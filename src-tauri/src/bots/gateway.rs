@@ -211,7 +211,16 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     if let Some(entry) = next {
         let taken = state.store.lock().ok().and_then(|store| message_queue::take(&store, &entry.id).ok());
         if let Some(entry) = taken {
-            let _ = crate::launch_task_in_project(app.clone(), app.state::<AppState>(), session_id.to_owned(), Some(entry.text), None, Some(bot.project_id.clone())).await;
+            let (text, images) = message_queue::prompt(&entry);
+            let images = (!images.is_empty()).then_some(images);
+            let launched = crate::launch_task_in_project(app.clone(), app.state::<AppState>(), session_id.to_owned(), Some(text), images, Some(bot.project_id.clone())).await;
+            // A failed launch puts the message back at the front, so nothing is lost.
+            if let Err(error) = launched {
+                if let Ok(store) = state.store.lock() {
+                    let _ = message_queue::requeue(&store, &entry);
+                    let _ = super::log(&store, &bot.id, "error", &format!("Queued message held: {}", error.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
+                }
+            }
         }
     }
 }

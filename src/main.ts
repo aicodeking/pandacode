@@ -1970,8 +1970,8 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
   } catch (error) {
     // Put it back at the front and hold, so nothing is lost or sent out of order.
     pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle';
-    const restored = await call<QueuedMessage>('queue_add', { sessionId: task.id, text: entry.text, attachments: entry.attachments }).catch(() => null);
-    if (restored) setQueue(task.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: task.id, ids: [restored.id, ...queueOf(task.id).map(item => item.id)] }).catch(() => [restored, ...queueOf(task.id)]));
+    const restored = await call<QueuedMessage>('queue_requeue', { entry }).catch(() => null);
+    if (restored) setQueue(task.id, [restored, ...queueOf(task.id).filter(item => item.id !== restored.id)]);
     state.queueHolds.set(task.id, 'failed');
     throw error;
   }

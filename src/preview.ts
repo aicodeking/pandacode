@@ -716,6 +716,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!entry) throw new Error('This queued message was already sent or removed.');
       savePreviewQueue(queue.filter(e => e.id !== args.id)); result = entry; break;
     }
+    case 'queue_requeue': {
+      const entry = args.entry as PreviewQueued; session(entry.sessionId);
+      const queue = previewQueue().filter(e => e.id !== entry.id);
+      queue.filter(e => e.sessionId === entry.sessionId).forEach(e => { e.position += 1; });
+      const restored = { ...entry, id: entry.id || crypto.randomUUID(), position: 0, updatedAt: Date.now() };
+      savePreviewQueue([...queue, restored]); result = restored; break;
+    }
     case 'steer_task': {
       const s = session(args.sessionId);
       if (!timers.has(s.id) && s.status !== 'running') throw new Error('The agent is not running; the message stays queued.');
