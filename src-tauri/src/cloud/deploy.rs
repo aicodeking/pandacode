@@ -59,7 +59,64 @@ pub fn scrub(text: &str, secrets: &[String]) -> String {
         }
         clean.push(ch);
     }
-    secrets.iter().filter(|s| s.len() >= 8).fold(clean, |text, secret| text.replace(secret.as_str(), "[redacted]"))
+    let clean = secrets.iter().filter(|s| s.len() >= 8).fold(clean, |text, secret| text.replace(secret.as_str(), "[redacted]"));
+    scrub_aws(&clean)
+}
+
+const AWS_LABELS: [&str; 4] = ["aws_secret_access_key", "aws_session_token", "secretaccesskey", "sessiontoken"];
+
+fn is_value_char(b: u8) -> bool {
+    !(b.is_ascii_whitespace() || matches!(b, b'"' | b'\'' | b',' | b'}' | b']' | b';'))
+}
+
+/// Redact AWS credentials the CLI may print: access key IDs, and the value after a secret-key or
+/// session-token label in env, ini or JSON form. Pure ASCII scanning, so offsets stay valid.
+fn scrub_aws(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let lower = text.to_ascii_lowercase();
+    let lower = lower.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let key_id = (bytes[i..].starts_with(b"AKIA") || bytes[i..].starts_with(b"ASIA"))
+            && bytes.len() >= i + 20
+            && bytes[i + 4..i + 20].iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+        if key_id {
+            out.extend_from_slice(b"[redacted]");
+            i += 20;
+            continue;
+        }
+        if let Some(label) = AWS_LABELS.iter().find(|l| lower[i..].starts_with(l.as_bytes())) {
+            let mut j = i + label.len();
+            let skip = |mut j: usize, set: &[u8]| { while j < bytes.len() && set.contains(&bytes[j]) { j += 1; } j };
+            let after_label = skip(j, b"\"' \t");
+            if after_label < bytes.len() && matches!(bytes[after_label], b'=' | b':') {
+                j = skip(after_label + 1, b" \t\"'");
+                let end = (j..bytes.len()).find(|&k| !is_value_char(bytes[k])).unwrap_or(bytes.len());
+                if end > j {
+                    out.extend_from_slice(&bytes[i..j]);
+                    out.extend_from_slice(b"[redacted]");
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// AWS subcommands that write or mint long-lived credentials into the agent's reach.
+fn refuse_aws(words: &[String]) -> Result<(), String> {
+    if words.iter().any(|w| w == "configure") {
+        return Err("PandaCode manages AWS credentials; `aws configure` is not available here.".into());
+    }
+    let positional: Vec<&str> = words.iter().map(String::as_str).filter(|w| !w.starts_with('-')).collect();
+    if positional.windows(2).any(|p| p[0] == "sts" && p[1] == "get-session-token") {
+        return Err("PandaCode manages AWS credentials; `aws sts get-session-token` is not available here.".into());
+    }
+    Ok(())
 }
 
 /// The command for a tool with its credentials, or why it cannot run.
@@ -107,6 +164,9 @@ fn run(checkout: &Path, args: &Value) -> Result<Value, String> {
     }
     if words.iter().any(|w| w == "--token" || w.starts_with("--token=")) {
         return Err("PandaCode adds the credentials itself; leave out --token.".into());
+    }
+    if tool == "aws" {
+        refuse_aws(&words)?;
     }
     let directory = inside(checkout, args["directory"].as_str().unwrap_or("."))?;
     let timeout = Duration::from_secs(args["timeoutSeconds"].as_u64().unwrap_or(600).clamp(1, 1800));
@@ -190,6 +250,29 @@ mod tests {
         assert!(run(&root, &json!({"tool":"vercel","args":"deploy --token=abc"})).unwrap_err().contains("leave out --token"));
         assert!(run(&root, &json!({"tool":"aws","args":"s3 ls 'unclosed"})).unwrap_err().contains("unclosed quote"));
         assert!(validate_spec(&catalog(), "pandacode_cloud_cli", &json!({"tool":"gcloud","args":"deploy"})).is_err());
+    }
+
+    #[test]
+    fn refuses_aws_credential_commands() {
+        let root = std::env::temp_dir();
+        for args in ["configure", "configure get aws_secret_access_key", "--profile x configure list", "sts get-session-token", "--region us-east-1 sts get-session-token --duration-seconds 60"] {
+            let err = run(&root, &json!({"tool":"aws","args":args})).unwrap_err();
+            assert!(err.contains("not available here"), "{args}: {err}");
+        }
+        assert!(refuse_aws(&["s3".into(), "ls".into()]).is_ok());
+        assert!(refuse_aws(&["sts".into(), "get-caller-identity".into()]).is_ok());
+    }
+
+    #[test]
+    fn scrubs_aws_credentials() {
+        let env = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\naws_session_token = FwoGZXIvYXdz//token==\n";
+        let clean = scrub(env, &[]);
+        for leak in ["AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI", "FwoGZXIvYXdz"] { assert!(!clean.contains(leak), "{clean}"); }
+        assert!(clean.contains("AWS_SECRET_ACCESS_KEY=[redacted]"), "{clean}");
+        let json = r#"{"Credentials": {"AccessKeyId": "ASIAIOSFODNN7EXAMPLE", "SecretAccessKey": "abc/def+ghi", "SessionToken": "tok/en=="}}"#;
+        assert_eq!(scrub(json, &[]), r#"{"Credentials": {"AccessKeyId": "[redacted]", "SecretAccessKey": "[redacted]", "SessionToken": "[redacted]"}}"#);
+        assert_eq!(scrub("key AKIAIOSFODNN7EXAMPLE here", &[]), "key [redacted] here");
+        assert_eq!(scrub("s3://bucket/AKIA-short and sessiontoken docs", &[]), "s3://bucket/AKIA-short and sessiontoken docs");
     }
 
     #[test]
