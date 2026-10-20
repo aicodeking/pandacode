@@ -188,23 +188,39 @@ fn run_git_bounded(
 /// Run a prepared external command with a null stdin, byte-bounded pipes, and a
 /// deadline that also stops the process group, so no tool can hold the app.
 pub(crate) fn run_process(
+    command: Command,
+    tool: &str,
+    limit: usize,
+    timeout: Duration,
+) -> Result<GitOutput, String> {
+    run_process_with_input(command, tool, limit, timeout, None)
+}
+
+/// `run_process` that writes `input` to the child's stdin (then closes it).
+pub(crate) fn run_process_with_input(
     mut command: Command,
     tool: &str,
     limit: usize,
     timeout: Duration,
+    input: Option<&str>,
 ) -> Result<GitOutput, String> {
     #[cfg(unix)]
     command.process_group(0);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|e| format!("Could not start {tool}: {e}"))?;
     let process_id = child.id();
+    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
+        use std::io::Write;
+        // A child that exits without reading is not an error here; its status says so.
+        let _ = stdin.write_all(input.as_bytes());
+    }
     #[cfg(windows)]
     let _job = crate::providers::windows_job::Job::attach(process_id);
     let stdout = capture(
@@ -1455,6 +1471,16 @@ mod tests {
         let result = run_process(command, "Fixture", 1024, Duration::from_millis(100));
         assert!(result.is_err());
         assert!(started.elapsed() < Duration::from_millis(750), "pipe draining must share the process deadline");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_input_reaches_stdin_and_large_output_does_not_block() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "head -c 300000 /dev/zero; cat"]);
+        let output = run_process_with_input(command, "Fixture", 1 << 20, Duration::from_secs(10), Some("secret")).unwrap();
+        assert!(output.status.success());
+        assert!(output.stdout.bytes.ends_with(b"secret"));
     }
 
     #[test]

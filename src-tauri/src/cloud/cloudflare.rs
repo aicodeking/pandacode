@@ -4,14 +4,13 @@
 //! minutes. Cloudflare cannot list Durable Objects, so PandaCode remembers the names.
 use serde_json::{json, Value};
 use std::{
-    io::Write,
     path::Path,
-    process::{Command, Stdio},
+    process::Command,
     time::Duration,
 };
 
 use super::{http, Machine};
-use crate::workspace::{checked, run_process};
+use crate::workspace::{checked, run_process, run_process_with_input};
 
 const SERVICE: &str = "Cloudflare";
 const FILES: [(&str, &str); 6] = [
@@ -147,25 +146,9 @@ fn wrangler(work: &Path, api_token: &str, account: &str, args: &[&str], input: O
     let mut command = Command::new(&wrangler);
     command.args(args).current_dir(work)
         .env("CLOUDFLARE_API_TOKEN", api_token).env("CLOUDFLARE_ACCOUNT_ID", account)
-        .env("WRANGLER_SEND_METRICS", "false").env("CI", "true")
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("Could not run Wrangler: {e}"))?;
-    if let (Some(mut stdin), Some(input)) = (child.stdin.take(), input) {
-        stdin.write_all(input.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            return Err("Wrangler did not finish in time.".into());
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        .env("WRANGLER_SEND_METRICS", "false").env("CI", "true");
+    let output = run_process_with_input(command, "Wrangler", 1 << 20, timeout, input)?;
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout.bytes), String::from_utf8_lossy(&output.stderr.bytes));
     if output.status.success() {
         Ok(text)
     } else {
