@@ -117,7 +117,7 @@ pub(super) fn context(
     let inbox = mailbox(store, &team.session_id, actor.id(), if full { 0 } else { seen }, 6, true)?;
     let newest = inbox["nextCursor"].as_i64().unwrap_or(0).max(seen);
     if !full {
-        if inbox["messages"].as_array().map_or(true, |messages| messages.is_empty()) {
+        if inbox["messages"].as_array().is_none_or(|messages| messages.is_empty()) {
             return Ok((String::new(), newest));
         }
         let inbox = serde_json::to_string(&inbox).map_err(|e| e.to_string())?;
