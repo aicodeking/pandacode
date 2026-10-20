@@ -25,6 +25,12 @@ pub(super) struct HostTools {
     active_calls: HashMap<String, String>,
 }
 const MAX_CALLS: usize = 64;
+/// Approval tools that still ask in Full access mode (cloud CLI runs carry the
+/// user's provider credentials, so every call needs an explicit yes).
+pub const ALWAYS_ASK_TOOLS: &[&str] = &["pandacode_cloud_cli"];
+pub fn asks_in_full_mode(tool: &str) -> bool {
+    ALWAYS_ASK_TOOLS.contains(&tool)
+}
 fn rpc_key(id: &Value) -> Result<String, String> {
     match id {
         Value::String(s) if !s.is_empty() && s.len() <= 256 => Ok(format!("s:{s}")),
@@ -250,7 +256,7 @@ impl Protocol {
                 call.id,
                 Err("This host action is unavailable in Plan mode".into()),
             ));
-        } else if protected && self.config.mode != "full" {
+        } else if protected && (self.config.mode != "full" || asks_in_full_mode(&call.tool)) {
             let label = format!(
                 "Allow {}?\n{}",
                 call.tool,
@@ -624,6 +630,41 @@ mod protocol_tests {
         assert_eq!(p.receive(request()).unwrap().calls.len(), 1);
         let mut p = protocol("plan", false);
         assert_eq!(p.receive(request()).unwrap().calls.len(), 1);
+    }
+    #[test]
+    fn full_mode_still_asks_for_cloud_cli_only() {
+        let mut p = protocol("full", true);
+        let cloud = "pandacode_cloud_cli";
+        p.host = Some(
+            HostTools::new(ToolHost {
+                tools: vec![
+                    json!({"type":"function","name":cloud,"description":"cloud","inputSchema":{"type":"object"}}),
+                    json!({"type":"function","name":"pandacode_test","description":"test","inputSchema":{"type":"object"}}),
+                ],
+                handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
+                approval_tools: HashSet::from([cloud.into(), "pandacode_test".into()]),
+            })
+            .unwrap(),
+        );
+        let mut req = request();
+        req["params"]["tool"] = json!(cloud);
+        let step = p.receive(req).unwrap();
+        assert!(step.calls.is_empty());
+        let id = step
+            .events
+            .iter()
+            .find(|event| event.kind == "approval")
+            .unwrap()
+            .request_id
+            .clone()
+            .unwrap();
+        assert_eq!(p.approval_step(&id, true).calls.len(), 1);
+        let mut other = request();
+        other["id"] = json!("rpc-2");
+        other["params"]["callId"] = json!("call-2");
+        let step = p.receive(other).unwrap();
+        assert_eq!(step.calls.len(), 1);
+        assert!(step.events.iter().all(|event| event.kind != "approval"));
     }
     #[test]
     fn foreign_and_missing_scope_never_dispatch() {
