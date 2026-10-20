@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory } from './common.mjs';
+import { repackAppImage } from './appimage.mjs';
 
 // Never forwarded to the build: leftovers of the old license check in a developer
 // shell must not change the output.
@@ -32,6 +33,18 @@ export function macosSigning(env) {
 
 function withoutApple(env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith('APPLE_')));
+}
+
+// `tauri build` accepts either the key or a path to it; `tauri signer sign` needs
+// the key itself.
+async function signingEnvironment(env) {
+  const key = env.TAURI_SIGNING_PRIVATE_KEY?.trim();
+  if (!key) return env;
+  try {
+    return { ...env, TAURI_SIGNING_PRIVATE_KEY: (await readFile(key, 'utf8')).trim() };
+  } catch {
+    return env;
+  }
 }
 
 export function buildPlan(releaseTarget, inherited, platform = process.platform, arch = process.arch) {
@@ -121,7 +134,8 @@ async function main() {
   await checkVersions(releaseVersion);
   const build = buildPlan(releaseTarget, process.env);
   // Execute Node directly: npm.cmd is not an executable for spawn() on Windows.
-  await run(process.execPath, [resolve(root, 'node_modules/@tauri-apps/cli/tauri.js'), ...build.args], { env: build.env });
+  const tauriCli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
+  await run(process.execPath, [tauriCli, ...build.args], { env: build.env });
   const bundleRoot = resolve(root, 'src-tauri/target', config.triple, 'release/bundle');
   const bundleDir = resolve(bundleRoot, config.bundleDir);
   const source = resolve(bundleDir, builtArtifact(await readdir(bundleDir), releaseVersion, releaseTarget));
@@ -129,6 +143,12 @@ async function main() {
     const app = resolve(bundleRoot, 'macos/PandaCode.app');
     await verifyMacApp(app, build.signing.mode);
     await verifyDmg(source, app, releaseVersion);
+  }
+  if (releaseTarget === 'linux-x86_64') {
+    // Drop the build host's Wayland libraries (see appimage.mjs) and sign the
+    // final bytes again, since Tauri signed the image before this rebuild.
+    await repackAppImage(source, { log: message => console.log(message) });
+    if (build.updater) await run(process.execPath, [tauriCli, 'signer', 'sign', source], { env: await signingEnvironment(build.env) });
   }
   const output = releaseDirectory(releaseVersion);
   await mkdir(output, { recursive: true });

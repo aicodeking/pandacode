@@ -131,6 +131,14 @@ target, verifies the macOS signature and disk image, and copies the installer to
 `CI=true` to skip the DMG Finder styling step, which needs Automation access.
 For a quick unpackaged build, `npm run tauri build` is enough.
 
+On Linux it also needs `mksquashfs` (`squashfs-tools`). The script rebuilds the
+finished AppImage without the Wayland libraries linuxdeploy copied from the
+Ubuntu 22.04 build host: those older copies stop newer Mesa EGL stacks from
+loading and leave WebKit's web process with a blank window (Tauri issue #15665).
+The image keeps its runtime and is signed again after the rebuild when update
+signing is configured, so publish the asset `build.mjs` produces rather than the
+raw `tauri build` output.
+
 ## Optional signing
 
 Builds are unsigned by default: macOS gets an ad-hoc signature, Windows and
