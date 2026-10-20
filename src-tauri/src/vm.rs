@@ -274,16 +274,20 @@ impl Vms {
     }
 
     /// Suspend or stop VMs nobody has used for `idle`. Returns the names it released.
+    /// A VM whose desktop is still installing is busy even though nothing marks it used.
     pub fn release_idle(&self, idle: Duration) -> Vec<String> {
+        self.release(idle, true)
+    }
+    fn release(&self, idle: Duration, spare_installing: bool) -> Vec<String> {
         let stale: Vec<(String, bool)> = self.lock().map(|sessions| sessions.iter().filter(|(_, s)| s.used.elapsed() >= idle).map(|(name, s)| (name.clone(), s.macos)).collect()).unwrap_or_default();
-        stale.into_iter().filter_map(|(name, macos)| {
+        stale.into_iter().filter(|(name, _)| !(spare_installing && self.desktop_state(name) == Some(desktop::State::Installing))).filter_map(|(name, macos)| {
             let released = if macos { self.suspend(&name) } else { self.stop(&name) };
             released.ok().map(|_| name)
         }).collect()
     }
     /// On quit, VMs PandaCode started are suspended or stopped so they free their memory.
     pub fn shutdown(&self) {
-        self.release_idle(Duration::ZERO);
+        self.release(Duration::ZERO, false);
     }
 }
 /// Read `tart run` output until it prints the VNC URL; keep draining afterwards.
@@ -334,6 +338,16 @@ pub fn watch_idle(app: tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vm_installing_its_desktop_is_not_released_as_idle() {
+        let vms = Vms::default();
+        assert!(vms.begin_desktop("vm"));
+        assert_eq!(vms.desktop_state("vm"), Some(desktop::State::Installing));
+        // No session exists, so nothing is stopped; the install state must survive a sweep.
+        assert!(vms.release_idle(Duration::ZERO).is_empty());
+        assert_eq!(vms.desktop_state("vm"), Some(desktop::State::Installing));
+    }
 
     #[test]
     fn parses_tarts_vnc_url_and_keeps_it_local() {
