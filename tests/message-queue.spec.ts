@@ -108,3 +108,51 @@ test('a follow-up queued by an agent for an idle task is sent right away', async
   });
   await expect.poll(async () => (await calls(page, 'send_message')).map(c => [c.args.sessionId, c.args.text])).toEqual([['session-2', 'Queued by the architect']]);
 });
+
+test('Send now delivers a held entry right away and keeps the rest held', async ({ page }) => {
+  await startRun(page);
+  for (const text of ['Later', 'Urgent']) { await prompt(page).fill(text); await prompt(page).press('Enter'); }
+  await emit(page, { sessionId: 'session-1', kind: 'error', text: 'Boom' });
+  await emit(page, { sessionId: 'session-1', kind: 'done', text: '' });
+  await expect(panel(page)).toContainText('Paused after the run failed');
+  await panel(page).getByRole('button', { name: 'Send now: Urgent' }).click();
+  await expect.poll(async () => (await calls(page, 'send_message')).map(c => c.args.text)).toEqual(['Build the feature', 'Urgent']);
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Later']);
+  await emit(page, { sessionId: 'session-1', kind: 'done', text: '' });
+  await expect(panel(page)).toContainText('Paused after the run failed');
+  expect((await calls(page, 'send_message')).length).toBe(2);
+});
+
+test('Send now while running stops the run, sends that entry first and keeps the others in order', async ({ page }) => {
+  await startRun(page);
+  for (const text of ['One', 'Two', 'Three']) { await prompt(page).fill(text); await prompt(page).press('Enter'); }
+  await panel(page).getByRole('button', { name: 'Send now: Three' }).click();
+  await expect.poll(async () => (await calls(page, 'stop_session')).length).toBe(1);
+  await expect.poll(async () => (await calls(page, 'send_message')).map(c => c.args.text)).toEqual(['Build the feature', 'Three']);
+  await expect(rows(page).locator('.queue-text')).toHaveText(['One', 'Two']);
+  // The stop was for Send now, so the rest are not paused: they follow when this run ends.
+  await expect(panel(page)).toContainText('Sends when the agent finishes');
+  await emit(page, { sessionId: 'session-1', kind: 'done', text: '' });
+  await expect.poll(async () => (await calls(page, 'send_message')).map(c => c.args.text)).toEqual(['Build the feature', 'Three', 'One']);
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Two']);
+});
+
+test('Steer sends a queued entry into a steerable running turn', async ({ page }) => {
+  await startRun(page);
+  for (const text of ['Keep', 'Steer me']) { await prompt(page).fill(text); await prompt(page).press('Enter'); }
+  const steer = panel(page).getByRole('button', { name: 'Steer now: Steer me' });
+  await expect(steer).toHaveText('Steer');
+  await steer.click();
+  await expect.poll(async () => (await calls(page, 'steer_task')).map(c => c.args.text)).toEqual(['Steer me']);
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Keep']);
+  expect(await calls(page, 'stop_session')).toEqual([]);
+});
+
+test('non-steerable harnesses offer only Send now', async ({ page }) => {
+  await page.locator('.task-item[data-id="session-3"]').click();
+  await startRun(page);
+  await prompt(page).fill('Queued');
+  await prompt(page).press('Enter');
+  await expect(panel(page).getByRole('button', { name: /^Steer now/ })).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: 'Send now: Queued' })).toBeVisible();
+});

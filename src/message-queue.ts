@@ -32,6 +32,8 @@ export interface QueueView {
   hold: HoldReason | null;
   running: boolean;
   steerable: boolean;
+  /** Send now can start a turn here (bot conversations drain natively, so they cannot). */
+  sendable: boolean;
   editingId: string | null;
   busy: boolean;
 }
@@ -47,10 +49,12 @@ function row(entry: QueuedMessage, index: number, view: QueueView): string {
     return `<li class="queue-row editing" data-queue-id="${escape(entry.id)}"><textarea class="queue-edit" aria-label="Edit queued message" rows="2">${escape(entry.text)}</textarea>
       <div class="queue-edit-actions"><button type="button" class="secondary-button" data-action="queue-cancel">Cancel</button><button type="button" class="primary-button" data-action="queue-save">Save</button></div></li>`;
   }
-  const steer = view.running && view.steerable && !view.busy ? `<button type="button" class="icon-button" data-action="queue-steer" title="Send now into the running turn" aria-label="Steer now: ${escape(entry.text.slice(0, 60))}">${icon('spark')}</button>` : '';
+  const preview = escape(entry.text.slice(0, 60));
+  const steer = view.running && view.steerable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-steer" title="Send into the running turn" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
+  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${view.running ? 'Stop the run and send this next' : 'Send this now'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
   return `<li class="queue-row" data-queue-id="${escape(entry.id)}"><span class="queue-index" aria-hidden="true">${index + 1}</span>
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span>${attachmentLabel(entry)}
-    <span class="queue-actions">${steer}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-up" aria-label="Move queued message ${index + 1} up" title="Move up" ${index === 0 || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button queue-down" data-action="queue-down" aria-label="Move queued message ${index + 1} down" title="Move down" ${last || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Remove" ${view.busy ? 'disabled' : ''}>${icon('close')}</button></span></li>`;
+    <span class="queue-actions">${steer}${sendNow}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-up" aria-label="Move queued message ${index + 1} up" title="Move up" ${index === 0 || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button queue-down" data-action="queue-down" aria-label="Move queued message ${index + 1} down" title="Move down" ${last || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Remove" ${view.busy ? 'disabled' : ''}>${icon('close')}</button></span></li>`;
 }
 
 /** Markup for the queue panel, or an empty string when nothing is queued. */

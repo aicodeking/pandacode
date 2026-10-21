@@ -3384,3 +3384,34 @@ test('the prompt sits in the same place in every thread', async ({ page }) => {
   await measure();
   expect(new Set(bottoms).size, `prompt bottoms: ${bottoms.join(', ')}`).toBe(1);
 });
+
+test('streaming keeps the transcript at the bottom after sending and leaves a reader who scrolled up', async ({ page }) => {
+  await installHistoryFixture(page, 30);
+  const transcript = page.locator('#transcript');
+  const reply = page.locator('#transcript .agent-message .message-content', { hasText: 'connects to the CLI tools' });
+  // A multi-line draft grows the composer; sending shrinks it again while the reply streams in.
+  await prompt(page).fill('Line one\nLine two\nLine three\nLine four');
+  await transcript.evaluate(element => {
+    const gaps: number[] = (window as any).__bottomGaps = [];
+    // Sample after each paint: the transcript re-pins between layout and paint, never visibly later.
+    const sample = () => { gaps.push(element.scrollHeight - element.scrollTop - element.clientHeight); requestAnimationFrame(() => setTimeout(sample)); };
+    sample();
+  });
+  await prompt(page).press('Enter');
+  await expect(reply).toHaveCount(1);
+  await expect(page.locator('#stream-region .live-message')).toHaveCount(0);
+  expect(Math.max(...await page.evaluate(() => (window as any).__bottomGaps.slice(1) as number[]))).toBeLessThanOrEqual(2);
+  await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(2);
+
+  await prompt(page).fill('Second message');
+  await prompt(page).press('Enter');
+  await expect(page.locator('#stream-region .live-text')).not.toBeEmpty();
+  await transcript.hover();
+  await page.mouse.wheel(0, -300);
+  await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeGreaterThan(100);
+  const anchor = page.locator('#transcript [data-message-id="566"]');
+  const anchorY = await historyOffset(anchor);
+  await expect(reply).toHaveCount(2);
+  await expect(page.locator('#stream-region .live-message')).toHaveCount(0);
+  expect(Math.abs(await historyOffset(anchor) - anchorY)).toBeLessThan(2);
+});

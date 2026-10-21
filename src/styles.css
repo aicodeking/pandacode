@@ -874,6 +874,9 @@ html[data-theme="dark"] body :is(.floating-menu,.bp-menu){box-shadow:0 16px 40px
 html[data-theme] body .dialog-plate{background:var(--panel);border-color:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:0 40px 100px -30px rgb(0 0 0 / .32),0 16px 36px -20px rgb(0 0 0 / .2)}
 html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0 0 / .7),0 16px 36px -20px rgb(0 0 0 / .45)}
 @media (prefers-contrast:more){html[data-theme] body .dialog-plate{border-color:var(--text)}}
+.queue-now{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 8px;border-radius:3px;font-size:.74rem;font-weight:550;white-space:nowrap;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 30%,transparent)}
+.queue-now:hover{background:color-mix(in srgb,var(--accent) 50%,transparent)}
+.queue-now .icon{width:12px;height:12px}
 /* PandaCode is instant: no transitions anywhere. Looping status indicators (spinners,
    working pulses) are animations, not transitions, so they keep running. */
 *,*::before,*::after{transition:none!important}

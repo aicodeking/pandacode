@@ -98,7 +98,6 @@ let selectedFileContext: FileLinkContext | undefined;
 let inspectorDiff: import('./diff-viewer').DiffViewerController | undefined;
 let inspectorDiffEpoch = 0;
 let transientId = -1;
-let transcriptRevision = 0;
 const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
@@ -492,12 +491,41 @@ const disposeMessageActions = bindMessageActions($('#transcript'), {
 });
 const transcriptScroller = $('#transcript');
 transcriptScroller.tabIndex = 0;
-transcriptScroller.addEventListener('scroll', () => { void loadOlderMessages(); }, { passive: true });
+/* Following the latest output is an intent, not a measurement. Growing content and a resizing
+ * composer never clear it: only the reader scrolling up or opening a fold does, and reaching
+ * the bottom sets it again. The observer re-pins before paint, so nothing jumps for a frame. */
+let stickToBottom = true, lastTranscriptTop = 0;
+const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
+const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+function followTranscript(): void {
+  if (!stickToBottom) return;
+  if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
+  transcriptScroller.scrollTop = transcriptScroller.scrollHeight;
+}
+function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
+const transcriptResize = new ResizeObserver(followTranscript);
+const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
+new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
+observeTranscript();
+const releaseTranscript = (): void => { if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
+// Rebuilding or measuring the composer briefly shrinks it; a layout read then grows the transcript
+// and clamps its scroll up. Re-pin in the mutation's microtask, before that clamp can paint or
+// reach the scroll handler, where any upward scroll means the reader left.
+new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target))) followTranscript(); })
+  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
+transcriptScroller.addEventListener('scroll', () => {
+  const top = transcriptScroller.scrollTop;
+  if (transcriptGap() <= 2) stickToBottom = true;
+  else if (top < lastTranscriptTop) stickToBottom = false;
+  lastTranscriptTop = top;
+  void loadOlderMessages();
+}, { passive: true });
+transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary')) stickToBottom = false; }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
-transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) void loadOlderMessages(); }, { passive: true });
+transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
 transcriptScroller.addEventListener('keydown', event => {
-  if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) void loadOlderMessages();
+  if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
 });
 const subagents = new Subagents($('#subagents-host'), 'subagents-panel', sessionId => ({ projectId: state.projectId, sessionId }));
 const jevActivity = new JevActivity();
@@ -950,12 +978,11 @@ function changesRow(sessionId: string, changes: TurnChanges | undefined): string
 function renderTranscript(preservePosition = false): void {
   closeContentMenus();
   $('.conversation-pane').classList.toggle('new-task-page', newTaskView());
-  const transcript = $('#transcript'); const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140;
-  const revision = ++transcriptRevision;
-  const restoreAnchor = preservePosition || !nearBottom ? captureTranscriptAnchor(transcript) : undefined;
+  const transcript = $('#transcript');
+  const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
-  const readingTool = Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes'));
+  const readingTool = readingTranscriptTool();
   const s = session();
   if (!s) { transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
   if ((state.messagesLoading || state.messagesError) && !state.streams.has(s.id) && !finishingStreams.has(s.id)) { transcript.innerHTML = `<p class="history-notice" role="status">${state.messagesError ? 'Unable to load this task. Select it again to retry.' : 'Loading conversation…'}</p>`; return; }
@@ -997,10 +1024,7 @@ function renderTranscript(preservePosition = false): void {
   restoreTools(transcript, toolViews);
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
-  const restoredTop = transcript.scrollTop;
-  if (!restoreAnchor && nearBottom && !readingTool) requestAnimationFrame(() => {
-    if (revision === transcriptRevision && Math.abs(transcript.scrollTop - restoredTop) <= 1) transcript.scrollTop = transcript.scrollHeight;
-  });
+  else followTranscript();
 }
 function savedActivityHtml(messages: Message[]): string {
   return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
@@ -1113,8 +1137,8 @@ function renderStream(): void {
   // A final text frame can run while the saved transcript is loading. Retain
   // its tool controls until renderTranscript can transfer their reading state.
   if (!current) { updateWorkTimer(); return; }
-  const transcript = $('#transcript'); const nearBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140;
-  const scrollTop = transcript.scrollTop, readingTool = Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .agent-input'));
+  const transcript = $('#transcript');
+  const scrollTop = transcript.scrollTop, readingTool = readingTranscriptTool();
   if (region.dataset.sessionId !== state.sessionId || !region.querySelector('.live-text')) {
     region.innerHTML = activityHtml(current.turnKey, workingLabel(current), '<div class="live-tools"></div><div class="live-status"></div>', true) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
     region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
@@ -1141,7 +1165,7 @@ function renderStream(): void {
   status.hidden = Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0;
   updateWorkTimer();
   if (readingTool) transcript.scrollTop = scrollTop;
-  else if (nearBottom) transcript.scrollTop = transcript.scrollHeight;
+  else followTranscript();
 }
 const liveGroupEntries = new WeakMap<HTMLElement, LiveTool[]>();
 /** Patch only changed groups; text frames do not recreate tool controls or open details. */
@@ -1281,7 +1305,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: canSteer(s.provider) && !team, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id) }));
+  $('#composer').insertAdjacentHTML('beforebegin', (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: canSteer(s.provider) && !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id) }));
   renderApprovalBar();
   void github.status(s.projectId);
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -1677,8 +1701,8 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
-  render();
-  if (remembered) $('#transcript').scrollTop = $('#transcript').scrollHeight;
+  stickToBottom = true; render();
+  if (remembered) stickTranscript();
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   let page: MessagePage, details: Session;
   try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
@@ -1709,7 +1733,7 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   // Resolve its display name in place, without delaying the task or replacing input.
   if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-  if (changed) $('#transcript').scrollTop = $('#transcript').scrollHeight;
+  if (changed) stickTranscript();
   rememberThread(id);
   if (generation !== state.generation) return;
   await refreshInspector(); renderHeader();
@@ -1862,6 +1886,9 @@ async function performSlashAction(action: string, argumentsText: string, task: S
 }
 
 const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
+/** Entries picked with Send now: delivered before the rest, even past a hold. While the run they
+ * stopped is ending, `stopping` keeps the hold from before, so the stop does not pause the others. */
+const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
 function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); }
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
@@ -1939,6 +1966,7 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   const s = session(); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
   if (action === 'queue-steer') return steerQueued(id);
+  if (action === 'queue-send-now') return sendQueuedNow(s, id);
   if (action === 'queue-edit') { state.queueEditing = id; renderComposer(); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
   if (action === 'queue-cancel') { state.queueEditing = ''; renderComposer(); return; }
   if (action === 'queue-save') return saveQueueEdit();
@@ -1946,16 +1974,28 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-up' || action === 'queue-down') { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids: moved(queueOf(s.id), id, action === 'queue-up' ? -1 : 1) })); renderComposer(); return; }
   if (action === 'queue-resume') { state.queueHolds.delete(s.id); renderComposer(); await dispatchQueue(s.id); }
 }
-/** Sends a task's next queued message once it is idle and its queue is not held. */
+/** Sends this entry next: right away when idle, otherwise after stopping the run (as the Stop button does). */
+async function sendQueuedNow(s: Session, id: string): Promise<void> {
+  if (!queueOf(s.id).some(item => item.id === id)) return;
+  if (!isRunning(s.id)) { sendFirst.set(s.id, { id }); return dispatchQueue(s.id); }
+  sendFirst.set(s.id, { id, stopping: true, hold: state.queueHolds.get(s.id) });
+  runEndings.set(s.id, 'stopped');
+  const team = teams.get(s.id);
+  await call(team ? 'architect_control' : 'stop_session', { sessionId: s.id, ...(team ? { action: 'stop' } : {}) });
+  notify('Stopping the run to send this message…');
+}
+/** Sends a task's next queued message once it is idle and its queue is not held (Send now skips the hold). */
 async function dispatchQueue(id: string): Promise<void> {
   if (!queueOf(id).length) return;
   await ensureBotProjects();
   const task = state.sessions.find(item => item.id === id);
-  const next = queueOf(id)[0];
-  if (!task || !next || botProjects.has(task.projectId) || state.queueHolds.has(id) || state.queueBusy.has(id) || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
+  const first = sendFirst.get(id), next = queueOf(id).find(item => item.id === first?.id) ?? queueOf(id)[0];
+  if (first && next?.id !== first.id) sendFirst.delete(id);
+  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
+    if (next.id === first?.id) sendFirst.delete(id);
     const entry = await call<QueuedMessage>('queue_take', { id: next.id });
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
@@ -2083,6 +2123,7 @@ async function send(): Promise<void> {
     if (currentPrompt?.dataset.sessionId === s.id && currentPrompt.value === draft) currentPrompt.value = '';
     if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
     if (isCurrent()) {
+      stickToBottom = true;
       state.messages = [...state.messages, { id: transientId--, sessionId: s.id, role: 'user', content, createdAt: Date.now() }];
       state.attachments = state.attachments.filter(path => !filePaths.includes(path)); render();
       const sent = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
@@ -2220,7 +2261,10 @@ function onAgent(event: AgentEvent): void {
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
-    if (ending) state.queueHolds.set(event.sessionId, ending);
+    const first = sendFirst.get(event.sessionId);
+    if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
+    if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
+    else if (ending) state.queueHolds.set(event.sessionId, ending);
     if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
     void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
   }
