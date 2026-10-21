@@ -441,7 +441,7 @@ fn mismatched_profile_or_storage_failure_roll_back_task_selection_and_library() 
     assert_eq!(library_json(&store), before);
 }
 #[test]
-fn used_teams_switch_setup_in_place_while_ordinary_composer_uses_team_controls() {
+fn used_teams_switch_setup_in_place_and_composer_can_change_the_architect_model() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let task = task(&store);
     store
@@ -481,8 +481,8 @@ fn used_teams_switch_setup_in_place_while_ordinary_composer_uses_team_controls()
         let store = state.store.lock().unwrap();
         assert!(store
             .configure(&task.id, "claude", "changed-via-composer", None)
-            .is_err());
-        assert!(store.set_reasoning_effort(&task.id, Some("low")).is_err());
+            .is_ok());
+        assert!(store.set_reasoning_effort(&task.id, Some("low")).is_ok());
         assert!(store
             .configure(&task.id, "claude", &setup.architect.model, None)
             .is_ok());

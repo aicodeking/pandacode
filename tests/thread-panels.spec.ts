@@ -209,7 +209,7 @@ test.describe('thread panels', () => {
     await page.evaluate(() => (window as any).__releasePanelFile());
     await page.locator('#inspector-toggle').click();
     await expect(page.locator('.file-preview-title')).toHaveText('README.md');
-    await expect(page.locator('.code-preview')).toBeVisible();
+    await expect(page.locator('.document-viewer')).toBeVisible();
   });
 
   test('a project change completed in the background discards the old workspace file context', async ({ page }) => {

@@ -1132,15 +1132,6 @@ impl Store {
             self.project(project_id)?;
         }
         let current = self.session(sid)?;
-        crate::architect::profiles::check_selection_change(
-            self,
-            sid,
-            &crate::architect::profiles::ModelSelection {
-                provider: provider.into(),
-                model: model.into(),
-                reasoning_effort: current.reasoning_effort,
-            },
-        )?;
         // Queue the handoff and replace the native context atomically. Keep the
         // project fixed once a conversation exists, but let another harness continue it.
         let switching = current.provider != provider;
@@ -1204,15 +1195,6 @@ impl Store {
         let session = self.session(sid)?;
         let effort = effort.map(str::trim).filter(|effort| !effort.is_empty());
         crate::providers::validate_reasoning_effort(&session.provider, effort)?;
-        crate::architect::profiles::check_selection_change(
-            self,
-            sid,
-            &crate::architect::profiles::ModelSelection {
-                provider: session.provider.clone(),
-                model: session.model.clone(),
-                reasoning_effort: effort.map(str::to_owned),
-            },
-        )?;
         let changed = self.db.execute(
             "UPDATE sessions SET reasoning_effort=?2,updated_at=?3 WHERE id=?1 AND status NOT IN ('running','waiting')",
             params![sid, effort, now()],

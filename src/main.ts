@@ -10,6 +10,8 @@ import './motion.css';
 import './sidebar-tree.css';
 import './message-queue.css';
 import './usage-limit.css';
+import './document-viewer.css';
+import { renderDocument, setDocumentView } from './document-viewer';
 import { canSteer, moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
 import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast, trackSegment } from './motion';
@@ -2437,7 +2439,7 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   await active();
   const { action, args } = request;
   if (action === 'open_task') { await selectSession(String(args.taskId)); return { opened: state.sessionId === args.taskId }; }
-  if (action === 'open_file') { state.inspectorTab = 'files'; await openFile(String(args.path), 'file'); return { opened: state.selectedFile === args.path }; }
+  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); state.inspectorTab = 'files'; await openFile(String(args.path), 'file'); return { opened: state.selectedFile === args.path }; }
   if (action === 'open_terminal') { if (!terminalPanel.open) await toggleTerminal(); return { opened: terminalPanel.open }; }
   if (action === 'run_project') return projectRunner.run(request.requestId, active);
   if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active); return { opened: true }; }
@@ -2491,7 +2493,8 @@ function renderInspector(): void {
   }
   if (state.selectedKind) {
     if (state.filePreviewLoading) { target.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
-    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file preview', 'copy')}${state.selectedKind === 'file' ? selectedFileContext?.sessionId && selectedFileContext.sessionId !== state.sessionId ? '' : `<button data-action="attach-file" data-path="${escape(state.selectedFile)}">${icon('attach')} Attach</button>` : button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div>${state.selectedKind === 'diff' ? '<div class="inspector-diff-host"></div>' : `<div class="code-preview">${state.selectedContent.split('\n', 2000).map((line, i) => `<div class="code-line"><span class="line-number">${i + 1}</span><code>${escape(line) || ' '}</code></div>`).join('')}</div>${state.selectedContent.split('\n', 2001).length > 2000 ? '<div class="inspector-hint">Preview limited to 2,000 lines.</div>' : ''}`}`;
+    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${state.selectedKind === 'file' ? selectedFileContext?.sessionId && selectedFileContext.sessionId !== state.sessionId ? '' : `<button data-action="attach-file" data-path="${escape(state.selectedFile)}">${icon('attach')} Attach</button>` : button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div>${state.selectedKind === 'diff' ? '<div class="inspector-diff-host"></div>' : '<div class="document-host"></div>'}`;
+    if (state.selectedKind === 'file') renderDocument(target.querySelector<HTMLElement>('.document-host')!, state.selectedFile, state.selectedContent);
     if (state.selectedKind === 'diff' && state.inspector) {
       const host = target.querySelector<HTMLElement>('.inspector-diff-host')!;
       const patch = state.selectedContent, path = state.selectedFile;
@@ -3362,7 +3365,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'filter-projects': await showProjectFilter(element); break;
     case 'default-provider': await showDefaultProvider(element); break;
     case 'close-dialog': closeModal(); break;
-    case 'copy-file': await navigator.clipboard.writeText(state.selectedContent); notify('Preview copied'); break;
+    case 'copy-file': await navigator.clipboard.writeText(state.selectedContent); notify('File copied'); break;
     case 'copy-path': await navigator.clipboard.writeText(workspacePath()); notify(session()?.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
     case 'terminal': await toggleTerminal(); break;
     case 'toggle-inspector': state.inspector = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;

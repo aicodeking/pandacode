@@ -1,0 +1,24 @@
+/* Inspector document viewer (src/document-viewer.ts). Always loaded from main.ts. */
+.document-viewer{display:flex;flex-direction:column;min-height:0}
+.document-viewer :is(.doc-reader,.doc-raw,.code-preview){user-select:text;-webkit-user-select:text;cursor:text}
+.doc-toolbar{display:flex;align-items:center;gap:10px;padding:0 15px 10px;font-size:.72rem;color:var(--muted);white-space:nowrap}
+.doc-view-switch{display:flex;gap:2px;padding:2px;border-radius:4px;background:color-mix(in srgb,var(--raised) 78%,transparent)}
+.doc-view-switch>button{padding:3px 10px;border-radius:3px;font-size:.72rem;font-weight:500;color:var(--muted);--press:1}
+.doc-view-switch>button[aria-pressed=true],.doc-view-switch>button:hover{color:var(--text)}
+.doc-view-switch>.segment-thumb{border-radius:3px;background:var(--panel);box-shadow:0 1px 3px rgb(0 0 0 / .08)}
+html[data-theme=dark] .doc-view-switch>.segment-thumb{background:color-mix(in srgb,var(--text) 13%,transparent);box-shadow:0 1px 3px rgb(0 0 0 / .25)}
+.doc-stats{overflow:hidden;text-overflow:ellipsis}
+.doc-wrap{margin-left:auto;padding:3px 8px;border-radius:3px;font-size:.72rem;color:var(--muted)}
+.doc-wrap[aria-pressed=true]{color:var(--text);background:color-mix(in srgb,var(--raised) 78%,transparent)}
+.doc-reader{max-width:68ch;padding:6px 18px 32px;font-size:.9rem;line-height:1.75;color:var(--text);overflow-wrap:anywhere}
+.doc-reader.markdown h1{font-size:1.35rem;margin:6px 0 14px;line-height:1.3}
+.doc-reader.markdown h2{font-size:1.12rem;margin:26px 0 10px;line-height:1.35}
+.doc-reader.markdown h3{font-size:1rem}
+.doc-reader.markdown li{padding-bottom:2px}
+.doc-reader.markdown blockquote{margin:0 0 16px}
+.doc-reader.markdown table{display:block;overflow-x:auto}
+.doc-plain p{margin:0 0 14px;white-space:pre-wrap}
+.doc-raw{margin:0;padding:9px 15px 20px;overflow:auto;font-family:var(--mono);font-size:.78rem;line-height:1.7;white-space:pre;tab-size:4}
+.document-viewer[data-wrap] .doc-raw{white-space:pre-wrap;overflow-wrap:anywhere}
+.document-viewer[data-wrap] .code-line{min-width:0}
+.document-viewer[data-wrap] .code-line code{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}

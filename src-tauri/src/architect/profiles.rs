@@ -238,19 +238,6 @@ pub(super) fn remember(
     }
     write(store, &library)
 }
-/// Ordinary composer edits must go through team controls for atomic setup changes.
-pub(crate) fn check_selection_change(
-    store: &Store,
-    sid: &str,
-    selection: &ModelSelection,
-) -> Result<()> {
-    if super::load(store, sid)?.is_some_and(|team| team.round > 0 || !team.workers.is_empty())
-        && *selection != ModelSelection::from_session(&store.session(sid)?)
-    {
-        return Err("Use the team controls to switch the architect for this task.".into());
-    }
-    Ok(())
-}
 pub(super) fn apply_selection(store: &Store, sid: &str, selection: &ModelSelection) -> Result<()> {
     selection.validate()?;
     store.db.execute("UPDATE sessions SET provider=?2,model=?3,reasoning_effort=?4,context_used_tokens=NULL,context_window=NULL WHERE id=?1",params![sid,selection.provider,selection.model,selection.reasoning_effort]).map_err(|e|e.to_string())?;

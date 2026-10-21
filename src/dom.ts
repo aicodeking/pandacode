@@ -102,9 +102,10 @@ let fallback: Promise<(value: string) => string | Promise<string>> | undefined;
 /** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a
  * fallback if its WebAssembly cannot start. Math is typeset after sanitizing, from KaTeX. */
 export async function markdownHtml(value: string): Promise<string> {
-  sanitizer ??= import('dompurify').then(d => (html: string) => d.default.sanitize(html, { ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] }));
+  sanitizer ??= import('dompurify').then(d => (html: string) => d.default.sanitize(html, { ADD_TAGS: ['pandacode-ui', 'pandacode-code'], ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] }));
   const engine = import('./enriched-markdown');
-  const [sanitize, enriched] = await Promise.all([sanitizer, engine]);
+  // Defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
+  const [sanitize, enriched] = await Promise.all([sanitizer, engine, import('./generative-ui')]);
   let html: string;
   try {
     html = enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
@@ -116,9 +117,27 @@ export async function markdownHtml(value: string): Promise<string> {
     });
     html = await (await fallback)(value);
   }
-  const result = await enriched.typesetMath(sanitize(html));
+  const result = pendingView(value, await enriched.typesetMath(sanitize(html)));
   remember(value, result);
   return result;
+}
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`]*)/;
+/** Whether the text ends inside an open generative-UI fence (a reply still streaming). */
+export function openViewFence(value: string): boolean {
+  let open: { mark: string; view: boolean } | undefined;
+  for (const line of value.split('\n')) {
+    const fence = line.match(FENCE_LINE);
+    if (!fence) continue;
+    if (!open) open = { mark: fence[1], view: /^(?:ui|chart|svg|html|mermaid)$/i.test(fence[2]) };
+    else if (fence[1][0] === open.mark[0] && fence[1].length >= open.mark.length && !fence[2] && !line.slice(line.indexOf(fence[1]) + fence[1].length).trim()) open = undefined;
+  }
+  return Boolean(open?.view);
+}
+/** An unfinished view shows a placeholder until its fence closes, instead of half-parsed JSON. */
+function pendingView(value: string, html: string): string {
+  if (!openViewFence(value)) return html;
+  const at = html.lastIndexOf('<pandacode-ui>');
+  return at < 0 ? html : `${html.slice(0, at)}<pandacode-ui class="pending">${html.slice(at + 14)}`;
 }
 export async function markdown(target: HTMLElement, value: string, scroll?: HTMLElement): Promise<void> {
   captureFileLinkContext(target);

@@ -44,11 +44,34 @@ const escapeAttr = (text: string) => escapeText(text).replace(/"/g, '&quot;');
 const text = (node: MarkdownNode): string => node.content ?? (node.children ?? []).map(text).join('');
 const ADMONITIONS: Record<string, string> = { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' };
 const ALIGN = new Set(['left', 'center', 'right']);
+const GENERATIVE = new Set(['ui', 'chart', 'svg', 'html', 'mermaid']);
+// Raw HTML is text to md4c; these collapsibles are the one HTML form agents rely on.
+const DETAILS_OPEN = /^<details( open)?>\s*(?:<summary>([\s\S]*?)<\/summary>)?$/i;
+const SUMMARY = /^<summary>([\s\S]*?)<\/summary>$/i;
+// Follow-up suggestions written as an inline directive, e.g. :codex-followup[Run tests]{prompt="Run the tests"}.
+const FOLLOWUP = /:(?:codex-)?followup\[([^\]\n]{1,80})\](?:\{prompt=("|&quot;)([\s\S]*?)\2\})?/g;
 
 /** Writes the tree as HTML. Math becomes inert placeholders that `typesetMath` fills in. */
 export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}): string {
   const link = (url: string) => escapeAttr(options.link ? options.link(url) : url);
   const kids = (node: MarkdownNode) => (node.children ?? []).map(render).join('');
+  let details = 0;
+  const paragraph = (node: MarkdownNode): string => {
+    const a = node.attributes ?? {};
+    const raw = node.children?.every(child => child.type === 'Text' || child.type === 'SoftBreak') ? text(node).trim() : '';
+    const open = raw.match(DETAILS_OPEN);
+    if (open) { details++; return `<details${open[1] ? ' open' : ''}>${open[2] === undefined ? '' : `<summary>${escapeText(open[2])}</summary>`}\n`; }
+    const summary = details ? raw.match(SUMMARY) : null;
+    if (summary) return `<summary>${escapeText(summary[1])}</summary>\n`;
+    if (/^<\/details>$/i.test(raw) && details) { details--; return '</details>\n'; }
+    const followups: { label: string; prompt: string }[] = [];
+    const html = kids(node).replace(FOLLOWUP, (_, label: string, _quote: string, prompt?: string) => {
+      followups.push({ label: unescapeText(label), prompt: unescapeText(prompt ?? label) });
+      return '';
+    });
+    const body = html.trim() ? (a.tight === 'true' ? html : `<p>${html}</p>\n`) : '';
+    return followups.length ? `${body}<pandacode-ui><pre><code class="language-ui">${escapeText(JSON.stringify({ type: 'followups', items: followups.slice(0, 8) }))}</code></pre></pandacode-ui>\n` : body;
+  };
   const cell = (tag: string, node: MarkdownNode) => {
     const align = node.attributes?.align ?? '';
     return `<${tag}${ALIGN.has(align) ? ` class="md-align-${align}"` : ''}>${kids(node)}</${tag}>`;
@@ -58,7 +81,7 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
     switch (node.type) {
       case 'Document': return kids(node);
       // Tight list items hold their text directly, as CommonMark renders them.
-      case 'Paragraph': return a.tight === 'true' ? kids(node) : `<p>${kids(node)}</p>\n`;
+      case 'Paragraph': return paragraph(node);
       case 'Text': return escapeText(node.content ?? '');
       case 'SoftBreak': return '\n';
       case 'LineBreak': return '<br>\n';
@@ -92,7 +115,10 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       }
       case 'CodeBlock': {
         const language = (a.language ?? '').trim().split(/\s/)[0];
-        return `<pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeText(text(node))}</code></pre>\n`;
+        const code = `<pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeText(text(node))}</code></pre>`;
+        // Generative UI: the source stays in the light DOM; <pandacode-ui> draws it in a shadow root.
+        // Other code gets a copy button from <pandacode-code>, which slots the block unchanged.
+        return GENERATIVE.has(language.toLowerCase()) ? `<pandacode-ui>${code}</pandacode-ui>\n` : `<pandacode-code>${code}</pandacode-code>\n`;
       }
       case 'ThematicBreak': return '<hr>\n';
       case 'Table': return `<table>\n${kids(node)}</table>\n`;
@@ -107,7 +133,8 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       default: return kids(node);
     }
   }
-  return render(root);
+  const html = render(root);
+  return details > 0 ? html + '</details>\n'.repeat(details) : html;
 }
 
 type Katex = { renderToString(tex: string, options: Record<string, unknown>): string };

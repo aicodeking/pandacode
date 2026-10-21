@@ -12,6 +12,7 @@ import { invokeBots } from './preview-bots';
 import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
 const turnChanges = createPreviewTurnChanges();
 const now = Date.now();
+const sampleReadme = '# Orbit\n\nA tiny search index for the browser preview.\n\n## Usage\n\n- Build the index with `createSearchIndex`.\n- Call `search(query)`.\n\n> Results are case-insensitive.\n';
 const sampleSource = '// Browser preview — sample source\nexport function createSearchIndex(items) {\n  return {\n    search(query) {\n      return items.filter(item =>\n        item.title.toLowerCase().includes(query.toLowerCase())\n      );\n    }\n  };\n}\n';
 const previewWorkspaceFiles = ['index.html', '.gitignore', 'README.md', 'package.json', 'tsconfig.json', 'src/main.ts', 'src/style.css', 'src/components/search.ts', 'src/components/search.test.ts', 'src/lib/search-index.ts', 'public/favicon.svg', 'docs/design notes.md'];
 const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters results as the query changes\n  ✓ preserves keyboard selection\n\nTests: 12 passed, 12 total\nTime: 0.8s\nSample output — no command was executed.';
@@ -1169,7 +1170,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><defs><linearGradient id="g" x1="0" x2="1"><stop stop-color="#2e513b"/><stop offset="1" stop-color="#ffd43b"/></linearGradient></defs><rect width="320" height="180" rx="12" fill="url(#g)"/><text x="160" y="96" fill="#fffcef" font-family="sans-serif" font-size="18" text-anchor="middle">${String(args.path).split('/').pop()}</text></svg>`;
       result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
     }
-    case 'read_file': result = args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : sampleSource; break;
+    case 'read_file': result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : sampleSource; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;
