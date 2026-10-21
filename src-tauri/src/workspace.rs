@@ -1465,6 +1465,8 @@ mod tests {
     fn explicit_commit_preserves_repository_hooks() {
         use std::os::unix::fs::PermissionsExt;
         let f = Fixture::new(true);
+        // Use the fixture's hooks even when the user configures a different hooksPath.
+        f.git(&["config", "core.hooksPath", ".git/hooks"]);
         let hook = f.root.join(".git/hooks/pre-commit");
         fs::write(&hook, "#!/bin/sh\necho Test hook refused >&2\nexit 1\n").unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
