@@ -451,6 +451,77 @@ mod tests {
     }
 
     #[test]
+    fn windows_pnpm_executable_shims_run_the_declared_binary() {
+        let f = Fixture::new();
+        let package = "pnpm/global/v11/hash/node_modules/@opencode/cli";
+        f.file(
+            &format!("{package}/package.json"),
+            r#"{"bin":{"opencode":"./bin/opencode.exe"}}"#,
+        );
+        let binary = f.file(&format!("{package}/bin/opencode.exe"), "");
+        let shim = f.file(
+            "pnpm/bin/opencode.cmd",
+            "@SETLOCAL\r\n@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\@opencode\\cli\\bin\\opencode.exe\"  %*\r\n",
+        );
+        let launch = resolve(&shim, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, true));
+        assert!(launch.args.is_empty());
+    }
+
+    #[test]
+    fn windows_pnpm_node_shims_run_the_declared_entry_with_the_adjacent_node() {
+        let f = Fixture::new();
+        let node = f.file("pnpm/bin/node.exe", "");
+        let package = "pnpm/global/v11/hash/node_modules/@earendil-works/pi-coding-agent";
+        f.file(
+            &format!("{package}/package.json"),
+            r#"{"bin":{"pi":"dist/bundle/cli.js"}}"#,
+        );
+        let script = f.file(&format!("{package}/dist/bundle/cli.js"), "");
+        let shim = f.file(
+            "pnpm/bin/pi.cmd",
+            "@SETLOCAL\r\n@IF EXIST \"%~dp0\\node.exe\" (\r\n  \"%~dp0\\node.exe\"  \"%~dp0\\..\\global\\v11\\hash\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js\" %*\r\n) ELSE (\r\n  @SET PATHEXT=%PATHEXT:;.JS;=;%\r\n  node  \"%~dp0\\..\\global\\v11\\hash\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\bundle\\cli.js\" %*\r\n)\r\n",
+        );
+        let launch = resolve(&shim, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(
+            launch.args,
+            [external_path_for(&script, true).into_os_string()]
+        );
+    }
+
+    #[test]
+    fn windows_shims_never_launch_a_shell_host() {
+        let f = Fixture::new();
+        f.file(
+            "npm/node_modules/opencode-ai/package.json",
+            r#"{"bin":{"opencode":"cmd.exe"}}"#,
+        );
+        f.file("npm/node_modules/opencode-ai/cmd.exe", "");
+        let shim = f.file("npm/opencode.cmd", "");
+        assert!(resolve(&shim, true).is_err());
+    }
+
+    #[test]
+    fn windows_shim_targets_must_match_their_package_entry() {
+        let f = Fixture::new();
+        let package = "pnpm/global/v11/hash/node_modules/@opencode/cli";
+        f.file(
+            &format!("{package}/package.json"),
+            r#"{"bin":{"opencode":"./bin/opencode.exe"}}"#,
+        );
+        f.file(&format!("{package}/bin/opencode.exe"), "");
+        f.file(&format!("{package}/bin/other.exe"), "");
+        let shim = f.file(
+            "pnpm/bin/opencode.cmd",
+            "@\"%~dp0\\..\\global\\v11\\hash\\node_modules\\@opencode\\cli\\bin\\other.exe\" %*\r\n",
+        );
+        assert!(resolve(&shim, true)
+            .err()
+            .is_some_and(|error| error.contains("does not match its package entry")));
+    }
+
+    #[test]
     fn rejects_unknown_batch_files_and_npm_entries_outside_the_package() {
         let f = Fixture::new();
         let unknown = f.file("custom.cmd", "@echo off\r\n");
