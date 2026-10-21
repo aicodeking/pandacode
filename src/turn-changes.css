@@ -9,7 +9,7 @@
 .turn-changes-actions{float:right;display:flex;gap:6px;margin:0 0 4px 10px}
 .turn-changes-open,.turn-changes-run{min-height:30px;border-radius:3px;padding:4px 9px;background:color-mix(in srgb,var(--raised) 78%,transparent);font-size:.75rem;font-weight:500}
 .turn-changes-run{color:var(--accent)}
-.turn-change-tree,.turn-change-notice{clear:both}
+.turn-change-tree{clear:both}
 .turn-changes:after{content:'';display:block;clear:both}
 .header-run{border-radius:3px;padding:5px 9px;color:var(--accent);font-size:.8rem;background:color-mix(in srgb,var(--raised) 55%,transparent)}
 @media(max-width:650px){.turn-changes-actions{float:none;margin-left:0;justify-content:flex-end}.header-run span{display:none}}
@@ -24,7 +24,7 @@
 .turn-change-children{padding-left:15px}
 .change-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .change-file-status{font-size:.62rem;color:var(--faint)}
-.turn-change-notice{margin:7px 4px 2px;color:var(--muted);font-size:.72rem;line-height:1.5;overflow-wrap:anywhere}
+.turn-change-list>summary>.info-mark{margin-left:2px;color:var(--muted)}
 .architect-worker-history .turn-changes{margin:10px 0 18px}
 .inspector-content:has(>.inspector-diff-host){display:flex;flex-direction:column;overflow:hidden}
 .inspector-content:has(>.inspector-diff-host)>.file-preview-header,.inspector-content:has(>.inspector-diff-host)>.file-preview-title{flex-shrink:0}

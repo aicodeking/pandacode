@@ -1,5 +1,6 @@
 import type { TurnChangeFile, TurnChanges } from './types.ts';
 import { escape, icon } from './dom.ts';
+import { infoMark } from './tooltip.ts';
 
 export function changeCounts(additions: number | null, deletions: number | null): string {
   if (additions === null || deletions === null) return '<span class="change-count-unknown">—</span>';
@@ -40,7 +41,7 @@ export function renderTurnChanges(sessionId: string, changes: TurnChanges, runna
   if (!count || !changes.attributed) return '';
   const label = `${count} changed ${count === 1 ? 'file' : 'files'}`;
   const notice = changeNotice(changes);
-  return `<section class="turn-changes" aria-label="Files changed during this turn" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><div class="turn-changes-actions"><button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="Run project" title="Run pandacode-run.sh" ${runnable ? '' : 'hidden'}>${icon('play')}<span>Run</span></button><button type="button" class="turn-changes-open" data-action="open-turn-diff">${icon('edit')}Open diff</button></div><details class="turn-change-list" data-change-key="${escape(changes.id)}" open><summary>${icon('chevron')}<strong>${label}</strong><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}</span></summary><div class="turn-change-tree">${fileTree(changes)}</div></details>${notice ? `<p class="turn-change-notice">${escape(notice)}</p>` : ''}</section>`;
+  return `<section class="turn-changes" aria-label="Files changed during this turn" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><div class="turn-changes-actions"><button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="Run project" title="Run pandacode-run.sh" ${runnable ? '' : 'hidden'}>${icon('play')}<span>Run</span></button><button type="button" class="turn-changes-open" data-action="open-turn-diff">${icon('edit')}Open diff</button></div><details class="turn-change-list" data-change-key="${escape(changes.id)}" open><summary>${icon('chevron')}<strong>${label}</strong><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}</span>${notice ? `${infoMark(notice, 'Change tracking details')}<span class="turn-change-notice sr-only">${escape(notice)}</span>` : ''}</summary><div class="turn-change-tree">${fileTree(changes)}</div></details></section>`;
 }
 
 export function changeRequest(element: HTMLElement): { sessionId: string; changes: TurnChanges; path?: string } | undefined {

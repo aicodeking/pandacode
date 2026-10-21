@@ -203,6 +203,7 @@ test.describe('turn changes', () => {
     await expect(card).toContainText('1 changed file');
     await expect(card.locator('.turn-change-notice')).toContainText('Change tracking is limited');
     await expect(card.locator('.turn-change-notice')).toContainText('Some files were not inspected.');
+    await expect(card.locator('.turn-change-list > summary .info-mark')).toHaveAttribute('data-tip', /Change tracking is limited/);
   });
 
   test('keeps the newest selected file when an older detail request resolves late', async ({ page }) => {
