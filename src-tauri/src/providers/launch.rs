@@ -63,6 +63,14 @@ fn ordinary_windows_path(path: &str) -> Option<String> {
 }
 
 fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
+    resolve_for(path, windows, &|key| std::env::var_os(key))
+}
+
+fn resolve_for(
+    path: &Path,
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+) -> Result<Launch, String> {
     let batch = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
@@ -72,7 +80,7 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             args: Vec::new(),
         });
     }
-    // npm shims forward arguments through cmd.exe. Launch their declared bin
+    // npm shims forward arguments through cmd.exe. Launch their declared target
     // directly instead, so paths, JSON and model names never become shell syntax.
     let name = path
         .file_stem()
@@ -86,10 +94,7 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             "opencode" => "opencode-ai",
             "pi" => "@earendil-works/pi-coding-agent",
             "dsh" => "@deepseek-ai/dsh",
-            _ => return Err(
-                "This batch launcher is unsupported. Select the native harness executable instead."
-                    .into(),
-            ),
+            _ => return Err(UNSUPPORTED_LAUNCHER.into()),
         };
     let directory = path
         .parent()
@@ -102,22 +107,68 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     } else {
         directory.join("node_modules")
     };
+    // npm installs keep their package.json boundary. pnpm global shims point at
+    // a hashed store, so trust the target the shim already declares.
+    if modules.join(package).is_dir() {
+        return npm_launch(directory, &modules, package, &name, windows, env);
+    }
+    match shim_target(path)? {
+        Some(target) => launch_from_shim(target, &name, windows, env),
+        None => Err(UNSUPPORTED_LAUNCHER.into()),
+    }
+}
+
+const UNSUPPORTED_LAUNCHER: &str =
+    "This batch launcher is unsupported. Select the native harness executable instead.";
+
+const NODE_REQUIRED: &str =
+    "Node.js is required by this harness. Install Node.js or use the native harness installer.";
+
+fn npm_launch(
+    directory: &Path,
+    modules: &Path,
+    package: &str,
+    name: &str,
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+) -> Result<Launch, String> {
     let package = modules.join(package).canonicalize().map_err(|_| "The npm harness package could not be found. Reinstall the harness or select its native executable.")?;
+    let entry = declared_entry(&package, name)?;
+    match payload_kind(&entry) {
+        Some(PayloadKind::Native) => Ok(Launch {
+            program: external_path_for(&entry, windows),
+            args: Vec::new(),
+        }),
+        Some(PayloadKind::Script) => {
+            let node = node_for(None, Some(directory.join("node.exe")), windows, env)
+                .ok_or(NODE_REQUIRED)?;
+            Ok(Launch {
+                program: external_path_for(&node, windows),
+                args: vec![external_path_for(&entry, windows).into_os_string()],
+            })
+        }
+        None => {
+            Err("The npm harness executable must be a native program or a Node script.".into())
+        }
+    }
+}
+
+fn declared_entry(package: &Path, name: &str) -> Result<PathBuf, String> {
     let file = std::fs::File::open(package.join("package.json"))
-        .map_err(|_| "Could not read the npm harness package metadata.")?;
+        .map_err(|_| "Could not read the harness package metadata.")?;
     let mut bytes = Vec::new();
     file.take(64 * 1024 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read the npm harness package metadata.")?;
+        .map_err(|_| "Could not read the harness package metadata.")?;
     if bytes.len() > 64 * 1024 {
-        return Err("The npm harness metadata is too large.".into());
+        return Err("The harness metadata is too large.".into());
     }
     let metadata: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| "The npm harness package metadata is invalid.")?;
+        .map_err(|_| "The harness package metadata is invalid.")?;
     let bin = metadata["bin"]
         .as_str()
-        .or_else(|| metadata["bin"][&name].as_str())
-        .ok_or("The npm harness package has no matching executable entry.")?
+        .or_else(|| metadata["bin"][name].as_str())
+        .ok_or("The harness package has no matching executable entry.")?
         .replace('\\', "/");
     if bin.is_empty()
         || bin.chars().any(char::is_control)
@@ -125,32 +176,233 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
     {
-        return Err("The npm harness executable must stay inside its package.".into());
+        return Err("The harness executable must stay inside its package.".into());
     }
-    let script = package
+    let entry = package
         .join(bin)
         .canonicalize()
-        .map_err(|_| "The npm harness executable could not be found.")?;
-    if !script.starts_with(&package) || !script.is_file() {
-        return Err("The npm harness executable must stay inside its package.".into());
+        .map_err(|_| "The harness executable could not be found.")?;
+    if !entry.starts_with(package) || !entry.is_file() {
+        return Err("The harness executable must stay inside its package.".into());
     }
-    if script
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    Ok(entry)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PayloadKind {
+    Native,
+    Script,
+}
+
+enum ShimTarget {
+    Native(PathBuf),
+    Script {
+        node: Option<PathBuf>,
+        script: PathBuf,
+    },
+}
+
+const SHIM_LIMIT: u64 = 64 * 1024;
+
+fn shim_target(path: &Path) -> Result<Option<ShimTarget>, String> {
+    let directory = path
+        .parent()
+        .ok_or("The launcher has no installation folder.")?;
+    let file =
+        std::fs::File::open(path).map_err(|_| "Could not read the Windows launcher shim.")?;
+    let mut bytes = Vec::new();
+    file.take(SHIM_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read the Windows launcher shim.")?;
+    if bytes.len() as u64 > SHIM_LIMIT {
+        return Err("The Windows launcher shim is too large.".into());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "The Windows launcher shim is not valid UTF-8.")?;
+    scan_shim(text, directory)
+}
+
+fn scan_shim(text: &str, directory: &Path) -> Result<Option<ShimTarget>, String> {
+    let mut node: Option<PathBuf> = None;
+    let mut payloads: Vec<(PayloadKind, PathBuf)> = Vec::new();
+    let mut missing = false;
+    let mut offset = 0;
+    while let Some(open) = text[offset..].find('"') {
+        let open = offset + open;
+        let start = open + 1;
+        let Some(close) = text[start..].find('"') else {
+            break;
+        };
+        let token = &text[start..start + close];
+        offset = start + close + 1;
+        if line_is_comment(text, open) {
+            continue;
+        }
+        let Some(raw) = dp0_suffix(token) else {
+            continue;
+        };
+        let Some(candidate) = relative_path(raw, directory) else {
+            continue;
+        };
+        let named_node = candidate
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"));
+        if !named_node && payload_kind(&candidate).is_none() {
+            continue;
+        }
+        let Ok(real) = candidate.canonicalize() else {
+            missing |= !named_node;
+            continue;
+        };
+        if !real.is_file() {
+            missing |= !named_node;
+            continue;
+        }
+        let real_is_node = real
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("node.exe"));
+        if named_node || real_is_node {
+            if real_is_node && node.is_none() {
+                node = Some(real);
+            }
+            continue;
+        }
+        let Some(kind) = payload_kind(&real) else {
+            continue;
+        };
+        payloads.push((kind, real));
+    }
+    payloads.sort_by(|left, right| left.1.cmp(&right.1));
+    payloads.dedup_by(|left, right| left.1 == right.1);
+    match payloads.as_slice() {
+        [] if missing => Err(
+            "The Windows launcher target could not be found. Reinstall the harness or select its native executable."
+                .into(),
+        ),
+        [] => Ok(None),
+        [(PayloadKind::Native, path)] => Ok(Some(ShimTarget::Native(path.clone()))),
+        [(PayloadKind::Script, path)] => Ok(Some(ShimTarget::Script {
+            node,
+            script: path.clone(),
+        })),
+        _ => Err(
+            "The Windows launcher declares more than one executable. Select the native harness executable instead."
+                .into(),
+        ),
+    }
+}
+
+fn line_is_comment(text: &str, at: usize) -> bool {
+    let start = text[..at].rfind('\n').map_or(0, |index| index + 1);
+    let line = text[start..at].trim_start_matches([' ', '\t', '@']);
+    line.starts_with("::")
+        || (line.get(..3).is_some_and(|head| head.eq_ignore_ascii_case("rem"))
+            && line
+                .as_bytes()
+                .get(3)
+                .is_none_or(|byte| byte.is_ascii_whitespace()))
+}
+
+fn dp0_suffix(token: &str) -> Option<&str> {
+    let head = token.get(..5)?;
+    (head.eq_ignore_ascii_case("%~dp0") || head.eq_ignore_ascii_case("%dp0%"))
+        .then(|| &token[5..])
+}
+
+fn relative_path(raw: &str, directory: &Path) -> Option<PathBuf> {
+    let raw = raw.trim_start_matches(['\\', '/']);
+    if raw.is_empty()
+        || raw.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '%' | '"' | ':' | '*' | '?' | '<' | '>' | '|' | '&' | '^'
+                )
+        })
     {
-        return Ok(Launch {
-            program: external_path_for(&script, windows),
-            args: Vec::new(),
-        });
+        return None;
     }
-    let adjacent_node = directory.join("node.exe");
-    let node = adjacent_node.is_file().then_some(adjacent_node)
-        .or_else(|| find_native_node(search_directories(true, &|key| std::env::var_os(key))))
-        .ok_or("Node.js is required by this npm-installed harness. Install Node.js or use the native harness installer.")?;
-    Ok(Launch {
-        program: external_path_for(&node, windows),
-        args: vec![external_path_for(&script, windows).into_os_string()],
-    })
+    let mut path = directory.to_path_buf();
+    for part in raw.split(['\\', '/']) {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part != ".." && part.ends_with([' ', '.']) {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
+}
+
+fn payload_kind(path: &Path) -> Option<PayloadKind> {
+    if is_shell_host(path.file_name()?.to_str()?) {
+        return None;
+    }
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "exe" => Some(PayloadKind::Native),
+        "js" | "cjs" | "mjs" => Some(PayloadKind::Script),
+        _ => None,
+    }
+}
+
+fn is_shell_host(name: &str) -> bool {
+    [
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "wscript.exe",
+        "cscript.exe",
+        "mshta.exe",
+    ]
+    .iter()
+    .any(|host| name.eq_ignore_ascii_case(host))
+}
+
+fn verify_target(target: &Path, name: &str) -> Result<(), String> {
+    for package in target.ancestors().skip(1).take(8) {
+        if declared_entry(package, name).ok().as_deref() == Some(target) {
+            return Ok(());
+        }
+    }
+    Err("The Windows launcher target does not match its package entry. Reinstall the harness or select its native executable.".into())
+}
+
+fn node_for(
+    declared: Option<PathBuf>,
+    adjacent: Option<PathBuf>,
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+) -> Option<PathBuf> {
+    declared
+        .filter(|path| path.is_file())
+        .or_else(|| adjacent.filter(|path| path.is_file()))
+        .or_else(|| find_native_node(search_directories(windows, env)))
+}
+
+fn launch_from_shim(
+    target: ShimTarget,
+    name: &str,
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+) -> Result<Launch, String> {
+    match target {
+        ShimTarget::Native(entry) => {
+            verify_target(&entry, name)?;
+            Ok(Launch {
+                program: external_path_for(&entry, windows),
+                args: Vec::new(),
+            })
+        }
+        ShimTarget::Script { node, script } => {
+            verify_target(&script, name)?;
+            let node = node_for(node, None, windows, env).ok_or(NODE_REQUIRED)?;
+            Ok(Launch {
+                program: external_path_for(&node, windows),
+                args: vec![external_path_for(&script, windows).into_os_string()],
+            })
+        }
+    }
 }
 
 fn find_native_node(directories: Vec<PathBuf>) -> Option<PathBuf> {
