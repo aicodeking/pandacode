@@ -58,10 +58,41 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
-pub(super) async fn opencode(path: &Path) -> Result<Vec<ModelInfo>, String> {
+fn parse_plain(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
+    if bytes.len() > LIMIT {
+        return Err("OpenCode model metadata exceeded its limit".into());
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| "Invalid OpenCode model catalog")?;
+    let mut models = vec![ModelInfo::default_choice()];
+    let mut seen = HashSet::new();
+    let mut count = 0;
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        count += 1;
+        if count > MODEL_CATALOG_LIMIT {
+            return Err("OpenCode returned too many models".into());
+        }
+        if !valid_model_id(line) || !line.contains('/') {
+            return Err("Invalid OpenCode model catalog".into());
+        }
+        if !seen.insert(line.to_owned()) {
+            continue;
+        }
+        models.push(ModelInfo {
+            id: line.into(),
+            name: line.into(),
+            description: line.into(),
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            context_window: None,
+        });
+    }
+    Ok(models)
+}
+
+async fn discover(path: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let mut command = super::command(path)?;
     command
-        .args(["models", "--verbose"])
+        .args(args)
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -97,15 +128,28 @@ pub(super) async fn opencode(path: &Path) -> Result<Vec<ModelInfo>, String> {
                     .into(),
             );
         }
-        parse(&bytes)
+        Ok(bytes)
     })
     .await
     .unwrap_or_else(|_| Err("OpenCode model discovery timed out".into()));
-    bytes.fill(0);
     drop(group);
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(1), child.wait()).await;
     result
+}
+
+pub(super) async fn opencode(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    if let Ok(mut bytes) = discover(path, &["models", "--verbose"]).await {
+        let parsed = parse(&bytes);
+        bytes.fill(0);
+        if let Ok(models) = parsed {
+            return Ok(models);
+        }
+    }
+    let mut bytes = discover(path, &["models"]).await?;
+    let models = parse_plain(&bytes);
+    bytes.fill(0);
+    models
 }
 
 #[cfg(test)]
@@ -129,6 +173,33 @@ mod tests {
         );
         assert_eq!(
             parse(&vec![b' '; LIMIT + 1]).unwrap_err(),
+            "OpenCode model metadata exceeded its limit"
+        );
+    }
+    #[test]
+    fn plain_catalogs_from_current_opencode_list_ids_without_metadata() {
+        let parsed =
+            parse_plain(b"opencode/beam-free\nvendor/model:free\n\nopencode/beam-free\n").unwrap();
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[1].id, "opencode/beam-free");
+        assert_eq!(parsed[1].name, "opencode/beam-free");
+        assert_eq!(parsed[2].id, "vendor/model:free");
+        assert_eq!(parsed[2].context_window, None);
+        assert!(parsed[2].reasoning_efforts.is_empty());
+    }
+    #[test]
+    fn plain_catalogs_validate_ids_and_bounds() {
+        assert_eq!(
+            parse_plain(b"opencode/beam-free\nnot-a-model\n").unwrap_err(),
+            "Invalid OpenCode model catalog"
+        );
+        let catalog = "vendor/model\n".repeat(MODEL_CATALOG_LIMIT + 1);
+        assert_eq!(
+            parse_plain(catalog.as_bytes()).unwrap_err(),
+            "OpenCode returned too many models"
+        );
+        assert_eq!(
+            parse_plain(&vec![b' '; LIMIT + 1]).unwrap_err(),
             "OpenCode model metadata exceeded its limit"
         );
     }
