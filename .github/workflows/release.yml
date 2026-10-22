@@ -150,6 +150,19 @@ jobs:
             --title "PandaCode $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
             --target "$GITHUB_SHA"
+      - name: Notify the Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_VERSION: ${{ env.VERSION }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping the Homebrew tap update."
+            exit 0
+          fi
+          gh api repos/aicodeking/homebrew-pandacode/dispatches \
+            --method POST \
+            -f event_type=pandacode-release \
+            -f "client_payload[version]=$RELEASE_VERSION"
 
   npm:
     needs: [prepare, publish]
