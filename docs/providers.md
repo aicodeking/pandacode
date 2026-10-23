@@ -716,6 +716,8 @@ differences, read from omp 18.12's `modes/rpc/rpc-types.ts` and CLI flag table:
   omp does not hide them behind tool discovery.
 - Model discovery skips Pi-only flags (`--offline`, `--no-mcp`, …); slash
   commands come from `get_available_commands`.
+- A mid-turn message steers the running turn, exactly as it does for Pi, so a
+  recipe step that requires a steer is supported on omp too.
 
 Accounts, models and thinking levels are omp's own. Live check:
 `cargo test installed_omp -- --ignored`.

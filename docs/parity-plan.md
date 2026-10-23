@@ -17,7 +17,7 @@ A triage of a long competitor feature list (October 2026) against PandaCode. Eac
 | Hold restarted queues for explicit resume | Done | After a launch, a non-empty queue waits for **Resume**. |
 | Preserve queues through usage limits, errors and stops | Done | A run that fails, hits a limit or is stopped holds the queue instead of sending the next message. |
 | Edit, reorder, remove and steer queued messages | Done | Rows above the composer. Edits stay pending until saved. |
-| Steer a running agent | Done | Native on Claude Code (stream input) and Codex (`turn/steer`); other harnesses queue instead. |
+| Steer a running agent | Done | Native on Claude Code, GLM and MiMo (stream input), Codex (`turn/steer`), Pi and Oh My Pi (their own steer), Muse Code (on the wire) and OpenCode (a second `session/prompt`); the other harnesses queue the message for the next turn. |
 | Alternate send shortcut (steer instead of queue) | Done | ⌘↩ / Ctrl+↩ while a run is active. |
 | Queue previews and attachment counts | Done | |
 | Agents can inspect and edit queues | Done | `list_queue`, `queue_message`, `remove_queued`. |
