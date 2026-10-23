@@ -20,6 +20,7 @@ embedded editor engine.
 <p align="center">
   <b>Download:</b>
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg">macOS (Apple silicon)</a> ·
+  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg">macOS (Intel)</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe">Windows x64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe">Windows arm64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
