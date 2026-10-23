@@ -13,7 +13,7 @@ Local, reusable multi-step flows (issue #44). A recipe is one JSON file: `.panda
 
 Kinds: `prompt` (text), `slash` (command, optional fallback text), `check` (the agent runs it and reports), `approval` (the agent stops and asks you to confirm). `requires`: `slash:<name>`, `mcp`, `steer`.
 
-Dry run (`recipes.rs::dry_run`) gives each step `supported`, `fallback` (missing slash command with fallback text; `steer` on a harness that cannot steer), `manual` (approval) or `blocked` (missing command, no fallback), with a reason. Run is disabled while any step is blocked; otherwise it enqueues one ordinary queued message per step, in order. No secrets live in recipes, and nothing runs an agent or touches the network.
+Dry run (`recipes.rs::dry_run`) gives each step `supported`, `fallback` (missing slash command with fallback text; `steer` on a harness that cannot steer), `manual` (approval) or `blocked` (missing command, no fallback), with a reason. A `steer` step is `supported` on the harnesses whose running turn takes a message (Claude Code, GLM, MiMo, Codex, Pi, Oh My Pi, Muse Code and OpenCode) and a `fallback` on the others. Run is disabled while any step is blocked; otherwise it enqueues one ordinary queued message per step, in order. No secrets live in recipes, and nothing runs an agent or touches the network.
 
 Not built (from the issue): role/task scopes, evidence records, skills/rules references.
 
