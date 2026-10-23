@@ -281,7 +281,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if provider == "antigravity" {
         return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -322,6 +322,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             match provider {
                 "codex" | "muse" => "resume",
                 "claude" | "glm" | "mimo" | "grok" => "--resume",
+                "cline" => "--id",
                 _ => "--session",
             }
             .into(),
@@ -397,6 +398,16 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             };
             args.extend(["--no-auto-update".into(), "--permission-mode".into(), mode.into()]);
         }
+        "cline" => {
+            if resume_id.is_none() {
+                args.push("-i".into());
+            }
+            if context.mode == "plan" {
+                args.push("--plan".into());
+            } else if context.mode == "full" {
+                args.extend(["--auto-approve".into(), "true".into()]);
+            }
+        }
         _ => {
             match context.mode {
                 "plan" => args.push("--plan".into()),
@@ -429,7 +440,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             ]),
             "claude" | "glm" | "mimo" => args.extend(["--effort".into(), effort.into()]),
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
-            "pi" | "omp" => args.extend(["--thinking".into(), effort.into()]),
+            "pi" | "omp" | "cline" => args.extend(["--thinking".into(), effort.into()]),
             "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
             _ => {} // The Kimi TUI restores its persisted thinking setting.
         }
@@ -907,6 +918,7 @@ mod tests {
             ("kimi", "--session"),
             ("glm", "--resume"),
             ("opencode", "--session"),
+            ("cline", "--id"),
         ] {
             let context = HarnessContext {
                 session_id: "task",
@@ -976,6 +988,44 @@ mod tests {
         assert!(args.contains(&"--disable-write".to_owned()) && args.contains(&"--disable-shell".to_owned()));
         let full = harness_arguments(&HarnessContext { mode: "full", resume_id: None, ..context }).unwrap();
         assert!(full.contains(&"--disable-approval".to_owned()) && full.contains(&"--disable-sandbox".to_owned()));
+    }
+
+    #[test]
+    fn cline_console_sets_tui_mode_effort_and_resume() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: None,
+            model: Some("anthropic/claude-sonnet-5.5"),
+            reasoning_effort: Some("high"),
+            mode: "plan",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(
+            args,
+            [
+                "-i",
+                "--plan",
+                "--model",
+                "anthropic/claude-sonnet-5.5",
+                "--thinking",
+                "high"
+            ]
+        );
+
+        let full_context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: Some("1792719287191_NBdt7_cli"),
+            model: None,
+            reasoning_effort: None,
+            mode: "full",
+        };
+        let full_args = harness_arguments(&full_context).unwrap();
+        assert_eq!(
+            full_args,
+            ["--id", "1792719287191_NBdt7_cli", "--auto-approve", "true"]
+        );
     }
 
     #[test]

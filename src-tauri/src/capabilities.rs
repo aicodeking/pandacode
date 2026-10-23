@@ -549,6 +549,42 @@ fn scan_harness_configs(
                 }
             }
         }
+        "cline" => {
+            for (path, source) in [
+                (
+                    home.join(".cline/data/settings/cline_mcp_settings.json"),
+                    "~/.cline/data/settings/cline_mcp_settings.json",
+                ),
+                (
+                    home.join(".cline/cline_mcp_settings.json"),
+                    "~/.cline/cline_mcp_settings.json",
+                ),
+                (
+                    home.join(".cline/mcp_settings.json"),
+                    "~/.cline/mcp_settings.json",
+                ),
+            ] {
+                if let Some(value) = read_json(&path) {
+                    entries.extend(parse_mcp_json(harness, source, &value, "mcpServers"));
+                }
+            }
+            if let Some(project) = project {
+                for (path, source) in [
+                    (
+                        project.join(".cline/cline_mcp_settings.json"),
+                        ".cline/cline_mcp_settings.json",
+                    ),
+                    (
+                        project.join(".cline/mcp_settings.json"),
+                        ".cline/mcp_settings.json",
+                    ),
+                ] {
+                    if let Some(value) = read_json(&path) {
+                        entries.extend(parse_mcp_json(harness, source, &value, "mcpServers"));
+                    }
+                }
+            }
+        }
         _ => {}
     }
     entries.extend(scan_skill_dirs(harness, home, project));
@@ -590,6 +626,12 @@ fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathB
             roots.push((home.join(".pi/agent/skills"), "~/.pi/agent/skills"));
             if let Some(project) = project {
                 roots.push((project.join(".pi/skills"), ".pi/skills"));
+            }
+        }
+        "cline" => {
+            roots.push((home.join(".cline/skills"), "~/.cline/skills"));
+            if let Some(project) = project {
+                roots.push((project.join(".cline/skills"), ".cline/skills"));
             }
         }
         _ => {}
@@ -837,5 +879,32 @@ env = { API_KEY = "secret" }
             instruction_delivery("codex"),
             ("messageInjection", "partial")
         );
+        assert_eq!(
+            instruction_delivery("cline"),
+            ("messageInjection", "partial")
+        );
+    }
+
+    #[test]
+    fn cline_mcp_and_skills_inventory_reads_configured_paths() {
+        let home = fixture_home("cline-home");
+        let project = fixture_home("cline-project");
+        let settings = home.join(".cline/data/settings");
+        fs::create_dir_all(&settings).unwrap();
+        fs::write(
+            settings.join("cline_mcp_settings.json"),
+            r#"{"mcpServers":{"local-tool":{"command":"node","args":["server.js"]}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(project.join(".cline/skills/code-review")).unwrap();
+        let entries = scan_harness_configs("cline", &home, Some(&project));
+        assert!(entries
+            .iter()
+            .any(|item| item.harness == "cline" && item.kind == "mcp server" && item.name == "local-tool"));
+        assert!(entries
+            .iter()
+            .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "code-review"));
+        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(project).unwrap();
     }
 }

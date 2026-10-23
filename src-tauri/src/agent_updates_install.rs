@@ -48,6 +48,7 @@ pub(super) fn docs(provider: &str) -> &'static str {
         "kimi" => "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html",
         "opencode" => "https://opencode.ai/docs/",
         "grok" => "https://docs.x.ai/build",
+        "cline" => "https://docs.cline.bot/usage/cli-overview",
         _ => "https://antigravity.google/docs/ide/extensions",
     }
 }
@@ -201,6 +202,7 @@ fn package(provider: &str) -> Option<&'static str> {
         "claude" => Some("@anthropic-ai/claude-code"),
         "codex" => Some("@openai/codex"),
         "opencode" => Some("opencode-ai"),
+        "cline" => Some("cline"),
         _ => None,
     }
 }
