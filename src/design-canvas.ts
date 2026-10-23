@@ -59,7 +59,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
       <button type="button" class="icon-button" data-design="refresh" aria-label="Reload artboards" title="Reload artboards">${icon('refresh')}</button>
       <button type="button" class="secondary-button design-send" data-design="send" disabled>Send comments to agent</button>
     </div>
-    <div class="design-viewport" tabindex="0" aria-label="Artboards. Drag to pan, pinch or ⌘ scroll to zoom.">
+    <div class="design-viewport" tabindex="0" aria-label="Artboards. Drag to pan, Shift-scroll to pan horizontally, or pinch and Ctrl/Command-scroll to zoom.">
       <div class="design-world"></div>
       <div class="design-empty" hidden></div>
     </div>
@@ -224,6 +224,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     event.preventDefault();
     const rect = viewport.getBoundingClientRect();
     if (event.ctrlKey || event.metaKey) zoom(Math.exp(-event.deltaY / 300), event.clientX - rect.left, event.clientY - rect.top);
+    else if (event.shiftKey) { view = { ...view, x: view.x - (event.deltaX || event.deltaY) }; place(); }
     else { view = { ...view, x: view.x - event.deltaX, y: view.y - event.deltaY }; place(); }
   }, { passive: false });
   root.addEventListener('keydown', event => { if (event.key === 'Escape' && (pick || commenting)) { event.stopPropagation(); if (pick) { pick = null; renderComments(); } else setCommenting(false); } });
