@@ -23,6 +23,7 @@ export const distribution = {
   platforms: 'macOS · Windows · Linux',
   isUnsignedPreview: true,
   requirements: 'Apple silicon · macOS 12+',
-  previewNotice: 'Not notarized by Apple. macOS may block the first launch.',
+  previewNotice: 'Not notarized by Apple. macOS blocks the first launch.',
+  unblockCommand: 'xattr -dr com.apple.quarantine /Applications/PandaCode.app',
   appleSupportUrl: 'https://support.apple.com/en-us/102445',
 };
