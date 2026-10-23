@@ -5,6 +5,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto'
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { ASSETS, PUBKEY, assetFor, desktopEntry, supportedPlatforms, verifyMinisign } from './installer.mjs';
+import { targets } from '../../scripts/release/common.mjs';
 
 /** Every build a release publishes, named for people. */
 const PUBLISHED = ['Apple silicon', 'Intel', 'Windows x64', 'Windows arm64', 'Linux x64', 'Linux arm64'];
@@ -82,6 +83,18 @@ test('every published build has a name', () => {
   for (const name of supportedPlatforms()) {
     assert.ok(PUBLISHED.some(published => name.includes(published)), `${name} is not a known platform`);
   }
+});
+
+test('the installer covers every published build', () => {
+  const missing = [];
+  for (const [target, config] of Object.entries(targets)) {
+    const key = `${config.platform}-${config.arch}`;
+    if (!ASSETS[key]) missing.push(`${target}: no asset for ${key}`);
+    else if (ASSETS[key] !== config.asset && ASSETS[key] !== config.updaterAsset) {
+      missing.push(`${target}: ${ASSETS[key]} is neither ${config.asset} nor ${config.updaterAsset}`);
+    }
+  }
+  assert.deepEqual(missing, []);
 });
 
 test('embedded pubkey matches tauri.conf.json', () => {
