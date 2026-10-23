@@ -1,8 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { PUBKEY, assetFor, desktopEntry, verifyMinisign } from './installer.mjs';
+import { fileURLToPath } from 'node:url';
+import { ASSETS, PUBKEY, assetFor, desktopEntry, supportedPlatforms, verifyMinisign } from './installer.mjs';
+
+/** Every build a release publishes, named for people. */
+const PUBLISHED = ['Apple silicon', 'Intel', 'Windows x64', 'Windows arm64', 'Linux x64', 'Linux arm64'];
 
 const b64 = b => Buffer.from(b).toString('base64');
 
@@ -58,6 +63,25 @@ test('writes a desktop entry', () => {
   assert.match(text, /^\[Desktop Entry\]\n/);
   assert.match(text, /\nExec=\/h\/\.local\/bin\/pandacode\n/);
   assert.match(text, /\nIcon=\/h\/icon\.png\n/);
+});
+
+test('the no-build error names every published build', () => {
+  let message = '';
+  try { assetFor('darwin', 'ia32'); } catch (error) { message = error.message; }
+  assert.match(message, /no build/);
+  for (const name of PUBLISHED) assert.ok(message.includes(name), `${name} is missing from the error`);
+});
+
+test('the help text names every published build', () => {
+  const help = execFileSync(process.execPath, [fileURLToPath(new URL('./bin/pandacode.mjs', import.meta.url)), '--help'], { encoding: 'utf8' });
+  for (const name of PUBLISHED) assert.ok(help.includes(name), `${name} is missing from the help`);
+});
+
+test('every published build has a name', () => {
+  assert.equal(supportedPlatforms().length, Object.keys(ASSETS).length);
+  for (const name of supportedPlatforms()) {
+    assert.ok(PUBLISHED.some(published => name.includes(published)), `${name} is not a known platform`);
+  }
 });
 
 test('embedded pubkey matches tauri.conf.json', () => {
