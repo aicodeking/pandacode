@@ -34,6 +34,21 @@ test('the panel opens on Files with an icon bar of labelled views', async ({ pag
   await expect(tab(page, 'tab-files')).not.toHaveClass(/selected/);
 });
 
+test('the icon bar runs along the top of the panel, level with the workspace header', async ({ page }) => {
+  await open(page);
+  const bar = await page.locator('.inspector-tabs').boundingBox();
+  const panel = await page.locator('#inspector').boundingBox();
+  const header = await page.locator('.workspace-header').boundingBox();
+  const title = await page.locator('#inspector-title').boundingBox();
+  const buttons = await page.locator('.inspector-tabs > button:visible').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().top));
+  expect(buttons.length).toBeGreaterThan(2);
+  expect(Math.max(...buttons) - Math.min(...buttons), 'one row of views').toBeLessThan(1);
+  expect(Math.abs(bar!.y - panel!.y), 'at the top of the panel').toBeLessThan(2);
+  expect(Math.abs(bar!.height - header!.height), 'as tall as the header beside it').toBeLessThan(2);
+  expect(bar!.width, 'across the panel').toBeGreaterThan(panel!.width - 4);
+  expect(title!.y, 'the view title sits under the bar').toBeGreaterThanOrEqual(bar!.y + bar!.height - 1);
+});
+
 test('search lists matching file names and highlighted text matches grouped by file', async ({ page }) => {
   await open(page);
   await tab(page, 'tab-search').click();
