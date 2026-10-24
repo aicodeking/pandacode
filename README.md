@@ -20,6 +20,7 @@ embedded editor engine.
 <p align="center">
   <b>Download:</b>
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg">macOS (Apple silicon)</a> ·
+  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg">macOS (Intel)</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe">Windows x64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe">Windows arm64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
@@ -46,6 +47,12 @@ embedded editor engine.
   every bot with its latest message. See [bots](docs/bots.md).
 - **Local VMs and cloud sandboxes.** Headless macOS/Linux VMs on Apple silicon
   (Tart), and Daytona, Cloudflare and AWS sandboxes that agents can drive.
+- **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
+  agent runs on a machine in your own account (Daytona, Cloudflare, AWS, Google Cloud,
+  E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle,
+  boat). PandaCode installs the harness there, copies your login, and keeps the run
+  going while your laptop sleeps; changes come back to a local worktree. See
+  [cloud agents](docs/cloud-agents.md).
 - **Simulators.** iOS Simulator and Android emulator tools for agents.
 - **Deploys.** Start a deploy task for Vercel, Cloudflare, Railway, AWS or Google
   Cloud from the header, with approval-gated CLI runs (AWS and Google Cloud use
@@ -119,8 +126,12 @@ Discord, WhatsApp or a browser too.
   stored locally in SQLite. Prompts go only to the coding CLI or service you
   pick, under that provider's own terms.
 - **It only talks to services you choose.** Provider keys (GLM, MiMo, DeepSeek, Command Code, cloud
-  sandboxes, bot channels) live in the system keychain and are sent only to
-  that provider.
+  sandboxes, bot channels, connection secrets) are sent only to that provider.
+  On macOS they live in `secrets.json` in PandaCode's app data folder, readable
+  only by your user (0600), never the Keychain, so updates never ask for your
+  login password; keys saved in the Keychain by older versions move there on
+  first use. Linux keeps them in the Secret Service and Windows in Credential
+  Manager.
 
 A few automatic checks send no personal data — just plain requests for public
 information:
@@ -128,8 +139,10 @@ information:
 | What | Where | How often |
 | --- | --- | --- |
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com` | About every 6 hours |
+| Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours; turn off in Settings → About |
+| Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Remote access; nothing before |
 
 ## Install

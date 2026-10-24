@@ -105,6 +105,10 @@ fn glm_usage_access() -> Result<std::sync::MutexGuard<'static, ()>> {
 #[cfg(target_os = "macos")]
 pub(crate) fn glm_key_for_usage() -> Result<Option<String>> {
     let _access = glm_usage_access()?;
+    if let Some(key) = crate::secret_store::peek(SERVICE, GLM_KEY.account) {
+        return Ok(Some(key));
+    }
+    // Not moved out of the Keychain yet: read it in the noninteractive child.
     crate::usage_keychain::read_glm()
         .map_err(|_| "The GLM Keychain item could not be read without interaction.".to_owned())?
         .map(|bytes| String::from_utf8(bytes).map_err(|_| invalid_key_error(GLM_KEY)))
@@ -138,19 +142,12 @@ pub fn commandcode_key() -> Result<Option<String>> {
     stored_key(COMMANDCODE_KEY)
 }
 
+/// macOS keeps keys in PandaCode's secrets file (`secret_store`), never prompting.
 #[cfg(target_os = "macos")]
 pub fn stored_key(credential: Credential) -> Result<Option<String>> {
-    use security_framework::passwords::{generic_password, PasswordOptions};
-    match generic_password(PasswordOptions::new_generic_password(SERVICE, credential.account)) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| invalid_key_error(credential)),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(_) => Err(format!(
-            "Could not access the {} key in Keychain. Unlock your login Keychain and try again.",
-            credential.label
-        )),
-    }
+    crate::secret_store::get(SERVICE, credential.account)
+        .map(|key| validate_key(&key).map(str::to_owned).map_err(|_| invalid_key_error(credential)))
+        .transpose()
 }
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn stored_key(credential: Credential) -> Result<Option<String>> {
@@ -233,8 +230,8 @@ fn native_key_removal_result(credential: Credential, result: keyring::Result<()>
 fn save_key(credential: Credential, key: &str) -> Result<()> {
     let key = validate_key(key)?;
     #[cfg(target_os = "macos")]
-    return security_framework::passwords::set_generic_password(SERVICE, credential.account, key.as_bytes())
-        .map_err(|_| format!("Could not save the {} key in Keychain.", credential.label));
+    return crate::secret_store::set(SERVICE, credential.account, key)
+        .map_err(|error| format!("Could not save the {} key: {error}", credential.label));
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     return save_native_key(credential, key);
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -245,11 +242,7 @@ fn save_key(credential: Credential, key: &str) -> Result<()> {
 }
 fn remove_key(credential: Credential) -> Result<()> {
     #[cfg(target_os = "macos")]
-    if let Err(error) = security_framework::passwords::delete_generic_password(SERVICE, credential.account) {
-        if error.code() != -25300 {
-            return Err(format!("Could not remove the {} key from Keychain.", credential.label));
-        }
-    }
+    crate::secret_store::remove(SERVICE, credential.account);
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     remove_native_key(credential)?;
     Ok(())

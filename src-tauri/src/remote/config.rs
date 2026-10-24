@@ -3,74 +3,6 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Keychain service for the relay token and the device's X25519 private key.
-pub(crate) const SERVICE: &str = "app.pandacode.remote";
-
-/// Keychain account names for one install, scoped by its data folder. A dev build and the
-/// installed app (each its own device) must not share one item: macOS ties an item to the
-/// signature that made it, so the other build was refused access (errSecAuthFailed, -25293),
-/// and one build's sign-in overwrote the other's token.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Accounts {
-    pub token: String,
-    pub key: String,
-}
-
-pub(crate) fn accounts(dir: &Path) -> Accounts {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(dir.to_string_lossy().as_bytes());
-    let id: String = digest[..6].iter().map(|byte| format!("{byte:02x}")).collect();
-    Accounts { token: format!("relay-token:{id}"), key: format!("device-key:{id}") }
-}
-
-/// The unscoped account names used before 0.3.20, adopted once by the installed app.
-pub(crate) fn legacy_accounts() -> Accounts {
-    Accounts { token: "relay-token".into(), key: "device-key".into() }
-}
-
-/// Only the installed app (data folder named after its identifier) ever owned the legacy
-/// items; a dev build must never take them.
-pub(crate) fn default_install(dir: &Path) -> bool {
-    dir.file_name().is_some_and(|name| name == "ai.pandacode.desktop")
-}
-
-/// Legacy values to copy to the scoped names: the token, and the key when it differs
-/// from the scoped one (the legacy key is the one the relay registered for this device).
-#[derive(Debug, PartialEq)]
-pub(crate) struct Adoption {
-    pub token: String,
-    pub key: Option<String>,
-}
-
-/// Whether to adopt the legacy items. `legacy` is read only when a scoped item is missing
-/// on the installed app, so other installs never touch (or get prompted for) them.
-pub(crate) fn adoption(dir: &Path, device_id: &str, now: i64, token: &crate::Result<Option<String>>, key: &crate::Result<Option<String>>, legacy: impl FnOnce() -> (Option<String>, Option<String>)) -> Option<Adoption> {
-    if !default_install(dir) || !(matches!(token, Ok(None)) || matches!(key, Ok(None))) {
-        return None;
-    }
-    let (legacy_token, legacy_key) = legacy();
-    let legacy_token = legacy_token.filter(|t| token_valid(t, now) && parse_token(t).is_some_and(|claims| claims.dev == device_id))?;
-    let legacy_key = legacy_key.filter(|k| super::crypto::decode_secret(k).is_some() && key.as_ref().ok().and_then(Option::as_deref) != Some(k.as_str()));
-    Some(Adoption { token: legacy_token, key: legacy_key })
-}
-
-/// How a signed-in computer starts: only a real not-found (or an unusable token) signs out;
-/// a keychain error keeps the account and is retried.
-#[derive(Debug, PartialEq)]
-pub(crate) enum Startup {
-    SignedIn(String),
-    SignedOut,
-    Unreadable,
-}
-
-pub(crate) fn startup(read: crate::Result<Option<String>>, now: i64) -> Startup {
-    match read {
-        Ok(Some(token)) if token_valid(&token, now) => Startup::SignedIn(token),
-        Ok(_) => Startup::SignedOut,
-        Err(_) => Startup::Unreadable,
-    }
-}
-
 /// Refresh once fewer than 7 days are left of the token's 30.
 pub(crate) fn needs_refresh(token: &str, now: i64) -> bool {
     parse_token(token).is_some_and(|claims| claims.exp - now < 7 * 24 * 3600)
@@ -112,7 +44,7 @@ pub(crate) struct Account {
     pub avatar_url: String,
 }
 
-/// Non-secret state in the app data dir. The token and private key stay in the keychain.
+/// Non-secret state in the app data dir. The token and private key are in `secrets.rs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Settings {
@@ -153,41 +85,9 @@ pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
     std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| format!("Could not save remote access settings: {e}"))
 }
 
-/// The device key as stored: `Ok(None)` only when there is none. A keychain failure (a denied
-/// or dismissed prompt, a locked keychain) is an error, so the key is never replaced over it.
-pub(crate) fn read_key(account: &str) -> crate::Result<Option<String>> {
-    #[cfg(test)]
-    {
-        Ok(crate::secret_store::get(SERVICE, account))
-    }
-    #[cfg(all(not(test), target_os = "macos"))]
-    {
-        match security_framework::passwords::get_generic_password(SERVICE, account) {
-            Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
-            Err(error) if error.code() == -25300 => Ok(None),
-            // -25293 (auth failed) and -128 (cancelled): the access prompt was denied or dismissed.
-            Err(error) if matches!(error.code(), -25293 | -128) => Err("macOS did not let PandaCode read its Connect key. Choose Always Allow when Keychain asks, or sign out and sign in again.".into()),
-            Err(error) => Err(format!("Could not read this computer's PandaCode Connect key from Keychain ({}).", error.code())),
-        }
-    }
-    #[cfg(all(not(test), any(target_os = "linux", target_os = "windows")))]
-    {
-        match keyring::Entry::new(SERVICE, account).and_then(|entry| entry.get_password()) {
-            Ok(text) => Ok(Some(text)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err("Could not read this computer's PandaCode Connect key from secure storage.".into()),
-        }
-    }
-    #[cfg(all(not(test), not(any(target_os = "macos", target_os = "linux", target_os = "windows"))))]
-    {
-        Err("Secure storage is not available on this platform.".into())
-    }
-}
-
 /// The stored key, or a new one written once when none (or an unreadable value) is stored.
-/// A read error is returned as is.
-pub(crate) fn load_or_create_key(stored: crate::Result<Option<String>>, write: impl FnOnce(&str) -> crate::Result<()>) -> crate::Result<x25519_dalek::StaticSecret> {
-    if let Some(secret) = stored?.and_then(|text| super::crypto::decode_secret(&text)) {
+pub(crate) fn load_or_create_key(stored: Option<String>, write: impl FnOnce(&str) -> crate::Result<()>) -> crate::Result<x25519_dalek::StaticSecret> {
+    if let Some(secret) = stored.and_then(|text| super::crypto::decode_secret(&text)) {
         return Ok(secret);
     }
     let secret = super::crypto::generate();
@@ -257,39 +157,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_items_are_adopted_only_when_they_belong_here() {
-        let installed = Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop");
-        let good = token(r#"{"acct":"gh:1","dev":"d1","iat":100,"exp":200}"#);
-        let legacy_key = super::super::crypto::encode_secret(&super::super::crypto::generate());
-        let scoped_key = super::super::crypto::encode_secret(&super::super::crypto::generate());
-        let legacy = |t: &String, k: &String| {
-            let pair = (Some(t.clone()), Some(k.clone()));
-            move || pair
-        };
-        // Missing scoped token: adopt both, the legacy key replacing a different scoped key.
-        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(Some(scoped_key.clone())), legacy(&good, &legacy_key)), Some(Adoption { token: good.clone(), key: Some(legacy_key.clone()) }));
-        // The same key is not written again.
-        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(Some(legacy_key.clone())), legacy(&good, &legacy_key)), Some(Adoption { token: good.clone(), key: None }));
-        // Another device's token, an expired one, or a dev build: nothing.
-        assert_eq!(adoption(installed, "d2", 150, &Ok(None), &Ok(None), legacy(&good, &legacy_key)), None);
-        assert_eq!(adoption(installed, "d1", 200, &Ok(None), &Ok(None), legacy(&good, &legacy_key)), None);
-        assert_eq!(adoption(Path::new("/Users/me/Library/Application Support/ai.pandacode.dev"), "d1", 150, &Ok(None), &Ok(None), || panic!("a dev build read the legacy items")), None);
-        // Both scoped items present, or the token unreadable: the legacy items are never read.
-        assert_eq!(adoption(installed, "d1", 150, &Ok(Some(good.clone())), &Ok(Some(scoped_key)), || panic!("read")), None);
-        assert_eq!(adoption(installed, "d1", 150, &Err("locked".into()), &Err("locked".into()), || panic!("read")), None);
-        assert_eq!(adoption(installed, "d1", 150, &Ok(None), &Ok(None), || (None, None)), None);
-    }
-
-    #[test]
-    fn only_a_missing_token_signs_out_at_startup() {
-        let good = token(r#"{"acct":"gh:1","dev":"d1","iat":100,"exp":200}"#);
-        assert_eq!(startup(Ok(Some(good.clone())), 150), Startup::SignedIn(good.clone()));
-        assert_eq!(startup(Ok(Some(good)), 250), Startup::SignedOut);
-        assert_eq!(startup(Ok(None), 150), Startup::SignedOut);
-        assert_eq!(startup(Err("Keychain locked (-25308)".into()), 150), Startup::Unreadable);
-    }
-
-    #[test]
     fn tokens_refresh_in_their_last_week() {
         let day = 24 * 3600;
         let t = token(&format!(r#"{{"acct":"gh:1","dev":"d1","iat":0,"exp":{}}}"#, 30 * day));
@@ -300,29 +167,18 @@ mod tests {
     }
 
     #[test]
-    fn a_keychain_error_never_replaces_the_key() {
+    fn an_existing_key_is_never_replaced() {
         let written = std::cell::Cell::new(false);
         let write = |_: &str| {
             written.set(true);
             Ok(())
         };
-        assert!(load_or_create_key(Err("Keychain locked".into()), write).is_err());
-        assert!(!written.get());
         let existing = super::super::crypto::generate();
-        let kept = load_or_create_key(Ok(Some(super::super::crypto::encode_secret(&existing))), write).unwrap();
+        let kept = load_or_create_key(Some(super::super::crypto::encode_secret(&existing)), write).unwrap();
         assert_eq!(kept.to_bytes(), existing.to_bytes());
         assert!(!written.get());
-        load_or_create_key(Ok(None), write).unwrap();
+        load_or_create_key(None, write).unwrap();
         assert!(written.get());
-    }
-
-    #[test]
-    fn keychain_accounts_are_scoped_per_install() {
-        let installed = accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop"));
-        let dev = accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.dev"));
-        assert_ne!(installed, dev);
-        assert_eq!(installed, accounts(Path::new("/Users/me/Library/Application Support/ai.pandacode.desktop")));
-        assert!(installed.key.starts_with("device-key:") && installed.token.starts_with("relay-token:"));
     }
 
     #[test]

@@ -225,6 +225,7 @@ main{flex:1;overflow-y:auto;padding:20px 16px 10px;display:flex;flex-direction:c
 .dots{display:inline-flex;gap:3px;padding:8px 10px;border-radius:12px;background:var(--bubble)}.dots i{width:5px;height:5px;border-radius:50%;background:var(--muted);animation:bob 1.2s ease-in-out infinite}.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
 @keyframes bob{0%,60%,100%{transform:none;opacity:.45}30%{transform:translateY(-3px);opacity:1}}
 .hello{margin:auto;text-align:center;color:var(--muted);max-width:420px;display:flex;flex-direction:column;align-items:center;gap:8px}
+:is(.avatar,.mini) img{width:100%;height:100%;border-radius:50%;object-fit:cover}
 .hello .avatar{width:64px;height:64px;font-size:30px;box-shadow:0 10px 30px color-mix(in srgb,var(--accent) 40%,transparent)}
 .hello b{color:var(--ink);font-size:17px;margin-top:6px}
 .chips{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:8px}.chips button{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:999px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
@@ -252,7 +253,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   if (location.hash) history.replaceState(null, "", location.pathname);
   const log = document.getElementById("log"), input = document.getElementById("input"), form = document.getElementById("form");
   const status = document.getElementById("status"), sendButton = document.getElementById("send");
-  let cursor = 0, botName = "Bot", glyph = "·", role = "", typing = null;
+  let cursor = 0, botName = "Bot", glyph = "·", image = "", role = "", typing = null;
   const api = (path, init = {}) => fetch("/api/chat/" + channel + "/" + path, { ...init, headers: { ...(init.headers || {}), Authorization: "Bearer " + token, "Content-Type": "application/json" } })
     .then(async r => { const body = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(body.error || "Something went wrong."), { revoked: r.status === 401 }); return body; });
   const escape = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -325,7 +326,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     log.querySelector(".hello")?.remove();
     const row = document.createElement("div");
     row.className = "msg " + (who === "user" ? "me" : "bot");
-    if (who !== "user") { const mini = document.createElement("span"); mini.className = "mini"; mini.textContent = glyph; row.append(mini); }
+    if (who !== "user") { const mini = document.createElement("span"); mini.className = "mini"; showAvatar(mini); row.append(mini); }
     const body = document.createElement("div"); body.className = "b";
     if (who === "user") body.textContent = text; else body.innerHTML = render(text);
     if (who !== "user" && text.startsWith("Approval needed:")) {
@@ -344,10 +345,15 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     if (value && !typing) { typing = document.createElement("div"); typing.className = "typing"; typing.setAttribute("role", "status"); typing.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'; typing.append(botName + " is working…"); log.append(typing); scroll(); }
     if (!value && typing) { typing.remove(); typing = null; }
   }
+  // Uploaded icons are data: URLs, set through .src so they are never parsed as markup.
+  function showAvatar(el) {
+    if (!image) { el.textContent = glyph; return; }
+    const img = document.createElement("img"); img.alt = ""; img.src = image; el.replaceChildren(img);
+  }
   function hello() {
     const box = document.createElement("div"); box.className = "hello";
     box.innerHTML = '<span class="avatar"></span><b></b><span></span><div class="chips"></div>';
-    box.querySelector(".avatar").textContent = glyph; box.querySelector("b").textContent = "Say hi to " + botName;
+    showAvatar(box.querySelector(".avatar")); box.querySelector("b").textContent = "Say hi to " + botName;
     box.querySelector("span:not(.avatar)").textContent = (role || "Your always-on assistant") + ". Type /stop to stop work, /new to start over.";
     for (const text of ["What can you do for me?", "Remember that I like short answers", "What are you working on?"]) {
       const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.onclick = () => post(text); box.querySelector(".chips").append(b);
@@ -381,8 +387,8 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
       await Promise.race([engine, new Promise(resolve => setTimeout(resolve, 1500))]);
       const r = await api("history");
       if (r.bot) {
-        botName = r.bot.name; role = r.bot.role || ""; glyph = r.bot.avatar || r.bot.name.slice(0, 1).toUpperCase();
-        document.getElementById("name").textContent = r.bot.name; document.title = r.bot.name; document.getElementById("avatar").textContent = glyph;
+        botName = r.bot.name; role = r.bot.role || ""; image = /^data:image\/(png|jpeg|webp|gif);base64,/.test(r.bot.avatar || "") ? r.bot.avatar : ""; glyph = (r.bot.avatar && !image && !r.bot.avatar.startsWith("panda:")) ? r.bot.avatar : r.bot.name.slice(0, 1).toUpperCase();
+        document.getElementById("name").textContent = r.bot.name; document.title = r.bot.name; showAvatar(document.getElementById("avatar"));
         status.textContent = r.bot.paused ? "Paused" : (role || "On your computer");
       }
       if (!r.messages.length) hello();

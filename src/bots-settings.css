@@ -1,11 +1,10 @@
-/* Bot settings: the Bots window and the single-bot modal share one tabbed layout. A header
-   carries the bot's identity, live state and actions; sections are compact tabs over
-   quiet cards at the app's field size. Conversations themselves open as ordinary tasks. */
+/* Bot settings read like the app's own Settings: a header with the bot's identity, live state and
+   actions, then a section list beside one panel of grouped rows. Settings.css loads only with
+   Settings, so the look is repeated here. The Bots window shows the list as a row of sections. */
 .bots{--bots-inset:color-mix(in srgb,var(--text) 4%,transparent);--bots-hover:color-mix(in srgb,var(--text) 6%,transparent);--bots-card:color-mix(in srgb,var(--panel) 60%,transparent)}
-dialog.bot-settings-dialog{width:min(720px,calc(100vw - 32px));max-height:88dvh}
+dialog.bot-settings-dialog{width:min(880px,calc(100vw - 32px));max-height:88dvh}
 .bots.bots-single{display:block;min-height:min(520px,70dvh)}
 .bots-detail{display:flex;flex-direction:column;gap:14px;min-width:0}
-.bots-detail>.bots-tabs{margin:0}
 
 /* Header */
 .bp-bar{display:flex;align-items:center;gap:12px;max-width:830px;min-height:46px;margin:0 auto}
@@ -40,10 +39,6 @@ dialog.bot-settings-dialog{width:min(720px,calc(100vw - 32px));max-height:88dvh}
 .bots-detail>:is(.bots-confirm,.bots-error,.bots-banner){margin:0}
 
 /* Sections */
-.bots-detail .bots-tabs{gap:0;margin:0;padding:3px;border-radius:4px;background:var(--bots-inset)}
-.bots-detail .bots-tabs>button{flex:1 1 auto;gap:3px;min-height:28px;padding:3px 6px;border-radius:3px;font-size:.78rem}
-.bots-detail .bots-tabs>.segment-thumb{border-radius:3px}
-.workspace[data-wallpaper] .bots-detail .bots-tabs>.segment-thumb{background:color-mix(in srgb,var(--text) 12%,transparent);box-shadow:none}
 .bots-count{margin-left:2px;font-size:.7rem;font-weight:500;color:var(--muted);font-variant-numeric:tabular-nums}
 .bots-detail .bots-panel{gap:14px}
 .bots-detail .bots-panel h4{margin:6px 0 -4px;font-size:.74rem;font-weight:550;text-transform:none;letter-spacing:0}
@@ -55,7 +50,6 @@ dialog.bot-settings-dialog{width:min(720px,calc(100vw - 32px));max-height:88dvh}
 .bots-detail .bots-inline-form{gap:6px}
 .bots-detail .bots-inline-form :is(.secondary-button,.primary-button){min-height:36px;padding:6px 12px;font-size:.82rem}
 .bots-detail .bots-inline-form select{flex:none;width:auto}
-.bots-detail .bots-grid:not(.three){grid-template-columns:64px minmax(0,1fr)}
 .bots-detail .dialog-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}
 .bots-detail .dialog-footer :is(.secondary-button,.primary-button){min-height:34px;padding:6px 14px;font-size:.84rem}
 .bots-detail .bots-items{border-color:var(--bots-line);background:var(--bots-card)}
@@ -70,6 +64,48 @@ dialog.bot-settings-dialog{width:min(720px,calc(100vw - 32px));max-height:88dvh}
 .bots-detail .bots-guide,.bots-detail .bots-warning{margin-left:0}
 .bots-detail .bots-activity>li{padding:9px 2px;font-size:.84rem;border-color:var(--bots-line)}
 
-@media(max-width:640px){.bp-open span{display:none}.bots-detail .bots-tabs>button{font-size:.74rem;padding:3px 4px}}
+@media(max-width:640px){.bp-open span{display:none}}
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.bp-menu{backdrop-filter:none;-webkit-backdrop-filter:none;background:var(--panel)}}
 .bots-detail .bp-bar{max-width:none;margin:0}
+
+/* Section list and panel */
+.bs-body{display:grid;grid-template-columns:170px minmax(0,1fr);gap:22px;min-width:0}
+.bs-nav{display:flex;flex-direction:column;gap:1px;min-width:0;align-self:start;position:sticky;top:0}
+.bs-nav>button{display:flex;align-items:center;gap:10px;min-height:32px;padding:0 10px;border-radius:3px;text-align:left;font-size:.86rem;color:var(--text);white-space:nowrap;--press:1}
+.bs-nav>button>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.bs-nav>button:hover{background:color-mix(in srgb,var(--text) 6%,transparent)}
+.bs-nav>button:active{background:color-mix(in srgb,var(--text) 9%,transparent)}
+.bs-nav>button[aria-selected=true]{background:var(--accent-dim);font-weight:550}
+.bs-nav>button .icon{flex:none;width:16px;height:16px;color:var(--muted)}
+.bs-nav>button[aria-selected=true] .icon{color:var(--accent-ink)}
+.bs-nav>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.bs-body>.bots-panel{min-width:0}
+.bs-panel-head{margin:0 0 4px}
+.bs-panel-head h2{margin:0;font-size:1.3rem;font-weight:650;letter-spacing:-.022em;line-height:1.2}
+.bs-panel-head p{margin:5px 0 0;font-size:.84rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bots .bs-heading{display:flex;align-items:center;gap:6px;margin:12px 2px -4px;font-size:.82rem;font-weight:600;color:var(--muted)}
+.bots .bs-heading>.info-mark{margin-left:0}
+
+/* Grouped rows, like .settings-group and .setting-row */
+.bs-group{border:1px solid var(--border);border-radius:.36rem;overflow:hidden;background:var(--panel)}
+.bs-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(10.5rem,20rem);gap:1rem;align-items:center;min-height:3rem;padding:.6rem 1rem;margin:0}
+.bs-row+.bs-row{border-top:1px solid var(--border)}
+.bs-row.stacked{grid-template-columns:minmax(0,1fr);gap:.5rem}
+.bs-row-text{display:flex;align-items:baseline;gap:8px;min-width:0}
+.bs-row-text strong{flex:none;font-size:.88rem;font-weight:520;line-height:1.4;color:var(--text)}
+.bs-row-text small{min-width:0;font-size:.76rem;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bots-detail .bs-row>:is(input,select){width:100%;min-height:34px;padding:6px 10px}
+.bs-row textarea{width:100%;padding:8px 11px;font:inherit;line-height:1.45;resize:vertical}
+.bots-template-avatar{width:20px;height:20px;font-size:.7rem}
+.workspace[data-wallpaper] .bots .bs-group{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);border-color:color-mix(in srgb,var(--text) 12%,transparent)}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .bots .bs-group{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(prefers-contrast:more){.bs-nav>button[aria-selected=true]{outline:1px solid var(--text)}}
+
+/* The Bots window already has a list on the left, and narrow modals have no room: sections become a scrolling row. */
+.bots:not(.bots-single) .bs-body{grid-template-columns:minmax(0,1fr);gap:14px}
+.bots:not(.bots-single) .bs-nav{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none}
+@media(max-width:700px){
+  .bots-single .bs-body{grid-template-columns:minmax(0,1fr);gap:14px}
+  .bots-single .bs-nav{position:static;flex-direction:row;overflow-x:auto;scrollbar-width:none}
+  .bs-row{grid-template-columns:minmax(0,1fr);gap:.5rem}
+}

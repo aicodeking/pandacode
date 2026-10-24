@@ -1,0 +1,13 @@
+/* Cloud task status strip (src/cloud-agents.ts). Imported by main.ts so it is loaded before
+ * the composer first renders it. */
+.cloud-strip{display:flex;align-items:center;gap:8px;min-width:0;margin:0 0 6px;padding:4px 4px 4px 10px;border-radius:6px;background:rgb(var(--accent-rgb) / .08);color:var(--text);font-size:12px}
+.cloud-strip-status{display:inline-flex;align-items:center;gap:7px;min-width:0;flex:1}
+.cloud-strip-status>.icon{width:14px;height:14px;flex-shrink:0;color:var(--muted)}
+.cloud-strip-status>.support-spinner{width:12px;height:12px;color:var(--accent)}
+.cloud-strip-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cloud-strip[data-stage="error"]{background:color-mix(in srgb, var(--danger) 12%, transparent)}
+.cloud-strip-menu{--press:1;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:4px;color:var(--muted)}
+.cloud-strip-menu:hover{background:var(--raised);color:var(--text)}
+.cloud-strip-menu .icon{width:14px;height:14px}
+.task-cloud{display:inline-flex;flex-shrink:0;color:var(--muted)}
+.task-cloud .icon{width:12px;height:12px}

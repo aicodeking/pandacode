@@ -532,7 +532,7 @@ pub(crate) async fn agent_usage(
     query_usage(provider, refresh).await
 }
 
-async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
+pub(crate) async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
     let slot = cache().get(provider.as_str()).ok_or("Unknown agent.")?;
     Ok(cached(slot, refresh, || async {
         static LIMIT: Semaphore = Semaphore::const_new(3);

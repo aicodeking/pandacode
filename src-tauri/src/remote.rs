@@ -8,12 +8,13 @@ mod config;
 mod crypto;
 mod host;
 pub(crate) mod mirror;
+mod secrets;
 mod socket;
 mod start;
 
 pub(crate) use mirror::{route, Mirror};
 
-use crate::{secret_store, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -71,8 +72,6 @@ pub(crate) struct Subscriber {
 pub(crate) struct Inner {
     settings: config::Settings,
     token: Option<String>,
-    /// Signed in, but the keychain refused the token read at startup; retried in the background.
-    unreadable: bool,
     connected: bool,
     /// Bumped on every start/stop so an old socket task knows to exit.
     generation: u64,
@@ -137,7 +136,6 @@ impl Inner {
         self.connected = false;
         self.fail_pending(None, "Signed out of PandaCode Connect.");
         self.token = None;
-        self.unreadable = false;
         self.settings.account = None;
         self.devices.clear();
         self.presence = false;
@@ -149,9 +147,8 @@ impl Inner {
 
 pub(crate) struct Remote {
     dir: PathBuf,
-    accounts: config::Accounts,
     inner: Mutex<Inner>,
-    /// The device key, separate from `inner` so a slow keychain prompt blocks nothing else.
+    /// The device key, separate from `inner` so reading or creating it blocks nothing else.
     key: Mutex<Option<StaticSecret>>,
 }
 
@@ -170,13 +167,13 @@ impl Remote {
         }
     }
 
-    /// The device's X25519 key from the keychain. Never creates one.
+    /// The device's X25519 key from the secrets file. Never creates one.
     fn secret(&self) -> Result<StaticSecret> {
         let mut key = self.key();
         if let Some(secret) = key.as_ref() {
             return Ok(secret.clone());
         }
-        let secret = config::read_key(&self.accounts.key)?.and_then(|text| crypto::decode_secret(&text)).ok_or("This computer has no PandaCode Connect key. Sign in again.")?;
+        let secret = secrets::read(&self.dir).key.and_then(|text| crypto::decode_secret(&text)).ok_or("This computer has no PandaCode Connect key. Sign in again.")?;
         *key = Some(secret.clone());
         Ok(secret)
     }
@@ -187,7 +184,7 @@ impl Remote {
         if let Some(secret) = key.as_ref() {
             return Ok(secret.clone());
         }
-        let secret = config::load_or_create_key(config::read_key(&self.accounts.key), |text| secret_store::set(config::SERVICE, &self.accounts.key, text))?;
+        let secret = config::load_or_create_key(secrets::read(&self.dir).key, |text| secrets::set_key(&self.dir, text))?;
         *key = Some(secret.clone());
         Ok(secret)
     }
@@ -203,7 +200,7 @@ impl Remote {
         let inner = self.lock();
         let mut status = json!({
             "configured": config::build().is_some(),
-            "signedIn": inner.token.is_some() || inner.unreadable,
+            "signedIn": inner.token.is_some(),
             "device": {"id": inner.settings.device_id, "name": config::device_name(), "fingerprint": fingerprint},
             "hostEnabled": inner.settings.host_enabled,
             "connected": inner.connected,
@@ -235,80 +232,13 @@ fn emit_presence(app: &tauri::AppHandle) {
 /// Loads settings and starts the socket when already signed in. No network otherwise.
 pub(crate) fn setup(app: &tauri::AppHandle, dir: &std::path::Path) {
     let settings = config::load(dir);
-    let accounts = config::accounts(dir);
-    // Only a signed-in computer reads the keychain at startup.
-    let (startup, key) = if settings.account.is_some() { signed_in_start(dir, &accounts, &settings.device_id) } else { (config::Startup::SignedOut, None) };
-    let unreadable = startup == config::Startup::Unreadable;
-    let token = match startup {
-        config::Startup::SignedIn(token) => Some(token),
-        _ => None,
-    };
+    // Only a signed-in computer reads the secrets file; an expired token means signed out.
+    let now = chrono::Utc::now().timestamp();
+    let token = if settings.account.is_some() { secrets::read(dir).token.filter(|token| config::token_valid(token, now)) } else { None };
     let signed_in = token.is_some();
-    app.manage(Remote { dir: dir.to_owned(), accounts, inner: Mutex::new(Inner { settings, token, unreadable, ..Default::default() }), key: Mutex::new(key) });
+    app.manage(Remote { dir: dir.to_owned(), inner: Mutex::new(Inner { settings, token, ..Default::default() }), key: Mutex::new(None) });
     if signed_in && config::build().is_some() {
         socket::start(app);
-    }
-    if unreadable {
-        tauri::async_runtime::spawn(retry_token(app.clone()));
-    }
-}
-
-/// Reads the token, first adopting the pre-0.3.20 unscoped items once (one attempt per
-/// launch) when the scoped ones are missing. Returns the adopted key so it is used even if
-/// writing it failed.
-fn signed_in_start(dir: &std::path::Path, accounts: &config::Accounts, device_id: &str) -> (config::Startup, Option<StaticSecret>) {
-    let now = chrono::Utc::now().timestamp();
-    let token = config::read_key(&accounts.token);
-    let key = config::read_key(&accounts.key);
-    let legacy = config::legacy_accounts();
-    let read_legacy = || (config::read_key(&legacy.token).ok().flatten(), config::read_key(&legacy.key).ok().flatten());
-    let Some(adopted) = config::adoption(dir, device_id, now, &token, &key, read_legacy) else { return (config::startup(token, now), None) };
-    let mut saved = secret_store::set(config::SERVICE, &accounts.token, &adopted.token);
-    let secret = adopted.key.as_deref().and_then(crypto::decode_secret);
-    if let Some(text) = &adopted.key {
-        saved = saved.and(secret_store::set(config::SERVICE, &accounts.key, text));
-    }
-    match saved {
-        Ok(()) => {
-            secret_store::remove(config::SERVICE, &legacy.token);
-            secret_store::remove(config::SERVICE, &legacy.key);
-        }
-        Err(error) => eprintln!("Could not move the PandaCode Connect sign-in to this install's Keychain items: {error}"),
-    }
-    (config::Startup::SignedIn(adopted.token), secret)
-}
-
-/// After a keychain error at startup: reads the token again at 5 s, 15 s and 60 s. A token
-/// starts the socket; a real not-found signs out; errors keep the account as it is.
-async fn retry_token(app: tauri::AppHandle) {
-    for wait in [5, 15, 60] {
-        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-        let state = remote(&app);
-        if !state.lock().unreadable {
-            return;
-        }
-        let startup = config::startup(config::read_key(&state.accounts.token), chrono::Utc::now().timestamp());
-        if startup == config::Startup::Unreadable {
-            continue;
-        }
-        let signed_in = {
-            let mut inner = state.lock();
-            // A sign-in or sign-out meanwhile settled it.
-            if !inner.unreadable {
-                return;
-            }
-            inner.unreadable = false;
-            match startup {
-                config::Startup::SignedIn(token) => inner.token = Some(token),
-                _ => inner.token = None,
-            }
-            inner.token.is_some()
-        };
-        if signed_in && config::build().is_some() {
-            socket::start(&app);
-        }
-        emit_status(&app);
-        return;
     }
 }
 
@@ -323,7 +253,9 @@ fn sign_out_local(app: &tauri::AppHandle, used: Option<&str>) {
         }
         inner.settings.clone()
     };
-    secret_store::remove(config::SERVICE, &remote.accounts.token);
+    if let Err(error) = secrets::remove_token(&remote.dir) {
+        eprintln!("{error}");
+    }
     remote.save(&settings);
     emit_status(app);
     emit_presence(app);
@@ -414,7 +346,7 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
     };
     let device = |id: String| json!({"id": id, "name": config::device_name(), "platform": std::env::consts::OS, "publicKey": public_key});
     let (token, account) = match auth::register(&build, &github_token, device(state.device_id())).await {
-        // This id is registered with another key (a restored keychain, say): become a new device once.
+        // This id is registered with another key (the key file was lost, say): become a new device once.
         Err(error) if error == auth::KEY_CHANGED => {
             let settings = {
                 let mut inner = state.lock();
@@ -429,11 +361,10 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
     if config::parse_token(&token).is_none_or(|claims| claims.dev != state.device_id()) {
         return Err("The relay returned an unexpected sign-in token.".into());
     }
-    secret_store::set(config::SERVICE, &state.accounts.token, &token)?;
+    secrets::set_token(&state.dir, &token)?;
     let settings = {
         let mut inner = state.lock();
         inner.token = Some(token);
-        inner.unreadable = false;
         inner.settings.account = Some(account);
         inner.settings.clone()
     };

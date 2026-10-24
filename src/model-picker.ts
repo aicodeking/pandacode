@@ -48,7 +48,7 @@ const optionKey = (button: HTMLElement) => `${button.dataset.connection ?? ''}|$
 export function openModelPicker(options: ModelPickerOptions): () => void {
   const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
-  const catalogErrors = new Set<ProviderId>();
+  const catalogErrors = new Map<ProviderId, string>();
   const catalogLoading = new Set<ProviderId>();
   const particles = Array.from({ length: 12 }, (_, i) => `<i style="left:${4 + i * 8}%;top:${18 + i * 29 % 58}%;--drift-duration:${2.2 + i % 4 * .4}s;--drift-delay:${-i * .37}s"></i>`).join('');
   const panel = document.createElement('section');
@@ -294,7 +294,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     }
     list.querySelectorAll<HTMLElement>('[data-catalog-loading]').forEach(status => { status.hidden = !catalogLoading.has(status.dataset.catalogLoading as ProviderId); });
     catalogError.hidden = catalogErrors.size === 0;
-    catalogError.textContent = catalogErrors.size ? `Could not load models for ${providers.filter(provider => catalogErrors.has(provider.id)).map(provider => provider.name).join(', ')}. You can enter model IDs for agents that support custom models.` : '';
+    catalogError.textContent = catalogErrors.size ? `Could not load models for ${providers.filter(provider => catalogErrors.has(provider.id)).map(provider => { const reason = catalogErrors.get(provider.id)?.replace(/\.$/, ''); return reason ? `${provider.name} (${reason})` : provider.name; }).join(', ')}. You can enter model IDs for agents that support custom models.` : '';
     updateControls();
     position();
   }
@@ -437,7 +437,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       void Promise.resolve().then(() => loadModels(provider.id)).then(models => {
         if (closed) return;
         provider.models = models;
-      }).catch(() => { if (!closed) catalogErrors.add(provider.id); }).finally(() => {
+      }).catch(reason => { if (!closed) catalogErrors.set(provider.id, reason instanceof Error ? reason.message : String(reason ?? '')); }).finally(() => {
         if (closed) return;
         catalogLoading.delete(provider.id);
         renderChoices();

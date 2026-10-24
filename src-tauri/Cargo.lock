@@ -2978,7 +2978,7 @@ dependencies = [
 
 [[package]]
 name = "pandacode"
-version = "0.3.28"
+version = "0.3.35"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -4570,6 +4570,7 @@ dependencies = [
  "gtk",
  "heck 0.5.0",
  "http",
+ "image",
  "jni 0.21.1",
  "libc",
  "log",

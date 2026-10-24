@@ -815,7 +815,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 /* A bot's conversations are ordinary task threads. The header names the bot and its state,
    with pause and settings beside it; bots own their workspace, so the project bar is hidden. */
 .breadcrumb .bot-crumb{display:flex;align-items:center;gap:8px;min-width:0;max-width:none;overflow:hidden;color:var(--text)}
-.bot-crumb-avatar{display:grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--bot-color,color-mix(in srgb,var(--accent) 55%,var(--raised)));color:#fff;font-size:.72rem;font-weight:650;line-height:1}
+.bot-avatar.bot-crumb-avatar{display:grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--bot-color,color-mix(in srgb,var(--accent) 55%,var(--raised)));color:#fff;font-size:.72rem;font-weight:650;line-height:1}
 .bot-crumb strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.84rem;font-weight:600}
 .bot-crumb-where{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .bot-crumb-where::before{content:'·';margin-right:8px;opacity:.6}
@@ -833,14 +833,25 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 .chat-thread :is(.composer-context,#deploy-button,#run-project-button){display:none!important}
 .sidebar .chats-group{margin-bottom:8px}
 .chat-welcome{display:grid;justify-items:center;gap:12px}
-.bot-welcome-avatar{display:inline-grid;place-items:center;width:58px;height:58px;margin-bottom:20px;border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--on-accent);font-size:1.6rem;font-weight:650;box-shadow:0 12px 32px -12px color-mix(in srgb,var(--accent) 70%,transparent)}
+.bot-avatar.bot-welcome-avatar{display:inline-grid;place-items:center;width:58px;height:58px;margin-bottom:20px;border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--on-accent);font-size:1.6rem;font-weight:650;box-shadow:0 12px 32px -12px color-mix(in srgb,var(--accent) 70%,transparent)}
 .bot-welcome>p{max-width:460px;margin:10px auto 0;color:var(--muted);font-size:.94rem;line-height:1.55}
 .bot-welcome .prompt-suggestions{margin:24px auto 0;text-align:left}
 .bot-welcome-setup{display:flex;flex-wrap:wrap;justify-content:center;gap:6px;margin-top:22px}
 .bot-welcome-setup button{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;border:1px solid var(--border);color:var(--muted);font-size:.8rem}
 .bot-welcome-setup button:hover{border-color:color-mix(in srgb,var(--accent) 70%,var(--border));color:var(--text)}
 .bot-welcome-setup .icon{width:13px;height:13px}
-@media(max-width:650px){.breadcrumb>.bot-crumb-settings span,.bot-crumb-where{display:none}.bot-welcome-avatar{width:44px;height:44px;font-size:1.25rem;margin-bottom:14px}}
+@media(max-width:650px){.breadcrumb>.bot-crumb-settings span,.bot-crumb-where{display:none}.bot-avatar.bot-welcome-avatar{width:44px;height:44px;font-size:1.25rem;margin-bottom:14px}}
+/* Bot icons (src/bot-avatars.ts): a panda badge or an uploaded image fills the circle. */
+.bot-avatar.has-art{padding:0;overflow:hidden;background:none;box-shadow:none}
+.bot-avatar.has-art>:is(svg,img),.avatar-swatch>:is(svg,img){display:block;width:100%;height:100%;border-radius:50%;object-fit:cover}
+.avatar-picker{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.avatar-swatch{flex:none;width:34px;height:34px;padding:0;border-radius:50%;--press:1}
+.avatar-swatch:hover{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+.avatar-swatch[aria-pressed=true]{box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--accent)}
+.avatar-swatch:focus-visible,.avatar-upload:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.avatar-upload{padding:6px 12px;border-radius:999px;border:1px solid var(--border);color:var(--muted);font-size:.8rem}
+.avatar-upload:hover{color:var(--text);border-color:color-mix(in srgb,var(--accent) 70%,var(--border))}
+.avatar-error{flex-basis:100%;color:var(--danger);font-size:.78rem}
 @media(prefers-reduced-motion:no-preference){.bot-crumb-state[data-state=working]{animation:bot-crumb-pulse 1.8s ease-in-out infinite}}
 @keyframes bot-crumb-pulse{50%{opacity:.6}}
 

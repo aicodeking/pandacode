@@ -26,6 +26,7 @@ mod simulator;
 mod vm;
 mod secret_store;
 mod cloud;
+mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
@@ -60,8 +61,10 @@ mod usage_keychain;
 mod usage_ledger;
 mod workspace;
 mod jj;
+mod tray;
 
 pub use usage_keychain::handle_usage_keychain_helper;
+pub use cloud_agents::handle_cloud_bridge;
 
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -210,8 +213,10 @@ fn reconcile_inactive_task(
         task.task_stage = "in_progress".into();
         return task;
     }
-    // A mirror runs on its host; its events keep the status.
-    if matches!(task.status.as_str(), "running" | "waiting") && !agents.contains_key(&task.id) && task.remote_device.is_none() {
+    // A mirror runs on its host; its events keep the status. A cloud run keeps going on its
+    // machine until `cloud_agents::resume` re-attaches and finishes it.
+    if matches!(task.status.as_str(), "running" | "waiting") && !agents.contains_key(&task.id) && task.remote_device.is_none()
+        && !cloud_agents::load(store, &task.id).ok().flatten().is_some_and(|cloud| cloud.active()) {
         if let Err(error) = store.finish_task_turn(&task.id, false, true) {
             eprintln!("Could not persist interrupted task state: {error}");
         }
@@ -517,6 +522,10 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
 }
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
+    listed_sessions(&state)
+}
+/// Tasks as the sidebar shows them, with stale running states settled.
+pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(store
@@ -1153,6 +1162,9 @@ async fn send_message(
         remote::route(&app, &state, &session_id, "task.send", serde_json::json!({"text": text})).await?;
         return Ok(());
     }
+    if image_ids.as_ref().is_some_and(|ids| !ids.is_empty()) && cloud_agents::transport::is_cloud(&session_id) {
+        return Err("Images can't be sent to a cloud machine yet.".into());
+    }
     launch_task_in_project(
         app,
         state,
@@ -1195,6 +1207,8 @@ struct RunAdmission<'a> {
     command: Option<PreparedCommand>,
     goal: Option<goal_state::GoalRequest>,
     team: Option<architect::Admission>,
+    /// Re-attach to a cloud task's remote run (`cloud_agents::resume`): no new turn.
+    cloud_attach: bool,
 }
 
 struct PreparedRun {
@@ -1252,6 +1266,9 @@ fn prepare_task_run_in_project(
     let store = state.store.lock().map_err(|e| e.to_string())?;
     architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
+    if admission.cloud_attach {
+        return prepare_cloud_attach(&store, &mut agents, session, tx, stopped);
+    }
     if admission.goal.is_some() && session.provider != "codex" {
         return Err(
             "Goals require the Codex harness. The task provider changed before it started.".into(),
@@ -1400,6 +1417,74 @@ fn prepare_task_run_in_project(
     })
 }
 
+/// A run that re-attaches to a cloud task's remote run: the turn it belongs to was saved
+/// before; what came after is rebuilt by replaying the run's whole log.
+fn prepare_cloud_attach(
+    store: &Store,
+    agents: &mut HashMap<String, RunningAgent>,
+    session: Session,
+    tx: UnboundedSender<RunInput>,
+    stopped: Arc<AtomicBool>,
+) -> Result<PreparedRun> {
+    let session_id = session.id.clone();
+    let cloud = cloud_agents::load(store, &session_id)?
+        .filter(|cloud| cloud.active())
+        .ok_or("This cloud run already ended.")?;
+    let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
+    store.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL WHERE id=?1", [&session_id]).map_err(|e| e.to_string())?;
+    let config = RunConfig {
+        session_id: session_id.clone(),
+        provider: session.provider,
+        model: session.model,
+        reasoning_effort: session.reasoning_effort,
+        mode: session.mode,
+        cwd,
+        resume_id: session.resume_id,
+        prompt: String::new(),
+        instructions: String::new(),
+        images: Vec::new(),
+        skill: None,
+        goal: None,
+        codex_settings: session.codex_settings,
+    };
+    let agent = RunningAgent::new(tx, stopped);
+    let prepared = PreparedRun {
+        config,
+        restore_stage: None,
+        turn_message_id: cloud.turn_message,
+        turn_started: std::time::Instant::now(),
+        context_handoff: None,
+        run_id: agent.run_id.clone(),
+        pending_approvals: agent.approvals.clone(),
+        subagents: agent.subagents.clone(),
+        assistant: agent.assistant.clone(),
+        last_event: agent.last_event.clone(),
+        team: None,
+    };
+    agents.insert(session_id, agent);
+    Ok(prepared)
+}
+
+/// Starts a run that re-attaches to a cloud task's remote run (`cloud_agents::resume`).
+pub(crate) async fn attach_cloud_run(app: tauri::AppHandle, session_id: String) -> Result<()> {
+    let state = app.state::<AppState>();
+    launch_operation_admitted(
+        app.clone(),
+        state,
+        session_id,
+        None,
+        None,
+        OperationAdmission {
+            expected_project: None,
+            goal: None,
+            team: None,
+            cloud_attach: true,
+        },
+    )
+    .await
+}
+
 async fn launch_task(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1449,6 +1534,7 @@ async fn launch_operation(
             expected_project,
             goal,
             team: None,
+            cloud_attach: false,
         },
     )
     .await
@@ -1472,6 +1558,7 @@ pub(crate) fn launch_team_task<'a>(
             expected_project: None,
             goal: None,
             team: Some(admission),
+            cloud_attach: false,
         },
     ))
 }
@@ -1480,6 +1567,7 @@ struct OperationAdmission {
     expected_project: Option<String>,
     goal: Option<task_controls::GoalLaunch>,
     team: Option<architect::Admission>,
+    cloud_attach: bool,
 }
 
 async fn launch_operation_admitted(
@@ -1494,11 +1582,12 @@ async fn launch_operation_admitted(
         expected_project,
         goal,
         team: team_admission,
+        cloud_attach,
     } = admission;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() {
+    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach {
         prepare_command(&state, &session_id, text.as_deref()).await?
     } else {
         None
@@ -1557,9 +1646,14 @@ async fn launch_operation_admitted(
             command,
             goal: goal_request,
             team: team_admission,
+            cloud_attach,
         },
     )?;
+    // A cloud task's agent runs on its machine (cloud_agents::transport). Quitting must
+    // leave that run alone, so this run neither stops it nor records an end while closing.
+    let cloud = cloud_agents::transport::is_cloud(&session_id);
     let _ = app.emit("agent-event", event(&session_id, "status", "running"));
+    tray::refresh(&app);
     let store = state.store.clone();
     let agents = state.agents.clone();
     // Optional metadata must never block a conversation when its storage cannot
@@ -1626,6 +1720,9 @@ async fn launch_operation_admitted(
         let native_turn_sink = Mutex::new(String::new());
         let team_sink = team.clone();
         let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
+            if cloud && app_sink.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+                return;
+            }
             last_event.store(storage::now(), Ordering::SeqCst);
             if e.kind == "done" {
                 return;
@@ -1688,6 +1785,7 @@ async fn launch_operation_admitted(
                         if let Some(request_id) = &e.request_id {
                             bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
                         }
+                        tray::refresh(&app_sink);
                     }
                     saved
                 } else {
@@ -1777,7 +1875,7 @@ async fn launch_operation_admitted(
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
         let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let warm_next = (providers::warms(&config) && !managed_worker).then(|| {
+        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
@@ -1791,6 +1889,13 @@ async fn launch_operation_admitted(
         } else {
             providers::run_with_tools(config, sink, rx, host).await
         };
+        if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+            // The remote run continues; the next launch re-attaches to it.
+            if let Ok(mut registry) = agents.lock() {
+                registry.remove(&session_id);
+            }
+            return;
+        }
         if let Ok(mut slot) = goal_reply.lock() {
             if let Some(reply) = slot.take() {
                 let _ =
@@ -1818,6 +1923,22 @@ async fn launch_operation_admitted(
             .await
             {
                 persist_turn_changes(&app, &store, &session_id, capture);
+            }
+        }
+        if cloud {
+            // The run's messages are saved; now its changes come back, before the turn ends,
+            // so a queued follow-up starts from them. Until that is done the run stays
+            // re-attachable (its run ID is kept), so a quit or an outage loses nothing.
+            let (cloud_app, cloud_id) = (app.clone(), session_id.clone());
+            if let Err(error) = blocking(move || cloud_agents::tasks::after_run(&cloud_app, &cloud_id)).await {
+                eprintln!("Cloud agents: could not finish a cloud run yet: {error}");
+            }
+            let unfinished = store.lock().ok().and_then(|db| cloud_agents::load(&db, &session_id).ok().flatten()).is_some_and(|cloud| cloud.active());
+            if unfinished && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+                if let Ok(mut registry) = agents.lock() {
+                    registry.remove(&session_id);
+                }
+                return;
             }
         }
         // Match the registry -> store lock order used for Start and Stop. Stop
@@ -1946,6 +2067,8 @@ async fn launch_operation_admitted(
         } else {
             "Turn failed"
         };
+        // Before `done`, so the window's tray_seen for the open task lands after it.
+        tray::finished(&app, &session_id, was_stopped, successful);
         let _ = app.emit("agent-event", event(&session_id, "done", done));
         remote::run_finished(&app, &session_id, successful, was_stopped, done);
         // Bot conversations reply on their channel and send their next queued message.
@@ -2002,6 +2125,9 @@ async fn stop_session(
     if is_team {
         architect::architect_control(app, state, session_id, "stop".into()).await?;
         return Ok(());
+    }
+    if cloud_agents::transport::is_cloud(&session_id) {
+        cloud_agents::tasks::stop_run(&app, &session_id);
     }
     if let Some(tx) = state
         .agents
@@ -3020,6 +3146,7 @@ pub fn run() {
             }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            secret_store::setup(&dir);
             provider_settings::setup(&dir).map_err(std::io::Error::other)?;
             connections::setup(&dir).map_err(std::io::Error::other)?;
             // Optional integration storage must never prevent the workspace from opening.
@@ -3038,6 +3165,7 @@ pub fn run() {
                 terminals: Arc::new(Mutex::new(HashMap::new())),
                 shutdown: AtomicU8::new(0),
             });
+            cloud_agents::init(app.handle());
             overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             remote::setup(app.handle(), &dir);
             app.manage(browser::BrowserState::default());
@@ -3049,6 +3177,9 @@ pub fn run() {
             app.manage(architect::Runtime::default());
             architect::watchdog::watch(app.handle().clone());
             bots::start(app.handle());
+            if let Err(error) = tray::setup(app.handle()) {
+                eprintln!("Menu bar item is unavailable: {error}");
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -3096,6 +3227,18 @@ pub fn run() {
                 ];
                 return handler(invoke);
             }
+            if invoke.message.webview_ref().label() == "tray" {
+                let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                    tray::tray_snapshot,
+                    tray::tray_open,
+                    tray::tray_refresh_usage,
+                    tray::tray_show_app,
+                    tray::tray_hide,
+                    tray::tray_quit,
+                    tray::tray_resize,
+                ];
+                return handler(invoke);
+            }
             if invoke.message.webview_ref().label() != "main" {
                 invoke
                     .resolver
@@ -3140,6 +3283,10 @@ pub fn run() {
                 remote::remote_set_trusted,
                 remote::remote_targets,
                 remote::mirror::remote_start_task,
+                cloud_agents::tasks::cloud_agent_targets,
+                cloud_agents::tasks::cloud_agent_start,
+                cloud_agents::tasks::cloud_agent_action,
+                cloud_agents::tasks::cloud_agent_set_claude_token,
                 remote::mirror::remote_repo_check,
                 provider_settings::provider_configuration,
                 connections::connections_list,
@@ -3147,6 +3294,7 @@ pub fn run() {
                 connections::connection_delete,
                 connections::connection_assign,
                 agent_usage::agent_usage,
+                tray::tray_seen,
                 usage_ledger::usage_ledger,
                 capabilities::capabilities_inventory,
                 capabilities::cache_alignment,
@@ -3410,8 +3558,10 @@ pub fn run() {
             }
             jev::shutdown();
             app.state::<file_preview::FilePreviews>().shutdown();
+            // Cloud runs keep going on their machines; their bridges are killed below.
+            let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
             if let Ok(agents) = state.agents.lock() {
-                for tx in agents.values() {
+                for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
                     let _ = tx.send(RunInput::Stop);
                 }
             }
@@ -3423,7 +3573,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
                 while tokio::time::Instant::now() < deadline {
-                    if agents.lock().map(|a| a.is_empty()).unwrap_or(true) {
+                    if agents.lock().map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
                         break;
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

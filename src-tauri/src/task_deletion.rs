@@ -102,7 +102,10 @@ pub async fn delete_session(
     // A deleted task never sends a follow-up; free its waiting agent.
     crate::providers::discard_warm_agent(&session_id);
     crate::blocking(move || {
+        let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| crate::cloud_agents::load(&store, &session_id).ok().flatten());
         let deleted = delete_state(&app.state::<AppState>(), &session_id)?;
+        // Its cloud machine goes with it, best effort.
+        crate::cloud_agents::tasks::forget_machine(cloud);
         let _ = app.emit(
             "sessions-deleted",
             serde_json::json!({

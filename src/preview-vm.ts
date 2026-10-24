@@ -80,6 +80,9 @@ export function createPreviewVm() {
 
 /* Cloud sandboxes in the preview: connections that accept any key (except "bad"),
  * machines per provider, a drawn desktop for providers with screens, and recorded input. */
+const BASE = ['daytona', 'cloudflare', 'aws', 'vercel', 'railway', 'gcloud'];
+const KEYED = ['e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat'];
+const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud']] as const;
 type PreviewCloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };
 export function createPreviewCloud() {
   const connected = new Map<string, string | null>();
@@ -93,18 +96,22 @@ export function createPreviewCloud() {
     agentcore: { provider: 'agentcore', os: 'linux', desktop: false, detail: 'AWS AgentCore code interpreter · commands only · ends after an hour', needs: 'aws' },
   };
   let sandboxes = false;
-  const connections = () => (['daytona', 'cloudflare', 'aws', 'vercel', 'railway', 'gcloud'] as const).map(provider => ({ provider, connected: connected.has(provider), detail: connected.get(provider) ?? null, ...(provider === 'cloudflare' ? { sandboxes: connected.has(provider) && sandboxes } : {}) }));
+  const connections = () => [...BASE, ...KEYED].map(provider => ({ provider, connected: connected.has(provider), detail: connected.get(provider) ?? null, ...(provider === 'cloudflare' ? { sandboxes: connected.has(provider) && sandboxes } : {}) }));
   const find = (id: unknown) => { const machine = machines.find(m => m.id === id); if (!machine) throw new Error('Unknown cloud machine.'); return machine; };
   return {
     inputs,
     connections,
     connect(provider: unknown, key: unknown, options: Record<string, unknown>) {
-      if (provider !== 'daytona' && provider !== 'cloudflare' && provider !== 'aws' && provider !== 'vercel' && provider !== 'railway' && provider !== 'gcloud') throw new Error('Unknown cloud provider.');
+      if (typeof provider !== 'string' || ![...BASE, ...KEYED].includes(provider)) throw new Error('Unknown cloud provider.');
+      if (provider === 'modal' && !options.tokenId) throw new Error('Enter the Modal token ID.');
+      if (provider === 'blaxel' && !options.workspace) throw new Error('Enter the Blaxel workspace.');
       if (provider !== 'aws' && provider !== 'gcloud' && (typeof key !== 'string' || !key.trim())) throw new Error('Enter the key.');
       if (key === 'bad') throw new Error(`${provider === 'daytona' ? 'Daytona' : 'Cloudflare'} refused the credentials (HTTP 401). Check them in Settings → Cloud.`);
-      connected.set(provider, provider === 'aws' ? `${options.profile || 'default profile'} · ${options.region}` : provider === 'cloudflare' ? String(options.account) : provider === 'vercel' ? (String(options.team ?? '') || null) : provider === 'railway' ? (String(options.workspace ?? '') || null) : provider === 'gcloud' ? [options.project, options.region].filter(Boolean).join(' · ') : null);
+      connected.set(provider, provider === 'aws' ? `${options.profile || 'default profile'} · ${options.region}` : provider === 'cloudflare' ? String(options.account) : provider === 'vercel' ? (String(options.team ?? '') || null) : provider === 'railway' ? (String(options.workspace ?? '') || null) : provider === 'gcloud' ? [options.project, options.region, options.zone].filter(Boolean).join(' · ') : KEYED.includes(provider) ? (String(options.workspace ?? options.environment ?? options.apiUrl ?? '') || null) : null);
       return connections();
     },
+    /** Providers that can run cloud agents, ready once connected. */
+    agentTargets() { return AGENT_TARGETS.map(([provider, label]) => ({ provider, label, ready: connected.has(provider) })); },
     disconnect(provider: unknown) { connected.delete(String(provider)); if (provider === 'cloudflare') sandboxes = false; return connections(); },
     setupSandboxes() { if (!connected.has('cloudflare')) throw new Error('Connect Cloudflare first.'); sandboxes = true; return connections(); },
     list() { return { machines: structuredClone(machines.filter(m => connected.has(kinds[Object.keys(kinds).find(k => kinds[k].provider === m.provider)!].needs))), errors: [] }; },
