@@ -550,6 +550,7 @@ fn scan_harness_configs(
             }
         }
         "cline" => {
+            let mut seen_user_mcp = std::collections::HashSet::new();
             for (path, source) in [
                 (
                     home.join(".cline/data/settings/cline_mcp_settings.json"),
@@ -565,10 +566,15 @@ fn scan_harness_configs(
                 ),
             ] {
                 if let Some(value) = read_json(&path) {
-                    entries.extend(parse_mcp_json(harness, source, &value, "mcpServers"));
+                    for entry in parse_mcp_json(harness, source, &value, "mcpServers") {
+                        if seen_user_mcp.insert(entry.name.clone()) {
+                            entries.push(entry);
+                        }
+                    }
                 }
             }
             if let Some(project) = project {
+                let mut seen_project_mcp = std::collections::HashSet::new();
                 for (path, source) in [
                     (
                         project.join(".cline/cline_mcp_settings.json"),
@@ -580,7 +586,11 @@ fn scan_harness_configs(
                     ),
                 ] {
                     if let Some(value) = read_json(&path) {
-                        entries.extend(parse_mcp_json(harness, source, &value, "mcpServers"));
+                        for entry in parse_mcp_json(harness, source, &value, "mcpServers") {
+                            if seen_project_mcp.insert(entry.name.clone()) {
+                                entries.push(entry);
+                            }
+                        }
                     }
                 }
             }
@@ -632,6 +642,8 @@ fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathB
             roots.push((home.join(".cline/skills"), "~/.cline/skills"));
             if let Some(project) = project {
                 roots.push((project.join(".cline/skills"), ".cline/skills"));
+                roots.push((project.join(".clinerules/skills"), ".clinerules/skills"));
+                roots.push((project.join(".claude/skills"), ".claude/skills"));
             }
         }
         _ => {}
@@ -896,14 +908,27 @@ env = { API_KEY = "secret" }
             r#"{"mcpServers":{"local-tool":{"command":"node","args":["server.js"]}}}"#,
         )
         .unwrap();
+        // Fallback config has a duplicate server name that should be deduplicated in favor of settings.
+        fs::write(
+            home.join(".cline/mcp_settings.json"),
+            r#"{"mcpServers":{"local-tool":{"command":"node","args":["legacy.js"]}}}"#,
+        )
+        .unwrap();
         fs::create_dir_all(project.join(".cline/skills/code-review")).unwrap();
+        fs::create_dir_all(project.join(".clinerules/skills/doc-gen")).unwrap();
         let entries = scan_harness_configs("cline", &home, Some(&project));
-        assert!(entries
+        let local_tools: Vec<_> = entries
             .iter()
-            .any(|item| item.harness == "cline" && item.kind == "mcp server" && item.name == "local-tool"));
+            .filter(|item| item.harness == "cline" && item.kind == "mcp server" && item.name == "local-tool")
+            .collect();
+        assert_eq!(local_tools.len(), 1);
+        assert_eq!(local_tools[0].source, "~/.cline/data/settings/cline_mcp_settings.json");
         assert!(entries
             .iter()
             .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "code-review"));
+        assert!(entries
+            .iter()
+            .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "doc-gen"));
         fs::remove_dir_all(home).unwrap();
         fs::remove_dir_all(project).unwrap();
     }

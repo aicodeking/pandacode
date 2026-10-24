@@ -404,6 +404,10 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 args.push("--plan".into());
             } else if context.mode == "full" {
                 args.extend(["--auto-approve".into(), "true".into()]);
+            } else {
+                // Cline CLI defaults --auto-approve to true unless explicitly turned off.
+                // For approval modes (ask, review, auto), enforce manual tool confirmation.
+                args.extend(["--auto-approve".into(), "false".into()]);
             }
         }
         _ => {
@@ -1024,6 +1028,17 @@ mod tests {
             full_args,
             ["--id", "1792719287191_NBdt7_cli", "-i", "--auto-approve", "true"]
         );
+
+        let ask_context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let ask_args = harness_arguments(&ask_context).unwrap();
+        assert_eq!(ask_args, ["-i", "--auto-approve", "false"]);
     }
 
     #[test]

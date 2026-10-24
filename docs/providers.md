@@ -593,9 +593,9 @@ options by ID first. There is no ACP effort option. The effort is the launch fla
 **Approvals.** See [approvals](approvals.md): Plan → `plan`, everything else → `act`.
 Full access adds `--auto-approve true`.
 
-**Terminal console.** Opening the terminal console launches Cline's interactive TUI (`cline -i`), preserving the task's model, mode (`--plan` or `--auto-approve true`), and reasoning effort (`--thinking <level>`). Resuming an existing task in the console passes `--id <session-id>`.
+**Terminal console.** Opening the terminal console launches Cline's interactive TUI (`cline -i`), preserving the task's model, mode (`--plan`, `--auto-approve true` for Full access, or `--auto-approve false` for approval modes), and reasoning effort (`--thinking <level>`). Resuming an existing task in the console passes `--id <session-id>`.
 
-**Capabilities and MCP.** Settings → Tools & add-ons inspects Cline's MCP configurations from `~/.cline/data/settings/cline_mcp_settings.json`, `~/.cline/cline_mcp_settings.json`, `~/.cline/mcp_settings.json`, and project-level `.cline/mcp_settings.json`. Custom skills are detected from `~/.cline/skills` and `.cline/skills`.
+**Capabilities and MCP.** Settings → Tools & add-ons inspects Cline's MCP configurations from `~/.cline/data/settings/cline_mcp_settings.json`, `~/.cline/cline_mcp_settings.json`, `~/.cline/mcp_settings.json`, and project-level `.cline/cline_mcp_settings.json` and `.cline/mcp_settings.json`. Custom skills are detected from `~/.cline/skills`, `.cline/skills`, and compatibility roots (`.clinerules/skills`, `.claude/skills`).
 
 **Updates.** Checked through the official npm registry (`npm:cline`).
 
