@@ -399,9 +399,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             args.extend(["--no-auto-update".into(), "--permission-mode".into(), mode.into()]);
         }
         "cline" => {
-            if resume_id.is_none() {
-                args.push("-i".into());
-            }
+            args.push("-i".into());
             if context.mode == "plan" {
                 args.push("--plan".into());
             } else if context.mode == "full" {
@@ -1024,7 +1022,7 @@ mod tests {
         let full_args = harness_arguments(&full_context).unwrap();
         assert_eq!(
             full_args,
-            ["--id", "1792719287191_NBdt7_cli", "--auto-approve", "true"]
+            ["--id", "1792719287191_NBdt7_cli", "-i", "--auto-approve", "true"]
         );
     }
 
