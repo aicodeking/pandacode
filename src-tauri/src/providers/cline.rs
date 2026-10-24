@@ -11,6 +11,10 @@ pub(super) const SIGN_IN: &str = "Cline is not signed in. Run `cline auth` in a 
 pub(super) const EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
 
 pub(super) fn configure(command: &mut Command, config: &RunConfig) {
+    configure_environment(command);
+    if !config.model.is_empty() && config.model != "default" {
+        command.env("CLINE_MODEL", &config.model);
+    }
     command.arg("--acp");
     if let Some(effort) = &config.reasoning_effort {
         command.args(["--thinking", effort]);
@@ -38,6 +42,111 @@ pub(super) fn permission(mode: &str, kind: &str) -> Option<&'static str> {
     }
 }
 
+/// Reads Cline's stored provider and API credentials from ~/.cline when
+/// not already provided by the environment. Cline CLI's ACP mode expects
+/// `CLINE_API_KEY` and `CLINE_PROVIDER` to be set when using API-key providers
+/// (like OpenRouter, Anthropic, OpenAI, etc.) rather than hosted Cline OAuth.
+pub(super) fn configure_environment(command: &mut Command) {
+    if std::env::var_os("CLINE_API_KEY").is_some() {
+        return;
+    }
+    let Some(home) = crate::agent_usage_providers::home() else {
+        return;
+    };
+    if let Some((provider, key, model)) = detect_credentials(&home) {
+        if let Some(key) = key {
+            command.env("CLINE_API_KEY", key);
+        }
+        if let Some(provider) = provider {
+            if std::env::var_os("CLINE_PROVIDER").is_none() {
+                command.env("CLINE_PROVIDER", provider);
+            }
+        }
+        if let Some(model) = model {
+            if std::env::var_os("CLINE_MODEL").is_none() {
+                command.env("CLINE_MODEL", model);
+            }
+        }
+    }
+}
+
+fn detect_credentials(home: &Path) -> Option<(Option<String>, Option<String>, Option<String>)> {
+    let providers_path = home.join(".cline/data/settings/providers.json");
+    let content = std::fs::read_to_string(&providers_path).ok()?;
+    let value: Value = serde_json::from_str(&content).ok()?;
+    let provider = value
+        .get("lastUsedProvider")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut key = None;
+    let mut model = None;
+
+    if let Some(ref p) = provider {
+        if let Some(settings) = value
+            .get("providers")
+            .and_then(|entry| entry.get(p))
+            .and_then(|entry| entry.get("settings"))
+        {
+            if let Some(k) = settings
+                .get("apiKey")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+            {
+                key = Some(k.to_string());
+            }
+            if let Some(m) = settings
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+            {
+                model = Some(m.to_string());
+            }
+        }
+    }
+
+    if key.is_none() {
+        let secrets_path = home.join(".cline/data/secrets.json");
+        if let Ok(content) = std::fs::read_to_string(&secrets_path) {
+            if let Ok(secrets) = serde_json::from_str::<Value>(&content) {
+                if let Some(obj) = secrets.as_object() {
+                    if let Some(ref p) = provider {
+                        let target = format!("{}apikey", p.replace(['-', '_'], "").to_lowercase());
+                        for (k, v) in obj {
+                            if k.replace(['-', '_'], "").to_lowercase() == target {
+                                if let Some(val) = v.as_str().filter(|s| !s.trim().is_empty()) {
+                                    key = Some(val.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if key.is_none() {
+                        let candidate_keys: Vec<_> = obj
+                            .iter()
+                            .filter_map(|(k, v)| {
+                                if k.to_lowercase().ends_with("apikey") {
+                                    v.as_str().filter(|s| !s.trim().is_empty()).map(str::to_owned)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if candidate_keys.len() == 1 {
+                            key = candidate_keys.into_iter().next();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if provider.is_some() || key.is_some() || model.is_some() {
+        Some((provider, key, model))
+    } else {
+        None
+    }
+}
+
 /// Models come from `session/new` (no prompt, no inference); every model gets
 /// Cline's `--thinking` levels, with the CLI default left unset.
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
@@ -50,6 +159,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         } else {
             let discovery = acp_catalog::begin("cline", path);
             let mut command = super::command(path)?;
+            configure_environment(&mut command);
             command.arg("--acp");
             let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await?;
             acp_catalog::store(discovery, &metadata);
@@ -193,6 +303,48 @@ mod tests {
     #[test]
     fn images_become_path_references() {
         assert_eq!(image_reference(Path::new("/tmp/a.png")), "Attached image: /tmp/a.png (open it with read_files to see it).\n\n");
+    }
+
+    #[test]
+    fn detects_credentials_from_providers_and_secrets_json() {
+        let home = std::env::temp_dir().join(format!("cline-creds-test-{}", uuid::Uuid::new_v4()));
+        let settings = home.join(".cline/data/settings");
+        std::fs::create_dir_all(&settings).unwrap();
+        std::fs::write(
+            settings.join("providers.json"),
+            r#"{"lastUsedProvider":"openrouter","providers":{"openrouter":{"settings":{"provider":"openrouter","apiKey":"sk-direct","model":"recursive/flint"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_credentials(&home),
+            Some((
+                Some("openrouter".into()),
+                Some("sk-direct".into()),
+                Some("recursive/flint".into())
+            ))
+        );
+
+        // Fallback to secrets.json when apiKey is omitted in settings
+        std::fs::write(
+            settings.join("providers.json"),
+            r#"{"lastUsedProvider":"anthropic","providers":{"anthropic":{"settings":{"model":"claude-3-5"}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".cline/data/secrets.json"),
+            r#"{"anthropicApiKey":"sk-ant-secret"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_credentials(&home),
+            Some((
+                Some("anthropic".into()),
+                Some("sk-ant-secret".into()),
+                Some("claude-3-5".into())
+            ))
+        );
+
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[tokio::test]
