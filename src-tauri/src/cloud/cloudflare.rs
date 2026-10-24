@@ -79,14 +79,26 @@ impl Cloudflare {
         };
         self.call(method, &path, None, Duration::from_secs(120)).await.map(|_| ())
     }
+    /// Keep the container awake for `minutes` without requests (the Worker's `/keepalive`).
+    pub async fn keep_alive(&self, name: &str, minutes: u32) -> Result<(), String> {
+        self.call(reqwest::Method::POST, &format!("/sandboxes/{name}/keepalive"), Some(json!({"minutes": minutes})), Duration::from_secs(30)).await.map(|_| ())
+    }
+    async fn run(&self, name: &str, command: &str, timeout: Duration) -> Result<Value, String> {
+        self.call(reqwest::Method::POST, &format!("/sandboxes/{name}/exec"), Some(json!({"command": command, "timeoutMs": timeout.as_millis() as u64})), timeout + Duration::from_secs(30)).await
+    }
+    /// Exit code and stdout alone, for callers that parse the output (base64 file reads).
+    pub async fn exec_stdout(&self, name: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String), String> {
+        let result = self.run(name, command, timeout).await?;
+        Ok((result["exitCode"].as_i64().map(|c| c as i32), result["stdout"].as_str().unwrap_or_default().to_string()))
+    }
     pub async fn exec(&self, name: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String), String> {
-        let result = self.call(reqwest::Method::POST, &format!("/sandboxes/{name}/exec"), Some(json!({"command": command, "timeoutMs": timeout.as_millis() as u64})), timeout + Duration::from_secs(30)).await?;
+        let result = self.run(name, command, timeout).await?;
         let mut output = result["stdout"].as_str().unwrap_or_default().to_string();
         if let Some(stderr) = result["stderr"].as_str().filter(|s| !s.is_empty()) {
             output.push_str(&format!("{}[stderr]\n{stderr}", if output.is_empty() || output.ends_with('\n') { "" } else { "\n" }));
         }
         if result["truncated"].as_bool() == Some(true) {
-            output.push_str("\n[output truncated to the last 256 KB]");
+            output.push_str("\n[output truncated to the last 4 MB]");
         }
         Ok((result["exitCode"].as_i64().map(|c| c as i32), output))
     }
@@ -173,6 +185,7 @@ mod tests {
     fn the_worker_ships_with_auth_and_an_idle_timeout() {
         let worker = FILES.iter().find(|(path, _)| *path == "src/index.ts").unwrap().1;
         assert!(worker.contains("timingSafeEqual") && worker.contains("IDLE_MS = 10 * 60 * 1000"));
+        assert!(worker.contains("/keepalive") && worker.contains("keepAlive(minutes: number)") && worker.contains("setInactivityTimeout"));
         assert!(FILES.iter().any(|(path, contents)| *path == "Dockerfile" && contents.contains("cloudflare/sandbox:1.0.1")));
         let package: Value = serde_json::from_str(FILES.iter().find(|(path, _)| *path == "package.json").unwrap().1).unwrap();
         assert_eq!(package["dependencies"]["@cloudflare/sandbox"], "1.0.1");
@@ -185,6 +198,7 @@ mod tests {
             ("GET", "/sandboxes/b") => (200, r#"{"running":false}"#.into()),
             ("POST", "/sandboxes/c/start") => (200, r#"{"running":true}"#.into()),
             ("POST", "/sandboxes/a/exec") => (200, r#"{"exitCode":1,"stdout":"out","stderr":"err","truncated":false}"#.into()),
+            ("POST", "/sandboxes/a/keepalive") => (200, r#"{"keepAliveMs":900000}"#.into()),
             ("DELETE", "/sandboxes/b") => (200, r#"{"deleted":true}"#.into()),
             ("GET", "/health") => (401, "Unauthorized".into()),
             _ => (404, r#"{"message":"Not found"}"#.into()),
@@ -195,11 +209,15 @@ mod tests {
         assert_eq!(cf.create("c").await.unwrap().state, "running");
         assert!(cf.create("Bad Name").await.is_err());
         assert_eq!(cf.exec("a", "ls", Duration::from_secs(5)).await.unwrap(), (Some(1), "out\n[stderr]\nerr".into()));
+        assert_eq!(cf.exec_stdout("a", "ls", Duration::from_secs(5)).await.unwrap(), (Some(1), "out".into()));
         cf.power("b", "delete").await.unwrap();
+        cf.keep_alive("a", 15).await.unwrap();
         assert!(cf.health().await.unwrap_err().contains("refused the credentials"));
         let log = seen.lock().unwrap();
         assert!(log.iter().all(|r| r.authorization.as_deref() == Some("Bearer tok")));
         let exec: Value = serde_json::from_str(&log.iter().find(|r| r.path.ends_with("/exec")).unwrap().body).unwrap();
         assert_eq!(exec, json!({"command":"ls","timeoutMs":5000}));
+        let keep: Value = serde_json::from_str(&log.iter().find(|r| r.path.ends_with("/keepalive")).unwrap().body).unwrap();
+        assert_eq!(keep, json!({"minutes":15}));
     }
 }

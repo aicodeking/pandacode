@@ -29,6 +29,9 @@ pub fn connections() -> Vec<Connection> {
         Connection { provider: "railway", connected: super::secret("railway_token").is_some(), sandboxes: None, detail: settings.railway_workspace },
         Connection { provider: "gcloud", connected: settings.gcloud_project.is_some(), sandboxes: None, detail: settings.gcloud_project.map(|project| match settings.gcloud_region { Some(region) => format!("{project} · {region}"), None => project }) },
     ]
+    .into_iter()
+    .chain(super::sandbox::KEYED.iter().map(|&provider| Connection { provider, connected: super::sandbox::ready(provider), sandboxes: None, detail: settings.providers.get(provider).and_then(|options| options.get("detail").cloned()) }))
+    .collect()
 }
 
 #[tauri::command]
@@ -68,10 +71,13 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
             }
             "vercel" => {
                 let team = text("team");
-                block(verify_vercel(key.trim(), team.as_deref()))?;
+                let (project_id, team_id) = vercel_ids(text("projectId"), text("teamId"))?;
+                block(verify_vercel(key.trim(), team_id.as_deref().or(team.as_deref())))?;
                 super::set_secret("vercel_token", key.trim())?;
                 let mut settings = super::settings();
                 settings.vercel_team = team;
+                set_option(&mut settings, "vercel", "projectId", project_id);
+                set_option(&mut settings, "vercel", "teamId", team_id);
                 super::save_settings(&settings)?;
             }
             "railway" => {
@@ -92,10 +98,15 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
                 if region.as_deref().is_some_and(|r| r.len() > 32 || !r.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')) {
                     return Err("That does not look like a Google Cloud region (for example us-central1).".into());
                 }
+                let zone = text("zone");
+                if zone.as_deref().is_some_and(|z| z.len() > 40 || !z.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') || z.rsplit_once('-').is_none_or(|(_, letter)| letter.len() != 1)) {
+                    return Err("That does not look like a Google Cloud zone (for example us-central1-a).".into());
+                }
                 super::deploy::gcloud_verify(&project, region.as_deref())?;
                 let mut settings = super::settings();
                 settings.gcloud_project = Some(project);
                 settings.gcloud_region = region;
+                set_option(&mut settings, "gcloud", "zone", zone);
                 super::save_settings(&settings)?;
             }
             // AWS uses the CLI's own login; PandaCode stores only the profile and region.
@@ -114,12 +125,32 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
                 settings.aws_region = Some(region);
                 super::save_settings(&settings)?;
             }
+            other if super::sandbox::KEYED.contains(&other) => super::sandbox::connect(other, key.trim(), &options)?,
             _ => return Err("Unknown cloud provider.".into()),
         }
         let _ = app.emit("vm-changed", serde_json::json!({}));
         Ok(connections())
     })
     .await
+}
+
+/// Set or clear one saved option of a provider (`settings.providers[provider][name]`).
+fn set_option(settings: &mut super::Settings, provider: &str, name: &str, value: Option<String>) {
+    let options = settings.providers.entry(provider.into()).or_default();
+    match value { Some(value) => { options.insert(name.into(), value); } None => { options.remove(name); } }
+    if options.is_empty() { settings.providers.remove(provider); }
+}
+
+/// Vercel project (`prj_…`) and team (`team_…`) IDs. The team slug stays in `vercel_team`.
+fn vercel_ids(project: Option<String>, team_id: Option<String>) -> Result<(Option<String>, Option<String>)> {
+    let id = |value: &str, prefix: &str| value.len() <= 64 && value.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric()));
+    if project.as_deref().is_some_and(|p| !id(p, "prj_")) {
+        return Err("A Vercel project ID looks like prj_… (Project → Settings → General).".into());
+    }
+    if team_id.as_deref().is_some_and(|t| !id(t, "team_")) {
+        return Err("A Vercel team ID looks like team_… (Team → Settings → General).".into());
+    }
+    Ok((project, team_id))
 }
 
 async fn verify_vercel(token: &str, team: Option<&str>) -> Result<()> {
@@ -202,6 +233,7 @@ pub async fn cloud_disconnect(app: AppHandle, provider: String) -> Result<Vec<Co
                 super::remove_secret("vercel_token");
                 let mut settings = super::settings();
                 settings.vercel_team = None;
+                settings.providers.remove("vercel");
                 super::save_settings(&settings)?;
             }
             "railway" => {
@@ -214,6 +246,7 @@ pub async fn cloud_disconnect(app: AppHandle, provider: String) -> Result<Vec<Co
                 let mut settings = super::settings();
                 settings.gcloud_project = None;
                 settings.gcloud_region = None;
+                settings.providers.remove("gcloud");
                 super::save_settings(&settings)?;
             }
             "aws" => {
@@ -223,6 +256,7 @@ pub async fn cloud_disconnect(app: AppHandle, provider: String) -> Result<Vec<Co
                 settings.aws_region = None;
                 super::save_settings(&settings)?;
             }
+            other if super::sandbox::KEYED.contains(&other) => super::sandbox::disconnect(other)?,
             _ => return Err("Unknown cloud provider.".into()),
         }
         let _ = app.emit("vm-changed", serde_json::json!({}));
@@ -264,6 +298,17 @@ pub fn machines() -> Machines {
             result.machines.extend(list);
         }
     }
+    // Google Cloud is also a deploy-only connection; list its VMs only once a cloud-agent zone is chosen.
+    let gcloud_agents = super::settings().providers.get("gcloud").is_some_and(|o| o.contains_key("zone"));
+    for provider in ["gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat"] {
+        if provider == "gcloud" && !gcloud_agents { continue; }
+        if let Ok(sandbox) = super::sandbox::connected(provider) {
+            match sandbox.list() {
+                Ok(list) => result.machines.extend(list),
+                Err(error) => result.errors.push(error),
+            }
+        }
+    }
     result
 }
 
@@ -291,7 +336,7 @@ pub fn create(provider: &str, name: &str) -> Result<Machine> {
             Ok(machine)
         }
         "agentcore" => Aws::connected()?.interpreter_start(name),
-        _ => Err("Unknown cloud provider.".into()),
+        other => super::sandbox::connected(other)?.create(name),
     }
 }
 /// An AWS desktop's OS, from its tags.
@@ -321,6 +366,7 @@ pub fn power(id: &str, action: &str) -> Result<()> {
         }
         Some(("agentcore", native)) if matches!(action, "stop" | "delete") => Aws::connected()?.interpreter_stop(native),
         Some(("agentcore", _)) => Err("AgentCore sessions cannot be restarted; create a new one.".into()),
+        Some((provider, native)) => super::sandbox::connected(provider)?.power(native, action),
         _ => Err("Unknown cloud machine.".into()),
     }
 }
@@ -330,6 +376,7 @@ pub fn exec(id: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, 
         Some(("cloudflare", native)) => block(Cloudflare::connected()?.exec(native, command, timeout)),
         Some(("aws", native)) => { let aws = Aws::connected()?; let windows = aws_os(&aws, native)? == "windows"; aws.exec(native, windows, command, timeout) }
         Some(("agentcore", native)) => { let aws = Aws::connected()?; let credentials = aws.credentials()?; block(aws.interpreter_exec(native, command, &credentials, None)) }
+        Some((provider, native)) => super::sandbox::connected(provider)?.exec(native, command, timeout),
         _ => Err("Unknown cloud machine.".into()),
     }
 }
@@ -380,6 +427,24 @@ pub async fn cloud_input(id: String, input: Value) -> Result<String> {
 mod tests {
     use super::*;
     use crate::cloud::http::mock;
+
+    #[test]
+    fn validates_vercel_ids_and_never_stores_the_slug_as_an_id() {
+        let ok = |p: Option<&str>, t: Option<&str>| vercel_ids(p.map(Into::into), t.map(Into::into));
+        assert_eq!(ok(Some("prj_Ab12"), Some("team_x9")).unwrap(), (Some("prj_Ab12".into()), Some("team_x9".into())));
+        assert_eq!(ok(None, None).unwrap(), (None, None));
+        assert!(ok(Some("project"), None).is_err() && ok(Some("prj_"), None).is_err());
+        assert!(ok(None, Some("acme")).is_err());
+    }
+
+    #[test]
+    fn set_option_adds_replaces_and_clears() {
+        let mut settings = super::super::Settings::default();
+        set_option(&mut settings, "gcloud", "zone", Some("us-east1-b".into()));
+        assert_eq!(settings.providers["gcloud"]["zone"], "us-east1-b");
+        set_option(&mut settings, "gcloud", "zone", None);
+        assert!(!settings.providers.contains_key("gcloud"));
+    }
 
     #[tokio::test]
     async fn verifies_railway_account_and_workspace_tokens() {

@@ -21,10 +21,6 @@ const ACTIVITY_ICONS: Record<string, string> = { inbound: 'chat', reply: 'arrow'
 
 let scheduleKind: Schedule['kind'] = 'daily';
 
-/** Each settings section opens with what it is for, in one line, beside its icon. */
-function sectionHead(symbol: string, title: string, text: string, more = ''): string {
-  return `<div class="bots-section-head"><span class="bots-section-icon" aria-hidden="true">${icon(symbol)}</span><div><b>${escape(title)}${more}</b><p>${escape(text)}</p></div></div>`;
-}
 let activity: { botId: string; items: Activity[]; done: boolean; loading: boolean } = { botId: '', items: [], done: false, loading: false };
 
 function threadLabel(detail: BotDetail, channelId: string, externalId: string): string {
@@ -40,15 +36,13 @@ function conversationsPanel(detail: BotDetail, context: PanelContext): string {
   const threads = [...detail.threads].sort((a, b) => Number(b.channelId === 'desktop') - Number(a.channelId === 'desktop') || b.updatedAt - a.updatedAt);
   const web = detail.channels.find(item => item.kind === 'web' && item.enabled);
   const row = (thread: BotDetail['threads'][number]) => `<li><span class="bots-item-main"><b>${escape(threadLabel(detail, thread.channelId, thread.externalId))}</b><small>${context.running(thread.sessionId) ? 'Working…' : escape(age(thread.updatedAt))}</small></span><button type="button" class="secondary-button" data-open-task="${escape(thread.sessionId)}">Open</button></li>`;
-  return `${sectionHead('chat', 'Conversations', `Each conversation is a task with its own model and history. Open one to read or reply.`)}
-    ${threads.length ? `<ul class="bots-items">${threads.map(row).join('')}</ul>` : '<p class="bots-empty-note">No conversations yet. Open chat to start one.</p>'}
+  return `${threads.length ? `<ul class="bots-items">${threads.map(row).join('')}</ul>` : '<p class="bots-empty-note">No conversations yet. Open chat to start one.</p>'}
     ${web ? `<div class="bots-callout">${icon('globe')}<span>Also chat from any browser on this computer.</span><button type="button" class="secondary-button" data-web-open="${escape(web.id)}">Open web chat</button></div>` : ''}`;
 }
 
 function memoryPanel(detail: BotDetail): string {
   const items = [...detail.memories].reverse();
-  return `${sectionHead('leaf', 'Memory', `${detail.bot.name} keeps these across conversations and adds its own as it learns.`)}
-    <form class="bots-inline-form bots-memory"><input name="content" maxlength="2000" placeholder="Add a memory" aria-label="New memory" autocomplete="off"><button type="submit" class="secondary-button">Remember</button></form>
+  return `<form class="bots-inline-form bots-memory"><input name="content" maxlength="2000" placeholder="Add a memory" aria-label="New memory" autocomplete="off"><button type="submit" class="secondary-button">Remember</button></form>
     ${items.length ? `<ul class="bots-items">${items.map(memory => `<li><span class="bots-item-main"><span>${escape(memory.content)}</span><small>${memory.source === 'bot' ? 'Learned' : 'Added by you'} · ${escape(age(memory.createdAt))}</small></span><button type="button" class="icon-button" data-forget="${escape(memory.id)}" aria-label="Forget this memory" title="Forget">${icon('trash')}</button></li>`).join('')}</ul>` : '<p class="bots-empty-note">No memories yet.</p>'}`;
 }
 
@@ -65,7 +59,7 @@ function schedulesPanel(detail: BotDetail): string {
   const field = (kinds: Schedule['kind'][], html: string) => `<div class="bots-when" data-kinds="${kinds.join(' ')}" ${kinds.includes(scheduleKind) ? '' : 'hidden'}>${html}</div>`;
   const soon = new Date(Date.now() + 3600000);
   const local = new Date(soon.getTime() - soon.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-  return `${sectionHead('refresh', 'Schedules', 'Recurring or one-off work the bot starts on its own.')}<form class="bots-schedule">
+  return `<form class="bots-schedule">
       <label class="bots-field"><span>What should it do?</span><textarea name="prompt" rows="2" maxlength="8000" placeholder="Check my GitHub notifications and summarize anything that needs me"></textarea></label>
       <div class="bots-grid three"><label class="bots-field"><span>Name</span><input name="title" maxlength="120" placeholder="Morning digest" autocomplete="off"></label>
       <label class="bots-field"><span>Repeat</span><select name="kind">${[['daily', 'Every day'], ['weekdays', 'Weekdays'], ['interval', 'Every few minutes or hours'], ['once', 'Once']].map(([id, label]) => `<option value="${id}" ${id === scheduleKind ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
@@ -100,21 +94,19 @@ function pairingsList(detail: BotDetail): string {
 }
 
 function channelsPanel(detail: BotDetail): string {
-  return `${sectionHead('globe', 'Channels', 'Talk to the bot from a browser, Telegram, Slack, Discord or WhatsApp. Messages are handled on this computer while PandaCode runs.')}${detail.channels.length ? `<ul class="bots-items">${detail.channels.map(channel => channelCard(detail, channel)).join('')}</ul>` : ''}
+  return `${detail.channels.length ? `<ul class="bots-items">${detail.channels.map(channel => channelCard(detail, channel)).join('')}</ul>` : ''}
     ${pairingsList(detail)}<h4>${detail.channels.length ? 'Add another channel' : 'Add a channel'}</h4>${connectSection(detail)}`;
 }
 
 function rulesPanel(detail: BotDetail): string {
-  return `${sectionHead('unlock', 'Rules', 'Answer the bot\'s requests for you. Deny wins over allow, and * matches anything, as in npm test*.', infoMark('Risky actions such as sudo, force pushes, deleting files or anything about passwords always ask, whatever the rules say.', 'About risky actions'))}
-    <form class="bots-inline-form bots-rule"><input name="pattern" maxlength="200" placeholder="git status*" aria-label="Pattern" autocomplete="off"><select name="decision" aria-label="Decision"><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select><button type="submit" class="secondary-button">Add rule</button></form>
+  return `<form class="bots-inline-form bots-rule"><input name="pattern" maxlength="200" placeholder="git status*" aria-label="Pattern" autocomplete="off"><select name="decision" aria-label="Decision"><option value="allow">Allow</option><option value="ask">Ask</option><option value="deny">Deny</option></select><button type="submit" class="secondary-button">Add rule</button></form>
     ${detail.rules.length ? `<ul class="bots-items">${detail.rules.map(rule => `<li><span class="bots-chip ${rule.decision}">${rule.decision}</span><span class="bots-item-main"><code>${escape(rule.pattern)}</code></span><button type="button" class="icon-button" data-delete-rule="${escape(rule.id)}" aria-label="Delete rule ${escape(rule.pattern)}" title="Delete">${icon('trash')}</button></li>`).join('')}</ul>` : '<p class="bots-empty-note">No rules. Reply "always" to an approval request to add one.</p>'}`;
 }
 
 function activityPanel(detail: BotDetail, context: PanelContext): string {
   if (activity.botId !== detail.bot.id) { activity = { botId: detail.bot.id, items: [], done: false, loading: false }; void loadActivity(context, false); }
-  const head = sectionHead('activity', 'Activity', 'Everything the bot did and heard, newest first.');
-  if (!activity.items.length) return head + (activity.loading || !activity.done ? '<p class="dialog-loading" role="status">Loading activity…</p>' : '<p class="bots-empty-note">Nothing yet.</p>');
-  return `${head}<ul class="bots-activity">${activity.items.map(item => `<li data-kind="${escape(item.kind)}">${icon(ACTIVITY_ICONS[item.kind] ?? 'info')}<span>${escape(item.summary)}</span><time datetime="${new Date(item.at).toISOString()}">${escape(age(item.at))}</time></li>`).join('')}</ul>
+  if (!activity.items.length) return (activity.loading || !activity.done ? '<p class="dialog-loading" role="status">Loading activity…</p>' : '<p class="bots-empty-note">Nothing yet.</p>');
+  return `<ul class="bots-activity">${activity.items.map(item => `<li data-kind="${escape(item.kind)}">${icon(ACTIVITY_ICONS[item.kind] ?? 'info')}<span>${escape(item.summary)}</span><time datetime="${new Date(item.at).toISOString()}">${escape(age(item.at))}</time></li>`).join('')}</ul>
     ${activity.done ? '' : '<div class="dialog-footer"><button type="button" class="secondary-button" data-more-activity>Show older</button></div>'}`;
 }
 

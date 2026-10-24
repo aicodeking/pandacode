@@ -14,11 +14,12 @@ async function mount(page: Page): Promise<void> {
   page.on('console', message => { if (/Content Security Policy/i.test(message.text())) runtime.push(message.text()); });
   const csp = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8')).app.security.csp.replace("connect-src ipc: http://ipc.localhost", "connect-src 'self' ws: ipc: http://ipc.localhost");
   await page.route(url => new URL(url).pathname === '/', async route => {
-    const response = await route.fetch();
-    await route.fulfill({ response, body: (await response.text()).replace('<head>', `<head><meta http-equiv="Content-Security-Policy" content="${csp}">`) });
+    await route.fulfill({
+      contentType: 'text/html',
+      body: `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Design canvas fixture</title></head><body style="margin:0;--bg:#fff"><section id="design-panel" class="design-panel" aria-label="Design" style="position:fixed;inset:0;background:var(--bg,#fff)"></section></body></html>`,
+    });
   });
   await page.goto('/');
-  await expect(page.locator('#prompt')).toBeVisible();
   await page.evaluate(async () => {
     const { mountDesignCanvas } = await import('/src/design-canvas.ts' as string);
     const { createPreviewDesign } = await import('/src/preview-design.ts' as string);
@@ -45,7 +46,7 @@ async function mount(page: Page): Promise<void> {
 const panel = (page: Page) => page.getByRole('region', { name: 'Design', exact: true });
 const frame = (page: Page, name: string) => page.frameLocator(`iframe[title="${name}"]`);
 
-test('renders artboards in sandboxed, script-free frames at their widths', async ({ page }) => {
+test('Design canvas renders artboards in sandboxed, script-free frames at their widths', async ({ page }) => {
   await mount(page);
   await expect(frame(page, 'home.html').getByRole('heading', { name: 'Ship calmer releases' })).toBeVisible();
   await expect(frame(page, 'phone.html').getByText('Deploys')).toBeVisible();
@@ -58,7 +59,7 @@ test('renders artboards in sandboxed, script-free frames at their widths', async
   await expect(panel(page).getByRole('button', { name: 'Send 1 comment to agent' })).toBeEnabled();
 });
 
-test('comments on a clicked element, saves it and sends the prompt', async ({ page }) => {
+test('Design canvas comments on a clicked element, saves it and sends the prompt', async ({ page }) => {
   await mount(page);
   const title = frame(page, 'home.html').getByRole('heading', { name: 'Ship calmer releases' });
   await expect(title).toBeVisible();
@@ -88,7 +89,7 @@ test('comments on a clicked element, saves it and sends the prompt', async ({ pa
   await expect(panel(page).getByRole('button', { name: 'Send 1 comment to agent' })).toBeEnabled();
 });
 
-test('reloads an artboard the agent rewrote, and pans and zooms', async ({ page }) => {
+test('Design canvas reloads an artboard the agent rewrote, and pans and zooms', async ({ page }) => {
   await mount(page);
   await expect(frame(page, 'home.html').getByText('Ship calmer releases')).toBeVisible();
   await page.evaluate(() => { const d = (window as any).__design; d.mock.write('home.html', '<h1>Revised</h1>'); d.mock.write('new.html', '<p>Fresh</p>'); return d.panel.refresh(); });
@@ -105,4 +106,71 @@ test('reloads an artboard the agent rewrote, and pans and zooms', async ({ page 
   // A hidden canvas makes no calls until it is shown again.
   const calls = await page.evaluate(() => { const d = (window as any).__design; d.panel.hide(); d.panel.refresh(); return d.calls.length; });
   expect(await page.evaluate(() => (window as any).__design.calls.length)).toBe(calls);
+});
+
+test('Design canvas Shift-scroll pans horizontally across hit targets and zoom levels', async ({ page }) => {
+  await mount(page);
+  await expect(frame(page, 'home.html').getByText('Ship calmer releases')).toBeVisible();
+  const world = page.locator('.design-world');
+  const snapshot = () => world.evaluate(el => {
+    const matrix = new DOMMatrix(getComputedStyle(el).transform);
+    return { x: matrix.e, y: matrix.f, z: Math.hypot(matrix.a, matrix.b) };
+  });
+  const wheel = (target: 'background' | 'artboard', deltaX: number, deltaY: number, modifiers: string[] = []) =>
+    page.locator(target === 'background' ? '.design-viewport' : '.design-hit').first().dispatchEvent('wheel', {
+      deltaX, deltaY, bubbles: true, cancelable: true,
+      shiftKey: modifiers.includes('Shift'), ctrlKey: modifiers.includes('Control'), metaKey: modifiers.includes('Meta'),
+    });
+
+  const initial = await snapshot();
+  await wheel('background', 0, 48, ['Shift']);
+  const down = await snapshot();
+  expect(down.x).toBe(initial.x - 48);
+  expect(down.y).toBe(initial.y);
+  expect(down.z).toBe(initial.z);
+  await wheel('artboard', 0, -31, ['Shift']);
+  const up = await snapshot();
+  expect(up.x).toBe(down.x + 31);
+  expect(up.y).toBe(initial.y);
+
+  // Existing horizontal deltas are consumed once even when Shift is held.
+  await wheel('background', 12, 40, ['Shift']);
+  const suppliedX = await snapshot();
+  expect(suppliedX.x).toBe(up.x - 12);
+  expect(suppliedX.y).toBe(up.y);
+
+  // Ordinary two-axis pan keeps its current behavior.
+  await wheel('background', 7, 9);
+  const ordinary = await snapshot();
+  expect(ordinary.x).toBe(suppliedX.x - 7);
+  expect(ordinary.y).toBe(suppliedX.y - 9);
+
+  // Ctrl and Meta zoom work with and without Shift; Shift never diverts these gestures into pan.
+  await wheel('background', 0, 30, ['Control', 'Shift']);
+  const ctrlShift = await snapshot();
+  expect(ctrlShift.z).not.toBeCloseTo(ordinary.z);
+  await wheel('background', 0, -24, ['Control']);
+  const ctrl = await snapshot();
+  expect(ctrl.z).not.toBeCloseTo(ctrlShift.z);
+  await wheel('background', 0, 30, ['Meta', 'Shift']);
+  const metaShift = await snapshot();
+  expect(metaShift.z).not.toBeCloseTo(ctrl.z);
+  await wheel('background', 0, -24, ['Meta']);
+  expect((await snapshot()).z).not.toBeCloseTo(metaShift.z);
+
+  // Change zoom through the real control, then verify horizontal pan keeps that scale and y.
+  const beforeZoomButton = await snapshot();
+  await panel(page).getByRole('button', { name: 'Zoom in' }).click();
+  const zoomed = await snapshot();
+  expect(zoomed.z).toBeGreaterThan(beforeZoomButton.z);
+  await wheel('artboard', 0, 20, ['Shift']);
+  const scaledPan = await snapshot();
+  expect(scaledPan.x).toBeCloseTo(zoomed.x - 20, 2);
+  expect(scaledPan.y).toBeCloseTo(zoomed.y, 2);
+  expect(scaledPan.z).toBeCloseTo(zoomed.z, 5);
+
+  // A wheel outside the mounted canvas cannot change its camera.
+  const outside = await snapshot();
+  await page.locator('.design-comments').dispatchEvent('wheel', { deltaY: 50, bubbles: true, cancelable: true, shiftKey: true });
+  expect(await snapshot()).toEqual(outside);
 });

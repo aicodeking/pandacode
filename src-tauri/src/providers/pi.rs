@@ -104,6 +104,136 @@ pub(super) fn parse_models(data: &Value) -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
+/// Discovery stdout cap. omp's v2 chunks are base64, so a 12 MiB catalog fits.
+const DISCOVERY_OUTPUT_LIMIT: u64 = 16 * 1024 * 1024;
+/// omp's advertised reassembled-frame limit (protocol v2).
+const MAX_REASSEMBLED_BYTES: u64 = 64 * 1024 * 1024;
+
+fn models_request() -> Value {
+    json!({"type":"get_available_models","id":"pandacode-models"})
+}
+
+struct Chunks {
+    id: String,
+    count: u64,
+    length: u64,
+    next: u64,
+    bytes: Vec<u8>,
+}
+
+/// Model discovery over Pi's RPC. omp first sends a `ready` frame; when it
+/// offers protocol v2 we negotiate it so a catalog over omp's 1 MiB frame
+/// limit arrives as `rpc_chunk` frames (omp `docs/rpc.md`, Transport and Framing).
+struct Discovery {
+    name: &'static str,
+    asked: bool,
+    chunks: Option<Chunks>,
+}
+
+impl Discovery {
+    fn new(provider: &str) -> Self {
+        Self {
+            name: if provider == "omp" { "Oh My Pi" } else { "Pi" },
+            // Pi has no ready frame; its request goes out at start.
+            asked: provider != "omp",
+            chunks: None,
+        }
+    }
+
+    /// Takes one stdout frame; returns frames to write, or the catalog.
+    fn receive(&mut self, value: Value) -> Result<(Vec<Value>, Option<Vec<ModelInfo>>), String> {
+        let Some(value) = self.reassemble(value)? else {
+            return Ok((vec![], None));
+        };
+        match (field(&value, "type"), field(&value, "id")) {
+            ("ready", _) if !self.asked => {
+                let v2 = value["supportedProtocolVersions"]
+                    .as_array()
+                    .is_some_and(|versions| versions.contains(&json!(2)));
+                if v2 {
+                    return Ok((vec![json!({"type":"negotiate_protocol","id":"pandacode-protocol","protocolVersion":2})], None));
+                }
+                self.asked = true;
+                Ok((vec![models_request()], None))
+            }
+            // A refused negotiation stays on v1; the catalog may still fit.
+            ("response", "pandacode-protocol") if !self.asked => {
+                self.asked = true;
+                Ok((vec![models_request()], None))
+            }
+            ("response", "pandacode-models") => {
+                if value["success"] != true {
+                    let error = field(&value, "error");
+                    return Err(if error.is_empty() {
+                        format!("{} could not load models. Check its login and configuration.", self.name)
+                    } else {
+                        short(error)
+                    });
+                }
+                parse_models(&value["data"]).map(|models| (vec![], Some(models)))
+            }
+            _ => Ok((vec![], None)),
+        }
+    }
+
+    /// Protocol v2 `rpc_chunk` reassembly; any irregular sequence is fatal.
+    fn reassemble(&mut self, value: Value) -> Result<Option<Value>, String> {
+        if value["type"] != "rpc_chunk" {
+            if self.chunks.is_some() {
+                return Err(format!("{} interrupted a chunked response", self.name));
+            }
+            return Ok(Some(value));
+        }
+        let invalid = || format!("{} sent an invalid response chunk", self.name);
+        let id = field(&value, "chunkId");
+        let (Some(index), Some(count), Some(length)) = (
+            value["index"].as_u64(),
+            value["count"].as_u64(),
+            value["byteLength"].as_u64(),
+        ) else {
+            return Err(invalid());
+        };
+        if id.is_empty() || index >= count || length > MAX_REASSEMBLED_BYTES {
+            return Err(invalid());
+        }
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(field(&value, "data"))
+            .map_err(|_| invalid())?;
+        let chunks = match &mut self.chunks {
+            Some(chunks) => chunks,
+            None if index == 0 => self.chunks.insert(Chunks {
+                id: id.to_owned(),
+                count,
+                length,
+                next: 0,
+                bytes: Vec::new(),
+            }),
+            None => return Err(invalid()),
+        };
+        if chunks.id != id || chunks.count != count || chunks.length != length || chunks.next != index {
+            return Err(invalid());
+        }
+        chunks.bytes.extend_from_slice(&data);
+        chunks.next += 1;
+        if chunks.bytes.len() as u64 > length {
+            return Err(invalid());
+        }
+        if chunks.next < count {
+            return Ok(None);
+        }
+        let bytes = self.chunks.take().map(|c| c.bytes).unwrap_or_default();
+        if bytes.len() as u64 != length {
+            return Err(invalid());
+        }
+        let frame: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+        if !frame.is_object() {
+            return Err(invalid());
+        }
+        Ok(Some(frame))
+    }
+}
+
 pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>, String> {
     let mut command = super::command(path)?;
     command.args(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
@@ -124,16 +254,15 @@ pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>
         .spawn()
         .map_err(|e| format!("Could not start Pi: {e}"))?;
     let group = ProcessGroup::register(child.id());
+    let mut discovery = Discovery::new(provider);
     let result = tokio::time::timeout(Duration::from_secs(15), async {
         let mut stdin = child.stdin.take().ok_or("Pi stdin unavailable")?;
-        write_json(
-            &mut stdin,
-            &json!({"type":"get_available_models","id":"pandacode-models"}),
-        )
-        .await?;
+        if discovery.asked {
+            write_json(&mut stdin, &models_request()).await?;
+        }
         let mut stdout =
             tokio::io::BufReader::new(child.stdout.take().ok_or("Pi stdout unavailable")?)
-                .take(1024 * 1024 + 1);
+                .take(DISCOVERY_OUTPUT_LIMIT + 1);
         let mut total = 0;
         loop {
             let mut line = Vec::new();
@@ -141,8 +270,8 @@ pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>
                 .read_until(b'\n', &mut line)
                 .await
                 .map_err(|e| e.to_string())?;
-            total += count;
-            if total > 1024 * 1024 {
+            total += count as u64;
+            if total > DISCOVERY_OUTPUT_LIMIT {
                 return Err("Pi model catalog exceeded its output limit".into());
             }
             if count == 0 {
@@ -150,13 +279,12 @@ pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>
             }
             let value: Value =
                 serde_json::from_slice(&line).map_err(|_| "Invalid Pi discovery JSON")?;
-            if value["type"] == "response" && value["id"] == "pandacode-models" {
-                if value["success"] != true {
-                    return Err(
-                        "Pi could not load models. Check its login and configuration.".into(),
-                    );
-                }
-                return parse_models(&value["data"]);
+            let (writes, models) = discovery.receive(value)?;
+            for frame in writes {
+                write_json(&mut stdin, &frame).await?;
+            }
+            if let Some(models) = models {
+                return Ok(models);
             }
         }
     })
@@ -725,6 +853,42 @@ mod tests {
         assert!(stop_settled("omp", &json!({"type":"prompt_result"})));
         assert!(stop_settled("pi", &json!({"type":"agent_settled"})));
         assert!(!stop_settled("pi", &json!({"type":"session_settled"})));
+    }
+
+    #[test]
+    fn omp_discovery_negotiates_v2_and_reassembles_chunks() {
+        use base64::Engine;
+        // Ready frame from omp 18.12 (issue #91) and chunk shape from omp `docs/rpc.md`.
+        let mut d = Discovery::new("omp");
+        let (write, _) = d.receive(json!({"type":"ready","protocolVersion":1,"supportedProtocolVersions":[1,2],"maxFrameBytes":1048576,"maxReassembledFrameBytes":67108864})).unwrap();
+        assert_eq!(write, [json!({"type":"negotiate_protocol","id":"pandacode-protocol","protocolVersion":2})]);
+        let (write, _) = d.receive(json!({"type":"response","command":"negotiate_protocol","id":"pandacode-protocol","success":true,"data":{"protocolVersion":2}})).unwrap();
+        assert_eq!(write, [models_request()]);
+        let response = json!({"type":"response","command":"get_available_models","id":"pandacode-models","success":true,"data":{"models":[{"provider":"anthropic","id":"sonnet"}]}}).to_string();
+        let (a, b) = response.as_bytes().split_at(40);
+        let chunk = |index: u64, part: &[u8]| json!({"type":"rpc_chunk","chunkId":"rpc-1","index":index,"count":2,"byteLength":response.len(),"data":base64::engine::general_purpose::STANDARD.encode(part)});
+        assert!(d.receive(chunk(0, a)).unwrap().1.is_none());
+        let models = d.receive(chunk(1, b)).unwrap().1.unwrap();
+        assert_eq!(models[1].id, "anthropic/sonnet");
+
+        // Interrupted or out-of-order sequences fail instead of parsing a fragment.
+        let mut d = Discovery::new("omp");
+        d.receive(chunk(0, a)).unwrap();
+        assert!(d.receive(json!({"type":"session_settled"})).is_err());
+        assert!(Discovery::new("omp").receive(chunk(1, b)).is_err());
+    }
+
+    #[test]
+    fn discovery_reports_the_harness_error() {
+        let mut d = Discovery::new("omp");
+        let (write, _) = d.receive(json!({"type":"ready","protocolVersion":1})).unwrap();
+        assert_eq!(write, [models_request()], "v1-only omp is asked directly");
+        let error = d.receive(json!({"id":"pandacode-models","type":"response","command":"get_available_models","success":false,"error":"RPC response exceeded the transport limit"})).err().unwrap();
+        assert_eq!(error, "RPC response exceeded the transport limit");
+        // Pi asks at start and keeps the generic hint when no reason is given.
+        let mut d = Discovery::new("pi");
+        assert!(d.asked);
+        assert!(d.receive(json!({"type":"response","id":"pandacode-models","success":false})).err().unwrap().contains("Check its login"));
     }
 
     #[tokio::test]

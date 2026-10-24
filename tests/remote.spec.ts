@@ -12,7 +12,6 @@ async function openRemoteSettings(page: Page) {
 
 test('signs in with a device code, toggles remote control and lists devices', async ({ page }) => {
   const panel = await openRemoteSettings(page);
-  await expect(page.locator('#composer-computer')).toHaveCount(0);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByLabel('Device code')).toHaveText('WDJB-MJHT');
   await expect(panel.getByRole('button', { name: 'Copy code' })).toBeVisible();
@@ -64,10 +63,14 @@ async function chooseStudio(page: Page) {
   await expect(computer).toHaveAccessibleName('Computer: Studio iMac');
 }
 
-test('the computer choice appears once signed in, one row per computer', async ({ page }) => {
+test('the computer choice offers setup before sign-in and one row per computer after', async ({ page }) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await expect(page.locator('#composer-computer')).toHaveCount(0);
+  // Signed out, Run on still shows so other computers can be set up from it.
+  await page.locator('#composer-computer').click();
+  await page.getByRole('menu', { name: 'Run on' }).getByRole('menuitemradio', { name: 'Set up other computers…' }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Remote access' })).toBeVisible();
+  await page.keyboard.press('Escape');
   const computer = await signedInNewTask(page);
   await expect(computer).toHaveAccessibleName('Computer: This computer');
   await computer.click();

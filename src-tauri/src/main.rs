@@ -5,5 +5,9 @@ fn main() {
     if pandacode_lib::handle_usage_keychain_helper() {
         return;
     }
+    // A cloud agent's bridge to its machine (docs/cloud-agents.md); exits when done.
+    if pandacode_lib::handle_cloud_bridge() {
+        return;
+    }
     pandacode_lib::run()
 }

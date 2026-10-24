@@ -20,7 +20,7 @@ function validate(input: BotInput): BotInput {
   if (!name) throw new Error('Give the bot a name.');
   if (!MODES.includes(input.mode)) throw new Error('Choose a permission mode for the bot.');
   if (!input.provider) throw new Error('Choose a harness and model for the bot.');
-  return { ...input, name, role: String(input.role ?? '').trim(), avatar: [...String(input.avatar ?? '')].slice(0, 4).join(''), heartbeatMinutes: Number(input.heartbeatMinutes) || 0 };
+  return { ...input, name, role: String(input.role ?? '').trim(), avatar: /^(panda:\d|data:image\/)/.test(String(input.avatar ?? '')) ? String(input.avatar) : [...String(input.avatar ?? '')].slice(0, 4).join(''), heartbeatMinutes: Number(input.heartbeatMinutes) || 0 };
 }
 function nextRun(input: Pick<Schedule, 'kind' | 'intervalMinutes' | 'timeOfDay'>, runAt: number | null): number | null {
   const now = Date.now();

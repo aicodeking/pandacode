@@ -18,7 +18,7 @@ It combines the ideas behind xAI's Grok Bot, Meta's Muse and OpenAI's Dots, with
 | A second check on anything risky | Muse (Sentinel) | **Guard**: every approval request is matched against the bot's rules; a fixed list of risky actions (sudo, force push, `rm -rf`, piping downloads to a shell, passwords, money transfers) always asks, even under a broad allow rule. |
 | Complete audit trail and Activity View | Muse, Dots | `bot_activity`: inbound messages, replies, notifications, approvals and rule decisions, memory changes, schedule runs, channel and pairing changes, errors. |
 | Monitoring that pauses suspicious work; kill switch | Dots | Pause a bot or all bots from the app or with `/stop` in any paired channel. |
-| A credential store the agent cannot see | Muse | Channel tokens live in the OS secure store and never enter prompts. |
+| A credential store the agent cannot see | Muse | Channel tokens live in PandaCode's secrets store and never enter prompts. |
 | Reset deletes conversations, memories and schedules together | Dots | **Reset bot**. |
 
 Out of scope: vendor cloud VMs, one-time card numbers and payment rails, health and smart-home connectors, voice calls.
@@ -54,7 +54,7 @@ A bot can run commands on the user's computer and can be messaged from outside i
 
 ## Channels
 
-All connections are outbound or local, so nothing is exposed unless you choose to. Third-party tokens (Telegram, Slack, Discord, WhatsApp) are saved in the system keychain (`app.pandacode.bots`, one account per channel and secret) and are never sent to the webview or the agent; the channel row records only which names were saved, so listing channels never touches the keychain. The web chat link's token is PandaCode's own and guards a page on this computer only, so it lives in the database next to the conversations it protects: a keychain access prompt after an update (ad-hoc builds change signature) would otherwise break every open link. **New link** replaces it and revokes old links.
+All connections are outbound or local, so nothing is exposed unless you choose to. Third-party tokens (Telegram, Slack, Discord, WhatsApp) are saved in PandaCode's secrets store (`app.pandacode.bots`, one account per channel and secret: a 0600 `secrets.json` on macOS, the Secret Service on Linux, Credential Manager on Windows; see [secret storage](providers.md#secret-storage)) and are never sent to the webview or the agent; the channel row records only which names were saved, so listing channels never reads a secret. The web chat link's token is PandaCode's own and guards a page on this computer only, so it lives in the database next to the conversations it protects: a keychain access prompt after an update (ad-hoc builds change signature) would otherwise break every open link. **New link** replaces it and revokes old links.
 
 Adding a channel is a guided flow (`src/bots-connect.ts`): numbered steps with buttons that open the exact page, copy buttons for every command and value, a **Test** button, and **Connect**, which checks the credentials with the service before saving (`channels::verify`). Common mistakes are caught before any request (`channels::check_format`): a truncated Telegram token, swapped Slack tokens, a Discord client secret pasted as the token, a WhatsApp phone number instead of its ID. Once connected, each channel shows what to do next.
 

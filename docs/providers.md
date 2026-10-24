@@ -3,8 +3,8 @@
 PandaCode launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
 Antigravity, and Grok Build own their authentication; sign in using their official
 CLI or extension.
-The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored in the macOS
-Keychain (separate entries) and injected only into their isolated Claude subprocesses. The app discovers executable paths
+The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored as separate
+entries in PandaCode's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
 from PATH and common per-user installation folders; provider settings report the
 actual path and version. The `default` model delegates model selection to the CLI.
 
@@ -44,8 +44,8 @@ that read one, a config folder: `CLAUDE_CONFIG_DIR` (Claude Code, GLM, MiMo),
 (OpenCode). Other harnesses take their folder variable under Environment.
 
 Connections live in `connections.json` beside the provider settings
-(`src-tauri/src/connections.rs`). Variables marked Secret are stored in the OS
-secure store (service `app.pandacode.connections`, one account per connection
+(`src-tauri/src/connections.rs`). Variables marked Secret are stored in PandaCode's
+secrets store (service `app.pandacode.connections`, one account per connection
 and variable); the file and the webview only see their names, and an edit that
 leaves a secret empty keeps the saved value. Deleting a connection removes its
 secrets and returns its tasks to the harness's own setup.
@@ -393,7 +393,7 @@ non-secret command-line settings to prevent user/project Claude credentials or
 endpoints replacing the Coding Plan connection. It does not inherit those settings
 files' hooks/plugins/permissions; PandaCode's explicitly supplied MCP tools remain
 available. Claude-managed enterprise policies still apply. The key is never
-written into argv or a settings file; it is resolved from the native Keychain or
+written into argv or a settings file; it is resolved from PandaCode's secrets store or
 `ZAI_API_KEY`. Competing Anthropic/cloud auth variables are removed, and Claude's
 subprocess credential scrubbing is enabled.
 
@@ -447,7 +447,7 @@ The Token Plan is a fixed subscription with a dedicated cluster per account —
 `ttp-…` (team); the pay-as-you-go API is `https://api.xiaomimimo.com/anthropic` with
 `sk-…` keys. Settings → Agents → Provider connections has one MiMo card: a cluster
 picker (the four endpoints above, nothing free-form — the URL is shown for the chosen
-one) and the key. The key goes into the platform secure store under its own account
+one) and the key. The key goes into PandaCode's secrets store under its own account
 (`mimo-token-plan`) or comes from `MIMO_API_KEY`; the cluster choice is a plain
 setting (`mimoEndpoint`). Unknown cluster IDs are dropped on load and refused on save.
 
@@ -716,6 +716,27 @@ differences, read from omp 18.12's `modes/rpc/rpc-types.ts` and CLI flag table:
   omp does not hide them behind tool discovery.
 - Model discovery skips Pi-only flags (`--offline`, `--no-mcp`, …); slash
   commands come from `get_available_commands`.
+- A mid-turn message steers the running turn, exactly as it does for Pi, so a
+  recipe step that requires a steer is supported on omp too.
 
 Accounts, models and thinking levels are omp's own. Live check:
 `cargo test installed_omp -- --ignored`.
+
+## Secret storage
+
+`src-tauri/src/secret_store.rs` holds every app secret: provider keys
+(`app.pandacode.providers`), connection secrets (`app.pandacode.connections`), cloud keys
+and settings (`app.pandacode.cloud`) and bot channel tokens (`app.pandacode.bots`).
+
+- **macOS:** one JSON file, `secrets.json` in the app data folder, keyed
+  `"<service>/<account>"`, mode 0600, written atomically (0600 temp file in the same folder,
+  fsync, rename) under a process lock and a `secrets.lock` advisory lock. Never the Keychain:
+  without an Apple Team ID each item is pinned to the build that made it, so every update
+  asked for the login password. A corrupt or unreadable file reads as none and is never
+  overwritten. An item saved in the Keychain by an older version is found with an
+  attributes-only query (no data, no prompt), read once, written to the file and deleted,
+  so each item can prompt at most once, ever; a denied read is not retried until the next
+  launch. Cloud agent bridge processes get the folder in their run spec. The usage check's
+  GLM read uses the file, else the noninteractive helper (`usage_keychain.rs`).
+- **Linux:** the Secret Service. **Windows:** Credential Manager. Neither prompts after an
+  update.

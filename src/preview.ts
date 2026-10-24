@@ -292,6 +292,14 @@ const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
 const previewCloud = createPreviewCloud();
+/** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
+const CLOUD_STEP_MS = 400;
+function cloudStage(s: Session, stage: NonNullable<Session['cloud']>['stage'], detail: string | null = null): void {
+  if (!s.cloud) return;
+  s.cloud = { ...s.cloud, stage, detail };
+  emit('cloud-agent://progress', { sessionId: s.id, stage, detail });
+  emit('sessions-changed', {});
+}
 const previewSimulator = (() => {
   const devices: { udid: string; name: string; runtime: string; state: string; family: string; deviceType: string; platform?: string; duo?: boolean }[] = [
     { udid: '3720D4A0-B8C5-4DAC-9425-6A4685BC533E', name: 'iPhone 17 Pro', runtime: 'iOS 26.2', state: 'Booted', family: 'phone', deviceType: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' },
@@ -626,7 +634,30 @@ const architect = createPreviewArchitect({
   agent,
 });
 
+/** Menu bar popover data; `window.__trayCalls` records what it asked for. */
+function trayCommand(command: string, args: Record<string, any>): unknown {
+  ((window as any).__trayCalls ??= []).push({ command, args });
+  if (command !== 'tray_snapshot') return undefined;
+  const now = Date.now(), minutes = (m: number) => now - m * 60_000, hours = (h: number) => new Date(now + h * 3_600_000).toISOString();
+  return {
+    running: [
+      { id: 'tray-running-1', title: 'Polish the new onboarding flow and keyboard navigation', project: 'PandaCode', provider: 'claude', at: minutes(4) },
+      { id: 'tray-running-2', title: 'Build search indexing', project: 'website', provider: 'codex', at: minutes(27) },
+    ],
+    waiting: [{ id: 'tray-waiting', title: 'Run the database migration', project: 'api', provider: 'opencode', at: minutes(12) }],
+    finished: [
+      { id: 'tray-done', title: 'Review the API changes', project: 'api', provider: 'kimi', at: minutes(8) },
+      { id: 'tray-failed', title: 'Fix flaky login test', project: 'PandaCode', provider: 'codex', at: minutes(65), failed: true },
+    ],
+    usage: [
+      { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
+      { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+    ],
+    checking: false,
+  };
+}
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -651,6 +682,36 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return { sessionId: s.id } as T;
   }
   if (command.startsWith('remote_')) return invokeRemote<T>(command, args, emit);
+  if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
+  if (command === 'cloud_agent_set_claude_token') { if (!String(args.token ?? '').trim()) throw new Error('Paste the token from claude setup-token.'); return null as T; }
+  if (command === 'cloud_agent_start') {
+    // The agent runs on a cloud machine; here the machine is prepared on a timer, then the prompt is sent.
+    const target = previewCloud.agentTargets().find(item => item.provider === args.provider && item.ready);
+    if (!target) throw new Error('Connect this provider in Settings → Cloud first.');
+    ((window as any).__cloudStarts ??= []).push(args);
+    const s = args.sessionId ? session(args.sessionId) : await invoke<Session>('create_session', { projectId: args.projectId, provider: args.harness, model: args.model, mode: args.mode });
+    Object.assign(s, { provider: args.harness, model: args.model, mode: args.mode, reasoningEffort: args.effort, draft: false, worktreeBranch: `pandacode/cloud-${s.id.slice(0, 8)}`, cloud: { provider: target.provider, label: target.label, machine: `${target.provider}:pc-${s.id.slice(0, 8)}`, stage: 'creating', detail: null } });
+    const stages = ['installing', 'credentials', 'uploading', 'running'] as const;
+    stages.forEach((stage, index) => setTimeout(async () => {
+      cloudStage(s, stage);
+      if (stage === 'running') { await invoke('send_message', { sessionId: s.id, text: args.prompt }); cloudStage(s, 'ready'); }
+    }, (index + 1) * CLOUD_STEP_MS));
+    emit('sessions-changed', {});
+    return structuredClone(s) as T;
+  }
+  if (command === 'cloud_agent_action') {
+    const s = session(args.sessionId);
+    if (!s.cloud) throw new Error('This task does not run on a cloud machine.');
+    ((window as any).__cloudActions ??= []).push(args.action);
+    // `window.__cloudActionFail` lets tests make one action fail like the provider would.
+    if ((window as any).__cloudActionFail === args.action) throw new Error(`${s.cloud.label} could not ${args.action} the machine (HTTP 503).`);
+    if (args.action === 'sync') { cloudStage(s, 'syncing'); setTimeout(() => cloudStage(s, 'ready'), CLOUD_STEP_MS); }
+    else if (args.action === 'retry') cloudStage(s, 'ready');
+    else if (args.action === 'stop') cloudStage(s, 'stopped');
+    else if (args.action === 'delete') { s.cloud = { ...s.cloud, machine: null }; cloudStage(s, 'stopped', 'Machine deleted'); }
+    else if (args.action !== 'open') throw new Error('Unknown cloud action.');
+    return null as T;
+  }
   if (command === 'capabilities_inventory' || command === 'cache_alignment') return previewCapabilities(command) as T;
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
@@ -822,6 +883,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (args.enabled && !(s.limitedAt && s.limitedUntil)) throw new Error('This task has no usage limit with a known reset time.');
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
+    case 'tray_seen': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {

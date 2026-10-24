@@ -121,6 +121,11 @@ impl Daytona {
         self.api(method, &path, None).await.map(|_| ())
     }
 
+    /// Minutes of inactivity before Daytona stops the sandbox; 0 turns auto-stop off.
+    pub async fn auto_stop(&self, id: &str, minutes: u32) -> Result<(), String> {
+        self.api(reqwest::Method::POST, &format!("/sandbox/{id}/autostop/{minutes}"), None).await.map(|_| ())
+    }
+
     async fn toolbox(&self, id: &str) -> Result<String, String> {
         let sandbox = self.api(reqwest::Method::GET, &format!("/sandbox/{id}"), None).await?;
         if sandbox["state"].as_str().is_some_and(|s| s != "started") {
@@ -218,6 +223,16 @@ mod tests {
         assert!(log.iter().all(|r| r.headers.iter().any(|(n, v)| n == "x-daytona-organization-id" && v == "org-9")));
         let body: Value = serde_json::from_str(&log[1].body).unwrap();
         assert_eq!(body, json!({"name":"new","labels":{"pandacode":"true"},"autoStopInterval":15}));
+    }
+
+    #[tokio::test]
+    async fn auto_stop_posts_the_interval_in_minutes() {
+        let (base, seen) = mock::serve(|_, _| (200, r#"{"id":"sb1"}"#));
+        let api = Daytona::new(Some(format!("{base}/api")), "k".into(), None);
+        api.auto_stop("sb1", 90).await.unwrap();
+        api.auto_stop("sb1", 0).await.unwrap();
+        let log = seen.lock().unwrap();
+        assert_eq!(log.iter().map(|r| (r.method.as_str(), r.path.as_str())).collect::<Vec<_>>(), vec![("POST", "/api/sandbox/sb1/autostop/90"), ("POST", "/api/sandbox/sb1/autostop/0")]);
     }
 
     #[tokio::test]

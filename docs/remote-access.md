@@ -11,7 +11,7 @@ view. Nothing is sent anywhere until the user signs in.
 | Piece | Where | Job |
 |---|---|---|
 | Relay | `relay/` (Cloudflare Worker + one Durable Object per account) | Sign-in, device list, forwards encrypted frames between an account's devices. Stores no task content. |
-| Native | `src-tauri/src/remote/` | Sign-in, keys in the OS keychain, one WebSocket to the relay, host RPC (`host.rs`, `start.rs`), mirrors (`mirror.rs`), client calls. |
+| Native | `src-tauri/src/remote/` | Sign-in, secrets in a private file (`secrets.rs`), one WebSocket to the relay, host RPC (`host.rs`, `start.rs`), mirrors (`mirror.rs`), client calls. |
 | UI | `src/remote*.ts`, `src/remote-settings.css` | Settings → Remote access, and choosing where a new task runs. |
 
 ## Mirrors
@@ -50,11 +50,22 @@ Sign in with GitHub using the OAuth **device flow** (no client secret anywhere):
 3. Desktop → relay `POST /v1/auth/github` `{ githubToken, device: { id, name, platform, publicKey } }`.
    The relay calls `GET https://api.github.com/user` and gets the numeric id, login and avatar_url. It
    registers the device and returns `{ token, account: { id: "gh:<id>", login, avatarUrl } }`.
-4. The desktop stores only the relay token in the keychain (`app.pandacode.remote`, with account names scoped to the install's data folder, so a dev build and the installed app never share an item). It discards the GitHub token.
+4. The desktop stores only the relay token, in `connect-secrets.json`, and discards the GitHub token.
+
+**Where secrets live.** The relay token and the base64 X25519 private key are one JSON file,
+`<app data dir>/connect-secrets.json` (`{ token?, key? }`), mode 0600 on unix, written
+atomically (temp file in the same folder, fsync, rename). Each install's data folder is its own
+scope, so a dev build and the installed app never share secrets. A missing, unreadable or
+corrupt file means none (signed out). Connect never uses the OS keychain: macOS pins each item
+to the exact code hash of the build that made it, and PandaCode has no Apple Team ID, so every
+update asked for the login password on every read. Other app secrets moved the same way, to
+`secrets.json` (see `secret_store.rs`). Nothing is migrated from the keychain for Connect
+(reading it is what prompted); users from before this change sign in once more, and the `409`
+path below gives them a new device id.
 
 The device key is made once, at sign-in, behind a lock (so two sign-ins cannot race) and before
-polling starts. A keychain *error* (a denied prompt, a locked keychain) fails sign-in; only a
-missing key is ever generated, so an existing key is never overwritten. `remote_sign_in_cancel`
+polling starts. Only a missing (or undecodable) key is ever generated, so an existing key is
+never overwritten; a failed write fails sign-in. `remote_sign_in_cancel`
 stops the device-flow poll, and a new `remote_sign_in_start` cancels any earlier flow.
 
 A relay `401` (or close code `4001`) signs this computer out only if the token that request
@@ -70,22 +81,12 @@ device closes its socket and makes its token invalid.
 
 **Refresh.** While connected, the desktop checks the token at connect and every 12 hours. With
 fewer than 7 days left it calls `POST /v1/token` and stores the fresh token (same account and
-device, later expiry) in the keychain and in memory. A failure is left for the next check; a
+device, later expiry) in the secrets file and in memory. A failure is left for the next check; a
 `401` follows the sign-out rule above.
 
-**Startup.** Only a computer with an account in `remote.json` reads the keychain. A missing (or
-expired) token means signed out. Any other keychain error (a locked keychain, `-25308` right
-after an update relaunch) is not a sign-out: status shows signed in but not connected, and the
-token is read again after 5 s, 15 s and 60 s; when it reads, the socket starts and
-`remote://status` is sent.
-
-**Adopting pre-0.3.20 items.** Before 0.3.20 the keychain accounts were `relay-token` and
-`device-key`. At startup, when the scoped token or key is missing, the installed app (data
-folder `ai.pandacode.desktop`, never a dev build) reads those once per launch. It adopts them only
-if the legacy token parses, is unexpired and its `dev` is this device id: the token is written
-to the scoped name, and so is the legacy key when it differs from the scoped one (the relay
-registered the legacy key for this device id). After both writes succeed the legacy items are
-deleted.
+**Startup.** Only a computer with an account in `remote.json` reads the secrets file. A
+missing (or expired) token means signed out. Nothing prompts and nothing touches the network
+unless signed in.
 
 Build config is `option_env!("PANDACODE_RELAY_URL")` and `option_env!("PANDACODE_GITHUB_CLIENT_ID")`.
 Environment variables of the same names override them at run time. If either is missing, remote
@@ -148,7 +149,7 @@ sockets cost no duration. Device rows live in the Durable Object's SQLite storag
 
 ## End-to-end encryption
 
-Each device has an X25519 key pair. The private key stays in the keychain, and the public key is
+Each device has an X25519 key pair. The private key stays in `connect-secrets.json`, and the public key is
 registered with the device. For a pair of devices:
 
 `key = HKDF-SHA256(ikm = X25519(mine, theirs), salt = sorted(idA, idB).join("|"), info = "pandacode-remote v1")`.

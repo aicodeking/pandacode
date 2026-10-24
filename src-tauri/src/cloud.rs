@@ -8,18 +8,30 @@
 pub mod agentcore;
 pub mod aws;
 pub mod aws_screen;
+pub mod blaxel;
+pub mod boat;
 pub mod cloudflare;
+pub mod codesandbox;
 pub mod commands;
 pub mod daytona;
 pub mod deploy;
+pub mod e2b;
+pub mod freestyle;
+pub mod gcloud_vm;
 pub mod http;
+pub mod modal;
+pub mod railway_sandbox;
+pub mod runloop;
+pub mod sandbox;
+pub mod tensorlake;
+pub mod vercel_sandbox;
 
 use serde::{Deserialize, Serialize};
 
 use crate::secret_store;
 
 const SERVICE: &str = "app.pandacode.cloud";
-pub const PROVIDERS: [&str; 4] = ["daytona", "cloudflare", "aws", "agentcore"];
+pub const PROVIDERS: [&str; 15] = ["daytona", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat"];
 
 /// A cloud machine as the panel and tools see it.
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -62,6 +74,9 @@ pub struct Settings {
     /// Google Cloud uses the gcloud CLI's own login; PandaCode stores the project and region.
     pub gcloud_project: Option<String>,
     pub gcloud_region: Option<String>,
+    /// Non-secret options of the providers added for cloud agents, by provider ID
+    /// (for example `{"vercel": {"projectId": "prj_…"}}`). Secrets go in `set_secret`.
+    pub providers: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 pub fn settings() -> Settings {
     secret_store::get(SERVICE, "settings").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()

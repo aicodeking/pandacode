@@ -1,6 +1,7 @@
 import './sidebar-bots.css';
 import type { Bot } from './bots';
 import { escape, icon } from './dom';
+import { botAvatarHtml } from './bot-avatars';
 
 /* The sidebar's Bots view: a bar at the bottom of the sidebar switches the whole sidebar
  * between tasks and a list of bots, each with its avatar, latest message and time. */
@@ -52,8 +53,8 @@ function avatarColor(id: string): string {
 }
 
 export function botAvatar(bot: Bot, cls = 'bot-card-face'): string {
-  const glyph = bot.avatar.trim() || bot.name.trim().slice(0, 1).toUpperCase() || '?';
-  return `<span class="${cls}" style="--bot-color:${avatarColor(bot.id)}" aria-hidden="true">${escape(glyph)}</span>`;
+  // Pandas and uploaded images bring their own art; text glyphs keep the per-bot color.
+  return botAvatarHtml(bot.avatar, bot.name, cls).replace('<span ', `<span style="--bot-color:${avatarColor(bot.id)}" `);
 }
 
 /** Today shows the time; this week the weekday; older, the date. */
