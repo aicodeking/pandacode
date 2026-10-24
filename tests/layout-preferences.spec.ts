@@ -635,7 +635,7 @@ test('layout preferences right sidebar keyboard limits and reset preserve the wi
   await inspectorSeparator(page).focus();
   await page.keyboard.press('Home');
   await expect.poll(() => inspectorWidth(page)).toBe(270);
-  expect((await page.getByRole('textbox', { name: 'Browser URL', exact: true }).boundingBox())!.width).toBeGreaterThan(130); // the 44px view bar shares the 270px minimum
+  expect((await page.getByRole('textbox', { name: 'Browser URL', exact: true }).boundingBox())!.width).toBeGreaterThan(140);
   expect(await page.locator('#inspector').evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
   await dragInspector(page, 480);
   await expect.poll(() => inspectorWidth(page)).toBeCloseTo(480, 0);

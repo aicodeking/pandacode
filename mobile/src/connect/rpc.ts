@@ -24,6 +24,25 @@ export function request(method: Method, params: unknown, now = Date.now()): Requ
   return { type: 'req', id: uuid(), method, params, ts: now, nonce };
 }
 
+const WINDOW_MS = 60_000;
+const MAX_SEEN = 20_000;
+/** A reply that failed the replay check fails its call at once instead of timing out. */
+export const STALE = "That computer's reply was stale or repeated. Update PandaCode on both computers and check their clocks.";
+
+/** Nonces of replies and events from hosts, as the host keeps them for requests
+ * (`Replay` in host.rs): outside ±60 s, repeated, or without ts/nonce is refused. */
+export class Replay {
+  private readonly seen = new Map<string, number>();
+
+  check(ts: unknown, nonce: unknown, now = Date.now()): boolean {
+    if (typeof ts !== 'number' || typeof nonce !== 'string' || !/^[\x21-\x7e]{16,64}$/.test(nonce) || Math.abs(now - ts) > WINDOW_MS) return false;
+    for (const [seen, at] of this.seen) if (at < now - WINDOW_MS) this.seen.delete(seen);
+    if (this.seen.has(nonce) || this.seen.size >= MAX_SEEN) return false;
+    this.seen.set(nonce, ts);
+    return true;
+  }
+}
+
 interface Call { device: string; resolve: (value: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
 
 /** Calls waiting for a response, keyed by request id. */

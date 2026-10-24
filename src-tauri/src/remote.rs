@@ -85,6 +85,8 @@ pub(crate) struct Inner {
     /// A flush of subscriber events is scheduled.
     flushing: bool,
     replay: host::Replay,
+    /// Nonces of replies and events from hosts, refused when repeated or stale.
+    inbound: host::Replay,
     /// Pair keys: device id → (the public key it was derived from, key).
     keys: HashMap<String, (String, crypto::Key)>,
     flow: Option<auth::Flow>,
@@ -198,6 +200,7 @@ impl Remote {
             "signedIn": inner.token.is_some(),
             "device": {"id": inner.settings.device_id, "name": config::device_name(), "fingerprint": fingerprint},
             "hostEnabled": inner.settings.host_enabled,
+            "remoteFullAccess": inner.settings.remote_full_access,
             "connected": inner.connected,
         });
         if let Some(account) = &inner.settings.account {
@@ -384,17 +387,23 @@ pub async fn remote_sign_out(app: tauri::AppHandle) -> Result<Value> {
     Ok(remote(&app).status())
 }
 
+/// Sets "Allow remote control" and/or "Full access for remote tasks"; either may be omitted.
 #[tauri::command]
-pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: bool) -> Result<Value> {
+pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: Option<bool>, full_access: Option<bool>) -> Result<Value> {
     let state = remote(&app);
     let settings = {
         let mut inner = state.lock();
-        inner.settings.host_enabled = enabled;
-        if !enabled {
-            inner.subscribers.clear();
+        if let Some(full_access) = full_access {
+            inner.settings.remote_full_access = full_access;
         }
-        if let Some(outbox) = &inner.outbox {
-            let _ = outbox.send(json!({"kind": "host", "enabled": enabled}).to_string());
+        if let Some(enabled) = enabled {
+            inner.settings.host_enabled = enabled;
+            if !enabled {
+                inner.subscribers.clear();
+            }
+            if let Some(outbox) = &inner.outbox {
+                let _ = outbox.send(json!({"kind": "host", "enabled": enabled}).to_string());
+            }
         }
         inner.settings.clone()
     };

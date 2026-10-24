@@ -33,8 +33,8 @@ pub(crate) async fn call_within(app: &tauri::AppHandle, device_id: &str, method:
         inner.pending.insert(id.clone(), (device_id.to_owned(), reply));
     }
     let forget = || remote(app).lock().pending.remove(&id);
-    // `ts` and a fresh `nonce` let the host refuse replays (docs/remote-access.md).
-    let request = json!({"type": "req", "id": id, "method": method, "params": params, "ts": chrono::Utc::now().timestamp_millis(), "nonce": uuid::Uuid::new_v4().simple().to_string()});
+    // Sealing adds `ts` and a fresh `nonce`, so the host can refuse replays.
+    let request = json!({"type": "req", "id": id, "method": method, "params": params});
     if let Err(error) = socket::send_to_device(app, device_id, &request) {
         forget();
         return Err(error);
