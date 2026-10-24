@@ -167,6 +167,7 @@ impl Protocol {
     pub(super) fn acp(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
         let grok = self.config.provider == "grok";
+        if let Some(step) = self.kiro_commands(&value) { return Ok(step); }
         if self.acp_live_answered(&value, &mut step) {
             return Ok(step);
         }
@@ -276,6 +277,16 @@ impl Protocol {
                         return Err("ACP did not return a session ID".into());
                     }
                     self.acp_config = result.clone();
+                    if self.config.provider == "kiro" {
+                        if self.kiro_commands.as_ref().is_some_and(|(frame, _)| frame["params"]["sessionId"] != self.remote_id) {
+                            self.kiro_commands = None;
+                        }
+                        if let Some((frame, _)) = &self.kiro_commands {
+                            if frame["params"]["sessionId"] == self.remote_id {
+                                self.commands_changed(frame, &mut step);
+                            }
+                        }
+                    }
                     if let Some(bytes) = self.early_kimi_commands.take() {
                         if let Ok(frame) = serde_json::from_slice::<Value>(&bytes) {
                             if frame["params"]["sessionId"] == self.remote_id {
@@ -309,6 +320,9 @@ impl Protocol {
                 }
                 6 => self.kimi_prompt(&mut step),
                 3 => {
+                    if self.config.provider == "kiro" && self.kiro_command_active {
+                        self.kiro_command_result(result, &mut step)?;
+                    }
                     if let Some(total) = result["_meta"]["totalTokens"].as_u64().filter(|_| grok) {
                         let window = self.grok_context_window();
                         self.usage(total, window, &mut step);
@@ -348,7 +362,7 @@ impl Protocol {
                     return Ok(step);
                 }
             }
-            if grok && self.config.mode == "plan" {
+            if (grok || super::acp_client::enabled(&self.config.provider)) && self.config.mode == "plan" {
                 let tool = &value["params"]["toolCall"];
                 let wanted = if grok_read_only(tool) { "allow_once" } else { "reject_once" };
                 let choice = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
@@ -358,6 +372,10 @@ impl Protocol {
                         step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
                     }
                     step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
+                    return Ok(step);
+                }
+                if !grok {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
                     return Ok(step);
                 }
             }
@@ -565,6 +583,9 @@ impl Protocol {
             };
             step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
             return Ok(());
+        } else if self.config.provider == "kiro" {
+            if self.config.mode == "plan" { &["kiro_planner", "plan", "planning"] }
+            else { &["kiro_default", "default"] }
         } else if self.config.provider == "qoder" && self.config.mode == "full" {
             &["bypassPermissions", "bypass_permissions", "bypass-permissions", "yolo"]
         } else if self.config.provider == "opencode" {
@@ -894,6 +915,7 @@ async fn inspect_state(
                 Err(()) if metadata.is_some() => return Ok((metadata.unwrap(), commands)),
                 Err(()) => return Err(transport_error(&pipe, stage)),
             };
+            let frame = super::kiro::command_frame(&frame).unwrap_or(frame);
             if frame.get("method").is_some() && frame.get("id").is_some() {
                 pipe.send(&json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Metadata discovery does not execute requests"}})).await.map_err(|_| transport_error(&pipe, stage))?;
             } else if matches!(frame["id"].as_u64(), Some(1 | 2 | 7)) && frame.get("error").is_some() {

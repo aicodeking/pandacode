@@ -47,22 +47,59 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
 }
 
 pub(super) fn parse_runtime(provider: &str, frame: &Value) -> Option<Catalog> {
+    let converted = (provider == "kiro").then(|| crate::providers::kiro::command_frame(frame)).flatten();
+    let frame = converted.as_ref().unwrap_or(frame);
     if frame["method"] != "session/update"
         || frame["params"]["update"]["sessionUpdate"] != "available_commands_update"
     {
         return None;
     }
-    Some(parse_entries(
+    let mut catalog = parse_entries(
         frame["params"]["update"]["availableCommands"].as_array()?,
         provider,
         &HashSet::new(),
-    ))
+    );
+    if provider == "codebuddy" {
+        for command in &mut catalog.commands {
+            if command.name == "/help" {
+                command.kind = "action".into();
+                command.invocation = super::Invocation::Action("help".into());
+                command.source = "PandaCode".into();
+            }
+        }
+    }
+    if provider == "kiro" && frame["kiroLegacyCommands"] == true {
+        for command in &mut catalog.commands {
+            if !crate::providers::kiro::native_command(&command.name) {
+                command.kind = "unsupported".into();
+                command.invocation = super::Invocation::Unsupported;
+                command.reason = Some("Dieser Befehl benötigt die interaktive Kiro-CLI.".into());
+            }
+        }
+    }
+    Some(catalog)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn kiro_extension_keeps_hints_and_marks_interactive_commands() {
+        let catalog = parse_runtime("kiro", &json!({"method":"_kiro.dev/commands/available","params":{"sessionId":"s","commands":[
+            {"name":"/context","description":"Context","meta":{"hint":"add <path>"}},
+            {"name":"/editor","description":"Editor"}
+        ]}})).unwrap();
+        assert_eq!(catalog.commands[0].argument_hint.as_deref(), Some("add <path>"));
+        assert!(matches!(catalog.commands[0].invocation, super::super::Invocation::Native));
+        assert!(matches!(catalog.commands[1].invocation, super::super::Invocation::Unsupported));
+    }
+    #[test]
+    fn codebuddy_help_uses_the_client_command_registry() {
+        let frame = json!({"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"help"}]}}});
+        let catalog = parse_runtime("codebuddy", &frame).unwrap();
+        assert!(matches!(&catalog.commands[0].invocation, super::super::Invocation::Action(action) if action == "help"));
+    }
     #[test]
     fn commands_use_real_provider_names_and_advertised_hints() {
         for provider in ["opencode", "antigravity", "grok", "github-copilot", "codebuddy", "qoder", "kiro"] {
