@@ -257,12 +257,29 @@ fn invalidate() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
-fn reusable(cache: &Cache, installations: &[Installation], force: bool, generation: u64) -> bool {
+/// Whether a cache entry can still be used. The age is given rather than
+/// measured, so the six-hour edge can be checked on any machine: an instant six
+/// hours old does not exist on one that has been up for less than that.
+fn reusable_at(
+    cache: &Cache,
+    installations: &[Installation],
+    force: bool,
+    generation: u64,
+    age: Option<Duration>,
+) -> bool {
     cache.generation == generation
         && cache.installations == installations
-        && cache.attempted.is_some_and(|at| {
-            at.elapsed() < Duration::from_secs(if force { 10 } else { 6 * 60 * 60 })
-        })
+        && age.is_some_and(|age| age < Duration::from_secs(if force { 10 } else { 6 * 60 * 60 }))
+}
+
+fn reusable(cache: &Cache, installations: &[Installation], force: bool, generation: u64) -> bool {
+    reusable_at(
+        cache,
+        installations,
+        force,
+        generation,
+        cache.attempted.map(|at| at.elapsed()),
+    )
 }
 
 fn metadata_endpoint(source: &str) -> Option<(&'static str, &'static str)> {
@@ -725,17 +742,37 @@ mod tests {
         assert!(reusable(&cache, &[], false, 2));
         assert!(reusable(&cache, &[], true, 2));
         assert!(!reusable(&cache, &[], false, 3));
-        let cache = Cache {
-            attempted: Some(Instant::now() - Duration::from_secs(11)),
-            ..cache
-        };
-        assert!(reusable(&cache, &[], false, 2));
-        assert!(!reusable(&cache, &[], true, 2));
-        let cache = Cache {
-            attempted: Some(Instant::now() - Duration::from_secs(6 * 3600 + 1)),
-            ..cache
-        };
-        assert!(!reusable(&cache, &[], false, 2));
+        // The ages are given, not measured: an instant that old cannot exist on a
+        // machine that has been up for less than that.
+        assert!(reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(11))
+        ));
+        assert!(!reusable_at(
+            &cache,
+            &[],
+            true,
+            2,
+            Some(Duration::from_secs(11))
+        ));
+        assert!(reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(6 * 3600 - 1))
+        ));
+        assert!(!reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(6 * 3600))
+        ));
+        assert!(!reusable_at(&cache, &[], false, 2, None));
     }
 
     #[test]
