@@ -356,6 +356,7 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   });
   await page.goto('/');
   await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
   await expect(items).toHaveCount(4);

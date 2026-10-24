@@ -47,7 +47,10 @@ pub(super) fn permission(mode: &str, kind: &str) -> Option<&'static str> {
 /// `CLINE_API_KEY` and `CLINE_PROVIDER` to be set when using API-key providers
 /// (like OpenRouter, Anthropic, OpenAI, etc.) rather than hosted Cline OAuth.
 pub(super) fn configure_environment(command: &mut Command) {
-    if std::env::var_os("CLINE_API_KEY").is_some() {
+    let existing_key = std::env::var("CLINE_API_KEY")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    if existing_key.is_some() {
         return;
     }
     let Some(home) = crate::agent_usage_providers::home() else {
@@ -58,32 +61,105 @@ pub(super) fn configure_environment(command: &mut Command) {
             command.env("CLINE_API_KEY", key);
         }
         if let Some(provider) = provider {
-            if std::env::var_os("CLINE_PROVIDER").is_none() {
+            let existing_provider = std::env::var("CLINE_PROVIDER")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            if existing_provider.is_none() {
                 command.env("CLINE_PROVIDER", provider);
             }
         }
         if let Some(model) = model {
-            if std::env::var_os("CLINE_MODEL").is_none() {
+            let existing_model = std::env::var("CLINE_MODEL")
+                .ok()
+                .filter(|s| !s.trim().is_empty());
+            if existing_model.is_none() {
                 command.env("CLINE_MODEL", model);
             }
         }
     }
 }
 
+fn provider_from_secret_key(key: &str) -> Option<&'static str> {
+    let normalized = key.replace(['-', '_'], "").to_lowercase();
+    if normalized.contains("openrouter") {
+        Some("openrouter")
+    } else if normalized.contains("anthropic") {
+        Some("anthropic")
+    } else if normalized.contains("openai") {
+        Some("openai")
+    } else if normalized.contains("gemini") {
+        Some("gemini")
+    } else if normalized.contains("deepseek") {
+        Some("deepseek")
+    } else if normalized.contains("groq") {
+        Some("groq")
+    } else if normalized.contains("mistral") {
+        Some("mistral")
+    } else if normalized.contains("together") {
+        Some("together")
+    } else if normalized.contains("qwen") {
+        Some("qwen")
+    } else if normalized.contains("cline") {
+        Some("cline")
+    } else {
+        None
+    }
+}
+
+fn env_key_for_provider(provider: &str) -> Option<String> {
+    let var_name = match provider {
+        "openrouter" => "OPENROUTER_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "openai" => "OPENAI_API_KEY",
+        "gemini" => "GEMINI_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        "mistral" => "MISTRAL_API_KEY",
+        _ => return None,
+    };
+    std::env::var(var_name).ok().filter(|s| !s.trim().is_empty())
+}
+
 fn detect_credentials(home: &Path) -> Option<(Option<String>, Option<String>, Option<String>)> {
     let providers_path = home.join(".cline/data/settings/providers.json");
-    let content = std::fs::read_to_string(&providers_path).ok()?;
-    let value: Value = serde_json::from_str(&content).ok()?;
-    let provider = value
-        .get("lastUsedProvider")
+    let providers_val: Option<Value> = std::fs::read_to_string(&providers_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok());
+
+    let global_state_path = home.join(".cline/data/globalState.json");
+    let global_state_val: Option<Value> = std::fs::read_to_string(&global_state_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok());
+
+    let secrets_path = home.join(".cline/data/secrets.json");
+    let secrets_val: Option<Value> = std::fs::read_to_string(&secrets_path)
+        .ok()
+        .and_then(|c| serde_json::from_str(&c).ok());
+
+    let mut provider = providers_val
+        .as_ref()
+        .and_then(|v| v.get("lastUsedProvider"))
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            global_state_val.as_ref().and_then(|v| {
+                v.get("actModeApiProvider")
+                    .or_else(|| v.get("planModeApiProvider"))
+                    .or_else(|| v.get("apiProvider"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_owned)
+            })
+        });
+
     let mut key = None;
     let mut model = None;
 
     if let Some(ref p) = provider {
-        if let Some(settings) = value
-            .get("providers")
+        if let Some(settings) = providers_val
+            .as_ref()
+            .and_then(|v| v.get("providers"))
             .and_then(|entry| entry.get(p))
             .and_then(|entry| entry.get("settings"))
         {
@@ -105,38 +181,102 @@ fn detect_credentials(home: &Path) -> Option<(Option<String>, Option<String>, Op
     }
 
     if key.is_none() {
-        let secrets_path = home.join(".cline/data/secrets.json");
-        if let Ok(content) = std::fs::read_to_string(&secrets_path) {
-            if let Ok(secrets) = serde_json::from_str::<Value>(&content) {
-                if let Some(obj) = secrets.as_object() {
-                    if let Some(ref p) = provider {
-                        let target = format!("{}apikey", p.replace(['-', '_'], "").to_lowercase());
-                        for (k, v) in obj {
-                            if k.replace(['-', '_'], "").to_lowercase() == target {
-                                if let Some(val) = v.as_str().filter(|s| !s.trim().is_empty()) {
-                                    key = Some(val.to_string());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if key.is_none() {
-                        let candidate_keys: Vec<_> = obj
-                            .iter()
-                            .filter_map(|(k, v)| {
-                                if k.to_lowercase().ends_with("apikey") {
-                                    v.as_str().filter(|s| !s.trim().is_empty()).map(str::to_owned)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        if candidate_keys.len() == 1 {
-                            key = candidate_keys.into_iter().next();
+        if let Some(obj) = secrets_val.as_ref().and_then(Value::as_object) {
+            if let Some(ref p) = provider {
+                let target = format!("{}apikey", p.replace(['-', '_'], "").to_lowercase());
+                for (k, v) in obj {
+                    if k.replace(['-', '_'], "").to_lowercase() == target {
+                        if let Some(val) = v.as_str().filter(|s| !s.trim().is_empty()) {
+                            key = Some(val.to_string());
+                            break;
                         }
                     }
                 }
             }
+        }
+    }
+
+    if key.is_none() {
+        if let Some(ref p) = provider {
+            if let Some(k) = env_key_for_provider(p) {
+                key = Some(k);
+            }
+        }
+    }
+
+    if key.is_none() {
+        if let Some(providers_map) = providers_val
+            .as_ref()
+            .and_then(|v| v.get("providers"))
+            .and_then(Value::as_object)
+        {
+            for (p_name, p_entry) in providers_map {
+                if let Some(settings) = p_entry.get("settings") {
+                    if let Some(k) = settings
+                        .get("apiKey")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        provider = Some(p_name.clone());
+                        key = Some(k.to_string());
+                        model = settings
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                            .map(str::to_owned)
+                            .or(model);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if key.is_none() {
+        if let Some(obj) = secrets_val.as_ref().and_then(Value::as_object) {
+            for (k, v) in obj {
+                if let Some(val) = v.as_str().filter(|s| !s.trim().is_empty()) {
+                    if let Some(inferred_provider) = provider_from_secret_key(k) {
+                        provider = Some(inferred_provider.to_string());
+                        key = Some(val.to_string());
+                        if let Some(p_model) = providers_val
+                            .as_ref()
+                            .and_then(|v| v.get("providers"))
+                            .and_then(|entries| entries.get(inferred_provider))
+                            .and_then(|entry| entry.get("settings"))
+                            .and_then(|s| s.get("model"))
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.trim().is_empty())
+                        {
+                            model = Some(p_model.to_string());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if key.is_none() {
+        for candidate_provider in ["openrouter", "anthropic", "openai", "gemini", "deepseek"] {
+            if let Some(k) = env_key_for_provider(candidate_provider) {
+                provider = Some(candidate_provider.to_string());
+                key = Some(k);
+                break;
+            }
+        }
+    }
+
+    if model.is_none() {
+        if let Some(ref gv) = global_state_val {
+            model = gv
+                .get("actModeOpenRouterModelId")
+                .or_else(|| gv.get("planModeOpenRouterModelId"))
+                .or_else(|| gv.get("actModeModelId"))
+                .or_else(|| gv.get("planModeModelId"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_owned);
         }
     }
 
@@ -161,7 +301,18 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
             let mut command = super::command(path)?;
             configure_environment(&mut command);
             command.arg("--acp");
-            let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await?;
+            let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false)
+                .await
+                .map_err(|error| {
+                    if error.contains("Authentication is required")
+                        || error.contains("Call authenticate")
+                        || error.contains("code: -32000")
+                    {
+                        SIGN_IN.to_owned()
+                    } else {
+                        error
+                    }
+                })?;
             acp_catalog::store(discovery, &metadata);
             acp::parse_models(&metadata)
         }
@@ -359,6 +510,42 @@ mod tests {
                 Some("anthropic".into()),
                 Some("sk-ant-secret".into()),
                 Some("claude-3-5".into())
+            ))
+        );
+
+        // Fallback to globalState.json + secrets.json when providers.json is missing
+        std::fs::remove_file(settings.join("providers.json")).unwrap();
+        std::fs::write(
+            home.join(".cline/data/globalState.json"),
+            r#"{"actModeApiProvider":"openai","actModeModelId":"gpt-4o"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".cline/data/secrets.json"),
+            r#"{"openAiApiKey":"sk-openai-key"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_credentials(&home),
+            Some((
+                Some("openai".into()),
+                Some("sk-openai-key".into()),
+                Some("gpt-4o".into())
+            ))
+        );
+
+        // Fallback to another provider in providers.json if lastUsedProvider has no key
+        std::fs::write(
+            settings.join("providers.json"),
+            r#"{"lastUsedProvider":"sapaicore","providers":{"sapaicore":{"settings":{"model":"claude"}},"openrouter":{"settings":{"apiKey":"sk-or-found","model":"qwen"}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_credentials(&home),
+            Some((
+                Some("openrouter".into()),
+                Some("sk-or-found".into()),
+                Some("qwen".into())
             ))
         );
 
