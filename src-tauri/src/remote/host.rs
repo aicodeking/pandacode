@@ -914,8 +914,10 @@ mod tests {
 
     #[test]
     fn access_is_checked_when_a_request_runs() {
-        let mut inner = super::super::Inner::default();
-        inner.devices = vec![super::super::Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: "k".into(), host: false, online: true, last_seen: Value::Null }];
+        let mut inner = super::super::Inner {
+            devices: vec![super::super::Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: "k".into(), host: false, online: true, last_seen: Value::Null }],
+            ..Default::default()
+        };
         let now = 1_000_000_000;
         let request = |nonce: &str| json!({"ts": now, "nonce": nonce});
         assert_eq!(admit(&mut inner, "viewer", &request("nonce-0000000000000001"), now), Err(OFF.to_string()));
