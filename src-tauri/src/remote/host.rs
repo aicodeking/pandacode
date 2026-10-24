@@ -861,8 +861,10 @@ mod tests {
     #[test]
     fn a_present_device_keeps_its_subscription_without_a_pin() {
         let now = Instant::now();
-        let mut subscriber = Subscriber::default();
-        subscriber.until = Some(now + Duration::from_secs(60));
+        let subscriber = Subscriber {
+            until: Some(now + Duration::from_secs(60)),
+            ..Default::default()
+        };
         let mut inner = super::super::Inner {
             devices: vec![super::super::Device {
                 id: "viewer".into(), name: "Phone".into(), platform: "iOS".into(), public_key: "current-key".into(),
