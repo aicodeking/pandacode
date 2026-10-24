@@ -54,16 +54,6 @@ pub(crate) struct Settings {
     pub host_enabled: bool,
     #[serde(default)]
     pub account: Option<Account>,
-    /// Devices allowed to drive this one: device id → the public key pinned when trusted.
-    #[serde(default)]
-    pub trusted: std::collections::BTreeMap<String, String>,
-}
-
-impl Settings {
-    /// Trusted only while the pinned key is still the device's current key.
-    pub(crate) fn is_trusted(&self, device_id: &str, current_key: &str) -> bool {
-        self.trusted.get(device_id).is_some_and(|pinned| !pinned.is_empty() && pinned == current_key)
-    }
 }
 
 /// Reads the settings, creating the device id once.
@@ -199,10 +189,10 @@ mod tests {
         assert!(!first.host_enabled);
         assert!(first.account.is_none());
         assert_eq!(load(&dir).device_id, first.device_id);
-        let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"}}"#).unwrap();
+        let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"},"trusted":{"old-device":"old-key"}}"#).unwrap();
         assert!(parsed.host_enabled);
-        assert_eq!(parsed.account.unwrap().avatar_url, "u");
-        assert!(parsed.trusted.is_empty());
+        assert_eq!(parsed.account.as_ref().unwrap().avatar_url, "u");
+        assert!(serde_json::to_value(parsed).unwrap().get("trusted").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

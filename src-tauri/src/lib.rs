@@ -3396,7 +3396,6 @@ pub fn run() {
                 remote::remote_set_host_enabled,
                 remote::remote_devices,
                 remote::remote_revoke_device,
-                remote::remote_set_trusted,
                 remote::remote_targets,
                 remote::mirror::remote_start_task,
                 cloud_agents::tasks::cloud_agent_targets,

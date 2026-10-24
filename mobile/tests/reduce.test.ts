@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyEvent, fromSubscribe, idleLive, mergeMessages, type Live } from '../src/store/reduce.ts';
+import { applyEvent, fromList, fromSubscribe, idleLive, mergeMessages, staleLists, type Live } from '../src/store/reduce.ts';
 import type { AgentEvent, Message } from '../src/connect/types.ts';
 
 const m = (id: number): Message => ({ id, role: 'assistant', content: `m${id}`, createdAt: id, turnDurationMs: null });
@@ -66,4 +66,25 @@ test('a subscribe reply restores pending requests or ends the run', () => {
   assert.deepEqual(opened.approvals.map(p => [p.requestId, p.tool?.name]), [['a1', 'Bash']]);
   assert.deepEqual(opened.inputs.map(p => p.requestId), ['q1']);
   assert.equal(run([ev('approval', { requestId: 'a2', tool })]).approvals[0].tool, tool);
+});
+
+test('a list settles a run that ended while the phone slept, and keeps newer live state', () => {
+  const working: Live = { ...idleLive(), status: 'running', activity: 'Running Bash', items: [{ kind: 'text', text: 'half' }] };
+  assert.deepEqual(fromList(working, 'idle'), idleLive());
+  assert.equal(fromList(working, 'failed')?.status, 'failed');
+  // Still running on the host: events are newer than the list.
+  assert.equal(fromList(working, 'running'), working);
+  const idle = idleLive();
+  assert.equal(fromList(idle, 'running'), idle);
+  assert.equal(fromList(undefined, 'idle'), undefined);
+  const ask = { kind: 'approval', requestId: 'r1', text: 'Run ls?' };
+  const seeded = fromList(undefined, 'running', [ask]);
+  assert.equal(seeded?.status, 'waiting');
+  assert.deepEqual(seeded?.approvals, [ask]);
+});
+
+test('task lists refresh only when missing or old enough', () => {
+  assert.deepEqual(staleLists(['a', 'b', 'c'], { a: 1000, b: 9000 }, 10_000, 5000), ['a', 'c']);
+  assert.deepEqual(staleLists(['a'], { a: 10_000 }, 10_000, 0), ['a']);
+  assert.deepEqual(staleLists([], {}, 10_000, 0), []);
 });

@@ -7,6 +7,7 @@ import type { PendingRequest } from '../connect/types.ts';
 import { Choice } from './Choice.tsx';
 import { initial, parseSchema, range, readForm, type Field } from './form-schema.ts';
 import { Glass } from './Glass.tsx';
+import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
 import { mono, useColors, type Colors } from './theme.ts';
 
@@ -22,12 +23,15 @@ function useSend() {
   return [busy, run] as const;
 }
 
-export function Button({ label, onPress, kind = 'plain', disabled }: { label: string; onPress: () => void; kind?: 'primary' | 'plain' | 'danger'; disabled?: boolean }) {
+type IconName = Pick<Parameters<typeof Icon>[0], 'ios' | 'android'>;
+
+export function Button({ label, onPress, kind = 'plain', disabled, icon }: { label: string; onPress: () => void; kind?: 'primary' | 'plain' | 'danger'; disabled?: boolean; icon?: IconName }) {
   const colors = useColors();
   const bg = kind === 'primary' ? colors.tint : colors.fill;
   const fg = kind === 'primary' ? colors.onTint : kind === 'danger' ? colors.red : colors.text;
   return (
     <Pressable onPress={onPress} disabled={disabled} accessibilityRole="button" style={({ pressed }) => [styles.button, { backgroundColor: bg, opacity: disabled ? 0.4 : pressed ? 0.7 : 1 }]}>
+      {!!icon && <Icon {...icon} size={14} color={fg} />}
       <Text style={[styles.buttonText, { color: fg }]}>{label}</Text>
     </Pressable>
   );
@@ -42,13 +46,13 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
   });
   return (
     <Glass style={styles.card}>
-      <Text style={[styles.title, { color: colors.secondary }]}>Approval needed</Text>
+      <Heading icon={{ ios: 'hand.raised.fill', android: 'front_hand' }} title="Approval needed" color={colors.orange} />
       <Markdown text={request.text || 'The agent asks to continue.'} />
-      {!!request.tool && <Text style={[styles.tool, { color: colors.secondary, fontFamily: mono }]} numberOfLines={6} selectable>{request.tool.name}{request.tool.input ? `\n${request.tool.input}` : ''}</Text>}
+      {!!request.tool && <Text style={[styles.tool, { color: colors.text, backgroundColor: colors.fill, fontFamily: mono }]} numberOfLines={6} selectable>{request.tool.name}{request.tool.input ? `\n${request.tool.input}` : ''}</Text>}
       <View style={styles.actions}>
         {busy ? <ActivityIndicator /> : <>
-          <Button label="Deny" kind="danger" onPress={() => answer(false)} />
-          <Button label="Approve" kind="primary" onPress={() => answer(true)} />
+          <Button label="Deny" kind="danger" icon={{ ios: 'xmark', android: 'close' }} onPress={() => answer(false)} />
+          <Button label="Approve" kind="primary" icon={{ ios: 'checkmark', android: 'check' }} onPress={() => answer(true)} />
         </>}
       </View>
     </Glass>
@@ -89,9 +93,18 @@ export function InputCard({ deviceId, sessionId, request }: { deviceId: string; 
   );
   return (
     <Glass style={styles.card}>
-      <Text style={[styles.title, { color: colors.secondary }]}>{input?.kind === 'questions' ? 'A quick question' : 'Input needed'}</Text>
+      <Heading icon={{ ios: 'questionmark', android: 'question_mark' }} title={input?.kind === 'questions' ? 'A quick question' : 'Input needed'} color={colors.orange} />
       {body}
     </Glass>
+  );
+}
+
+function Heading({ icon, title, color }: { icon: IconName; title: string; color: Colors[keyof Colors] }) {
+  return (
+    <View style={styles.heading}>
+      <View style={[styles.badge, { backgroundColor: color }]}><Icon {...icon} size={13} color="#ffffff" /></View>
+      <Text style={[styles.title, { color }]}>{title}</Text>
+    </View>
   );
 }
 
@@ -200,11 +213,13 @@ function Form({ message, schema, busy, colors, onSubmit, onDecline, onCancel }: 
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 22, padding: 14, gap: 6, marginHorizontal: 12, marginBottom: 8 },
-  title: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase' },
+  card: { borderRadius: 24, padding: 14, gap: 8, marginHorizontal: 12, borderCurve: 'continuous' },
+  heading: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  badge: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  title: { fontSize: 14, fontWeight: '600' },
   header: { fontSize: 13, fontWeight: '600' },
   actions: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 4, flexWrap: 'wrap' },
-  button: { borderRadius: 999, paddingHorizontal: 16, paddingVertical: 9, minHeight: 38, justifyContent: 'center', alignItems: 'center' },
+  button: { flexDirection: 'row', gap: 6, borderRadius: 999, paddingHorizontal: 16, paddingVertical: 9, minHeight: 38, justifyContent: 'center', alignItems: 'center' },
   buttonText: { fontSize: 15, fontWeight: '600' },
   question: { gap: 6 },
   options: { gap: 6 },
@@ -213,5 +228,5 @@ const styles = StyleSheet.create({
   optionDetail: { fontSize: 13, marginTop: 2 },
   field: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 10, fontSize: 16 },
   error: { fontSize: 14 },
-  tool: { fontSize: 12 },
+  tool: { fontSize: 12, borderRadius: 10, padding: 8, overflow: 'hidden' },
 });

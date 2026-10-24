@@ -10,11 +10,12 @@ controls their tasks. Screens read state with hooks from `src/store` and act wit
 
 | Hook | Returns |
 |---|---|
-| `useStatus()` | `{ configured, ready, signedIn, connected, account, fingerprint, error }`. `fingerprint` is this phone's key, to compare on the desktop. `error` is e.g. "signed out" or a relay error. |
-| `useDevices()` | every device on the account: `Device & { fingerprint, trusted, current }` (Settings → trust) |
-| `useHosts()` | other trusted computers with hosting on: what the phone can open (`online` tells if it answers now) |
+| `useStatus()` | `{ configured, ready, signedIn, connected, account, error }`. `error` is e.g. "signed out" or a relay error. |
+| `useDevices()` | every device signed in to the account: `Device & { current }` |
+| `useHosts()` | other computers with hosting on: what the phone can open (`online` tells if it answers now) |
 | `useTasks(deviceId)` | `{ tasks, projects, loadedAt }` from the last `listTasks`, statuses and titles kept live, or `undefined` |
 | `useMessages(deviceId, sessionId)` | stored messages, oldest first |
+| `useHistory(deviceId, sessionId)` | `null` while a message copy runs, the last copy's error, or `undefined` (the transcript shows a spinner or the error with Retry) |
 | `useLive(deviceId, sessionId)` | the live run: `{ status, activity, items, approvals, inputs, usage?, limited? }`. `items` are `text` / `tool` (ToolActivity) / `note` / `error`, in order. `approvals` and `inputs` are `{ requestId, text, data }`; `data` of an input is the AgentInputRequest (questions/form/url). |
 | `useProviders(deviceId)`, `useModels(deviceId, provider)` | last fetched lists |
 | `useConnect(selector)` | the raw zustand store, for anything else |
@@ -22,8 +23,8 @@ controls their tasks. Screens read state with hooks from `src/store` and act wit
 ## Actions (`connect.*`, all async, throw `Error` with a user-facing message)
 
 - Sign-in: `signInStart()` → `{ userCode, verificationUri, expiresIn, … }` (show the code, open the URL), then `signInFinish(code)` waits for GitHub and registers the phone. `signInCancel()`, `signOut()`.
-- Devices: `setTrusted(deviceId, trusted)` pins the device's current key (trust it on the desktop too: hosts answer only trusted devices). `revokeDevice(deviceId)`. `refreshDevices()` only matters before the socket's first presence frame.
-- Tasks: `listTasks(deviceId, limit?)`, `startTask(deviceId, { repo | projectId, branch?, worktree, prompt, provider, model, mode?, effort? })` → sessionId (waits up to 12.5 min; the new task is watched).
+- Devices: `revokeDevice(deviceId)`. `refreshDevices()` only matters before the socket's first presence frame.
+- Tasks: `listTasks(deviceId, limit?)`, `refreshLists(maxAgeMs?)` (every online host), `startTask(deviceId, { repo | projectId, branch?, worktree, prompt, provider, model, mode?, effort? })` → sessionId (waits up to 12.5 min; the new task is watched).
 - Open a task: `watch(deviceId, [sessionId])` subscribes (renewed every 9 min and on presence), copies missed messages and streams events into `useLive`; `unwatch` when the screen goes. `loadMessages(deviceId, sessionId)` copies new messages on demand (follows `hasMore`).
 - In a task: `sendMessage(…, text)` → `{ queued }`, `steerTask(…, text)`, `stopTask(…)`, `configureTask(deviceId, { sessionId, provider?, model?, effort?, mode? })`, `respondApproval(…, requestId, approve)`, `respondInput(…, requestId, response)`.
 - Model pickers: `listProviders(deviceId, force?)`, `listModels(deviceId, provider, force?)`.
@@ -33,7 +34,9 @@ At a run end the host's messages are copied, then the live view goes idle (`stop
 ## Rules kept here
 
 - Crypto is byte-for-byte `src-tauri/src/remote/crypto.rs` (`tests/crypto.test.ts` checks a vector from the Rust crates).
-- Calls and frames go only to devices trusted on this phone whose key matches presence; anything else is dropped.
+- Signing in with the same GitHub account is the trust: calls are sealed to the key presence lists now, and frames from a device presence doesn't list are dropped. Pins saved by older builds are deleted at start.
+- Sync: task lists refresh on every presence frame, on foreground, after each `run.finished`, and every 15 s while a task runs (60 s otherwise); a list that shows a run ended settles a live view still showing Working. Subscribe replies catch up on statuses, requests and messages after a reconnect.
+- In development Fast Refresh re-runs `client.ts` with fresh module state; the newest instance disposes the previous socket and `init()` runs once per instance, so calls never go through an instance without a token.
 - A 401 or close code 4001 signs out only if it refused the current token. Tokens with < 7 days left are refreshed at connect and every 12 h.
 - Socket: backoff 1 s → 60 s (reset after 30 s up), 60 s after close 4000, 30 s pings, closed after 30 s in the background, reconnected on foreground.
-- Secrets (token, X25519 key, device id, account, pins) live in `expo-secure-store`, this device only.
+- Secrets (token, X25519 key, device id, account) live in `expo-secure-store`, this device only.

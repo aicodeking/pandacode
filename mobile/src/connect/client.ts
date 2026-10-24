@@ -2,27 +2,36 @@
 // Owns the relay socket, the pending calls and the store; screens call `connect.*` and read
 // state with the hooks in src/store. See README.md beside this file.
 import './polyfill.ts';
-import { initialState, setPublicKey, taskKey, useConnect, type ConnectState } from '../store/index.ts';
-import { applyEvent, fromSubscribe, idleLive, lastId, mergeMessages } from '../store/reduce.ts';
+import { initialState, taskKey, useConnect, type ConnectState } from '../store/index.ts';
+import { chunks, dueIcons, mergeIcons } from '../store/icon-cache.ts';
+import { loadIcons, saveIcons, useIcons } from '../store/icons.ts';
+import { applyEvent, fromList, fromSubscribe, idleLive, lastId, mergeMessages, staleLists } from '../store/reduce.ts';
 import * as auth from './auth.ts';
 import { build, NOT_CONFIGURED } from './config.ts';
-import { open, pairKey, publicKey, seal } from './crypto.ts';
-import { LOST, OFFLINE, Pending, RATE, request, START_TIMEOUT_MS, TIMEOUT_MS, type Method } from './rpc.ts';
+import { open, pairKey, seal } from './crypto.ts';
+import { LOST, NOT_CONNECTED, OFFLINE, Pending, RATE, request, START_TIMEOUT_MS, TIMEOUT_MS, type Method } from './rpc.ts';
 import * as secrets from './secrets.ts';
+import { AppState } from 'react-native';
 import { RelaySocket } from './socket.ts';
-import { isTrusted, loadPins, prunePins, setTrusted as pin } from './trust.ts';
 import type { AgentEvent, ConfigureParams, Device, MessagePage, Provider, ProviderModel, RunFinished, StartParams, SubscribedTask, TasksList } from './types.ts';
 
 const RENEW_MS = 9 * 60_000;
 const REFRESH_MS = 12 * 3600_000;
 const MAX_FRAME = 256 * 1024;
 const MAX_PAGES = 50;
+/** Task lists refresh this often while the app is open (faster while a task runs). */
+const LIST_IDLE_MS = 60_000;
+const LIST_ACTIVE_MS = 15_000;
+/** Presence frames come in bursts; a list younger than this is fresh enough. */
+const LIST_FRESH_MS = 5_000;
 
 let token: string | null = null;
 let secret: Uint8Array | null = null;
 let presence = false;
 let signInAbort: AbortController | null = null;
 let timers: ReturnType<typeof setInterval>[] = [];
+/** Per module instance: Fast Refresh re-runs this file with fresh state while the store says ready. */
+let initialized = false;
 const pending = new Pending();
 /** Pair keys by device id, with the public key they were derived from. */
 const keys = new Map<string, { publicKey: string; key: Uint8Array }>();
@@ -39,7 +48,7 @@ const socket = new RelaySocket({
   onOpen: () => {
     patch({ connected: true, error: null });
     void refreshIfDue();
-    timers = [setInterval(() => void subscribeAll(), RENEW_MS), setInterval(() => void refreshIfDue(), REFRESH_MS)];
+    timers = [setInterval(() => void subscribeAll(), RENEW_MS), setInterval(() => void refreshIfDue(), REFRESH_MS), setInterval(pollLists, LIST_ACTIVE_MS)];
   },
   onClose: () => {
     timers.forEach(clearInterval);
@@ -55,15 +64,26 @@ const socket = new RelaySocket({
   },
 });
 
+// In development Fast Refresh re-runs this module whenever it or an import changes: the new
+// instance (token unset, socket closed) would serve every call while the old socket still kept
+// the store connected, so each new copy failed with NOT_SIGNED_IN. The newest instance closes the
+// previous socket, and init() (re-run by the layout's effect) starts this one.
+const instances = globalThis as { __pandacodeSocket?: RelaySocket };
+instances.__pandacodeSocket?.dispose();
+instances.__pandacodeSocket = socket;
+
 /** Reads secrets and connects when signed in. Call once at app start. */
 async function init(): Promise<void> {
-  if (state().ready) return;
-  const [saved, account, deviceId, pins] = await Promise.all([secrets.getToken(), secrets.getAccount(), secrets.getDeviceId(), loadPins()]);
+  if (initialized) return;
+  initialized = true;
+  const [saved, account, deviceId] = await Promise.all([secrets.getToken(), secrets.getAccount(), secrets.getDeviceId()]);
   secret = await secrets.getSecret();
-  setPublicKey(publicKey(secret));
+  // A newer instance took over while this one read secrets: two sockets would replace each other.
+  if (instances.__pandacodeSocket !== socket) return;
   token = saved && !auth.expired(saved) && build ? saved : null;
-  patch({ ready: true, deviceId, pins, signedIn: !!token, account: token ? account : null });
+  patch({ ready: true, deviceId, signedIn: !!token, account: token ? account : null });
   if (token) socket.start();
+  void secrets.forgetPins();
 }
 
 async function signInStart(): Promise<auth.SignInCode> {
@@ -98,8 +118,8 @@ async function signOut(): Promise<void> {
   watched.clear();
   presence = false;
   await secrets.clearSession();
-  const { deviceId, fingerprint, pins, ready } = state();
-  useConnect.setState({ ...initialState(), deviceId, fingerprint, pins, ready }, true);
+  const { deviceId, ready } = state();
+  useConnect.setState({ ...initialState(), deviceId, ready }, true);
 }
 
 /** A refusal signs out only if it refused the token that is still current. */
@@ -121,16 +141,17 @@ async function refreshIfDue() {
   }
 }
 
-// ---- Devices and trust ----
+// ---- Devices ----
 
 const validDevice = (d: any): d is Device =>
   d && typeof d.id === 'string' && /^[\x21-\x7e]{1,200}$/.test(d.id) && typeof d.name === 'string' && typeof d.publicKey === 'string';
 
-async function applyDevices(list: unknown[]) {
+/** Every device signed in to the same GitHub account is the user's: presence is the whole list. */
+function applyDevices(list: unknown[]) {
   const devices = list.filter(validDevice).slice(0, 64);
   for (const id of keys.keys()) if (!devices.some(d => d.id === id && d.publicKey === keys.get(id)!.publicKey)) keys.delete(id);
   for (const id of watched.keys()) if (!devices.some(d => d.id === id)) watched.delete(id);
-  patch({ devices, pins: await prunePins(state().pins, devices) });
+  patch({ devices });
 }
 
 /** The device list over HTTP; only needed before the socket's first presence frame. */
@@ -139,22 +160,15 @@ async function refreshDevices(): Promise<void> {
   const used = token;
   try {
     const devices = await auth.listDevices(used);
-    if (!presence) await applyDevices(devices);
+    if (!presence) applyDevices(devices);
   } catch (error) {
     if (error instanceof auth.SignedOut) signOutIf(error.token);
     throw error;
   }
 }
 
-async function setTrusted(deviceId: string, trusted: boolean): Promise<void> {
-  const device = state().devices.find(d => d.id === deviceId);
-  if (!device) throw new Error('That device is no longer on your account.');
-  patch({ pins: await pin(state().pins, device, trusted) });
-  if (trusted) void subscribeHost(deviceId);
-}
-
 async function revokeDevice(deviceId: string): Promise<void> {
-  if (!token) throw new Error('Sign in to PandaCode Connect first.');
+  if (!token) throw new Error(NOT_SIGNED_IN);
   const used = token;
   await auth.revokeDevice(used, deviceId).catch(error => {
     if (error instanceof auth.SignedOut) signOutIf(error.token);
@@ -165,13 +179,15 @@ async function revokeDevice(deviceId: string): Promise<void> {
 
 // ---- Calls ----
 
+/** Thrown by calls made while the token is still loading or after sign-out; screens don't show it. */
+export const NOT_SIGNED_IN = 'Sign in to PandaCode Connect first.';
+
 function callable(deviceId: string): Device {
-  if (!token) throw new Error('Sign in to PandaCode Connect first.');
+  if (!token) throw new Error(NOT_SIGNED_IN);
   const s = state();
   if (deviceId === s.deviceId) throw new Error('That is this phone.');
   const device = s.devices.find(d => d.id === deviceId);
   if (!device) throw new Error('That computer is no longer on your account.');
-  if (!isTrusted(s.pins, device)) throw new Error(`${device.name} isn't trusted on this phone yet. Trust it in Settings.`);
   if (!device.online) throw new Error(OFFLINE);
   return device;
 }
@@ -191,7 +207,7 @@ async function call<T>(deviceId: string, method: Method, params: unknown, timeou
   const frame = JSON.stringify({ to: device.id, body, ref: message.id });
   if (frame.length > MAX_FRAME) throw new Error('That request is too large.');
   const reply = pending.wait(device.id, message.id, timeoutMs);
-  if (!socket.send(frame)) pending.fail(device.id, message.id, 'Not connected to the relay.');
+  if (!socket.send(frame)) pending.fail(device.id, message.id, NOT_CONNECTED);
   return reply as Promise<T>;
 }
 
@@ -204,7 +220,9 @@ function frame(text: string) {
     case 'presence':
       if (!Array.isArray(value.devices)) return;
       presence = true;
-      void applyDevices(value.devices).then(subscribeAll);
+      applyDevices(value.devices);
+      void subscribeAll();
+      void refreshLists(LIST_FRESH_MS);
       return;
     case 'undeliverable':
       if (typeof value.to === 'string') pending.fail(value.to, typeof value.ref === 'string' ? value.ref : undefined, value.reason === 'rate' ? RATE : OFFLINE);
@@ -217,8 +235,8 @@ function frame(text: string) {
   const s = state();
   if (typeof from !== 'string' || typeof body !== 'string' || to !== s.deviceId || from === s.deviceId) return;
   const device = s.devices.find(d => d.id === from);
-  // Only a device trusted here, with the key presence lists now, may answer or send events.
-  if (!device || !isTrusted(s.pins, device)) return;
+  // Only a device presence lists may answer or send events, opened with the key it lists now.
+  if (!device?.publicKey) return;
   let message: any;
   try { message = JSON.parse(open(pairFor(device), from, to, body)); } catch { return; }
   if (message?.type === 'res') pending.resolve(from, message);
@@ -256,7 +274,9 @@ function withStatuses(s: ConnectState, host: string, live: ConnectState['live'])
 }
 
 async function finished(host: string, data: RunFinished) {
-  if (typeof data?.sessionId !== 'string' || !watched.get(host)?.has(data.sessionId)) return;
+  if (typeof data?.sessionId !== 'string') return;
+  void listTasks(host).catch(() => undefined); // titles, statuses and order
+  if (!watched.get(host)?.has(data.sessionId)) return;
   await loadMessages(host, data.sessionId).catch(() => undefined); // the next subscribe retries
   const key = taskKey(host, data.sessionId);
   const status = data.stopped ? 'stopped' : data.successful ? 'idle' : 'failed';
@@ -295,7 +315,7 @@ async function subscribeHost(deviceId: string): Promise<void> {
   try {
     reply = await call(deviceId, 'subscribe', { sessionIds: ids });
   } catch {
-    return; // offline or untrusted; the next presence frame or renewal retries
+    return; // offline; the next presence frame or renewal retries
   }
   const tasks = Array.isArray(reply?.tasks) ? reply.tasks : [];
   patch(s => {
@@ -320,7 +340,19 @@ function loadMessages(deviceId: string, sessionId: string): Promise<void> {
   };
   const next = (loads.get(key) ?? Promise.resolve()).catch(() => undefined).then(run);
   loads.set(key, next);
-  return next.finally(() => { if (loads.get(key) === next) loads.delete(key); });
+  const settle = (error: string | null) => {
+    if (loads.get(key) !== next) return; // a later copy owns the state now
+    loads.delete(key);
+    patch(s => {
+      const { [key]: _, ...history } = s.history;
+      return { history: error === null ? history : { ...history, [key]: error } };
+    });
+  };
+  patch(s => ({ history: { ...s.history, [key]: null } }));
+  return next.then(() => settle(null), (error: Error) => {
+    settle(error?.message || 'Could not load this task.');
+    throw error;
+  });
 }
 
 function withTitle(s: ConnectState, host: string, sessionId: string, title: unknown): ConnectState['tasks'] {
@@ -335,15 +367,65 @@ async function listTasks(deviceId: string, limit?: number): Promise<TasksList> {
   const reply = await call<TasksList>(deviceId, 'tasks.list', limit === undefined ? {} : { limit });
   const list = { tasks: Array.isArray(reply?.tasks) ? reply.tasks : [], projects: Array.isArray(reply?.projects) ? reply.projects : [] };
   patch(s => {
-    // A task already waiting can be answered as soon as it opens: seed its requests from the list.
+    // A task already waiting can be answered as soon as it opens; a run that ended while the
+    // phone wasn't listening stops showing as working.
     const live = { ...s.live };
     for (const t of list.tasks) {
       const key = taskKey(deviceId, t.sessionId);
-      if (Array.isArray(t.pending) && t.pending.length && !live[key]) live[key] = fromSubscribe(idleLive(), t.status, t.pending);
+      const next = fromList(live[key], t.status, Array.isArray(t.pending) ? t.pending : undefined);
+      if (next) live[key] = next;
     }
     return { live, tasks: { ...s.tasks, [deviceId]: { ...list, loadedAt: Date.now() } } };
   });
+  void projectIcons(deviceId, list.tasks.map(t => t.projectId));
   return list;
+}
+
+/** Lists the tasks of every online host whose list is older than `maxAgeMs`; failures wait for the next refresh. */
+async function refreshLists(maxAgeMs = 0): Promise<void> {
+  const s = state();
+  if (!token || !socket.open || AppState.currentState !== 'active') return;
+  const hosts = s.devices.filter(d => d.host && d.online && d.id !== s.deviceId).map(d => d.id);
+  const loadedAt = Object.fromEntries(Object.entries(s.tasks).map(([id, list]) => [id, list.loadedAt]));
+  await Promise.all(staleLists(hosts, loadedAt, Date.now(), maxAgeMs).map(id => listTasks(id).catch(() => undefined)));
+}
+
+/** Every LIST_ACTIVE_MS tick: lists refresh at that pace while a task runs, else every LIST_IDLE_MS. */
+function pollLists() {
+  const running = Object.values(state().live).some(l => l.status === 'running' || l.status === 'waiting');
+  void refreshLists(running ? LIST_ACTIVE_MS - 1000 : LIST_IDLE_MS - 1000);
+}
+
+// Back in the foreground: catch up on lists and subscriptions (a socket that stayed open
+// gets no presence frame; one that closed reconnects and catches up on presence).
+AppState.addEventListener('change', next => {
+  if (next !== 'active' || !socket.open) return;
+  void refreshLists(LIST_FRESH_MS);
+  void subscribeAll();
+});
+
+/** Hosts that answered 'Unknown method.' (older desktops): not asked again this session. */
+const noIcons = new Set<string>();
+const iconsAsking = new Set<string>();
+
+/** Fetches the icons of these projects that are new or a day old, in batches; failures wait for the next call. */
+async function projectIcons(deviceId: string, projectIds: string[]): Promise<void> {
+  await loadIcons();
+  if (noIcons.has(deviceId)) return;
+  const due = dueIcons(useIcons.getState().cache, deviceId, projectIds, Date.now()).filter(id => !iconsAsking.has(`${deviceId}/${id}`));
+  if (!due.length) return;
+  due.forEach(id => iconsAsking.add(`${deviceId}/${id}`));
+  try {
+    for (const batch of chunks(due)) {
+      const reply = await call<{ icons?: unknown }>(deviceId, 'projects.icons', { projectIds: batch });
+      useIcons.setState(s => ({ cache: mergeIcons(s.cache, deviceId, batch, reply?.icons, Date.now()) }));
+    }
+  } catch (error) {
+    if ((error as Error).message === 'Unknown method.') noIcons.add(deviceId);
+  } finally {
+    due.forEach(id => iconsAsking.delete(`${deviceId}/${id}`));
+    void saveIcons();
+  }
 }
 
 async function listProviders(deviceId: string, force = false): Promise<Provider[]> {
@@ -384,8 +466,8 @@ const respondInput = (deviceId: string, sessionId: string, requestId: string, re
 
 export const connect = {
   init, signInStart, signInFinish, signInCancel, signOut,
-  refreshDevices, setTrusted, revokeDevice,
+  refreshDevices, revokeDevice,
   watch, unwatch, loadMessages,
-  listTasks, listProviders, listModels, startTask,
+  listTasks, refreshLists, listProviders, listModels, startTask, projectIcons,
   sendMessage, stopTask, steerTask, configureTask, respondApproval, respondInput,
 };

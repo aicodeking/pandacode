@@ -3,7 +3,7 @@ export interface RemoteStatus {
   configured: boolean; signedIn: boolean; account?: { login: string; avatarUrl?: string };
   device: { id: string; name: string; fingerprint: string }; hostEnabled: boolean; connected: boolean;
 }
-export interface RemoteDevice { id: string; name: string; platform: string; fingerprint: string; host: boolean; online: boolean; trusted: boolean; lastSeen: number; current: boolean }
+export interface RemoteDevice { id: string; name: string; platform: string; fingerprint: string; host: boolean; online: boolean; lastSeen: number; current: boolean }
 export interface RemoteSignIn { userCode: string; verificationUri: string; expiresIn: number }
 export interface RemoteHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;

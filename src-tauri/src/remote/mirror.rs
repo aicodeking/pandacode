@@ -108,7 +108,7 @@ fn status_after(current: &str, kind: &str) -> Option<&'static str> {
     (next != current).then_some(next)
 }
 
-/// `agent.events` from a trusted host.
+/// `agent.events` from the task's host.
 pub(crate) fn events(app: &tauri::AppHandle, from: &str, data: &Value) {
     let Some(list) = data["events"].as_array() else { return };
     let state = app.state::<AppState>();
@@ -134,7 +134,7 @@ pub(crate) fn events(app: &tauri::AppHandle, from: &str, data: &Value) {
     }
 }
 
-/// `run.finished` from a trusted host: copy the run's messages, then end the local turn.
+/// `run.finished` from the task's host: copy the run's messages, then end the local turn.
 pub(crate) fn finished(app: &tauri::AppHandle, from: &str, data: &Value) {
     let Some(session) = data["sessionId"].as_str() else { return };
     let Some(local) = app.state::<AppState>().store.lock().ok().and_then(|store| local_id(&store, from, session)) else { return };

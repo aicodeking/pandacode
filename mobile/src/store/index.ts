@@ -3,8 +3,6 @@ import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import { build } from '../connect/config.ts';
-import { fingerprint } from '../connect/crypto.ts';
-import { isTrusted, type Pins } from '../connect/trust.ts';
 import type { Account, Device, Message, Provider, ProviderModel, TasksList } from '../connect/types.ts';
 import { idleLive, type Live } from './reduce.ts';
 
@@ -21,14 +19,13 @@ export interface ConnectState {
   connected: boolean;
   account: Account | null;
   deviceId: string;
-  /** This phone's public key fingerprint, to compare on the desktop. */
-  fingerprint: string;
   devices: Device[];
-  pins: Pins;
   /** tasks.list per host. */
   tasks: Record<string, TasksList & { loadedAt: number }>;
   /** Messages per taskKey, oldest first, incremental by afterId. */
   messages: Record<string, Message[]>;
+  /** A message copy in flight (null) or the error of the last one, per taskKey; absent once copied. */
+  history: Record<string, string | null>;
   /** Live run per taskKey. */
   live: Record<string, Live>;
   providers: Record<string, Provider[]>;
@@ -38,32 +35,32 @@ export interface ConnectState {
 }
 
 export const initialState = (): ConnectState => ({
-  configured: !!build, ready: false, signedIn: false, connected: false, account: null, deviceId: '', fingerprint: '',
-  devices: [], pins: {}, tasks: {}, messages: {}, live: {}, providers: {}, models: {}, error: null,
+  configured: !!build, ready: false, signedIn: false, connected: false, account: null, deviceId: '',
+  devices: [], tasks: {}, messages: {}, history: {}, live: {}, providers: {}, models: {}, error: null,
 });
 
 export const useConnect = create<ConnectState>(() => initialState());
 
-export const setPublicKey = (publicKey: string) => useConnect.setState({ fingerprint: fingerprint(publicKey) });
-
-export interface DeviceRow extends Device { fingerprint: string; trusted: boolean; current: boolean }
+export interface DeviceRow extends Device { current: boolean }
 
 function useRows(): DeviceRow[] {
-  const { devices, pins, deviceId } = useConnect(useShallow(s => ({ devices: s.devices, pins: s.pins, deviceId: s.deviceId })));
-  return useMemo(() => devices.map(d => ({ ...d, fingerprint: fingerprint(d.publicKey), trusted: isTrusted(pins, d), current: d.id === deviceId })), [devices, pins, deviceId]);
+  const { devices, deviceId } = useConnect(useShallow(s => ({ devices: s.devices, deviceId: s.deviceId })));
+  return useMemo(() => devices.map(d => ({ ...d, current: d.id === deviceId })), [devices, deviceId]);
 }
 
 const EMPTY: never[] = [];
 
-export const useStatus = () => useConnect(useShallow(s => ({ configured: s.configured, ready: s.ready, signedIn: s.signedIn, connected: s.connected, account: s.account, fingerprint: s.fingerprint, error: s.error })));
-/** Every device on the account (for Settings → trust). */
+export const useStatus = () => useConnect(useShallow(s => ({ configured: s.configured, ready: s.ready, signedIn: s.signedIn, connected: s.connected, account: s.account, error: s.error })));
+/** Every device signed in to the account. */
 export const useDevices = useRows;
-/** Other trusted, hosting computers: the ones the phone can open. */
+/** Other computers with remote access on: the ones the phone can open. */
 export function useHosts(): DeviceRow[] {
   const all = useRows();
-  return useMemo(() => all.filter(d => !d.current && d.host && d.trusted), [all]);
+  return useMemo(() => all.filter(d => !d.current && d.host), [all]);
 }
 export const useTasks = (deviceId: string) => useConnect(s => s.tasks[deviceId]);
+/** null while copying, the last copy's error, or undefined. */
+export const useHistory = (deviceId: string, sessionId: string) => useConnect(s => s.history[taskKey(deviceId, sessionId)]);
 export const useMessages = (deviceId: string, sessionId: string) => useConnect(s => s.messages[taskKey(deviceId, sessionId)] ?? EMPTY);
 const IDLE = idleLive();
 export const useLive = (deviceId: string, sessionId: string) => useConnect(s => s.live[taskKey(deviceId, sessionId)] ?? IDLE);

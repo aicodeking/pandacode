@@ -202,8 +202,8 @@ async fn refresh_token(app: tauri::AppHandle, old: String) {
     }
 }
 
-/// An opened request, the pair key to answer with, and whether the caller is trusted here.
-type Request = (Value, crypto::Key, bool);
+/// An opened request and the pair key to answer with.
+type Request = (Value, crypto::Key);
 
 /// One relay frame: presence, delivery failures and errors, or an encrypted message.
 /// Responses and events are handled at once; only requests wait in their peer's queue.
@@ -230,14 +230,13 @@ fn frame(app: &tauri::AppHandle, text: &str, peers: &mut HashMap<String, mpsc::S
             if to != me || from == me {
                 return;
             }
-            let Ok((key, trusted)) = peer_key(app, from) else { return };
+            let Ok(key) = peer_key(app, from) else { return };
             let Ok(plain) = crypto::open(&key, from, to, body) else { return };
             let Ok(message) = serde_json::from_slice::<Value>(&plain) else { return };
             match message["type"].as_str() {
-                Some("req") => queue(app, from, (message, key, trusted), peers),
-                // Only a host trusted here may answer or send its tasks' events.
-                Some("res") if trusted => super::client::resolve(app, from, &message),
-                Some("event") if trusted => match message["name"].as_str() {
+                Some("req") => queue(app, from, (message, key), peers),
+                Some("res") => super::client::resolve(app, from, &message),
+                Some("event") => match message["name"].as_str() {
                     Some("agent.events") => mirror::events(app, from, &message["data"]),
                     Some("run.finished") => mirror::finished(app, from, &message["data"]),
                     _ => {}
@@ -271,15 +270,21 @@ fn queue(app: &tauri::AppHandle, from: &str, request: Request, peers: &mut HashM
     }
     if !peers.contains_key(from) {
         if peers.len() >= MAX_PEERS {
-            return;
+            return busy(app, from, request);
         }
         let (tx, rx) = mpsc::channel(PEER_QUEUE);
         tauri::async_runtime::spawn(peer(app.clone(), from.to_owned(), rx));
         peers.insert(from.to_owned(), tx);
     }
-    if peers[from].try_send(request).is_err() {
-        eprintln!("PandaCode Connect: dropped a request from a busy peer");
+    if let Err(error) = peers[from].try_send(request) {
+        busy(app, from, error.into_inner());
     }
+}
+
+/// Refuses a request at once instead of dropping it, so the caller doesn't wait for its timeout.
+fn busy(app: &tauri::AppHandle, from: &str, (message, key): Request) {
+    let failure = json!({"type": "res", "id": message["id"], "ok": false, "error": "This computer is busy. Try again in a moment."});
+    let _ = send_sealed(app, from, &key, &failure);
 }
 
 /// Answers one peer's requests strictly in arrival order.
@@ -289,9 +294,8 @@ async fn peer(app: tauri::AppHandle, from: String, mut requests: mpsc::Receiver<
     }
 }
 
-async fn answer(app: &tauri::AppHandle, from: &str, (message, key, trusted): Request) {
-    if let Some(response) = host::handle(app, from, &message, trusted).await {
-        // An untrusted caller only ever gets an error back, never task content.
+async fn answer(app: &tauri::AppHandle, from: &str, (message, key): Request) {
+    if let Some(response) = host::handle(app, from, &message).await {
         if let Err(error) = send_sealed(app, from, &key, &response) {
             let failure = json!({"type": "res", "id": response["id"], "ok": false, "error": error});
             let _ = send_sealed(app, from, &key, &failure);
@@ -362,22 +366,21 @@ pub(crate) async fn refresh_devices(app: &tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
-/// The pair key with a device and whether it is trusted here (its pinned key is its
-/// current key). Keys are cached by (device id, public key).
-fn peer_key(app: &tauri::AppHandle, device_id: &str) -> Result<(crypto::Key, bool)> {
+/// The pair key with a device, derived from its current presence key. Keys are cached
+/// by (device id, public key), so key changes derive a fresh pair key.
+fn peer_key(app: &tauri::AppHandle, device_id: &str) -> Result<crypto::Key> {
     let state = remote(app);
-    let (public, trusted) = {
+    let public = {
         let inner = state.lock();
         let public = &inner.devices.iter().find(|d| d.id == device_id).filter(|d| !d.public_key.is_empty()).ok_or(super::UNKNOWN_DEVICE)?.public_key;
-        let trusted = inner.settings.is_trusted(device_id, public);
         if let Some((_, key)) = inner.keys.get(device_id).filter(|(cached, _)| cached == public) {
-            return Ok((*key, trusted));
+            return Ok(*key);
         }
-        (public.clone(), trusted)
+        public.clone()
     };
     let key = crypto::pair_key(&state.secret()?, &state.device_id(), &public, device_id)?;
     state.lock().keys.insert(device_id.to_owned(), (public, key));
-    Ok((key, trusted))
+    Ok(key)
 }
 
 /// Seals a message with a known key and queues it on the socket as `{to, body, ref}`.
@@ -398,10 +401,10 @@ fn send_sealed(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Va
     outbox.send(frame).map_err(|_| "Not connected to the relay.".into())
 }
 
-/// Requests and task content, sealed only to a device trusted here with its current key.
-pub(crate) fn send_trusted(app: &tauri::AppHandle, to: &str, message: &Value) -> Result<()> {
+/// Seals a request or event to the device's current key from presence.
+pub(crate) fn send_to_device(app: &tauri::AppHandle, to: &str, message: &Value) -> Result<()> {
     remote(app).lock().callable(to)?;
-    let (key, _) = peer_key(app, to)?;
+    let key = peer_key(app, to)?;
     send_sealed(app, to, &key, message)
 }
 
@@ -460,20 +463,14 @@ mod tests {
     }
 
     #[test]
-    fn trust_follows_the_pinned_key() {
+    fn device_views_omit_trust_while_encryption_still_uses_the_current_key() {
         let (host, old, new) = (crypto::generate(), crypto::generate(), crypto::generate());
-        let mut settings = config::Settings::default();
-        settings.trusted.insert("viewer".into(), crypto::public_key(&old));
-        assert!(settings.is_trusted("viewer", &crypto::public_key(&old)));
-        // The relay (or the device) reports a new key: untrusted until trusted again.
-        assert!(!settings.is_trusted("viewer", &crypto::public_key(&new)));
-        assert!(!settings.is_trusted("other", &crypto::public_key(&old)));
-        // A frame sealed by the new key never opens with the pinned pair key.
-        let pinned = crypto::pair_key(&host, "host", &crypto::public_key(&old), "viewer").unwrap();
+        // A frame sealed for an old key still cannot open after the peer key changes.
+        let previous = crypto::pair_key(&host, "host", &crypto::public_key(&old), "viewer").unwrap();
         let swapped = crypto::pair_key(&new, "viewer", &crypto::public_key(&host), "host").unwrap();
         let body = crypto::seal(&swapped, "viewer", "host", b"{}").unwrap();
-        assert!(crypto::open(&pinned, "viewer", "host", &body).is_err());
-        let view = Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: crypto::public_key(&new), host: false, online: true, last_seen: Value::Null }.view("host", &settings);
-        assert_eq!(view["trusted"], false);
+        assert!(crypto::open(&previous, "viewer", "host", &body).is_err());
+        let view = Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: crypto::public_key(&new), host: false, online: true, last_seen: Value::Null }.view("host");
+        assert!(view.get("trusted").is_none());
     }
 }

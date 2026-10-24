@@ -106,3 +106,21 @@ export function fromSubscribe(live: Live, status: TaskStatus, pending?: readonly
   const inputs = valid ? valid.filter(p => p.kind === 'input_request') : live.inputs;
   return { ...live, status: approvals.length + inputs.length ? 'waiting' : status, approvals, inputs };
 }
+
+const active = (status: TaskStatus) => status === 'running' || status === 'waiting';
+
+/**
+ * A fresh tasks.list row against the live view: a run the phone still shows as working that
+ * the host lists as ended (it finished while the phone slept or was offline) is settled, and
+ * pending requests listed for a task the phone has no live view of are seeded. Otherwise the
+ * live view is kept (undefined when there is none), since events are newer than any list.
+ */
+export function fromList(live: Live | undefined, status: TaskStatus, pending?: readonly PendingRequest[]): Live | undefined {
+  if (live && active(live.status) && !active(status)) return fromSubscribe(live, status, pending);
+  if (!live && pending?.length) return fromSubscribe(idleLive(), status, pending);
+  return live;
+}
+
+/** Hosts whose task list is missing or older than `maxAgeMs`. */
+export const staleLists = (hosts: readonly string[], loadedAt: Readonly<Record<string, number | undefined>>, now: number, maxAgeMs: number) =>
+  hosts.filter(id => now - (loadedAt[id] ?? 0) >= maxAgeMs);

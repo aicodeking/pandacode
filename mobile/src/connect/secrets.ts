@@ -1,5 +1,5 @@
 // Connect secrets in the OS secure store (Keychain / Android Keystore): relay token,
-// X25519 private key, device id, and the account shown while signed in. Pins are in trust.ts.
+// X25519 private key, device id, and the account shown while signed in.
 import * as SecureStore from 'expo-secure-store';
 import { decodeSecret, generateSecret, uuid } from './crypto.ts';
 import type { Account } from './types.ts';
@@ -10,6 +10,9 @@ const OPTIONS: SecureStore.SecureStoreOptions = { keychainAccessible: SecureStor
 export const get = (name: string) => SecureStore.getItemAsync(name, OPTIONS).catch(() => null);
 export const set = (name: string, value: string) => SecureStore.setItemAsync(name, value, OPTIONS);
 const remove = (name: string) => SecureStore.deleteItemAsync(name, OPTIONS).catch(() => undefined);
+
+/** Key pins from before trust was dropped (same GitHub account is enough); deleted at start. */
+export const forgetPins = () => remove('connect.pins');
 
 export const getToken = () => get(KEYS.token);
 export const setToken = (token: string) => set(KEYS.token, token);

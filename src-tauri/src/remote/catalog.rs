@@ -40,7 +40,7 @@ impl Cache {
         self.flights.entry(key.clone()).or_default().clone()
     }
 
-    /// Drops what a device said, when it goes offline, comes back or is untrusted.
+    /// Drops what a device said when it goes offline, comes back, or changes hosting.
     pub(crate) fn forget(&mut self, device: &str) {
         self.entries.retain(|(id, _), _| id != device);
     }
@@ -77,7 +77,7 @@ pub(crate) fn target(device_id: Option<String>, me: &str) -> Option<String> {
     device_id.filter(|id| !id.is_empty() && id != me)
 }
 
-/// The usual errors for an unknown, untrusted or offline host, even on a cache hit.
+/// The usual errors for an unknown or offline host, even on a cache hit.
 fn ready(inner: &Inner, device: &str) -> Result<()> {
     inner.callable(device)?;
     if !inner.devices.iter().any(|d| d.id == device && d.online) {

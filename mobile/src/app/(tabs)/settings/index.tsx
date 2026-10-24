@@ -3,21 +3,26 @@ import { Image } from 'expo-image';
 import * as WebBrowser from 'expo-web-browser';
 import type { ReactNode } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connect } from '../../../connect/client.ts';
 import { useStatus } from '../../../store/index.ts';
-import { mono, useColors } from '../../../ui/theme.ts';
+import { APPEARANCES, setAppearance, useAppearance } from '../../../ui/appearance.ts';
+import { useBackdrop } from '../../../ui/Backdrop.tsx';
+import { WallpaperSettings } from '../../../ui/WallpaperSettings.tsx';
 
 const SOURCE = 'https://github.com/aicodeking/pandacode';
 
 export default function Settings() {
-  const colors = useColors();
+  const colors = useBackdrop();
   const status = useStatus();
+  const insets = useSafeAreaInsets();
+  const appearance = useAppearance(s => s.choice);
   const signOut = () => Alert.alert('Sign out?', 'This phone stops seeing your computers until you sign in again.', [
     { text: 'Cancel', style: 'cancel' },
     { text: 'Sign out', style: 'destructive', onPress: () => void connect.signOut() },
   ]);
   return (
-    <ScrollView style={{ backgroundColor: colors.grouped }} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.page}>
+    <ScrollView style={{ backgroundColor: colors.grouped }} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={[styles.page, { paddingLeft: 16 + insets.left, paddingRight: 16 + insets.right }]}>
       <Section title="Account">
         <View style={styles.row}>
           {!!status.account?.avatarUrl && <Image source={status.account.avatarUrl} style={styles.avatar} />}
@@ -27,8 +32,21 @@ export default function Settings() {
           </View>
         </View>
       </Section>
-      <Section title="This phone" footer="Compare this fingerprint with the one your computer shows in Settings → Remote access before trusting this phone there.">
-        <Text selectable style={[styles.fingerprint, { color: colors.text }]}>{status.fingerprint}</Text>
+      <Section title="Appearance" footer="Applies to this app only. System follows the phone's light or dark setting.">
+        <View style={styles.chips} accessibilityRole="radiogroup">
+          {APPEARANCES.map(a => {
+            const selected = appearance === a.id;
+            return (
+              <Pressable key={a.id} onPress={() => setAppearance(a.id)} accessibilityRole="radio" accessibilityState={{ selected }}
+                style={[styles.chip, { backgroundColor: selected ? colors.tint : colors.fill }]}>
+                <Text style={[styles.chipText, { color: selected ? colors.onTint : colors.text }]}>{a.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </Section>
+      <Section title="Wallpaper" footer="The desktop's daily scenes, in step with your computer: each day has a morning, afternoon and night scene. Tap a scene to keep it.">
+        <WallpaperSettings />
       </Section>
       <Section>
         <Pressable onPress={signOut} accessibilityRole="button"><Text style={[styles.value, { color: colors.red }]}>Sign out</Text></Pressable>
@@ -42,7 +60,7 @@ export default function Settings() {
 }
 
 function Section({ title, footer, children }: { title?: string; footer?: string; children: ReactNode }) {
-  const colors = useColors();
+  const colors = useBackdrop();
   return (
     <View style={styles.section}>
       {!!title && <Text style={[styles.header, { color: colors.secondary }]}>{title}</Text>}
@@ -62,5 +80,7 @@ const styles = StyleSheet.create({
   value: { fontSize: 17 },
   small: { fontSize: 13, lineHeight: 18 },
   footer: { marginHorizontal: 14 },
-  fingerprint: { fontFamily: mono, fontSize: 14 },
+  chips: { flexDirection: 'row', gap: 8 },
+  chip: { flex: 1, alignItems: 'center', borderRadius: 16, paddingVertical: 8 },
+  chipText: { fontSize: 15, fontWeight: '500' },
 });

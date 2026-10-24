@@ -5,7 +5,6 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';
 
-const TRUST_TIP = 'Both computers must trust each other before one can drive the other. Compare the fingerprint shown on the other computer with the one here before trusting it. If its key changes, you need to trust it again.';
 const ALLOW_TIP = 'Remote prompts follow this computer’s approval settings; they get no more power than prompts typed here.';
 
 export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => void {
@@ -13,7 +12,7 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   const fail = (e: unknown) => { error = e instanceof Error ? e.message : String(e); render(); };
 
   function deviceRow(device: RemoteDevice): string {
-    return `<div class="setting-row remote-device" data-device="${escape(device.id)}"><div><strong><span class="remote-dot" data-online="${device.online}" role="img" aria-label="${device.online ? 'Online' : 'Offline'}"></span>${escape(device.name)}${device.current ? ' <span class="remote-badge">This computer</span>' : ''}</strong><small>${escape(device.platform)} · ${device.host ? 'remote control on' : 'remote control off'} · key <code>${escape(device.fingerprint)}</code></small></div>${device.current ? '' : `<label class="remote-trust"><span>Trusted ${infoMark(TRUST_TIP, 'About trusting a computer')}</span><input type="checkbox" class="settings-switch" data-trust="${escape(device.id)}" aria-label="Trusted: ${escape(device.name)}" ${device.trusted ? 'checked' : ''}></label>`}${device.current ? '' : `<button type="button" class="secondary-button" data-revoke="${escape(device.id)}" aria-label="Revoke ${escape(device.name)}">Revoke</button>`}</div>`;
+    return `<div class="setting-row remote-device" data-device="${escape(device.id)}"><div><strong><span class="remote-dot" data-online="${device.online}" role="img" aria-label="${device.online ? 'Online' : 'Offline'}"></span>${escape(device.name)}${device.current ? ' <span class="remote-badge">This computer</span>' : ''}</strong><small>${escape(device.platform)} · ${device.host ? 'remote control on' : 'remote control off'} · key <code>${escape(device.fingerprint)}</code></small></div>${device.current ? '' : `<button type="button" class="secondary-button" data-revoke="${escape(device.id)}" aria-label="Revoke ${escape(device.name)}">Revoke</button>`}</div>`;
   }
   function body(): string {
     if (!status) return '<p class="dialog-loading" role="status">Loading…</p>';
@@ -68,8 +67,7 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   });
   root.addEventListener('change', event => {
     const input = event.target as HTMLInputElement;
-    if (input.dataset.trust) void host.call<RemoteDevice[]>('remote_set_trusted', { deviceId: input.dataset.trust, trusted: input.checked }).then(next => { devices = next; render(); }, e => { input.checked = !input.checked; fail(e); });
-    else if (input.id === 'remote-host') void host.call<RemoteStatus>('remote_set_host_enabled', { enabled: input.checked }).then(next => { apply(next); render(); }, e => { input.checked = !input.checked; fail(e); });
+    if (input.id === 'remote-host') void host.call<RemoteStatus>('remote_set_host_enabled', { enabled: input.checked }).then(next => { apply(next); render(); }, e => { input.checked = !input.checked; fail(e); });
   });
   const unlisten: Promise<() => void>[] = [
     host.listen('remote://status', next => { if (!signingIn || next.signedIn) { apply(next); render(); } }),

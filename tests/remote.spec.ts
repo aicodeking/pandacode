@@ -31,16 +31,8 @@ test('signs in with a device code, toggles remote control and lists devices', as
   await expect(studio.getByRole('img', { name: 'Online' })).toBeVisible();
   await expect(panel.locator('.remote-device[data-device="dev-laptop"]').getByRole('img', { name: 'Offline' })).toBeVisible();
 
-  // Trust toggles show on other computers only.
-  await expect(panel.locator('.remote-device[data-device="dev-this"] [data-trust]')).toHaveCount(0);
-  const trust = panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' });
-  await expect(trust).toBeChecked();
-  await trust.uncheck();
-  await expect(trust).not.toBeChecked();
-  await trust.check();
-  await expect(trust).toBeChecked();
-  await expect(panel.getByRole('checkbox', { name: 'Trusted: Home NAS' })).not.toBeChecked();
-  await expect(panel.locator('.remote-trust .info-mark').first()).toHaveAttribute('data-tip', /compare the fingerprint/i);
+  await expect(panel.getByRole('checkbox', { name: /^Trusted:/ })).toHaveCount(0);
+  await expect(panel.locator('.remote-trust')).toHaveCount(0);
 
   await panel.getByRole('button', { name: 'Revoke Old laptop' }).click();
   await expect(panel.locator('.remote-device[data-device="dev-laptop"]')).toHaveCount(0);
@@ -77,9 +69,9 @@ test('the computer choice offers setup before sign-in and one row per computer a
   const menu = page.getByRole('menu', { name: 'Run on' });
   await expect(menu.getByRole('menuitemradio', { name: 'This computer' })).toHaveAttribute('aria-checked', 'true');
   await expect(menu.getByRole('menuitemradio', { name: 'Studio iMac' })).toBeEnabled();
-  await expect(menu.getByRole('menuitemradio', { name: 'Old laptop' })).toBeDisabled();
-  // Untrusted computers are not targets.
-  await expect(menu.getByRole('menuitemradio', { name: 'Home NAS' })).toHaveCount(0);
+  await expect(menu.getByRole('menuitemradio', { name: 'Old laptop' })).toHaveCount(0);
+  // Every online computer hosting remote control is a target.
+  await expect(menu.getByRole('menuitemradio', { name: 'Home NAS' })).toBeEnabled();
   await page.keyboard.press('Escape');
   // Local / Worktree still shows beside it.
   await expect(page.locator('#composer-area .composer-local')).toHaveText('Local');
@@ -158,11 +150,12 @@ test('sign-in can be cancelled', async ({ page }) => {
   await expect(panel.getByRole('alert')).toHaveCount(0);
 });
 
-test('the trust toggle shows without host mode', async ({ page }) => {
+test('device fingerprints are listed without trust controls when host mode is off', async ({ page }) => {
   const panel = await openRemoteSettings(page);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByRole('checkbox', { name: 'Allow remote control of this computer' })).not.toBeChecked();
-  await expect(panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' })).toBeChecked();
+  await expect(panel.locator('.remote-device[data-device="dev-studio"]')).toContainText('9b02e4aa71c3d605');
+  await expect(panel.getByRole('checkbox', { name: /^Trusted:/ })).toHaveCount(0);
 });
 
 const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
