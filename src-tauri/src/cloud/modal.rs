@@ -246,6 +246,10 @@ class Sandbox:
 "#;
 
     fn fake(package: &str) -> Option<(Modal, tempfile_dir::Dir)> {
+        // The fake interpreter is a `sh` wrapper; Windows has no shell script runner.
+        if !cfg!(unix) {
+            return None;
+        }
         let python3 = crate::token_saver::find_tool("python3")?;
         let dir = tempfile_dir::Dir::new();
         std::fs::create_dir_all(dir.0.join("modal")).unwrap();

@@ -11,7 +11,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
-use super::{http, sandbox::{download_command, Info, Sandbox}, Machine};
+use super::{http, sandbox::{checked, download_command, Info, Sandbox}, Machine};
 use crate::Result;
 
 const SERVICE: &str = "InstaBox";
@@ -31,8 +31,30 @@ const KEEP: u64 = 4 * 1024 * 1024;
 const PIECE: usize = 128 * 1024;
 /// The longest activity lease InstaBox grants, in seconds.
 const LEASE_MAX: u64 = 3600;
+/// PandaCode's lease on each machine (`PUT /machines/{id}/activity-leases/{lease}`).
+const LEASE: &str = "pandacode";
 const OPERATION_MAX: Duration = Duration::from_secs(600);
 const POLL: Duration = if cfg!(test) { Duration::from_millis(10) } else { Duration::from_secs(3) };
+
+/// A pause freezes every process, and after a resume clients still reuse keep-alive sockets
+/// whose connections are gone: a harness alive across the pause sends its next model request
+/// into a dead socket and hangs. This watcher (started once per boot) notices the wall clock
+/// jumping ahead of the frozen uptime and closes outbound HTTP(S) connections so clients
+/// reconnect. `ss -K` needs passwordless sudo, which agent-browser has; without it the
+/// watcher runs but closes nothing.
+const RECONNECT: &str = r#"d="$HOME/.pandacode"; mkdir -p "$d" || exit 1
+[ -f "$d/reconnect.pid" ] && kill -0 "$(cat "$d/reconnect.pid")" 2>/dev/null && exit 0
+cat > "$d/reconnect.sh" <<'EOF'
+echo $$ > "$HOME/.pandacode/reconnect.pid"
+gap() { echo $(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )); }
+last=$(gap)
+while sleep 5; do
+  now=$(gap)
+  [ $((now - last)) -gt 20 ] && sudo -n ss -K state established '( dport = :443 or dport = :80 )' > /dev/null 2>&1
+  last=$now
+done
+EOF
+setsid nohup sh "$d/reconnect.sh" > /dev/null 2>&1 < /dev/null &"#;
 
 pub struct InstaBox {
     api: String,
@@ -149,16 +171,18 @@ impl InstaBox {
         };
         if operation.is_null() { Ok(()) } else { self.settle(operation).await.map(|_| ()) }
     }
+    /// An activity lease (at most an hour; it wakes a paused machine first) holds off the idle
+    /// pause, and a full idle period starts when it expires. The idle pause itself changes
+    /// only for accounts with manual lifecycle: every other plan answers the PATCH with its
+    /// fixed 30 minutes, so the lease is always taken. Then the reconnect watcher starts.
     async fn keep_alive(&self, id: &str, minutes: u32) -> Result<()> {
         self.owned(id).await?;
         let seconds = u64::from(minutes.max(1)) * 60;
-        let patched = self.call(reqwest::Method::PATCH, &format!("/machines/{id}"), Some(json!({"autoSuspendAfterSeconds": seconds})), Duration::from_secs(30)).await;
-        if patched.is_ok() {
-            return Ok(());
-        }
-        // Plans with a fixed idle pause refuse the PATCH; an activity lease holds it off instead.
-        let lease = json!({"machineId": id, "ttlSeconds": seconds.min(LEASE_MAX)});
-        self.call(reqwest::Method::PUT, &format!("/activity-leases/pandacode-{id}"), Some(lease), Duration::from_secs(30)).await.map(|_| ())
+        let lease = json!({"ttlSeconds": seconds.clamp(30, LEASE_MAX)});
+        self.call(reqwest::Method::PUT, &format!("/machines/{id}/activity-leases/{LEASE}"), Some(lease), Duration::from_secs(30)).await?;
+        // A key with only `machines:exec` may lease but not PATCH; the lease is what counts.
+        let _ = self.call(reqwest::Method::PATCH, &format!("/machines/{id}"), Some(json!({"autoSuspendAfterSeconds": seconds.clamp(120, 86_400)})), Duration::from_secs(30)).await;
+        checked(self.exec(id, RECONNECT, Duration::from_secs(30)).await?)
     }
     /// One `exec` call; the reply's stdout, or None when InstaBox stopped it at `seconds`.
     async fn run(&self, id: &str, cmd: &str, stdin: Option<&str>, seconds: u64) -> Result<Option<String>> {
@@ -227,10 +251,10 @@ impl InstaBox {
 }
 
 impl Sandbox for InstaBox {
-    /// Suspended machines keep disk and memory. The free plan pauses after a fixed 30 idle
-    /// minutes, so promise no more than that.
+    /// Suspended machines keep disk and memory. The activity lease keeps one awake for up to
+    /// an hour; after it, InstaBox's idle pause applies.
     fn info(&self) -> Info {
-        Info { persistent: true, max_unattended_minutes: 30 }
+        Info { persistent: true, max_unattended_minutes: 60 }
     }
     fn list(&self) -> Result<Vec<Machine>> {
         http::block(InstaBox::list(self))
@@ -310,8 +334,10 @@ mod tests {
                 ("GET", "/v1/machines/m_9") => text(r#"{"id":"m_9","state":"running","metadata":{}}"#),
                 ("POST", "/v1/machines/m_2/resume") => (202, br#"{"id":"op_2","state":"succeeded"}"#.to_vec()),
                 ("DELETE", "/v1/machines/m_2") => (202, br#"{"id":"op_3","type":"delete","state":"failed","error":{"message":"busy"}}"#.to_vec()),
-                ("PATCH", "/v1/machines/m_1") => (403, br#"{"error":{"code":"plan","message":"not on this plan"}}"#.to_vec()),
-                ("PUT", "/v1/activity-leases/pandacode-m_1") => text("{}"),
+                // As live on the free plan: the PATCH succeeds but keeps the fixed 30 minutes.
+                ("PATCH", "/v1/machines/m_1") => text(r#"{"id":"m_1","autoSuspendAfterSeconds":1800}"#),
+                ("PUT", "/v1/machines/m_1/activity-leases/pandacode") => text(r#"{"id":"pandacode","machineId":"m_1","expiresAt":"2026-10-24T07:30:21Z"}"#),
+                ("POST", "/v1/machines/m_1/exec") if stdin.contains("reconnect.sh") => exec_reply("0 0\n"),
                 ("POST", "/v1/machines/m_1/exec") if cmd.contains("tail -c +") => {
                     let number = |after: &str| cmd.split(after).nth(1).and_then(|r| r.split(' ').next()).and_then(|n| n.parse::<usize>().ok()).unwrap();
                     let (start, max, all) = (number("tail -c +") - 1, number("head -c "), big());
@@ -339,18 +365,56 @@ mod tests {
         instabox.power("m_2", "start").await.unwrap();
         assert!(instabox.power("m_2", "delete").await.unwrap_err().contains("busy"));
         assert!(instabox.power("m_2", "pause").await.is_err());
-        instabox.keep_alive("m_1", 30).await.unwrap();
         let log = seen.lock().unwrap();
         assert_eq!(log.iter().filter(|r| r.path == "/v1/operations/op_1").count(), 2, "polled until it succeeded");
         assert!(log.iter().all(|r| r.headers.iter().any(|(n, v)| n == "x-api-key" && v == "ibk_k")));
         let keys: Vec<&str> = log.iter().filter(|r| r.method != "GET").map(|r| r.headers.iter().find(|(n, _)| n == "idempotency-key").map(|(_, v)| v.as_str()).expect("mutation without an Idempotency-Key")).collect();
-        assert_eq!(keys.len(), 5);
+        assert_eq!(keys.len(), 3);
         assert_eq!(keys.iter().collect::<std::collections::HashSet<_>>().len(), keys.len(), "each mutation gets its own key");
         assert!(log.iter().filter(|r| r.method == "GET").all(|r| !r.headers.iter().any(|(n, _)| n == "idempotency-key")));
         let create: Value = serde_json::from_str(&log.iter().find(|r| r.method == "POST" && r.path == "/v1/machines").unwrap().body).unwrap();
         assert_eq!(create, json!({"name": "pc-new", "templateId": "agent-browser", "metadata": {"created-by": "pandacode"}}));
-        let lease: Value = serde_json::from_str(&log.iter().find(|r| r.method == "PUT").unwrap().body).unwrap();
-        assert_eq!(lease, json!({"machineId": "m_1", "ttlSeconds": 1800}));
+    }
+
+    #[tokio::test]
+    async fn keep_alive_takes_the_machine_lease_even_when_the_idle_patch_succeeds() {
+        let (instabox, seen) = instabox();
+        instabox.keep_alive("m_1", 60).await.unwrap();
+        instabox.keep_alive("m_1", 15).await.unwrap();
+        // Over the hour InstaBox grants, the lease is capped.
+        instabox.keep_alive("m_1", 24 * 60).await.unwrap();
+        let log = seen.lock().unwrap();
+        let leases: Vec<Value> = log.iter().filter(|r| r.method == "PUT").map(|r| {
+            assert_eq!(r.path, "/v1/machines/m_1/activity-leases/pandacode");
+            serde_json::from_str(&r.body).unwrap()
+        }).collect();
+        assert_eq!(leases, vec![json!({"ttlSeconds": 3600}), json!({"ttlSeconds": 900}), json!({"ttlSeconds": 3600})]);
+        let idle: Vec<Value> = log.iter().filter(|r| r.method == "PATCH").map(|r| serde_json::from_str(&r.body).unwrap()).collect();
+        assert_eq!(idle, vec![json!({"autoSuspendAfterSeconds": 3600}), json!({"autoSuspendAfterSeconds": 900}), json!({"autoSuspendAfterSeconds": 86400})]);
+    }
+
+    #[tokio::test]
+    async fn keep_alive_starts_the_reconnect_watcher_and_fails_when_it_cannot() {
+        let (instabox, seen) = instabox();
+        instabox.keep_alive("m_1", 60).await.unwrap();
+        {
+            let log = seen.lock().unwrap();
+            let watcher: Vec<Value> = log.iter().filter(|r| r.path == "/v1/machines/m_1/exec").map(|r| serde_json::from_str(&r.body).unwrap()).collect();
+            assert_eq!(watcher.len(), 1);
+            let script = watcher[0]["stdin"].as_str().unwrap();
+            assert!(script.contains("sudo -n ss -K state established '( dport = :443 or dport = :80 )'"), "{script}");
+            assert!(script.contains("kill -0") && script.contains("/proc/uptime") && script.contains("setsid nohup"), "{script}");
+        }
+        // A machine where the watcher can't start (here: no writable HOME) fails the keep-alive.
+        let (base, _) = mock::serve(|request, _| -> (u16, Vec<u8>) {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("GET", "/v1/machines/m_1") => (200, br#"{"id":"m_1","state":"running","metadata":{"created-by":"pandacode"}}"#.to_vec()),
+                ("POST", "/v1/machines/m_1/exec") => exec_reply("1 9\nread-only"),
+                _ => (200, b"{}".to_vec()),
+            }
+        });
+        let error = InstaBox::new(Some(format!("{base}/v1")), "test-key".into()).keep_alive("m_1", 60).await.unwrap_err();
+        assert!(error.contains("read-only"), "{error}");
     }
 
     #[tokio::test]
@@ -394,6 +458,65 @@ mod tests {
         }
         let log = seen.lock().unwrap();
         assert!(log.iter().all(|r| r.method == "GET" && r.path == "/v1/machines/m_9"), "nothing else was sent");
+    }
+
+    /// `INSTABOX_API_KEY=… cargo test --lib instabox_live -- --ignored --nocapture`. Creates
+    /// one agent-browser machine and always deletes it.
+    #[test]
+    #[ignore = "needs INSTABOX_API_KEY"]
+    fn instabox_live() {
+        let api = InstaBox::new(None, std::env::var("INSTABOX_API_KEY").expect("INSTABOX_API_KEY"));
+        let started = Instant::now();
+        let made = Sandbox::create(&api, &format!("pc-live-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])).unwrap();
+        let id = made.id.trim_start_matches("instabox:").to_string();
+        eprintln!("instabox_live: created {id} ({}) in {} s", made.detail, started.elapsed().as_secs());
+        let run = || -> Result<()> {
+            let wait_running = || -> Result<()> {
+                let started = Instant::now();
+                while Sandbox::state(&api, &id)? != "running" {
+                    assert!(started.elapsed() < Duration::from_secs(600), "never ran");
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+                Ok(())
+            };
+            wait_running()?;
+            // The lease (the old /activity-leases path answered 404) and one watcher, however
+            // often keep_alive runs.
+            Sandbox::keep_alive(&api, &id, 60)?;
+            Sandbox::keep_alive(&api, &id, 60)?;
+            assert_eq!(Sandbox::exec(&api, &id, "pgrep -fc reconnect.sh", Duration::from_secs(30))?.1.trim(), "1", "one watcher only");
+            // Pause with an open HTTPS connection: after the resume it is closed, processes kept.
+            Sandbox::spawn(&api, &id, "exec sleep 3000")?;
+            let sleeper = "pgrep -x sleep -a | grep ' 3000$' | cut -d' ' -f1";
+            let (_, pid) = Sandbox::exec(&api, &id, sleeper, Duration::from_secs(30))?;
+            assert!(!pid.trim().is_empty(), "background process died");
+            Sandbox::spawn(&api, &id, "exec python3 -c 'import socket,ssl,time; s=ssl.create_default_context().wrap_socket(socket.create_connection((\"api.github.com\",443)),server_hostname=\"api.github.com\"); time.sleep(3600)'")?;
+            std::thread::sleep(Duration::from_secs(3));
+            let open = "ss -Htnp state established '( dport = :443 )' | grep -c python3";
+            assert_eq!(Sandbox::exec(&api, &id, open, Duration::from_secs(30))?.1.trim(), "1");
+            Sandbox::power(&api, &id, "stop")?;
+            assert_eq!(Sandbox::state(&api, &id)?, "stopped");
+            std::thread::sleep(Duration::from_secs(30));
+            Sandbox::power(&api, &id, "start")?;
+            wait_running()?;
+            std::thread::sleep(Duration::from_secs(12));
+            assert_eq!(Sandbox::exec(&api, &id, open, Duration::from_secs(30))?.1.trim(), "0", "stale connection left open");
+            assert_eq!(Sandbox::exec(&api, &id, sleeper, Duration::from_secs(30))?.1, pid, "processes were not kept across the pause");
+            eprintln!("instabox_live: all steps passed");
+            Ok(())
+        };
+        // Delete even when a step panics, and wait until InstaBox answers 404.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+        Sandbox::power(&api, &id, "delete").unwrap();
+        let deleted = Instant::now();
+        loop {
+            match http::block(api.get(&id)) {
+                Err(error) if error.contains("not found") => break eprintln!("instabox_live: {id} deleted, GET answers 404 ({error})"),
+                _ => assert!(deleted.elapsed() < Duration::from_secs(180), "{id} still exists"),
+            }
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        result.unwrap().unwrap();
     }
 
     #[test]

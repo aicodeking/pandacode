@@ -443,7 +443,13 @@ mod tests {
         let root = std::env::temp_dir().join(format!("pandacode-cloud-repo-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let root = root.canonicalize().unwrap();
-        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@example.com"], &["config", "user.name", "T"]] {
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "T"],
+            // The test compares bytes; a global autocrlf must not rewrite them.
+            &["config", "core.autocrlf", "false"],
+        ] {
             git(&root, None, args).unwrap();
         }
         std::fs::write(root.join("a.txt"), "one\n").unwrap();

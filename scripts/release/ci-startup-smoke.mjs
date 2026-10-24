@@ -96,8 +96,11 @@ async function killTree(child, platform) {
   if (!child.pid) return;
   if (platform === 'win32') {
     // The owned root process remains alive until taskkill resolves its children.
+    // Resolve it under System32: PATH need not carry System32 (Git Bash strips it),
+    // and a missing taskkill leaves the fixture running for the whole test run.
+    const taskkill = join(process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows', 'System32', 'taskkill.exe');
     await new Promise(resolve => {
-      const killer = spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+      const killer = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], { shell: false, windowsHide: true, stdio: 'ignore', timeout: 10_000 });
       killer.once('error', resolve); killer.once('close', resolve);
     });
   } else {

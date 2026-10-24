@@ -9,7 +9,7 @@ import { applyEvent, fromList, fromSubscribe, idleLive, lastId, mergeMessages, s
 import * as auth from './auth.ts';
 import { build, NOT_CONFIGURED } from './config.ts';
 import { open, pairKey, seal } from './crypto.ts';
-import { LOST, NOT_CONNECTED, OFFLINE, Pending, RATE, request, START_TIMEOUT_MS, TIMEOUT_MS, type Method } from './rpc.ts';
+import { LOST, NOT_CONNECTED, OFFLINE, Pending, RATE, Replay, request, STALE, START_TIMEOUT_MS, TIMEOUT_MS, type Method } from './rpc.ts';
 import * as secrets from './secrets.ts';
 import { AppState } from 'react-native';
 import { RelaySocket } from './socket.ts';
@@ -33,6 +33,7 @@ let timers: ReturnType<typeof setInterval>[] = [];
 /** Per module instance: Fast Refresh re-runs this file with fresh state while the store says ready. */
 let initialized = false;
 const pending = new Pending();
+const inbound = new Replay();
 /** Pair keys by device id, with the public key they were derived from. */
 const keys = new Map<string, { publicKey: string; key: Uint8Array }>();
 /** Tasks the UI has open, per host; subscribed, renewed, and re-subscribed on presence. */
@@ -239,6 +240,11 @@ function frame(text: string) {
   if (!device?.publicKey) return;
   let message: any;
   try { message = JSON.parse(open(pairFor(device), from, to, body)); } catch { return; }
+  // Replies and events carry ts + nonce: a stale or repeated one (or an older host's) is dropped.
+  if ((message?.type === 'res' || message?.type === 'event') && !inbound.check(message.ts, message.nonce)) {
+    if (message.type === 'res') pending.resolve(from, { id: message.id, ok: false, error: STALE });
+    return;
+  }
   if (message?.type === 'res') pending.resolve(from, message);
   else if (message?.type === 'event' && message.name === 'agent.events') events(from, message.data?.events);
   else if (message?.type === 'event' && message.name === 'run.finished') void finished(from, message.data);

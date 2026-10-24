@@ -42,10 +42,10 @@ export const generateSecret = () => toBase64(x25519.utils.randomSecretKey());
 export const decodeSecret = decodeKey;
 export const publicKey = (secret: Uint8Array) => toBase64(x25519.getPublicKey(secret));
 
-/** First 8 bytes of SHA-256 of the raw public key, hex; '' for a malformed key. */
+/** First 16 bytes (128 bits) of SHA-256 of the raw public key, hex; '' for a malformed key. */
 export function fingerprint(publicKeyBase64: string): string {
   const raw = decodeKey(publicKeyBase64);
-  return raw ? hex(sha256(raw).slice(0, 8)) : '';
+  return raw ? hex(sha256(raw).slice(0, 16)) : '';
 }
 
 /** HKDF-SHA256 over the X25519 secret, salted with the sorted device ids. */

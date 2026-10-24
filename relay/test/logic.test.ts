@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readJsonCapped } from "../src/body.ts";
+import { configured } from "../src/config.ts";
 import { fullBucket, take } from "../src/bucket.ts";
 import { byteLength, parseClientFrame, undeliverableFrame } from "../src/frames.ts";
 import { githubUser } from "../src/github.ts";
 import { MAX_FRAME_BYTES, STALE_MS, TOKEN_TTL_SECONDS } from "../src/limits.ts";
-import { hostChanged, isStale, issuedAfterRegistration, keyChanged } from "../src/policy.ts";
+import { hostChanged, isStale, issuedAfterRegistration, keyChanged, tokenCurrent } from "../src/policy.ts";
 import { signToken, verifyToken } from "../src/token.ts";
 import { parseDevice } from "../src/validate.ts";
 
@@ -137,4 +139,34 @@ test("host frame that repeats the stored value is a no-op", () => {
   assert.equal(hostChanged(0, true), true);
   assert.equal(hostChanged(1, false), true);
   assert.equal(hostChanged(undefined, false), true);
+});
+
+test("capped body reader stops at the cap, chunked or not", async () => {
+  const post = (body: BodyInit) => new Request("https://x/", { method: "POST", body, duplex: "half" } as RequestInit);
+  assert.deepEqual(await readJsonCapped(post('{"a":1}'), 100), { value: { a: 1 } });
+  assert.equal(await readJsonCapped(post(JSON.stringify({ a: "x".repeat(200) })), 100), "too-large");
+  const chunks = new ReadableStream({ start(c) { for (let i = 0; i < 5; i++) c.enqueue(new TextEncoder().encode("x".repeat(30))); c.close(); } });
+  assert.equal(await readJsonCapped(post(chunks), 100), "too-large");
+  assert.equal(await readJsonCapped(post("{nope"), 100), "invalid");
+});
+
+test("secret config check", () => {
+  const ok = { SESSION_SECRET: "s".repeat(32), GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "sec" };
+  assert.equal(configured(ok, true), true);
+  assert.equal(configured({ ...ok, SESSION_SECRET: "s".repeat(31) }, false), false);
+  assert.equal(configured({ ...ok, SESSION_SECRET: undefined }, false), false);
+  assert.equal(configured({ SESSION_SECRET: ok.SESSION_SECRET }, false), true);
+  assert.equal(configured({ SESSION_SECRET: ok.SESSION_SECRET }, true), false);
+});
+
+test("gen claim: round trip, mismatch refused, legacy tokens use iat", async () => {
+  const c = await verifyToken("s3cret", await signToken("s3cret", "gh:1", ID, 1000, 42), 1001);
+  assert.equal(c?.gen, 42);
+  assert.equal(tokenCurrent({ gen: 42, iat: 1000 }, { gen: 42, registered_at: 1000 }), true);
+  // Same-second revoke + re-register: iat == registered_at would pass, gen does not.
+  assert.equal(tokenCurrent({ gen: 42, iat: 1000 }, { gen: 7, registered_at: 1000 }), false);
+  assert.equal(tokenCurrent({ iat: 1000 }, { gen: 0, registered_at: 1000 }), true);
+  assert.equal(tokenCurrent({ iat: 999 }, { gen: 0, registered_at: 1000 }), false);
+  const bad = btoa(JSON.stringify({ acct: "a", dev: ID, iat: 1, exp: 9e9, gen: "x" })).replace(/=+$/, "");
+  assert.equal(await verifyToken("s3cret", `${bad}.x`, 2), null);
 });

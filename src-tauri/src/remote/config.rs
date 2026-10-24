@@ -52,6 +52,9 @@ pub(crate) struct Settings {
     pub device_id: String,
     #[serde(default)]
     pub host_enabled: bool,
+    /// Lets remote devices pick Full access (no approvals). Off: they get approving modes only.
+    #[serde(default)]
+    pub remote_full_access: bool,
     #[serde(default)]
     pub account: Option<Account>,
 }
@@ -71,8 +74,29 @@ pub(crate) fn load(dir: &Path) -> Settings {
 
 pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| format!("Could not save remote access settings: {e}"))
+    write_atomic(dir, text.as_bytes()).map_err(|e| format!("Could not save remote access settings: {e}"))
+}
+
+/// A unique 0600 temp file beside `remote.json`, fsynced, then renamed over it.
+// ponytail: same steps as secret_store's private write_atomic; share it if that one is made pub(crate).
+fn write_atomic(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let temp = dir.join(format!("{FILE}.{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let renamed = options
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|_| std::fs::rename(&temp, dir.join(FILE)));
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    renamed
 }
 
 /// The stored key, or a new one written once when none (or an unreadable value) is stored.
@@ -186,7 +210,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pandacode-remote-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = load(&dir);
-        assert!(!first.host_enabled);
+        assert!(!first.host_enabled && !first.remote_full_access);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(dir.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        save(&dir, &Settings { remote_full_access: true, ..first.clone() }).unwrap();
+        assert!(load(&dir).remote_full_access);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp files left behind");
         assert!(first.account.is_none());
         assert_eq!(load(&dir).device_id, first.device_id);
         let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"},"trusted":{"old-device":"old-key"}}"#).unwrap();

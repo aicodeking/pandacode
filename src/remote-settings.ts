@@ -5,6 +5,7 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';
 
+const FULL_TIP = 'When off, your other computers cannot start or switch a task here to Full access (no approvals); a remote task without a mode starts in Ask.';
 const ALLOW_TIP = 'Remote prompts follow this computer’s approval settings; they get no more power than prompts typed here.';
 
 export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => void {
@@ -23,6 +24,7 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     }
     return `<div class="setting-row"><div><strong>${escape(status.account?.login ?? 'Signed in')}</strong><small>Signed in with GitHub · ${status.connected ? 'connected' : 'connecting…'}</small></div><button type="button" class="secondary-button" data-sign-out>Sign out</button></div>
       <div class="setting-row"><div><strong>Allow remote control of this computer ${infoMark(ALLOW_TIP, 'About remote control')}</strong><small>Your other signed-in computers can see and drive tasks here.</small></div><input type="checkbox" class="settings-switch" id="remote-host" aria-label="Allow remote control of this computer" ${status.hostEnabled ? 'checked' : ''}></div>
+      <div class="setting-row"><div><strong>Full access for remote tasks ${infoMark(FULL_TIP, 'About full access for remote tasks')}</strong><small>Off: remote tasks always ask before acting.</small></div><input type="checkbox" class="settings-switch" id="remote-full-access" aria-label="Full access for remote tasks" ${status.remoteFullAccess ? 'checked' : ''}></div>
       <h3 class="settings-heading">Devices</h3><div class="settings-group remote-devices">${devices.length ? devices.map(deviceRow).join('') : '<p class="remote-note">No devices yet.</p>'}</div>`;
   }
   function render(): void {
@@ -67,7 +69,8 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   });
   root.addEventListener('change', event => {
     const input = event.target as HTMLInputElement;
-    if (input.id === 'remote-host') void host.call<RemoteStatus>('remote_set_host_enabled', { enabled: input.checked }).then(next => { apply(next); render(); }, e => { input.checked = !input.checked; fail(e); });
+    const args = input.id === 'remote-host' ? { enabled: input.checked } : input.id === 'remote-full-access' ? { fullAccess: input.checked } : undefined;
+    if (args) void host.call<RemoteStatus>('remote_set_host_enabled', args).then(next => { apply(next); render(); }, e => { input.checked = !input.checked; fail(e); });
   });
   const unlisten: Promise<() => void>[] = [
     host.listen('remote://status', next => { if (!signingIn || next.signedIn) { apply(next); render(); } }),

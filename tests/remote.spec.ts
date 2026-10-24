@@ -22,6 +22,11 @@ test('signs in with a device code, toggles remote control and lists devices', as
   await expect(toggle).not.toBeChecked();
   await toggle.check();
   await expect(toggle).toBeChecked();
+  const full = panel.getByRole('checkbox', { name: 'Full access for remote tasks' });
+  await expect(full).not.toBeChecked();
+  await full.check();
+  await expect(full).toBeChecked();
+  await expect(toggle).toBeChecked();
   await expect(panel.locator('.remote-device[data-device="dev-this"]')).toContainText('This computer');
   await expect(panel.locator('.remote-device[data-device="dev-this"]')).toContainText('remote control on');
 

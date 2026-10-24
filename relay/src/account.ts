@@ -2,8 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { type Bucket, fullBucket, take } from "./bucket.ts";
 import { type Env, fail, json } from "./env.ts";
 import { type DeviceView, errorFrame, forwardFrame, parseClientFrame, presenceFrame, undeliverableFrame } from "./frames.ts";
-import { MAX_DEVICES } from "./limits.ts";
-import { hostChanged, isStale, issuedAfterRegistration, keyChanged } from "./policy.ts";
+import { MAX_DEVICES, RATE_LIMITED_PARSE_CHARS } from "./limits.ts";
+import { hostChanged, isStale, keyChanged, tokenCurrent } from "./policy.ts";
 import { isUuid, parseDevice } from "./validate.ts";
 
 interface Attachment extends Bucket {
@@ -12,7 +12,7 @@ interface Attachment extends Bucket {
   joinedAt: number;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 interface Row {
   id: string;
@@ -22,6 +22,7 @@ interface Row {
   host: number;
   last_seen: number;
   registered_at: number;
+  gen: number;
   [column: string]: SqlStorageValue;
 }
 
@@ -56,6 +57,10 @@ export class Account extends DurableObject<Env> {
     if (!sql.exec<{ name: string }>("PRAGMA table_info(devices)").toArray().some((c) => c.name === "registered_at")) {
       sql.exec("ALTER TABLE devices ADD COLUMN registered_at INTEGER NOT NULL DEFAULT 0");
     }
+    // gen (schema 2): existing rows get 0; tokens without a gen claim still use the iat check.
+    if (!sql.exec<{ name: string }>("PRAGMA table_info(devices)").toArray().some((c) => c.name === "gen")) {
+      sql.exec("ALTER TABLE devices ADD COLUMN gen INTEGER NOT NULL DEFAULT 0");
+    }
     if (version >= 0) sql.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -66,13 +71,14 @@ export class Account extends DurableObject<Env> {
     const device = request.headers.get("x-device-id") ?? "";
     const row = this.row(device);
     if (!row) return fail(401, "device is not registered");
-    if (!issuedAfterRegistration(Number(request.headers.get("x-token-iat")), row.registered_at)) {
+    const gen = request.headers.get("x-token-gen");
+    if (!tokenCurrent({ iat: Number(request.headers.get("x-token-iat")), gen: gen === null ? undefined : Number(gen) }, row)) {
       return fail(401, "token was issued before the device registered");
     }
 
     if (pathname === "/v1/connect") return this.join(request, device);
     // The Worker signs the fresh token after this 200; reaching here means the device is still registered.
-    if (pathname === "/v1/token") return request.method === "POST" ? json({ ok: true }) : fail(405, "method not allowed");
+    if (pathname === "/v1/token") return request.method === "POST" ? json({ ok: true, gen: row.gen }) : fail(405, "method not allowed");
     if (pathname === "/v1/devices" && request.method === "GET") {
       if (this.reap()) this.broadcastPresence();
       return json({ devices: this.devices() });
@@ -88,12 +94,15 @@ export class Account extends DurableObject<Env> {
     const existing = this.row(d.id);
     if (keyChanged(existing?.public_key, d.publicKey)) return fail(409, "device key changed");
     if (!existing && this.rows().length >= MAX_DEVICES) return fail(403, `device limit reached (${MAX_DEVICES})`);
+    // gen is set only on a fresh insert (the row is gone after a revoke). A plain re-sign-in of a registered device keeps it,
+    // so that device's other valid tokens keep working; they carry the same key and are the same device.
+    const gen = crypto.getRandomValues(new Uint32Array(1))[0];
     this.ctx.storage.sql.exec(
-      `INSERT INTO devices (id, name, platform, public_key, last_seen, registered_at) VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO devices (id, name, platform, public_key, last_seen, registered_at, gen) VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, platform = excluded.platform`,
-      d.id, d.name, d.platform, d.publicKey, Date.now(), Math.floor(Date.now() / 1000),
+      d.id, d.name, d.platform, d.publicKey, Date.now(), Math.floor(Date.now() / 1000), gen,
     );
-    return json({ ok: true });
+    return json({ ok: true, gen: this.row(d.id)?.gen ?? gen });
   }
 
   private revoke(raw: string): Response {
@@ -133,7 +142,8 @@ export class Account extends DurableObject<Env> {
     this.buckets.set(att.device, spent.bucket);
     ws.serializeAttachment({ device: att.device, joinedAt: att.joinedAt, ...spent.bucket } satisfies Attachment);
 
-    // Parsed before the bucket check so a rate-limited send can still name its `to` and `ref`.
+    // Parsed before the bucket check so a small rate-limited send can still name its `to` and `ref`; a large one is not parsed at all.
+    if (!spent.ok && (typeof message !== "string" || message.length > RATE_LIMITED_PARSE_CHARS)) return this.send(ws, errorFrame("rate limit exceeded"));
     const frame = parseClientFrame(message);
     if (!spent.ok) {
       return this.send(ws, frame.kind === "send" ? undeliverableFrame(frame.to, "rate", frame.ref) : errorFrame("rate limit exceeded"));

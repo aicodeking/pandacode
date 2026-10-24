@@ -195,18 +195,53 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
     })
 }
 
+/// Checked when a queued request is about to run, not when it arrived: remote control is
+/// still on, the sender is still in presence, and the request is fresh. Returns whether
+/// remote tasks may use Full access.
+fn admit(inner: &mut super::Inner, from: &str, message: &Value, now_ms: i64) -> Result<bool> {
+    gate(inner.settings.host_enabled)?;
+    inner.callable(from)?;
+    inner.replay.check(message["ts"].as_i64(), message["nonce"].as_str(), now_ms)?;
+    Ok(inner.settings.remote_full_access)
+}
+
+/// Without "Full access for remote tasks", an explicit `full` is refused and a start
+/// without a mode (which would default to full) asks for approvals.
+fn cap_mode(call: Call, full_access: bool) -> Result<Call> {
+    const SAFE: &str = "ask";
+    if full_access {
+        return Ok(call);
+    }
+    let refuse = || Err(full_access_off());
+    Ok(match call {
+        Call::Start(start) if start.mode.as_deref() == Some("full") => return refuse(),
+        Call::Start(start) => Call::Start(start::Start { mode: Some(start.mode.unwrap_or_else(|| SAFE.into())), ..start }),
+        Call::Configure { mode: Some(mode), .. } if mode == "full" => return refuse(),
+        other => other,
+    })
+}
+
+fn full_access_off() -> String {
+    format!("Full access is off for remote tasks on {}.", super::config::device_name())
+}
+
+/// Without "Full access for remote tasks", a prompt, steer or configure that would run a
+/// task stored in `full` is refused, unless it switches the task to another mode. The
+/// task's own mode is the user's and is never changed here.
+fn allow_task_mode(stored: &str, requested: Option<&str>, full_access: bool) -> Result<()> {
+    if !full_access && stored == "full" && requested.is_none_or(|mode| mode == "full") {
+        return Err(full_access_off());
+    }
+    Ok(())
+}
+
 /// The response to one request frame, or None when it has no usable id.
 pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value) -> Option<Value> {
     let id = message["id"].as_str().filter(|id| valid_id(id).is_ok())?;
-    let admitted = {
-        let state = remote(app);
-        let mut inner = state.lock();
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let enabled = inner.settings.host_enabled;
-        gate(enabled).and_then(|_| inner.replay.check(message["ts"].as_i64(), message["nonce"].as_str(), now_ms)).map(|_| enabled)
-    };
-    let result = match admitted.and_then(|enabled| parse(enabled, message["method"].as_str().unwrap_or_default(), &message["params"])) {
-        Ok(call) => run(app, from, call).await,
+    let admitted = admit(&mut remote(app).lock(), from, message, chrono::Utc::now().timestamp_millis());
+    let call = admitted.and_then(|full_access| parse(true, message["method"].as_str().unwrap_or_default(), &message["params"]).and_then(|call| cap_mode(call, full_access)).map(|call| (call, full_access)));
+    let result = match call {
+        Ok((call, full_access)) => run(app, from, call, full_access).await,
         Err(error) => Err(error),
     };
     Some(match result {
@@ -216,15 +251,15 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value) 
 }
 
 /// The task must exist here; a mirror never forwards a second hop.
-fn local_task(state: &AppState, session_id: &str) -> Result<()> {
+fn local_task(state: &AppState, session_id: &str) -> Result<crate::storage::Session> {
     let task = state.store.lock().map_err(|e| e.to_string())?.session(session_id)?;
     if task.remote_device.is_some() {
         return Err("That task runs on another computer.".into());
     }
-    Ok(())
+    Ok(task)
 }
 
-async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
+async fn run(app: &tauri::AppHandle, from: &str, call: Call, full_access: bool) -> Result<Value> {
     let state = app.state::<AppState>();
     match call {
         Call::Subscribe { session_ids } => {
@@ -277,7 +312,7 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             messages_page(&store.db, &session_id, after_id)
         }
         Call::Send { session_id, text } => {
-            local_task(&state, &session_id)?;
+            allow_task_mode(&local_task(&state, &session_id)?.mode, None, full_access)?;
             // Like Enter in the composer: a running task queues the message.
             let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
             if busy()? {
@@ -299,11 +334,11 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             Ok(json!({}))
         }
         Call::Steer { session_id, text } => {
-            local_task(&state, &session_id)?;
+            allow_task_mode(&local_task(&state, &session_id)?.mode, None, full_access)?;
             message_queue::steer_task(app.clone(), state, session_id, text).await
         }
         Call::Configure { session_id, model, effort, mode } => {
-            local_task(&state, &session_id)?;
+            allow_task_mode(&local_task(&state, &session_id)?.mode, mode.as_deref(), full_access)?;
             if let Some((provider, _)) = &model {
                 start::require_installed(provider).await?;
             }
@@ -875,6 +910,60 @@ mod tests {
         inner.subscribers.insert("viewer".into(), subscriber);
         assert!(prune_subscribers(&mut inner, now));
         assert!(inner.subscribers.contains_key("viewer"));
+    }
+
+    #[test]
+    fn access_is_checked_when_a_request_runs() {
+        let mut inner = super::super::Inner {
+            devices: vec![super::super::Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: "k".into(), host: false, online: true, last_seen: Value::Null }],
+            ..Default::default()
+        };
+        let now = 1_000_000_000;
+        let request = |nonce: &str| json!({"ts": now, "nonce": nonce});
+        assert_eq!(admit(&mut inner, "viewer", &request("nonce-0000000000000001"), now), Err(OFF.to_string()));
+        inner.settings.host_enabled = true;
+        assert_eq!(admit(&mut inner, "viewer", &request("nonce-0000000000000002"), now), Ok(false));
+        inner.settings.remote_full_access = true;
+        assert_eq!(admit(&mut inner, "viewer", &request("nonce-0000000000000003"), now), Ok(true));
+        assert!(admit(&mut inner, "viewer", &request("nonce-0000000000000003"), now).is_err(), "replayed");
+        // Revoked (gone from presence) after the request was queued.
+        inner.devices.clear();
+        assert_eq!(admit(&mut inner, "viewer", &request("nonce-0000000000000004"), now), Err(super::super::UNKNOWN_DEVICE.to_string()));
+    }
+
+    #[test]
+    fn full_access_is_capped_for_remote_tasks() {
+        let start = |mode: Option<&str>| {
+            let mut params = json!({"projectId": "p", "prompt": "go", "provider": "claude", "model": "sonnet"});
+            if let Some(mode) = mode {
+                params["mode"] = json!(mode);
+            }
+            parse(true, "task.start", &params).unwrap()
+        };
+        let mode = |call: Call| match call {
+            Call::Start(start) => start.mode,
+            Call::Configure { mode, .. } => mode,
+            _ => unreachable!(),
+        };
+        assert_eq!(mode(cap_mode(start(None), false).unwrap()).as_deref(), Some("ask"), "the full default asks instead");
+        assert_eq!(mode(cap_mode(start(Some("auto")), false).unwrap()).as_deref(), Some("auto"));
+        assert!(cap_mode(start(Some("full")), false).unwrap_err().starts_with("Full access is off for remote tasks on "));
+        assert_eq!(mode(cap_mode(start(None), true).unwrap()), None);
+        assert_eq!(mode(cap_mode(start(Some("full")), true).unwrap()).as_deref(), Some("full"));
+        let configure = |mode: &str| parse(true, "task.configure", &json!({"sessionId": "s", "mode": mode})).unwrap();
+        assert!(cap_mode(configure("full"), false).is_err());
+        assert_eq!(mode(cap_mode(configure("plan"), false).unwrap()).as_deref(), Some("plan"));
+        assert_eq!(mode(cap_mode(configure("full"), true).unwrap()).as_deref(), Some("full"));
+    }
+
+    #[test]
+    fn a_full_task_takes_no_remote_prompts_without_full_access() {
+        let off = |stored, requested| allow_task_mode(stored, requested, false);
+        assert!(off("full", None).unwrap_err().starts_with("Full access is off for remote tasks on "), "send, steer, model-only configure");
+        assert!(off("full", Some("full")).is_err());
+        assert!(off("full", Some("ask")).is_ok(), "switching it to an approving mode");
+        assert!(off("ask", None).is_ok() && off("auto", None).is_ok());
+        assert!(allow_task_mode("full", None, true).is_ok());
     }
 
     #[test]

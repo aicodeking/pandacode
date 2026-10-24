@@ -1,4 +1,6 @@
 import { Account } from "./account.ts";
+import { readJsonCapped } from "./body.ts";
+import { configured } from "./config.ts";
 import { type Env, fail, json } from "./env.ts";
 import { githubUser } from "./github.ts";
 import { MAX_FRAME_BYTES } from "./limits.ts";
@@ -12,8 +14,10 @@ const stub = (env: Env, acct: string) => env.ACCOUNT.get(env.ACCOUNT.idFromName(
 async function authGithub(request: Request, env: Env): Promise<Response> {
   const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
   if (!(await env.AUTH_LIMITER.limit({ key: ip })).success) return fail(429, "too many sign-in attempts");
-  if (Number(request.headers.get("content-length") ?? 0) > MAX_FRAME_BYTES) return fail(413, "request too large");
-  const body = (await request.json().catch(() => null)) as { githubToken?: unknown; device?: unknown } | null;
+  if (!(await env.GLOBAL_AUTH_LIMITER.limit({ key: "all" })).success) return fail(429, "too many sign-in attempts");
+  const read = await readJsonCapped(request, MAX_FRAME_BYTES);
+  if (read === "too-large") return fail(413, "request too large");
+  const body = read === "invalid" ? null : (read.value as { githubToken?: unknown; device?: unknown } | null);
   if (!body || typeof body.githubToken !== "string" || !body.githubToken || body.githubToken.length > 512) {
     return fail(400, "githubToken is required");
   }
@@ -23,7 +27,8 @@ async function authGithub(request: Request, env: Env): Promise<Response> {
   if ("status" in user) return fail(user.status, user.error);
   const res = await stub(env, user.id).fetch("https://account/internal/register", { method: "POST", body: JSON.stringify(device) });
   if (!res.ok) return res;
-  const token = await signToken(env.SESSION_SECRET, user.id, device.id, Math.floor(Date.now() / 1000));
+  const { gen } = (await res.json().catch(() => ({}))) as { gen?: unknown };
+  const token = await signToken(env.SESSION_SECRET, user.id, device.id, Math.floor(Date.now() / 1000), typeof gen === "number" ? gen : undefined);
   return json({ token, account: user });
 }
 
@@ -31,6 +36,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (!configured(env, path === "/v1/auth/github")) return fail(500, "server error");
     if (path === "/v1/auth/github") return request.method === "POST" ? authGithub(request, env) : fail(405, "method not allowed");
 
     const known = path === "/v1/connect" || path === "/v1/devices" || path === "/v1/token" || path.startsWith("/v1/devices/");
@@ -44,9 +50,12 @@ export default {
     const headers = new Headers(request.headers);
     headers.set("x-device-id", claims.dev);
     headers.set("x-token-iat", String(claims.iat));
+    headers.delete("x-token-gen");
+    if (claims.gen !== undefined) headers.set("x-token-gen", String(claims.gen));
     headers.delete("authorization");
     const res = await stub(env, claims.acct).fetch(new Request(request, { headers }));
     if (path !== "/v1/token" || !res.ok) return res;
-    return json({ token: await signToken(env.SESSION_SECRET, claims.acct, claims.dev, Math.floor(Date.now() / 1000)) });
+    const { gen } = (await res.json().catch(() => ({}))) as { gen?: unknown };
+    return json({ token: await signToken(env.SESSION_SECRET, claims.acct, claims.dev, Math.floor(Date.now() / 1000), typeof gen === "number" ? gen : undefined) });
   },
 } satisfies ExportedHandler<Env>;

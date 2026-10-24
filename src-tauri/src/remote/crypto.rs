@@ -33,9 +33,9 @@ fn decode_public(text: &str) -> Option<[u8; 32]> {
     STANDARD.decode(text.trim()).ok()?.try_into().ok()
 }
 
-/// First 8 bytes of SHA-256 of the raw public key, hex.
+/// First 16 bytes (128 bits) of SHA-256 of the raw public key, hex.
 pub(crate) fn fingerprint(public: &str) -> String {
-    decode_public(public).map(|raw| Sha256::digest(raw)[..8].iter().map(|b| format!("{b:02x}")).collect()).unwrap_or_default()
+    decode_public(public).map(|raw| Sha256::digest(raw)[..16].iter().map(|b| format!("{b:02x}")).collect()).unwrap_or_default()
 }
 
 /// HKDF-SHA256 over the X25519 secret, salted with the sorted device ids.
@@ -110,7 +110,7 @@ mod tests {
         let restored = decode_secret(&encode_secret(&secret)).unwrap();
         assert_eq!(public_key(&restored), public_key(&secret));
         let print = fingerprint(&public_key(&secret));
-        assert_eq!(print.len(), 16);
+        assert_eq!(print.len(), 32);
         assert!(print.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(fingerprint("nope"), "");
         assert!(pair_key(&secret, "a", &STANDARD.encode([0u8; 32]), "b").is_err());

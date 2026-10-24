@@ -48,7 +48,8 @@ Sign in with GitHub using the OAuth **device flow** (no client secret anywhere):
 1. Desktop: `POST https://github.com/login/device/code` with `client_id`, and the scope is empty (identity only).
 2. The user enters the code at `verification_uri`. The desktop polls `https://github.com/login/oauth/access_token`.
 3. Desktop → relay `POST /v1/auth/github` `{ githubToken, device: { id, name, platform, publicKey } }`.
-   The relay calls `GET https://api.github.com/user` and gets the numeric id, login and avatar_url. It
+   The relay checks the token against its own OAuth app (`POST /applications/{client_id}/token`, so a
+   token issued to any other app is refused) and gets the numeric id, login and avatar_url. It
    registers the device and returns `{ token, account: { id: "gh:<id>", login, avatarUrl } }`.
 4. The desktop stores only the relay token, in `connect-secrets.json`, and discards the GitHub token.
 
@@ -75,9 +76,12 @@ sign-in.
 If the relay answers `409` (this device id is already registered with a different public key), the
 desktop makes a new device id, saves it, and retries once.
 
-Relay token: `base64url(JSON {acct, dev, iat, exp}) + "." + base64url(HMAC-SHA256(SESSION_SECRET))`.
-It is valid for 30 days, and only while the device is still registered on the account. Revoking a
-device closes its socket and makes its token invalid.
+Relay token: `base64url(JSON {acct, dev, iat, exp, gen}) + "." + base64url(HMAC-SHA256(SESSION_SECRET))`.
+It is valid for 30 days, and only while the device is still registered on the account with the same
+`gen` (a random value set when the device row is created; older tokens without `gen` fall back to
+`iat >= registered_at`, and a refresh adds it). Revoking a device closes its socket and makes its
+tokens invalid, even after a re-registration in the same second. The relay refuses to run with a
+`SESSION_SECRET` shorter than 32 characters.
 
 **Refresh.** While connected, the desktop checks the token at connect and every 12 hours. With
 fewer than 7 days left it calls `POST /v1/token` and stores the fresh token (same account and
@@ -143,8 +147,10 @@ sockets cost no duration. Device rows live in the Durable Object's SQLite storag
 | Devices per account | 10 | Fits personal use. Stops abuse. |
 | Sockets per device | 1 | A new socket closes the old one. |
 | Frame size | 256 KiB | Message pages and event frames are capped at 180 KiB of JSON. |
-| Frame rate per socket | 20/s sustained, burst 100 | Token bucket. Over the limit → `error` and drop. |
-| Auth calls | 10/min per IP | Workers rate-limit binding |
+| Frame rate per socket | 20/s sustained, burst 100 | Token bucket. Over the limit → `undeliverable` (`reason: "rate"`) or `error`, and drop; frames over 4 KiB are not parsed. |
+| Auth calls | 10/min per IP, 300/min overall | Workers rate-limit bindings |
+| Authenticated HTTP calls | 30/min per account | Workers rate-limit binding |
+| Sign-in body | 256 KiB, counted while streaming | Chunked bodies too |
 | Idle socket | kept (hibernated). The client pings every 30 s. | |
 
 ## End-to-end encryption
@@ -157,7 +163,7 @@ registered with the device. For a pair of devices:
 `body = base64(nonce24 || XChaCha20-Poly1305(key, nonce24, plaintext, aad = from + "|" + to))`.
 Pair keys are cached by `(deviceId, publicKey)`, so a key change derives a new one from the
 current key in presence. The relay sees only device ids and ciphertext. Settings shows each
-device's key fingerprint (first 8 bytes of SHA-256 of the public key, hex) for information.
+device's key fingerprint (first 16 bytes of SHA-256 of the public key, hex) for information.
 
 ### Account access
 
@@ -178,13 +184,25 @@ access.
   16–64 random printable characters. A host refuses a request if `ts` is more than 60 s old or
   ahead, and refuses any nonce it saw in that window. The seen-nonce set is pruned to the window
   and bounded.
-- Response `{ type: "res", id, ok: true, result }` or `{ type: "res", id, ok: false, error }`
-- Event `{ type: "event", name, data }`
+- Response `{ type: "res", id, ok: true, result, ts, nonce }` or `{ type: "res", id, ok: false, error, ts, nonce }`
+- Event `{ type: "event", name, data, ts, nonce }`
+
+Every sealed message carries `ts` and `nonce`. The viewer (desktop and phone) applies the same
+window and seen-nonce check to responses and events and drops a stale, repeated or unstamped one;
+a dropped response fails its call at once with `That computer's reply was stale or repeated…`.
+A viewer therefore needs a host on a version that stamps replies.
 
 A host answers requests from other devices listed in its account presence only while **Allow
 remote control** is on. Otherwise it returns
 `{ ok: false, error: "Remote control is off on this computer" }`. A host still applies its own
-approval policy: remote prompts get no more power than local ones.
+approval policy: remote prompts get no more power than local ones. Access (remote control on, the
+sender in presence, replay) is checked again when a queued request runs, not only when it arrives.
+
+**Full access for remote tasks** (`remote_full_access` in `remote.json`, off by default): while
+off, `task.start` without a mode starts in `ask`; an explicit `full` in `task.start` or
+`task.configure`, and any `task.send`, `task.steer` or mode-less `task.configure` on a task whose
+stored mode is `full`, are refused with `Full access is off for remote tasks on <host>.` This
+prevents accidents; it is not a boundary against a device that can also answer approvals.
 
 | Method | Params | Result |
 |---|---|---|
@@ -291,7 +309,7 @@ Requests from one peer are answered in order, except `task.start` (above).
 | `remote_sign_in_finish` | | status (waits for the device flow, error on expiry, denial or cancel) |
 | `remote_sign_in_cancel` | | status. Stops the device-flow poll. |
 | `remote_sign_out` | | status |
-| `remote_set_host_enabled` | `{ enabled }` | status |
+| `remote_set_host_enabled` | `{ enabled?, fullAccess? }` | status (with `remoteFullAccess`). Sets Allow remote control and/or Full access for remote tasks. |
 | `remote_devices` | | `[{ id, name, platform, fingerprint, host, online, lastSeen, current }]`, from presence (fetched only before the first presence frame) |
 | `remote_revoke_device` | `{ deviceId }` | `{}` |
 | `remote_targets` | | `[{ deviceId, name, platform, online }]`: other online devices with hosting on |

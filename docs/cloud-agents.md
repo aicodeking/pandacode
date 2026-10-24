@@ -95,13 +95,30 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | tensorlake | API key | — |
 | freestyle | API key | — |
 | boat | API key | `apiUrl` |
-| instabox | API key | — (machines from the `agent-browser` template; `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 30 unattended minutes) |
+| instabox | API key | — (machines from the `agent-browser` template; `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 60 unattended minutes) |
 | vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
 | railway | (existing deploy token) | `workspace` (existing) |
 | gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |
 
 Non-secret options live in `cloud::Settings.providers[<id>]`; a `detail` entry there is
 shown in Settings. Secrets use `cloud::set_secret("<id>_key", …)`.
+
+## InstaBox
+
+**Staying awake.** `keep_alive` takes an activity lease
+(`PUT /v1/machines/{id}/activity-leases/pandacode`, at most 3600 s), which also wakes a
+paused machine; when it expires a full idle period starts. It also PATCHes
+`autoSuspendAfterSeconds`, which only accounts with manual lifecycle (`GET /v1/me`
+`manualLifecycle`) get: every other account keeps the fixed 30-minute idle pause and the
+reply says 1800 whatever was sent.
+
+**Reconnecting after a pause.** A pause freezes processes, and after a resume clients
+such as Claude Code reuse keep-alive sockets to the model API whose connections are gone,
+and hang. `keep_alive` starts a small watcher on the machine (once per boot,
+`~/.pandacode/reconnect.sh`) that notices the wall clock jumping ahead of `/proc/uptime`
+and closes established outbound connections to ports 443 and 80 with `sudo -n ss -K`,
+so clients reconnect. This needs passwordless sudo, which `agent-browser` and snapshots
+of it have; on an image without it the watcher closes nothing.
 
 ## Privacy
 
