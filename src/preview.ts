@@ -419,6 +419,7 @@ function session(value: unknown): Session { const result = sessions.find(s => s.
 function assertIdle(s: Session): void {
   if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing this task.');
 }
+function ensureWritable(s: Session): void { if (s.transcriptOnly) throw new Error('This imported conversation is a read-only archive and cannot accept messages.'); }
 function taskDetails(title: unknown, description: unknown): { title: string; taskDescription: string } {
   if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Title must be 1–200 characters.');
   if (typeof description !== 'string' || new TextEncoder().encode(description).length > 128 * 1024) throw new Error('Task description must be under 128 KiB.');
@@ -547,6 +548,14 @@ const previewImportables: Record<'claude' | 'codex', { id: string; title: string
     { id: '4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f', title: 'Speed up the search index', folder: '/Users/you/Projects/pandacode', updatedAt: now - 5 * 3600000, messages: null, model: 'gpt-6-astra' },
   ],
 };
+type PreviewCopilotImport = { id: string; title: string; folder: string; updatedAt: number; messages: number; model: string | null; sourceKind: 'local' | 'synced' | 'hosted'; transcriptOnly: boolean; repository?: string; projectId?: string; unavailable?: string; history: { role: 'user' | 'assistant' | 'tool'; content: string; at: number }[] };
+const previewCopilotImportables: PreviewCopilotImport[] = [
+  { id: 'copilot-local-9a31', title: 'Document the search API', folder: '/Users/you/Projects/pandacode', updatedAt: now - 2 * 3600000, messages: 8, model: 'default', sourceKind: 'local', transcriptOnly: false, history: [{ role: 'user', content: 'Document the public search API.', at: now - 3 * 3600000 }, { role: 'assistant', content: 'I will document the search API and its options.', at: now - 2.8 * 3600000 }, { role: 'tool', content: 'Tool: Read', at: now - 2.7 * 3600000 }, { role: 'assistant', content: 'The API docs are updated.', at: now - 2 * 3600000 }] },
+  { id: 'copilot-synced-5b2c', title: 'Tune search ranking', folder: 'orbit-labs/orbit', updatedAt: now - 4 * 3600000, messages: 6, model: 'default', sourceKind: 'synced', transcriptOnly: false, repository: 'orbit-labs/orbit', projectId: 'project-1', history: [{ role: 'user', content: 'Tune search ranking for exact matches.', at: now - 5 * 3600000 }, { role: 'assistant', content: 'I will inspect the ranking function.', at: now - 4.7 * 3600000 }, { role: 'assistant', content: 'Exact matches now rank first.', at: now - 4 * 3600000 }] },
+  { id: 'copilot-hosted-b07f', title: 'Review the hosted migration', folder: 'orbit-labs/orbit', updatedAt: now - 6 * 3600000, messages: 4, model: null, sourceKind: 'hosted', transcriptOnly: true, repository: 'orbit-labs/orbit', projectId: 'project-1', history: [{ role: 'user', content: 'Review the hosted migration plan.', at: now - 6.5 * 3600000 }, { role: 'assistant', content: 'The plan keeps the data migration reversible.', at: now - 6 * 3600000 }] },
+  { id: 'copilot-hosted-unmatched-1c22', title: 'Fix the billing webhook', folder: 'outside-org/billing', updatedAt: now - 8 * 3600000, messages: 2, model: null, sourceKind: 'hosted', transcriptOnly: true, repository: 'outside-org/billing', history: [{ role: 'user', content: 'Fix the billing webhook.', at: now - 8.2 * 3600000 }, { role: 'assistant', content: 'I will review the webhook flow.', at: now - 8 * 3600000 }] },
+];
+const previewImportedConversationIds = new Map<string, string>();
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */
 function settleDraft(task: Session): Session {
   if (task.draft && (messages[task.id] ?? []).some(message => message.role === 'user' && message.content.trim())) { task.draft = false; task.createdAt = Date.now(); }
@@ -788,7 +797,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
     case 'architect_delete_profile': result = architect.deleteProfile(args.id); break;
-    case 'architect_start': architect.start(args.sessionId, args.text, args.imageIds); break;
+    case 'architect_start': { const task = session(args.sessionId); ensureWritable(task); architect.start(args.sessionId, args.text, args.imageIds); break; }
     case 'architect_control': result = architect.control(args.sessionId, args.action); break;
     case 'architect_worker_messages': result = architect.workerMessages(args.sessionId, args.workerId, args.beforeId); break;
     case 'architect_team_messages': result = architect.teamMessages(args.sessionId, args.afterId, args.limit); break;
@@ -893,7 +902,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
-      session(args.sessionId);
+      const task = session(args.sessionId); ensureWritable(task);
       const text = String(args.text ?? ''), list = Array.isArray(args.attachments) ? args.attachments : [];
       if (!text.trim() && !list.length) throw new Error('Write a message or add an attachment to queue.');
       const queue = previewQueue(), at = Date.now();
@@ -927,6 +936,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'steer_task': {
       const s = session(args.sessionId);
+      ensureWritable(s);
       if (!timers.has(s.id) && s.status !== 'running') throw new Error('The agent is not running; the message stays queued.');
       // Claude-family, Codex, Pi and Muse take it live; others hold it for the next turn of the same run.
       const text = String(args.text).trim(), steerId = `steer-${++id}`;
@@ -943,23 +953,54 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'list_importable_conversations': {
       const query = String(args.search ?? '').toLowerCase();
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
-      const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
-      const items = previewImportables[source].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
-        .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
-      result = { items, cursor: null, note: items.length ? null : `No ${source === 'codex' ? 'Codex' : 'Claude Code'} conversations were found on this computer.` }; break;
+      const source = args.provider as 'claude' | 'codex' | 'github-copilot';
+      if (source === 'github-copilot') {
+        const candidates = previewCopilotImportables.filter(item => item.sourceKind === 'local' || args.includeCloud === true);
+        const items = candidates.filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query)).map(item => ({
+          id: item.id, title: item.title, folder: item.folder, updatedAt: item.updatedAt, messages: item.messages, model: item.model,
+          sourceKind: item.sourceKind, transcriptOnly: item.transcriptOnly,
+          importedTaskId: previewImportedConversationIds.get(item.id) ?? null,
+          unavailable: item.unavailable ?? (item.sourceKind !== 'local' && !item.projectId ? 'Open this repository as a project before importing.' : null),
+        }));
+        result = { items, cursor: null, note: items.length ? null : args.includeCloud ? 'No local or cloud Copilot CLI conversations were found.' : 'No local Copilot CLI conversations were found on this computer.' }; break;
+      }
+      const ordinarySource = source === 'codex' ? 'codex' : 'claude';
+      const imported = (id: string) => sessions.find(task => task.provider === ordinarySource && task.resumeId === id)?.id ?? null;
+      const items = previewImportables[ordinarySource].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
+        .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null, sourceKind: 'local', transcriptOnly: false }));
+      result = { items, cursor: null, note: items.length ? null : `No ${ordinarySource === 'codex' ? 'Codex' : 'Claude Code'} conversations were found on this computer.` }; break;
     }
     case 'import_conversations': {
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = args.provider as 'claude' | 'codex' | 'github-copilot';
+      if (source === 'github-copilot') {
+        const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
+        for (const conversationId of args.ids as string[]) {
+          const alreadyId = previewImportedConversationIds.get(conversationId);
+          if (alreadyId) { existing.push(alreadyId); continue; }
+          const found = previewCopilotImportables.find(item => item.id === conversationId && (item.sourceKind === 'local' || args.includeCloud === true));
+          if (!found || found.unavailable || (found.sourceKind !== 'local' && !found.projectId)) { failed.push({ id: conversationId, message: found?.unavailable ?? 'Open this repository as a project before importing.' }); continue; }
+          let project = found.projectId ? projects.find(p => p.id === found.projectId) ?? projects.find(p => p.name === found.repository?.split('/').at(-1)) : projects.find(p => p.path === found.folder);
+          if (!project && found.sourceKind === 'local') { project = { id: crypto.randomUUID(), name: found.folder.split('/').pop()!, path: found.folder }; projects.push(project); }
+          if (!project) { failed.push({ id: conversationId, message: 'Open this repository as a project before importing.' }); continue; }
+          const created = await invoke<Session>('create_session', { projectId: project.id, provider: 'github-copilot', model: found.model ?? args.model, mode: 'full' });
+          const task = session(created.id);
+          Object.assign(task, { resumeId: found.transcriptOnly ? null : found.id, transcriptOnly: found.transcriptOnly, title: found.title, taskStage: 'in_progress', createdAt: found.updatedAt - 600000, updatedAt: found.updatedAt, lastPromptAt: found.updatedAt - 600000, lastResponseAt: found.updatedAt });
+          messages[task.id] = found.history.map(entry => ({ id: ++id, sessionId: task.id, role: entry.role, content: entry.content, createdAt: entry.at }));
+          previewImportedConversationIds.set(found.id, task.id); imported.push(taskSummary(task));
+        }
+        if (imported.length) emit('sessions-changed', undefined);
+        result = { imported, existing, failed }; break;
+      }
+      const ordinarySource = source === 'codex' ? 'codex' : 'claude';
       const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
       for (const conversationId of args.ids as string[]) {
-        const found = previewImportables[source].find(item => item.id === conversationId);
-        const already = sessions.find(task => task.provider === source && task.resumeId === conversationId);
+        const found = previewImportables[ordinarySource].find(item => item.id === conversationId);
+        const already = sessions.find(task => task.provider === ordinarySource && task.resumeId === conversationId);
         if (already) { existing.push(already.id); continue; }
         if (!found || found.folder.startsWith('/missing')) { failed.push({ id: conversationId, message: 'Its folder no longer exists on this computer.' }); continue; }
         let project = projects.find(p => p.path === found.folder);
         if (!project) { project = { id: crypto.randomUUID(), name: found.folder.split('/').pop()!, path: found.folder }; projects.push(project); }
-        const created = await invoke<Session>('create_session', { projectId: project.id, provider: source, model: found.model ?? args.model, mode: 'full' });
+        const created = await invoke<Session>('create_session', { projectId: project.id, provider: ordinarySource, model: found.model ?? args.model, mode: 'full' });
         const task = session(created.id);
         Object.assign(task, { resumeId: conversationId, title: found.title, taskStage: 'in_progress', createdAt: found.updatedAt - 600000, updatedAt: found.updatedAt, lastPromptAt: found.updatedAt - 600000, lastResponseAt: found.updatedAt });
         messages[task.id] = [{ id: ++id, sessionId: task.id, role: 'user', content: `Imported: ${found.title}`, createdAt: found.updatedAt - 600000 }, { id: ++id, sessionId: task.id, role: 'assistant', content: 'This conversation was imported into PandaCode.', createdAt: found.updatedAt }];
@@ -1070,6 +1111,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'start_task': {
       const s = session(args.sessionId);
+      ensureWritable(s);
       await invoke('send_message', { sessionId: s.id, text: s.taskDescription?.trim() || s.title }); break;
     }
     case 'update_session': {
@@ -1113,8 +1155,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'send_message': {
-      if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
-      const s = session(args.sessionId); assertIdle(s);
+      const s = session(args.sessionId); ensureWritable(s);
+      if (resolveSlash(s.provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
+      assertIdle(s);
       let moodboardContext = '';
       for (const boardId of args.moodboardIds ?? []) {
         const board = await invoke<import('./moodboards').MoodboardDetail>('read_moodboard', { projectId: s.projectId, boardId });

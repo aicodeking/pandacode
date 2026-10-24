@@ -91,6 +91,8 @@ pub struct Session {
     pub limited_until: Option<i64>,
     pub resume_at_reset: bool,
     pub resume_id: Option<String>,
+    /// Imported transcript that has no supported continuation path.
+    pub transcript_only: bool,
     /// Checkout owned by this task; the project continues to identify its repository.
     pub worktree_path: Option<String>,
     /// Branch created for that checkout, kept so chips and recreation need no Git call.
@@ -160,7 +162,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 30;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -424,14 +426,6 @@ impl Store {
                 }
                 migration.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS sessions_remote ON sessions(remote_device,remote_session) WHERE remote_session IS NOT NULL; PRAGMA user_version=26;").map_err(|e| e.to_string())?;
             }
-            if version < 27 {
-                // Cloud agents: the machine and run behind a task (docs/cloud-agents.md).
-                let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='cloud')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-                if !exists {
-                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN cloud TEXT CHECK(cloud IS NULL OR json_valid(cloud));").map_err(|e| e.to_string())?;
-                }
-                migration.execute_batch("PRAGMA user_version=27;").map_err(|e| e.to_string())?;
-            }
             if version < 28 {
                 // Bots: an optional personality (soul.md) kept apart from instructions (docs/bots.md).
                 crate::bots::migrate_soul(&migration)?;
@@ -441,6 +435,32 @@ impl Store {
                 // Bots: skill and MCP references, and the bot a project task was started with (docs/bots.md).
                 crate::bots::migrate_capabilities(&migration)?;
                 migration.execute_batch("PRAGMA user_version=29;").map_err(|e| e.to_string())?;
+            }
+            if version < 30 {
+                // The union of two features that both stamped the columns below into
+                // version 27: a 27..=29 database may hold the cloud agents column
+                // (docs/cloud-agents.md) without the import-identity columns, or the
+                // other way round. The exists-checked adds below repair any partial
+                // state. Runs after the bots steps so its stamp is the last one to
+                // leave the migration.
+                // Cloud agents: the machine and run behind a task (docs/cloud-agents.md).
+                let cloud: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='cloud')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !cloud {
+                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN cloud TEXT CHECK(cloud IS NULL OR json_valid(cloud));").map_err(|e| e.to_string())?;
+                }
+                // Imported source identity is separate from the runtime resume ID:
+                // a transcript-only archive has an import ID but cannot be resumed.
+                for (name, definition) in [
+                    ("import_source", "TEXT"),
+                    ("import_id", "TEXT"),
+                    ("transcript_only", "INTEGER NOT NULL DEFAULT 0 CHECK(transcript_only IN (0,1))"),
+                ] {
+                    let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE sessions ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                migration.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS sessions_import_identity ON sessions(import_source,import_id) WHERE import_id IS NOT NULL; PRAGMA user_version=30;").map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -649,6 +669,7 @@ impl Store {
             limited_until: r.get(27)?,
             resume_at_reset: r.get(28)?,
             resume_id: r.get(10)?,
+            transcript_only: r.get(31)?,
             last_response_at: r.get(11)?,
             last_prompt_at: r.get(22)?,
             worktree_path: r.get(12)?,
@@ -674,7 +695,7 @@ impl Store {
     pub fn sessions(&self) -> Result<Vec<Session>> {
         // Lists only need a card preview. Full details remain in SQLite and are
         // fetched for the selected task or directly for an agent's Start prompt.
-        let mut stmt=self.db.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
+        let mut stmt=self.db.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,transcript_only FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map([], Self::session_row)
             .map_err(|e| e.to_string())?;
@@ -685,7 +706,7 @@ impl Store {
         Ok(sessions)
     }
     pub fn session(&self, sid: &str) -> Result<Session> {
-        let mut session = self.db.query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
+        let mut session = self.db.query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,transcript_only FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
         self.attach_links(std::slice::from_mut(&mut session))?;
         Ok(session)
     }
@@ -755,15 +776,36 @@ impl Store {
     /// The PandaCode task already continuing an agent conversation, if any.
     pub fn imported_task(&self, provider: &str, resume_id: &str) -> Result<Option<String>> {
         self.db
-            .query_row("SELECT id FROM sessions WHERE provider=?1 AND resume_id=?2 ORDER BY updated_at DESC LIMIT 1", params![provider, resume_id], |row| row.get(0))
+            .query_row("SELECT id FROM sessions WHERE (import_source=?1 AND import_id=?2) OR (provider=?1 AND resume_id=?2) ORDER BY CASE WHEN import_source=?1 AND import_id=?2 THEN 0 ELSE 1 END,updated_at DESC LIMIT 1", params![provider, resume_id], |row| row.get(0))
             .optional()
             .map_err(|e| e.to_string())
+    }
+
+    /// Prevents transcript-only imports from receiving prompts through any native command.
+    pub fn ensure_writable(&self, sid: &str) -> Result<()> {
+        let transcript_only: bool = self.db.query_row("SELECT transcript_only FROM sessions WHERE id=?1", [sid], |row| row.get(0)).optional().map_err(|e| e.to_string())?.ok_or_else(|| String::from("Conversation not found."))?;
+        if transcript_only {
+            return Err("This imported conversation is a read-only archive and cannot accept messages.".into());
+        }
+        Ok(())
     }
 
     /// Adds a conversation started outside PandaCode as a task that continues it:
     /// its history keeps original times, and the agent resumes `resume_id` on the next prompt.
     #[allow(clippy::too_many_arguments)]
     pub fn import_task(&self, project_id: &str, provider: &str, model: &str, title: &str, resume_id: &str, reasoning_effort: Option<&str>, created_at: i64, entries: &[(&str, String, i64)]) -> Result<Session> {
+        self.import_task_record(project_id, provider, model, title, Some(resume_id), reasoning_effort, created_at, entries, None, None, false)
+    }
+
+    /// Adds a Copilot CLI conversation, preserving its source identity independently
+    /// from the runtime resume ID and marking unsupported sessions read-only.
+    #[allow(clippy::too_many_arguments)]
+    pub fn import_copilot_task(&self, project_id: &str, model: &str, title: &str, source_id: &str, resume_id: Option<&str>, transcript_only: bool, created_at: i64, entries: &[(&str, String, i64)]) -> Result<Session> {
+        self.import_task_record(project_id, "github-copilot", model, title, resume_id, None, created_at, entries, Some("github-copilot"), Some(source_id), transcript_only)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn import_task_record(&self, project_id: &str, provider: &str, model: &str, title: &str, resume_id: Option<&str>, reasoning_effort: Option<&str>, created_at: i64, entries: &[(&str, String, i64)], import_source: Option<&str>, import_id: Option<&str>, transcript_only: bool) -> Result<Session> {
         let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let task = self.create_session(project_id, provider, model, DEFAULT_PERMISSION_MODE)?;
         let title: String = title.chars().filter(|c| !c.is_control()).take(200).collect();
@@ -772,8 +814,8 @@ impl Store {
         let last = entries.last().map_or(created_at, |entry| entry.2).max(first);
         self.db
             .execute(
-                "UPDATE sessions SET resume_id=?2,title=?3,title_origin='manual',reasoning_effort=?4,task_stage='in_progress',created_at=?5,updated_at=?6 WHERE id=?1",
-                params![task.id, resume_id, title, reasoning_effort, first, last],
+                "UPDATE sessions SET resume_id=?2,title=?3,title_origin='manual',reasoning_effort=?4,task_stage='in_progress',created_at=?5,updated_at=?6,import_source=?7,import_id=?8,transcript_only=?9 WHERE id=?1",
+                params![task.id, resume_id, title, reasoning_effort, first, last, import_source, import_id, transcript_only],
             )
             .map_err(|e| e.to_string())?;
         for (role, content, at) in entries {
@@ -2974,6 +3016,55 @@ mod tests {
             .max()
             .unwrap();
         assert_eq!(newest, SCHEMA_VERSION, "bump SCHEMA_VERSION with every new migration step");
+    }
+
+    #[test]
+    fn imported_conversation_columns_migrate_from_schema_26() {
+        let dir = std::env::temp_dir().join(format!("pandacode-import-identity-migration-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+        let task_id;
+        {
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            task_id = store.create_session(&project.id, "github-copilot", "default", "full").unwrap().id;
+            store.db.execute_batch("DROP INDEX sessions_import_identity; ALTER TABLE sessions DROP COLUMN import_source; ALTER TABLE sessions DROP COLUMN import_id; ALTER TABLE sessions DROP COLUMN transcript_only; PRAGMA user_version=26;").unwrap();
+        }
+        let migrated = Store::open(&path).unwrap();
+        assert_eq!(migrated.db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+        assert!(!migrated.session(&task_id).unwrap().transcript_only);
+        assert!(migrated.ensure_writable(&task_id).is_ok());
+        let columns: Vec<String> = migrated.db.prepare("SELECT name FROM pragma_table_info('sessions')").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap();
+        assert!(columns.contains(&"import_source".into()) && columns.contains(&"import_id".into()) && columns.contains(&"transcript_only".into()));
+        drop(migrated);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_partial_database_heals_to_the_union() {
+        // Half-stamped databases heal here: the columns below were stamped into
+        // version 27 by two features independently, so a database may hold `cloud`
+        // without the import-identity columns, or the other way round. Either
+        // partial — however it got stamped — heals on open.
+        for (drop_command, stamp) in [
+            ("ALTER TABLE sessions DROP COLUMN cloud;", 27),
+            ("DROP INDEX sessions_import_identity; ALTER TABLE sessions DROP COLUMN import_source; ALTER TABLE sessions DROP COLUMN import_id; ALTER TABLE sessions DROP COLUMN transcript_only;", 27),
+            // A mid-series database that already carried the next feature's column.
+            ("DROP INDEX sessions_import_identity; ALTER TABLE sessions DROP COLUMN import_source; ALTER TABLE sessions DROP COLUMN import_id; ALTER TABLE sessions DROP COLUMN transcript_only;", 28),
+        ] {
+            let dir = std::env::temp_dir().join(format!("pandacode-partial-{}", id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("legacy.db");
+            {
+                let store = Store::open(&path).unwrap();
+                store.db.execute_batch(&format!("{drop_command} PRAGMA user_version={stamp};")).unwrap();
+            }
+            let healed = Store::open(&path).unwrap();
+            assert_eq!(healed.db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+            assert!(healed.sessions().is_ok(), "the listing query runs on any partial state");
+            drop(healed);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

@@ -1,0 +1,4 @@
+[env]
+# The Copilot CLI runtime is never embedded: conversations import the CLI that
+# is installed, through `CliProgram::Path` (conversation_import/copilot.rs).
+COPILOT_SKIP_CLI_DOWNLOAD = "1"

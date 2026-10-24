@@ -73,6 +73,8 @@ Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.gith
 
 The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. PandaCode maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a PandaCode permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
 
+The conversation importer reads local session event logs from `COPILOT_HOME` (or `~/.copilot`) by default. **Include cloud sessions** is off until enabled. When enabled, PandaCode asks the installed Copilot CLI through the supported Copilot SDK session interface for synced and GitHub-hosted sessions. This user-initiated request uses the CLI's existing sign-in. Cloud sessions are matched to an already-open project by repository; PandaCode never clones a repository. GitHub-hosted sessions import as read-only archives when the local ACP harness cannot resume them. If the installed CLI does not expose cloud sessions, the importer reports that and suggests updating the CLI.
+
 ## Claude login and environment credentials
 
 Open **Settings → Agents → Set up → Claude Code** to see the credential source

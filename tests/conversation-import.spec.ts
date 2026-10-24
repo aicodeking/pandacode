@@ -13,6 +13,7 @@ test.beforeEach(async ({ page }) => {
   });
   await page.goto('/');
   await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
+  await page.evaluate(async () => { await import('/src/conversation-import.ts'); });
 });
 
 test('imports selected Claude Code conversations into their projects and marks them as imported', async ({ page }) => {
@@ -63,6 +64,44 @@ test('searches, switches to Codex, and selects all importable conversations', as
   await expect(dialog(page)).toBeHidden();
   expect((await calls(page, 'import_conversations')).at(-1).args).toMatchObject({ provider: 'codex', ids: ['4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f'] });
   await expect(page.getByRole('region', { name: 'pandacode tasks', exact: true })).toContainText('Speed up the search index');
+});
+
+test('Copilot shows local sessions first and reveals synced and hosted sessions only on request', async ({ page }) => {
+  await page.getByRole('button', { name: 'Import conversations', exact: true }).click();
+  await dialog(page).getByRole('button', { name: 'GitHub Copilot CLI' }).click();
+  const cloud = dialog(page).getByRole('checkbox', { name: 'Include cloud sessions' });
+  await expect(cloud).not.toBeChecked();
+  await expect(dialog(page).locator('.import-row')).toHaveCount(1);
+  await expect(row(page, 'Document the search API')).toContainText('Local Copilot session');
+  expect((await calls(page, 'list_importable_conversations')).at(-1).args.includeCloud).toBe(false);
+
+  await cloud.check();
+  await expect(dialog(page).locator('.import-row')).toHaveCount(4);
+  await expect(row(page, 'Tune search ranking')).toContainText('Synced CLI session');
+  await expect(row(page, 'Review the hosted migration')).toContainText('GitHub-hosted agent');
+  await expect(row(page, 'Review the hosted migration')).toContainText('Read-only archive');
+  await expect(row(page, 'Fix the billing webhook').getByRole('checkbox')).toBeDisabled();
+  await expect(row(page, 'Fix the billing webhook')).toContainText('Open this repository as a project');
+  expect((await calls(page, 'list_importable_conversations')).at(-1).args.includeCloud).toBe(true);
+
+  await row(page, 'Review the hosted migration').click();
+  await dialog(page).locator('.import-commit').click();
+  await expect(dialog(page)).toBeHidden();
+  await expect(page.locator('#transcript')).toContainText('The plan keeps the data migration reversible.');
+  await expect(page.locator('#composer-area')).toContainText('Read-only archive');
+  await expect(page.locator('#composer-area')).toContainText('cannot be resumed');
+  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveCount(0);
+  expect((await calls(page, 'import_conversations')).at(-1).args).toMatchObject({ provider: 'github-copilot', includeCloud: true, ids: ['copilot-hosted-b07f'] });
+});
+
+test('a resumable local Copilot import keeps the normal composer available', async ({ page }) => {
+  await page.getByRole('button', { name: 'Import conversations', exact: true }).click();
+  await dialog(page).getByRole('button', { name: 'GitHub Copilot CLI' }).click();
+  await row(page, 'Document the search API').click();
+  await dialog(page).locator('.import-commit').click();
+  await expect(dialog(page)).toBeHidden();
+  await expect(page.locator('#transcript')).toContainText('The API docs are updated.');
+  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
 });
 
 test('is reachable from Go to anything', async ({ page }) => {

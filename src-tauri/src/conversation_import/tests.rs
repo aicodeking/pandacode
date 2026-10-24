@@ -1,7 +1,9 @@
 use super::claude;
+use super::copilot;
 use super::*;
 use crate::storage::Store;
 use serde_json::json;
+use serde_json::Value;
 
 const SESSION: &str = "0f9d1c4e-6f7a-4b8e-9c2d-3a1b5e7f9d10";
 
@@ -103,6 +105,59 @@ fn search_matches_title_or_folder_case_insensitively() {
     assert!(matches(&Some("LOGIN".into()), &["Fix login loop", "/tmp"]));
     assert!(matches(&Some("acme".into()), &["Other", "/Users/me/acme-shop"]));
     assert!(!matches(&Some("billing".into()), &["Fix login loop", "/tmp"]));
+}
+
+#[test]
+fn copilot_local_sessions_are_discovered_under_the_selected_home() {
+    let dir = temp();
+    let id = "copilot-session-01";
+    let session_dir = dir.join("session-state").join(id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    let events = [
+        json!({"id":"start","timestamp":"2026-09-20T10:00:00Z","type":"session.start","data":{"title":"Improve docs","context":{"cwd":dir}}}),
+        json!({"id":"user","timestamp":"2026-09-20T10:01:00Z","type":"user.message","data":{"content":"Improve the README."}}),
+        json!({"id":"assistant","timestamp":"2026-09-20T10:02:00Z","type":"assistant.message","data":{"message":"README updated."}}),
+    ];
+    std::fs::write(session_dir.join("events.jsonl"), events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+    let logs = copilot::logs(&dir, 10);
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].0, id);
+    let records = copilot::read_events(&logs[0].1).unwrap();
+    let summary = copilot::summarize(id, &records).unwrap();
+    assert_eq!(summary.title, "Improve docs");
+    assert_eq!(summary.folder, dir.to_string_lossy());
+    assert_eq!(summary.messages, 2);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn copilot_import_identity_is_deduplicated_separately_from_resume_state() {
+    let dir = temp();
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let project = project_for(&store, dir.to_str().unwrap()).unwrap();
+    let history = vec![("user", "Hello Copilot".to_owned(), 1000), ("assistant", "Hello.".to_owned(), 2000)];
+    let archive = store.import_copilot_task(&project, "default", "Hosted review", "copilot-hosted-01", None, true, 1000, &history).unwrap();
+    assert!(archive.transcript_only);
+    assert_eq!(archive.resume_id, None);
+    assert_eq!(store.imported_task("github-copilot", "copilot-hosted-01").unwrap(), Some(archive.id.clone()));
+    assert!(store.ensure_writable(&archive.id).unwrap_err().contains("read-only archive"));
+    assert!(crate::message_queue::add(&store, &archive.id, "try to send", &json!([])).unwrap_err().contains("read-only archive"));
+
+    let resumed = store.import_copilot_task(&project, "gpt-test", "Local task", "copilot-local-01", Some("copilot-local-01"), false, 1000, &history).unwrap();
+    assert!(!resumed.transcript_only);
+    assert_eq!(resumed.resume_id.as_deref(), Some("copilot-local-01"));
+    assert_eq!(store.imported_task("github-copilot", "copilot-local-01").unwrap(), Some(resumed.id.clone()));
+    assert!(store.ensure_writable(&resumed.id).is_ok());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn cloud_sessions_without_an_open_repository_project_are_not_mapped() {
+    let dir = temp();
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    store.add_project(&dir).unwrap();
+    assert_eq!(project_for_repository(&store, "acme/not-open-here").unwrap(), None);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// `cargo test --lib live_claude_conversations -- --ignored --nocapture` prints counts only.

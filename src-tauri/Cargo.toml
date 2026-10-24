@@ -4,6 +4,9 @@ version = "0.3.37"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
+# `github-copilot-sdk` requires rustc 1.94; its own dependency sets this too, but
+# spell it out so older toolchains fail with one clear message.
+rust-version = "1.94"
 
 [lib]
 name = "pandacode_lib"
@@ -22,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "=0.9.12", default-features = false, features = ["parse", "serde"] }
 tokio = { version = "1", features = ["full"] }
+github-copilot-sdk = { version = "1.0.26", default-features = false, features = ["runtime"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 uuid = { version = "1", features = ["v4", "v7"] }
 portable-pty = "0.9"

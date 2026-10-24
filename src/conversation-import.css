@@ -11,6 +11,9 @@ html[data-theme=dark] .import-sources>.segment-thumb{background:color-mix(in srg
 .import-search{display:flex;align-items:center;gap:7px;flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:4px;background:color-mix(in srgb,var(--panel) 68%,transparent);color:var(--muted)}
 .import-search:focus-within{border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
 .import-search>.icon{width:15px;height:15px;flex:none}
+.import-cloud{display:flex;align-items:center;gap:8px;margin:0 2px 8px;padding:8px 10px;border-radius:4px;background:color-mix(in srgb,var(--raised) 64%,transparent);font-size:.78rem;color:var(--text)}
+.import-cloud input{accent-color:var(--accent);width:15px;height:15px;margin:0;flex:none}
+.import-cloud small{margin-left:auto;color:var(--muted);font-size:.72rem}
 .conversation-import .import-search input{flex:1;min-width:0;height:auto;padding:0;border:0;border-radius:0;outline:0;box-shadow:none;background:transparent;color:var(--text);font:inherit;font-size:.86rem;-webkit-appearance:none;appearance:none}
 .import-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 10px 6px;font-size:.76rem;color:var(--muted)}
 .import-all{display:flex;align-items:center;gap:8px;cursor:pointer}
@@ -25,15 +28,18 @@ html[data-theme=dark] .import-sources>.segment-thumb{background:color-mix(in srg
 .import-row.disabled .import-copy{opacity:.62}
 .import-copy{flex:1;min-width:0}
 .import-copy strong{display:block;font-size:.88rem;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-source-badge,.import-archive-badge{display:inline-flex;vertical-align:middle;margin-left:7px;padding:2px 6px;border:1px solid var(--border);border-radius:8px;font-size:.63rem;font-weight:500;color:var(--muted)}
+.import-archive-badge{color:var(--focus);border-color:color-mix(in srgb,var(--focus) 35%,var(--border))}
 .import-copy small{display:block;margin-top:2px;font-size:.74rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .import-open{display:flex;align-items:center;gap:4px;flex:none;padding:3px 8px;border-radius:8px;font-size:.72rem;font-weight:550;color:var(--focus);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .import-open:hover{background:color-mix(in srgb,var(--accent) 22%,transparent)}
 .import-open>.icon{width:11px;height:11px}
 .import-unavailable{flex:none;font-size:.72rem;color:var(--faint)}
 .import-empty{margin:0;padding:28px 10px;text-align:center;font-size:.84rem;color:var(--muted)}
+.import-note{margin:6px 8px;padding:8px 10px;border-radius:4px;background:color-mix(in srgb,var(--text) 4%,transparent);font-size:.76rem;line-height:1.45;color:var(--muted)}
 .import-more{justify-self:center;margin:8px 0 4px}
 .import-error{margin:10px 2px 0;font-size:.8rem;line-height:1.5;color:var(--danger,#e99380);overflow-wrap:anywhere}
 .conversation-import .dialog-footer{margin-top:14px}
-@media(max-width:560px){.import-controls{flex-direction:column;align-items:stretch}.import-sources{align-self:flex-start}}
+@media(max-width:560px){.import-controls{flex-direction:column;align-items:stretch}.import-sources{align-self:flex-start}.import-cloud{flex-wrap:wrap}.import-cloud small{flex-basis:100%;margin-left:23px}}
 @media(prefers-contrast:more){.import-row:has(input:checked){outline:1px solid var(--text)}}
 @media(prefers-reduced-transparency:reduce){.import-search{background:var(--panel)}}

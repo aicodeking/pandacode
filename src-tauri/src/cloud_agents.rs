@@ -133,7 +133,7 @@ mod tests {
             store.db.execute_batch("ALTER TABLE sessions DROP COLUMN cloud; PRAGMA user_version=26;").unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (29, 29));
+        assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::storage::SCHEMA_VERSION);
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         assert_eq!(task.cloud, None);
