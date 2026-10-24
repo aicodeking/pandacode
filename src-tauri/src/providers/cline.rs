@@ -216,6 +216,24 @@ mod tests {
     }
 
     #[test]
+    fn cline_without_http_mcp_starts_normal_session_but_rejects_required_tools() {
+        for required in [false, true] {
+            let mut p = Protocol::new(super::super::tests::config("cline"));
+            p.mcp_server = Some(json!({"type":"http","name":"pandacode_architect"}));
+            p.mcp_required = required;
+            let result = p.receive(serde_json::from_str(INITIALIZE).unwrap());
+            if required {
+                assert!(result.err().unwrap().contains("HTTP MCP"));
+            } else {
+                let step = result.unwrap();
+                assert_eq!(step.write[0]["method"], "session/new");
+                assert_eq!(step.write[0]["params"]["mcpServers"], json!([]));
+                assert!(p.mcp_server.is_none());
+            }
+        }
+    }
+
+    #[test]
     fn plan_and_act_follow_the_approval_choice() {
         for (mode, expected) in [("ask", "act"), ("auto", "act"), ("plan", "plan"), ("full", "act")] {
             let (mut p, writes) = ready(mode, "default", None);
