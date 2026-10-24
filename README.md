@@ -320,6 +320,15 @@ Data lives in Tauri's per-user application data directory (on macOS,
 database keeps its legacy internal name. Project source stays in the folders you
 open, and removing a project from the app never deletes its files.
 
+## Weitere lokale ACP-Provider
+
+CodeBuddy (`codebuddy --acp`), Qoder (`qoder --acp`) und Kiro (`kiro-cli acp`)
+nutzen den vorhandenen ACP-Adapter mit Modell-Picker, Session-Resume,
+Freigaben sowie Datei- und Terminal-Callbacks. Einmalig im jeweiligen CLI anmelden.
+Kiros native Befehls-Panels werden über seine ACP-Erweiterung ausgeführt.
+Unterstützte Befehle, Grenzen und die Einrichtung einer lokalen Claude-OmniRoute-
+Connection sind in [Provider-Integrationen](docs/providers.md#codebuddy-qoder-und-kiro-über-acp) beschrieben.
+
 ## License
 
 [PandaCode License](LICENSE) (MIT with an attribution requirement for forks) ©

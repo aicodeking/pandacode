@@ -27,6 +27,7 @@ pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as pr
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 pub(crate) mod acp;
+mod acp_client;
 pub(crate) mod acp_catalog;
 #[cfg(test)]
 mod claude_stream_tests;
@@ -35,6 +36,9 @@ mod codex_stream_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
 mod cline;
+pub(crate) mod kiro;
+#[cfg(test)]
+mod acp_provider_tests;
 mod commandcode;
 mod extra_models;
 mod github_copilot;
@@ -67,7 +71,7 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-const PROVIDERS: [(&str, &str); 15] = [
+const PROVIDERS: [(&str, &str); 18] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -80,6 +84,9 @@ const PROVIDERS: [(&str, &str); 15] = [
     ("deepseek", "DeepSeek"),
     ("commandcode", "Command Code"),
     ("cline", "Cline"),
+    ("codebuddy", "CodeBuddy Code"),
+    ("qoder", "Qoder CLI"),
+    ("kiro", "Kiro CLI"),
     ("omp", "Oh My Pi"),
     ("github-copilot", "GitHub Copilot CLI"),
     ("muse", "Muse Code"),
@@ -455,14 +462,14 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "omp" | "github-copilot" | "muse",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
-        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline", Some(value)) => {
+        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro", Some(value)) => {
             !value.is_empty()
                 && value.len() <= 64
                 && value
@@ -523,6 +530,7 @@ fn executable_name(name: &str) -> &str {
         "deepseek" => "dsh",
         "commandcode" => "command-code",
         "github-copilot" => "copilot",
+        "kiro" => "kiro-cli",
         other => other,
     }
 }
@@ -691,7 +699,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" | "muse"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot" | "muse"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -719,6 +727,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "commandcode" => commandcode::models(&path).await,
         "cline" => cline::models(&path).await,
         "github-copilot" => github_copilot::models(&path).await,
+        "codebuddy" | "qoder" | "kiro" => acp::models_for(provider, &path).await,
         "muse" => muse::models(&path).await,
         _ => unreachable!(),
     }
@@ -1072,6 +1081,9 @@ struct Protocol {
     active_model: String,
     kimi_thinking_values: Vec<String>,
     acp_config: Value,
+    kiro_commands: Option<(Value, bool)>,
+    kiro_prompt_waiting: bool,
+    kiro_command_active: bool,
     // Grok Build authenticates before session calls; the session request waits here.
     acp_pending_session: Option<Value>,
     grok_context_used: u64,
@@ -1198,6 +1210,9 @@ impl Protocol {
             image_blocks: Vec::new(),
             kimi_thinking_values: Vec::new(),
             acp_config: Value::Null,
+            kiro_commands: None,
+            kiro_prompt_waiting: false,
+            kiro_command_active: false,
             acp_pending_session: None,
             grok_context_used: 0,
             grok_reasoning: false,
@@ -1645,8 +1660,8 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
-                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot" => {
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":acp_client::capabilities(&self.config.provider),"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
                 json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
@@ -1684,7 +1699,7 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -1711,7 +1726,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1741,7 +1756,7 @@ impl Protocol {
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2178,6 +2193,7 @@ impl Protocol {
         Ok(())
     }
     fn kimi_prompt(&mut self, step: &mut Step) {
+        if self.kiro_prompt(step) { return; }
         let mut request = json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":self.remote_id}});
         request["params"]["prompt"] = Value::Array(self.prompt_content());
         step.write.push(request);
@@ -2675,7 +2691,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
         }
         "pi" | "omp" => pi::configure(command, config),
         "muse" => muse::configure(command, config),
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" => acp::configure(command, config),
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" => acp::configure(command, config),
         "github-copilot" => acp::configure(command, config),
         "kimi" => {
             if use_model {
@@ -2750,7 +2766,7 @@ async fn run_inner(
         "pi",
         "deepseek",
         "commandcode",
-        "cline",
+        "cline", "codebuddy", "qoder", "kiro",
         "omp",
         "github-copilot",
         "muse",
@@ -2917,7 +2933,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
+            | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "omp" | "github-copilot" | "muse",
             Some(host),
         ) => (
             None,
@@ -2974,6 +2990,10 @@ async fn run_process_with_tools(
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
     let mut jobs = tokio::task::JoinSet::new();
+    let mut acp_jobs = tokio::task::JoinSet::new();
+    let mut acp_client = if acp_client::enabled(&protocol.config.provider) {
+        Some(acp_client::Client::new(&protocol.config.cwd)?)
+    } else { None };
     let mut queued = VecDeque::new();
     let mut bytes = Vec::new();
     let mut buf = [0u8; 8192];
@@ -2992,7 +3012,10 @@ async fn run_process_with_tools(
                         Some(RunInput::Goal{request,reply})=>{let step=protocol.goal_control(request,reply);if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}},
                         Some(RunInput::CodexRequest{method,params,reply})=>{let step=protocol.codex_control(method,params,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
                         Some(RunInput::Steer{id,text,reply})=>{let step=protocol.steer(id,text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
-                        Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {let step=protocol.approval_step(&request_id,approved); apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;}},
+                        Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {
+                            let step=acp_client.as_mut().and_then(|client| client.approve(&request_id,approved,&mut acp_jobs)).unwrap_or_else(|| protocol.approval_step(&request_id,approved));
+                            apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;
+                        }},
                         Some(RunInput::UserInput{request_id,response,reply})=>{
                             match if protocol.config.provider=="muse" {protocol.muse_user_input(&request_id,response)} else {protocol.user_input(&request_id,response)} {
                                 Ok(step)=>{let result=apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await.map(|_|());if let Some(reply)=reply {let _=reply.send(result.clone());}result?;},
@@ -3000,6 +3023,11 @@ async fn run_process_with_tools(
                             }
                         },
                         Some(RunInput::Stop)|None=>{
+                            acp_jobs.abort_all();
+                            if let Some(client) = &mut acp_client {
+                                let step = client.cancel(&protocol);
+                                let _ = tokio::time::timeout(Duration::from_millis(500),apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued)).await;
+                            }
                             if let Some(server) = &mcp { server.stop(); }
                             if let Some(step)=protocol.stop_goal() {
                                 input_open=false;
@@ -3016,6 +3044,12 @@ async fn run_process_with_tools(
                             let _=tokio::time::timeout(Duration::from_millis(500),apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued)).await;
                             let _=tokio::time::timeout(Duration::from_millis(500),write_json(&mut stdin,&protocol.cancel())).await;deadline=tokio::time::Instant::now()+Duration::from_secs(3);
                         },
+                    }
+                },
+                completed=acp_jobs.join_next(),if !acp_jobs.is_empty() && !stopped=>{
+                    let (id,response)=completed.ok_or("ACP-Client-Auftrag fehlt")?.map_err(|_|"ACP-Client-Auftrag fehlgeschlagen")?;
+                    if acp_client.as_mut().is_some_and(|client| client.finish(&id)) {
+                        host_tools::write_response(&mut stdin,&response).await?;
                     }
                 },
                 completed=jobs.join_next(),if !jobs.is_empty() && !stopped=>{
@@ -3050,7 +3084,9 @@ async fn run_process_with_tools(
                             if pi::stop_settled(&protocol.config.provider, &value) {return Ok(());}
                             continue;
                         }
-                        let step=protocol.receive(value)?;
+                        let step=if acp_client::accepts(&value) && acp_client.is_some() {
+                            acp_client.as_mut().unwrap().request(value,&protocol,&mut acp_jobs)
+                        } else { protocol.receive(value)? };
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
                     }
                     bytes.drain(..consumed);
@@ -3063,6 +3099,10 @@ async fn run_process_with_tools(
         server.stop();
     }
     jobs.abort_all();
+    acp_jobs.abort_all();
+    if let Some(client) = &mut acp_client {
+        for event in client.cancel(&protocol).events { sink(event); }
+    }
     queued.clear();
     protocol.goals.cancel_pending();
     for event in protocol.steers_ended(result.is_ok() && !stopped) {

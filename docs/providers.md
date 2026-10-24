@@ -73,6 +73,49 @@ Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.gith
 
 The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. PandaCode maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a PandaCode permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
 
+## CodeBuddy, Qoder und Kiro über ACP
+
+Die optionalen lokalen Provider starten mit `codebuddy --acp`, `qoder --acp`
+beziehungsweise `kiro-cli acp`. Installation und Anmeldung übernimmt das jeweilige
+CLI. Die offiziellen Protokollbeschreibungen stehen bei [CodeBuddy](https://www.codebuddy.ai/docs/cli/acp),
+[Qoder](https://docs.qoder.com/cli/acp) und [Kiro](https://kiro.dev/docs/cli/acp/).
+Modelle und verfügbare Einstellungen kommen aus den ACP-Metadaten. Gespeicherte
+Sessions werden mit dem angekündigten `session/resume` oder `session/load` wiederhergestellt.
+
+Nur diese drei Provider erhalten die Client-Capabilities `fs.readTextFile`,
+`fs.writeTextFile` und `terminal`. Datei-Callbacks bleiben im Arbeitsverzeichnis
+der Aufgabe; Ausbrüche über Symlinks und Zugriffe auf `.git` werden abgelehnt.
+Dateien müssen UTF-8 sein und dürfen für diese Callbacks 512 KiB nicht überschreiten.
+Terminalausgaben sind auf höchstens 256 KiB begrenzt. Terminalprozesse laufen
+mit normalen Benutzerrechten im Aufgabenordner; das ist keine Betriebssystem-Sandbox. Stop beendet offene
+Terminalprozesse einschließlich ihrer Prozessgruppen und verwirft ausstehende Freigaben.
+Standard fragt vor Client-Schreibzugriffen und Terminalstarts. Auto edits erlaubt
+Client-Dateiänderungen, fragt aber vor Befehlen. Full access erlaubt beide;
+Planmodus lehnt Schreibzugriffe und Terminalstarts ab. Die Freigaben für native
+Agent-Tools folgen weiterhin den ACP-Permission-Anfragen. Qoder Full access
+wählt zusätzlich einen angekündigten Bypass-Modus; Kiro Planmodus wählt den
+angekündigten `kiro_planner`-Modus. Antigravitys Handshake bleibt unverändert.
+
+CodeBuddy und Qoder liefern den normalen ACP-Befehlskatalog. CodeBuddys `/help`
+öffnet PandaCodes Befehlshilfe, da das CLI dafür keinen Antworttext liefert.
+Kiro CLI 2.x meldet seinen Katalog über `_kiro.dev/commands/available`;
+PandaCode führt die Panels `/help`, `/context`, `/usage`, `/tools` sowie `/compact`
+über `_kiro.dev/commands/execute` aus und zeigt den Antworttext an. `/model`
+verwendet PandaCodes Modell-Picker; `/agent <id>` und `/effort <id>` werden als
+Auswahlwerte übertragen. Interaktive Kiro-Befehle und Unterbefehle wie
+`/tools trust-all` werden mit einem Hinweis abgelehnt. Die optionale neuere
+Kiro-V3-Engine hat andere Extensions; ihre vollständige Feature-Parität ist
+nicht Bestandteil dieses Adapters. Ein dort angekündigter Standard-ACP-Katalog
+wird über den Standardpfad behandelt.
+
+Für Claude Code mit lokalem OmniRoute unter Settings → Providers → Connections
+eine Connection `Claude OmniRoute` anlegen. `ANTHROPIC_BASE_URL` erhält die
+lokal geprüfte Basisadresse, beispielsweise `http://127.0.0.1:20128` ohne `/v1`.
+`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` kann für den Claude-Prozess gesetzt
+werden. Den Gateway-Token ausschließlich als Secret-Umgebungsvariable
+`ANTHROPIC_AUTH_TOKEN` speichern. Kein Token gehört ins Repository. Vor dem
+Einsatz eine authentifizierte Anthropic-Messages-Anfrage am lokalen Gateway prüfen.
+
 ## Claude login and environment credentials
 
 Open **Settings → Agents → Set up → Claude Code** to see the credential source

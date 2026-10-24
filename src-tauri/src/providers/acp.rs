@@ -69,6 +69,8 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
             command.args(["--no-auto-update", "--acp", "--stdio"]);
         }
         "cline" => super::cline::configure(command, config),
+        "codebuddy" | "qoder" => { command.arg("--acp"); },
+        "kiro" => { command.arg("acp"); },
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -165,6 +167,7 @@ impl Protocol {
     pub(super) fn acp(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
         let grok = self.config.provider == "grok";
+        if let Some(step) = self.kiro_commands(&value) { return Ok(step); }
         if self.acp_live_answered(&value, &mut step) {
             return Ok(step);
         }
@@ -274,6 +277,16 @@ impl Protocol {
                         return Err("ACP did not return a session ID".into());
                     }
                     self.acp_config = result.clone();
+                    if self.config.provider == "kiro" {
+                        if self.kiro_commands.as_ref().is_some_and(|(frame, _)| frame["params"]["sessionId"] != self.remote_id) {
+                            self.kiro_commands = None;
+                        }
+                        if let Some((frame, _)) = &self.kiro_commands {
+                            if frame["params"]["sessionId"] == self.remote_id {
+                                self.commands_changed(frame, &mut step);
+                            }
+                        }
+                    }
                     if let Some(bytes) = self.early_kimi_commands.take() {
                         if let Ok(frame) = serde_json::from_slice::<Value>(&bytes) {
                             if frame["params"]["sessionId"] == self.remote_id {
@@ -307,6 +320,9 @@ impl Protocol {
                 }
                 6 => self.kimi_prompt(&mut step),
                 3 => {
+                    if self.config.provider == "kiro" && self.kiro_command_active {
+                        self.kiro_command_result(result, &mut step)?;
+                    }
                     if let Some(total) = result["_meta"]["totalTokens"].as_u64().filter(|_| grok) {
                         let window = self.grok_context_window();
                         self.usage(total, window, &mut step);
@@ -346,7 +362,7 @@ impl Protocol {
                     return Ok(step);
                 }
             }
-            if grok && self.config.mode == "plan" {
+            if (grok || super::acp_client::enabled(&self.config.provider)) && self.config.mode == "plan" {
                 let tool = &value["params"]["toolCall"];
                 let wanted = if grok_read_only(tool) { "allow_once" } else { "reject_once" };
                 let choice = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
@@ -356,6 +372,10 @@ impl Protocol {
                         step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
                     }
                     step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
+                    return Ok(step);
+                }
+                if !grok {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
                     return Ok(step);
                 }
             }
@@ -563,6 +583,11 @@ impl Protocol {
             };
             step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
             return Ok(());
+        } else if self.config.provider == "kiro" {
+            if self.config.mode == "plan" { &["kiro_planner", "plan", "planning"] }
+            else { &["kiro_default", "default"] }
+        } else if self.config.provider == "qoder" && self.config.mode == "full" {
+            &["bypassPermissions", "bypass_permissions", "bypass-permissions", "yolo"]
         } else if self.config.provider == "opencode" {
             if self.config.mode == "plan" {
                 &["plan"]
@@ -583,7 +608,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 4, option, id)?);
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || (self.config.provider == "qoder" && self.config.mode == "full") || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
@@ -594,7 +619,7 @@ impl Protocol {
                 step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || (self.config.provider == "qoder" && self.config.mode == "full") || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if self.config.mode == "plan" {
@@ -752,14 +777,25 @@ pub(crate) async fn handshake(command: Command, cwd: &Path) -> Result<Value, Str
 }
 
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
-    let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
-    if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
-    let discovery = super::acp_catalog::begin("antigravity", path);
+    models_for("antigravity", path).await
+}
+
+/// Metadata-only ACP discovery; use the same executable/flags as a real turn.
+pub(super) async fn models_for(provider: &str, path: &Path) -> Result<Vec<ModelInfo>, String> {
+    if let Some(models) = super::acp_catalog::get(provider, path) { return Ok(models); }
+    let _refresh = super::acp_catalog::refresh_lock(provider, path).await;
+    if let Some(models) = super::acp_catalog::get(provider, path) { return Ok(models); }
+    let discovery = super::acp_catalog::begin(provider, path);
     #[allow(unused_mut)]
     let mut command = super::command(path)?;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    match provider {
+        "codebuddy" | "qoder" => { command.arg("--acp"); },
+        "kiro" => { command.arg("acp"); },
+        _ => {
+            #[cfg(target_os = "linux")]
+            command.arg("--uid=");
+        },
+    }
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
     Ok(parse_models(&metadata))
@@ -879,6 +915,7 @@ async fn inspect_state(
                 Err(()) if metadata.is_some() => return Ok((metadata.unwrap(), commands)),
                 Err(()) => return Err(transport_error(&pipe, stage)),
             };
+            let frame = super::kiro::command_frame(&frame).unwrap_or(frame);
             if frame.get("method").is_some() && frame.get("id").is_some() {
                 pipe.send(&json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Metadata discovery does not execute requests"}})).await.map_err(|_| transport_error(&pipe, stage))?;
             } else if matches!(frame["id"].as_u64(), Some(1 | 2 | 7)) && frame.get("error").is_some() {
@@ -1722,7 +1759,7 @@ mod tests {
 
     #[test]
     fn resume_uses_capabilities_without_silently_starting_fresh() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             let mut cfg = config(provider);
             cfg.resume_id = Some("existing".into());
             let mut p = Protocol::new(cfg.clone());
@@ -1784,7 +1821,7 @@ mod tests {
     }
     #[test]
     fn acp_approvals_wait_in_standard_and_auto_edit_modes_and_cancel_foreign_requests() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             for mode in ["ask", "auto"] {
                 let mut cfg = config(provider);
                 cfg.mode = mode.into();
@@ -1823,7 +1860,7 @@ mod tests {
     }
     #[test]
     fn full_acp_permissions_do_not_answer_questions_or_guess_between_grants() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             for options in [
                 json!([{"optionId":"q0_opt_0","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]),
                 json!([{"optionId":"one","kind":"allow_once"},{"optionId":"two","kind":"allow_once"}]),
@@ -1897,7 +1934,22 @@ mod tests {
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
+
+        for (provider, binary, args) in [
+            ("codebuddy", "codebuddy", vec!["--acp"]),
+            ("qoder", "qoder", vec!["--acp"]),
+            ("kiro", "kiro-cli", vec!["acp"]),
+        ] {
+            let mut command = Command::new(binary);
+            configure(&mut command, &config(provider));
+            assert_eq!(
+                command.as_std().get_args().collect::<Vec<_>>(),
+                args.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>(),
+                "unexpected ACP arguments for {provider}"
+            );
+        }
     }
+
     #[test]
     fn glm_explicit_model_remains_a_cli_override_and_default_is_real_glm() {
         for model in ["default", "glm-5.3-flash"] {

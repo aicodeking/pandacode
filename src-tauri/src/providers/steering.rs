@@ -44,7 +44,7 @@ impl Protocol {
     }
 
     pub(super) fn steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
-        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot") {
+        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "codebuddy" | "qoder" | "kiro" | "github-copilot") {
             return self.acp_steer(id, text, reply);
         }
         let mut step = Step::default();
