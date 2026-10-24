@@ -89,6 +89,8 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             "command-code" | "cmdc" | "commandcode" => "command-code",
             "copilot" => "@github/copilot",
             "cline" => "cline",
+            "codebuddy" => "@tencent-ai/codebuddy-code",
+            "qoder" | "qodercli" => "@qoder-ai/qodercli",
             _ => return Err(
                 "This batch launcher is unsupported. Select the native harness executable instead."
                     .into(),

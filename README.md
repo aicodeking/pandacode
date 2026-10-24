@@ -325,3 +325,16 @@ open, and removing a project from the app never deletes its files.
 [PandaCode License](LICENSE) (MIT with an attribution requirement for forks) ©
 2026 PandaCode contributors. Provider names and logos belong to
 their owners and do not imply endorsement ([brand assets](docs/brand-assets.md)).
+
+
+### Additional local ACP harnesses (CodeBuddy / Qoder / Kiro)
+
+The PandaCode ACP adapter can also run three optional locally-installed tools:
+CodeBuddy (`codebuddy --acp`), Qoder (`qoder --acp`) and Kiro
+(`kiro-cli acp`). Authenticate using each CLI's own login first.
+Provider-specific permissions, model discovery, client-side filesystem/terminal
+capabilities, and resume must be verified with the installed CLI version.
+For local OmniRoute with Claude Code use Settings → Providers → Connections;
+create a Claude Code connection with `ANTHROPIC_BASE_URL` pointing at
+`http://127.0.0.1:20128` (omit `/v1`) and store `ANTHROPIC_AUTH_TOKEN`
+as a secret. This does not change your global Claude Code settings.

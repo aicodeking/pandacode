@@ -73,6 +73,32 @@ Install GitHub Copilot CLI using [GitHub's installation guide](https://docs.gith
 
 The model picker reads only ACP metadata. It offers the models Copilot advertises and keeps **Default** available if the catalog is empty or unavailable. A model override is sent only when Copilot advertises that setting; the picker does not accept arbitrary model IDs for this provider. Copilot CLI 1.0.82 advertised task modes Agent, Plan and Autopilot, plus an Allow All setting, but no model catalog. PandaCode maps Agent with Allow All off to **Standard**, Plan with Allow All off to **Plan mode**, and Agent with Allow All on to **Full access**. Autopilot is not exposed because it does not map to a PandaCode permission mode. In Plan mode, read, search and think requests can proceed while other permission requests are declined. No prompt is sent during catalog discovery.
 
+## CodeBuddy, Qoder, and Kiro ACP
+
+PandaCode can launch CodeBuddy (`codebuddy --acp`), Qoder (`qoder --acp`), and
+Kiro (`kiro-cli acp`) as local ACP agents. See the official [CodeBuddy ACP guide](https://www.codebuddy.ai/docs/cli/acp), [Qoder ACP guide](https://docs.qoder.com/cli/acp), and [Kiro ACP guide](https://kiro.dev/docs/cli/acp/).
+Install and authenticate each CLI using its own supported setup. Model metadata is queried through ACP and
+defaults remain available when a CLI does not advertise a catalog. Standard
+mode waits for tool approval; full-access mode only grants a request when its
+options make the choice unambiguous. Qoder's full-access mode additionally
+selects an advertised bypass-permissions mode when available.
+
+ACP launch and generic permission handling are implemented, but this does not
+claim feature parity with each CLI: PandaCode currently initializes these
+harnesses without client filesystem/terminal capabilities, and Kiro's
+`_kiro.dev/commands/*` extensions are not equivalent to the standard ACP
+available-commands update. Resume, model/config switching, and provider-specific
+slash-command execution must be verified against the installed CLI version.
+Antigravity continues to use its existing ACP implementation.
+
+For Claude Code through a local OmniRoute gateway, make a named Claude Code
+connection under Settings → Providers → Connections. Set
+`ANTHROPIC_BASE_URL=http://127.0.0.1:20128` (without `/v1`) and
+`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`. Store the gateway token as a
+Secret environment variable named `ANTHROPIC_AUTH_TOKEN`; never put a token in
+the repository. OmniRoute should be authenticated and its Anthropic Messages
+API compatibility verified locally before using the connection.
+
 ## Claude login and environment credentials
 
 Open **Settings → Agents → Set up → Claude Code** to see the credential source

@@ -160,12 +160,15 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('Antigravity', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Grok Build', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('MiMo Token Plan', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('CodeBuddy Code', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Qoder CLI', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Kiro CLI', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('GitHub Copilot CLI', { exact: true }).first()).toBeVisible();
   await page.getByText('GLM Coding Plan', { exact: true }).first().click();
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'omp', 'github-copilot', 'muse']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'codebuddy', 'qoder', 'kiro', 'omp', 'github-copilot', 'muse']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {

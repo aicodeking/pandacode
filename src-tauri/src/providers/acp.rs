@@ -69,6 +69,8 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
             command.args(["--no-auto-update", "--acp", "--stdio"]);
         }
         "cline" => super::cline::configure(command, config),
+        "codebuddy" | "qoder" => { command.arg("--acp"); },
+        "kiro" => { command.arg("acp"); },
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -563,6 +565,8 @@ impl Protocol {
             };
             step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
             return Ok(());
+        } else if self.config.provider == "qoder" && self.config.mode == "full" {
+            &["bypassPermissions", "bypass_permissions", "bypass-permissions", "yolo"]
         } else if self.config.provider == "opencode" {
             if self.config.mode == "plan" {
                 &["plan"]
@@ -583,7 +587,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 4, option, id)?);
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || (self.config.provider == "qoder" && self.config.mode == "full") || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
@@ -594,7 +598,7 @@ impl Protocol {
                 step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || (self.config.provider == "qoder" && self.config.mode == "full") || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if self.config.mode == "plan" {
@@ -752,14 +756,25 @@ pub(crate) async fn handshake(command: Command, cwd: &Path) -> Result<Value, Str
 }
 
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
-    let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
-    if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
-    let discovery = super::acp_catalog::begin("antigravity", path);
+    models_for("antigravity", path).await
+}
+
+/// Metadata-only ACP discovery; use the same executable/flags as a real turn.
+pub(super) async fn models_for(provider: &str, path: &Path) -> Result<Vec<ModelInfo>, String> {
+    if let Some(models) = super::acp_catalog::get(provider, path) { return Ok(models); }
+    let _refresh = super::acp_catalog::refresh_lock(provider, path).await;
+    if let Some(models) = super::acp_catalog::get(provider, path) { return Ok(models); }
+    let discovery = super::acp_catalog::begin(provider, path);
     #[allow(unused_mut)]
     let mut command = super::command(path)?;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    match provider {
+        "codebuddy" | "qoder" => { command.arg("--acp"); },
+        "kiro" => { command.arg("acp"); },
+        _ => {
+            #[cfg(target_os = "linux")]
+            command.arg("--uid=");
+        },
+    }
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
     Ok(parse_models(&metadata))
@@ -1722,7 +1737,7 @@ mod tests {
 
     #[test]
     fn resume_uses_capabilities_without_silently_starting_fresh() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             let mut cfg = config(provider);
             cfg.resume_id = Some("existing".into());
             let mut p = Protocol::new(cfg.clone());
@@ -1784,7 +1799,7 @@ mod tests {
     }
     #[test]
     fn acp_approvals_wait_in_standard_and_auto_edit_modes_and_cancel_foreign_requests() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             for mode in ["ask", "auto"] {
                 let mut cfg = config(provider);
                 cfg.mode = mode.into();
@@ -1823,7 +1838,7 @@ mod tests {
     }
     #[test]
     fn full_acp_permissions_do_not_answer_questions_or_guess_between_grants() {
-        for provider in ["opencode", "antigravity"] {
+        for provider in ["opencode", "antigravity", "codebuddy", "qoder", "kiro"] {
             for options in [
                 json!([{"optionId":"q0_opt_0","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]),
                 json!([{"optionId":"one","kind":"allow_once"},{"optionId":"two","kind":"allow_once"}]),
@@ -1897,7 +1912,22 @@ mod tests {
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
+
+        for (provider, binary, args) in [
+            ("codebuddy", "codebuddy", vec!["--acp"]),
+            ("qoder", "qoder", vec!["--acp"]),
+            ("kiro", "kiro-cli", vec!["acp"]),
+        ] {
+            let mut command = Command::new(binary);
+            configure(&mut command, &config(provider));
+            assert_eq!(
+                command.as_std().get_args().collect::<Vec<_>>(),
+                args.iter().map(std::ffi::OsStr::new).collect::<Vec<_>>(),
+                "unexpected ACP arguments for {provider}"
+            );
+        }
     }
+
     #[test]
     fn glm_explicit_model_remains_a_cli_override_and_default_is_real_glm() {
         for model in ["default", "glm-5.3-flash"] {

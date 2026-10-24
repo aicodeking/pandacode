@@ -20,9 +20,10 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         }
         // Grok Build publishes its command list right after session/new, which
         // needs the cached-credential authenticate step first.
-        "cline" => {
+        "cline" | "codebuddy" | "qoder" => {
             command.arg("--acp");
         }
+        "kiro" => { command.arg("acp"); }
         "grok" => {
             command.args(["--no-auto-update", "agent", "stdio"]);
         }
@@ -64,7 +65,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn commands_use_real_provider_names_and_advertised_hints() {
-        for provider in ["opencode", "antigravity", "grok", "github-copilot"] {
+        for provider in ["opencode", "antigravity", "grok", "github-copilot", "codebuddy", "qoder", "kiro"] {
             let catalog = parse_runtime(provider,&json!({"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"review","description":"Review changes","input":{"hint":"[focus]"}}]}}})).unwrap();
             assert_eq!(catalog.commands[0].id, format!("{provider}:/review"));
             assert_eq!(

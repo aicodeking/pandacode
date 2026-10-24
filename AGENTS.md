@@ -12,6 +12,8 @@
 - `npx playwright test` — browser suite against the Vite preview (`npm run dev` on 127.0.0.1:1420 is started/reused automatically; needs Google Chrome at `/Applications/Google Chrome.app`). Full run ≈ 3.5 min at the default 4 workers (`PW_WORKERS=N` overrides); pass file paths or `-g "title"` for a subset.
 - `npx playwright test -c playwright.webkit.config.ts` — the same suite in WebKit (the real target is WKWebView).
 
+CodeBuddy, Qoder, and Kiro share the generic ACP adapter; their launch commands and currently unimplemented ACP capability extensions are recorded in `docs/providers.md`. Keep Antigravity's existing dedicated handshake unchanged when editing ACP handling.
+
 ## UI conventions
 - Color: never write a literal accent color. Use `--accent`, `--accent-rgb` (for `rgb(var(--accent-rgb) / a)`), `--on-accent` (text on accent fills), `--accent-dim`/`--accent-ink`, `--focus`, `--accent-hover`, `--accent-tint`. `src/palette.ts` sets them from the user's choice (wallpaper accent from `src/wallpaper-accents.ts`, classic yellow, a swatch) or from an imported VS Code theme (`html[data-vsix]`, mapped in `src/palette-core.ts`), which also sets the surface tokens and holds still when wallpapers change. Themes are imported natively by `vsix_themes.rs` (colors only, nothing executed). Regenerate `wallpaper-accents.ts` when scenes change; `tests/palette.test.mjs` checks every scene and 23 recorded real themes for contrast.
 - Material: every floating surface (dialog plate, menus, toast) is one warm glass defined by the `--glass-*` tokens in `src/motion.css`; a yellow highlight sits at the top edge. Reduced transparency/contrast rules must keep solid fallbacks.
