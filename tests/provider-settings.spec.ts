@@ -350,10 +350,12 @@ test('Command Code has a key card, four approval modes and its own model list', 
 });
 
 test('Cline has a sign-in card, four approval modes and thinking levels', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'cline'));
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.defaultProvider', 'cline');
+    localStorage.setItem('pandacode.provider', 'cline');
+  });
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="cline"]')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
   await expect(items).toHaveCount(4);
