@@ -345,7 +345,7 @@ pub async fn provider_configuration() -> Result<Configuration> {
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
     if !matches!(
         provider,
-        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse"
+        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse"
     ) {
         return Err("This provider does not support an executable override.".into());
     }

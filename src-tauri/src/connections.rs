@@ -24,7 +24,7 @@ const MAX_NAME: usize = 60;
 // on task deletion if this ever matters.
 const MAX_TASKS: usize = 5000;
 const PROVIDERS: &[&str] = &[
-    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "omp", "github-copilot", "muse",
+    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -110,6 +110,7 @@ fn config_dir_var(provider: &str) -> Option<&'static str> {
         "codex" => Some("CODEX_HOME"),
         "pi" => Some("PI_CODING_AGENT_DIR"),
         "opencode" => Some("OPENCODE_CONFIG_DIR"),
+        "kilo" => Some("KILO_CONFIG_DIR"),
         _ => None,
     }
 }

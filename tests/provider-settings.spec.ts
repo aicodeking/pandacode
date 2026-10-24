@@ -1,5 +1,33 @@
 import { expect, test, type Page } from '@playwright/test';
 
+test('provider connections expose Kilo models, approval modes and executable settings', async ({ page }, testInfo) => {
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  await trigger.click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await expect(picker.locator('.model-menu-option[data-provider="kilo"][data-model="default"]')).toBeVisible();
+  const model = picker.locator('.model-menu-option[data-provider="kilo"][data-model="kilo/anthropic/claude-sonnet-4.6"]');
+  await expect(model).toContainText('Kilo Gateway/Anthropic: Claude Sonnet 4.6');
+  await model.click();
+  await expect(trigger).toContainText('Kilo');
+  await page.locator('#mode-picker-trigger').click();
+  const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  await expect(permissions.getByRole('menuitemradio')).toHaveCount(4);
+  await permissions.getByRole('menuitemradio', { name: /Plan mode/ }).click();
+  await expect(page.locator('#mode-picker-trigger')).toContainText('Plan mode');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Kilo Code', exact: false }) });
+  await expect(card).toContainText('kilo auth login');
+  await expect(card.getByRole('link', { name: 'Kilo CLI docs' })).toHaveAttribute('href', 'https://kilo.ai/docs/code-with-ai/platforms/cli');
+  await card.locator('summary').click();
+  await expect(card.getByLabel('Kilo executable', { exact: true })).toBeVisible();
+  await card.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('kilo-provider-settings.png') });
+});
+
 test('provider connections show Claude credential conflicts and let users prefer the saved login', async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -50,7 +78,7 @@ async function delayedConnections(page: Page): Promise<void> {
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
-  await expect(page.locator('#settings-panel-providers details summary')).toHaveCount(9);
+  await expect(page.getByLabel('OpenCode executable', { exact: true })).toHaveCount(1);
   for (const summary of await page.locator('#settings-panel-providers details summary').all()) await summary.click();
 }
 
@@ -165,7 +193,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'omp', 'github-copilot', 'muse']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {

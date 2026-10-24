@@ -3,7 +3,7 @@
 A small, native desktop workspace for coding agents. PandaCode runs the coding
 CLIs you already use — **Claude Code, Codex, Kimi Code, OpenCode, GLM Coding
 Plan and Xiaomi MiMo** (through Claude Code), **GitHub Copilot CLI, Antigravity,
-xAI's Grok Build, DeepSeek, Command Code and Cline** (through ACP), **Pi** and its
+xAI's Grok Build, DeepSeek, Command Code, Cline and Kilo Code** (through ACP), **Pi** and its
 fork **omp** (through Pi's RPC mode), and Meta's **Muse Code** (through its MSP
 protocol) — side by side, with your projects, Git, a
 terminal and a browser in one window.
@@ -20,6 +20,7 @@ embedded editor engine.
 <p align="center">
   <b>Download:</b>
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg">macOS (Apple silicon)</a> ·
+  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg">macOS (Intel)</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe">Windows x64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe">Windows arm64</a> ·
   <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
@@ -168,8 +169,11 @@ on macOS, or `brew install aicodeking/pandacode/pandacode` on Linux
 
 Release builds are not code-signed, so your OS will warn the first time:
 
-- **macOS:** if macOS says it cannot verify PandaCode, open **System Settings →
-  Privacy & Security** and click **Open Anyway**.
+- **macOS:** the build carries an ad-hoc signature and is not notarized, so macOS
+  refuses to open it, and **Open Anyway** in **System Settings → Privacy &
+  Security** does not always clear it. Run `xattr -dr com.apple.quarantine
+  /Applications/PandaCode.app` once instead; `npx pandacode` signs the app locally
+  and needs no such step.
 - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
 - **Linux:** `chmod +x PandaCode-Linux-x86_64.AppImage` (or `-aarch64`), then run it. Some
   distributions need FUSE 2 (`libfuse2`), or set `APPIMAGE_EXTRACT_AND_RUN=1`.
@@ -191,6 +195,8 @@ PandaCode does not include provider plans or usage.
 
 [Command Code](https://commandcode.ai/docs/acp) installs with `npm i -g command-code` (Node 22 or newer); PandaCode launches `command-code acp`. Sign in once with `command-code login`, or save an API key in Settings → Providers (or set `COMMAND_CODE_API_KEY`); either one authenticates the same account. Usage limits are not shown in PandaCode; check Command Code Studio.
 [Cline](https://docs.cline.bot/cline-cli/overview) installs with `npm i -g cline`; PandaCode launches `cline --acp`. Sign in once with `cline auth` (or set `CLINE_API_KEY`); the provider and models chosen in Cline apply. See [provider details](docs/providers.md#cline).
+
+[Kilo Code](https://kilo.ai/docs/code-with-ai/platforms/cli) installs with `npm i -g @kilocode/cli`; sign in with `kilo auth login`, then select **Kilo Code** in PandaCode. PandaCode launches `kilo acp` and uses Kilo's configured providers and models. See [provider details](docs/providers.md#kilo-code).
 
 Muse Code installs with Meta's launcher into `~/.local/bin/muse`; run `muse login` once in a terminal. PandaCode launches `muse serve` and speaks MSP, Muse's JSON-RPC session protocol, with its sandbox and approval modes; see [docs/providers.md](docs/providers.md#muse-code) for what each mode does and what Muse cannot express.
 

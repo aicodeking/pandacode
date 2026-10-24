@@ -85,6 +85,15 @@ mode: reads and searches are allowed, edits, deletes and moves are declined, and
 tools (commands, fetches) ask you. Full access is `act` with `--auto-approve true`, so
 Cline runs every tool without asking. A missing mode fails the turn.
 
+Kilo Code uses its `code` agent, or `plan` in Plan mode. Its process-local global
+and code/plan wildcard permission policies, including legacy `mode` settings,
+are set to `ask` (or `allow` for Full access), and inherited `KILO_PERMISSION` is removed. Standard allows read-only
+tool requests and asks before edits, commands and other tools. Accept edits also
+approves file edits. Plan allows read/search/fetch/think and declines all other
+requests, including commands and edits to planning files; a missing rejection
+option cancels the request. Full access runs tools without approval prompts.
+This is an ACP tool policy, not a filesystem or network sandbox.
+
 Muse Code selects its approval mode on the wire and its sandbox with process flags:
 Standard is `promptUnmatched`, Accept edits `onRequest`, Plan `denyUnmatched` with
 `--disable-write --disable-shell` (read-only, plus a plan instruction in the prompt),

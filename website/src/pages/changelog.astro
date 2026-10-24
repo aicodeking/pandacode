@@ -41,5 +41,5 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
       ))}
     </ol>
   </div>
-  <p class="changelog-note section-width">PandaCode is an Alpha preview. Release builds may be unsigned: macOS builds aren’t notarized by Apple and Windows builds aren’t Authenticode signed yet, so your system may warn on first launch. Download builds only from <a href="https://github.com/aicodeking/pandacode/releases">GitHub Releases</a>, or build from source. Linux needs X11 or XWayland.</p>
+  <p class="changelog-note section-width">PandaCode is an Alpha preview. Release builds may be unsigned: macOS builds aren’t notarized by Apple and Windows builds aren’t Authenticode signed yet, so your system may warn on first launch. On macOS, <code>xattr -dr com.apple.quarantine /Applications/PandaCode.app</code> clears the warning, or install with <code>npx pandacode</code>, which signs the app locally. Download builds only from <a href="https://github.com/aicodeking/pandacode/releases">GitHub Releases</a>, or build from source. Linux needs X11 or XWayland.</p>
 </Page>

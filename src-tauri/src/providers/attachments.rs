@@ -57,7 +57,7 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
             }}),
             // Cline's ACP prompt keeps only text blocks; its read_files tool opens images.
             "cline" => json!({"type":"text","text":super::cline::image_reference(path)}),
-            "kimi" | "opencode" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" => {
+            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" => {
                 json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
             }
             // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.
@@ -106,7 +106,7 @@ mod tests {
         );
         let codex = load("codex", &paths).await.unwrap();
         assert_eq!(codex, vec![json!({"type":"localImage","path":file.0})]);
-        for provider in ["glm", "mimo", "opencode", "antigravity", "grok"] {
+        for provider in ["glm", "mimo", "opencode", "kilo", "antigravity", "grok"] {
             let blocks = load(provider, &paths).await.unwrap();
             assert_eq!(blocks[0]["type"], "image");
             if matches!(provider, "glm" | "mimo") {

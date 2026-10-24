@@ -52,11 +52,11 @@ test('hero, supported harnesses, and complete page have valid resources and resp
     const disclosure = page.locator(`#${id}`);
     await expect(disclosure).toContainText('macOS · Windows · Linux');
     await expect(disclosure).toContainText('Unsigned build');
-    await expect(disclosure).toContainText('Windows x64: unsigned installer');
-    await expect(disclosure).toContainText('Linux x64: AppImage');
-    await expect(disclosure).toContainText('Apple silicon · macOS 12+');
+    await expect(disclosure).toContainText('Windows x64 and arm64: unsigned installer');
+    await expect(disclosure).toContainText('Linux x86_64 and aarch64: AppImage');
+    await expect(disclosure).toContainText('Apple silicon or Intel · macOS 12+');
     await expect(disclosure).toContainText('Not notarized by Apple');
-    await expect(disclosure).toContainText('macOS may block the first launch');
+    await expect(disclosure).toContainText('macOS blocks the first launch');
     await expect(disclosure.getByRole('link', { name: /First-launch help/ })).toHaveAttribute('href', 'https://support.apple.com/en-us/102445');
     await expect(page.locator(`[data-download][aria-describedby~="${id}"]`)).toHaveCount(1);
   }
@@ -70,7 +70,7 @@ test('hero, supported harnesses, and complete page have valid resources and resp
   }
   await expect(page.locator('#preview-notes')).toContainText('free, open-source software');
   await expect(page.locator('#preview-notes')).toContainText('provider subscriptions and model usage are separate');
-  await expect(page.locator('#preview-notes')).toContainText('Apple silicon Macs, Windows x64, and Linux x64 are published on GitHub Releases');
+  await expect(page.locator('#preview-notes')).toContainText('Apple silicon and Intel Macs, Windows x64 and arm64, and Linux x86_64 and aarch64 are published on GitHub Releases');
   await expect(page.locator('#preview-notes').getByRole('link', { name: 'PandaCode License' })).toHaveAttribute('href', '/license/');
   await expect(page.locator('#preview-notes').getByRole('link', { name: /Report an issue/ })).toHaveAttribute('href', issues);
   await expect.poll(() => page.locator('img:visible').evaluateAll(images => images.filter(image => !(image as HTMLImageElement).complete || !(image as HTMLImageElement).naturalWidth).map(image => (image as HTMLImageElement).src))).toEqual([]);
@@ -193,8 +193,12 @@ test('download and source links go to GitHub, open safely, and fetch nothing unt
   await expect(page.locator('.download-content').getByRole('link', {name: /Download PandaCode/})).toHaveAttribute('href', releases);
   await expect(page.locator('.download-content').getByRole('link', {name: /View the source on GitHub/})).toHaveAttribute('href', repo);
   const direct = page.locator('[data-platform-download]');
-  await expect(direct).toHaveCount(3);
-  for (const [index, file] of ['PandaCode-macOS-arm64.dmg', 'PandaCode-Windows-x64-setup.exe', 'PandaCode-Linux-x86_64.AppImage'].entries()) {
+  await expect(direct).toHaveCount(6);
+  for (const [index, file] of [
+    'PandaCode-macOS-arm64.dmg', 'PandaCode-macOS-x64.dmg',
+    'PandaCode-Windows-x64-setup.exe', 'PandaCode-Windows-arm64-setup.exe',
+    'PandaCode-Linux-x86_64.AppImage', 'PandaCode-Linux-aarch64.AppImage',
+  ].entries()) {
     await expect(direct.nth(index)).toHaveAttribute('href', `${repo}/releases/latest/download/${file}`);
   }
   for (const link of await page.locator('a[href^="https://github.com/"]:not([data-platform-download])').all()) {

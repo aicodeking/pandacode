@@ -119,7 +119,7 @@ function render(): void {
   start.disabled = busy || modelSaving || !snapshot.projects.length || !prompt.value.trim();
   agentButton.disabled = busy || modelSaving || pickerLoading;
   agentButton.setAttribute('aria-busy',String(modelSaving || pickerLoading));
-  const name = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'}[snapshot.context.provider] || snapshot.context.provider;
+  const name = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'}[snapshot.context.provider] || snapshot.context.provider;
   const modelName = modelNames.get(`${snapshot.context.provider}:${snapshot.context.model}`) || fallbackModel(snapshot.context.provider as ProviderId,snapshot.context.model).name;
   const teamCount = snapshot.teamWorkerCount ?? 0;
   const teamLabel = teamCount > 0 ? `+${teamCount} ${teamCount === 1 ? 'model' : 'models'}` : '';

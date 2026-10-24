@@ -89,6 +89,7 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             "command-code" | "cmdc" | "commandcode" => "command-code",
             "copilot" => "@github/copilot",
             "cline" => "cline",
+            "kilo" | "kilocode" => "@kilocode/cli",
             _ => return Err(
                 "This batch launcher is unsupported. Select the native harness executable instead."
                     .into(),
@@ -296,6 +297,7 @@ fn search_directories(windows: bool, env: &impl Fn(&str) -> Option<OsString>) ->
             ".kimi-code/bin",
             ".kimi-code/Scripts",
             ".opencode/bin",
+            ".kilo/bin",
             ".cargo/bin",
             ".bun/bin",
             ".grok/bin",
@@ -805,6 +807,8 @@ mod tests {
             ("pi", "@earendil-works/pi-coding-agent"),
             ("copilot", "@github/copilot"),
             ("cline", "cline"),
+            ("kilo", "@kilocode/cli"),
+            ("kilocode", "@kilocode/cli"),
         ] {
             let shim = f.file(&format!("node_modules/.bin/{name}.cmd"), "@echo off");
             f.file(
@@ -834,6 +838,7 @@ mod tests {
         let dirs = search_directories(true, &env);
         for path in [
             "C:/Users/Person/.local/bin",
+            "C:/Users/Person/.kilo/bin",
             "C:/Users/Person/.kimi-code/Scripts",
             "D:/Roaming Data/npm",
             "D:/Local Data/Microsoft/WinGet/Links",

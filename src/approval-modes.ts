@@ -18,6 +18,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? 'DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.'
     : provider === 'cline'
     ? 'Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.'
+    : provider === 'kilo'
+    ? 'Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.'
     : provider === 'muse'
     ? 'Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.'
     : 'Use the harness’s normal rules. Ask you when approval is needed.' };
@@ -45,7 +47,7 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Work freely inside the sandbox. Muse asks only to leave it.' }
     : provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
-    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline'].includes(provider)
+    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo'].includes(provider)
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
     : provider === 'kimi'
     ? { id: 'auto', label: 'Ask when needed', icon: 'spark', description: 'Allow routine tools automatically. Ask you about sensitive actions.' }
@@ -61,6 +63,8 @@ export function approvalModes(provider: ProviderId): ApprovalMode[] {
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only sandbox: DeepSeek cannot write files and proposes a plan; requests to escalate are declined.' }
     : provider === 'cline'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Cline’s Plan mode: it explores and proposes a plan; file edits are declined, commands still ask.' }
+    : provider === 'kilo'
+    ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only: Kilo investigates and plans; edits, commands and other state-changing tools are declined.' }
     : provider === 'muse'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only: Muse cannot write files or run shell commands, and proposes a plan.' }
     : provider === 'commandcode'

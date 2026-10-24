@@ -232,6 +232,7 @@
 .distribution-note,.download-content>.distribution-note{max-width:450px;margin:18px auto 0;font-size:12px;line-height:1.65;color:#405540;text-wrap:pretty}
 .distribution-note strong{font-weight:650}
 .distribution-note a{text-decoration:underline;text-underline-offset:3px;white-space:nowrap}
+.distribution-note code{padding:1px 5px;border-radius:5px;background:#eef2e4;color:#22301f;font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}
 .download-content>.distribution-note{color:#e0e8db}
 .source-link{display:inline-block;font-size:12px;margin-top:19px;text-underline-offset:4px}
 .source-link:hover{text-decoration:underline}

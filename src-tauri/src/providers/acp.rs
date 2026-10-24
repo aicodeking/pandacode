@@ -1,4 +1,4 @@
-//! ACP v1 transport for OpenCode, Antigravity, Grok Build, Command Code, Cline and
+//! ACP v1 transport for OpenCode, Kilo, Antigravity, Grok Build, Command Code, Cline and
 //! GitHub Copilot CLI. Kimi retains its provider-specific mode mapping.
 use super::*;
 use crate::slash_commands::claude::Pipe;
@@ -69,6 +69,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
             command.args(["--no-auto-update", "--acp", "--stdio"]);
         }
         "cline" => super::cline::configure(command, config),
+        "kilo" => super::kilo::configure(command),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -180,6 +181,9 @@ impl Protocol {
             }
             if self.config.provider == "cline" && value["error"]["code"] == -32000 {
                 return Err(super::cline::SIGN_IN.into());
+            }
+            if self.config.provider == "kilo" && value["error"]["code"] == -32000 {
+                return Err(super::kilo::SIGN_IN.into());
             }
             if value["error"]["code"] == -32000 {
                 return Err(format!("{} requires authentication. Sign in using its own CLI or official extension, then retry.", self.config.provider));
@@ -337,6 +341,22 @@ impl Protocol {
             let options = value["params"]["options"].as_array();
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
+            if self.config.provider == "kilo" {
+                let tool = &value["params"]["toolCall"];
+                if let Some(wanted) = super::kilo::permission(&self.config.mode, field(tool, "kind")) {
+                    let selected = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
+                    let outcome = match selected {
+                        Some(selected) => json!({"outcome":"selected","optionId":selected["optionId"]}),
+                        None => json!({"outcome":"cancelled"}),
+                    };
+                    if wanted == "reject_once" {
+                        let title = model_text(tool["title"].as_str(), "a state-changing action", 200);
+                        step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
+                    }
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":outcome}}));
+                    return Ok(step);
+                }
+            }
             if deepseek && self.config.mode == "plan" {
                 // dsh runs read-only here and asks only to escalate past it.
                 if let Some(selected) = options.and_then(|values| values.iter().find(|entry| entry["kind"] == "reject_once")) {
@@ -526,6 +546,8 @@ impl Protocol {
             // Command Code's ACP modes are its permission modes, so each PandaCode
             // choice has exactly one, and a missing one must not widen access.
             &[super::commandcode::mode_id(&self.config.mode)]
+        } else if self.config.provider == "kilo" {
+            &[super::kilo::mode_id(&self.config.mode)]
         } else if self.config.provider == "cline" {
             // Cline has Plan and Act; approvals ride on permission requests.
             &[if self.config.mode == "plan" { "plan" } else { "act" }]
@@ -583,7 +605,7 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 4, option, id)?);
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
@@ -594,11 +616,15 @@ impl Protocol {
                 step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "commandcode" | "cline") {
+            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline") {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
-        } else if self.config.mode == "plan" {
-            return Err("This harness does not advertise a read-only planning mode.".into());
+        } else if self.config.mode == "plan" || self.config.provider == "kilo" {
+            return Err(if self.config.provider == "kilo" {
+                "This harness does not advertise the selected task mode."
+            } else {
+                "This harness does not advertise a read-only planning mode."
+            }.into());
         }
         self.acp_model(step)
     }

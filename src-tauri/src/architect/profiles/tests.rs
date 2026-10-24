@@ -150,6 +150,7 @@ fn new_user_tasks_default_to_full_without_overriding_requested_modes_or_saved_ta
             "pi",
             "deepseek",
             "cline",
+            "kilo",
             "github-copilot",
         ] {
             let existing = store

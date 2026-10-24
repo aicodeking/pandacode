@@ -610,6 +610,45 @@ directly. The recorded frames back the unit tests in `providers/cline.rs`, and
 an ignored smoke test (`live_cline_lists_models`) reads the real catalog without
 spending tokens.
 
+## Kilo Code
+
+Kilo Code (`npm i -g @kilocode/cli`) exposes ACP v1 with `kilo acp`, so PandaCode
+uses its shared ACP adapter. Sign in with `kilo auth login` (or `/connect` in
+Kilo). Credentials and provider configuration stay with Kilo; PandaCode adds no
+separate account or key store. See the [official CLI docs](https://kilo.ai/docs/code-with-ai/platforms/cli).
+
+**Models and effort.** Discovery opens an empty session without sending a prompt
+or spending model tokens. Kilo advertises `model`, `effort` and `mode` config
+options; the current model's effort choices belong only to that model. Default
+leaves selection to Kilo. Mode, model and effort changes must be acknowledged
+before the prompt is sent. Missing advertised choices fail the turn.
+
+**Approvals.** Standard, Accept edits and Full access select Kilo's `code` agent;
+Plan selects `plan`. A process-local `KILO_CONFIG_CONTENT` sets global and
+code/plan wildcard permissions to `ask` in both `agent` and legacy `mode`
+settings; the inherited `KILO_PERMISSION` override is removed. PandaCode allows read/search/fetch/think
+requests, approves edits in Accept edits, and declines all other requests in Plan
+(cancelling if no rejection option is offered). Full access uses `allow` instead.
+Kilo's own configuration and managed restrictions still apply. These are tool
+permissions, not an OS sandbox. Kilo auto-updates are disabled for
+these subprocesses; update the CLI yourself.
+
+**Turn data.** Images, streaming text, tool calls, HTTP MCP for PandaCode tools,
+advertised slash commands, cancellation and session resume use the shared ACP
+paths. Kilo advertises both `session/resume` and `session/load`; older servers
+with only `loadSession` use `session/load`. Mid-turn messages remain queued for
+the next turn. Named connections accept `KILO_CONFIG_DIR` as their config folder.
+Their inline model/provider settings are retained, but the task's permission
+policy is applied after connection overrides.
+
+**Not integrated.** The interactive harness console, cloud-agent installation,
+automatic CLI updates and account balance/limits are not offered for Kilo. Check
+your Kilo or connected provider dashboard for credits and limits.
+
+Verified against `kilo` 7.3.41 on 2026-10-24 with real ACP metadata. Recorded
+frames back `providers/kilo.rs` tests; `live_kilo_lists_models` is an ignored,
+opt-in smoke test that reads the installed CLI's catalog without prompting.
+
 ## Muse Code
 
 Muse Code (Meta's coding agent CLI, `muse`, installed by its launcher into
@@ -716,6 +755,8 @@ differences, read from omp 18.12's `modes/rpc/rpc-types.ts` and CLI flag table:
   omp does not hide them behind tool discovery.
 - Model discovery skips Pi-only flags (`--offline`, `--no-mcp`, …); slash
   commands come from `get_available_commands`.
+- A mid-turn message steers the running turn, exactly as it does for Pi, so a
+  recipe step that requires a steer is supported on omp too.
 
 Accounts, models and thinking levels are omp's own. Live check:
 `cargo test installed_omp -- --ignored`.

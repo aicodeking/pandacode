@@ -133,6 +133,7 @@
 .license-text .caps { font-size: 13px; }
 @media (max-width: 760px) { .license-text { padding: 18px; font-size: 12.5px; } .license-text .caps { font-size: 12px; } }
 .changelog-note a { text-decoration: underline; text-decoration-color: #a9c47f; text-underline-offset: 3px; }
+.changelog-note code { padding: 1px 5px; border-radius: 5px; background: #eef2e4; color: #22301f; font: .88em ui-monospace, SFMono-Regular, Menlo, monospace; }
 .release-body { overflow-wrap: anywhere; }
 .release-body a { text-decoration: underline; text-decoration-color: #a9c47f; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
 .release-body a:hover { color: #647a43; }

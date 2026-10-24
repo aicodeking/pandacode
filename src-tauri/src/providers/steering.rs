@@ -44,7 +44,7 @@ impl Protocol {
     }
 
     pub(super) fn steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
-        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot") {
+        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot") {
             return self.acp_steer(id, text, reply);
         }
         let mut step = Step::default();
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn acp_harnesses_steer_and_empty_messages_are_refused() {
-        for provider in ["kimi", "opencode", "grok", "antigravity", "deepseek", "commandcode"] {
+        for provider in ["kimi", "opencode", "kilo", "grok", "antigravity", "deepseek", "commandcode"] {
             let mut p = Protocol::new(config(provider));
             let (_, mut reply) = steer(&mut p, "hello");
             assert!(reply.try_recv().unwrap().is_ok(), "{provider} holds the steer");

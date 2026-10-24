@@ -47,7 +47,7 @@ const AGENTS_STOPPING: &str = "Wait for the current agents to stop before resumi
 const CONTINUE_BODY: &str = "Background commands, monitors and scheduled wakeups do not report back after your turn ends, so nothing is waiting on them. Continue now: dispatch the remaining work to workers, run any check you need in the foreground and wait for it in this turn, or call finish_team with a summary if the objective is done. Do not end this turn waiting on anything.";
 const FAILED_PREFIX: &str = "A worker failed while other workers are still running, for this objective: ";
 const FAILED_BODY: &str = "\n\nRead the failed worker's error and result. Retry it with followup_worker, dispatch a replacement, or leave it for the final review. Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after you act; settled work will trigger review.\n\n";
-const HARNESSES: [&str; 15] = [
+const HARNESSES: [&str; 16] = [
     "claude",
     "codex",
     "kimi",
@@ -60,6 +60,7 @@ const HARNESSES: [&str; 15] = [
     "deepseek",
     "commandcode",
     "cline",
+    "kilo",
     "omp",
     "github-copilot",
     "muse",

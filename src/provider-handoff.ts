@@ -1,5 +1,5 @@
 import type { Message, ProviderId } from './types.ts';
-const providers = new Set(['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'omp', 'github-copilot', 'muse']);
+const providers = new Set(['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse']);
 export interface Handoff { fromProvider: ProviderId; toProvider: ProviderId; summary: string; }
 export function decodeHandoff(message: Message): Handoff | null {
   if (message.role !== 'handoff') return null;

@@ -252,7 +252,7 @@ export class OverlayThreadView {
     }
     const response = node.querySelector<HTMLElement>('.launcher-thread-response')!; response.hidden = !turn.final;
     response.classList.toggle('launcher-thread-live', last);
-    const names: Record<string,string> = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'};
+    const names: Record<string,string> = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'};
     const heading = response.querySelector('header')!;
     const author = turn.final ? historicalProvider(turn.final, messages, this.task!.provider as ProviderId) : this.task!.provider;
     if (heading.dataset.provider !== author) {

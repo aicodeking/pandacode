@@ -2,7 +2,7 @@
  * pretend Claude Code and Codex install, and the same refusals the native side gives. */
 import type { SkillActivation, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
-const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'omp', 'muse']);
+const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse']);
 const FILES = ['claude', 'codex'];
 const PROJECT_ROOT = '/Users/you/Projects/orbit';
 

@@ -13,7 +13,7 @@ import type { ProviderId } from './types';
 interface TrayTask { id: string; title: string; project: string; provider: ProviderId; at: number; failed?: boolean }
 interface TraySnapshot { running: TrayTask[]; waiting: TrayTask[]; finished: TrayTask[]; usage: AgentUsage[]; checking: boolean }
 
-const NAMES: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', glm: 'GLM', opencode: 'OpenCode', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', deepseek: 'DeepSeek', pi: 'Pi', cline: 'Cline', muse: 'Muse', commandcode: 'Command Code', omp: 'Oh My Pi', 'github-copilot': 'Copilot' };
+const NAMES: Partial<Record<ProviderId, string>> = { claude: 'Claude', codex: 'Codex', kimi: 'Kimi', glm: 'GLM', opencode: 'OpenCode', kilo: 'Kilo', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', deepseek: 'DeepSeek', pi: 'Pi', cline: 'Cline', muse: 'Muse', commandcode: 'Command Code', omp: 'Oh My Pi', 'github-copilot': 'Copilot' };
 const root = document.documentElement;
 
 function refreshTheme(): void {

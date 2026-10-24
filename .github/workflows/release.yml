@@ -125,18 +125,15 @@ jobs:
           pattern: pandacode-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Write release notes
+        env:
+          # A Developer ID signed build is notarized; an ad-hoc one is not, and
+          # macOS then needs a step the notes have to name.
+          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
         run: |
           {
             cat "releases/$VERSION.md"
-            printf '\n\n## Installing\n\n'
-            printf -- '- **macOS (Apple silicon):** open `PandaCode-macOS-arm64.dmg` and drag PandaCode to Applications. If macOS says it cannot verify the app, open System Settings > Privacy & Security and choose **Open Anyway**.\n'
-            printf -- '- **macOS (Intel):** open `PandaCode-macOS-x64.dmg` and drag PandaCode to Applications (same **Open Anyway** step if macOS cannot verify the app).\n'
-            printf -- '- **Windows x64:** run `PandaCode-Windows-x64-setup.exe`. If SmartScreen warns about an unknown publisher, choose **More info > Run anyway**.\n'
-            printf -- '- **Windows arm64:** run `PandaCode-Windows-arm64-setup.exe` (same SmartScreen step).\n'
-            printf -- '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.\n'
-            printf -- '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.\n'
-            printf -- '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build (macOS: signed locally automatically).\n\n'
-            printf 'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.\n'
+            printf '\n\n'
+            if [ "$SIGNED" = "true" ]; then node scripts/release/install-notes.mjs --signed; else node scripts/release/install-notes.mjs; fi
           } > "$RUNNER_TEMP/notes.md"
       - name: Write the updater manifest
         run: |

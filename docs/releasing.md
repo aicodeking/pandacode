@@ -167,6 +167,14 @@ Builds are unsigned by default: macOS gets an ad-hoc signature, Windows and
 Linux are not signed. Users see first-launch warnings, which the release notes
 explain.
 
+An ad-hoc macOS build is not notarized, and Gatekeeper refuses to open it.
+**Open Anyway** in System Settings → Privacy & Security does not always clear
+that warning, so the release notes name the step that does:
+`xattr -dr com.apple.quarantine /Applications/PandaCode.app`. `npx pandacode`
+signs the app locally and needs no such step. The notes come from
+`scripts/release/install-notes.mjs`, which takes `--signed` when a Developer ID
+signature was used and then asks for no workaround.
+
 To ship Developer ID signed and notarized macOS builds, add these repository
 secrets (Settings → Secrets and variables → Actions):
 

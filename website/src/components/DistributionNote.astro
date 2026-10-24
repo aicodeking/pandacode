@@ -7,6 +7,7 @@ const { id } = Astro.props;
   <p id={id} class="distribution-note">
     <strong>{distribution.platforms}</strong> · Alpha preview<br>
     <span>Mac: {distribution.requirements}. <strong>Unsigned build.</strong> {distribution.previewNotice}</span> <a href={distribution.appleSupportUrl} target="_blank" rel="noopener noreferrer">First-launch help <span aria-hidden="true">↗</span></a><br>
-    <span>Windows x64: unsigned installer. Linux x64: AppImage for Ubuntu 22.04+.</span>
+    <span>macOS blocks the first launch: run <code>{distribution.unblockCommand}</code> once in Terminal, or install with <code>npx pandacode</code>, which signs the app locally.</span><br>
+    <span>Windows x64 and arm64: unsigned installer. Linux x86_64 and aarch64: AppImage for Ubuntu 22.04+.</span>
   </p>
 )}

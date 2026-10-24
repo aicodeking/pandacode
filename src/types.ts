@@ -1,4 +1,4 @@
-export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'omp' | 'github-copilot' | 'muse';
+export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse';
 export type Mode = 'ask' | 'auto' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
 export interface Project { id: string; name: string; path: string; }
