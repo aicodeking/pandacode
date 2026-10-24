@@ -350,10 +350,13 @@ test('Command Code has a key card, four approval modes and its own model list', 
 });
 
 test('Cline has a sign-in card, four approval modes and thinking levels', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'cline'));
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.defaultProvider', 'cline');
+    localStorage.setItem('pandacode.provider', 'cline');
+  });
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="cline"]')).toBeVisible();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
   await expect(items).toHaveCount(4);
@@ -364,7 +367,9 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Cline', exact: false }) });
   await expect(card).toContainText('cline auth');
-  await expect(card.getByRole('link', { name: 'Cline CLI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/cline-cli/overview');
+  await expect(card.getByRole('link', { name: 'Cline CLI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/cli-overview');
+  await expect(card.getByRole('link', { name: 'ACP details' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/acp');
+  await expect(card.getByRole('link', { name: 'TUI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/tui');
   await card.locator('summary').click();
   await expect(card.getByLabel('Cline executable', { exact: true })).toBeVisible();
 });

@@ -575,7 +575,7 @@ without spending tokens.
 Cline (`cline`, installed with `npm i -g cline`) exposes ACP v1 with
 `cline --acp`, so PandaCode drives it with the shared ACP adapter. The npm package's
 `bin/cline` is a Node launcher for a bundled native binary. On Windows the npm
-`cline.cmd` shim resolves to that declared entry.
+`cline.cmd` shim resolves to that declared entry. Official docs: [CLI overview](https://docs.cline.bot/usage/cli-overview), [TUI](https://docs.cline.bot/usage/tui), and [ACP](https://docs.cline.bot/usage/acp).
 
 **Sign-in.** Cline keeps its own sign-in (`cline auth`: Cline, ClinePass or a ChatGPT
 subscription), or reads `CLINE_API_KEY` from the environment. Without either,
@@ -592,6 +592,12 @@ options by ID first. There is no ACP effort option. The effort is the launch fla
 
 **Approvals.** See [approvals](approvals.md): Plan → `plan`, everything else → `act`.
 Full access adds `--auto-approve true`.
+
+**Terminal console.** Opening the terminal console launches Cline's interactive TUI (`cline -i`), preserving the task's model, mode (`--plan`, `--auto-approve true` for Full access, or `--auto-approve false` for approval modes), and reasoning effort (`--thinking <level>`). Resuming an existing task in the console passes `--id <session-id>`.
+
+**Capabilities and MCP.** Settings → Tools & add-ons inspects Cline's MCP configurations from `~/.cline/data/settings/cline_mcp_settings.json`, `~/.cline/cline_mcp_settings.json`, `~/.cline/mcp_settings.json`, and project-level `.cline/cline_mcp_settings.json` and `.cline/mcp_settings.json`. Custom skills are detected from `~/.cline/skills`, `.cline/skills`, and compatibility roots (`.clinerules/skills`, `.claude/skills`).
+
+**Updates.** Checked through the official npm registry (`npm:cline`).
 
 **Turn data.** Streaming text, thoughts, tool calls with `rawInput`/`rawOutput`,
 cancel and `session/load` (resume) use the common ACP paths. Cline can load a

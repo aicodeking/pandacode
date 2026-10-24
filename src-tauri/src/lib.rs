@@ -189,7 +189,7 @@ fn save_approval_with_pending(
     activity.request_id = Some(request_id.clone());
     let mut approvals = approvals.lock().map_err(|error| error.to_string())?;
     let mut pending_requests = pending_requests.map(|requests| requests.lock().map_err(|error| error.to_string())).transpose()?;
-    update_pending_request(&mut approvals, pending_requests.as_mut().map(|requests| &mut **requests), &request_id, activity);
+    update_pending_request(&mut approvals, pending_requests.as_deref_mut(), &request_id, activity);
     store.lock().map_err(|error| error.to_string())?.status(
         &activity.session_id,
         if approvals.is_empty() {

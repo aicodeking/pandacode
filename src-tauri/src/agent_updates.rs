@@ -163,6 +163,7 @@ const PROVIDERS: &[(&str, &str)] = &[
     ("antigravity", "Antigravity"),
     ("grok", "Grok Build"),
     ("mimo", "MiMo Token Plan"),
+    ("cline", "Cline"),
 ];
 
 fn family(provider: &str) -> &str {
@@ -292,6 +293,7 @@ fn metadata_endpoint(source: &str) -> Option<(&'static str, &'static str)> {
             "tag_name",
         )),
         "npm:opencode" => Some(("https://registry.npmjs.org/opencode-ai/latest", "version")),
+        "npm:cline" => Some(("https://registry.npmjs.org/cline/latest", "version")),
         "kimi" => Some(("https://cdn.kimi.com/kimi-code/latest", "text")),
         "kimi-python" => Some(("https://pypi.org/pypi/kimi-cli/json", "info.version")),
         "grok" => Some((

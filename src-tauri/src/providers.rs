@@ -2852,13 +2852,25 @@ async fn run_process(
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL
 }
-// Preview tools are an optional transport capability, but retain their normal
-// approval requirements and transcript activity. They are not metadata tools.
+// Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
+// transport capabilities, but retain their normal approval requirements and transcript
+// activity. They are not metadata tools.
 fn optional_transport_tool(name: &str) -> bool {
-    optional_metadata_tool(name) || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
+    optional_metadata_tool(name)
+        || matches!(
+            name,
+            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli"
+        )
+        || name.starts_with("pandacode_simulator_")
+        || name.starts_with("pandacode_vm_")
+        || name.starts_with("pandacode_design_")
+        || name.starts_with("pandacode_jev_")
+        || name.starts_with("pandacode_bot_")
 }
 fn per_run_mcp_tool(name: &str) -> bool {
-    name.starts_with("pandacode_jev_") || optional_transport_tool(name)
+    name.starts_with("pandacode_jev_")
+        || optional_metadata_tool(name)
+        || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
 }
 
 fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>) {
@@ -3286,7 +3298,7 @@ mod tests {
 
     #[test]
     fn preview_tools_do_not_block_normal_acp_turns_when_http_mcp_is_unavailable() {
-        for provider in ["kimi", "opencode", "antigravity", "grok"] {
+        for provider in ["kimi", "opencode", "antigravity", "grok", "cline"] {
             let mut p = Protocol::new(config(provider));
             p.mcp_server = Some(json!({"type":"http","name":"pandacode_architect"}));
             p.mcp_required = ["pandacode_run_project", "pandacode_preview_file"].iter().any(|name| !optional_transport_tool(name));
@@ -3297,6 +3309,32 @@ mod tests {
             }
             assert_eq!(step.write[0]["method"], "session/new", "{provider}");
             assert_eq!(step.write[0]["params"]["mcpServers"], json!([]), "{provider}");
+        }
+    }
+
+    #[test]
+    fn optional_host_tools_do_not_block_normal_acp_turns_when_http_mcp_is_unavailable() {
+        for name in [
+            crate::session_titles::TOOL,
+            crate::turn_changes::TRACK_TOOL,
+            "pandacode_run_project",
+            "pandacode_preview_file",
+            "pandacode_cloud_cli",
+            "pandacode_simulator_tap",
+            "pandacode_vm_exec",
+            "pandacode_design_artboard",
+            "pandacode_jev_test",
+            "pandacode_bot_recall",
+        ] {
+            assert!(optional_transport_tool(name), "{name} should be optional transport");
+        }
+        for name in [
+            "pandacode_delegate",
+            "pandacode_send_team_message",
+            "pandacode_team_status",
+            "pandacode_read_file",
+        ] {
+            assert!(!optional_transport_tool(name), "{name} must be required");
         }
     }
 

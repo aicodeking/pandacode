@@ -549,6 +549,52 @@ fn scan_harness_configs(
                 }
             }
         }
+        "cline" => {
+            let mut seen_user_mcp = std::collections::HashSet::new();
+            for (path, source) in [
+                (
+                    home.join(".cline/data/settings/cline_mcp_settings.json"),
+                    "~/.cline/data/settings/cline_mcp_settings.json",
+                ),
+                (
+                    home.join(".cline/cline_mcp_settings.json"),
+                    "~/.cline/cline_mcp_settings.json",
+                ),
+                (
+                    home.join(".cline/mcp_settings.json"),
+                    "~/.cline/mcp_settings.json",
+                ),
+            ] {
+                if let Some(value) = read_json(&path) {
+                    for entry in parse_mcp_json(harness, source, &value, "mcpServers") {
+                        if seen_user_mcp.insert(entry.name.clone()) {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+            if let Some(project) = project {
+                let mut seen_project_mcp = std::collections::HashSet::new();
+                for (path, source) in [
+                    (
+                        project.join(".cline/cline_mcp_settings.json"),
+                        ".cline/cline_mcp_settings.json",
+                    ),
+                    (
+                        project.join(".cline/mcp_settings.json"),
+                        ".cline/mcp_settings.json",
+                    ),
+                ] {
+                    if let Some(value) = read_json(&path) {
+                        for entry in parse_mcp_json(harness, source, &value, "mcpServers") {
+                            if seen_project_mcp.insert(entry.name.clone()) {
+                                entries.push(entry);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {}
     }
     entries.extend(scan_skill_dirs(harness, home, project));
@@ -590,6 +636,14 @@ fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathB
             roots.push((home.join(".pi/agent/skills"), "~/.pi/agent/skills"));
             if let Some(project) = project {
                 roots.push((project.join(".pi/skills"), ".pi/skills"));
+            }
+        }
+        "cline" => {
+            roots.push((home.join(".cline/skills"), "~/.cline/skills"));
+            if let Some(project) = project {
+                roots.push((project.join(".cline/skills"), ".cline/skills"));
+                roots.push((project.join(".clinerules/skills"), ".clinerules/skills"));
+                roots.push((project.join(".claude/skills"), ".claude/skills"));
             }
         }
         _ => {}
@@ -837,5 +891,45 @@ env = { API_KEY = "secret" }
             instruction_delivery("codex"),
             ("messageInjection", "partial")
         );
+        assert_eq!(
+            instruction_delivery("cline"),
+            ("messageInjection", "partial")
+        );
+    }
+
+    #[test]
+    fn cline_mcp_and_skills_inventory_reads_configured_paths() {
+        let home = fixture_home("cline-home");
+        let project = fixture_home("cline-project");
+        let settings = home.join(".cline/data/settings");
+        fs::create_dir_all(&settings).unwrap();
+        fs::write(
+            settings.join("cline_mcp_settings.json"),
+            r#"{"mcpServers":{"local-tool":{"command":"node","args":["server.js"]}}}"#,
+        )
+        .unwrap();
+        // Fallback config has a duplicate server name that should be deduplicated in favor of settings.
+        fs::write(
+            home.join(".cline/mcp_settings.json"),
+            r#"{"mcpServers":{"local-tool":{"command":"node","args":["legacy.js"]}}}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(project.join(".cline/skills/code-review")).unwrap();
+        fs::create_dir_all(project.join(".clinerules/skills/doc-gen")).unwrap();
+        let entries = scan_harness_configs("cline", &home, Some(&project));
+        let local_tools: Vec<_> = entries
+            .iter()
+            .filter(|item| item.harness == "cline" && item.kind == "mcp server" && item.name == "local-tool")
+            .collect();
+        assert_eq!(local_tools.len(), 1);
+        assert_eq!(local_tools[0].source, "~/.cline/data/settings/cline_mcp_settings.json");
+        assert!(entries
+            .iter()
+            .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "code-review"));
+        assert!(entries
+            .iter()
+            .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "doc-gen"));
+        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(project).unwrap();
     }
 }

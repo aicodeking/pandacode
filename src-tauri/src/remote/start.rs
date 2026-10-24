@@ -107,7 +107,7 @@ fn project_for(state: &AppState, target: &Target) -> Result<(Project, bool)> {
             if bot_projects.iter().any(|bot_project| bot_project == id) {
                 return Err("Bot workspaces cannot be used for remote tasks.".into());
             }
-            return find_project_id(projects, id).map(|project| (project, false)).ok_or_else(|| "Project not found.".into());
+            find_project_id(projects, id).map(|project| (project, false)).ok_or_else(|| "Project not found.".into())
         }
         Target::Repo(repo) => {
             let origins = projects.into_iter().map(|project| {

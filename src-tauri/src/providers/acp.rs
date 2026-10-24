@@ -237,9 +237,11 @@ impl Protocol {
                         if self.mcp_required {
                             return Err("This harness does not advertise HTTP MCP support required for PandaCode tools. Update its ACP server.".into());
                         }
-                        // Title suggestions are optional metadata. Older ACP
-                        // agents can continue normally using the local fallback.
+                        // Title suggestions and host tools are optional capabilities.
+                        // Older ACP agents or harnesses without HTTP MCP can continue
+                        // normally using the local fallback.
                         self.mcp_server = None;
+                        self.mcp_tool_names.clear();
                     }
                     let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
                     let method = if self.remote_id.is_empty() {
