@@ -81,6 +81,7 @@ test('settings organization recovers a failed default model catalog and permits 
   await model.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByRole('status').filter({ hasText: 'Could not load models for Claude Code' })).toBeVisible();
+  await expect(picker.locator('.model-menu-catalog-error')).toContainText('Catalog unavailable');
   await picker.getByRole('searchbox').fill('custom-default-model');
   await picker.getByRole('button', { name: 'Use "custom-default-model" with Claude Code', exact: true }).click();
   await expect(model).toHaveText('custom-default-model');
