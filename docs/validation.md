@@ -1218,3 +1218,25 @@ data was moved. No public publication or notarization was performed.
   unit tests, all 29 Chromium overlay tests and three focused WebKit regressions
   passed. TypeScript, production build, changed-file formatting and diff checks
   passed. No paid model inference was used.
+
+## Interface localization (en-US, en-GB, 简体中文, 繁體中文, October 2026)
+
+- Wrapped ~2,900 user-visible desktop strings (workspace shell, settings family,
+  provider/cloud/github/bots/jev/vm panels, inspector panels, quick launcher,
+  menu bar popover) and ~210 mobile strings behind the catalogs. English output
+  is byte-identical to before: the whole existing Playwright suite passes
+  unchanged in en-US.
+- Language preference defaults to the system language (zh-Hans/zh-Hant-HK/
+  zh-Hant-TW/en-GB/en-US mapping) with an override in Settings → General and the
+  mobile Settings tab; the native tray menu and launcher title follow the
+  persisted `ui-language.json` so they open in the chosen language.
+- Validation: desktop `tsc`, 147 Node unit tests (including the seven-case i18n
+  guardrail: catalog completeness, placeholder signatures, source coverage scan,
+  locale mapping, `t()` substitution), the six-case `tests/language.spec.ts`
+  (default/override/reload/auto-detect/en-GB spelling), the full Playwright
+  chromium suite (842 passed), the WebKit run (646 passed, 1 standard skip),
+  `cargo test` (1,322 passed, 53 standard live-test ignores), production build
+  (locale catalogs are lazy chunks; the 80 KiB entry budget holds), and mobile
+  `tsc`/39 unit tests (including desktop-mapping parity)/`expo lint`.
+  Terminology and generation notes in
+  [src/locales/GLOSSARY.md](../src/locales/GLOSSARY.md).
