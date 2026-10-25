@@ -403,6 +403,35 @@ pub fn read_document(path: &Path) -> Result<DocumentText, String> {
     })
 }
 
+/// A dropped browser File carries no path, so the webview sends its bytes; they are
+/// staged into a temporary file so `read_document`'s extractors apply unchanged, and
+/// the copy is removed afterwards. The document keeps the file's own name.
+pub fn read_dropped_document(raw_name: &str, bytes: &[u8]) -> Result<DocumentText, String> {
+    let name = dropped_name(raw_name);
+    if name.is_empty() { return Err("The dropped file has no usable name.".into()); }
+    if bytes.is_empty() { return Err("The dropped file is empty.".into()); }
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err("This document is too large to attach. Files up to 64 MB are supported.".into());
+    }
+    let staged = std::env::temp_dir().join(format!("pandacode-drop-{}-{name}", uuid::Uuid::new_v4()));
+    std::fs::write(&staged, bytes).map_err(|_| "Could not stage the dropped document.".to_string())?;
+    let document = read_document(&staged);
+    let _ = std::fs::remove_file(&staged);
+    let mut document = document?;
+    document.name = name.clone();
+    document.path = name;
+    Ok(document)
+}
+
+/// A file name safe to stage: the bare component without control characters, bounded
+/// in length while keeping the extension the extractors match on.
+fn dropped_name(raw: &str) -> String {
+    let bare: String = raw.rsplit(['/', '\\']).next().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+    let bare = bare.trim();
+    if bare.is_empty() || bare == "." || bare == ".." { return String::new(); }
+    if bare.chars().count() <= 120 { bare.to_owned() } else { bare.chars().skip(bare.chars().count() - 120).collect() }
+}
+
 fn spotlight(path: &Path) -> Result<String, String> {
     let dump = extract_with("/usr/bin/mdimport", &["-t", "-d3"], path)?;
     spotlight_text(&dump).ok_or_else(|| {
@@ -663,5 +692,30 @@ mod tests {
         assert!(summary.listing.lines().last().unwrap().starts_with("… 21 more"));
         assert_eq!(summary.files, LISTING_LINES + 20, "counts continue past the printed lines");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn staged_copies() -> usize {
+        std::env::temp_dir().read_dir().unwrap().flatten().filter(|entry| entry.file_name().to_string_lossy().starts_with("pandacode-drop-")).count()
+    }
+
+    #[test]
+    fn dropped_documents_extract_from_staged_bytes_and_leave_no_copy() {
+        let bytes = b"# Dropped\n\nHello from the finder.";
+        let before = staged_copies();
+        let document = read_dropped_document("notes.md", bytes).unwrap();
+        assert_eq!((document.name.as_str(), document.path.as_str(), document.method), ("notes.md", "notes.md", "text"));
+        assert_eq!(document.size, bytes.len() as u64);
+        assert!(document.text.contains("Hello from the finder."));
+        assert_eq!(staged_copies(), before, "the staging copy is removed after the extraction");
+    }
+
+    #[test]
+    fn dropped_names_are_reduced_to_one_safe_component() {
+        let document = read_dropped_document("..\\..\\notes.md", b"stub bytes").unwrap();
+        assert_eq!(document.name, "notes.md");
+        assert_eq!(read_dropped_document("..", b"bytes").unwrap_err(), "The dropped file has no usable name.");
+        assert_eq!(read_dropped_document("notes.md", b"").unwrap_err(), "The dropped file is empty.");
+        let oversized = vec![b'a'; MAX_DOCUMENT_BYTES as usize + 1];
+        assert!(read_dropped_document("notes.md", &oversized).is_err());
     }
 }

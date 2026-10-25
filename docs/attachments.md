@@ -8,10 +8,14 @@ carry besides text:
 - **Project files** — the Files tab, for source context from the checkout.
 - **Sketch a mockup…** — draw a wireframe and attach it as an image.
 
-Images can also be **pasted** into the message box or **dropped** anywhere on the
-window (the composer lights up while you drag). Attachments belong to their task
-and stay put while you switch tasks; they leave with the message that sends them
-and come back if that send fails.
+Images can also be **pasted** into the message box or **dropped** anywhere on
+the window (the composer lights up while you drag). Plain text can be dragged
+into the message box too — from the transcript or another app — and lands at
+the caret. A dropped file arrives as a browser drop (without its path) and
+attaches like its picker equivalent; anything that cannot attach falls back to
+the file's name at the caret. Attachments belong to their task and stay put
+while you switch tasks; they leave with the message that sends them and come
+back if that send fails.
 
 ## Images
 
@@ -35,7 +39,9 @@ Plain text (Markdown, code, CSV, JSON, logs…) is read directly. On macOS,
 `.doc/.docx/.rtf/.odt` go through `textutil`, and PDF, iWork, Office and EPUB
 files go through Spotlight's importers (`mdimport`), which extract the text
 without any extra dependency. Extraction runs with the same bounded process
-runner as Git and `gh` (30 s, 12 MB of output). Each document contributes at most
+runner as Git and `gh` (30 s, 12 MB of output). A dropped document carries no
+path, so its bytes are staged into a temporary copy that the extractors read
+and the copy is removed afterwards. Each document contributes at most
 32 KiB; the chip and the block say when it was cut. Up to five documents per
 message. Scanned PDFs with no text layer are refused with a note.
 
@@ -79,8 +85,12 @@ your message, so the conversation reads as what you said.
 
 - `import_prompt_image { path | dataUrl, name }` → `{ id, name, width, height, thumbnail }`
 - `read_document { path }` → `{ name, path, size, text, truncated, method }`
+- `import_dropped_document` (raw bytes, name in the `x-pandacode-file-name` header) → `{ name, path, size, text, truncated, method }`
 - `describe_folder { path }` → `{ name, path, files, folders, listing, truncated }`
 
-All three are main-window commands (`src-tauri/src/prompt_attachments.rs`); the
-launcher's allowlist does not include them. Paths come from native pickers, drops
-and pastes in the trusted webview; agents only ever see the resulting IDs and text.
+All four are main-window commands (`src-tauri/src/prompt_attachments.rs`); the
+launcher's allowlist does not include them. Paths come from native pickers in
+the trusted webview; drops arrive as ordinary HTML5 drag events
+(`dragDropEnabled` is off, which is what lets text be dragged into the prompt),
+so dropped documents travel as raw bytes and are staged for extraction. Agents
+only ever see the resulting IDs and text.

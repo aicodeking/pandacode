@@ -671,6 +671,10 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
     checking: false,
   };
 }
+/** Raw-IPC twin of `invoke`: the body is bytes and named arguments arrive in headers. */
+export async function invokeRaw<T>(command: string, body: Uint8Array, headers: Record<string, string>): Promise<T> {
+  return invoke<T>(command, { ...headers, bytes: body.byteLength });
+}
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
@@ -1406,6 +1410,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (/\.(zip|dmg|bin)$/i.test(name)) throw new Error('No readable text was found in this document. It may be scanned images only.');
       const pdf = /\.pdf$/i.test(name);
       result = { name, path, size: pdf ? 48210 : 1830, method: pdf ? 'spotlight' : /\.(docx?|rtf|odt)$/i.test(name) ? 'textutil' : 'text', truncated: /large/i.test(name), text: pdf ? 'Product brief\n\nGoal: make search feel instant.\nSuccess: results appear while typing, under 100 ms.' : '# Notes\n\nKeyboard shortcuts should mirror the menu bar.' };
+      break;
+    }
+    case 'import_dropped_document': {
+      // The desktop stages dropped bytes into a temporary file and runs the same extractors.
+      const name = String(args['x-pandacode-file-name'] ?? 'Document');
+      if (!/\.(pdf|doc|docx|rtf|odt|pages|key|numbers|ppt|pptx|xls|xlsx|epub)$/i.test(name)) throw new Error('No readable text was found in this document. It may be scanned images only.');
+      const pdf = /\.pdf$/i.test(name);
+      result = { name, path: name, size: pdf ? 48210 : 1830, method: pdf ? 'spotlight' : 'textutil', truncated: false, text: pdf ? 'Product brief\n\nGoal: make search feel instant.\nSuccess: results appear while typing, under 100 ms.' : '# Brief\n\nExtracted from the dropped file.' };
       break;
     }
     case 'describe_folder': {

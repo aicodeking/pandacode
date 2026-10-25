@@ -2732,6 +2732,16 @@ async fn read_document(path: String) -> Result<prompt_attachments::DocumentText>
     blocking(move || prompt_attachments::read_document(std::path::Path::new(&path))).await
 }
 
+/// A dropped browser File arrives as raw bytes (the webview never sees paths); the
+/// file's own name travels in a header so the extractors still see an extension.
+#[tauri::command]
+async fn import_dropped_document(request: tauri::ipc::Request<'_>) -> Result<prompt_attachments::DocumentText> {
+    let raw_name = request.headers().get("x-pandacode-file-name").and_then(|value| value.to_str().ok()).unwrap_or_default().to_owned();
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else { return Err("Unexpected request body.".into()) };
+    let bytes = bytes.clone();
+    blocking(move || prompt_attachments::read_dropped_document(&raw_name, &bytes)).await
+}
+
 #[tauri::command]
 async fn describe_folder(path: String) -> Result<prompt_attachments::FolderSummary> {
     blocking(move || prompt_attachments::describe_folder(std::path::Path::new(&path))).await
@@ -3679,6 +3689,7 @@ pub fn run() {
                 prompt_image,
                 reveal_path,
                 read_document,
+                import_dropped_document,
                 describe_folder,
                 list_files,
                 search_files,
