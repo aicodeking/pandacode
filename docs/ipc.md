@@ -374,6 +374,10 @@ catalog with install state; `voice_download_model({id})` streams one model in
 the background, emitting `voice-download {id, status, progress, error?}`.
 `voice_start()` refuses when voice is off, a recording is already running or
 the required models are missing; `voice_stop()` finalizes and
-`voice_cancel()` discards. Events: `voice-partial {text}` replaces the live
+`voice_cancel()` discards. Online modes add `voice_providers()` (the preset
+registry), `voice_set_key({provider, key})` (secure store; empty key forgets),
+`voice_keys()` (provider ids with saved keys) and
+`voice_test_provider({provider})` (a silence probe through the real
+endpoint). Events: `voice-partial {text}` replaces the live
 text, `voice-result {text, engine, fallback}` settles the transcript,
 `voice-error {message}`, `voice-level f32`. See [voice](voice.md).

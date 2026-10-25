@@ -117,9 +117,8 @@ impl Settings {
             self.online_model.clear();
             self.online_base_url.clear();
         }
-        if self.online_provider.is_empty() {
-            self.mode = MODE_OFFLINE.into();
-        }
+        // An online mode without a provider yet is kept: the form must stay
+        // reachable to pick one; recording refuses until it is configured.
         self
     }
 
@@ -201,6 +200,32 @@ mod tests {
         assert_eq!(settings.resolved_model(&installed), "sense-voice");
         // …and nothing is chosen when nothing is installed.
         assert_eq!(settings.resolved_model(&|_| false), "");
+    }
+
+    #[test]
+    fn online_mode_survives_until_a_provider_is_picked() {
+        let settings = Settings { mode: super::MODE_ONLINE.into(), ..Settings::default() }.normalized();
+        assert_eq!(settings.mode, super::MODE_ONLINE);
+        assert!(settings.online_first());
+        // An unknown provider id is still scrubbed, and a known one kept.
+        let with_provider = Settings {
+            mode: super::MODE_ONLINE_FALLBACK.into(),
+            online_provider: "deepgram".into(),
+            online_base_url: "".into(),
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(with_provider.mode, super::MODE_ONLINE_FALLBACK);
+        assert_eq!(with_provider.online_provider, "deepgram");
+        let bogus = Settings {
+            mode: super::MODE_ONLINE.into(),
+            online_provider: "nope".into(),
+            online_model: "m".into(),
+            ..Settings::default()
+        }
+        .normalized();
+        assert_eq!(bogus.online_provider, "");
+        assert_eq!(bogus.online_model, "");
     }
 
     #[test]

@@ -104,3 +104,29 @@ test('hold mode records while the button is pressed', async ({ page }) => {
   await page.mouse.up();
   await expect.poll(async () => await voiceCalls(page)).toContain('voice_stop');
 });
+
+test('online mode: pick a provider, save its key, run the connectivity test', async ({ page }) => {
+  await open(page);
+  await openVoiceSettings(page);
+  const panel = page.locator('#voice-settings');
+  await page.locator('#voice-enabled').click();
+
+  // Online is inert until a provider is configured; pick one first.
+  await panel.locator('[data-mode="online"]').click();
+  await expect(panel.locator('.voice-provider')).toBeVisible();
+  await panel.locator('.voice-provider').selectOption('groq');
+  // The provider switch adopts the preset's default model.
+  await expect(panel.locator('.voice-model-select')).toHaveValue('whisper-large-v3-turbo');
+  await expect.poll(async () => await voiceCalls(page)).toContain('voice_save_settings');
+
+  // The test refuses without a key, then succeeds once one is saved.
+  await panel.locator('.voice-test').click();
+  await expect(page.locator('#toast')).toContainText('Save an API key first.');
+  await panel.locator('.voice-key').fill('sk-test');
+  await panel.locator('.voice-key-save').click();
+  await expect.poll(async () => await voiceCalls(page)).toContain('voice_set_key');
+  await expect(panel.locator('.voice-key')).toHaveValue('');
+  await panel.locator('.voice-test').click();
+  await expect.poll(async () => await voiceCalls(page)).toContain('voice_test_provider');
+  await expect(page.locator('#toast')).toContainText('is connected.');
+});

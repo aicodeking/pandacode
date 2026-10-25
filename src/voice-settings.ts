@@ -1,6 +1,6 @@
 import './voice-settings.css';
 import { escape, icon } from './dom';
-import type { VoiceHost, VoiceModelStatus, VoiceSettings } from './voice';
+import type { VoiceHost, VoiceModelStatus, VoiceProviderInfo, VoiceSettings } from './voice';
 
 /* Settings → Voice: turn dictation on, pick the engine and its downloaded
    models, choose tap or hold. Downloads stream progress; nothing is bundled. */
@@ -26,9 +26,32 @@ const KIND_LABEL: Record<VoiceModelStatus['kind'], string> = {
 
 export type VoiceSettingsHost = VoiceHost;
 
+/** Provider, key, model and endpoint fields for the online modes. */
+function providerForm(
+  settings: VoiceSettings,
+  providers: VoiceProviderInfo[],
+  keys: string[],
+): string {
+  const current = providers.find(provider => provider.id === settings.onlineProvider);
+  const options = providers
+    .map(provider => `<option value="${escape(provider.id)}" ${provider.id === settings.onlineProvider ? 'selected' : ''}>${escape(provider.label)}${provider.streaming ? ' · live' : ''}</option>`)
+    .join('');
+  const models = current ? current.models.map((model: string) =>
+    `<option value="${escape(model)}" ${model === settings.onlineModel ? 'selected' : ''}>${escape(model)}</option>`).join('') : '';
+  const hasKey = keys.includes(settings.onlineProvider);
+  return `<h3 class="settings-heading">Online provider</h3>
+      <div class="settings-group">
+        <div class="setting-row"><div><strong>Service</strong><small>Presets cover the common APIs; Custom points at any OpenAI-compatible endpoint, self-hosted included.</small></div><select class="settings-select voice-provider" aria-label="Online provider">${options || '<option value="">Loading…</option>'}</select></div>
+        ${current ? `
+        <div class="setting-row"><div><strong>API key</strong><small>${hasKey ? 'A key is saved in the secure store.' : 'Stored in the secure store on this computer; never sent anywhere but the provider.'}</small></div><span class="voice-model-actions"><input type="password" class="voice-key" placeholder="${hasKey ? 'Saved — paste to replace' : 'Paste an API key'}" aria-label="API key for ${escape(current.label)}"><button type="button" class="secondary-button voice-key-save">Save</button><button type="button" class="secondary-button voice-test">Test</button></span></div>
+        <div class="setting-row"><div><strong>Model</strong><small>${current.streaming ? 'Streams partial text while you speak.' : 'Transcribes once when you stop; usually back within a second.'}</small></div><span class="voice-model-actions"><select class="settings-select voice-model-select" aria-label="Online model">${models}</select></span></div>
+        <div class="setting-row"><div><strong>Endpoint</strong><small>${current.id === 'custom' ? 'Base URL, e.g. http://127.0.0.1:8080 for a local whisper.cpp server.' : 'Leave empty to use the official endpoint.'}</small></div><span class="voice-model-actions"><input type="text" class="voice-base-url" placeholder="${escape(current.baseUrl || 'https://…')}" value="${escape(settings.onlineBaseUrl)}" aria-label="Provider base URL" ${current.id === 'custom' ? '' : 'spellcheck="false"'}></span></div>` : ''}
+      </div>`;
+}
+
 export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost): () => void {
   let disposed = false;
-  let state = { settings: null as VoiceSettings | null, models: [] as VoiceModelStatus[], appleAvailable: false, microphoneAvailable: true };
+  let state = { settings: null as VoiceSettings | null, models: [] as VoiceModelStatus[], appleAvailable: false, microphoneAvailable: true, providers: [] as VoiceProviderInfo[], keys: [] as string[] };
   let busy = false;
 
   const draw = (): void => {
@@ -58,6 +81,13 @@ export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost
         ${!state.microphoneAvailable ? '<p class="voice-note" role="note">No microphone is available on this computer.</p>' : ''}
       </div>
       ${settings.enabled ? `
+      <h3 class="settings-heading">Transcription</h3>
+      <div class="settings-group" role="radiogroup" aria-label="Transcription mode">
+        <div class="setting-row"><div><strong>Offline</strong><small>This computer only: Apple Speech or downloaded local models. Nothing leaves the machine.</small></div><button type="button" class="voice-engine${settings.mode !== 'online' && settings.mode !== 'online-fallback' ? ' voice-picked' : ''}" data-mode="offline" aria-pressed="${settings.mode !== 'online' && settings.mode !== 'online-fallback'}">${settings.mode !== 'online' && settings.mode !== 'online-fallback' ? 'Selected' : 'Use'}</button></div>
+        <div class="setting-row"><div><strong>Online</strong><small>A provider you configure below. Audio goes to that provider while you speak (streaming) or once when you stop.</small></div><button type="button" class="voice-engine${settings.mode === 'online' ? ' voice-picked' : ''}" data-mode="online" aria-pressed="${settings.mode === 'online'}" ${state.providers.length ? '' : 'disabled'}>${settings.mode === 'online' ? 'Selected' : 'Use'}</button></div>
+        <div class="setting-row"><div><strong>Online with offline fallback</strong><small>Online first; if it fails, the local quality model settles the transcript.</small></div><button type="button" class="voice-engine${settings.mode === 'online-fallback' ? ' voice-picked' : ''}" data-mode="online-fallback" aria-pressed="${settings.mode === 'online-fallback'}" ${state.providers.length ? '' : 'disabled'}>${settings.mode === 'online-fallback' ? 'Selected' : 'Use'}</button></div>
+      </div>
+      ${settings.mode !== 'offline' ? providerForm(settings, state.providers, state.keys) : ''}
       <h3 class="settings-heading">Engine</h3>
       <div class="settings-group" role="radiogroup" aria-label="Voice engine">
         ${state.appleAvailable ? `<div class="setting-row"><div><strong>Apple Speech</strong><small>macOS dictation: no download, live punctuated text. On-device when the language supports it.</small></div><button type="button" class="voice-engine${settings.engine !== 'apple' ? '' : ' voice-picked'}" data-engine="apple" aria-pressed="${settings.engine === 'apple'}">${settings.engine === 'apple' ? 'Selected' : 'Use'}</button></div>` : ''}
@@ -95,11 +125,13 @@ export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost
 
   const refresh = async (): Promise<void> => {
     try {
-      const [next, models] = await Promise.all([
-        options.call<{ settings: VoiceSettings; models: VoiceModelStatus[]; appleAvailable: boolean; microphoneAvailable: boolean }>('voice_state'),
+      const [next, models, providers, keys] = await Promise.all([
+        options.call<{ settings: VoiceSettings; models: VoiceModelStatus[]; appleAvailable: boolean; microphoneAvailable: boolean; keys: string[] }>('voice_state'),
         options.call<VoiceModelStatus[]>('voice_models'),
+        options.call<VoiceProviderInfo[]>('voice_providers'),
+        options.call<string[]>('voice_keys'),
       ]);
-      state = { settings: next.settings, models, appleAvailable: next.appleAvailable, microphoneAvailable: next.microphoneAvailable };
+      state = { settings: next.settings, models, appleAvailable: next.appleAvailable, microphoneAvailable: next.microphoneAvailable, providers, keys };
     } catch { state = { ...state, settings: state.settings }; }
     draw();
   };
@@ -120,12 +152,48 @@ export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost
     if (engine?.dataset.engine) { void save({ engine: engine.dataset.engine }); return; }
     const interaction = target.closest<HTMLElement>('[data-interaction]');
     if (interaction?.dataset.interaction) { void save({ interaction: interaction.dataset.interaction }); return; }
+    const mode = target.closest<HTMLElement>('[data-mode]');
+    if (mode?.dataset.mode) { void save({ mode: mode.dataset.mode }); return; }
+    // Save key: read the password field, store it, refresh the saved state.
+    if (target.closest('.voice-key-save')) {
+      const input = host.querySelector<HTMLInputElement>('.voice-key');
+      const key = input?.value.trim() ?? '';
+      if (!key && state.keys.includes(state.settings?.onlineProvider ?? '')) { options.notify('Already saved — clear by saving an empty field.'); return; }
+      if (!key) { options.notify('Paste an API key first.'); return; }
+      void (async () => {
+        try {
+          await options.call('voice_set_key', { provider: state.settings!.onlineProvider, key });
+          if (input) input.value = '';
+          options.notify('Key saved to the secure store.');
+        } catch (error) { options.notify(error instanceof Error ? error.message : String(error)); }
+        await refresh();
+      })();
+      return;
+    }
+    if (target.closest('.voice-test')) {
+      const provider = state.settings?.onlineProvider ?? '';
+      const status = host.querySelector<HTMLElement>('[data-voice-status]');
+      if (status) status.textContent = 'Testing…';
+      void options.call<string>('voice_test_provider', { provider })
+        .then(message => options.notify(message))
+        .catch((error: unknown) => options.notify(error instanceof Error ? error.message : String(error)))
+        .finally(() => { if (status) status.textContent = busy ? 'Saving…' : ''; });
+      return;
+    }
   };
   const onChange = (event: Event): void => {
     const target = event.target as HTMLElement;
     if (target.id === 'voice-enabled') { void save({ enabled: (target as HTMLInputElement).checked }); return; }
     if (target.id === 'voice-fast') { void save({ fastMode: (target as HTMLInputElement).checked }); return; }
     if (target.classList.contains('voice-language')) { void save({ language: (target as HTMLSelectElement).value }); return; }
+    if (target.classList.contains('voice-provider')) {
+      const provider = state.providers.find(entry => entry.id === (target as HTMLSelectElement).value);
+      // A provider switch adopts its default model and clears the endpoint.
+      void save({ onlineProvider: provider?.id ?? '', onlineModel: provider?.defaultModel ?? '', onlineBaseUrl: '' });
+      return;
+    }
+    if (target.classList.contains('voice-model-select')) { void save({ onlineModel: (target as HTMLSelectElement).value }); return; }
+    if (target.classList.contains('voice-base-url')) { void save({ onlineBaseUrl: (target as HTMLInputElement).value.trim() }); return; }
   };
   const unlistenDownload = options.listen('voice-download', payload => {
     const { id, status, progress } = payload as { id: string; status: string; progress?: number };

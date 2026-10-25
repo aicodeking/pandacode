@@ -586,8 +586,18 @@ function agent(event: AgentEvent) { emit('agent-event', event); }
 
 /* Voice dictation preview: a fake catalog and a scripted recording that ticks
    levels, streams partials and settles a final transcript on stop. */
-type PreviewVoiceSettings = { enabled: boolean; engine: string; model: string; language: string; interaction: string; fastMode: boolean };
-let previewVoiceSettings: PreviewVoiceSettings = { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false };
+type PreviewVoiceSettings = { enabled: boolean; engine: string; model: string; language: string; interaction: string; fastMode: boolean; mode: string; onlineProvider: string; onlineModel: string; onlineBaseUrl: string };
+let previewVoiceSettings: PreviewVoiceSettings = { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false, mode: 'offline', onlineProvider: '', onlineModel: '', onlineBaseUrl: '' };
+const previewVoiceProviders = [
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com', defaultModel: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'], streaming: false },
+  { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com', defaultModel: 'whisper-large-v3-turbo', models: ['whisper-large-v3-turbo', 'whisper-large-v3'], streaming: false },
+  { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai', defaultModel: 'openai/gpt-4o-mini-transcribe', models: ['openai/gpt-4o-mini-transcribe', 'openai/whisper-large-v3-turbo', 'deepgram/nova-3'], streaming: false },
+  { id: 'together', label: 'Together', baseUrl: 'https://api.together.ai', defaultModel: 'openai/whisper-large-v3', models: ['openai/whisper-large-v3'], streaming: false },
+  { id: 'deepgram', label: 'Deepgram (live)', baseUrl: 'wss://api.deepgram.com', defaultModel: 'nova-3', models: ['nova-3', 'nova-2'], streaming: true },
+  { id: 'openai-realtime', label: 'OpenAI Realtime (live)', baseUrl: 'wss://api.openai.com', defaultModel: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe'], streaming: true },
+  { id: 'custom', label: 'Custom (OpenAI-compatible)', baseUrl: '', defaultModel: '', models: [], streaming: false },
+];
+let previewVoiceKeys: string[] = [];
 let previewVoiceModels: Array<{ id: string; label: string; kind: 'final' | 'live' | 'punct'; languages: string; license: string; size: number; installed: boolean; downloading: boolean; progress: number }> = [
   { id: 'live-en', label: 'Live English (streaming)', kind: 'live', languages: 'en', license: 'Apache-2.0', size: 72_700_000, installed: false, downloading: false, progress: 0 },
   { id: 'punct-en', label: 'Live punctuation (English)', kind: 'punct', languages: 'en', license: 'Apache-2.0', size: 30_600_000, installed: false, downloading: false, progress: 0 },
@@ -627,6 +637,7 @@ function previewVoiceState() {
     recording: previewVoiceRecording ? 'sherpa' : null,
     appleAvailable: true,
     microphoneAvailable: true,
+    keys: [...previewVoiceKeys],
   };
 }
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -1788,15 +1799,38 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'voice_models': result = previewVoiceModels.map(model => ({ ...model })); break;
     case 'voice_save_settings': {
       const next = args as unknown as PreviewVoiceSettings;
-      previewVoiceSettings = { ...previewVoiceSettings, ...next, interaction: next.interaction === 'hold' ? 'hold' : 'toggle' };
+      const providerKnown = previewVoiceProviders.some(provider => provider.id === next.onlineProvider);
+      previewVoiceSettings = {
+        ...previewVoiceSettings,
+        ...next,
+        interaction: next.interaction === 'hold' ? 'hold' : 'toggle',
+        mode: next.mode === 'online' || next.mode === 'online-fallback' ? next.mode : 'offline',
+        onlineProvider: providerKnown ? next.onlineProvider : '',
+        onlineModel: providerKnown ? next.onlineModel : '',
+      };
       result = { ...previewVoiceSettings };
+      break;
+    }
+    case 'voice_providers': result = previewVoiceProviders.map(provider => ({ ...provider, models: [...provider.models] })); break;
+    case 'voice_keys': result = [...previewVoiceKeys]; break;
+    case 'voice_set_key': {
+      const provider = String((args as { provider?: string }).provider ?? '');
+      const key = String((args as { key?: string }).key ?? '');
+      previewVoiceKeys = key ? [...new Set([...previewVoiceKeys, provider])] : previewVoiceKeys.filter(id => id !== provider);
+      result = null;
+      break;
+    }
+    case 'voice_test_provider': {
+      const provider = String((args as { provider?: string }).provider ?? '');
+      if (!previewVoiceKeys.includes(provider)) throw 'Save an API key first.';
+      result = `${provider} is connected.`;
       break;
     }
     case 'voice_download_model': {
       const id = String((args as { id?: string }).id ?? '');
       const model = previewVoiceModels.find(entry => entry.id === id);
-      if (!model) { result = Promise.reject('Unknown voice model.'); break; }
-      if (model.downloading) { result = Promise.reject('That model is already downloading.'); break; }
+      if (!model) throw 'Unknown voice model.';
+      if (model.downloading) throw 'That model is already downloading.';
       model.downloading = true; model.progress = 0;
       const step = (fraction: number) => {
         model.progress = fraction;
@@ -1809,8 +1843,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'voice_start': {
-      if (!previewVoiceSettings.enabled) { result = Promise.reject('Voice is off. Enable it in Settings → Voice.'); break; }
-      if (previewVoiceRecording) { result = Promise.reject('A voice recording is already running.'); break; }
+      if (!previewVoiceSettings.enabled) throw 'Voice is off. Enable it in Settings → Voice.';
+      if (previewVoiceRecording) throw 'A voice recording is already running.';
       previewVoiceStart();
       result = null;
       break;
