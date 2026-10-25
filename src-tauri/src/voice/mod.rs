@@ -31,15 +31,18 @@ pub const EVENT_DOWNLOAD: &str = "voice-download";
 
 /// One running recording. The engine worker owns its audio pipeline; these
 /// flags ask it to finalize (`stop`) or discard (`cancel`), and the worker
-/// clears `session` when it exits.
+/// clears `session` when it exits. `worker` is kept so a panic cannot leave
+/// the session stuck (the UI can read `engine` while it runs).
 pub struct ActiveSession {
     pub engine: &'static str,
     pub stop: Arc<AtomicBool>,
     pub cancel: Arc<AtomicBool>,
+    #[allow(dead_code)]
     pub worker: tauri::async_runtime::JoinHandle<()>,
 }
 
 impl ActiveSession {
+    #[allow(dead_code)]
     pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::SeqCst) || self.cancel.load(Ordering::SeqCst)
     }

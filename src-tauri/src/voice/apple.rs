@@ -12,7 +12,7 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2_avf_audio::{AVAudioEngine, AVAudioFormat, AVAudioPCMBuffer};
-use objc2_foundation::{NSLocale, NSString};
+use objc2_foundation::{NSBundle, NSLocale, NSString};
 use objc2_speech::{
     SFSpeechAudioBufferRecognitionRequest, SFSpeechRecognizer, SFSpeechRecognizerAuthorizationStatus,
 };
@@ -76,6 +76,14 @@ fn run_session(
     stop: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
 ) -> Result<(), String> {
+    // Requesting authorization without the usage strings crashes (Apple's
+    // documented behavior), which is exactly the unbundled dev binary's state.
+    if !usage_keys_present() {
+        return Err(
+            "Voice needs a bundled app build (the microphone usage strings are missing)."
+                .into(),
+        );
+    }
     let status = request_authorization();
     if status != SFSpeechRecognizerAuthorizationStatus::Authorized {
         return Err(
@@ -223,9 +231,19 @@ fn run_session(
     Ok(())
 }
 
+/// True when the running bundle carries the microphone usage strings —
+/// bundled releases always do (src-tauri/Info.plist), `tauri dev` does not.
+fn usage_keys_present() -> bool {
+    NSBundle::mainBundle()
+        .infoDictionary()
+        .is_some_and(|info| {
+            info.objectForKey(&NSString::from_str("NSMicrophoneUsageDescription"))
+                .is_some()
+        })
+}
+
 /// Requests authorization, prompting once when needed.
-fn request_authorization() -> SFSpeechRecognizerAuthorizationStatus {
-    let (tx, rx) = std::sync::mpsc::channel();
+fn request_authorization() -> SFSpeechRecognizerAuthorizationStatus {    let (tx, rx) = std::sync::mpsc::channel();
     let handler = block2::RcBlock::new(move |status: SFSpeechRecognizerAuthorizationStatus| {
         let _ = tx.send(status);
     });
