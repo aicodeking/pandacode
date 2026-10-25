@@ -1,0 +1,36 @@
+/* Settings → Voice: model catalog rows and engine pickers. */
+
+.voice-models { list-style: none; margin: 0 0 12px; padding: 0; }
+.voice-model, .voice-model-support {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgb(127 127 127 / 0.14);
+}
+.voice-model:last-child { border-bottom: none; }
+.voice-model strong { display: block; font-size: 13.5px; }
+.voice-model small { color: var(--text-secondary); font-size: 12px; }
+.voice-model-actions { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.voice-installed { color: var(--text-secondary); font-size: 12px; }
+.voice-download-progress { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--text-secondary); min-width: 42px; text-align: right; }
+.voice-engine, .voice-model-pick {
+  border: 1px solid rgb(127 127 127 / 0.3);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.voice-engine:hover, .voice-model-pick:hover { border-color: rgb(var(--accent-rgb)); }
+.voice-engine.voice-picked, .voice-model-pick.voice-picked {
+  background: rgb(var(--accent-rgb));
+  border-color: transparent;
+  color: var(--on-accent);
+  cursor: default;
+}
+.voice-note { color: var(--text-secondary); font-size: 12.5px; margin: 8px 0 0; }
+.voice-language { min-width: 200px; }
