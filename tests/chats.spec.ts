@@ -30,8 +30,8 @@ test('a new chat lists under Chats, not projects, without project affordances', 
 test('deleting a chat removes it and its hidden project', async ({ page }) => {
   await newChat(page);
   await page.getByRole('button', { name: 'Task actions', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Task actions', exact: true }).getByRole('menuitem', { name: 'Delete task…', exact: true }).click();
-  await page.getByRole('dialog', { name: 'Delete task?', exact: true }).getByRole('button', { name: 'Delete task', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Task actions', exact: true }).getByRole('menuitem', { name: 'Delete chat…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Delete chat?', exact: true }).getByRole('button', { name: 'Delete chat', exact: true }).click();
   await expect(chats(page)).toHaveCount(0);
   // The project filter lists real projects only.
   await page.locator('#project-filter').click();

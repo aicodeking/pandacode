@@ -1120,13 +1120,14 @@ test('all projects: folder headings show the project icon and rows are one line 
   await expect(folders.locator('.task-item .task-meta')).toHaveCount(0);
   await expect(folders.locator('.task-item .task-top .task-provider').first()).toBeVisible();
   for (const height of await folders.locator('.task-item').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height))) expect(height).toBeLessThan(36);
-  // One project on its own is named by the filter, which shows its icon: two lines per task.
+  // One project on its own is named by the filter, which shows its icon; the harness leads each title.
   await chooseProjectFilter(page, 'pandacode');
   await expect(page.locator('#project-filter > .task-app-icon')).toHaveCount(1);
   await expect(page.locator('#project-filter')).toHaveText('pandacode');
   await expect(page.locator('#navigation .task-item .task-checkout')).toHaveCount(0);
   await expect(page.locator('#navigation .task-item .task-top .task-title')).toHaveText(['Explore the project']);
-  await expect(page.locator('#navigation .task-item .task-meta .task-provider')).toHaveCount(1);
+  await expect(page.locator('#navigation .task-item .task-top .task-provider')).toHaveCount(1);
+  await expect(page.locator('#navigation .task-item .task-meta .task-provider')).toHaveCount(0);
   await chooseProjectFilter(page, 'All projects');
   await expect(page.locator('#project-filter > .task-app-icon')).toHaveCount(0);
 });

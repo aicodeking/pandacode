@@ -1,13 +1,13 @@
 .turn-changes-row{padding-left:31px}
 .side-thread .turn-changes-row{padding-left:28px}
-.turn-changes{position:relative;margin:12px 0 25px;padding:10px 12px;border-radius:6px;background:color-mix(in srgb,var(--panel) 56%,transparent);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--border) 38%,transparent);font-size:.8rem;min-width:0}
+.turn-changes{position:relative;margin:16px 0 30px;padding:14px 18px;border-radius:18px;background:color-mix(in srgb,var(--panel) 75%,transparent);box-shadow:inset 0 0 0 1px var(--border),0 12px 30px -18px rgb(0 0 0 / .45);font-size:.8rem;min-width:0}
 .turn-change-list>summary{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer;list-style:none;flex-wrap:wrap}
 .turn-changes summary::-webkit-details-marker{display:none}
 .turn-changes summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
 .turn-changes summary>.icon:first-child{width:13px;height:13px;transition:transform 150ms ease;color:var(--muted)}
 .turn-changes details[open]>summary>.icon:first-child{transform:rotate(90deg)}
 .turn-changes-actions{float:right;display:flex;gap:6px;margin:0 0 4px 10px}
-.turn-changes-open,.turn-changes-run{min-height:30px;border-radius:3px;padding:4px 9px;background:color-mix(in srgb,var(--raised) 78%,transparent);font-size:.75rem;font-weight:500}
+.turn-changes-open,.turn-changes-run{min-height:30px;border-radius:999px;padding:4px 12px;background:color-mix(in srgb,var(--raised) 78%,transparent);font-size:.75rem;font-weight:500}
 .turn-changes-run{color:var(--accent)}
 .turn-change-tree{clear:both}
 .turn-changes:after{content:'';display:block;clear:both}

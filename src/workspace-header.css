@@ -1,0 +1,56 @@
+/* Conversation header: a project chip, a pill view switch and quiet round-cornered tools.
+   Colors come from the accent and surface tokens, so imported themes and wallpapers follow.
+   Selectors start with `html` to win over the older header rules. */
+html .workspace-header{
+  --head-radius:var(--r-md);
+  --head-hover:var(--wash-hover);
+  --head-well:var(--wash-well);
+  --head-edge:var(--edge);
+  box-shadow:0 1px 0 color-mix(in srgb,var(--text) 6%,transparent);
+}
+html .workspace[data-wallpaper]>.main-pane>.workspace-header{box-shadow:none}
+
+/* Where you are: the project as a chip with a tinted tile for its icon. */
+html .workspace-header .breadcrumb{gap:8px}
+html .workspace-header .breadcrumb>.icon{box-sizing:content-box;width:14px;height:14px;padding:6px;border-radius:var(--head-radius);background:rgb(var(--accent-rgb) / .16);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .28);color:var(--focus)}
+html .workspace-header .breadcrumb>button{padding:4px 9px;margin-left:-2px;border-radius:var(--head-radius);font-size:.88rem;font-weight:620;letter-spacing:-.01em;--press:1}
+html .workspace-header .breadcrumb>button:hover{background:var(--head-hover)}
+html .workspace-header .breadcrumb>span:not(:first-child){font-size:.86rem;font-weight:550;color:var(--text)}
+
+/* Views: a pill with a lifted thumb. */
+html .workspace-header .view-switch{gap:2px;padding:3px;margin-right:4px;border-radius:11px;background:var(--head-well);box-shadow:inset 0 0 0 1px var(--head-edge)}
+html .workspace-header .view-switch button{height:26px;padding:0 11px;gap:6px;border-radius:8px;font-size:.76rem;font-weight:550;color:var(--muted)}
+html .workspace-header .view-switch button:hover{color:var(--text)}
+html .workspace-header .view-switch button[aria-pressed=true]{color:var(--text)}
+html .workspace-header .view-switch button[aria-pressed=true] .icon{color:var(--focus)}
+html .workspace-header .view-switch>.segment-thumb{border-radius:8px;background:color-mix(in srgb,var(--text) 12%,transparent);box-shadow:0 1px 2px rgb(0 0 0 / .16),0 0 0 1px var(--head-edge),inset 0 1px 0 rgb(255 255 255 / .06)}
+html:not([data-theme=dark]) .workspace-header .view-switch>.segment-thumb{background:var(--bg);box-shadow:0 1px 3px rgb(0 0 0 / .1),0 0 0 1px var(--head-edge)}
+
+/* Tools: round-cornered, tinted when on. */
+html .workspace-header .header-actions{gap:3px}
+html .workspace-header .header-actions .icon-button{width:30px;height:30px;border-radius:var(--head-radius)}
+html .workspace-header .header-actions .icon-button:hover{background:var(--head-hover)}
+html .workspace-header .header-actions .icon-button.active,
+html .workspace[data-wallpaper] .workspace-header .header-actions .icon-button.active,
+html[data-theme=dark] .workspace-header .header-actions .icon-button.active{background:rgb(var(--accent-rgb) / .17);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .26);color:var(--focus)}
+html .workspace-header .header-divider{height:18px;margin:0 7px;background:var(--head-edge)}
+html .workspace-header .header-run{padding:0 11px;height:30px;border-radius:var(--head-radius);background:rgb(var(--accent-rgb) / .14);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .26);color:var(--focus);font-weight:600}
+html .workspace-header .header-run:hover{background:rgb(var(--accent-rgb) / .22)}
+
+/* The browser preview's label becomes a small status pill. */
+html .workspace-header .preview-status{display:inline-flex;align-items:center;gap:7px;margin-right:6px;padding:3px 10px 3px 9px;border-radius:999px;background:var(--head-well);box-shadow:inset 0 0 0 1px var(--head-edge);font-size:.7rem;font-weight:550;color:var(--muted)}
+html .workspace-header .preview-status::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--success)}
+
+@media(max-width:900px){html .workspace-header .preview-status{display:none}}
+/* Tighter tools as the header narrows, so the project name and the sidebar button keep their room. */
+@container workspace-header (max-width:900px){html .workspace-header .header-actions{gap:2px}html .workspace-header .header-actions .icon-button{width:28px;height:28px}html .workspace-header .header-divider{margin:0 4px}}
+@container workspace-header (max-width:760px){html .workspace-header .view-switch button{padding:0 7px}}
+@container workspace-header (max-width:620px){html .workspace-header .header-divider{margin:0 2px}}
+@container workspace-header (max-width:420px){html .workspace-header .header-actions .icon-button{width:26px}}
+@media(max-width:650px){html .workspace-header .view-switch button{padding:0 6px}}
+
+/* Solid fallbacks: no translucent hairline, and the pressed view keeps an outline. */
+@media(prefers-contrast:more){
+  html .workspace-header{--head-edge:var(--border);box-shadow:none}
+  html .workspace-header .view-switch button[aria-pressed=true]{outline:1px solid var(--focus);outline-offset:-1px}
+}

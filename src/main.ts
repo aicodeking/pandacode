@@ -1,6 +1,8 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
 import { bindThreadReordering, compareThreadOrder, threadGroupRows } from './thread-order';
 import { FOLDER_LIMIT, PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks } from './sidebar-tree';
+import './vendor/inter/inter.css';
+import './design-tokens.css';
 import './styles.css';
 import './smooth.css';
 import './wallpapers.css';
@@ -8,6 +10,7 @@ import './turn-changes.css';
 import './team-progress.css';
 import './motion.css';
 import './sidebar-tree.css';
+import './workspace-header.css';
 import './inspector-bar.css';
 import './message-queue.css';
 import './usage-limit.css';
@@ -54,6 +57,7 @@ import { createThreadFind } from './thread-find';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import { CONNECT_SETUP, LOCAL, behindDialog, behindText, computerControl, computerItems } from './remote-target';
 import './cloud-agents.css';
+import './modern.css';
 import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
 import { botsBarHtml, botsListHtml, botsPanelHeadHtml, storedSidebarView, storeSidebarView, syncSeen, type SidebarView } from './sidebar-bots';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
@@ -276,7 +280,7 @@ const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
 const $app = document.querySelector<HTMLDivElement>('#app')!;
 $app.innerHTML = `<div class="workspace">
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
-    <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span></div>
+    <div class="brand" data-tauri-drag-region><img class="brand-mark" src="/icon.svg" alt="" aria-hidden="true" draggable="false" data-tauri-drag-region/><span class="brand-name" data-tauri-drag-region>PandaCode</span></div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
     <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
     <div id="navigation" class="navigation"></div>
@@ -970,14 +974,14 @@ function renderNavigation(): void {
     const pin = s.pinned ? `<span class="task-pin" role="img" aria-label="Pinned">${icon('pin')}</span>` : '';
     const projectName = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
     // Inside a project's folder the heading already names the project: one line with the
-    // title, then the worktree mark, linked PR or issue, status, age and harness.
-    if (inFolder) return `${button}<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${worktreeMark}${linkMark}${pin}${projectName}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`;
+    // harness, the title, then the worktree mark, linked PR or issue, status and age.
+    if (inFolder) return `${button}<span class="task-line task-top">${providerLogo(s.provider, 'task-provider')}<span class="task-title">${escape(s.title)}</span>${worktreeMark}${linkMark}${pin}${projectName}${signals}</span></button>`;
     // With one project chosen the filter names it: two lines, the title and then the rest.
     const head = inProject
-      ? `<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${signals}</span>`
+      ? `<span class="task-line task-top">${providerLogo(s.provider, 'task-provider')}<span class="task-title">${escape(s.title)}</span>${signals}</span>`
       : `<span class="task-line task-head">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-checkout">${escape(checkout)}</span>${signals}</span><span class="task-title">${escape(s.title)}</span>`;
     return `${button}${head}`
-      + `<span class="task-line task-meta">${branch}${linkMark}${pin}${projectName}${providerLogo(s.provider, 'task-provider')}</span></button>`;
+      + `<span class="task-line task-meta">${branch}${linkMark}${pin}${projectName}${inProject ? '' : providerLogo(s.provider, 'task-provider')}</span></button>`;
   };
   const pinned = visible.filter(s => s.pinned).sort(compareThreadOrder);
   // Projectless chats get their own group; a chosen project filter hides them.
@@ -994,8 +998,11 @@ function renderNavigation(): void {
     const rows = shownTasks(tasks, expanded, state.sessionId, limit);
     const more = tasks.length > rows.length || expanded && tasks.length > limit
       ? `<button class="folder-more" data-action="toggle-folder-more" data-project="${escape(project.id)}">${expanded ? 'Show less' : `Show ${tasks.length - rows.length} more`}</button>` : '';
+    // A redraw keeps the state the open ⋯ menu set on its button; morph() would reset it.
+    const menuAnchor = choiceMenuAnchor?.classList.contains('folder-menu') && choiceMenuAnchor.dataset.id === project.id ? choiceMenuAnchor : undefined;
+    const menuControls = menuAnchor?.getAttribute('aria-controls');
     if (single) return `<section class="task-group folder-group single-project" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="task-list">${rows.map(s => row(s, false, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
-    return `<section class="task-group folder-group" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="folder-row"><button class="folder-heading ${tasks.length ? '' : 'empty'}" data-action="toggle-folder" data-project="${escape(project.id)}" aria-expanded="${open}" aria-controls="folder-tasks-${index}" title="${escape(project.path)}">${projectAppIcon(project.id, project.name)}<span>${escape(project.name)}</span></button><button class="icon-button folder-new-task" data-action="project-task" data-id="${escape(project.id)}" aria-label="New task in ${escape(project.name)}" title="New task">${icon('plus')}</button></div><div id="folder-tasks-${index}" class="task-list folder-tasks" ${open ? '' : 'hidden'}>${rows.map(s => row(s, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
+    return `<section class="task-group folder-group" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="folder-row"><button class="folder-heading ${tasks.length ? '' : 'empty'}" data-action="toggle-folder" data-project="${escape(project.id)}" aria-expanded="${open}" aria-controls="folder-tasks-${index}" title="${escape(project.path)}">${projectAppIcon(project.id, project.name)}<span>${escape(project.name)}</span>${tasks.length ? `<small class="folder-count" aria-hidden="true">${tasks.length}</small>` : ''}</button><button class="icon-button folder-menu" data-action="project-menu" data-id="${escape(project.id)}" aria-haspopup="dialog" aria-expanded="${Boolean(menuAnchor)}"${menuControls ? ` aria-controls="${escape(menuControls)}"` : ''} aria-label="Project actions for ${escape(project.name)}" title="Project actions">${icon('more')}</button><button class="icon-button folder-new-task" data-action="project-task" data-id="${escape(project.id)}" aria-label="New task in ${escape(project.name)}" title="New task">${icon('plus')}</button></div><div id="folder-tasks-${index}" class="task-list folder-tasks" ${open ? '' : 'hidden'}>${rows.map(s => row(s, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
   };
   const nav = $('#navigation');
   nav.setAttribute('aria-busy', String(orderingBusy));
@@ -1073,6 +1080,11 @@ function botCrumb(bot: import('./bots').Bot): string {
   const where = s && s.id !== bot.desktopSession ? s.title.split(' · ').slice(1).join(' · ') : '';
   return `<span class="bot-crumb">${botAvatarHtml(bot.avatar, bot.name, 'bot-crumb-avatar')}<strong>${escape(bot.name)}</strong>${where ? `<span class="bot-crumb-where">${escape(where)}</span>` : ''}<span class="bot-crumb-state" data-state="${status.toLowerCase()}">${status}</span></span><button class="icon-button bot-crumb-action" data-action="bot-pause" data-bot="${escape(bot.id)}" aria-label="${bot.paused ? 'Resume' : 'Pause'} ${escape(bot.name)}" title="${bot.paused ? 'Resume: schedules, check-ins and channels continue' : 'Pause: stop work and hold schedules and messages'}" aria-pressed="${bot.paused}">${icon(bot.paused ? 'play' : 'pause')}</button><button class="bot-crumb-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${escape(bot.name)} settings" title="Profile, memory, schedules, channels and rules">${icon('settings')}<span>Settings</span></button>`;
 }
+/** A few ways to start, shown under the new-task heading; a click fills the prompt. */
+function welcomePrompts(): string {
+  const asks = ['Explain how this project is organized', 'Find and fix a bug', 'Add tests for the most important code', 'Review my uncommitted changes'];
+  return `<div class="prompt-suggestions">${asks.map(text => `<button type="button" data-action="suggest" data-text="${escape(text)}">${escape(text)}</button>`).join('')}</div>`;
+}
 /** An empty bot conversation: who it is, a few things to ask, and the settings that make it useful. */
 function botWelcome(bot: import('./bots').Bot): string {
   const asks = ['What can you help me with?', 'Remember that I prefer short, direct answers.', 'Every weekday at 9, send me a summary of what changed.'];
@@ -1135,7 +1147,7 @@ function renderTranscript(preservePosition = false): void {
   }
   if (newTaskView()) {
     const name = project()?.name ?? 'this project';
-    transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
+    transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1>${welcomePrompts()}</div><div id="stream-region"></div>`;
     return;
   }
   const turns = groupTurns(visibleMessages());
@@ -2875,8 +2887,8 @@ function renderInspector(): void {
   if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+'<h3>No Git repository</h3><p>Open a Git repository to review changes.</p></div>'; return; }
   const staged = state.git.files.filter(file => ![' ', '?', '!', '.'].includes(file.index));
   const unstaged = state.git.files.filter(file => ![' ', '!', '.'].includes(file.working) || file.index === '?');
-  const fileRows = (files: typeof staged, isStaged: boolean) => files.map(file => `<div class="change-row"><button class="change-file" data-action="open-diff" data-path="${escape(file.path)}" data-staged="${isStaged}">${fileIcon(file.path.split('/').pop() ?? file.path, false)}<span><strong>${escape(file.path.split('/').pop())}</strong><small>${escape(file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : 'root')}</small></span><span class="file-status ${file.index === '?' ? 'new' : ''}">${file.index === '?' ? 'A' : escape(isStaged ? file.index : file.working)}</span></button>${button(isStaged ? 'unstage-file' : 'stage-file', isStaged ? 'Unstage file' : 'Stage file', isStaged ? 'close' : 'plus', 'stage-button', `data-path="${escape(file.path)}"`)}</div>`).join('');
-  target.innerHTML = `<div class="branch-card"><span>${icon('branch')}<span>${escape(state.git.branch || 'No commits yet')}</span>${jjChip(state.jj)}</span><button data-action="worktree" title="Create isolated worktree" aria-label="Create isolated worktree">${icon('plus')}</button></div><div class="change-summary"><span>${state.git.files.length ? state.git.files.length + ' changed files' : 'Working tree clean'}</span>${state.git.files.length ? '' : icon('check')}</div>${staged.length ? `<section class="change-group"><div class="change-group-title"><span>Staged <small>${staged.length}</small></span><button data-action="unstage-all">Unstage all</button></div>${fileRows(staged, true)}</section>` : ''}${unstaged.length ? `<section class="change-group"><div class="change-group-title"><span>Changes <small>${unstaged.length}</small></span><button data-action="stage-all">Stage all</button></div>${fileRows(unstaged, false)}</section>` : ''}<form id="commit-form" class="commit-form"><label for="commit-message">Commit message</label><textarea id="commit-message" placeholder="Describe these changes…" rows="3" aria-label="Commit message"></textarea><button class="commit-button" ${!staged.length ? 'disabled' : ''}>${icon('check')}Commit${staged.length ? ' ' + staged.length + ' file' + (staged.length > 1 ? 's' : '') : ''}</button></form>`;
+  const fileRows = (files: typeof staged, isStaged: boolean) => files.map(file => `<div class="change-row"><button class="change-file" data-action="open-diff" data-path="${escape(file.path)}" data-staged="${isStaged}">${fileIcon(file.path.split('/').pop() ?? file.path, false)}<span><strong>${escape(file.path.split('/').pop())}</strong>${file.path.includes('/') ? `<small>${escape(file.path.slice(0, file.path.lastIndexOf('/')))}</small>` : ''}</span><span class="file-status ${file.index === '?' ? 'new' : ''}" data-status="${file.index === '?' ? 'A' : escape(isStaged ? file.index : file.working)}">${file.index === '?' ? 'A' : escape(isStaged ? file.index : file.working)}</span></button>${button(isStaged ? 'unstage-file' : 'stage-file', isStaged ? 'Unstage file' : 'Stage file', isStaged ? 'close' : 'plus', 'stage-button', `data-path="${escape(file.path)}"`)}</div>`).join('');
+  target.innerHTML = `<div class="branch-card"><span>${icon('branch')}<span>${escape(state.git.branch || 'No commits yet')}</span>${jjChip(state.jj)}</span><button data-action="worktree" title="Create isolated worktree" aria-label="Create isolated worktree">${icon('plus')}</button></div><form id="commit-form" class="commit-form"><textarea id="commit-message" placeholder="Commit message" rows="1" aria-label="Commit message"></textarea><button class="commit-button" ${!staged.length ? 'disabled' : ''}>${icon('check')}Commit${staged.length ? ' ' + staged.length + ' file' + (staged.length > 1 ? 's' : '') : ''}</button></form>${state.git.files.length ? '' : `<div class="change-summary"><span>Working tree clean</span>${icon('check')}</div>`}${staged.length ? `<section class="change-group"><div class="change-group-title"><span>Staged <small>${staged.length}</small></span><button data-action="unstage-all">Unstage all</button></div>${fileRows(staged, true)}</section>` : ''}${unstaged.length ? `<section class="change-group"><div class="change-group-title"><span>Changes <small>${unstaged.length}</small></span><button data-action="stage-all">Stage all</button></div>${fileRows(unstaged, false)}</section>` : ''}`;
 }
 async function openRunPreview(url: string, context: { projectId: string; sessionId?: string }): Promise<void> {
   const current = () => state.projectId === context.projectId && state.sessionId === (context.sessionId ?? '');
@@ -3246,7 +3258,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
-    { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
+    { id: 'delete-task', label: `Delete ${chatTask(s) ? 'chat' : 'task'}…`, icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: id => {
     if (s.id !== state.sessionId || generation !== state.generation) return;
     closeChoiceMenu(); run(action(id, anchor));
@@ -3288,9 +3300,11 @@ async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'pin', label: task.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
     { id: 'up', label: 'Move up', icon: 'arrow', disabled: orderingBusy || index < 1 },
     { id: 'down', label: 'Move down', icon: 'down', disabled: orderingBusy || index === ids.length - 1 },
+    { id: 'delete', label: `Delete ${chatTask(task) ? 'chat' : 'task'}…`, icon: 'trash', danger: true, disabled: isRunning(id) || configuringSessions.has(id) || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting.' : undefined },
   ], onSelect: choice => {
     closeChoiceMenu();
     if (choice === 'pin') { run(pinTask(id)); return; }
+    if (choice === 'delete') { const current = state.sessions.find(item => item.id === id); if (current) showDeleteTask(current); return; }
     // Resolve the current list after an agent activity change or project filter.
     const row = $('#navigation').querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(id)}"]`);
     if (!row) return;
@@ -3300,6 +3314,26 @@ async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
       [current[from], current[to]] = [current[to], current[from]];
       run(reorderThreads(current, id));
     }
+  } });
+}
+/** A project heading's ⋯ menu. */
+async function showProjectMenu(anchor: HTMLElement): Promise<void> {
+  const id = anchor.dataset.id!, target = state.projects.find(p => p.id === id);
+  if (!target) return;
+  await showChoices(anchor, { title: 'Project actions', actions: true, items: [
+    { id: 'new', label: 'New task', icon: 'plus' },
+    { id: 'only', label: 'Show only this project', icon: 'folder', disabled: state.projectFilter === id },
+    { id: 'copy', label: 'Copy project path', icon: 'copy' },
+    { id: 'settings', label: 'Project settings', icon: 'settings' },
+    { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true },
+  ], onSelect: choice => {
+    closeChoiceMenu();
+    if (choice === 'new') run(createTask(id));
+    else if (choice === 'only') { setProjectFilter(id); run(selectProject(id)); }
+    else if (choice === 'copy') run(navigator.clipboard.writeText(target.path).then(() => notify('Project path copied')));
+    // Settings → General lists the projects.
+    else if (choice === 'settings') run(showSettings('general'));
+    else if (choice === 'remove') showRemoveProject(target);
   } });
 }
 /** A project's favicon or app icon; the sidebar redraws once a new one has loaded. */
@@ -3349,9 +3383,9 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
     },
   });
 }
-function showDeleteTask(): void {
-  const task = session(); if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
-  const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog');
+/** A destructive confirmation: Cancel has focus, and a refusal shows inline instead of closing. */
+function confirmDanger(title: string, body: string, confirmLabel: string, perform: () => Promise<void>): void {
+  const dialog = modal(title, `<form id="delete-task-form">${body}<p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">${escape(confirmLabel)}</button></div></form>`, 'delete-task-dialog');
   const form = dialog.querySelector<HTMLFormElement>('#delete-task-form')!;
   const confirm = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
   const error = form.querySelector<HTMLElement>('[role="alert"]')!;
@@ -3363,16 +3397,29 @@ function showDeleteTask(): void {
     confirm.disabled = true; confirm.setAttribute('aria-busy', 'true'); error.hidden = true;
     void (async () => {
       try {
-        const result = await call<{deletedSessionIds: string[]}>('delete_session', { sessionId: task.id });
-        if (chatTask(task)) await forgetChat(task.projectId);
-        removeDeletedSessions(result.deletedSessionIds);
+        await perform();
         if (ownsDialog()) closeModal();
-        notify('Task deleted');
       } catch (failure) {
         if (ownsDialog()) { error.textContent = String(failure instanceof Error ? failure.message : failure); error.hidden = false; }
         else report(failure);
       } finally { confirm.disabled = false; confirm.removeAttribute('aria-busy'); }
     })();
+  });
+}
+function showDeleteTask(task = session()): void {
+  if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
+  const noun = chatTask(task) ? 'chat' : 'task';
+  confirmDanger(`Delete ${noun}?`, `<p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p>`, `Delete ${noun}`, async () => {
+    const result = await call<{deletedSessionIds: string[]}>('delete_session', { sessionId: task.id });
+    if (chatTask(task)) await forgetChat(task.projectId);
+    removeDeletedSessions(result.deletedSessionIds);
+    notify(noun === 'chat' ? 'Chat deleted' : 'Task deleted');
+  });
+}
+function showRemoveProject(target: Project): void {
+  confirmDanger(`Remove ${target.name}?`, `<p class="delete-task-name">${escape(target.path)}</p><p class="delete-task-description">Its tasks are removed from PandaCode. The folder stays on disk.</p>`, 'Remove project', async () => {
+    await removeProject(target.id);
+    notify('Project removed');
   });
 }
 function showRename(): void { const s = session(); if (!s) return; modal('Rename task', `<form id="rename-form"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
@@ -3920,6 +3967,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'board-complete': await changeBoardStage('completed'); break;
     case 'board-reopen': await changeBoardStage('review'); break;
     case 'project-task': await createTask(element.dataset.id!); break;
+    case 'project-menu': await showProjectMenu(element); break;
     case 'toggle-folder': { const id = element.dataset.project!; if (!state.collapsedFolders.delete(id)) state.collapsedFolders.add(id); saveCollapsedFolders(); renderNavigation(); break; }
     case 'toggle-folder-more': { const id = element.dataset.project!; if (!state.expandedFolders.delete(id)) state.expandedFolders.add(id); renderNavigation(); break; }
     case 'show-all-projects': setProjectFilter(''); renderNavigation(); break;
@@ -4033,7 +4081,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'approval-allow-all': case 'approval-deny-all': { const sessionId = state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }
     case 'approval-group': approvalGroupOpen = !approvalGroupOpen; renderApprovalBar(); break;
     case 'approval-details': { const key = state.sessionId + element.dataset.request; if (!approvalDetails.delete(key)) approvalDetails.add(key); renderApprovalBar(); break; }
-    case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.focus(); } break; }
+    case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); } break; }
   }
 }
 mountExternalLinks(document, url => call('open_external_url', { url }), report);

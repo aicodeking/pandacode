@@ -1,0 +1,101 @@
+/* Modern polish for the conversation, inspector, settings, menus and status marks.
+   Loaded after the other stylesheets; selectors start with `html` to win over them.
+   Shapes and tints come from design-tokens.css, so themes and wallpapers follow. */
+
+/* ── Composer: a raised surface with a soft accent ring when focused ── */
+html .composer{border-color:var(--edge);box-shadow:inset 0 1px 0 rgb(255 255 255 / .04),var(--shadow-card)}
+html .composer:focus-within{border-color:var(--accent-edge);box-shadow:inset 0 1px 0 rgb(255 255 255 / .04),var(--ring),var(--shadow-card)}
+html .composer-tools{gap:4px}
+html .composer-tools :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver,[data-action="token-saver"]){padding:5px 10px;border-radius:var(--r-pill);color:var(--muted)}
+html .composer-tools :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver,[data-action="token-saver"]):hover{background:var(--wash-hover);color:var(--text)}
+html .composer-tools .model-picker{background:var(--wash-well);box-shadow:inset 0 0 0 1px var(--edge-soft);color:var(--text)}
+html .composer-tools .composer-team-button[aria-pressed=true]{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-edge);color:var(--accent-ink)}
+html .composer-tools>.icon-button{border-radius:var(--r-pill)}
+html .composer-tools>.icon-button:hover{background:var(--wash-hover);color:var(--text)}
+html .send-button:not(:disabled){box-shadow:0 6px 16px -6px rgb(var(--accent-rgb) / .7)}
+html .composer-footnote{font-size:.7rem;color:var(--faint)}
+/* Where the task runs: the project, machine and branch as chips. */
+html .composer-context{gap:6px}
+html .composer-context :is(.composer-project,.composer-local,.composer-branch,button[class*="composer-"]){padding:4px 11px;max-width:none;border-radius:var(--r-pill);background:var(--wash-well);box-shadow:inset 0 0 0 1px var(--edge-soft)}
+html .composer-context :is(.composer-project,.composer-branch,button[class*="composer-"]):hover{background:var(--wash-hover)}
+html .composer-context .composer-project{max-width:50%}
+
+/* ── Messages ── */
+html .transcript>.user-message>.message-content{border-radius:20px 20px 6px 20px;background:linear-gradient(180deg,rgb(var(--accent-rgb) / .15),rgb(var(--accent-rgb) / .09));box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .22)}
+html .message-avatar{width:26px;height:26px;border-radius:var(--r-md);background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-edge);color:var(--focus)}
+html .message-meta strong{letter-spacing:-.005em}
+html .message-content{line-height:1.7;letter-spacing:-.003em}
+html .message-content :is(pre,.md-code-block){border-radius:var(--r-lg);box-shadow:inset 0 0 0 1px var(--edge)}
+html .message-content :not(pre)>code{padding:.12em .4em;border-radius:var(--r-xs);background:var(--wash-hover)}
+html .message-error{border-radius:var(--r-lg);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--danger) 30%,transparent)}
+
+/* ── Tool activity and changed files: quiet cards ── */
+html .tool-activity summary{border-radius:var(--r-pill);padding:0 12px;background:var(--wash-well);box-shadow:inset 0 0 0 1px var(--edge-soft)}
+html .tool-activity summary:hover{background:var(--wash-hover)}
+html .tool-activity pre{border-radius:var(--r-lg);background:var(--wash-well);border-color:var(--edge)}
+html .tool-activity-status-row{color:var(--muted)}
+html .turn-changes{border-radius:var(--r-xl);background:color-mix(in srgb,var(--panel) 82%,transparent);box-shadow:inset 0 0 0 1px var(--edge),var(--shadow-card)}
+html .turn-changes :is(.turn-changes-open,.turn-changes-run){box-shadow:inset 0 0 0 1px var(--edge-soft);background:var(--wash-well)}
+html .turn-changes :is(.turn-changes-open,.turn-changes-run):hover{background:var(--wash-hover)}
+html .turn-changes .change-counts{font-weight:600}
+html .turn-changes :is(.change-file,.turn-change-tree summary):hover{background:var(--wash-hover);border-radius:var(--r-sm)}
+
+/* ── Empty states ── */
+html .new-task-mark{width:64px;height:64px;border-radius:var(--r-xl);background:radial-gradient(circle at 50% 35%,rgb(var(--accent-rgb) / .2),transparent 70%),var(--wash-well);box-shadow:inset 0 0 0 1px var(--edge)}
+html .new-task-welcome h1{font-weight:600;letter-spacing:-.034em}
+html .welcome-project{border-bottom-style:solid;border-bottom-color:var(--accent-edge);color:var(--focus)}
+html .new-task-welcome .prompt-suggestions{display:flex;flex-wrap:wrap;justify-content:center;gap:8px;max-width:640px;margin:26px auto 0}
+html .new-task-welcome .prompt-suggestions button{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border:0;border-radius:var(--r-pill);background:var(--wash-well);box-shadow:inset 0 0 0 1px var(--edge);color:var(--text);font-size:.82rem;font-weight:500}
+html .new-task-welcome .prompt-suggestions button:hover{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-edge)}
+html .new-task-welcome .prompt-suggestions .icon{width:13px;height:13px;color:var(--focus)}
+
+/* ── Inspector: the view bar as tinted tiles, rows like the sidebar's ── */
+html[data-theme] .inspector>.inspector-tabs{gap:3px;padding:0 10px}
+html[data-theme] .inspector>.inspector-tabs>button{width:34px;height:34px;min-height:34px;border-radius:var(--r-md)}
+html[data-theme] .inspector>.inspector-tabs>button:hover{background:var(--wash-hover)}
+html[data-theme] .inspector>.inspector-tabs>button.selected{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-edge);color:var(--focus)}
+html[data-theme] .inspector>.inspector-tabs>button.selected::before{display:none}
+html .inspector-heading .inspector-title{color:var(--faint)}
+html .file-row{border-radius:var(--r-sm)}
+html .file-row:hover{background:var(--wash-hover)}
+html .file-row:has(>button[aria-current],>button.selected,>button[aria-pressed=true]){background:var(--accent-wash)}
+
+/* ── Settings: pill toggles, rounded groups and fields ── */
+html .settings-nav-list>button{border-radius:var(--r-md);min-height:34px}
+html .settings-nav-list>button:hover{background:var(--wash-hover)}
+html .settings-nav-list>button[aria-selected="true"]{background:var(--accent-wash);box-shadow:inset 0 0 0 1px var(--accent-edge)}
+html .settings-back{border-radius:var(--r-md)}
+html .settings-panel .settings-group{border-radius:var(--r-xl);border-color:var(--edge);box-shadow:var(--shadow-card)}
+html .settings-panel-head h2{font-weight:650;letter-spacing:-.03em}
+html .settings-page-root .settings-switch{width:2.5rem;height:1.5rem;border-radius:var(--r-pill);border-color:var(--edge);background:var(--wash-hover)}
+html .settings-page-root .settings-switch::before{left:.15rem;top:.15rem;width:1.1rem;height:1.1rem;border-radius:50%}
+html .settings-page-root .settings-switch:checked::before{transform:translateX(1rem)}
+html .settings-page-root .settings-switch:checked{border-color:transparent;box-shadow:var(--ring)}
+html :is(.primary-button,.secondary-button){border-radius:var(--r-md)}
+html dialog .primary-button{border-radius:var(--r-md)}
+html .settings-select{border-radius:var(--r-md);background:var(--wash-well);border-color:var(--edge);box-shadow:none}
+html :is(input,select,textarea):not([type=checkbox],[type=radio],[type=range],#prompt,.composer textarea){border-radius:var(--r-md);border-color:var(--edge)}
+html :is(input,select,textarea):not([type=checkbox],[type=radio],[type=range],#prompt,.composer textarea):focus{border-color:var(--accent-edge);box-shadow:var(--ring)}
+html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){border-radius:var(--r-md)}
+
+/* ── Menus: rounded panel, rows with a wash ── */
+html .floating-menu,html .model-menu{border-radius:var(--r-xl)}
+html :is(.model-menu-option,.project-menu-option,.choice-menu-option){border-radius:var(--r-md)}
+html :is(.model-menu-option,.project-menu-option,.choice-menu-option):hover{background:var(--wash-hover)}
+html :is(.model-menu-option,.project-menu-option,.choice-menu-option):is(.model-menu-current,[aria-selected="true"],[aria-checked="true"]){background:var(--accent-wash)}
+html :is(.model-menu-search,.project-menu-search,.choice-menu-search){border-radius:var(--r-md)}
+
+/* ── Status: a halo on the marks that say an agent is working or waiting ── */
+html .sidebar .task-indicator{width:8px;height:8px}
+html .sidebar .task-indicator.running{background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .24);animation:status-halo 1.8s ease-in-out infinite}
+html .sidebar .task-indicator.attention{background:#e0a23b;box-shadow:0 0 0 3px rgb(224 162 59 / .28);animation:status-halo-warm 1.8s ease-in-out infinite}
+html .sidebar .task-indicator.limited{background:var(--danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 24%,transparent)}
+@keyframes status-halo{50%{box-shadow:0 0 0 5px rgb(var(--accent-rgb) / .06)}}
+@keyframes status-halo-warm{50%{box-shadow:0 0 0 5px rgb(224 162 59 / .08)}}
+@media(prefers-reduced-motion:reduce){html .sidebar .task-indicator{animation:none!important}}
+
+/* Increased contrast: keep real outlines, drop the soft shadows. */
+@media(prefers-contrast:more){
+  html .composer,html .turn-changes,html .settings-panel .settings-group{box-shadow:none;border:1px solid var(--border)}
+  html .transcript>.user-message>.message-content{box-shadow:none;outline:1px solid var(--border)}
+}

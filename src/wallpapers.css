@@ -64,9 +64,7 @@ html[data-theme="dark"] .workspace[data-wallpaper] .conversation-pane{
   --thread-error:rgb(99 44 38 / .4);
   --thread-border:rgb(230 230 207 / .18);
 }
-.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context,.subagents-trigger,.secondary-button){background:var(--thread-surface);border-color:var(--thread-border)}
-/* The prompt box and the bar above it are borderless; increased contrast restores the edge. */
-.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context),.workspace[data-wallpaper] .conversation-pane .composer:focus-within{border-color:transparent}
+.workspace[data-wallpaper] .conversation-pane :is(.composer,.subagents-trigger,.secondary-button){background:var(--thread-surface);border-color:var(--thread-border)}
 .workspace[data-wallpaper] .conversation-pane .composer{backdrop-filter:var(--thread-frost);-webkit-backdrop-filter:var(--thread-frost)}
 /* Both agent panels are one solid surface with no border or blur, like the dropdowns. */
 html .workspace :is(.architect-panel,.subagents-panel).floating-menu{

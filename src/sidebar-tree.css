@@ -1,66 +1,86 @@
 /* Compact sidebar: list-style actions, then pinned tasks and one folder per project.
    Selectors are scoped to .sidebar so they win over the older card-style rules and theme variants. */
-.sidebar{--tree-row:30px;--tree-indent:15px;--tree-guide:color-mix(in srgb,var(--muted) 22%,transparent)}
+.sidebar{--tree-row:30px;--tree-indent:15px;--tree-radius:var(--r-sm);--tree-guide:color-mix(in srgb,var(--muted) 22%,transparent);--tree-hover:var(--wash-hover);--tree-well:var(--wash-well);--tree-edge:var(--edge)}
 
-.sidebar .sidebar-actions{padding:6px 8px 14px;gap:1px}
+/* Brand: the panda mark beside the name. */
+.sidebar .brand{gap:8px}
+.brand-mark{width:20px;height:20px;flex:none;margin-left:auto;border-radius:5px;pointer-events:none;user-select:none}
+.sidebar .brand-name{font-weight:620;letter-spacing:-.01em}
+@media(max-width:650px){.brand-mark{display:none}}
+
+.sidebar .sidebar-actions{padding:6px 10px 14px;gap:2px}
 .sidebar .sidebar-actions>button,
-html[data-theme] .sidebar .sidebar-actions>.new-task-button{height:var(--tree-row);width:100%;padding:0 9px;gap:10px;justify-content:flex-start;border:0;border-radius:3px;background:transparent;box-shadow:none;color:var(--text);font-size:.86rem;font-weight:500}
+html[data-theme] .sidebar .sidebar-actions>.new-task-button{height:var(--tree-row);width:100%;padding:0 9px;gap:10px;justify-content:flex-start;border:0;border-radius:var(--tree-radius);background:transparent;box-shadow:none;color:var(--text);font-size:.86rem;font-weight:500}
 .sidebar .sidebar-actions>button:hover,
-html[data-theme] .sidebar .sidebar-actions>.new-task-button:hover{background:var(--raised);box-shadow:none;color:var(--text)}
-html[data-theme] .sidebar .sidebar-actions>.new-task-button:not(:disabled):active{background:var(--raised);scale:.98}
+html[data-theme] .sidebar .sidebar-actions>.new-task-button:hover{background:var(--tree-hover);box-shadow:none;color:var(--text)}
 .sidebar .sidebar-actions>button>.icon{width:16px;height:16px;flex:none;color:var(--muted)}
+/* New task is the one primary action: a tinted pill in the user's accent. */
+html[data-theme] .sidebar .sidebar-actions>.new-task-button{height:34px;margin-bottom:4px;background:rgb(var(--accent-rgb) / .16);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .3);font-weight:580}
+html[data-theme] .sidebar .sidebar-actions>.new-task-button:hover{background:rgb(var(--accent-rgb) / .24);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .42)}
+html[data-theme] .sidebar .sidebar-actions>.new-task-button:not(:disabled):active{background:rgb(var(--accent-rgb) / .3);scale:.98}
 html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
-.sidebar .sidebar-actions kbd,html[data-theme] .sidebar .new-task-button kbd{margin-left:auto;color:var(--faint);font-size:.72rem;background:none;border:0;padding:0}
+/* Search reads as a field. */
+.sidebar .sidebar-actions>.search-trigger{margin-top:6px;background:var(--tree-well);box-shadow:inset 0 0 0 1px var(--tree-edge);color:var(--muted)}
+.sidebar .sidebar-actions>.search-trigger:hover{color:var(--text)}
+/* Shortcuts are small keycaps. */
+.sidebar .sidebar-actions kbd,html[data-theme] .sidebar .new-task-button kbd{margin-left:auto;padding:1px 5px;border:0;border-radius:4px;background:var(--tree-well);box-shadow:inset 0 0 0 1px var(--tree-edge);color:var(--faint);font-size:.68rem;line-height:1.5;font-family:inherit}
+html[data-theme] .sidebar .new-task-button kbd{background:rgb(var(--accent-rgb) / .14);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .3);color:var(--accent-ink)}
 
 /* "All projects" doubles as the section label and the project filter. */
 .sidebar .sidebar-projects{padding:2px 8px 4px 17px;gap:2px}
-.sidebar .project-filter{flex:0 1 auto;gap:4px;padding:3px 6px;margin-left:-6px;color:var(--muted);font-size:.76rem;font-weight:550}
+.sidebar .project-filter{flex:0 1 auto;gap:4px;padding:3px 6px;margin-left:-6px;border-radius:5px;color:var(--faint);font-size:.68rem;font-weight:650;letter-spacing:.06em;text-transform:uppercase}
 .sidebar .project-filter:hover{color:var(--text)}
 .sidebar .project-filter>.icon:last-child{position:static;width:10px;height:10px;opacity:.7}
-.sidebar .sidebar-projects>.icon-button{width:24px;height:24px;margin-left:0;color:var(--muted)}
+.sidebar .sidebar-projects>.icon-button{width:24px;height:24px;margin-left:0;border-radius:6px;color:var(--muted)}
+.sidebar .sidebar-projects>.icon-button:hover{background:var(--tree-hover);color:var(--text)}
 .sidebar .sidebar-projects>.import-trigger{margin-left:auto}
 .sidebar .sidebar-projects>.icon-button .icon{width:14px}
 
-.sidebar .navigation{padding:0 8px 16px}
-.sidebar .task-group+.task-group{margin-top:2px}
+.sidebar .navigation{padding:0 10px 16px}
+.sidebar .task-group+.task-group{margin-top:4px}
 .sidebar .pinned-group{margin-bottom:8px}
-.sidebar .group-heading{display:flex;align-items:center;gap:7px;height:26px;padding:0 9px;font-size:.74rem;font-weight:550;color:var(--muted)}
+.sidebar .group-heading{display:flex;align-items:center;gap:7px;height:26px;padding:0 9px;font-size:.68rem;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
 .sidebar .group-heading>.icon{width:13px;height:13px;color:var(--focus)}
 .sidebar .group-heading>span{font-size:.7rem;font-weight:400;color:var(--faint);font-variant-numeric:tabular-nums}
 
-.folder-heading{display:flex;align-items:center;gap:9px;width:100%;height:var(--tree-row);padding:0 9px;border-radius:3px;justify-content:flex-start;color:var(--text);font-size:.86rem;font-weight:500;--press:1}
-.folder-heading:hover{background:var(--raised)}
+.folder-heading{display:flex;align-items:center;gap:9px;width:100%;height:var(--tree-row);padding:0 9px;border-radius:var(--tree-radius);justify-content:flex-start;color:var(--text);font-size:.86rem;font-weight:560;--press:1}
+.folder-heading:hover{background:var(--tree-hover)}
 .folder-heading>.icon{width:16px;height:16px;flex:none;color:var(--muted)}
-.folder-heading>.task-app-icon{flex:none;width:16px;height:16px;border-radius:3px;object-fit:contain}
-.folder-heading>.task-app-default{display:grid;place-items:center;background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--muted);font-size:.6rem;font-weight:650;line-height:1}
+.folder-heading>.task-app-icon{flex:none;width:18px;height:18px;border-radius:5px;object-fit:contain}
+.folder-heading>.task-app-default{display:grid;place-items:center;background:color-mix(in srgb,var(--text) 10%,transparent);box-shadow:inset 0 0 0 1px var(--tree-edge);color:var(--muted);font-size:.62rem;font-weight:650;line-height:1}
 .folder-heading[aria-expanded=false]>.task-app-icon{opacity:.7}
 .folder-heading>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .folder-heading[aria-expanded=false]>.icon{opacity:.6}
 .folder-heading.empty{color:var(--muted)}
+/* Task count: a quiet badge on the row's right edge that makes way for the hover buttons. */
+.folder-heading>.folder-count{position:absolute;right:9px;top:50%;translate:0 -50%;pointer-events:none;min-width:18px;padding:0 5px;border-radius:9px;background:var(--tree-well);color:var(--faint);font-size:.68rem;font-weight:550;line-height:17px;text-align:center;font-variant-numeric:tabular-nums}
+.folder-row:hover .folder-count,.folder-row:focus-within .folder-count{visibility:hidden}
+@media(hover:none){.folder-count{visibility:hidden}}
 
-/* Wrapper lets the heading button and the hover-reveal new-task icon sit side by side. */
-.folder-row{position:relative;display:flex;align-items:center;border-radius:3px}
-.folder-row:hover{background:var(--raised)}
-.folder-row>.folder-heading{flex:1;min-width:0;padding-right:28px}
+/* Wrapper lets the heading button and the hover-reveal ⋯ menu and new-task icons sit side by side. */
+.folder-row{position:relative;display:flex;align-items:center;border-radius:var(--tree-radius)}
+.folder-row:hover{background:var(--tree-hover)}
+.folder-row>.folder-heading{flex:1;min-width:0;padding-right:56px}
 .folder-row>.folder-heading:hover{background:transparent}
-.folder-new-task{position:absolute;z-index:1;right:3px;display:grid;place-items:center;width:24px;height:24px;border-radius:4px;color:var(--muted);opacity:0}
-.folder-new-task .icon{width:14px;height:14px}
-.folder-row:hover>.folder-new-task,.folder-row:focus-within>.folder-new-task{opacity:1}
-.folder-new-task:hover{color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
-@media(hover:none){.folder-new-task{opacity:1}}
+:is(.folder-new-task,.folder-menu){position:absolute;z-index:1;right:3px;display:grid;place-items:center;width:24px;height:24px;border-radius:6px;color:var(--muted);opacity:0}
+.folder-menu{right:29px}
+:is(.folder-new-task,.folder-menu) .icon{width:14px;height:14px}
+.folder-row:hover>:is(.folder-new-task,.folder-menu),.folder-row:focus-within>:is(.folder-new-task,.folder-menu),.folder-menu[aria-expanded=true]{opacity:1}
+:is(.folder-new-task,.folder-menu):hover,.folder-menu[aria-expanded=true]{color:var(--text);background:color-mix(in srgb,var(--text) 8%,transparent)}
+@media(hover:none){:is(.folder-new-task,.folder-menu){opacity:1}}
 
 /* Tasks hang off a thin guide under their folder. */
-.sidebar .folder-tasks{margin:1px 0 4px var(--tree-indent);padding-left:6px;border-left:1px solid var(--tree-guide);gap:1px}
-.sidebar .task-list{gap:1px}
+.sidebar .folder-tasks{margin:2px 0 6px var(--tree-indent);padding-left:6px;border-left:1px solid var(--tree-guide);gap:2px}
+.sidebar .task-list{gap:2px}
 /* Each task is a three-line card: where (app icon, checkout, age), what (title), and the
    branch, linked pull request and agent. Quiet until hovered or selected. */
-.sidebar .task-item{display:grid;grid-template-columns:minmax(0,1fr);row-gap:3px;min-height:0;height:auto;padding:8px 10px 8px 9px;border-radius:4px;align-items:center;font-size:.84rem;font-weight:400;color:var(--text)}
+.sidebar .task-item{display:grid;grid-template-columns:minmax(0,1fr);row-gap:3px;min-height:0;height:auto;padding:8px 10px 8px 9px;border-radius:var(--tree-radius);align-items:center;font-size:.84rem;font-weight:400;color:var(--text)}
 .sidebar .task-line{display:flex;align-items:center;gap:6px;min-width:0}
 .sidebar .task-head{font-size:.74rem;color:var(--muted)}
 .sidebar .task-app-icon{flex:none;width:16px;height:16px;border-radius:2px;object-fit:contain}
 .sidebar .task-app-default{display:grid;place-items:center;background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--muted);font-size:.6rem;font-weight:650;line-height:1}
 .sidebar .task-checkout{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* In a folder each task is one line: the title, then its PR, harness, status and age. */
+/* In a folder each task is one line: the harness, the title, then its PR, status and age. */
 .sidebar .task-item.task-oneline{padding-top:7px;padding-bottom:7px}
 .sidebar .project-filter>.task-app-icon{flex:none;width:14px;height:14px;border-radius:3px;object-fit:contain}
 .sidebar .project-filter>.task-app-default{display:grid;place-items:center;background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--muted);font-size:.55rem;font-weight:650;line-height:1}
@@ -74,6 +94,7 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .task-item:hover .task-title,.sidebar .task-item.selected .task-title{color:var(--text)}
 .sidebar .task-meta{font-size:.74rem;color:var(--muted)}
 .sidebar .task-meta:not(:has(.task-branch,.task-link,.task-pin,.task-worktree)){min-height:0}
+.sidebar .task-meta:empty{display:none}
 .sidebar .task-branch{display:inline-flex;align-items:center;gap:5px;flex:0 1 auto;min-width:0;overflow:hidden}
 .sidebar .task-branch>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sidebar .task-branch .icon{flex:none;width:12px;height:12px;opacity:.8}
@@ -93,11 +114,18 @@ html:not([data-theme=dark]) .sidebar .task-link.pull{color:#7c3aed}
 .sidebar .task-item[data-activity=active] .task-age{color:var(--accent-ink)}
 .sidebar .task-item.selected .task-age{color:var(--muted)}
 .sidebar .task-item.selected{font-weight:500}
+/* Hover is a translucent wash, so it reads on the plain sidebar and over a wallpaper alike;
+   the selected task is tinted with the accent and marked by a bar on its leading edge. */
+.sidebar .task-item:hover{background:var(--tree-hover)}
+.sidebar .task-item{position:relative}
+.sidebar .task-item.selected{background:rgb(var(--accent-rgb) / .17)}
+.sidebar .task-item.selected:not(.drop-before)::before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:3px;border-radius:0 3px 3px 0;background:var(--focus);pointer-events:none}
+.sidebar .task-item.selected:hover{background:rgb(var(--accent-rgb) / .22)}
 .sidebar .task-project{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
-.folder-more{display:block;width:100%;height:26px;padding:0 8px 0 29px;border-radius:3px;text-align:left;font-size:.76rem;color:var(--muted);--press:1}
-.folder-more:hover{color:var(--text);background:var(--raised)}
-.sidebar .folder-tasks>.no-tasks{padding:5px 8px 6px;font-size:.74rem}
+.folder-more{display:block;width:100%;height:26px;padding:0 8px 0 29px;border-radius:var(--tree-radius);text-align:left;font-size:.76rem;color:var(--muted);--press:1}
+.folder-more:hover{color:var(--text);background:var(--tree-hover)}
+.sidebar .folder-tasks>.no-tasks{padding:4px 9px 5px;font-size:.72rem;font-style:italic;color:var(--faint)}
 .sidebar .single-project .task-list{gap:1px}
 .sidebar .single-project .folder-more{padding-left:31px}
 /* "N more in other projects" sits under the list as a single quiet line. */
@@ -115,8 +143,9 @@ html:not([data-theme=dark]) .sidebar .task-link.pull{color:#7c3aed}
 
 /* Bots: a compact section at the bottom of the sidebar. A row opens the bot's chat;
    its gear opens memory, schedules and channels. */
-.bot-row{position:relative;display:flex;align-items:center;border-radius:3px}
-.bot-row:hover,.bot-row.selected{background:var(--raised)}
+.bot-row{position:relative;display:flex;align-items:center;border-radius:var(--tree-radius)}
+.bot-row:hover{background:var(--tree-hover)}
+.bot-row.selected{background:rgb(var(--accent-rgb) / .17)}
 .bot-row-open{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:var(--tree-row);padding:0 30px 0 7px;border-radius:3px;justify-content:flex-start;color:var(--text);font-size:.84rem;--press:.985}
 .bot-row.selected .bot-row-open{font-weight:500}
 .bot-row-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left}
@@ -135,3 +164,19 @@ html:not([data-theme=dark]) .sidebar .task-link.pull{color:#7c3aed}
 
 /* The default tile's letter is drawn, so it never joins the text of the label it sits in. */
 .task-app-default::before{content:attr(data-initial)}
+
+/* Footer: the utility buttons sit under a hairline as rounded squares. */
+.sidebar .sidebar-bottom{gap:4px;margin:0 10px;padding:8px 0 10px;border-top:1px solid var(--tree-guide)}
+.sidebar .sidebar-bottom>button{border-radius:8px}
+.sidebar .sidebar-bottom>button:hover{background:var(--tree-hover);color:var(--text)}
+.sidebar .sidebar-bottom>button.active{background:rgb(var(--accent-rgb) / .17);color:var(--text)}
+.sidebar .sidebar-bottom>#theme-toggle[aria-pressed="true"]{background:rgb(var(--accent-rgb) / .17);color:var(--accent-ink)}
+.sidebar .sidebar-bots-bar{border-radius:var(--tree-radius)}
+.sidebar .sidebar-bots-bar:hover{background:var(--tree-hover)}
+@media(max-width:650px){.sidebar .sidebar-bottom{margin:0;padding:7px;border-top:0}}
+
+/* Solid fallbacks: no translucent washes, and the selection keeps its outline. */
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+  .sidebar{--tree-hover:var(--raised);--tree-well:var(--raised);--tree-edge:var(--border)}
+  .sidebar .task-item.selected,.sidebar .task-item.selected:hover,.bot-row.selected{background:var(--accent-dim)}
+}

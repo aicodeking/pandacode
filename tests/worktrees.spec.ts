@@ -198,16 +198,16 @@ test('the branch menu switches the checkout to main or another local branch', as
 });
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`the prompt box and its context bar have no border in ${theme} mode, except under increased contrast`, async ({ page }) => {
+  test(`the prompt box has a hairline and its context bar no border in ${theme} mode, both solid under increased contrast`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: theme });
     await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
     await probe(page);
     await page.locator('#prompt').focus();
     const border = (selector: string) => page.locator(selector).evaluate(el => getComputedStyle(el).borderTopColor);
-    await expect.poll(() => border('#composer-area .composer')).toBe('rgba(0, 0, 0, 0)');
+    await expect.poll(() => border('#composer-area .composer')).toMatch(/^rgba\(.+, 0\.\d+\)$/);
     await expect.poll(() => border('#composer-area .composer-context')).toBe('rgba(0, 0, 0, 0)');
     await page.emulateMedia({ colorScheme: theme, contrast: 'more' });
-    await expect.poll(() => border('#composer-area .composer')).not.toBe('rgba(0, 0, 0, 0)');
+    for (const selector of ['#composer-area .composer', '#composer-area .composer-context']) await expect.poll(() => border(selector)).toMatch(/^rgb\(/);
   });
 }
 
