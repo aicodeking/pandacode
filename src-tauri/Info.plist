@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Merged into the generated Info.plist by Tauri (bundle.macOS.infoPlist
+     auto-discovers this file next to tauri.conf.json). Voice dictation needs
+     both prompts; the strings match the app's voice. -->
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>PandaCode uses the microphone when you dictate a message to your agent. Audio is transcribed on your computer unless you configure an online provider in Settings.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>PandaCode uses speech recognition to turn your dictation into text. On supported languages it runs entirely on your computer.</string>
+</dict>
+</plist>
