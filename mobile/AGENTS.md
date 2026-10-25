@@ -39,3 +39,17 @@ Docs: https://docs.expo.dev/eas/index.md
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+
+## Language (i18n)
+
+- Wrap user-visible strings with `useT()` from `src/ui/language.ts` in components
+  (`` t('Copy') `` and tagged `` t`Copied ${name}` ``); in non-render helpers use
+  `tNow()`. Constants that double as data (e.g. `APPEARANCES` labels) keep raw
+  values — translate at the render site with a literal record.
+- Catalogs live in `src/i18n/catalogs.ts`; the core (`src/i18n/core.ts`) mirrors
+  the desktop's `src/i18n.ts`, and `tests/language.test.ts` pins the
+  system-locale mapping to the desktop's. New keys go into the catalogs the same
+  way as desktop (`src/locales/GLOSSARY.md` has the terminology).
+- The preference is `system` or a locale, stored via SecureStore beside the
+  appearance choice; there is no reload — components re-render through the
+  zustand subscription in `useT()`.
