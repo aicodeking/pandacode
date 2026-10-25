@@ -90,6 +90,7 @@ import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
+import { createVoice } from './voice';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -564,6 +565,18 @@ function ensureTaskUsage(sessionId: string): void {
     if (state.sessionId === sessionId) renderContextUsage();
   }).catch(() => taskUsage.delete(sessionId));
 }
+/* Voice dictation: the mic records natively and streams partial text into the prompt. */
+const voice = createVoice({
+  call,
+  listen: (name, handler) => {
+    const unlisten = subscribe(name as 'voice-partial', handler as (event: { text: string }) => void);
+    return () => { void unlisten.then(off => off()); };
+  },
+  notify,
+  changed: () => renderComposer(),
+  setSettings: (settings, models) => voice.setSettings(settings, models),
+});
+void voice.load();
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
@@ -4632,6 +4645,16 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
+      voice: {
+        call,
+        listen: (name, handler) => {
+          const unlisten = subscribe(name as 'voice-download', handler as (event: { id: string; status: string }) => void);
+          return () => { void unlisten.then(off => off()); };
+        },
+        notify,
+        changed: () => renderComposer(),
+        setSettings: (settings, models) => voice.setSettings(settings, models),
+      },
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })) },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
@@ -5717,6 +5740,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
+    case 'voice': voice.handleAction(); break;
     case 'tab-pull': state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector(); break;
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;

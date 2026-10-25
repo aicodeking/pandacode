@@ -1,0 +1,89 @@
+/* Voice dictation: the composer mic button and the floating recording bar.
+   Loaded eagerly beside the composer (renderComposer bakes this markup). */
+
+.composer-voice-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.composer-voice-button .icon { width: 14px; height: 14px; }
+.composer-voice-button:hover { background: var(--hover, rgb(var(--accent-rgb) / 0.08)); color: var(--text); }
+.composer-voice-button.voice-recording {
+  color: var(--on-accent);
+  background: rgb(var(--accent-rgb) / 0.92);
+}
+
+.voice-bar {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: linear-gradient(to bottom, var(--glass-warm), var(--glass-tint));
+  backdrop-filter: blur(30px) saturate(1.5);
+  -webkit-backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: 0 10px 32px rgb(0 0 0 / 0.28), inset 0 1px 0 0 var(--glass-edge, rgb(255 214 90 / 0.5));
+  color: var(--text);
+  font-size: 13px;
+}
+.voice-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: voice-pulse 1.2s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.voice-time { font-variant-numeric: tabular-nums; min-width: 34px; }
+.voice-meter {
+  width: 90px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgb(127 127 127 / 0.25);
+  overflow: hidden;
+}
+.voice-meter i {
+  display: block;
+  height: 100%;
+  width: 4%;
+  border-radius: 3px;
+  background: rgb(var(--accent-rgb));
+  transition: width 90ms linear;
+}
+.voice-label { color: var(--text-secondary); }
+.voice-bar button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.voice-bar button .icon { width: 12px; height: 12px; }
+.voice-stop { background: rgb(var(--accent-rgb)); color: var(--on-accent); }
+.voice-cancel { background: transparent; color: var(--text-secondary); }
+.voice-cancel:hover { color: var(--text); }
+
+@media (prefers-reduced-transparency: reduce) {
+  .voice-bar { background: var(--surface, #fff); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-dot { animation: none; }
+  .voice-meter i { transition: none; }
+}

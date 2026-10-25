@@ -34,6 +34,11 @@ export async function subscribe(name: 'agent-event', callback: (event: AgentEven
 export async function subscribe(name: 'terminal-event', callback: (event: TerminalEvent) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
+export async function subscribe(name: 'voice-partial', callback: (event: { text: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'voice-result', callback: (event: { text: string; engine: string; fallback: boolean }) => void): Promise<() => void>;
+export async function subscribe(name: 'voice-error', callback: (event: { message: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'voice-level', callback: (event: number) => void): Promise<() => void>;
+export async function subscribe(name: 'voice-download', callback: (event: { id: string; status: string; progress?: number; error?: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await import('./preview')).listen(name, callback);
   return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));

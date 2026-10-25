@@ -583,6 +583,52 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
 function agent(event: AgentEvent) { emit('agent-event', event); }
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
+
+/* Voice dictation preview: a fake catalog and a scripted recording that ticks
+   levels, streams partials and settles a final transcript on stop. */
+type PreviewVoiceSettings = { enabled: boolean; engine: string; model: string; language: string; interaction: string; fastMode: boolean };
+let previewVoiceSettings: PreviewVoiceSettings = { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false };
+let previewVoiceModels: Array<{ id: string; label: string; kind: 'final' | 'live' | 'punct'; languages: string; license: string; size: number; installed: boolean; downloading: boolean; progress: number }> = [
+  { id: 'live-en', label: 'Live English (streaming)', kind: 'live', languages: 'en', license: 'Apache-2.0', size: 72_700_000, installed: false, downloading: false, progress: 0 },
+  { id: 'punct-en', label: 'Live punctuation (English)', kind: 'punct', languages: 'en', license: 'Apache-2.0', size: 30_600_000, installed: false, downloading: false, progress: 0 },
+  { id: 'sense-voice', label: 'SenseVoice Small', kind: 'final', languages: 'zh/en/ja/ko/yue', license: 'FunASR Model License (attribution required)', size: 239_500_000, installed: false, downloading: false, progress: 0 },
+  { id: 'moonshine-base', label: 'Moonshine Base', kind: 'final', languages: 'en', license: 'MIT', size: 287_000_000, installed: false, downloading: false, progress: 0 },
+  { id: 'parakeet-v3', label: 'Parakeet TDT 0.6B v3', kind: 'final', languages: '25 European', license: 'CC-BY-4.0', size: 670_500_000, installed: false, downloading: false, progress: 0 },
+  { id: 'whisper-small', label: 'Whisper Small', kind: 'final', languages: '99', license: 'MIT', size: 375_500_000, installed: false, downloading: false, progress: 0 },
+];
+let previewVoiceRecording = false, previewVoiceTimers: number[] = [];
+function previewVoiceStopTimers(): void {
+  previewVoiceTimers.forEach(clearTimeout); previewVoiceTimers = [];
+}
+function previewVoiceStart(): void {
+  previewVoiceRecording = true;
+  const parts = ['Okay,', 'Okay, run the', 'Okay, run the test suite', 'Okay, run the test suite and'];
+  parts.forEach((text, index) => previewVoiceTimers.push(setTimeout(() => {
+    if (previewVoiceRecording) emit('voice-partial', { text });
+  }, 350 * (index + 1))));
+  let level = 0.1;
+  const tick = () => {
+    if (!previewVoiceRecording) return;
+    level = Math.min(0.9, Math.max(0.05, level + (Math.random() - 0.45) * 0.3));
+    emit('voice-level', level);
+    previewVoiceTimers.push(setTimeout(tick, 150) as unknown as number);
+  };
+  previewVoiceTimers.push(setTimeout(tick, 150) as unknown as number);
+}
+function previewVoiceFinish(): void {
+  previewVoiceStopTimers();
+  emit('voice-result', { text: 'Okay, run the test suite and report failures.', engine: previewVoiceSettings.engine === 'apple' || !previewVoiceSettings.engine ? 'apple' : 'sherpa', fallback: false });
+  previewVoiceRecording = false;
+}
+function previewVoiceState() {
+  return {
+    settings: { ...previewVoiceSettings },
+    models: previewVoiceModels.map(model => ({ ...model })),
+    recording: previewVoiceRecording ? 'sherpa' : null,
+    appleAvailable: true,
+    microphoneAvailable: true,
+  };
+}
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
 function assertIdle(s: Session): void {
   if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing this task.');
@@ -1738,6 +1784,39 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'task_token_usage': result = { input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
     case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk' }; break;
+    case 'voice_state': result = previewVoiceState(); break;
+    case 'voice_models': result = previewVoiceModels.map(model => ({ ...model })); break;
+    case 'voice_save_settings': {
+      const next = args as unknown as PreviewVoiceSettings;
+      previewVoiceSettings = { ...previewVoiceSettings, ...next, interaction: next.interaction === 'hold' ? 'hold' : 'toggle' };
+      result = { ...previewVoiceSettings };
+      break;
+    }
+    case 'voice_download_model': {
+      const id = String((args as { id?: string }).id ?? '');
+      const model = previewVoiceModels.find(entry => entry.id === id);
+      if (!model) { result = Promise.reject('Unknown voice model.'); break; }
+      if (model.downloading) { result = Promise.reject('That model is already downloading.'); break; }
+      model.downloading = true; model.progress = 0;
+      const step = (fraction: number) => {
+        model.progress = fraction;
+        emit('voice-download', { id, status: 'downloading', progress: Math.round(fraction * 1000) / 10 });
+        if (fraction < 1) previewVoiceTimers.push(setTimeout(() => step(Math.min(1, fraction + 0.25)), 240) as unknown as number);
+        else { model.downloading = false; model.installed = true; emit('voice-download', { id, status: 'done', progress: 100 }); }
+      };
+      previewVoiceTimers.push(setTimeout(() => step(0.2), 60) as unknown as number);
+      result = null;
+      break;
+    }
+    case 'voice_start': {
+      if (!previewVoiceSettings.enabled) { result = Promise.reject('Voice is off. Enable it in Settings → Voice.'); break; }
+      if (previewVoiceRecording) { result = Promise.reject('A voice recording is already running.'); break; }
+      previewVoiceStart();
+      result = null;
+      break;
+    }
+    case 'voice_stop': if (previewVoiceRecording) previewVoiceFinish(); result = null; break;
+    case 'voice_cancel': previewVoiceStopTimers(); previewVoiceRecording = false; result = null; break;
     case 'token_saver_install': {
       if (args.tool !== 'rtk') throw new Error('Unknown tool.');
       await new Promise(resolve => setTimeout(resolve, 500));
