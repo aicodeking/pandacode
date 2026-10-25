@@ -74,6 +74,7 @@ mod jj;
 mod tray;
 mod headless;
 mod headless_bots;
+mod ui_language;
 
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
@@ -3773,6 +3774,7 @@ pub fn run() {
                 }
             });
             let dir = setup_common(app)?;
+            ui_language::load(&dir);
             agents_dock::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             vm::watch_idle(app.handle().clone());
@@ -3795,6 +3797,7 @@ pub fn run() {
                     overlay::overlay_select_model,
                     overlay::overlay_hide,
                     overlay::overlay_open_task,
+                    ui_language::set_ui_language,
                     task_controls::fork_session_at_message,
                     task_controls::get_message_content,
                     list_providers,
@@ -3813,6 +3816,7 @@ pub fn run() {
                     tray::tray_hide,
                     tray::tray_quit,
                     tray::tray_resize,
+                    ui_language::set_ui_language,
                 ];
                 return handler(invoke);
             }
@@ -3849,6 +3853,7 @@ pub fn run() {
                 model_routing::model_routing_tier_models,
                 model_health::model_health_list,
                 model_health::model_health_clear,
+                ui_language::set_ui_language,
                 local_sign_app,
                 app_updates::app_update_install_supported,
                 agent_updates::check_agent_updates,

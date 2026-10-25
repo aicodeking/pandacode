@@ -503,7 +503,7 @@ fn toggle(app: &tauri::AppHandle) -> Result<()> {
         LABEL,
         tauri::WebviewUrl::App("index.html?view=launcher".into()),
     )
-    .title("PandaCode launcher")
+    .title(crate::ui_language::launcher_title())
     .inner_size(650.0, 510.0)
     .resizable(false)
     .decorations(false)

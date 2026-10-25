@@ -34,13 +34,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub(crate) fn setup(app: &AppHandle) -> tauri::Result<()> {
-    let menu = Menu::with_items(
-        app,
-        &[
-            &MenuItem::with_id(app, "show", "Open PandaCode", true, None::<&str>)?,
-            &MenuItem::with_id(app, "quit", "Quit PandaCode", true, None::<&str>)?,
-        ],
-    )?;
+    let menu = menu(app)?;
     TrayIconBuilder::with_id(ID)
         .icon(Image::from_bytes(include_bytes!("../icons/tray-template@2x.png"))?)
         .icon_as_template(true)
@@ -58,6 +52,33 @@ pub(crate) fn setup(app: &AppHandle) -> tauri::Result<()> {
         .build(app)?;
     refresh(app);
     Ok(())
+}
+
+/// The right-click menu, in the persisted UI language so it is never English for a zh user.
+fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let (open, quit) = crate::ui_language::tray_labels();
+    Menu::with_items(
+        app,
+        &[
+            &MenuItem::with_id(app, "show", open, true, None::<&str>)?,
+            &MenuItem::with_id(app, "quit", quit, true, None::<&str>)?,
+        ],
+    )
+}
+
+/// The frontend picked another language: rebuild the menu and retitle the launcher.
+pub(crate) fn apply_language(app: &AppHandle) {
+    if let Some(tray) = app.tray_by_id(ID) {
+        match menu(app) {
+            Ok(menu) => {
+                let _ = tray.set_menu(Some(menu));
+            }
+            Err(error) => eprintln!("Menu bar menu rebuild failed: {error}"),
+        }
+    }
+    if let Some(window) = app.get_webview_window("launcher") {
+        let _ = window.set_title(crate::ui_language::launcher_title());
+    }
 }
 
 /// Updates the icon title off the caller's thread, so callers may hold any lock.
