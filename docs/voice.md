@@ -68,7 +68,8 @@ OpenAI; runtimes by the k2-fsa sherpa-onnx project).
 
 Commands (all camelCase args, errors reject as strings): `voice_state`,
 `voice_save_settings`, `voice_models`, `voice_download_model`,
-`voice_start`, `voice_stop`, `voice_cancel`.
+`voice_start`, `voice_stop`, `voice_cancel`, `voice_providers`,
+`voice_set_key`, `voice_keys`, `voice_test_provider`.
 
 Events: `voice-partial {text}` (replaces the previous live text),
 `voice-result {text, engine, fallback}`, `voice-error {message}`,
@@ -82,6 +83,32 @@ Tap-to-talk (default) or hold-to-talk, per setting. Esc cancels. The recording
 bar (level meter, timer, Done/Cancel) mounts on the document body so composer
 re-renders never kill a recording, and dictated text works while an agent runs
 (it queues or steers like typed text).
+
+## Online providers (opt-in)
+
+Settings → Voice has three modes: **offline** (default), **online**, and
+**online with offline fallback**. Online transcription exists only when you
+configure it: pick a provider, save its API key (secure store, never the
+webview), and choose a model. Audio then goes to that provider — while you
+speak for the streaming ones, once on stop for the multipart ones — and
+nowhere else.
+
+| Provider | Transport | Live partials | Default model |
+| --- | --- | --- | --- |
+| OpenAI | `POST /v1/audio/transcriptions` | no | `gpt-4o-mini-transcribe` |
+| Groq | OpenAI-compatible multipart | no | `whisper-large-v3-turbo` |
+| OpenRouter | OpenAI-compatible multipart | no | `openai/gpt-4o-mini-transcribe` (25+ models) |
+| Together | OpenAI-compatible multipart | no | `openai/whisper-large-v3` |
+| Deepgram | streaming WebSocket | yes | `nova-3` |
+| OpenAI Realtime | streaming WebSocket (Together-compatible) | yes | `gpt-4o-mini-transcribe` |
+| Custom | any OpenAI-compatible endpoint (self-hosted incl. localhost) | no | yours |
+
+With fallback on, a failed online attempt (connection error, timeout, mid-stream
+error) keeps the recording and settles it with the local quality model — the
+result is marked as a fallback and a toast says so. Streaming providers send
+16 kHz PCM (Deepgram) or 24 kHz PCM16 (OpenAI Realtime); multipart sends one
+16 kHz WAV when you stop. Keys: `voice_set_key`/`voice_keys`/`voice_test_provider`
+(the test sends half a second of silence through the real endpoint).
 
 ## Mobile
 

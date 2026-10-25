@@ -13,6 +13,21 @@ export type VoiceSettings = {
   language: string;
   interaction: string;
   fastMode: boolean;
+  /** offline | online | online-fallback */
+  mode: string;
+  onlineProvider: string;
+  onlineModel: string;
+  onlineBaseUrl: string;
+};
+
+export type VoiceProviderInfo = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  defaultModel: string;
+  models: string[];
+  /** Streams partial text while speaking (WebSocket providers). */
+  streaming: boolean;
 };
 
 export type VoiceModelStatus = {
@@ -33,6 +48,7 @@ export type VoiceStateInfo = {
   recording: string | null;
   appleAvailable: boolean;
   microphoneAvailable: boolean;
+  keys: string[];
 };
 
 export type VoiceHost = {
@@ -52,11 +68,12 @@ const ENGINE_LABEL: Record<string, string> = {
 
 export function createVoice(host: VoiceHost) {
   let info: VoiceStateInfo = {
-    settings: { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false },
+    settings: { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false, mode: 'offline', onlineProvider: '', onlineModel: '', onlineBaseUrl: '' },
     models: [],
     recording: null,
     appleAvailable: false,
     microphoneAvailable: false,
+    keys: [],
   };
   let loading: Promise<void> | undefined;
   let recording = false;
