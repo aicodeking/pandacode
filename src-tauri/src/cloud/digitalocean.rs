@@ -112,7 +112,7 @@ impl DigitalOcean {
         }
         let ip = address.map_err(|_| "The droplet started but got no public address in time. Delete it and try again.".to_string())?;
         // The address may have been recycled from an older droplet with a different key.
-        ssh::forget_host(&ip);
+        ssh::forget_host(&ip, 22);
         ssh::wait_ready(&ssh::Target::vps(ip), CLOUD_INIT_WAIT)?;
         Ok(Machine { id: format!("digitalocean:{native}"), provider: "digitalocean".into(), name: name.into(), state: "running".into(), os: "linux".into(), desktop: false, detail: format!("{SERVICE} · {SIZE} · {region}") })
     }
@@ -150,7 +150,7 @@ impl DigitalOcean {
                 // the remembered host key.
                 if result.is_ok() {
                     if let Some(ip) = address {
-                        ssh::forget_host(&ip);
+                        ssh::forget_host(&ip, 22);
                     }
                 }
                 result
@@ -189,7 +189,7 @@ impl DigitalOcean {
             Err(e) if ssh::transport_error(&e) => match self.address(native, true).await {
                 Ok(ip) => {
                     if ip != target.host {
-                        ssh::forget_host(&target.host);
+                        ssh::forget_host(&target.host, 22);
                     }
                     ssh::exec(&ssh::Target::vps(ip), command, timeout)
                 }
@@ -293,7 +293,7 @@ impl Sandbox for DigitalOcean {
             Err(e) if ssh::transport_error(&e) => match block(self.address(native, true)) {
                 Ok(ip) => {
                     if ip != target.host {
-                        ssh::forget_host(&target.host);
+                        ssh::forget_host(&target.host, 22);
                     }
                     ssh::upload(&ssh::Target::vps(ip), path, bytes, private)
                 }

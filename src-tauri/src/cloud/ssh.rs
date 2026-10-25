@@ -124,13 +124,19 @@ fn store_dir() -> Result<&'static Path> {
 }
 
 /// Drop a host's remembered key, for machines whose address was recycled (deleted and
-/// recreated droplets can draw the same IP with a new host key, which ssh would refuse
-/// forever). Best effort: with no store there is nothing to forget.
-pub fn forget_host(host: &str) {
+/// recreated machines can draw the same address with a new host key, which ssh would
+/// refuse forever). OpenSSH records non-default ports as `[host]:port`. Best effort: with
+/// no store there is nothing to forget.
+pub fn forget_host(host: &str, port: u16) {
     let Ok(dir) = store_dir() else { return };
     let mut command = Command::new("ssh-keygen");
-    command.arg("-R").arg(host).arg("-f").arg(dir.join("ssh-known-hosts"));
+    command.arg("-R").arg(known_hosts_entry(host, port)).arg("-f").arg(dir.join("ssh-known-hosts"));
     let _ = run(command, Duration::from_secs(30));
+}
+
+/// How OpenSSH records a host in known_hosts: bare for the default port, bracketed otherwise.
+fn known_hosts_entry(host: &str, port: u16) -> String {
+    if port == 22 { host.to_string() } else { format!("[{host}]:{port}") }
 }
 
 /// The options every ssh and scp call shares: no prompts, trust a new host once, keep its key.
@@ -349,6 +355,12 @@ mod tests {
         assert!(!transport_error("my-tool: fatal: connection refused"));
         assert!(!transport_error("ssh operation timed out. Check the repository before retrying."));
         assert!(!transport_error(""));
+    }
+
+    #[test]
+    fn known_hosts_entries_are_bracketed_for_non_default_ports() {
+        assert_eq!(known_hosts_entry("203.0.113.7", 22), "203.0.113.7");
+        assert_eq!(known_hosts_entry("203.0.113.7", 13007), "[203.0.113.7]:13007");
     }
 
     #[test]

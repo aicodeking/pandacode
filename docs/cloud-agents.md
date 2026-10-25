@@ -3,8 +3,9 @@
 A task can run its agent on a cloud machine instead of this computer. In a New task, the
 context bar's computer menu ("This computer", other Connect computers) also lists
 **Cloud** targets: every provider connected in Settings → Cloud (Daytona, DigitalOcean,
-Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
-Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and sending starts the task there. The
+Vultr, Hetzner, RunPod, Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox,
+CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and
+sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
 queue, model picker. It keeps running when the laptop sleeps or PandaCode quits, and
 catches up when it comes back.
@@ -90,6 +91,9 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | Provider | Key | Options |
 | --- | --- | --- |
 | digitalocean | API token | `region` (default `nyc1`). Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
+| vultr | API key | `region` (default `ewr`). Instances carry the `pandacode` tag; the Ubuntu 24.04 image is picked by name from the account's OS list at create (Vultr has no image slugs), and `user_data` is sent base64-encoded. Bill while they exist, stopped included — delete ends the billing |
+| hetzner | API token | `location` (default `fsn1`). Servers carry the `pandacode=true` label and are persistent VMs billed while they exist; CPX22 on the stock Ubuntu 24.04 image. Stop is a graceful shutdown followed by a hard poweroff, as Hetzner's own guidance orders them |
+| runpod | API key | `gpu` (default an RTX 3090) and `image` (default RunPod's own Ubuntu 24.04 base image, which ships SSH configured). Pods expose SSH on their public IP through the container's port 22 and authorize PandaCode's key with the documented `SSH_PUBLIC_KEY` pod variable; only pods named `pc-…` (the run pipeline's names) appear in the panel. The container disk is cleared when a pod stops (only the `/workspace` volume survives), so pods are non-persistent: a stopped pod is replaced by a fresh one and rehydrated, like Cloudflare's sandboxes. A running pod bills its GPU until stopped — the panel's stop releases it |
 | e2b | API key | — |
 | modal | token secret | `tokenId` (required), `environment` |
 | codesandbox | API key | — |

@@ -17,6 +17,9 @@ type Field = { name: string; label: string; placeholder: string; secret?: boolea
 /* Sandbox providers that connect with one API key (docs/cloud-agents.md → Provider settings). */
 const KEYED = {
   digitalocean: { name: 'DigitalOcean', key: 'API token', docs: 'cloud.digitalocean.com/account/api/tokens', fields: [{ name: 'region', label: 'Region', placeholder: 'Optional, e.g. nyc1', optional: true }] },
+  vultr: { name: 'Vultr', key: 'API key', docs: 'my.vultr.com/settings → API', fields: [{ name: 'region', label: 'Region', placeholder: 'Optional, e.g. ewr', optional: true }] },
+  hetzner: { name: 'Hetzner', key: 'API token', docs: 'console.hetzner.cloud → Security → API tokens', fields: [{ name: 'location', label: 'Location', placeholder: 'Optional, e.g. fsn1', optional: true }] },
+  runpod: { name: 'RunPod', key: 'API key', docs: 'runpod.io → Settings → API Keys', fields: [{ name: 'gpu', label: 'GPU type', placeholder: 'Optional, e.g. NVIDIA RTX 3090', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, an image with SSH built in', optional: true }] },
   e2b: { name: 'E2B', key: 'API key', docs: 'e2b.dev/dashboard → API keys', fields: [] },
   modal: { name: 'Modal', key: 'Token secret', docs: 'modal.com/settings/tokens', fields: [{ name: 'tokenId', label: 'Token ID', placeholder: 'ak-…' }, { name: 'environment', label: 'Environment', placeholder: 'Optional', optional: true }] },
   codesandbox: { name: 'CodeSandbox', key: 'API key', docs: 'codesandbox.io/t/api', fields: [] },

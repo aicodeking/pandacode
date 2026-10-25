@@ -81,8 +81,8 @@ export function createPreviewVm() {
 /* Cloud sandboxes in the preview: connections that accept any key (except "bad"),
  * machines per provider, a drawn desktop for providers with screens, and recorded input. */
 const BASE = ['daytona', 'cloudflare', 'aws', 'vercel', 'railway', 'gcloud'];
-const KEYED = ['digitalocean', 'e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat', 'instabox'];
-const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['digitalocean', 'DigitalOcean'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['instabox', 'InstaBox'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud']] as const;
+const KEYED = ['digitalocean', 'vultr', 'hetzner', 'runpod', 'e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat', 'instabox'];
+const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['digitalocean', 'DigitalOcean'], ['vultr', 'Vultr'], ['hetzner', 'Hetzner'], ['runpod', 'RunPod'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['instabox', 'InstaBox'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud']] as const;
 type PreviewCloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };
 export function createPreviewCloud() {
   const connected = new Map<string, string | null>();
