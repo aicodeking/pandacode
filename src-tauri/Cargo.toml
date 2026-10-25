@@ -71,7 +71,7 @@ objc2 = "0.6.4"
 block2 = "0.6"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "WKNavigation", "block2", "objc2-app-kit"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSAppearance", "NSColor", "NSGlassEffectView", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSGeometry", "NSData", "NSDictionary", "NSString", "NSError", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSGeometry", "NSData", "NSDictionary", "NSString", "NSError", "NSURL", "NSBundle"] }
 objc2-speech = "0.3.2"
 objc2-avf-audio = "0.3.2"
 
