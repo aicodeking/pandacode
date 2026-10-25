@@ -1,5 +1,6 @@
 import './design-canvas.css';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 
 /* The inspector's Design view: a pan/zoom canvas of the task's artboards
  * (`.pandacode/design/*.html`), each in a sandboxed iframe that runs no scripts.
@@ -51,19 +52,19 @@ export function artboardWidth(html: string): number {
 }
 
 export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
-  root.innerHTML = `<div class="design-toolbar" role="toolbar" aria-label="Design canvas">
-      <button type="button" class="icon-button" data-design="comment" aria-pressed="false" aria-label="Comment on an element" title="Comment: click an element">${icon('chat')}</button>
-      <button type="button" class="icon-button" data-design="out" aria-label="Zoom out" title="Zoom out">${icon('minimize')}</button>
-      <button type="button" class="design-zoom" data-design="fit" aria-label="Fit artboards" title="Fit artboards">100%</button>
-      <button type="button" class="icon-button" data-design="in" aria-label="Zoom in" title="Zoom in">${icon('plus')}</button>
-      <button type="button" class="icon-button" data-design="refresh" aria-label="Reload artboards" title="Reload artboards">${icon('refresh')}</button>
-      <button type="button" class="secondary-button design-send" data-design="send" disabled>Send comments to agent</button>
+  root.innerHTML = `<div class="design-toolbar" role="toolbar" aria-label="${t('Design canvas')}">
+      <button type="button" class="icon-button" data-design="comment" aria-pressed="false" aria-label="${t('Comment on an element')}" title="${t('Comment: click an element')}">${icon('chat')}</button>
+      <button type="button" class="icon-button" data-design="out" aria-label="${t('Zoom out')}" title="${t('Zoom out')}">${icon('minimize')}</button>
+      <button type="button" class="design-zoom" data-design="fit" aria-label="${t('Fit artboards')}" title="${t('Fit artboards')}">100%</button>
+      <button type="button" class="icon-button" data-design="in" aria-label="${t('Zoom in')}" title="${t('Zoom in')}">${icon('plus')}</button>
+      <button type="button" class="icon-button" data-design="refresh" aria-label="${t('Reload artboards')}" title="${t('Reload artboards')}">${icon('refresh')}</button>
+      <button type="button" class="secondary-button design-send" data-design="send" disabled>${t('Send comments to agent')}</button>
     </div>
-    <div class="design-viewport" tabindex="0" aria-label="Artboards. Drag to pan, Shift-scroll to pan horizontally, or pinch and Ctrl/Command-scroll to zoom.">
+    <div class="design-viewport" tabindex="0" aria-label="${t('Artboards. Drag to pan, Shift-scroll to pan horizontally, or pinch and Ctrl/Command-scroll to zoom.')}">
       <div class="design-world"></div>
       <div class="design-empty" hidden></div>
     </div>
-    <section class="design-comments" aria-label="Design comments"></section>`;
+    <section class="design-comments" aria-label="${t('Design comments')}"></section>`;
   const $ = <T extends HTMLElement>(s: string) => root.querySelector<T>(s)!;
   const viewport = $('.design-viewport'), world = $('.design-world'), empty = $('.design-empty'), list = $('.design-comments');
   const tool = (name: string) => $<HTMLButtonElement>(`[data-design="${name}"]`);
@@ -123,7 +124,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     const context = args();
     const key = context ? `${context.projectId}:${context.sessionId ?? ''}` : '';
     if (key !== contextKey) { contextKey = key; boards.forEach(b => b.el.remove()); boards = []; comments = []; pick = null; fitted = false; }
-    if (!context) { say('Open a project to see its designs.'); renderComments(); return; }
+    if (!context) { say(t('Open a project to see its designs.')); renderComments(); return; }
     try {
       const [listed, saved] = await Promise.all([host.call<Artboard[]>('design_list', context), host.call<DesignComment[]>('design_comments', context)]);
       if (key !== contextKey) return;
@@ -143,7 +144,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
       comments = saved;
       layout();
       if (!fitted && boards.length) { fitted = true; fit(); }
-      say(boards.length ? '' : 'No artboards yet. Ask the agent to design a screen; it saves HTML artboards in .pandacode/design/.');
+      say(boards.length ? '' : t('No artboards yet. Ask the agent to design a screen; it saves HTML artboards in .pandacode/design/.'));
     } catch (error) { say(failure(error)); }
     renderComments();
   }
@@ -165,16 +166,16 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   function renderComments(): void {
     const open = comments.filter(c => c.status === 'open');
     tool('send').disabled = !open.length;
-    tool('send').textContent = open.length ? `Send ${open.length} comment${open.length === 1 ? '' : 's'} to agent` : 'Send comments to agent';
-    const form = pick ? `<form class="design-new"><label class="sr-only" for="design-comment-text">Comment on ${escape(pick.selector)}</label>
-      <textarea id="design-comment-text" rows="2" maxlength="4000" placeholder="Comment on ${escape(pick.selector)}"></textarea>
-      <div><button type="button" class="secondary-button" data-design="cancel">Cancel</button><button type="submit" class="primary-button">Add comment</button></div></form>` : '';
+    tool('send').textContent = open.length ? (open.length === 1 ? t('Send 1 comment to agent') : t`Send ${open.length} comments to agent`) : t('Send comments to agent');
+    const form = pick ? `<form class="design-new"><label class="sr-only" for="design-comment-text">${t`Comment on ${escape(pick.selector)}`}</label>
+      <textarea id="design-comment-text" rows="2" maxlength="4000" placeholder="${t`Comment on ${escape(pick.selector)}`}"></textarea>
+      <div><button type="button" class="secondary-button" data-design="cancel">${t('Cancel')}</button><button type="submit" class="primary-button">${t('Add comment')}</button></div></form>` : '';
     const rows = comments.map((c, i) => `<li class="design-comment${c.status === 'resolved' ? ' resolved' : ''}" data-comment="${escape(c.id)}">
       <span class="design-comment-number">${c.status === 'open' ? open.indexOf(c) + 1 : icon('check')}</span>
       <div><p>${escape(c.text)}</p><small>${escape(c.artboard)} · <code>${escape(c.selector)}</code></small>${c.note ? `<small class="design-note">${escape(c.note)}</small>` : ''}</div>
-      <button type="button" class="icon-button" data-design="toggle" data-index="${i}" aria-label="${c.status === 'open' ? 'Resolve' : 'Reopen'} comment" title="${c.status === 'open' ? 'Resolve' : 'Reopen'}">${icon(c.status === 'open' ? 'check' : 'refresh')}</button>
-      <button type="button" class="icon-button" data-design="delete" data-index="${i}" aria-label="Delete comment" title="Delete">${icon('trash')}</button></li>`).join('');
-    list.innerHTML = form + (rows ? `<ol>${rows}</ol>` : commenting || pick ? '' : '<p class="design-hint">Turn on comment mode and click an element to comment on it.</p>');
+      <button type="button" class="icon-button" data-design="toggle" data-index="${i}" aria-label="${c.status === 'open' ? t('Resolve comment') : t('Reopen comment')}" title="${c.status === 'open' ? t('Resolve') : t('Reopen')}">${icon(c.status === 'open' ? 'check' : 'refresh')}</button>
+      <button type="button" class="icon-button" data-design="delete" data-index="${i}" aria-label="${t('Delete comment')}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('');
+    list.innerHTML = form + (rows ? `<ol>${rows}</ol>` : commenting || pick ? '' : `<p class="design-hint">${t('Turn on comment mode and click an element to comment on it.')}</p>`);
     list.querySelector('textarea')?.focus();
     paintMarks();
   }
@@ -182,7 +183,7 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
     const context = args();
     if (!context) return;
     try { await host.call('design_save_comments', { ...context, comments: next }); comments = next; }
-    catch (error) { host.notify(`Could not save design comments: ${failure(error)}`); }
+    catch (error) { host.notify(t`Could not save design comments: ${failure(error)}`); }
     renderComments();
   }
 

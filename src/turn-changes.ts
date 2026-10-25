@@ -2,6 +2,7 @@ import type { TurnChangeDiff, TurnChangeFile, TurnChanges } from './types.ts';
 import type { CombinedChanges } from './turn-activity.ts';
 import { escape, fileIcon, icon } from './dom.ts';
 import { infoMark } from './tooltip.ts';
+import { t } from './i18n.ts';
 
 /** A merged card's summary of several runs (combineChanges), as opposed to one run's snapshot. */
 export const isCombined = (changes: TurnChanges): changes is CombinedChanges => Array.isArray((changes as Partial<CombinedChanges>).runs);
@@ -23,7 +24,7 @@ export function changeDots(additions: number | null, deletions: number | null): 
 }
 
 export function changeNotice(changes: TurnChanges): string {
-  return [changes.concurrent ? 'Shared checkout: only files reported by this task are listed; detected conflicts were omitted.' : '', changes.truncated ? 'Change tracking is limited; some files or details were not captured.' : '', changes.error ?? '', isCombined(changes) ? changes.note : ''].filter(Boolean).join(' ');
+  return [changes.concurrent ? t('Shared checkout: only files reported by this task are listed; detected conflicts were omitted.') : '', changes.truncated ? t('Change tracking is limited; some files or details were not captured.') : '', changes.error ?? '', isCombined(changes) ? changes.note : ''].filter(Boolean).join(' ');
 }
 
 type Folder = { name: string; path: string; folders: Map<string, Folder>; files: TurnChangeFile[]; additions: number; deletions: number };
@@ -41,7 +42,7 @@ function fileTree(changes: TurnChanges): string {
   }
   function render(folder: Folder): string {
     return [...folder.folders.values()].map(child => `<details class="turn-change-folder" data-change-key="${escape(changes.id + ':' + child.path)}"><summary>${icon('chevron')}${fileIcon(child.name, true)}<span class="change-path">${escape(child.name)}</span><span class="change-counts">${changeCounts(child.additions, child.deletions)}</span></summary><div class="turn-change-children">${render(child)}</div></details>`).join('')
-      + folder.files.map(file => `<button type="button" class="turn-change-file" data-action="open-turn-diff" data-path="${escape(file.path)}" title="${escape(file.oldPath ? file.oldPath + ' → ' + file.path : file.path)}" aria-label="View diff for ${escape(file.path)}">${fileIcon(file.path.split('/').pop() ?? file.path, false)}<span class="change-path">${escape(file.path.split('/').pop())}</span><span class="change-file-status" title="${file.status}">${file.status === 'renamed' ? 'R' : file.status === 'added' ? 'A' : file.status === 'deleted' ? 'D' : 'M'}</span><span class="change-counts">${file.binary ? '<span class="change-count-unknown">Binary</span>' : changeCounts(file.additions, file.deletions)}</span></button>`).join('');
+      + folder.files.map(file => `<button type="button" class="turn-change-file" data-action="open-turn-diff" data-path="${escape(file.path)}" title="${escape(file.oldPath ? file.oldPath + ' → ' + file.path : file.path)}" aria-label="${t`View diff for ${escape(file.path)}`}">${fileIcon(file.path.split('/').pop() ?? file.path, false)}<span class="change-path">${escape(file.path.split('/').pop())}</span><span class="change-file-status" title="${file.status}">${file.status === 'renamed' ? 'R' : file.status === 'added' ? 'A' : file.status === 'deleted' ? 'D' : 'M'}</span><span class="change-counts">${file.binary ? `<span class="change-count-unknown">${t('Binary')}</span>` : changeCounts(file.additions, file.deletions)}</span></button>`).join('');
   }
   return render(root);
 }
@@ -54,9 +55,9 @@ export function renderTurnChanges(sessionId: string, changes: TurnChanges, runna
   const count = changes.files.length;
   // Older whole-checkout snapshots have no reliable task ownership.
   if (!count || !changes.attributed) return '';
-  const label = `${count} changed ${count === 1 ? 'file' : 'files'}`;
+  const label = t`${count} changed ${count === 1 ? t('file') : t('files')}`;
   const notice = changeNotice(changes);
-  return `<section class="turn-changes" aria-label="Files changed during this turn" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><div class="turn-changes-actions"><button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="Run project" title="Run pandacode-run.sh" ${runnable ? '' : 'hidden'}>${icon('play')}<span>Run</span></button><button type="button" class="turn-changes-open" data-action="open-turn-diff">${icon('edit')}Open diff</button></div><details class="turn-change-list" data-change-key="${escape(changes.id)}" open><summary>${icon('chevron')}<strong>${label}</strong><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}${changeDots(changes.additions, changes.deletions)}</span>${notice ? `${infoMark(notice, 'Change tracking details', true)}<span class="turn-change-notice sr-only">${escape(notice)}</span>` : ''}</summary><div class="turn-change-tree">${fileTree(changes)}</div></details></section>`;
+  return `<section class="turn-changes" aria-label="${t('Files changed during this turn')}" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><div class="turn-changes-actions"><button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="${t('Run project')}" title="${t('Run pandacode-run.sh')}" ${runnable ? '' : 'hidden'}>${icon('play')}<span>${t('Run')}</span></button><button type="button" class="turn-changes-open" data-action="open-turn-diff">${icon('edit')}${t('Open diff')}</button></div><details class="turn-change-list" data-change-key="${escape(changes.id)}" open><summary>${icon('chevron')}<strong>${label}</strong><span class="change-counts">${changeCounts(changes.additions, changes.deletions)}${changeDots(changes.additions, changes.deletions)}</span>${notice ? `${infoMark(notice, t('Change tracking details'), true)}<span class="turn-change-notice sr-only">${escape(notice)}</span>` : ''}</summary><div class="turn-change-tree">${fileTree(changes)}</div></details></section>`;
 }
 
 /** A turn card's footer: one row that opens the turn's diff (`N changed files`, counts and the meter),
@@ -67,7 +68,7 @@ export function turnChangesFoot(sessionId: string, changes: TurnChanges, runnabl
   const label = `${count} changed ${count === 1 ? 'file' : 'files'}`, notice = changeNotice(changes);
   // A merged card's one footer covers every run of the exchange and says so.
   const runs = isCombined(changes) ? `<span class="turn-card-foot-runs">across ${changes.runs.length} runs</span>` : '';
-  return `<section class="turn-changes turn-card-foot" aria-label="Files changed during this turn" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><button type="button" class="turn-card-foot-open" data-action="open-turn-diff" aria-description="Opens the diff">${icon('branch')}<strong>${label}</strong>${runs}<span class="change-counts">${changeCounts(changes.additions, changes.deletions)}${changeDots(changes.additions, changes.deletions)}</span><span class="turn-card-foot-chevron" aria-hidden="true">${icon('chevron')}</span></button>${notice ? `${infoMark(notice, 'Change tracking details')}<span class="turn-change-notice sr-only">${escape(notice)}</span>` : ''}<button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="Run project" title="Run pandacode-run.sh" ${runnable ? '' : 'hidden'}>${icon('play')}<span>Run</span></button></section>`;
+  return `<section class="turn-changes turn-card-foot" aria-label="${t('Files changed during this turn')}" data-session-id="${escape(sessionId)}" data-changes="${escape(JSON.stringify(changes))}"><button type="button" class="turn-card-foot-open" data-action="open-turn-diff" aria-description="Opens the diff">${icon('branch')}<strong>${label}</strong>${runs}<span class="change-counts">${changeCounts(changes.additions, changes.deletions)}${changeDots(changes.additions, changes.deletions)}</span><span class="turn-card-foot-chevron" aria-hidden="true">${icon('chevron')}</span></button>${notice ? `${infoMark(notice, t('Change tracking details'))}<span class="turn-change-notice sr-only">${escape(notice)}</span>` : ''}<button type="button" class="turn-changes-run" data-action="run-project" data-session-id="${escape(sessionId)}" aria-label="${t('Run project')}" title="${t('Run pandacode-run.sh')}" ${runnable ? '' : 'hidden'}>${icon('play')}<span>${t('Run')}</span></button></section>`;
 }
 
 /** The diff viewer for a merged card's footer: every file once, and for the chosen file one tab per run that changed it,

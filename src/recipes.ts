@@ -4,6 +4,7 @@
  * resolves them. The host supplies the task and the queue, so this module imports no app state. */
 import './recipes.css';
 import { escape } from './dom';
+import { t } from './i18n.ts';
 
 export interface RecipeStep { kind: 'prompt' | 'slash' | 'check' | 'approval'; text?: string; command?: string; requires?: string[] }
 export interface Recipe { name: string; description: string; steps: RecipeStep[]; scope?: 'project' | 'global' }
@@ -22,7 +23,7 @@ export interface RecipesHost {
   done?(count: number): void;
 }
 
-const LABEL: Record<StepReport['status'], string> = { supported: 'Supported', fallback: 'Fallback', manual: 'Manual', blocked: 'Blocked' };
+const LABEL: Record<StepReport['status'], string> = { supported: t('Supported'), fallback: t('Fallback'), manual: t('Manual'), blocked: t('Blocked') };
 const summary = (step: RecipeStep) => (step.kind === 'slash' ? step.command : step.text) ?? '';
 const NEW_RECIPE: Recipe = { name: 'my-recipe', description: '', steps: [{ kind: 'prompt', text: 'Review the changed files.' }, { kind: 'check', text: 'npm test' }, { kind: 'approval', text: 'Ready to commit?' }] };
 
@@ -34,26 +35,26 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
   let message = '';
   let busy = false;
 
-  const rowFor = (recipe: Recipe) => `<li><button type="button" class="recipe-pick" data-recipe="${escape(recipe.name)}" aria-pressed="${recipe.name === selected?.name}"><b>${escape(recipe.name)}</b><span>${escape(recipe.description)}</span><i>${recipe.scope === 'global' ? 'Global' : 'Project'}</i></button></li>`;
+  const rowFor = (recipe: Recipe) => `<li><button type="button" class="recipe-pick" data-recipe="${escape(recipe.name)}" aria-pressed="${recipe.name === selected?.name}"><b>${escape(recipe.name)}</b><span>${escape(recipe.description)}</span><i>${recipe.scope === 'global' ? t('Global') : t('Project')}</i></button></li>`;
 
   function detail(): string {
     if (editing !== null) {
-      return `<textarea class="recipe-json" aria-label="Recipe JSON" spellcheck="false">${escape(editing)}</textarea>
-        <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-cancel">Cancel</button><button type="button" class="primary-button" data-action="recipe-save">Save</button></div>`;
+      return `<textarea class="recipe-json" aria-label="${t('Recipe JSON')}" spellcheck="false">${escape(editing)}</textarea>
+        <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-cancel">${t('Cancel')}</button><button type="button" class="primary-button" data-action="recipe-save">${t('Save')}</button></div>`;
     }
-    if (!selected) return '<p class="recipe-empty">Choose a recipe, or create one.</p>';
+    if (!selected) return `<p class="recipe-empty">${t('Choose a recipe, or create one.')}</p>`;
     const rows = selected.steps.map((step, i) => {
       const report = plan?.steps[i];
       return `<tr><td>${i + 1}</td><td>${escape(step.kind)}</td><td class="recipe-text">${escape(summary(step))}</td><td>${report ? `<span class="recipe-status" data-status="${report.status}">${LABEL[report.status]}</span>` : ''}</td><td class="recipe-reason">${escape(report?.reason ?? '')}</td></tr>`;
     }).join('');
     const blocked = !plan || plan.steps.some(s => s.status === 'blocked');
     return `<h3>${escape(selected.name)}</h3><p class="recipe-description">${escape(selected.description)}</p>
-      <table class="recipe-steps" aria-label="Dry run for ${escape(selected.name)}"><thead><tr><th>#</th><th>Step</th><th>What</th><th>Status</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-delete">Delete</button><button type="button" class="secondary-button" data-action="recipe-edit">Edit</button><button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>Run</button></div>`;
+      <table class="recipe-steps" aria-label="${t`Dry run for ${escape(selected.name)}`}"><thead><tr><th>#</th><th>${t('Step')}</th><th>${t('What')}</th><th>${t('Status')}</th><th>${t('Why')}</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-delete">${t('Delete')}</button><button type="button" class="secondary-button" data-action="recipe-edit">${t('Edit')}</button><button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>${t('Run')}</button></div>`;
   }
 
   function draw(): void {
-    root.innerHTML = `<section class="recipes" aria-label="Workflow recipes"><div class="recipe-list"><ul>${recipes.map(rowFor).join('')}</ul><button type="button" class="secondary-button" data-action="recipe-new">New recipe</button></div>
+    root.innerHTML = `<section class="recipes" aria-label="${t('Workflow recipes')}"><div class="recipe-list"><ul>${recipes.map(rowFor).join('')}</ul><button type="button" class="secondary-button" data-action="recipe-new">${t('New recipe')}</button></div>
       <div class="recipe-detail">${detail()}<p class="recipe-message" role="status">${escape(message)}</p></div></section>`;
   }
 
@@ -84,18 +85,18 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
       else if (action === 'recipe-save') {
         const recipe = JSON.parse(root.querySelector<HTMLTextAreaElement>('.recipe-json')!.value) as Recipe;
         await host.call('recipes_save', { projectId: host.projectId, scope: selected?.scope ?? 'project', recipe });
-        editing = null; await reload(recipe.name); message = 'Saved.'; draw();
+        editing = null; await reload(recipe.name); message = t('Saved.'); draw();
       } else if (action === 'recipe-delete' && selected) {
         await host.call('recipes_delete', { projectId: host.projectId, scope: selected.scope ?? 'project', name: selected.name });
-        selected = null; message = 'Deleted.'; await reload(); message = 'Deleted.'; draw();
+        selected = null; message = t('Deleted.'); await reload(); message = t('Deleted.'); draw();
       } else if (action === 'recipe-run' && plan && !busy) {
         busy = true; draw();
         const messages = plan.messages;
         for (const text of messages) await host.enqueue(text);
-        busy = false; message = `Queued ${messages.length} ${messages.length === 1 ? 'message' : 'messages'}.`; draw();
+        busy = false; message = messages.length === 1 ? t`Queued ${messages.length} message.` : t`Queued ${messages.length} messages.`; draw();
         host.done?.(messages.length);
       }
-    } catch (error) { busy = false; message = error instanceof SyntaxError ? `Not valid JSON: ${error.message}` : String(error); draw(); }
+    } catch (error) { busy = false; message = error instanceof SyntaxError ? t`Not valid JSON: ${error.message}` : String(error); draw(); }
   });
 
   void reload().catch(error => { message = String(error); draw(); });

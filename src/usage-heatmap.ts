@@ -1,4 +1,5 @@
 import './usage-heatmap.css';
+import { t } from './i18n.ts';
 
 export interface DailyTokens { date: string; tokens: number; }
 interface Day { date: Date; key: string; tokens: number; level: number; }
@@ -27,8 +28,9 @@ function addDays(date: Date, days: number): Date { return new Date(date.getFullY
 export type HeatmapUnit = 'tokens' | 'prompts';
 export interface HeatmapOptions { unit?: HeatmapUnit; label?: string; }
 function amountLabel(value: number, unit: HeatmapUnit): string {
-  if (!value) return unit === 'tokens' ? 'No tokens' : 'No prompts';
-  return `${count.format(value)} ${unit === 'prompts' && value === 1 ? 'prompt' : unit}`;
+  if (!value) return unit === 'tokens' ? t('No tokens') : t('No prompts');
+  if (unit === 'prompts') return value === 1 ? t`1 prompt` : t`${count.format(value)} prompts`;
+  return t`${count.format(value)} tokens`;
 }
 
 /** Totals per local calendar day; malformed or negative buckets from the harness are dropped. */
@@ -84,9 +86,9 @@ function weekdayColumn(days: readonly Day[]): HTMLElement {
 
 function legend(): HTMLElement {
   const scale = element('span', 'heatmap-legend'); scale.setAttribute('aria-hidden', 'true');
-  scale.append(element('span', '', 'Less'), ...Array.from({ length: LEVELS + 1 }, (_, level) => {
+  scale.append(element('span', '', t('Less')), ...Array.from({ length: LEVELS + 1 }, (_, level) => {
     const swatch = element('i', 'heatmap-cell'); swatch.dataset.level = String(level); return swatch;
-  }), element('span', '', 'More'));
+  }), element('span', '', t('More')));
   return scale;
 }
 
@@ -94,8 +96,10 @@ function summary(days: readonly Day[], unit: HeatmapUnit): string {
   const active = days.filter(day => day.tokens > 0);
   const total = active.reduce((sum, day) => sum + day.tokens, 0);
   const weeks = Math.ceil(days.length / 7);
-  const period = weeks >= MAX_WEEKS ? 'past year' : `past ${Math.round(weeks / 4.345)} months`;
-  return `${compact.format(total)} ${unit} · ${active.length} active ${active.length === 1 ? 'day' : 'days'} · ${period}`;
+  const period = weeks >= MAX_WEEKS ? t('past year') : t`past ${Math.round(weeks / 4.345)} months`;
+  const totalText = unit === 'tokens' ? t`${compact.format(total)} tokens` : t`${compact.format(total)} prompts`;
+  const activeText = active.length === 1 ? t`1 active day` : t`${active.length} active days`;
+  return `${totalText} · ${activeText} · ${period}`;
 }
 
 function cells(days: readonly Day[], prefix: string, unit: HeatmapUnit): HTMLElement[] {
@@ -112,11 +116,11 @@ function cells(days: readonly Day[], prefix: string, unit: HeatmapUnit): HTMLEle
 const KEY_STEPS: Record<string, number> = { ArrowLeft: -7, ArrowRight: 7, ArrowUp: -1, ArrowDown: 1 };
 
 /** A calendar heatmap of daily token use. One tab stop; arrows move by day and week, hover previews. */
-export function usageHeatmap(daily: readonly DailyTokens[], { unit = 'tokens', label = 'Daily token use' }: HeatmapOptions = {}): HTMLElement {
+export function usageHeatmap(daily: readonly DailyTokens[], { unit = 'tokens', label = t('Daily token use') }: HeatmapOptions = {}): HTMLElement {
   const days = buildDays(daily);
   const prefix = `heatmap-${++instances}`;
   const section = element('section', 'command-daily usage-heatmap'); section.setAttribute('aria-labelledby', `${prefix}-title`);
-  const heading = element('header', 'heatmap-heading'); const title = element('h3', '', 'Activity'); title.id = `${prefix}-title`;
+  const heading = element('header', 'heatmap-heading'); const title = element('h3', '', t('Activity')); title.id = `${prefix}-title`;
   heading.append(title, element('span', 'heatmap-summary', summary(days, unit)));
   const body = element('div', 'heatmap-body'); body.style.setProperty('--weeks', String(Math.ceil(days.length / 7)));
   const scroller = element('div', 'heatmap-scroll');

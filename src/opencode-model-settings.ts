@@ -2,6 +2,7 @@ import './opencode-model-settings.css';
 import { call } from './bridge';
 import { icon } from './dom';
 import { tokenCount } from './model-catalog';
+import { t } from './i18n.ts';
 import type { ProviderModel } from './types';
 
 interface Catalog {
@@ -18,14 +19,14 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
   const rows = new Map<string, HTMLLabelElement>();
   let rowId = 0;
   host.classList.add('opencode-model-settings');
-  host.innerHTML = `<p class="dialog-description">Choose the OpenCode models you want in your model selectors.</p>
-    <div class="opencode-model-toolbar"><label class="opencode-model-search">${icon('search')}<input type="search" aria-label="Search OpenCode models" placeholder="Search models or providers" autocomplete="off" spellcheck="false"></label><button type="button" class="secondary-button" data-refresh aria-label="Refresh models" title="Refresh from OpenCode">${icon('refresh')}</button></div>
+  host.innerHTML = `<p class="dialog-description">${t('Choose the OpenCode models you want in your model selectors.')}</p>
+    <div class="opencode-model-toolbar"><label class="opencode-model-search">${icon('search')}<input type="search" aria-label="${t('Search OpenCode models')}" placeholder="${t('Search models or providers')}" autocomplete="off" spellcheck="false"></label><button type="button" class="secondary-button" data-refresh aria-label="${t('Refresh models')}" title="${t('Refresh from OpenCode')}">${icon('refresh')}</button></div>
     <p class="opencode-model-status" role="status" hidden></p>
-    <div class="opencode-model-list" role="group" aria-label="Available OpenCode models"></div>
-    <button type="button" class="secondary-button opencode-model-more" hidden>Show more models</button>
+    <div class="opencode-model-list" role="group" aria-label="${t('Available OpenCode models')}"></div>
+    <button type="button" class="secondary-button opencode-model-more" hidden>${t('Show more models')}</button>
     <p class="opencode-model-empty" hidden></p>
-    <div class="opencode-model-footer"><span class="opencode-model-count"></span><button type="button" class="primary-button" data-save>Save models</button></div>
-    <small class="opencode-model-note">Default always uses OpenCode’s own selection. Models and connected providers come from your OpenCode installation.</small>`;
+    <div class="opencode-model-footer"><span class="opencode-model-count"></span><button type="button" class="primary-button" data-save>${t('Save models')}</button></div>
+    <small class="opencode-model-note">${t('Default always uses OpenCode’s own selection. Models and connected providers come from your OpenCode installation.')}</small>`;
   const search = host.querySelector<HTMLInputElement>('input')!;
   const list = host.querySelector<HTMLElement>('.opencode-model-list')!;
   const empty = host.querySelector<HTMLElement>('.opencode-model-empty')!;
@@ -41,8 +42,8 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
   function controls(): void {
     refreshButton.disabled = loading || saving;
     saveButton.disabled = !initialized || saving || !dirty();
-    saveButton.textContent = saving ? 'Saving…' : 'Save models';
-    count.textContent = selected.size === 100 ? '100 selected · limit reached' : `${selected.size} selected`;
+    saveButton.textContent = saving ? t('Saving…') : t('Save models');
+    count.textContent = selected.size === 100 ? t('100 selected · limit reached') : t`${selected.size} selected`;
     for (const input of list.querySelectorAll<HTMLInputElement>('input')) input.disabled = saving || (selected.size >= 100 && !input.checked);
   }
   function render(): void {
@@ -55,7 +56,7 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
     const matching = items.filter(model => `${model.name} ${model.id}`.toLocaleLowerCase().includes(query));
     const shown = Math.min(visibleLimit, matching.length);
     moreButton.hidden = shown === matching.length;
-    moreButton.textContent = `Show more models · ${matching.length - shown} remaining`;
+    moreButton.textContent = t`Show more models · ${matching.length - shown} remaining`;
     for (const [index, model] of matching.slice(0, visibleLimit).entries()) {
       keep.add(model.id);
       let row = rows.get(model.id);
@@ -73,21 +74,21 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
       checkbox.checked = selected.has(model.id); checkbox.disabled = saving;
       checkbox.setAttribute('aria-label', model.name);
       row.querySelector('strong')!.textContent = model.name;
-      row.querySelector('small')!.textContent = available.has(model.id) ? model.id : `${model.id} · Currently unavailable`;
-      row.querySelector('.opencode-model-context')!.textContent = model.contextWindow ? `${tokenCount(model.contextWindow)} context` : '';
+      row.querySelector('small')!.textContent = available.has(model.id) ? model.id : t`${model.id} · Currently unavailable`;
+      row.querySelector('.opencode-model-context')!.textContent = model.contextWindow ? t`${tokenCount(model.contextWindow)} context` : '';
       row.classList.toggle('selected', checkbox.checked);
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
     }
     for (const [id, row] of rows) if (!keep.has(id)) { row.remove(); rows.delete(id); }
     list.hidden = shown === 0;
     empty.hidden = shown > 0;
-    empty.textContent = loading ? 'Loading models from OpenCode…' : query ? 'No matching models. Try another name or provider.' : 'No models found. Connect a provider in OpenCode, then refresh.';
+    empty.textContent = loading ? t('Loading models from OpenCode…') : query ? t('No matching models. Try another name or provider.') : t('No models found. Connect a provider in OpenCode, then refresh.');
     controls();
   }
   async function refresh(): Promise<void> {
     if (disposed || loading || saving) return;
     loading = true; controls();
-    message('Loading models from OpenCode…');
+    message(t('Loading models from OpenCode…'));
     if (!models.length) render();
     try {
       const result = await call<Catalog>('list_opencode_models');
@@ -106,7 +107,7 @@ export function mountOpenCodeModels(host: HTMLElement, saved: () => void): () =>
       const ids = await call<string[]>('save_opencode_models', {modelIds: [...selected]});
       if (disposed) return;
       persisted = new Set(ids); selected = new Set(ids);
-      saved(); message('Models saved. Available in every model selector.');
+      saved(); message(t('Models saved. Available in every model selector.'));
     } catch (error) { if (!disposed) message(String(error), true); }
     finally { saving = false; if (!disposed) render(); }
   }

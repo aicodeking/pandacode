@@ -1,5 +1,6 @@
 import './jev-activity.css';
 import { call, subscribe } from './bridge';
+import { t } from './i18n.ts';
 import { icon } from './dom';
 import type { JevReport } from './jev';
 
@@ -11,7 +12,7 @@ export class JevActivity {
   readonly host = document.createElement('div');
   constructor() {
     this.host.className = 'jev-activity'; this.host.hidden = true;
-    this.host.innerHTML = `<button type="button" class="secondary-button" data-action="jev-tests" aria-label="Open Jev browser test reports">${icon('spark')}<span></span>${icon('chevron')}</button>`;
+    this.host.innerHTML = `<button type="button" class="secondary-button" data-action="jev-tests" aria-label="${t('Open Jev browser test reports')}">${icon('spark')}<span></span>${icon('chevron')}</button>`;
     void subscribe('jev-run', report => {
       if (report.sessionId !== this.task) return;
       this.revision++;
@@ -32,8 +33,8 @@ export class JevActivity {
     if (this.report && report.createdAt < this.report.createdAt) return;
     this.report = { id: report.id, createdAt: report.createdAt, status: report.status, verification: report.verification };
     const working = report.status === 'starting' || report.status === 'running';
-    const label = working ? 'Testing app…' : report.verification === 'failed' ? 'Checks failed' : report.verification === 'passed' ? 'Checks passed' : report.status === 'done' ? 'Agent finished' : report.status === 'cancelled' ? 'Test stopped' : 'Test needs attention';
-    this.host.querySelector('span')!.textContent = `Jev · ${label}`;
+    const label = working ? t('Testing app…') : report.verification === 'failed' ? t('Checks failed') : report.verification === 'passed' ? t('Checks passed') : report.status === 'done' ? t('Agent finished') : report.status === 'cancelled' ? t('Test stopped') : t('Test needs attention');
+    this.host.querySelector('span')!.textContent = t`Jev · ${label}`;
     this.host.dataset.working = String(working); this.host.hidden = false;
   }
 }

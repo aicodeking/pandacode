@@ -1,4 +1,5 @@
 import { call } from './bridge';
+import { t } from './i18n.ts';
 
 interface SupportDetails { version: string; platform: string; architecture: string; }
 
@@ -12,14 +13,14 @@ export function mountSupportDetails(host: HTMLDetailsElement): () => void {
 
   async function load(): Promise<void> {
     if (disposed || loaded || loading || !host.open) return;
-    loading = true; retry.hidden = true; status.textContent = 'Loading app details…';
+    loading = true; retry.hidden = true; status.textContent = t('Loading app details…');
     try {
       const data = await call<SupportDetails>('support_details');
       if (disposed) return;
       output.value = `PandaCode: ${data.version}\nPlatform: ${data.platform}\nArchitecture: ${data.architecture}`;
       loaded = true; copy.disabled = false; status.textContent = '';
     } catch {
-      if (!disposed) { status.textContent = 'Could not load app details.'; retry.hidden = false; }
+      if (!disposed) { status.textContent = t('Could not load app details.'); retry.hidden = false; }
     } finally { loading = false; }
   }
   async function copyDetails(): Promise<void> {
@@ -27,11 +28,11 @@ export function mountSupportDetails(host: HTMLDetailsElement): () => void {
     copying = true; copy.setAttribute('aria-busy', 'true');
     try {
       await navigator.clipboard.writeText(output.value);
-      if (!disposed) status.textContent = 'App details copied. Paste them into your support request.';
+      if (!disposed) status.textContent = t('App details copied. Paste them into your support request.');
     } catch {
       if (!disposed) {
         output.focus(); output.select();
-        status.textContent = 'Copy the selected app details using your keyboard.';
+        status.textContent = t('Copy the selected app details using your keyboard.');
       }
     } finally { copying = false; copy.removeAttribute('aria-busy'); }
   }

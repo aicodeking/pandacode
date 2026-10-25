@@ -6,6 +6,7 @@
  * Caveman Full is caveman-micro (MIT, kuba-guzik/caveman-micro), the 85-token distillation
  * of Caveman (Apache-2.0, JuliusBrussee/caveman); Lite and Ultra and the exceptions follow
  * Caveman's own rules. Savings figures are the projects' published benchmarks or estimates. */
+import { t } from './i18n.ts';
 
 export type PackId = 'caveman' | 'lean-code' | 'quiet-tools' | 'rtk';
 export type Level = 'lite' | 'full' | 'ultra';
@@ -20,9 +21,9 @@ export const PACKS: Pack[] = [
   { id: 'rtk', title: 'RTK compression', summary: 'Runs commands through rtk, which compresses their output before the agent reads it.', saves: '60–90% of command output', source: 'rtk-ai/rtk', needs: 'rtk' },
 ];
 export const LEVELS: { id: Level; label: string; hint: string }[] = [
-  { id: 'lite', label: 'Lite', hint: 'Brief, normal grammar' },
-  { id: 'full', label: 'Full', hint: 'Caveman voice' },
-  { id: 'ultra', label: 'Ultra', hint: 'Telegraphic' },
+  { id: 'lite', label: t('Lite'), hint: t('Brief, normal grammar') },
+  { id: 'full', label: t('Full'), hint: t('Caveman voice') },
+  { id: 'ultra', label: t('Ultra'), hint: t('Telegraphic') },
 ];
 
 const CAVEMAN: Record<Level, string> = {

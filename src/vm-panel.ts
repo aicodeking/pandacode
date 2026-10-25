@@ -1,5 +1,6 @@
 import './vm-panel.css';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { cloudName, createOptions, machines, type CloudConnection, type CloudMachine, type Machine } from './vm-machines';
 
 /* The inspector's VM panel: one local macOS or Linux VM's live screen, which you can
@@ -22,19 +23,19 @@ const KEYS: Record<string, string> = { Enter: 'Return', Backspace: 'backspace', 
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 
 export function mountVmPanel(root: HTMLElement, host: VmHost) {
-  root.innerHTML = `<div class="vm-stage" tabindex="0" role="application" aria-label="VM screen. Click to use it; type while it is focused.">
-      <canvas class="vm-screen" role="img" aria-label="VM screen" hidden></canvas>
+  root.innerHTML = `<div class="vm-stage" tabindex="0" role="application" aria-label="${t('VM screen. Click to use it; type while it is focused.')}">
+      <canvas class="vm-screen" role="img" aria-label="${t('VM screen')}" hidden></canvas>
       <div class="vm-empty"></div>
     </div>
     <p class="vm-status" role="status" hidden></p>
     <div class="vm-dock">
-      <button type="button" class="vm-select" data-vm="select" aria-haspopup="menu" aria-label="Choose VM">${icon('monitor')}<span class="vm-name">Machines</span><small class="vm-detail"></small>${icon('down')}</button>
-      <div class="vm-actions" role="toolbar" aria-label="VM controls">
-        <button type="button" class="icon-button" data-vm="power" aria-label="Start VM" title="Start">${icon('play')}</button>
-        <button type="button" class="icon-button" data-vm="suspend" aria-label="Suspend VM" title="Suspend (frees memory)" hidden>${icon('pause')}</button>
-        <button type="button" class="icon-button" data-vm="desktop" aria-label="Add a desktop" title="Add a desktop for computer use" hidden>${icon('grid')}</button>
-        <button type="button" class="icon-button" data-vm="share" aria-label="Share project read-only at start" title="Share this project read-only when the VM starts" aria-pressed="false">${icon('folder')}</button>
-        <button type="button" class="icon-button" data-vm="new" aria-label="New VM" title="New machine" aria-haspopup="menu">${icon('plus')}</button>
+      <button type="button" class="vm-select" data-vm="select" aria-haspopup="menu" aria-label="${t('Choose VM')}">${icon('monitor')}<span class="vm-name">${t('Machines')}</span><small class="vm-detail"></small>${icon('down')}</button>
+      <div class="vm-actions" role="toolbar" aria-label="${t('VM controls')}">
+        <button type="button" class="icon-button" data-vm="power" aria-label="${t('Start VM')}" title="${t('Start')}">${icon('play')}</button>
+        <button type="button" class="icon-button" data-vm="suspend" aria-label="${t('Suspend VM')}" title="${t('Suspend (frees memory)')}" hidden>${icon('pause')}</button>
+        <button type="button" class="icon-button" data-vm="desktop" aria-label="${t('Add a desktop')}" title="${t('Add a desktop for computer use')}" hidden>${icon('grid')}</button>
+        <button type="button" class="icon-button" data-vm="share" aria-label="${t('Share project read-only at start')}" title="${t('Share this project read-only when the VM starts')}" aria-pressed="false">${icon('folder')}</button>
+        <button type="button" class="icon-button" data-vm="new" aria-label="${t('New VM')}" title="${t('New machine')}" aria-haspopup="menu">${icon('plus')}</button>
       </div>
     </div>`;
   const stage = root.querySelector<HTMLElement>('.vm-stage')!;
@@ -59,36 +60,36 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   const failure = (error: unknown) => error instanceof Error ? error.message : String(error);
 
   function emptyState(): string {
-    if (!status) return '<p>Loading machines…</p>';
+    if (!status) return `<p>${t('Loading machines…')}</p>`;
     const vm = current();
     if (!vm) {
-      if (all().length) return '<p>Choose a machine below.</p>';
-      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">Set up VMs</button><small>Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.</small>` : '';
+      if (all().length) return `<p>${t('Choose a machine below.')}</p>`;
+      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">${t('Set up VMs')}</button><small>${t("Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.")}</small>` : '';
       const options = createOptions(status, connections);
-      const local = status.supported ? "PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it." : 'Local VMs need a Mac with Apple silicon.';
-      return `<strong>${options.length ? 'Create a machine' : 'Run Linux, macOS and Windows machines'}</strong><p>Agents can see, click, type and run commands in an isolated machine. ${local}${anyCloud() ? '' : ' Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.'}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
+      const local = status.supported ? t("PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it.") : t('Local VMs need a Mac with Apple silicon.');
+      return `<strong>${options.length ? t('Create a machine') : t('Run Linux, macOS and Windows machines')}</strong><p>${t('Agents can see, click, type and run commands in an isolated machine.')} ${local}${anyCloud() ? '' : ` ${t('Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.')}`}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
     }
-    if (vm.elsewhere) return `<strong>${escape(vm.name)} is running outside PandaCode</strong><p>Stop it, then start it here to see its screen.</p><button type="button" class="secondary-button" data-vm="power">Stop</button>`;
-    if (!vm.running) return `<strong>${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? 'stopped or suspended' : 'stopped'}</strong><p>${escape(vm.detail)}</p>${vm.canStart ? '<button type="button" class="primary-button" data-vm="power">Start</button>' : ''}`;
-    if (!vm.desktop) return `<strong>${escape(vm.name)} has no screen</strong><p>Agents use it with commands (vm_exec). ${escape(vm.detail)}</p>`;
-    return '<p>Connecting to the screen…</p>';
+    if (vm.elsewhere) return `<strong>${t`${escape(vm.name)} is running outside PandaCode`}</strong><p>${t('Stop it, then start it here to see its screen.')}</p><button type="button" class="secondary-button" data-vm="power">${t('Stop')}</button>`;
+    if (!vm.running) return `<strong>${t`${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? t('stopped or suspended') : t('stopped')}`}</strong><p>${escape(vm.detail)}</p>${vm.canStart ? `<button type="button" class="primary-button" data-vm="power">${t('Start')}</button>` : ''}`;
+    if (!vm.desktop) return `<strong>${t`${escape(vm.name)} has no screen`}</strong><p>${t('Agents use it with commands (vm_exec).')} ${escape(vm.detail)}</p>`;
+    return `<p>${t('Connecting to the screen…')}</p>`;
   }
   function render(): void {
     const vm = current();
     empty.innerHTML = emptyState();
     empty.hidden = live() && painted;
     screen.hidden = !live() || !painted;
-    root.querySelector('.vm-name')!.textContent = vm?.name ?? 'Machines';
+    root.querySelector('.vm-name')!.textContent = vm?.name ?? t('Machines');
     root.querySelector('.vm-detail')!.textContent = vm ? vm.detail : '';
     const power = button('power');
     power.disabled = !vm || Boolean(busy) || (!vm.running && !vm.canStart);
     power.innerHTML = icon(vm?.running ? 'stop' : 'play');
-    power.setAttribute('aria-label', vm?.running ? 'Stop VM' : 'Start VM'); power.title = vm?.running ? 'Stop' : 'Start';
+    power.setAttribute('aria-label', vm?.running ? t('Stop VM') : t('Start VM')); power.title = vm?.running ? t('Stop') : t('Start');
     button('suspend').hidden = !(vm && !vm.cloud && vm.os === 'darwin' && live());
     // Desktops install on their own; the button is only a retry after a failure.
     button('desktop').hidden = !(vm && !vm.cloud && vm.os === 'linux' && live() && vm.local?.desktop === 'failed');
-    if (!busy && vm?.local?.desktop === 'installing' && live()) say('Installing a desktop for agents (a few minutes). The console shows until it is ready; commands already work.');
-    else if (!busy && vm?.local?.desktop === 'failed' && live()) say(vm.local.desktopError ?? 'The desktop could not be installed.');
+    if (!busy && vm?.local?.desktop === 'installing' && live()) say(t('Installing a desktop for agents (a few minutes). The console shows until it is ready; commands already work.'));
+    else if (!busy && vm?.local?.desktop === 'failed' && live()) say(vm.local.desktopError ?? t('The desktop could not be installed.'));
     else if (!busy && desktopNotice) say('');
     desktopNotice = Boolean(vm?.local?.desktop && live());
     button('share').hidden = Boolean(vm?.cloud);
@@ -123,7 +124,7 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   const power = () => {
     const vm = current(); if (!vm) return;
     const action = vm.running ? 'stop' : 'start';
-    const label = `${vm.running ? 'Stopping' : 'Starting'} ${vm.name}…`;
+    const label = t`${vm.running ? t('Stopping') : t('Starting')} ${vm.name}…`;
     if (vm.cloud) return run(label, () => host.call('cloud_power', { id: vm.key, action }));
     return run(label, () => host.call<VmStatus>('vm_power', { name: vm.key, action, ...(action === 'start' ? { share: share ? host.project() : null } : {}) }));
   };
@@ -135,26 +136,26 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
   }
   function create(option: string): void {
     if (option.startsWith('cloud:')) {
-      const provider = option.slice(6), label = createOptions(status, connections).find(o => o.id === option)?.label ?? 'cloud machine';
-      void run(`Creating a ${label}…`, async () => {
+      const provider = option.slice(6), label = createOptions(status, connections).find(o => o.id === option)?.label ?? t('cloud machine');
+      void run(t`Creating a ${label}…`, async () => {
         const machine = await host.call<CloudMachine>('cloud_create', { provider, name: cloudName() });
         await host.call('vm_show', { name: machine.id });
-      }, `${label} created. Cloud machines can take a minute or more to be ready.`);
+      }, t`${label} created. Cloud machines can take a minute or more to be ready.`);
       return;
     }
     const id = option.replace(/^image:/, '');
     const image = status?.images.find(candidate => candidate.id === id); if (!image) return;
-    void run(`Downloading ${image.name} (about ${image.downloadGb} GB). This can take a while…`, () => host.call<VmStatus>('vm_create', { image: id, name: uniqueName(id) }), image.os === 'linux' ? '' : `${image.name} is starting.`);
+    void run(t`Downloading ${image.name} (about ${image.downloadGb} GB). This can take a while…`, () => host.call<VmStatus>('vm_create', { image: id, name: uniqueName(id) }), image.os === 'linux' ? '' : t`${image.name} is starting.`);
   }
   function chooseNew(anchor: HTMLElement): void {
-    host.choose(anchor, 'New machine', createOptions(status, connections).map(option => ({ id: option.id, label: option.label, description: option.description, icon: 'monitor' })), create);
+    host.choose(anchor, t('New machine'), createOptions(status, connections).map(option => ({ id: option.id, label: option.label, description: option.description, icon: 'monitor' })), create);
   }
   function chooseVm(anchor: HTMLElement): void {
     const vm = current();
     const items: ChoiceItem[] = all().map(machine => ({ id: `vm:${machine.key}`, label: machine.name, description: machine.detail, icon: 'monitor', selected: machine.key === vm?.key }));
-    if (vm) items.push({ id: 'delete', label: `Delete ${vm.name}`, description: vm.cloud ? 'Removes it from your cloud account' : `Frees about ${vm.local?.sizeGb ?? 0} GB`, icon: 'trash' });
-    host.choose(anchor, 'Machines', items, id => {
-      if (id === 'delete' && vm) void run(`Deleting ${vm.name}…`, () => vm.cloud ? host.call('cloud_power', { id: vm.key, action: 'delete' }) : host.call<VmStatus>('vm_power', { name: vm.key, action: 'delete' }), `${vm.name} is deleted.`);
+    if (vm) items.push({ id: 'delete', label: t`Delete ${vm.name}`, description: vm.cloud ? t('Removes it from your cloud account') : t`Frees about ${vm.local?.sizeGb ?? 0} GB`, icon: 'trash' });
+    host.choose(anchor, t('Machines'), items, id => {
+      if (id === 'delete' && vm) void run(t`Deleting ${vm.name}…`, () => vm.cloud ? host.call('cloud_power', { id: vm.key, action: 'delete' }) : host.call<VmStatus>('vm_power', { name: vm.key, action: 'delete' }), t`${vm.name} is deleted.`);
       else if (id.startsWith('vm:')) void run('', () => host.call<VmStatus>('vm_show', { name: id.slice(3) }));
     });
   }
@@ -240,10 +241,10 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     if (target.dataset.vmCreate) { create(target.dataset.vmCreate); return; }
     const vm = current();
     switch (target.dataset.vm) {
-      case 'setup': void run('Downloading and checking Tart…', () => host.call<string>('vm_setup'), 'Tart is installed. Create a VM to begin.'); break;
+      case 'setup': void run(t('Downloading and checking Tart…'), () => host.call<string>('vm_setup'), t('Tart is installed. Create a VM to begin.')); break;
       case 'power': void power(); break;
-      case 'suspend': if (vm) void run(`Suspending ${vm.name}…`, () => host.call<VmStatus>('vm_power', { name: vm.key, action: 'suspend' }), `${vm.name} is suspended and uses no memory.`); break;
-      case 'desktop': if (vm) void run(`Adding a desktop to ${vm.name} (a few minutes)…`, () => host.call<string>('vm_desktop', { name: vm.key }), 'Desktop ready.'); break;
+      case 'suspend': if (vm) void run(t`Suspending ${vm.name}…`, () => host.call<VmStatus>('vm_power', { name: vm.key, action: 'suspend' }), t`${vm.name} is suspended and uses no memory.`); break;
+      case 'desktop': if (vm) void run(t`Adding a desktop to ${vm.name} (a few minutes)…`, () => host.call<string>('vm_desktop', { name: vm.key }), t('Desktop ready.')); break;
       case 'share': share = !share; try { localStorage.setItem(SHARE_KEY, String(share)); } catch { /* This window keeps it. */ } render(); break;
       case 'new': chooseNew(target); break;
       case 'select': chooseVm(target); break;

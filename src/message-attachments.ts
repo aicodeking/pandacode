@@ -1,4 +1,5 @@
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 
 /** What a sent message carried, read back from the context blocks appended at send time
  * (`CONTEXT_BOUNDARY` in main.ts splits them). Content is untrusted: it is only ever
@@ -32,22 +33,22 @@ function documentHead(line: string): { name: string; path: string } | null {
 function parseBlock(block: string): MessageAttachment[] {
   const head = block.split('\n', 1)[0];
   let match: RegExpMatchArray | null;
-  if ((match = head.match(/^File context: (.+)$/))) return [{ kind: 'file', name: baseName(match[1]), detail: 'Project file', path: match[1] }];
+  if ((match = head.match(/^File context: (.+)$/))) return [{ kind: 'file', name: baseName(match[1]), detail: t('Project file'), path: match[1] }];
   const document = documentHead(head);
   if (document) {
     const ext = document.name.includes('.') ? document.name.split('.').pop()!.toUpperCase() : '';
-    return [{ kind: 'document', ...document, detail: `${ext && ext.length <= 8 ? ext : 'Text'}${block.includes('\n[Context truncated at 32 KiB]') ? ' · first 32 KB' : ''}` }];
+    return [{ kind: 'document', ...document, detail: `${ext && ext.length <= 8 ? ext : t('Text')}${block.includes('\n[Context truncated at 32 KiB]') ? t(' · first 32 KB') : ''}` }];
   }
   if ((match = head.match(/^Folder context: (.+) \((\d+) files, (\d+) folders(, partial listing)?\)$/))) {
-    return [{ kind: 'folder', name: baseName(match[1]) + '/', path: match[1], detail: `${match[2]} files · ${match[3]} folders${match[4] ? ' · partial' : ''}` }];
+    return [{ kind: 'folder', name: baseName(match[1]) + '/', path: match[1], detail: `${t`${match[2]} files · ${match[3]} folders`}${match[4] ? t(' · partial') : ''}` }];
   }
   const imageId = block.match(IMAGE_ID)?.[1];
   if ((match = head.match(/^Attached (image|mockup): (.+) \((\d+) × (\d+)\)/))) {
-    return [{ kind: 'image', name: match[2], detail: `${match[1] === 'mockup' ? 'Mockup · ' : ''}${match[3]} × ${match[4]}`, imageId, raw: block }];
+    return [{ kind: 'image', name: match[2], detail: `${match[1] === 'mockup' ? t('Mockup · ') : ''}${match[3]} × ${match[4]}`, imageId, raw: block }];
   }
   if ((match = head.match(/^Attached browser screenshot: (.*)$/))) {
     const viewport = block.match(/^Viewport: (\d+ × \d+)$/m)?.[1];
-    return [{ kind: 'image', name: match[1].trim() || 'Browser screenshot', detail: `Screenshot${viewport ? ' · ' + viewport : ''}`, imageId, raw: block }];
+    return [{ kind: 'image', name: match[1].trim() || t('Browser screenshot'), detail: t`Screenshot${viewport ? ` · ${viewport}` : ''}`, imageId, raw: block }];
   }
   if (head.startsWith('GitHub context')) {
     const items = [...block.matchAll(GITHUB_ITEM)].flatMap(([, number, kind, state, title, url]) => {
@@ -58,16 +59,16 @@ function parseBlock(block: string): MessageAttachment[] {
   }
   if (head.startsWith('Main thread context:')) return [{ kind: 'raw', name: 'Main thread context', detail: 'Sent with /btw', raw: block }];
   if (head.startsWith('Browser element context')) {
-    let name = 'Page element', detail = 'Browser element';
+    let name = t('Page element'), detail = t('Browser element');
     try {
       const element = JSON.parse(block.slice(block.indexOf('\n') + 1)) as { tag?: unknown; selector?: unknown; url?: unknown };
       if (typeof element.selector === 'string' && element.selector) name = element.selector;
       else if (typeof element.tag === 'string' && element.tag) name = `<${element.tag}>`;
-      if (typeof element.url === 'string') detail = `Element · ${new URL(element.url).host}`;
+      if (typeof element.url === 'string') detail = t`Element · ${new URL(element.url).host}`;
     } catch { /* Keep the generic label; the raw text is still one click away. */ }
     return [{ kind: 'raw', name, detail, raw: block }];
   }
-  return [{ kind: 'raw', name: head.replace(/[:(].*$/, '').trim() || 'Context', detail: 'Attached context', raw: block }];
+  return [{ kind: 'raw', name: head.replace(/[:(].*$/, '').trim() || t('Context'), detail: t('Attached context'), raw: block }];
 }
 
 /** Bot briefs and token-saver style notes are setup, not attachments, so they stay hidden. */
@@ -86,6 +87,6 @@ export function attachmentChips(items: MessageAttachment[], messageId: number, i
       ? `<img data-prompt-image="${escape(item.imageId)}" ${thumbnail ? `src="${escape(thumbnail)}"` : ''} alt="" width="36" height="36"${thumbnail ? '' : ' hidden'}>${thumbnail ? '' : icon('camera')}`
       : icon(item.kind === 'github' && item.detail.startsWith('Pull') ? 'pull' : ICONS[item.kind]);
     const title = 'path' in item ? ` title="${escape(item.path)}"` : item.kind === 'github' ? ` title="${escape(item.url)}"` : '';
-    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" aria-label="Open ${escape(item.name)}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
+    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" aria-label="${t`Open ${escape(item.name)}`}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
   }).join('')}</div>`;
 }
