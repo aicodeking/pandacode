@@ -1,8 +1,10 @@
 // The task composer: a floating glass panel with the prompt over a row of a + menu, the task's
 // branch chip, the harness (opens the model picker) and a round send button. Send queues while
 // running (like the desktop's Enter) and a long press steers; "Steer instead of queue" swaps
-// them. An empty field while running shows Stop. Unreachable computers keep the message in the outbox.
-// In a bot's conversation (`bot`) a send goes through the bot (bot.message), so its brief applies.
+// them. An empty field while running shows Stop. The mic dictates with the phone's own speech
+// recognition, streaming partials into the field; only the text is sent. Unreachable computers
+// keep the message in the outbox. In a bot's conversation (`bot`) a send goes through the bot
+// (bot.message), so its brief applies.
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
 import { frame } from '@expo/ui/swift-ui/modifiers';
@@ -18,6 +20,7 @@ import { GlassIcon, interactiveGlass, nativeGlass } from './NativeGlass.tsx';
 import { HarnessLogo, harnessName } from './harness.tsx';
 import { Icon } from './Icon.tsx';
 import { Menu } from './Menu.tsx';
+import { onDictation, startDictation, stopDictation, useVoice } from './speech.ts';
 import { useColors } from './theme.ts';
 
 export const SIZE = 36;
@@ -37,6 +40,19 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
   const [steer, setSteer] = useState(false);
   const branch = useConnect(s => s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.branch ?? '');
   const provider = useConnect(s => s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.provider ?? '');
+  // Voice input: probed once at launch; false (no speech service) hides the mic.
+  const voiceSupported = useVoice(s => s.supported);
+  const voiceRecording = useVoice(s => s.recording);
+  const voiceError = useVoice(s => s.error);
+  useEffect(() => onDictation(text => setText(text)), []);
+  useEffect(() => {
+    if (voiceError) Alert.alert('Voice input', voiceError);
+  }, [voiceError]);
+  const dictate = async () => {
+    if (voiceRecording) { stopDictation(); return; }
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await startDictation(text);
+  };
   const act = async (kind: 'send' | 'steer' | 'stop') => {
     const prompt = text.trim();
     if (kind !== 'stop' && !prompt) return;
@@ -99,6 +115,17 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
             <Icon ios="arrow.triangle.branch" android="call_split" size={13} color={colors.green} />
             <Text style={[styles.chipText, { color: colors.green }]} numberOfLines={1}>{branch}</Text>
           </Pressable>
+        )}
+        {voiceSupported !== false && (
+          <Round
+            label={voiceRecording ? 'Stop dictation' : 'Dictate'}
+            ios={voiceRecording ? 'stop.fill' : 'mic.fill'}
+            android={voiceRecording ? 'stop' : 'mic'}
+            onPress={() => void dictate()}
+            disabled={busy}
+            bg={voiceRecording ? colors.red : colors.fill}
+            fg={voiceRecording ? colors.background : colors.text}
+          />
         )}
         <View style={styles.spacer} />
         {!!provider && (
