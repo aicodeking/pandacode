@@ -47,6 +47,7 @@ Area → key files → detail (read it before touching the area).
 - Menu bar item, Settings: `src-tauri/src/tray.rs`, `src/tray-popover.ts`, `src/settings.ts`, `src/settings-sections.ts` → [ref](docs/agent-reference.md#tray-and-settings).
 - Sidebar, thread switching, find: `src/sidebar-sections.ts`, `src/sidebar-sort.ts`, `src/thread-find.ts` → [ref](docs/agent-reference.md#sidebar-and-thread-switching).
 - Composer tray, model picker, teams, attachments, queue, token saver: `src/model-picker.ts`, `src/attachments.ts`, `src/message-queue.ts`, `src/token-saver.ts` → [ref](docs/agent-reference.md#composer-model-picker-and-teams).
+- Voice dictation: `src/voice.ts`, `src/voice-settings.ts`, `src-tauri/src/voice/`; [docs/voice.md](docs/voice.md) → [ref](docs/agent-reference.md#voice-dictation).
 - Menus, dialogs, Markdown, files, search, /btw: `src/choice-menu.ts`, `src/dom.ts`, `src/file-tabs.ts`, `src/btw-panel.ts` → [ref](docs/agent-reference.md#menus-dialogs-and-rich-content).
 - Providers, harnesses, routing, Devin, ZCode: `src-tauri/src/providers*`, `acp.rs`, `panda_router*`; [docs/providers.md](docs/providers.md), [docs/model-routing.md](docs/model-routing.md) → [ref](docs/agent-reference.md#providers-and-harnesses).
 - Local VMs, cloud sandboxes and agents: `src-tauri/src/vm*`, `cloud*`, `cloud_agents/`; [docs/cloud-agents.md](docs/cloud-agents.md) → [ref](docs/agent-reference.md#local-vms-and-cloud).
