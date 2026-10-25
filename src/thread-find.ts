@@ -1,5 +1,6 @@
 import './thread-find.css';
 import { icon, isImeKey } from './dom';
+import { t } from './i18n.ts';
 
 /* ⌘F in a thread: a slim find bar over the conversation. Matches in your messages, the
  * agent's and its tools' details are highlighted with the CSS Custom Highlight API, so the message
@@ -245,7 +246,7 @@ export function createThreadFind(host: Host) {
       bar = document.createElement('div');
       bar.className = 'thread-find';
       bar.setAttribute('role', 'search');
-      bar.innerHTML = `${icon('search')}<input type="search" aria-label="Find in thread" placeholder="Find in thread" autocomplete="off" spellcheck="false" maxlength="200"><span class="thread-find-count" aria-live="polite"></span><button type="button" class="icon-button thread-find-previous" data-find-step="-1" aria-label="Previous match" title="Previous match (⇧↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-step="1" aria-label="Next match" title="Next match (↩)">${icon('down')}</button><button type="button" class="icon-button" data-find-close aria-label="Close find" title="Close (Esc)">${icon('close')}</button>`;
+      bar.innerHTML = `${icon('search')}<input type="search" aria-label="${t('Find in thread')}" placeholder="${t('Find in thread')}" autocomplete="off" spellcheck="false" maxlength="200"><span class="thread-find-count" aria-live="polite"></span><button type="button" class="icon-button thread-find-previous" data-find-step="-1" aria-label="${t('Previous match')}" title="${t('Previous match (⇧↩)')}">${icon('down')}</button><button type="button" class="icon-button" data-find-step="1" aria-label="${t('Next match')}" title="${t('Next match (↩)')}">${icon('down')}</button><button type="button" class="icon-button" data-find-close aria-label="${t('Close find')}" title="${t('Close (Esc)')}">${icon('close')}</button>`;
       input = bar.querySelector('input')!; count = bar.querySelector<HTMLElement>('.thread-find-count')!;
       // A keystroke's search waits for typing to pause: each one counts every turn not drawn yet.
       input.addEventListener('input', () => { clearTimeout(typing); typing = window.setTimeout(() => { typing = 0; search(true); }, FIND_TYPING_MS); });

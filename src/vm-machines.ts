@@ -1,5 +1,6 @@
 /* One list of machines for the VM panel: local VMs from Tart and cloud sandboxes from
  * connected providers, with what each can do. Pure, so the panel only renders. */
+import { t } from './i18n.ts';
 import type { Vm, VmStatus } from './vm-panel';
 
 export type CloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };
@@ -29,7 +30,7 @@ const memory = (mb: number) => mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${m
 export function machines(status: VmStatus | undefined, cloud: CloudMachine[]): Machine[] {
   const local = (status?.vms ?? []).map((vm): Machine => ({
     key: vm.name, name: vm.name, os: vm.os, cloud: false, running: vm.running, live: vm.running && vm.attached, desktop: true,
-    detail: `${osName(vm.os)} · ${memory(vm.memoryMb)} · ${vm.running ? (vm.attached ? 'Running' : 'Running elsewhere') : 'Stopped'}`,
+    detail: `${osName(vm.os)} · ${memory(vm.memoryMb)} · ${vm.running ? (vm.attached ? t('Running') : t('Running elsewhere')) : t('Stopped')}`,
     elsewhere: vm.running && !vm.attached, canStart: true, local: vm,
   }));
   const remote = cloud.map((machine): Machine => ({
@@ -42,15 +43,15 @@ export function machines(status: VmStatus | undefined, cloud: CloudMachine[]): M
 
 /** Things the New menu can make: local images once Tart is set up, and cloud kinds per connected provider. */
 export function createOptions(status: VmStatus | undefined, connections: CloudConnection[]): CreateOption[] {
-  const local = status?.installed ? status.images.map(image => ({ id: `image:${image.id}`, label: image.name, description: `Local · ${image.downloadGb} GB download · ${memory(image.memoryMb)}`, cloud: false })) : [];
+  const local = status?.installed ? status.images.map(image => ({ id: `image:${image.id}`, label: image.name, description: t`Local · ${image.downloadGb} GB download · ${memory(image.memoryMb)}`, cloud: false })) : [];
   const on = (provider: CloudConnection['provider']) => connections.some(c => c.provider === provider && c.connected);
   const cloud: CreateOption[] = [
-    ...(on('daytona') ? [{ id: 'cloud:daytona', label: 'Daytona desktop', description: 'Linux with a screen · billed by Daytona', cloud: true }] : []),
-    ...(connections.some(c => c.provider === 'cloudflare' && c.connected && c.sandboxes) ? [{ id: 'cloud:cloudflare', label: 'Cloudflare container', description: 'Linux, commands only · your Cloudflare account', cloud: true }] : []),
+    ...(on('daytona') ? [{ id: 'cloud:daytona', label: t('Daytona desktop'), description: t('Linux with a screen · billed by Daytona'), cloud: true }] : []),
+    ...(connections.some(c => c.provider === 'cloudflare' && c.connected && c.sandboxes) ? [{ id: 'cloud:cloudflare', label: t('Cloudflare container'), description: t('Linux, commands only · your Cloudflare account'), cloud: true }] : []),
     ...(on('aws') ? [
-      { id: 'cloud:aws-linux', label: 'AWS Linux desktop', description: 'Ubuntu on EC2 · billed while running', cloud: true },
-      { id: 'cloud:aws-windows', label: 'AWS Windows desktop', description: 'Windows Server on EC2 · about 10 min to set up', cloud: true },
-      { id: 'cloud:agentcore', label: 'AWS AgentCore session', description: 'Commands only · ends after an hour', cloud: true },
+      { id: 'cloud:aws-linux', label: t('AWS Linux desktop'), description: t('Ubuntu on EC2 · billed while running'), cloud: true },
+      { id: 'cloud:aws-windows', label: t('AWS Windows desktop'), description: t('Windows Server on EC2 · about 10 min to set up'), cloud: true },
+      { id: 'cloud:agentcore', label: t('AWS AgentCore session'), description: t('Commands only · ends after an hour'), cloud: true },
     ] : []),
   ];
   return [...local, ...cloud];

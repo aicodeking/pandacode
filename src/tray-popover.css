@@ -1,14 +1,7 @@
 @import "./tokens.css";
-/* Menu bar popover: one sheet of the warm glass (motion.css), sized to its content. It loads neither
-   styles.css nor design-system.css, so the design system's --ds-* tokens are mirrored here from the
-   popover's own text colour: section heads over grouped cards of rows with status subtitles and meters. */
-:root{font:var(--text-md)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark;--tray-text:#f4f3ee;--tray-muted:rgb(244 243 238 / .56);--success:#83cf9c;--danger:#ff9e96;--tray-warn:var(--warning);--tray-danger:var(--danger);--tray-success:var(--success);--tray-info:color-mix(in srgb,var(--info) 75%,var(--tray-text));
-  --tray-card:color-mix(in srgb,var(--tray-text) 3%,transparent);--tray-inner:color-mix(in srgb,var(--tray-text) 3%,transparent);--tray-raised:color-mix(in srgb,var(--tray-text) 5%,transparent);--tray-border:color-mix(in srgb,var(--tray-text) 8%,transparent);--tray-hover:color-mix(in srgb,var(--tray-text) 5%,transparent);--tray-press:color-mix(in srgb,var(--tray-text) 8%,transparent);
-  --tray-fill:color-mix(in srgb,var(--tray-text) 5.5%,transparent);--tray-track:color-mix(in srgb,var(--tray-text) 12%,transparent);--tray-shadow-card:0 1px 2px rgb(0 0 0 / .3),0 2px 6px rgb(0 0 0 / .25);--tray-shadow-raised:0 1px 2px rgb(0 0 0 / .45),0 1px 1px rgb(0 0 0 / .25);
-  --tray-radius-card:16px;--tray-radius-inner:10px;--tray-pad:6px;--tray-ease-in:120ms;--tray-ease-out:180ms}
-:root[data-theme=light]{color-scheme:light;--tray-text:#242423;--tray-muted:rgb(36 36 35 / .58);--success:#237345;--danger:#b03535;--tray-card:color-mix(in srgb,var(--tray-text) 3%,transparent);--tray-inner:rgb(255 255 255 / .72);--tray-raised:rgb(255 255 255 / .8);--tray-border:color-mix(in srgb,var(--tray-text) 9%,transparent);--tray-shadow-card:0 1px 2px rgb(0 0 0 / .04),0 2px 8px rgb(0 0 0 / .04);--tray-shadow-raised:0 1px 2px rgb(0 0 0 / .08),0 1px 1px rgb(0 0 0 / .04);
-  /* Status text on light glass: a step toward the text, so each clears 4.5:1 on the card even over a mid-grey desktop. */
-  --tray-info:color-mix(in srgb,var(--info) 70%,var(--tray-text));--tray-warn:color-mix(in srgb,var(--warning) 60%,var(--tray-text));--tray-success:color-mix(in srgb,var(--success) 75%,var(--tray-text));--tray-danger:color-mix(in srgb,var(--danger) 85%,var(--tray-text))}
+/* Menu bar popover: one sheet of the warm glass (motion.css), sized to its content. */
+:root{font:var(--text-md)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","PingFang TC","Microsoft YaHei","Microsoft JhengHei",sans-serif;color-scheme:dark;--tray-text:#f4f3ee;--tray-muted:rgb(244 243 238 / .56);--tray-hover:rgb(255 255 255 / .075);--success:#83cf9c;--danger:#ff9e96;--tray-warn:var(--warning);--tray-danger:var(--danger);--tray-success:var(--success)}
+:root[data-theme=light]{color-scheme:light;--tray-text:#242423;--tray-muted:rgb(36 36 35 / .56);--tray-hover:rgb(20 18 8 / .055);--success:#237345;--danger:#b03535}
 *{box-sizing:border-box}html,body{margin:0;background:transparent;overflow:hidden;color:var(--tray-text);-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;border:0;background:transparent;cursor:default;padding:0;-webkit-tap-highlight-color:transparent}
 button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}

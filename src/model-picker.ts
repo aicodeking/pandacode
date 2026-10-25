@@ -1,4 +1,5 @@
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
+import { t } from './i18n.ts';
 import { advertisedModelsOnly, fallbackModel, modelChoices, tokenCount } from './model-catalog';
 import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
@@ -71,8 +72,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const panel = document.createElement('section');
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.setAttribute('aria-label', t('Harness and model'));
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="${t('Search harnesses and models')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>${t('Applying…')}</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const rail = panel.querySelector<HTMLElement>('.model-menu-rail')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
@@ -83,7 +84,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const anchorAction = anchor.dataset.action;
   const originalExpanded = anchor.getAttribute('aria-expanded');
   let pending = false;
-  let providersStatus = options.loadProviders ? 'Loading…' : '';
+  let providersStatus = options.loadProviders ? t('Loading…') : '';
   let closed = false;
   let activeKey = '';
   let positionFrame = 0;
@@ -669,7 +670,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     void options.loadProviders().then(found => {
       if (closed) return;
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
-      providersStatus = providers.length ? '' : 'No harnesses on this computer';
+      providersStatus = providers.length ? '' : t('No harnesses on this computer');
       loadCatalogs();
     }).catch(failure => {
       if (closed) return;

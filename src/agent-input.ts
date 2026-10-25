@@ -1,5 +1,6 @@
 import './agent-input.css';
 import { call } from './bridge';
+import { t } from './i18n.ts';
 import { richMarkdown, type RichContext } from './rich-markdown';
 import type { AgentInputResponse, AgentQuestion } from './types';
 
@@ -18,16 +19,16 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
   const request = object(data) ? data : {};
   const element = node('form', 'agent-input');
   element.dataset.requestId = requestId;
-  element.setAttribute('aria-label', request.kind === 'questions' ? 'Agent questions' : 'Integration request');
-  const heading = node('h3', '', request.kind === 'questions' ? 'A quick question' : 'Input needed');
+  element.setAttribute('aria-label', request.kind === 'questions' ? t('Agent questions') : t('Integration request'));
+  const heading = node('h3', '', request.kind === 'questions' ? t('A quick question') : t('Input needed'));
   element.append(heading);
   const fields = node('fieldset', 'agent-input-fields');
   element.append(fields);
   const error = node('p', 'agent-input-error'); error.setAttribute('role', 'alert'); error.hidden = true;
   const actions = node('div', 'agent-input-actions');
-  const cancel = node('button', 'secondary-button', 'Cancel'); cancel.type = 'button';
-  const submit = node('button', 'primary-button', request.kind === 'url' ? 'Continue' : 'Submit answers'); submit.type = 'submit';
-  const decline = node('button', 'secondary-button', 'Decline'); decline.type = 'button';
+  const cancel = node('button', 'secondary-button', t('Cancel')); cancel.type = 'button';
+  const submit = node('button', 'primary-button', request.kind === 'url' ? t('Continue') : t('Submit answers')); submit.type = 'submit';
+  const decline = node('button', 'secondary-button', t('Decline')); decline.type = 'button';
   actions.append(cancel); if (request.kind !== 'questions') actions.append(decline); actions.append(submit);
   element.append(error, actions);
   let disposed = false, pending = false;
@@ -38,10 +39,10 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
 
   try {
     if (request.kind === 'questions') {
-      if (!Array.isArray(request.questions) || !request.questions.length || request.questions.length > 20) throw new Error('This question format is not supported. Cancel to let the agent continue.');
+      if (!Array.isArray(request.questions) || !request.questions.length || request.questions.length > 20) throw new Error(t('This question format is not supported. Cancel to let the agent continue.'));
       const ids = new Set<string>();
       const readers = request.questions.map(raw => {
-        if (!object(raw) || !text(raw.id) || !text(raw.question) || ids.has(raw.id as string)) throw new Error('This question format is not supported. Cancel to let the agent continue.');
+        if (!object(raw) || !text(raw.id) || !text(raw.question) || ids.has(raw.id as string)) throw new Error(t('This question format is not supported. Cancel to let the agent continue.'));
         ids.add(raw.id as string);
         return { id: raw.id as string, read: renderQuestion(fields, raw as unknown as AgentQuestion, richContext) };
       });
@@ -54,10 +55,10 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
       })) });
     } else if (request.kind === 'url') {
       const url = new URL(text(request.url));
-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('This request does not contain a supported web address.');
-      fields.append(node('p', 'agent-input-message', text(request.message) || 'Complete the requested step in your browser, then continue.'));
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error(t('This request does not contain a supported web address.'));
+      fields.append(node('p', 'agent-input-message', text(request.message) || t('Complete the requested step in your browser, then continue.')));
       fields.append(node('p', 'agent-input-url', url.origin));
-      const open = node('button', 'secondary-button', 'Open in browser'); open.type = 'button';
+      const open = node('button', 'secondary-button', t('Open in browser')); open.type = 'button';
       open.title = url.href;
       open.addEventListener('click', async () => {
         open.disabled = true;
@@ -67,18 +68,18 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
       });
       fields.append(open);
       response = () => ({ action: 'accept', content: null });
-    } else throw new Error('This input format is not supported. Cancel to let the agent continue.');
+    } else throw new Error(t('This input format is not supported. Cancel to let the agent continue.'));
   } catch (cause) {
     fields.replaceChildren(); submit.hidden = true; decline.hidden = true;
     fail(cause instanceof Error ? cause.message : String(cause));
-    response = () => { throw new Error('This input format is not supported.'); };
+    response = () => { throw new Error(t('This input format is not supported.')); };
   }
 
   async function send(value: AgentInputResponse): Promise<void> {
     if (disposed || pending) return;
     pending = true; fields.disabled = true;
     actions.querySelectorAll('button').forEach(button => { button.disabled = true; });
-    error.hidden = true; submit.textContent = 'Sending…';
+    error.hidden = true; submit.textContent = t('Sending…');
     try {
       await call('respond_user_input', { sessionId, requestId, response: value });
       if (!disposed) resolved();
@@ -88,7 +89,7 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
       pending = false;
       if (!disposed) {
         fields.disabled = false; actions.querySelectorAll('button').forEach(button => { button.disabled = false; });
-        submit.textContent = request.kind === 'url' ? 'Continue' : 'Submit answers';
+        submit.textContent = request.kind === 'url' ? t('Continue') : t('Submit answers');
       }
     }
   }
@@ -122,9 +123,9 @@ function renderQuestion(host: HTMLElement, question: AgentQuestion, context: Ric
   const name = `agent-question-${++nextControlId}`;
   const choices: HTMLInputElement[] = [];
   const options = Array.isArray(question.options) && !question.isSecret ? question.options : [];
-  if (options.length > 30) throw new Error('This question has too many options to display.');
+  if (options.length > 30) throw new Error(t('This question has too many options to display.'));
   for (const option of options) {
-    if (!object(option) || !text(option.label)) throw new Error('This question contains an unsupported option.');
+    if (!object(option) || !text(option.label)) throw new Error(t('This question contains an unsupported option.'));
     const label = node('label', 'agent-input-option');
     const input = node('input'); input.type = question.multiSelect ? 'checkbox' : 'radio'; input.name = name; input.value = option.label;
     choices.push(input);
@@ -136,11 +137,11 @@ function renderQuestion(host: HTMLElement, question: AgentQuestion, context: Ric
   let custom: HTMLInputElement | undefined, other: HTMLInputElement | undefined;
   if (!choices.length || question.isOther !== false) {
     const label = node('label', 'agent-input-custom');
-    label.append(node('span', '', choices.length ? 'Other answer' : question.isSecret ? 'Private answer' : 'Your answer'));
+    label.append(node('span', '', choices.length ? t('Other answer') : question.isSecret ? t('Private answer') : t('Your answer')));
     custom = node('input'); custom.type = question.isSecret ? 'password' : 'text'; custom.autocomplete = 'off'; custom.spellcheck = !question.isSecret; custom.maxLength = 8192;
     custom.setAttribute('aria-label', question.header || question.question);
     if (choices.length) {
-      other = node('input'); other.type = question.multiSelect ? 'checkbox' : 'radio'; other.name = name; other.setAttribute('aria-label', 'Use other answer');
+      other = node('input'); other.type = question.multiSelect ? 'checkbox' : 'radio'; other.name = name; other.setAttribute('aria-label', t('Use other answer'));
       label.prepend(other); custom.addEventListener('input', () => { other!.checked = Boolean(custom!.value); });
     } else custom.required = true;
     label.append(custom); group.append(label);
@@ -148,14 +149,14 @@ function renderQuestion(host: HTMLElement, question: AgentQuestion, context: Ric
   return () => {
     const values = choices.filter(input => input.checked).map(input => input.value);
     if (custom && (!choices.length || other?.checked) && custom.value.trim()) values.push(custom.value);
-    if (!values.length) { (custom ?? choices[0])?.focus(); throw new Error(`Answer “${question.header || question.question}” before continuing.`); }
+    if (!values.length) { (custom ?? choices[0])?.focus(); throw new Error(t`Answer “${question.header || question.question}” before continuing.`); }
     return values;
   };
 }
 
 type FieldReader = { name: string; read(): unknown };
 function renderSchema(host: HTMLElement, raw: unknown): FieldReader[] {
-  const unsupported = () => new Error('This integration asks for a form format that PandaCode cannot display yet. Cancel this request to continue.');
+  const unsupported = () => new Error(t('This integration asks for a form format that PandaCode cannot display yet. Cancel this request to continue.'));
   if (!object(raw) || raw.type !== 'object' || !object(raw.properties) || Object.keys(raw.properties).length > 30) throw unsupported();
   const topKeys = new Set(['type', 'properties', 'required', 'title', 'description', 'additionalProperties', '$schema', '$id']);
   if (Object.keys(raw).some(key => !topKeys.has(key))) throw unsupported();
@@ -167,7 +168,7 @@ function renderSchema(host: HTMLElement, raw: unknown): FieldReader[] {
     if (!['string', 'number', 'integer', 'boolean', 'array'].includes(text(schema.type))) throw unsupported();
     const isRequired = required.has(name), title = text(schema.title) || name;
     const field = node('label', 'agent-input-field');
-    field.append(node('span', '', title + (isRequired ? '' : ' (optional)')));
+    field.append(node('span', '', title + (isRequired ? '' : t(' (optional)'))));
     if (text(schema.description)) field.append(node('small', '', text(schema.description)));
     host.append(field);
     if (schema.type === 'array') {
@@ -182,14 +183,14 @@ function renderSchema(host: HTMLElement, raw: unknown): FieldReader[] {
       });
       return { name, read() {
         const value = choices.filter(input => input.checked).map(input => input.value);
-        if (typeof schema.minItems === 'number' && value.length < schema.minItems || typeof schema.maxItems === 'number' && value.length > schema.maxItems) throw new Error(`Choose the requested number of options for “${title}”.`);
+        if (typeof schema.minItems === 'number' && value.length < schema.minItems || typeof schema.maxItems === 'number' && value.length > schema.maxItems) throw new Error(t`Choose the requested number of options for “${title}”.`);
         return !isRequired && !value.length ? undefined : [...new Set(value)];
       } };
     }
     if (Array.isArray(schema.enum)) {
       if (!schema.enum.length || schema.enum.length > 50 || schema.enum.some(value => value === null || !['string', 'number', 'boolean'].includes(typeof value))) throw unsupported();
       const select = node('select'); select.required = isRequired; select.setAttribute('aria-label', title);
-      select.append(new Option('Choose…', ''));
+      select.append(new Option(t('Choose…'), ''));
       schema.enum.forEach((value, index) => select.append(new Option(Array.isArray(schema.enumNames) ? text(schema.enumNames[index]) || String(value) : String(value), String(index))));
       const defaultIndex = schema.enum.indexOf(schema.default); if (defaultIndex >= 0) select.value = String(defaultIndex);
       field.append(select);
@@ -222,7 +223,7 @@ function renderSchema(host: HTMLElement, raw: unknown): FieldReader[] {
 }
 
 function validate(value: unknown, schema: ObjectValue, title: string): unknown {
-  const invalid = () => { throw new Error(`Enter a valid value for “${title}”.`); };
+  const invalid = () => { throw new Error(t`Enter a valid value for “${title}”.`); };
   if (schema.type === 'string') {
     if (typeof value !== 'string') return invalid();
     if (typeof schema.minLength === 'number' && [...value].length < schema.minLength || typeof schema.maxLength === 'number' && [...value].length > schema.maxLength) return invalid();
