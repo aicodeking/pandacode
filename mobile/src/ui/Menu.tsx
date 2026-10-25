@@ -11,6 +11,7 @@ import Animated, { Easing, Keyframe, ReduceMotion } from 'react-native-reanimate
 import { create } from 'zustand';
 import { FADE_MS, geometry, LARGE_TEXT_SCALE, PressScale, type as dsText, useMotion } from './ds/index.ts';
 import { Icon } from './Icon.tsx';
+import { tNow, useT } from './language.ts';
 import { useColors } from './theme.ts';
 
 type Android = ComponentProps<typeof Icon>['android'];
@@ -49,7 +50,8 @@ function popoverFrame({ x, y }: Anchor, width: number, height: number, content: 
 export function showActions(title: string | undefined, items: MenuItem[], anchor?: Anchor) {
   // The system action sheet can't mark a choice, so a list with one uses the card with a real check.
   if (Platform.OS !== 'ios' || items.some(i => i.checked)) return useSheet.setState({ open: items.length > 0, title, items, anchor });
-  const labels = [...items.map(i => i.label), 'Cancel'];
+  const t = tNow();
+  const labels = [...items.map(i => i.label), t('Cancel')];
   const destructive = items.map((i, n) => (i.destructive ? n : -1)).filter(n => n >= 0);
   ActionSheetIOS.showActionSheetWithOptions(
     { title, options: labels, cancelButtonIndex: items.length, destructiveButtonIndex: destructive },
@@ -59,6 +61,7 @@ export function showActions(title: string | undefined, items: MenuItem[], anchor
 
 /** The menu card: every menu on Android, and on iOS only a list with a checked choice. */
 export function MenuHost() {
+  const t = useT();
   const colors = useColors();
   const { open, title, items, anchor } = useSheet();
   const { width, height, fontScale } = useWindowDimensions();
