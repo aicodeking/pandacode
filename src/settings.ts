@@ -20,6 +20,7 @@ import { mountRemoteSettings } from './remote-settings';
 import { mountSchedulesSettings } from './schedules-settings';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
+import { LANGUAGES, setLanguagePref, t, type LanguagePref } from './i18n.ts';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -37,6 +38,8 @@ interface SettingsOptions {
   preview: boolean;
   /** Runs the checkout's fast check after a clean turn and queues one repair on failure. */
   turnChecks: boolean;
+  /** The current UI language preference; changing it reloads every window. */
+  language: LanguagePref;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
   /** Mounts the optional GitHub row; returns its cleanup. */
@@ -61,18 +64,18 @@ export interface SettingsView { show(section: SettingsSection): void; dispose():
 
 /** The groups in the left column, in order. Each names what it holds, not a vague umbrella. */
 export const SECTIONS: { id: SettingsSection; label: string; icon: string; description: string }[] = [
-  { id: 'general', label: 'General', icon: 'settings', description: 'Text size, conversation density and the quick launcher.' },
-  { id: 'appearance', label: 'Appearance', icon: 'sun', description: 'Theme, accent colors and wallpapers.' },
-  { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent and the agent harnesses installed on this computer.' },
-  { id: 'providers', label: 'Providers', icon: 'lock', description: 'Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.' },
-  { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
-  { id: 'schedules', label: 'Schedules', icon: 'clock', description: 'Wake-ups and timed messages from you and your agents.' },
-  { id: 'tools', label: 'Tools & add-ons', icon: 'terminal', description: 'App tools, MCP servers, skills and Jev.' },
-  { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
-  { id: 'cloud', label: 'Cloud sandboxes', icon: 'server', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
-  { id: 'remote', label: 'Remote access', icon: 'globe', description: 'Reach your other computers with PandaCode Connect, end-to-end encrypted.' },
-  { id: 'github', label: 'GitHub', icon: 'github', description: 'Issues, pull requests and repositories through the GitHub CLI.' },
-  { id: 'about', label: 'About & updates', icon: 'info', description: 'Version, updates, resource usage, license and support.' },
+  { id: 'general', label: t('General'), icon: 'settings', description: t('Text size, conversation density and the quick launcher.') },
+  { id: 'appearance', label: t('Appearance'), icon: 'sun', description: t('Theme, accent colors and wallpapers.') },
+  { id: 'agents', label: t('Agents'), icon: 'bot', description: t('Your default agent and the agent harnesses installed on this computer.') },
+  { id: 'providers', label: t('Providers'), icon: 'lock', description: t('Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.') },
+  { id: 'teams', label: t('Agent teams'), icon: 'grid', description: t('Named teams of models, and the classic team setup.') },
+  { id: 'schedules', label: t('Schedules'), icon: 'clock', description: t('Wake-ups and timed messages from you and your agents.') },
+  { id: 'tools', label: t('Tools & add-ons'), icon: 'terminal', description: t('App tools, MCP servers, skills and Jev.') },
+  { id: 'skills', label: t('Skills & rules'), icon: 'widget', description: t('Import skills and rules once, turn them on per harness, and check for drift.') },
+  { id: 'cloud', label: t('Cloud sandboxes'), icon: 'server', description: t('Daytona, Cloudflare and AWS machines for your agents.') },
+  { id: 'remote', label: t('Remote access'), icon: 'globe', description: t('Reach your other computers with PandaCode Connect, end-to-end encrypted.') },
+  { id: 'github', label: t('GitHub'), icon: 'github', description: t('Issues, pull requests and repositories through the GitHub CLI.') },
+  { id: 'about', label: t('About & updates'), icon: 'info', description: t('Version, updates, resource usage, license and support.') },
 ];
 
 /** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
@@ -134,31 +137,33 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
 function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
-    case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', 'Less space between messages.', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', 'Show grouped activity expanded by default.', options.activityExpanded)}</div>
-      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
+    case 'general': return `<div class="settings-group">
+        <div class="setting-row"><div><strong>${t('Language')}</strong><small>${t('Follows the system language until you pick one here.')}</small></div><select class="settings-select" data-language aria-label="${t('Language')}"><option value="auto">${t('System default')}</option>${LANGUAGES.map(language => `<option value="${language.id}">${language.native}</option>`).join('')}</select></div>
+        ${uiSizeControls()}${switchRow('compact-mode', t('Compact conversation'), t('Less space between messages.'), options.compact)}${switchRow('expand-tool-activity', t('Expand tool activity'), t('Show grouped activity expanded by default.'), options.activityExpanded)}</div>
+      <h3 class="settings-heading">${t('Quick launcher')}</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? `<h3 class="settings-heading">${t('Projects')}</h3><div id="projects-settings" class="settings-group"></div>` : ''}`;
     case 'appearance': return `<div class="settings-group">
-        <div class="setting-row"><div><strong>Theme</strong><small>${options.theme === 'dark' ? 'Dark' : 'Light'}. Imported VS Code themes keep their own.</small></div><button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button></div>
-        <div class="setting-row"><div><strong>Daily wallpapers</strong><small>A new scene for each part of the day.</small></div><input type="checkbox" class="settings-switch" id="daily-wallpapers" aria-label="Daily wallpapers" ${options.wallpapers ? 'checked' : ''}></div>
+        <div class="setting-row"><div><strong>${t('Theme')}</strong><small>${t`${options.theme === 'dark' ? t('Dark') : t('Light')}. Imported VS Code themes keep their own.`}</small></div><button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}${t`Use ${options.theme === 'dark' ? t('light') : t('dark')}`}</button></div>
+        <div class="setting-row"><div><strong>${t('Daily wallpapers')}</strong><small>${t('A new scene for each part of the day.')}</small></div><input type="checkbox" class="settings-switch" id="daily-wallpapers" aria-label="${t('Daily wallpapers')}" ${options.wallpapers ? 'checked' : ''}></div>
       </div>
-      <h3 class="settings-heading">Colors <small class="settings-colors-summary">${escape(colorsSummary())}</small></h3><div class="settings-embed" data-embed="colors"></div>
-      <h3 class="settings-heading">Wallpapers</h3><div class="settings-embed" data-embed="wallpapers"></div>`;
+      <h3 class="settings-heading">${t('Colors')} <small class="settings-colors-summary">${escape(colorsSummary())}</small></h3><div class="settings-embed" data-embed="colors"></div>
+      <h3 class="settings-heading">${t('Wallpapers')}</h3><div class="settings-embed" data-embed="wallpapers"></div>`;
     case 'agents': return `<div class="settings-group">
-        <div class="setting-row settings-default-row"><div><strong>Default agent</strong><small>Used for new tasks.</small></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="Default agent for new tasks" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
-        <div class="setting-row settings-default-row"><div><strong>Default model</strong><small>Used for new tasks.</small></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
-        <div class="setting-row"><div><strong>Agent updates</strong><small>Keep installed agents up to date.</small></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
-        ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        <div class="setting-row settings-default-row"><div><strong>${t('Default agent')}</strong><small>${t('Used for new tasks.')}</small></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="${t('Default agent for new tasks')}" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
+        <div class="setting-row settings-default-row"><div><strong>${t('Default model')}</strong><small>${t('Used for new tasks.')}</small></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="${t('Default model for new tasks')}" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
+        <div class="setting-row"><div><strong>${t('Agent updates')}</strong><small>${t('Keep installed agents up to date.')}</small></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">${t('Check updates')}</button></div>
+        ${switchRow('turn-checks', t('Project checks after turns'), t('When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.'), options.turnChecks)}
       </div>
-      <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh">${icon('refresh')}Refresh agents</button></div>
+      <div class="settings-heading settings-agents-heading"><h3>${t('Installed agents')}</h3><button type="button" class="settings-refresh">${icon('refresh')}${t('Refresh agents')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
-      ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
-      <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
-      <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
+      ${options.preview ? `<p class="settings-preview-note">${t('Browser preview · sample agent availability.')}</p>` : ''}
+      <h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
+      <h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div><div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
-        <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
-        <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
+        <div class="setting-row"><div><strong>${t('Tools & integrations')}</strong><small>${t('App tools, MCP servers, and skills.')}</small></div><button type="button" class="secondary-button" data-action="agent-integrations">${t('Manage')}</button></div>
+        <div class="setting-row"><div><strong>${t('Jev · Optional add-on')}</strong><small>${t('Browser tests and decision assistance. Your agents work without it.')}</small></div><button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button></div>
       </div>
       <div id="capabilities-settings"></div>`;
     case 'schedules': return '<div id="schedules-settings"></div>';
@@ -167,17 +172,17 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
     case 'remote': return '<div id="remote-settings"></div>';
     case 'github': return '<div id="github-settings"></div>';
     case 'about': return `${aboutSettingsHtml()}${resourceUsageHtml()}
-      <div class="settings-group settings-support"><div class="setting-row"><div><strong>Help & support</strong><small>Open an issue on GitHub.</small></div><button type="button" class="secondary-button" data-action="support">Open issues${icon('forward')}</button></div><details class="support-details"><summary>App details for support</summary><p>Only the app version, platform, and architecture. Nothing is sent automatically.</p><textarea aria-label="App details for support" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}Copy app details</button><button type="button" class="secondary-button support-retry" hidden>Try again</button></div><p role="status" aria-live="polite"></p></details></div>`;
+      <div class="settings-group settings-support"><div class="setting-row"><div><strong>${t('Help & support')}</strong><small>${t('Open an issue on GitHub.')}</small></div><button type="button" class="secondary-button" data-action="support">${t('Open issues')}${icon('forward')}</button></div><details class="support-details"><summary>${t('App details for support')}</summary><p>${t('Only the app version, platform, and architecture. Nothing is sent automatically.')}</p><textarea aria-label="${t('App details for support')}" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}${t('Copy app details')}</button><button type="button" class="secondary-button support-retry" hidden>${t('Try again')}</button></div><p role="status" aria-live="polite"></p></details></div>`;
   }
 }
 
 /** Settings as a full page: groups on the left, the chosen group's settings on the right. */
 export function mountSettings(host: HTMLElement, options: SettingsOptions): SettingsView {
   host.classList.add('settings-page-root');
-  host.innerHTML = `<nav class="settings-nav" aria-label="Settings sections">
-      <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="Back to the workspace" title="Back (Esc)">${icon('back')}<span>Back</span></button></div>
-      <h1 class="settings-nav-title" data-tauri-drag-region>Settings</h1>
-      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
+  host.innerHTML = `<nav class="settings-nav" aria-label="${t('Settings sections')}">
+      <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="${t('Back to the workspace')}" title="${t('Back (Esc)')}">${icon('back')}<span>${t('Back')}</span></button></div>
+      <h1 class="settings-nav-title" data-tauri-drag-region>${t('Settings')}</h1>
+      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="${t('Settings')}">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
     </nav>
     <div class="settings-content">${SECTIONS.map(section => `<section class="settings-panel" id="settings-panel-${section.id}" role="tabpanel" aria-labelledby="settings-tab-${section.id}" hidden><header class="settings-panel-head" data-tauri-drag-region><h2>${section.label}</h2><p>${section.description}</p></header><div class="settings-panel-body">${sectionHtml(section.id, options)}</div></section>`).join('')}</div>`;
   const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
@@ -201,18 +206,18 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       if (!row) {
         row = document.createElement('details');
         row.className = 'provider-diagnostic'; row.dataset.provider = provider.id;
-        row.innerHTML = `<summary aria-label="${escape(provider.name)} details"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>Version</span><span class="settings-provider-version"></span><span>Location</span><code></code></div>`;
+        row.innerHTML = `<summary aria-label="${escape(provider.name)} ${t('details')}"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>${t('Version')}</span><span class="settings-provider-version"></span><span>${t('Location')}</span><code></code></div>`;
       }
       if (provider.id === 'antigravity' && !row.querySelector('.provider-readiness')) {
         const check = document.createElement('div');
         row.append(check); readinessCleanup.push(mountProviderReadiness(check));
       }
       row.querySelector('strong')!.textContent = provider.name;
-      row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
+      row.querySelector('summary')!.setAttribute('aria-label', t`${provider.name} details, ${provider.installed ? t('Installed') : t('Not installed')}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
-      row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
-      row.querySelector('.settings-provider-version')!.textContent = provider.version || 'Not reported';
-      row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
+      row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? t('ACP installed') : t('Installed')) : t('Not installed');
+      row.querySelector('.settings-provider-version')!.textContent = provider.version || t('Not reported');
+      row.querySelector('code')!.textContent = provider.path || t('Install the agent, then refresh.');
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
     }
@@ -221,7 +226,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   async function refresh(): Promise<void> {
     if (!live() || pending) return;
     pending = true; refreshButton.disabled = true;
-    status.hidden = false; status.textContent = 'Checking agents…';
+    status.hidden = false; status.textContent = t('Checking agents…');
     try {
       const providers = await options.discover();
       if (!live()) return;
@@ -229,7 +234,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       status.textContent = ''; status.hidden = true;
     } catch {
       if (!live()) return;
-      status.textContent = 'Couldn’t check agents. Try refreshing again.';
+      status.textContent = t('Couldn’t check agents. Try refreshing again.');
     } finally { pending = false; if (live()) refreshButton.disabled = false; }
   }
 
@@ -239,9 +244,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     const draw = () => {
       const rows = projects.list();
       slot.innerHTML = rows.length ? rows.map(project => confirming === project.id
-        ? `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>Remove ${escape(project.name)}?</strong><small>Its tasks are removed from PandaCode. The folder stays on disk.</small>${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-cancel>Cancel</button><button type="button" class="secondary-button" data-project-confirm>Remove project</button></div></div>`
-        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><small class="project-path">${escape(project.path)}</small></div><button type="button" class="secondary-button" data-project-remove aria-label="Remove ${escape(project.name)}">Remove</button></div>`).join('')
-        : '<div class="setting-row"><div><small>No projects yet.</small></div></div>';
+        ? `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${t`Remove ${escape(project.name)}?`}</strong><small>${t('Its tasks are removed from PandaCode. The folder stays on disk.')}</small>${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-cancel>${t('Cancel')}</button><button type="button" class="secondary-button" data-project-confirm>${t('Remove project')}</button></div></div>`
+        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><small class="project-path">${escape(project.path)}</small></div><button type="button" class="secondary-button" data-project-remove aria-label="${t`Remove ${escape(project.name)}`}">${t('Remove')}</button></div>`).join('')
+        : `<div class="setting-row"><div><small>${t('No projects yet.')}</small></div></div>`;
     };
     const onClick = async (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
@@ -269,6 +274,11 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
+      const language = panel.querySelector<HTMLSelectElement>('[data-language]');
+      if (language) {
+        language.value = options.language;
+        language.addEventListener('change', () => setLanguagePref(language.value as LanguagePref));
+      }
     }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
@@ -287,9 +297,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const embed = options.embed[slot.dataset.embed as keyof SettingsOptions['embed']];
-      slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      slot.innerHTML = `<p class="dialog-loading">${t('Loading…')}</p>`;
       embed(slot).then(cleanup => { if (disposed) cleanup(); else cleanups.push(cleanup); })
-        .catch(() => { if (!disposed) slot.innerHTML = '<p class="settings-embed-error" role="alert">This section couldn’t load. Close Settings and try again.</p>'; });
+        .catch(() => { if (!disposed) slot.innerHTML = `<p class="settings-embed-error" role="alert">${t('This section couldn’t load. Close Settings and try again.')}</p>`; });
     }
   }
 

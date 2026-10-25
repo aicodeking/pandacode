@@ -1,3 +1,5 @@
+import { t } from './i18n.ts';
+
 export interface FileLinkContext { projectId: string; sessionId?: string }
 export interface ResolvedFile { input: string; path: string; previewable: boolean }
 interface FileLinkOptions {
@@ -169,7 +171,7 @@ async function flush(hub: Hub): Promise<void> {
 function fileLink(hub: Hub, file: ResolvedFile, contents: Node[]): HTMLElement {
   const link = document.createElement('button');
   link.type = 'button'; link.className = 'workspace-file-link';
-  link.title = `${file.previewable ? 'Preview' : 'Open'} ${file.path}`;
+  link.title = `${file.previewable ? t('Preview') : t('Open')} ${file.path}`;
   link.append(...contents); linkFiles.set(link, { hub, file });
   return link;
 }

@@ -1,4 +1,5 @@
 import { escape, icon } from './dom.ts';
+import { t } from './i18n.ts';
 import type { ProviderId, Session } from './types';
 
 /* Cloud agents (docs/cloud-agents.md): the "Run on" menu's Cloud section, the fixed chip and
@@ -22,14 +23,14 @@ export const cloudIcon = (): string => CLOUD_ICON;
  * ponytail: the "Cloud · " label prefix stands in for a section heading; choice-menu.ts has none. */
 export function cloudItems(targets: CloudTarget[], chosen: string) {
   return [
-    ...targets.filter(target => target.ready).map(target => ({ id: cloudChoice(target.provider), label: `Cloud · ${target.label}`, leading: CLOUD_ICON, selected: chosen === cloudChoice(target.provider) })),
-    { id: SETUP_CHOICE, label: 'Set up cloud providers…', icon: 'settings' },
+    ...targets.filter(target => target.ready).map(target => ({ id: cloudChoice(target.provider), label: t`Cloud · ${target.label}`, leading: CLOUD_ICON, selected: chosen === cloudChoice(target.provider) })),
+    { id: SETUP_CHOICE, label: t('Set up cloud providers…'), icon: 'settings' },
   ];
 }
 
 /** Why a harness can't run in the cloud, or '' when it can. */
 export function harnessRefusal(harness: ProviderId, name: string): string {
-  return CLOUD_HARNESSES.includes(harness) ? '' : `${name} can’t run on a cloud machine yet. Choose Claude Code, GLM, MiMo, Codex or OpenCode.`;
+  return CLOUD_HARNESSES.includes(harness) ? '' : t`${name} can’t run on a cloud machine yet. Choose Claude Code, GLM, MiMo, Codex or OpenCode.`;
 }
 
 function installing(harness: ProviderId): string {
@@ -37,16 +38,16 @@ function installing(harness: ProviderId): string {
 }
 export function stageText(stage: CloudStage, detail: string | null | undefined, harness: ProviderId): string {
   switch (stage) {
-    case 'creating': return 'Creating machine';
-    case 'installing': return `Installing ${installing(harness)}`;
-    case 'credentials': return 'Copying logins';
-    case 'uploading': return 'Uploading checkout';
-    case 'ready': return 'Ready';
-    case 'running': return 'Running';
-    case 'reconnecting': return 'Reconnecting…';
-    case 'syncing': return 'Syncing changes';
-    case 'stopped': return 'Stopped';
-    case 'error': return `Error: ${detail || 'the machine could not be prepared'}`;
+    case 'creating': return t('Creating machine');
+    case 'installing': return t`Installing ${installing(harness)}`;
+    case 'credentials': return t('Copying logins');
+    case 'uploading': return t('Uploading checkout');
+    case 'ready': return t('Ready');
+    case 'running': return t('Running');
+    case 'reconnecting': return t('Reconnecting…');
+    case 'syncing': return t('Syncing changes');
+    case 'stopped': return t('Stopped');
+    case 'error': return t`Error: ${detail || t('the machine could not be prepared')}`;
   }
 }
 export const busyStage = (stage: CloudStage): boolean => BUSY.has(stage);
@@ -54,7 +55,7 @@ export const busyStage = (stage: CloudStage): boolean => BUSY.has(stage);
 /** The context bar's computer control for a cloud task: fixed, like a Connect mirror's. */
 export function cloudChip(session: Session): string {
   const cloud = session.cloud!, label = escape(cloud.label), stage = escape(stageText(cloud.stage, cloud.detail, session.provider));
-  return `<span class="composer-computer composer-computer-fixed" aria-label="Computer: ${label} cloud machine (fixed for this task) · ${stage}" title="This task runs on a ${label} cloud machine. ${stage}.">${CLOUD_ICON}<span>on ${label}</span></span>`;
+  return `<span class="composer-computer composer-computer-fixed" aria-label="${t`Computer: ${label} cloud machine (fixed for this task) · ${stage}`}" title="${t`This task runs on a ${label} cloud machine. ${stage}.`}">${CLOUD_ICON}<span>${t`on ${label}`}</span></span>`;
 }
 
 /** The status strip above a cloud task's composer. */
@@ -62,20 +63,20 @@ export function cloudStrip(session: Session): string {
   const cloud = session.cloud; if (!cloud) return '';
   const text = stageText(cloud.stage, cloud.detail, session.provider);
   const lead = busyStage(cloud.stage) ? '<span class="support-spinner" aria-hidden="true"></span>' : CLOUD_ICON;
-  return `<div class="cloud-strip" data-stage="${cloud.stage}"><span class="cloud-strip-status" role="status">${lead}<span class="cloud-strip-text">${escape(cloud.label)} · ${escape(text)}</span></span><button type="button" id="cloud-menu" class="cloud-strip-menu" data-action="cloud-menu" aria-haspopup="dialog" aria-expanded="false" aria-label="Cloud machine actions" title="Cloud machine actions">${icon('more')}</button></div>`;
+  return `<div class="cloud-strip" data-stage="${cloud.stage}"><span class="cloud-strip-status" role="status">${lead}<span class="cloud-strip-text">${escape(cloud.label)} · ${escape(text)}</span></span><button type="button" id="cloud-menu" class="cloud-strip-menu" data-action="cloud-menu" aria-haspopup="dialog" aria-expanded="false" aria-label="${t('Cloud machine actions')}" title="${t('Cloud machine actions')}">${icon('more')}</button></div>`;
 }
 
 export function cloudActionItems(session: Session) {
   const stage = session.cloud?.stage;
   return [
-    { id: 'sync', label: 'Sync changes', icon: 'refresh', disabled: stage === 'syncing' },
-    ...(stage === 'error' ? [{ id: 'retry', label: 'Retry', icon: 'refresh' }] : []),
-    { id: 'open', label: 'Open machine', icon: 'monitor' },
-    { id: 'stop', label: 'Stop machine', icon: 'stop', disabled: stage === 'stopped' },
-    { id: 'delete', label: 'Delete machine…', icon: 'trash', danger: true },
+    { id: 'sync', label: t('Sync changes'), icon: 'refresh', disabled: stage === 'syncing' },
+    ...(stage === 'error' ? [{ id: 'retry', label: t('Retry'), icon: 'refresh' }] : []),
+    { id: 'open', label: t('Open machine'), icon: 'monitor' },
+    { id: 'stop', label: t('Stop machine'), icon: 'stop', disabled: stage === 'stopped' },
+    { id: 'delete', label: t('Delete machine…'), icon: 'trash', danger: true },
   ];
 }
 
 export function deleteMachineDialog(session: Session): string {
-  return `<form id="cloud-delete-form"><p class="dialog-description">Delete this task’s ${escape(session.cloud?.label ?? 'cloud')} machine? Its files there are lost; the task stays and creates a new machine with your next message.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete machine</button></div></form>`;
+  return `<form id="cloud-delete-form"><p class="dialog-description">${t`Delete this task’s ${escape(session.cloud?.label ?? t('cloud'))} machine? Its files there are lost; the task stays and creates a new machine with your next message.`}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="submit" class="secondary-button delete-task-confirm">${t('Delete machine')}</button></div></form>`;
 }

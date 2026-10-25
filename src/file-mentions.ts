@@ -1,4 +1,5 @@
 import './file-mentions.css';
+import { t } from './i18n.ts';
 import { fileIcon, icon } from './dom';
 import { hidePopover, showPopover } from './popover-motion';
 import type { FileEntry } from './types';
@@ -46,8 +47,8 @@ function mentionToken(textarea: HTMLTextAreaElement): Token | undefined {
 export function mountFileMentions(textarea: HTMLTextAreaElement, options: Options): { refresh(): void; dispose(): void } {
   const panel = document.createElement('section');
   panel.className = 'file-mention-menu floating-menu';
-  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Mention a file');
-  panel.innerHTML = `<header>${icon('file')}<strong>Project files</strong><span>@</span></header><div class="file-mention-list" id="file-mentions-${++pickerId}" role="listbox" aria-label="Project files"></div><p class="file-mention-status" role="status" aria-live="polite"></p><footer><span>↑ ↓ navigate</span><span>Tab or ↵ mention</span></footer>`;
+  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', t('Mention a file'));
+  panel.innerHTML = `<header>${icon('file')}<strong>${t('Project files')}</strong><span>@</span></header><div class="file-mention-list" id="file-mentions-${++pickerId}" role="listbox" aria-label="${t('Project files')}"></div><p class="file-mention-status" role="status" aria-live="polite"></p><footer><span>${t('↑ ↓ navigate')}</span><span>${t('Tab or ↵ mention')}</span></footer>`;
   const list = panel.querySelector<HTMLElement>('.file-mention-list')!;
   const status = panel.querySelector<HTMLElement>('.file-mention-status')!;
   const original = new Map(['role', 'aria-autocomplete', 'aria-haspopup', 'aria-controls', 'aria-expanded', 'aria-activedescendant'].map(name => [name, textarea.getAttribute(name)]));
@@ -119,7 +120,7 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
         row.className = 'file-mention-option'; row.dataset.filePath = file.path;
         row.setAttribute('role', 'option'); row.id = `${list.id}-option-${++rowId}`; row.title = file.path;
         const copy = document.createElement('span'), name = document.createElement('strong'), directory = document.createElement('small');
-        name.textContent = file.isDir ? file.name + '/' : file.name; directory.textContent = file.detail ?? (file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : 'Project root');
+        name.textContent = file.isDir ? file.name + '/' : file.name; directory.textContent = file.detail ?? (file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : t('Project root'));
         copy.append(name, directory); row.innerHTML = file.icon ? icon(file.icon) : fileIcon(file.name, file.isDir); row.append(copy); rows.set(file.path, row);
         if (file.mention) row.classList.add('file-mention-reference');
         if (file.isDir) row.classList.add('file-mention-folder');
@@ -130,8 +131,8 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
     setActive(visible.has(active) ? active : files[0]?.path ?? '');
     list.setAttribute('aria-busy', String(loading));
     const references = files.filter(file => file.mention).length, folders = files.filter(file => file.isDir && !file.mention).length, plain = files.length - references - folders;
-    panel.querySelector('header strong')!.textContent = references ? 'Files and GitHub' : 'Project files';
-    status.textContent = loading ? 'Searching…' : error || (!files.length ? 'No matching files in this project.' : [plain ? `${plain === 40 ? 'Top ' : ''}${plain} file${plain === 1 ? '' : 's'}` : '', folders ? `${folders} folder${folders === 1 ? '' : 's'}` : '', references ? `${references} on GitHub` : ''].filter(Boolean).join(' · '));
+    panel.querySelector('header strong')!.textContent = references ? t('Files and GitHub') : t('Project files');
+    status.textContent = loading ? t('Searching…') : error || (!files.length ? t('No matching files in this project.') : [plain ? plain === 40 ? t`Top ${plain} files` : plain === 1 ? t`${plain} file` : t`${plain} files` : '', folders ? folders === 1 ? t`${folders} folder` : t`${folders} folders` : '', references ? t`${references} on GitHub` : ''].filter(Boolean).join(' · '));
     position();
   }
   async function search(value: string, ticket: number, key: string): Promise<void> {
@@ -187,7 +188,7 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
     const suffix = textarea.value.slice(current.end);
     const insertion = reference + (/^\s/.test(suffix) ? '' : ' ');
     if (textarea.maxLength >= 0 && textarea.value.length - (current.end - current.start) + insertion.length > textarea.maxLength) {
-      status.textContent = 'There is not enough room for this reference. Shorten your message first.'; return;
+      status.textContent = t('There is not enough room for this reference. Shorten your message first.'); return;
     }
     textarea.setRangeText(insertion, current.start, current.end, 'end');
     if (/^\s/.test(suffix)) textarea.setSelectionRange(current.start + reference.length + 1, current.start + reference.length + 1);

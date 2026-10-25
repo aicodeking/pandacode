@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './overlay.css';
 import { escape, icon } from './dom';
 import { mountExternalLinks } from './external-links';
@@ -21,9 +22,16 @@ function refreshTheme(): void {
   }
 }
 refreshTheme();
-window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') refreshTheme(); });
+window.addEventListener('storage', event => {
+  if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') refreshTheme();
+  // A language change rewrites the launcher's own labels: keep unsent text and start over in the new one.
+  else if (event.key === 'pandacode.language') {
+    try { sessionStorage.setItem('pandacode.launcher-draft', prompt.value); } catch { /* best effort */ }
+    location.reload();
+  }
+});
 const host = document.querySelector<HTMLDivElement>('#app')!;
-host.innerHTML = `<main class="launcher" aria-label="PandaCode quick launcher"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="Close launcher"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">New task</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="What should we work on?" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="Task project"></select></label><button type="button" class="launcher-agent" aria-label="Choose harness and model" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="Start task">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="Search tasks" placeholder="Find a task" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="Active agents"><p class="launcher-empty">Loading tasks…</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">Live status</span></footer></div><section class="launcher-thread" hidden></section></main>`;
+host.innerHTML = `<main class="launcher" aria-label="${t('PandaCode quick launcher')}"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="${t('Close launcher')}"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">${t('New task')}</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="${t('What should we work on?')}" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="${t('Task project')}"></select></label><button type="button" class="launcher-agent" aria-label="${t('Choose harness and model')}" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="${t('Start task')}">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>${t('Active agents')} <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="${t('Search tasks')}" placeholder="${t('Find a task')}" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="${t('Active agents')}"><p class="launcher-empty">${t('Loading tasks…')}</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> ${t('start task')}</span><span><kbd>⇧ ↵</kbd> ${t('new line')}</span><span class="launcher-live">${t('Live status')}</span></footer></div><section class="launcher-thread" hidden></section></main>`;
 const prompt = host.querySelector<HTMLTextAreaElement>('textarea')!;
 const project = host.querySelector<HTMLSelectElement>('select')!;
 const list = host.querySelector<HTMLDivElement>('.launcher-tasks')!;
@@ -31,6 +39,11 @@ const search = host.querySelector<HTMLInputElement>('input[type=search]')!;
 const feedback = host.querySelector<HTMLElement>('.launcher-feedback')!;
 const start = host.querySelector<HTMLButtonElement>('.launcher-start')!;
 const agentButton = host.querySelector<HTMLButtonElement>('.launcher-agent')!;
+try {
+  const restored = sessionStorage.getItem('pandacode.launcher-draft');
+  if (restored) prompt.value = restored;
+  sessionStorage.removeItem('pandacode.launcher-draft');
+} catch { /* best effort */ }
 let snapshot: OverlaySnapshot | null = null, visible = true, busy = false, refreshing = false;
 let timer: number | undefined, lastProject = '', lastProjectMarkup = '', lastAgentMarkup = '';
 const rows = new Map<string, HTMLButtonElement>();
@@ -47,13 +60,13 @@ function rememberModelNames(provider: ProviderId, models: ProviderModel[]): void
 }
 function closeModelPicker(): void {
   pickerRequest++; const close = pickerCleanup; pickerCleanup = undefined; pickerLoading = false; close?.();
-  if (feedback.textContent === 'Loading harnesses…') showFeedback('');
+  if (feedback.textContent === t('Loading harnesses…')) showFeedback('');
   render();
 }
 async function chooseModel(): Promise<void> {
   if (!snapshot || busy || modelSaving || pickerLoading) return;
   if (pickerCleanup) { closeModelPicker(); return; }
-  const request = ++pickerRequest; pickerLoading = true; showFeedback('Loading harnesses…'); render();
+  const request = ++pickerRequest; pickerLoading = true; showFeedback(t('Loading harnesses…')); render();
   try {
     const {openOverlayModelPicker} = await import('./overlay-model-picker');
     if (request !== pickerRequest || !visible) return;
@@ -75,7 +88,7 @@ async function chooseModel(): Promise<void> {
       },
     });
   } catch (error) { if (request === pickerRequest) showFeedback(String(error),true); }
-  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === 'Loading harnesses…') showFeedback(''); render(); } }
+  finally { if (request === pickerRequest) { pickerLoading = false; if (feedback.textContent === t('Loading harnesses…')) showFeedback(''); render(); } }
 }
 
 let threadView: OverlayThreadView | undefined, threadLoading: Promise<OverlayThreadView> | undefined;
@@ -115,7 +128,7 @@ function filterDeletedTasks(value: OverlaySnapshot): void {
   value.tasks = value.tasks.filter(task => !deletedSessions.has(task.sessionId));
   value.activeCount = value.tasks.filter(task => ['running', 'waiting', 'coordinating'].includes(task.status)).length;
 }
-const label = (status: string): string => ({running:'Working',coordinating:'Coordinating',waiting:'Needs attention',interrupted:'Paused',error:'Failed',idle:'Ready',stopped:'Stopped',completed:'Completed'}[status] || status);
+const label = (status: string): string => ({running:t('Working'),coordinating:t('Coordinating'),waiting:t('Needs attention'),interrupted:t('Paused'),error:t('Failed'),idle:t('Ready'),stopped:t('Stopped'),completed:t('Completed')}[status] || status);
 function showFeedback(text: string, error = false): void { feedback.hidden = !text; feedback.textContent = text; feedback.classList.toggle('is-error', error); }
 function render(): void {
   if (!snapshot) return;
@@ -131,11 +144,11 @@ function render(): void {
   const name = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code',devin:'Devin CLI',zcode:'ZCode',hermes:'Hermes Agent'}[snapshot.context.provider] || snapshot.context.provider;
   const modelName = modelNames.get(`${snapshot.context.provider}:${snapshot.context.model}`) || fallbackModel(snapshot.context.provider as ProviderId,snapshot.context.model).name;
   const teamCount = snapshot.teamWorkerCount ?? 0;
-  const teamLabel = teamCount > 0 ? `+${teamCount} ${teamCount === 1 ? 'model' : 'models'}` : '';
-  const agentMarkup = `${providerLogo(snapshot.context.provider as ProviderId)}<span class="launcher-model-name">${escape(modelName === 'Default' ? `${name} · Default` : modelName)}</span>${teamLabel ? `<span class="launcher-team-models">${teamLabel}</span>` : ''}${icon('down')}`;
+  const teamLabel = teamCount > 0 ? `+${teamCount} ${teamCount === 1 ? t('model') : t('models')}` : '';
+  const agentMarkup = `${providerLogo(snapshot.context.provider as ProviderId)}<span class="launcher-model-name">${escape(modelName === 'Default' ? `${name} · ${t('Default')}` : modelName)}</span>${teamLabel ? `<span class="launcher-team-models">${teamLabel}</span>` : ''}${icon('down')}`;
   agentButton.title = `${name} · ${modelName}${teamLabel ? ` ${teamLabel}` : ''}`;
   if (agentMarkup !== lastAgentMarkup) { host.querySelector('.launcher-agent')!.innerHTML = agentMarkup; lastAgentMarkup = agentMarkup; }
-  host.querySelector('.launcher-count')!.textContent = snapshot.activeCount ? `${snapshot.activeCount} active` : '';
+  host.querySelector('.launcher-count')!.textContent = snapshot.activeCount ? t`${snapshot.activeCount} active` : '';
   const tasks = snapshot.tasks.filter(task => ['running','waiting','coordinating'].includes(task.status) && `${task.title} ${task.parentTitle ?? ''} ${task.projectName} ${task.provider}`.toLocaleLowerCase().includes(search.value.toLocaleLowerCase()));
   const ids = new Set(tasks.map(t => t.id));
   for (const [id,row] of rows) if (!ids.has(id)) { row.remove(); rows.delete(id); }
@@ -144,12 +157,12 @@ function render(): void {
     let row = rows.get(task.id);
     if (!row) { row = document.createElement('button'); row.type = 'button'; row.className = 'launcher-task'; row.dataset.task = task.id; rows.set(task.id,row); }
     row.dataset.kind = task.kind;
-    const detail = [task.kind === 'worker' ? 'Worker' : task.kind === 'subagent' ? 'Subagent' : '', task.projectName, task.parentTitle].filter(Boolean).join(' · ');
+    const detail = [task.kind === 'worker' ? t('Worker') : task.kind === 'subagent' ? t('Subagent') : '', task.projectName, task.parentTitle].filter(Boolean).join(' · ');
     const content = `<span class="launcher-task-logo">${providerLogo(task.provider as ProviderId)}</span><span class="launcher-task-text"><strong>${escape(task.title)}</strong><small title="${escape(detail)}">${escape(detail)}</small></span><span class="launcher-task-status ${escape(task.status)}"><i></i>${escape(label(task.status))}</span>${icon('chevron')}`;
     if (row.dataset.signature !== content) { row.innerHTML = content; row.dataset.signature = content; }
     if (list.children[index] !== row) list.insertBefore(row,list.children[index] || null);
   }
-  if (!tasks.length) list.innerHTML = `<p class="launcher-empty">${snapshot.projects.length ? search.value ? 'No matching active agents.' : 'No agents working right now.' : 'Open a project in PandaCode to get started.'}</p>`;
+  if (!tasks.length) list.innerHTML = `<p class="launcher-empty">${snapshot.projects.length ? search.value ? t('No matching active agents.') : t('No agents working right now.') : t('Open a project in PandaCode to get started.')}</p>`;
 }
 async function refresh(): Promise<void> {
   if (!visible || refreshing) return;
@@ -173,10 +186,10 @@ async function hide(): Promise<void> { setVisible(false); await overlayCall('ove
 async function submit(event?: Event): Promise<void> {
   event?.preventDefault(); if (busy || modelSaving || !prompt.value.trim() || !project.value) return;
   closeModelPicker();
-  busy = true; render(); showFeedback('Starting task…');
+  busy = true; render(); showFeedback(t('Starting task…'));
   try {
     await overlayCall('overlay_launch',{prompt:prompt.value.trim(),projectId:project.value});
-    prompt.value = ''; fileMentions.refresh(); showFeedback('Task started. You can keep working.');
+    prompt.value = ''; fileMentions.refresh(); showFeedback(t('Task started. You can keep working.'));
     clearTimeout(timer); void refresh();
   } catch (error) { showFeedback(String(error instanceof Error ? error.message : error),true); }
   finally { busy = false; render(); prompt.focus({preventScroll:true}); }

@@ -5,6 +5,7 @@
  * request, and a failed or unstarted one can be handed to an agent to fix. A repository without a local checkout can be browsed and cloned. */
 import './github-hub.css';
 import { escape, icon, markdownHtml, morph } from './dom';
+import { t } from './i18n.ts';
 import { runsBody, statusBadge, type DetailsLoad, type HubRun, type RunDetails, type RunFilter } from './github-actions';
 import { cascade, trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
@@ -36,7 +37,7 @@ export interface HubHost {
 export interface HubView { render(): void; refresh(): void; dispose(): void }
 
 const STALE = 60_000;
-const TABS: { id: Tab; label: string }[] = [{ id: 'threads', label: 'Threads' }, { id: 'pulls', label: 'Pull requests' }, { id: 'issues', label: 'Issues' }, { id: 'actions', label: 'Actions' }];
+const TABS: { id: Tab; label: string }[] = [{ id: 'threads', label: t('Threads') }, { id: 'pulls', label: t('Pull requests') }, { id: 'issues', label: t('Issues') }, { id: 'actions', label: t('Actions') }];
 const stored = (key: string) => { try { return localStorage.getItem(key) ?? ''; } catch { return ''; } };
 const store = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* A per-device preference only. */ } };
 
@@ -64,14 +65,14 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   const loads: Record<Exclude<Tab, 'threads'>, Map<string, Load<unknown>>> = { pulls, issues, actions: runs };
 
   root.classList.add('gh-hub');
-  root.innerHTML = `<aside class="gh-repos" aria-label="GitHub repositories">
-      <div class="gh-repos-head" data-tauri-drag-region>${icon('github')}<span data-tauri-drag-region>GitHub</span><button type="button" class="icon-button" data-gh="refresh" aria-label="Refresh" title="Refresh">${icon('refresh')}</button></div>
-      <label class="gh-filter">${icon('search')}<input type="search" data-gh-filter="repos" placeholder="Filter repositories" aria-label="Filter repositories" autocomplete="off" spellcheck="false"></label>
-      <div class="gh-repo-scroll"><div class="gh-repo-list" role="listbox" aria-label="Repositories"></div><div class="gh-repo-other"></div></div>
+  root.innerHTML = `<aside class="gh-repos" aria-label="${t('GitHub repositories')}">
+      <div class="gh-repos-head" data-tauri-drag-region>${icon('github')}<span data-tauri-drag-region>GitHub</span><button type="button" class="icon-button" data-gh="refresh" aria-label="${t('Refresh')}" title="${t('Refresh')}">${icon('refresh')}</button></div>
+      <label class="gh-filter">${icon('search')}<input type="search" data-gh-filter="repos" placeholder="${t('Filter repositories')}" aria-label="${t('Filter repositories')}" autocomplete="off" spellcheck="false"></label>
+      <div class="gh-repo-scroll"><div class="gh-repo-list" role="listbox" aria-label="${t('Repositories')}"></div><div class="gh-repo-other"></div></div>
     </aside>
     <section class="gh-main" aria-live="polite"><header class="gh-head"></header>
-      <div class="gh-bar"><div class="gh-tabs" role="tablist" aria-label="Repository"></div>
-        <label class="gh-filter gh-search">${icon('search')}<input type="search" data-gh-filter="items" placeholder="Search" aria-label="Search this tab" autocomplete="off" spellcheck="false"></label></div>
+      <div class="gh-bar"><div class="gh-tabs" role="tablist" aria-label="${t('Repository')}"></div>
+        <label class="gh-filter gh-search">${icon('search')}<input type="search" data-gh-filter="items" placeholder="${t('Search')}" aria-label="${t('Search this tab')}" autocomplete="off" spellcheck="false"></label></div>
       <div class="gh-body"></div></section>`;
   const $ = <T extends HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
 
@@ -115,25 +116,25 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       const local = mapping.has(item.nameWithOwner);
       return `<button type="button" class="gh-repo" role="option" data-gh-repo="${escape(item.nameWithOwner)}" aria-selected="${item.nameWithOwner === selected}" title="${escape(item.nameWithOwner)}${item.description ? ` · ${escape(item.description)}` : ''}">
         ${glyph(item.private ? 'lock' : 'repo')}<span class="gh-repo-name"><b>${escape(name)}</b><small>${escape(owner)}</small></span>
-        ${local ? '<span class="gh-local-dot" title="On this computer" aria-label="On this computer"></span>' : ''}<time>${escape(age(item.pushedAt))}</time></button>`;
+        ${local ? `<span class="gh-local-dot" title="${t('On this computer')}" aria-label="${t('On this computer')}"></span>` : ''}<time>${escape(age(item.pushedAt))}</time></button>`;
     };
     // Repositories pushed to in the last 30 days lead; the rest wait under Other. A search covers both.
     const recent = visible.filter(item => isRecent(item.pushedAt)), older = visible.filter(item => !isRecent(item.pushedAt));
     const open = otherOpen || Boolean(repoFilter);
-    list.innerHTML = recent.map(row).join('') || (older.length ? '' : `<p class="gh-note">${repos.length ? 'No matches.' : reposError ? '' : 'No repositories yet.'}</p>`);
-    other.innerHTML = older.length ? `<button type="button" class="gh-other-toggle" data-gh="other" aria-expanded="${open}" aria-controls="gh-other-list">${icon('chevron')}<span>Other</span><small>${older.length}</small></button>
-      <div id="gh-other-list" class="gh-repo-list" role="listbox" aria-label="Other repositories" ${open ? '' : 'hidden'}>${older.map(row).join('')}</div>` : '';
+    list.innerHTML = recent.map(row).join('') || (older.length ? '' : `<p class="gh-note">${repos.length ? t('No matches.') : reposError ? '' : t('No repositories yet.')}</p>`);
+    other.innerHTML = older.length ? `<button type="button" class="gh-other-toggle" data-gh="other" aria-expanded="${open}" aria-controls="gh-other-list">${icon('chevron')}<span>${t('Other')}</span><small>${older.length}</small></button>
+      <div id="gh-other-list" class="gh-repo-list" role="listbox" aria-label="${t('Other repositories')}" ${open ? '' : 'hidden'}>${older.map(row).join('')}</div>` : '';
   }
 
   function renderHead(): void {
     const head = $('.gh-head'), item = repo();
     if (!item) { head.innerHTML = ''; return; }
     const project = projectFor(item.nameWithOwner);
-    const facts = [item.private ? 'Private' : 'Public', item.fork ? 'Fork' : '', item.archived ? 'Archived' : '', item.language, item.defaultBranch].filter(Boolean).map(fact => `<span>${escape(fact)}</span>`).join('<i aria-hidden="true">·</i>');
+    const facts = [item.private ? t('Private') : t('Public'), item.fork ? t('Fork') : '', item.archived ? t('Archived') : '', item.language, item.defaultBranch].filter(Boolean).map(fact => `<span>${escape(fact)}</span>`).join('<i aria-hidden="true">·</i>');
     const where = project
       ? `<span class="gh-where" title="${escape(project.path)}">${icon('folder')}${escape(project.path.split('/').slice(-2).join('/'))}</span>`
-      : `<button type="button" class="gh-clone" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning === item.nameWithOwner ? 'Cloning…' : 'Clone to this computer'}</button>`;
-    head.innerHTML = `<div class="gh-title"><h2>${escape(item.nameWithOwner)}</h2><a class="icon-button" data-gh-open="${escape(item.url)}" href="${escape(item.url)}" aria-label="Open on GitHub" title="Open on GitHub">${icon('external')}</a></div>
+      : `<button type="button" class="gh-clone" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning === item.nameWithOwner ? t('Cloning…') : t('Clone to this computer')}</button>`;
+    head.innerHTML = `<div class="gh-title"><h2>${escape(item.nameWithOwner)}</h2><a class="icon-button" data-gh-open="${escape(item.url)}" href="${escape(item.url)}" aria-label="${t('Open on GitHub')}" title="${t('Open on GitHub')}">${icon('external')}</a></div>
       <p class="gh-meta">${facts}</p>${item.description ? `<p class="gh-desc">${escape(item.description)}</p>` : ''}<div class="gh-where-row">${where}</div>`;
   }
 
@@ -159,28 +160,28 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   function bodyHtml(): string {
     const item = repo();
     if (reposError && !repos?.length) return connectState(reposError);
-    if (!item) return repos ? emptyState('github', 'Choose a repository', 'Its threads, pull requests and issues appear here.') : skeleton(6);
+    if (!item) return repos ? emptyState('github', t('Choose a repository'), t('Its threads, pull requests and issues appear here.')) : skeleton(6);
     const project = projectFor(item.nameWithOwner);
     if (tab === 'threads') return threadsBody(project);
     const load = loads[tab].get(item.nameWithOwner);
     const items = load?.items;
-    if (!items) return load?.error ? emptyState('alert', 'Couldn’t load from GitHub', escape(load.error), '<button type="button" class="secondary-button" data-gh="refresh">Try again</button>') : skeleton(6);
+    if (!items) return load?.error ? emptyState('alert', t('Couldn’t load from GitHub'), escape(load.error), `<button type="button" class="secondary-button" data-gh="refresh">${t('Try again')}</button>`) : skeleton(6);
     if (tab === 'pulls') return pullsBody(items as HubPull[], project);
     if (tab === 'issues') return issuesBody(items as HubIssue[], project);
     return runsBody(items as HubRun[], pulls.get(item.nameWithOwner)?.items, runFilter, query, expanded, run => details.get(detailsKey(run)));
   }
 
   function threadsBody(project: Project | undefined): string {
-    if (!project) return emptyState('download', 'Not on this computer yet', 'Clone this repository to start threads, review pull requests and work on issues.', `<button type="button" class="primary-button" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning ? 'Cloning…' : 'Clone repository'}</button>`);
+    if (!project) return emptyState('download', t('Not on this computer yet'), t('Clone this repository to start threads, review pull requests and work on issues.'), `<button type="button" class="primary-button" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning ? t('Cloning…') : t('Clone repository')}</button>`);
     const list = threads(project.id).filter(task => matches(task.title));
-    const compose = `<form class="gh-compose" data-gh-compose><span class="gh-compose-mark">${icon('plus')}</span><input name="prompt" placeholder="Ask an agent to work on ${escape(project.name)}…" aria-label="New thread" autocomplete="off" required><button type="submit" class="gh-compose-send" aria-label="Start thread" title="Start thread (Enter)">${icon('arrow')}</button></form>`;
+    const compose = `<form class="gh-compose" data-gh-compose><span class="gh-compose-mark">${icon('plus')}</span><input name="prompt" placeholder="${t`Ask an agent to work on ${escape(project.name)}…`}" aria-label="${t('New thread')}" autocomplete="off" required><button type="submit" class="gh-compose-send" aria-label="${t('Start thread')}" title="${t('Start thread (Enter)')}">${icon('arrow')}</button></form>`;
     const stage = (task: Session) => host.running(task.id) ? 'working' : taskStage(task);
-    const label: Record<string, string> = { working: 'Working', pending: 'Pending', in_progress: 'In progress', review: 'Review', completed: 'Done' };
+    const label: Record<string, string> = { working: t('Working'), pending: t('Pending'), in_progress: t('In progress'), review: t('Review'), completed: t('Done') };
     const row = (task: Session) => {
       const link = task.pullRequest ?? task.issue;
       return `<button type="button" class="gh-row gh-thread" data-gh-task="${escape(task.id)}"><span class="gh-stage" data-stage="${stage(task)}" title="${label[stage(task)]}"></span><span class="gh-logo">${providerLogo(task.provider)}</span><span class="gh-row-title">${escape(task.title)}</span>${link ? `<span class="gh-ref">${glyph(link.kind === 'pull' ? 'pull' : 'issue')}#${link.number}</span>` : ''}<span class="gh-row-meta">${label[stage(task)]}</span><time>${escape(age(task.updatedAt))}</time></button>`;
     };
-    return compose + `<div class="gh-list">${list.length ? list.map(row).join('') : `<p class="gh-note">${query ? 'No matching threads.' : 'No threads yet. Describe a task above to start one.'}</p>`}</div>`;
+    return compose + `<div class="gh-list">${list.length ? list.map(row).join('') : `<p class="gh-note">${query ? t('No matching threads.') : t('No threads yet. Describe a task above to start one.')}</p>`}</div>`;
   }
 
   function existingThread(project: Project | undefined, kind: 'pull' | 'issue', number: number): Session | undefined {
@@ -190,30 +191,30 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
 
   function pullsBody(items: HubPull[], project: Project | undefined): string {
     const list = items.filter(pull => matches(`#${pull.number} ${pull.title} ${pull.author} ${pull.head}`));
-    if (!list.length) return `<p class="gh-note">${query ? 'No matching pull requests.' : 'No open pull requests.'}</p>`;
-    const review: Record<string, string> = { approved: 'Approved', changes_requested: 'Changes requested', review_required: 'Review required' };
+    if (!list.length) return `<p class="gh-note">${query ? t('No matching pull requests.') : t('No open pull requests.')}</p>`;
+    const review: Record<string, string> = { approved: t('Approved'), changes_requested: t('Changes requested'), review_required: t('Review required') };
     const row = (pull: HubPull) => {
       const thread = existingThread(project, 'pull', pull.number);
       return `<div class="gh-row gh-item" data-gh-number="${pull.number}" tabindex="-1">${glyph('pull', `gh-state-${pull.state}`)}<span class="gh-num">#${pull.number}</span>
         <span class="gh-row-title" title="${escape(pull.title)}">${escape(pull.title)}</span>${labels(pull.labels)}
-        <span class="gh-row-meta">${pull.review && review[pull.review] ? `<span class="gh-review" data-review="${escape(pull.review)}">${review[pull.review]}</span>` : ''}${pull.checks !== 'none' ? statusBadge(pull.checks, 'gh-checks', `data-checks="${escape(pull.checks)}" title="Checks ${escape(pull.checks)}"`) : ''}<span class="gh-diff"><ins>+${pull.additions}</ins><del>−${pull.deletions}</del></span><span class="gh-author">${escape(pull.author)}</span></span>
+        <span class="gh-row-meta">${pull.review && review[pull.review] ? `<span class="gh-review" data-review="${escape(pull.review)}">${review[pull.review]}</span>` : ''}${pull.checks !== 'none' ? statusBadge(pull.checks, 'gh-checks', `data-checks="${escape(pull.checks)}" title="${t`Checks ${escape(pull.checks)}`}"`) : ''}<span class="gh-diff"><ins>+${pull.additions}</ins><del>−${pull.deletions}</del></span><span class="gh-author">${escape(pull.author)}</span></span>
         <time>${escape(age(pull.updatedAt))}</time>
-        <span class="gh-actions">${thread ? `<button type="button" class="gh-act" data-gh-task="${escape(thread.id)}">${icon('chat')}Thread</button>` : ''}<button type="button" class="gh-act" data-gh-pull-runs title="Workflow runs for #${pull.number}">Runs</button><button type="button" class="gh-act gh-primary" data-gh-pull="review">Review</button><button type="button" class="gh-act gh-more" data-gh-pull-menu aria-label="More actions for #${pull.number}" aria-haspopup="menu">${icon('more')}</button></span></div>`;
+        <span class="gh-actions">${thread ? `<button type="button" class="gh-act" data-gh-task="${escape(thread.id)}">${icon('chat')}${t('Thread')}</button>` : ''}<button type="button" class="gh-act" data-gh-pull-runs title="${t`Workflow runs for #${pull.number}`}">${t('Runs')}</button><button type="button" class="gh-act gh-primary" data-gh-pull="review">${t('Review')}</button><button type="button" class="gh-act gh-more" data-gh-pull-menu aria-label="${t`More actions for #${pull.number}`}" aria-haspopup="menu">${icon('more')}</button></span></div>`;
     };
     return `<div class="gh-list">${list.map(row).join('')}</div>`;
   }
 
   function issuesBody(items: HubIssue[], project: Project | undefined): string {
     const list = items.filter(issue => matches(`#${issue.number} ${issue.title} ${issue.author} ${issue.labels.join(' ')}`));
-    if (!list.length) return `<p class="gh-note">${query ? 'No matching issues.' : 'No open issues.'}</p>`;
+    if (!list.length) return `<p class="gh-note">${query ? t('No matching issues.') : t('No open issues.')}</p>`;
     const row = (issue: HubIssue) => {
       const thread = existingThread(project, 'issue', issue.number);
-      const people = issue.assignees.slice(0, 2).map(name => `<span class="gh-avatar" title="Assigned to ${escape(name)}">${escape(name.slice(0, 1).toUpperCase())}</span>`).join('');
+      const people = issue.assignees.slice(0, 2).map(name => `<span class="gh-avatar" title="${t`Assigned to ${escape(name)}`}">${escape(name.slice(0, 1).toUpperCase())}</span>`).join('');
       return `<div class="gh-row gh-item" data-gh-number="${issue.number}" tabindex="-1">${glyph('issue', 'gh-state-open')}<span class="gh-num">#${issue.number}</span>
         <span class="gh-row-title" title="${escape(issue.title)}">${escape(issue.title)}</span>${labels(issue.labels)}
-        <span class="gh-row-meta">${people}${issue.comments ? `<span class="gh-comments" title="${issue.comments} comments">${icon('chat')}${issue.comments}</span>` : ''}<span class="gh-author">${escape(issue.author)}</span></span>
+        <span class="gh-row-meta">${people}${issue.comments ? `<span class="gh-comments" title="${t`${issue.comments} comments`}">${icon('chat')}${issue.comments}</span>` : ''}<span class="gh-author">${escape(issue.author)}</span></span>
         <time>${escape(age(issue.updatedAt))}</time>
-        <span class="gh-actions">${thread ? `<button type="button" class="gh-act" data-gh-task="${escape(thread.id)}">${icon('chat')}Thread</button>` : `<button type="button" class="gh-act" data-gh-issue="thread">Open in thread</button>`}<button type="button" class="gh-act gh-primary" data-gh-issue="solve">${icon('spark')}Solve</button></span></div>`;
+        <span class="gh-actions">${thread ? `<button type="button" class="gh-act" data-gh-task="${escape(thread.id)}">${icon('chat')}${t('Thread')}</button>` : `<button type="button" class="gh-act" data-gh-issue="thread">${t('Open in thread')}</button>`}<button type="button" class="gh-act gh-primary" data-gh-issue="solve">${icon('spark')}${t('Solve')}</button></span></div>`;
     };
     return `<div class="gh-list">${list.map(row).join('')}</div>`;
   }
@@ -227,13 +228,13 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   async function ensureLocal(): Promise<Project | undefined> {
     const item = repo(); if (!item) return undefined;
     const existing = projectFor(item.nameWithOwner); if (existing) return existing;
-    const parent = await host.chooseFolder(`Choose where to clone ${item.nameWithOwner}`); if (!parent || disposed) return undefined;
+    const parent = await host.chooseFolder(t`Choose where to clone ${item.nameWithOwner}`); if (!parent || disposed) return undefined;
     cloning = item.nameWithOwner; render();
     try {
       const added = await host.call<Project>('github_clone_repo', { repo: item.nameWithOwner, parent });
       mapping.set(item.nameWithOwner, added.id);
       await host.projectsChanged();
-      host.notify(`Cloned ${item.nameWithOwner}`);
+      host.notify(t`Cloned ${item.nameWithOwner}`);
       return added;
     } catch (cause) { host.notify(cause instanceof Error ? cause.message : String(cause)); return undefined; }
     finally { cloning = ''; render(); }
@@ -303,7 +304,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.ghPull && pull) { void pullAction(data.ghPull as PullAction, pull); return; }
     if ('ghPullRuns' in data && pull) { filterRunsBy(pull.number); return; }
     if ('ghPullMenu' in data && pull) {
-      void host.showChoices(target, { title: `Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: 'Open on GitHub', icon: 'external' }], onSelect: id => id === 'github' ? void host.call('open_external_url', { url: pull.url }) : pullAction(id as PullAction, pull) });
+      void host.showChoices(target, { title: t`Pull request #${pull.number}`, items: [...PULL_ACTIONS, { id: 'github', label: t('Open on GitHub'), icon: 'external' }], onSelect: id => id === 'github' ? void host.call('open_external_url', { url: pull.url }) : pullAction(id as PullAction, pull) });
       return;
     }
     if (data.ghIssue && issue) { void issueAction(data.ghIssue as IssueAction, issue); return; }
@@ -369,10 +370,10 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
 }
 
 function skeleton(rows: number, cls = 'gh-row'): string {
-  return `<div class="gh-skeleton" aria-hidden="true">${Array.from({ length: rows }, () => `<span class="${cls} gh-ghost"></span>`).join('')}</div><p class="sr-only" role="status">Loading…</p>`;
+  return `<div class="gh-skeleton" aria-hidden="true">${Array.from({ length: rows }, () => `<span class="${cls} gh-ghost"></span>`).join('')}</div><p class="sr-only" role="status">${t('Loading…')}</p>`;
 }
 function connectState(error: string): string {
-  return emptyState('github', 'Connect GitHub', `${connectAdvice(error)}<small class="gh-error-detail">${escape(error)}</small>`, '<button type="button" class="secondary-button" data-gh="refresh">Try again</button>');
+  return emptyState('github', t('Connect GitHub'), `${connectAdvice(error)}<small class="gh-error-detail">${escape(error)}</small>`, `<button type="button" class="secondary-button" data-gh="refresh">${t('Try again')}</button>`);
 }
 function emptyState(symbol: string, title: string, text: string, action = ''): string {
   return `<div class="gh-empty"><span class="gh-empty-mark">${icon(symbol)}</span><b>${escape(title)}</b><p>${text}</p>${action}</div>`;

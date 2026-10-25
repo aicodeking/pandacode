@@ -1,6 +1,7 @@
 import './browser.css';
 import { call, preview, subscribe } from './bridge';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { mountJevLive, type JevLiveView } from './jev-live';
 import { pageZoom } from './ui-size';
 import type { BrowserAttachment, BrowserBounds, BrowserElement, BrowserScreenshot, BrowserStatus, LocalServer } from './types';
@@ -12,18 +13,18 @@ type Options = { task(): string | undefined; session(): string | undefined; navi
 // the guest lands in a bottom pane and window resizes fight over the split.
 // ponytail: system browser on Linux; embed again once the guest sits in a GtkOverlay.
 export const embedsGuest = (platform: string, sample: boolean): boolean => sample || !/Linux/i.test(platform);
-const LINUX_NOTICE = 'Opened in your system browser. Linux cannot show pages inside this pane yet.';
+const LINUX_NOTICE = t('Opened in your system browser. Linux cannot show pages inside this pane yet.');
 const emptyStatus = (): BrowserStatus => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false });
 
 export function normalizeUrl(input: string): string {
   const value = input.trim();
-  if (!value || value.length > 8192) throw new Error('Enter a website address or localhost port.');
+  if (!value || value.length > 8192) throw new Error(t('Enter a website address or localhost port.'));
   const candidate = /^\d{2,5}$/.test(value) ? `http://localhost:${value}`
     : /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value
     : /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(value) ? `http://${value}`
     : /^[a-z][a-z\d+.-]*:/i.test(value) ? value : `https://${value}`;
   const url = new URL(candidate);
-  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error('Use an HTTP or HTTPS address without embedded credentials.');
+  if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error(t('Use an HTTP or HTTPS address without embedded credentials.'));
   return url.href;
 }
 
@@ -37,11 +38,11 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   };
   const tool = (action: string, label: string, symbol: string) => `<button type="button" class="browser-tool" data-browser-action="${action}" aria-label="${label}" title="${label}">${icon(symbol)}</button>`;
   host.innerHTML = `<div class="browser-toolbar">
-    ${tool('back', 'Go back', 'back')}${tool('forward', 'Go forward', 'forward')}${tool('reload', 'Reload page', 'refresh')}
-    <form class="browser-address"><span>${icon('globe')}</span><input aria-label="Browser URL" placeholder="Enter URL or localhost port" autocomplete="off" spellcheck="false" inputmode="url"><button type="submit" aria-label="Open URL">${icon('arrow')}</button></form>
-    ${tool('pick', 'Attach an element', 'select')}${tool('capture', 'Attach screenshot', 'camera')}
-  </div><div class="browser-location"><button type="button" data-browser-action="home">${icon('server')}Local servers</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}Watch Jev</button>${options.test ? tool('test', 'Test with Jev', 'spark') : ''}${tool('close', 'Close browser', 'close')}</div>
-  <div class="browser-notice" role="status" hidden></div><div class="browser-viewport"><section class="browser-home"><div class="browser-home-heading"><h2>Local servers</h2>${tool('refresh-ports', 'Refresh local servers', 'refresh')}</div><div class="browser-servers" aria-label="Local servers"></div><p class="browser-home-hint">Open a server, or enter any website above.</p></section><div class="browser-guest-placeholder" hidden></div></div>`;
+    ${tool('back', t('Go back'), 'back')}${tool('forward', t('Go forward'), 'forward')}${tool('reload', t('Reload page'), 'refresh')}
+    <form class="browser-address"><span>${icon('globe')}</span><input aria-label="${t('Browser URL')}" placeholder="${t('Enter URL or localhost port')}" autocomplete="off" spellcheck="false" inputmode="url"><button type="submit" aria-label="${t('Open URL')}">${icon('arrow')}</button></form>
+    ${tool('pick', t('Attach an element'), 'select')}${tool('capture', t('Attach screenshot'), 'camera')}
+  </div><div class="browser-location"><button type="button" data-browser-action="home">${icon('server')}${t('Local servers')}</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}${t('Watch Jev')}</button>${options.test ? tool('test', t('Test with Jev'), 'spark') : ''}${tool('close', t('Close browser'), 'close')}</div>
+  <div class="browser-notice" role="status" hidden></div><div class="browser-viewport"><section class="browser-home"><div class="browser-home-heading"><h2>${t('Local servers')}</h2>${tool('refresh-ports', t('Refresh local servers'), 'refresh')}</div><div class="browser-servers" aria-label="${t('Local servers')}"></div><p class="browser-home-hint">${t('Open a server, or enter any website above.')}</p></section><div class="browser-guest-placeholder" hidden></div></div>`;
   const query = <T extends HTMLElement = HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const address = query<HTMLInputElement>('.browser-address input'), viewport = query('.browser-viewport');
   const notice = query('.browser-notice'), placeholder = query('.browser-guest-placeholder');
@@ -63,8 +64,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     button('watch-jev').hidden = watching || !jevAvailable;
     host.classList.toggle('browser-loading', !watching && status.loading);
     if (document.activeElement !== address) address.value = home ? '' : status.url;
-    if (status.picking) tell('Click an element to attach it. Press Esc to cancel.');
-    else if (notice.textContent?.startsWith('Click an element')) tell('');
+    if (status.picking) tell(t('Click an element to attach it. Press Esc to cancel.'));
+    else if (notice.textContent?.startsWith(t('Click an element'))) tell('');
   }
   // The native view is placed in window points; under interface zoom one CSS pixel is `pageZoom()` points.
   function bounds(): BrowserBounds { const rect = viewport.getBoundingClientRect(), zoom = pageZoom(); return { x: rect.x * zoom, y: rect.y * zoom, width: rect.width * zoom, height: rect.height * zoom }; }
@@ -101,7 +102,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     }, 16);
   }
   function renderServers(): void {
-    query('.browser-servers').innerHTML = servers.length ? servers.map(server => `<button class="browser-server" type="button" data-server-url="${escape(server.url)}"><span class="browser-server-icon">${icon('terminal')}</span><span><strong>${escape(server.process || 'Local server')}</strong><small>${escape(new URL(server.url).host)}</small></span><span class="browser-server-dot" aria-label="Listening"></span>${icon('chevron')}</button>`).join('') : '<div class="browser-no-servers">No local servers found.<small>Start your app in the terminal, then refresh.</small></div>';
+    query('.browser-servers').innerHTML = servers.length ? servers.map(server => `<button class="browser-server" type="button" data-server-url="${escape(server.url)}"><span class="browser-server-icon">${icon('terminal')}</span><span><strong>${escape(server.process || t('Local server'))}</strong><small>${escape(new URL(server.url).host)}</small></span><span class="browser-server-dot" aria-label="${t('Listening')}"></span>${icon('chevron')}</button>`).join('') : `<div class="browser-no-servers">${t('No local servers found.')}<small>${t('Start your app in the terminal, then refresh.')}</small></div>`;
   }
   async function refreshServers(): Promise<void> {
     const ticket = ++request;
@@ -130,12 +131,12 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     }
   }
   function showSamplePage(): void {
-    placeholder.innerHTML = `<div class="browser-preview-label">Browser preview · sample page</div><div class="browser-sample"><span class="browser-sample-kicker">LOCAL PREVIEW</span><h2>Your app, right here.</h2><p>Inspect the page beside your conversation.</p><button type="button" class="browser-sample-button">Try the interaction</button></div>`;
+    placeholder.innerHTML = `<div class="browser-preview-label">${t('Browser preview · sample page')}</div><div class="browser-sample"><span class="browser-sample-kicker">${t('LOCAL PREVIEW')}</span><h2>${t('Your app, right here.')}</h2><p>${t('Inspect the page beside your conversation.')}</p><button type="button" class="browser-sample-button">${t('Try the interaction')}</button></div>`;
   }
   function attachElement(element: BrowserElement): void {
     if (disposed || !pickTask) return;
     const task = pickTask; pickTask = undefined; status.picking = false; updateControls();
-    try { options.attach(task, { ...element, kind: 'element', id: crypto.randomUUID() }); tell('Element attached to your message.'); }
+    try { options.attach(task, { ...element, kind: 'element', id: crypto.randomUUID() }); tell(t('Element attached to your message.')); }
     catch (error) { fail(error); }
   }
   const unlisten = await Promise.all([
@@ -168,7 +169,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     if (action === 'capture') {
       const target = options.task(); if (!target) return;
       busy = true; tell(''); updateControls();
-      try { const screenshot = await enqueue(() => call<BrowserScreenshot>('browser_capture')); options.attach(target, { ...screenshot, kind: 'screenshot' }); if (!disposed) tell('Screenshot attached to your message.'); }
+      try { const screenshot = await enqueue(() => call<BrowserScreenshot>('browser_capture')); options.attach(target, { ...screenshot, kind: 'screenshot' }); if (!disposed) tell(t('Screenshot attached to your message.')); }
       finally { busy = false; updateControls(); }
       return;
     }
@@ -220,13 +221,13 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   updateControls(); void refreshServers(); if (!watching) address.focus();
   return {
     async navigate(url) {
-      if (disposed) throw new Error('Browser is closed.');
+      if (disposed) throw new Error(t('Browser is closed.'));
       await navigate(url);
       // Agents must not drive a page they cannot read; tell them where it went.
       if (!embedsGuest(navigator.platform, preview)) throw new Error(LINUX_NOTICE);
       return status;
     },
-    async watchJev(runId) { if (disposed) throw new Error('Browser is closed.'); await live?.watch(runId); },
+    async watchJev(runId) { if (disposed) throw new Error(t('Browser is closed.')); await live?.watch(runId); },
     refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); } updateControls(); scheduleBounds(); },
     async close() {
       disposed = true; ++request; clearTimeout(frame); resize.disconnect(); menus.clear(); overlays.disconnect();

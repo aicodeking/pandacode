@@ -1,16 +1,17 @@
 /* Deploy: a header menu that starts an agent task to ship the project to Vercel,
  * Cloudflare, Railway, Netlify, AWS or Google Cloud end to end. The agent deploys with the pandacode_cloud_cli tool,
  * which is already signed in, so no keys appear in prompts. */
+import { t } from './i18n.ts';
 import type { CloudConnection } from './cloud-settings';
 
 export type DeployTarget = 'vercel' | 'cloudflare' | 'railway' | 'netlify' | 'aws' | 'gcloud';
 export const TARGETS: { id: DeployTarget; label: string; description: string }[] = [
-  { id: 'vercel', label: 'Deploy to Vercel', description: 'Preview first, then production' },
-  { id: 'cloudflare', label: 'Deploy to Cloudflare', description: 'Workers, static assets or Pages' },
-  { id: 'railway', label: 'Deploy to Railway', description: 'Servers, containers and databases' },
-  { id: 'netlify', label: 'Deploy to Netlify', description: 'Draft first, then production' },
-  { id: 'aws', label: 'Deploy to AWS', description: 'The simplest fitting AWS service' },
-  { id: 'gcloud', label: 'Deploy to Google Cloud', description: 'Cloud Run or Cloud Storage' },
+  { id: 'vercel', label: t('Deploy to Vercel'), description: t('Preview first, then production') },
+  { id: 'cloudflare', label: t('Deploy to Cloudflare'), description: t('Workers, static assets or Pages') },
+  { id: 'railway', label: t('Deploy to Railway'), description: t('Servers, containers and databases') },
+  { id: 'netlify', label: t('Deploy to Netlify'), description: t('Draft first, then production') },
+  { id: 'aws', label: t('Deploy to AWS'), description: t('The simplest fitting AWS service') },
+  { id: 'gcloud', label: t('Deploy to Google Cloud'), description: t('Cloud Run or Cloud Storage') },
 ];
 
 const COMMON = `Work end to end and verify the result yourself. Use the pandacode_cloud_cli tool for the CLI below: it is already signed in to my account, so never ask me for tokens and never print or commit secrets. First read the project to understand how it builds and runs, install dependencies and run the build locally, and fix anything that stops it. If the app needs environment variables, list them and ask me for their values before deploying. When the deploy finishes, open the URL (fetch it, or use the browser) and check the main page and one key route really work; fix and redeploy if not. Finish with the live URL, what you changed in the project, and how to redeploy.`;
@@ -32,6 +33,6 @@ export function deployBrief(target: DeployTarget): string {
 export function deployItems(connections: CloudConnection[]) {
   return TARGETS.map(target => {
     const connected = connections.some(c => c.provider === target.id && c.connected);
-    return { id: target.id, label: target.label, description: connected ? target.description : 'Connect it in Settings → Agents → Cloud sandboxes', icon: 'upload', disabled: !connected };
+    return { id: target.id, label: target.label, description: connected ? target.description : t('Connect it in Settings → Agents → Cloud sandboxes'), icon: 'upload', disabled: !connected };
   });
 }

@@ -1,6 +1,7 @@
 import './wallpaper-settings.css';
 import { escape, icon } from './dom';
 import { wallpaperAt, wallpaperPeriods, wallpaperSets, type WallpaperController, type WallpaperPreferences } from './wallpapers';
+import { t } from './i18n.ts';
 
 const thumbnail = (id: string): string => `/wallpapers/thumbnails/${id}.webp`;
 
@@ -8,40 +9,40 @@ const thumbnail = (id: string): string => `/wallpapers/thumbnails/${id}.webp`;
 export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperController): () => void {
   host.classList.add('wallpaper-settings');
   host.innerHTML = `
-    <figure class="wallpaper-settings-preview" aria-label="Wallpaper preview">
+    <figure class="wallpaper-settings-preview" aria-label="${t('Wallpaper preview')}">
       <img class="wallpaper-preview-image" alt="" decoding="async">
       <div class="wallpaper-preview-scrim"></div>
       <div class="wallpaper-preview-workspace" aria-hidden="true">
         <div class="wallpaper-preview-sidebar"><i></i><i></i><i></i></div>
-        <div class="wallpaper-preview-thread"><span>A little room to think.</span><div><i></i><i></i></div><div class="wallpaper-preview-composer">Describe a task…<b>↑</b></div></div>
+        <div class="wallpaper-preview-thread"><span>${t('A little room to think.')}</span><div><i></i><i></i></div><div class="wallpaper-preview-composer">${t('Describe a task…')}<b>↑</b></div></div>
       </div>
-      <figcaption><span class="wallpaper-preview-caption"></span><span class="wallpaper-preview-badge">Live preview</span></figcaption>
+      <figcaption><span class="wallpaper-preview-caption"></span><span class="wallpaper-preview-badge">${t('Live preview')}</span></figcaption>
     </figure>
     <div class="wallpaper-adjustments">
     <div class="wallpaper-visibility-control">
-      <div class="wallpaper-control-heading"><label for="wallpaper-visibility">Wallpaper visibility</label><output class="wallpaper-visibility-output" for="wallpaper-visibility"></output></div>
+      <div class="wallpaper-control-heading"><label for="wallpaper-visibility">${t('Wallpaper visibility')}</label><output class="wallpaper-visibility-output" for="wallpaper-visibility"></output></div>
       <input id="wallpaper-visibility" class="wallpaper-range-slider wallpaper-visibility-slider" type="range" min="0" max="100" step="1" aria-describedby="wallpaper-visibility-endpoints">
-      <div id="wallpaper-visibility-endpoints" class="wallpaper-range-endpoints"><span>Solid</span><span>Wallpaper</span></div>
+      <div id="wallpaper-visibility-endpoints" class="wallpaper-range-endpoints"><span>${t('Solid')}</span><span>${t('Wallpaper')}</span></div>
     </div>
     <div class="wallpaper-blur-control">
-      <div class="wallpaper-control-heading"><label for="wallpaper-blur">Wallpaper blur</label><output class="wallpaper-blur-output" for="wallpaper-blur"></output></div>
+      <div class="wallpaper-control-heading"><label for="wallpaper-blur">${t('Wallpaper blur')}</label><output class="wallpaper-blur-output" for="wallpaper-blur"></output></div>
       <input id="wallpaper-blur" class="wallpaper-range-slider" type="range" min="0" max="24" step="1" aria-describedby="wallpaper-blur-endpoints">
-      <div id="wallpaper-blur-endpoints" class="wallpaper-range-endpoints"><span>Sharp</span><span>Soft</span></div>
+      <div id="wallpaper-blur-endpoints" class="wallpaper-range-endpoints"><span>${t('Sharp')}</span><span>${t('Soft')}</span></div>
     </div>
-    <p class="wallpaper-accessibility-note" hidden>Your accessibility settings keep the workspace solid. Your wallpaper choices are saved.</p>
+    <p class="wallpaper-accessibility-note" hidden>${t('Your accessibility settings keep the workspace solid. Your wallpaper choices are saved.')}</p>
     </div>
     <section aria-labelledby="wallpaper-set-heading">
-      <div class="wallpaper-section-heading"><h3 id="wallpaper-set-heading">Wallpaper set</h3><span>Three scenes per day</span></div>
-      <div class="wallpaper-set-grid" role="group" aria-label="Wallpaper sets">
-        <button type="button" class="wallpaper-set-card wallpaper-set-automatic" data-wallpaper-set="automatic" aria-label="Automatic weekly rotation" aria-pressed="false"><span class="wallpaper-set-art">${icon('refresh')}<small>7 days · 21 scenes</small></span><span class="wallpaper-set-label">Automatic<span class="wallpaper-selection-check">${icon('check')}</span></span></button>
-        ${wallpaperSets.map(set => `<button type="button" class="wallpaper-set-card" data-wallpaper-set="${escape(set.id)}" aria-label="${escape(set.label)} wallpaper set" aria-pressed="false"><span class="wallpaper-set-art"><img src="${thumbnail(`${set.id}-morning`)}" alt="" loading="lazy" decoding="async"></span><span class="wallpaper-set-label">${escape(set.label)}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>`).join('')}
+      <div class="wallpaper-section-heading"><h3 id="wallpaper-set-heading">${t('Wallpaper set')}</h3><span>${t('Three scenes per day')}</span></div>
+      <div class="wallpaper-set-grid" role="group" aria-label="${t('Wallpaper sets')}">
+        <button type="button" class="wallpaper-set-card wallpaper-set-automatic" data-wallpaper-set="automatic" aria-label="${t('Automatic weekly rotation')}" aria-pressed="false"><span class="wallpaper-set-art">${icon('refresh')}<small>${t('7 days · 21 scenes')}</small></span><span class="wallpaper-set-label">${t('Automatic')}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>
+        ${wallpaperSets.map(set => `<button type="button" class="wallpaper-set-card" data-wallpaper-set="${escape(set.id)}" aria-label="${t`${escape(set.label)} wallpaper set`}" aria-pressed="false"><span class="wallpaper-set-art"><img src="${thumbnail(`${set.id}-morning`)}" alt="" loading="lazy" decoding="async"></span><span class="wallpaper-set-label">${escape(set.label)}<span class="wallpaper-selection-check">${icon('check')}</span></span></button>`).join('')}
       </div>
     </section>
     <section aria-labelledby="wallpaper-default-heading">
-      <div class="wallpaper-section-heading"><h3 id="wallpaper-default-heading">Keep a favorite</h3><button type="button" class="wallpaper-resume" hidden>Resume rotation</button></div>
-      <p class="wallpaper-default-help">Choose a scene to use it every day.</p>
-      <div class="wallpaper-period-grid" role="group" aria-label="Default wallpaper">
-        ${wallpaperPeriods.map(period => `<button type="button" class="wallpaper-period-card" data-wallpaper-period="${escape(period.id)}" aria-pressed="false"><span class="wallpaper-period-art"><img alt="" loading="lazy" decoding="async"><span class="wallpaper-default-badge">${icon('check')} Default</span></span><span class="wallpaper-period-label">${escape(period.label)}<small>${period.id === 'morning' ? '6 am – noon' : period.id === 'afternoon' ? 'Noon – 6 pm' : '6 pm – 6 am'}</small></span></button>`).join('')}
+      <div class="wallpaper-section-heading"><h3 id="wallpaper-default-heading">${t('Keep a favorite')}</h3><button type="button" class="wallpaper-resume" hidden>${t('Resume rotation')}</button></div>
+      <p class="wallpaper-default-help">${t('Choose a scene to use it every day.')}</p>
+      <div class="wallpaper-period-grid" role="group" aria-label="${t('Default wallpaper')}">
+        ${wallpaperPeriods.map(period => `<button type="button" class="wallpaper-period-card" data-wallpaper-period="${escape(period.id)}" aria-pressed="false"><span class="wallpaper-period-art"><img alt="" loading="lazy" decoding="async"><span class="wallpaper-default-badge">${icon('check')} ${t('Default')}</span></span><span class="wallpaper-period-label">${escape(period.label)}<small>${period.id === 'morning' ? t('6 am – noon') : period.id === 'afternoon' ? t('Noon – 6 pm') : t('6 pm – 6 am')}</small></span></button>`).join('')}
       </div>
       <p class="wallpaper-schedule-description" role="status"></p>
     </section>`;
@@ -78,7 +79,7 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
     if (preview.dataset.wallpaper !== id) {
       preview.dataset.wallpaper = id;
       previewImage.src = thumbnail(id);
-      previewImage.alt = `${dayName} ${period} wallpaper`;
+      previewImage.alt = t`${dayName} ${period} wallpaper`;
     }
     preview.style.setProperty('--wallpaper-visibility', String(visibility / 100));
     preview.style.setProperty('--wallpaper-scrim-edge', String(1 - visibility / 100));
@@ -88,15 +89,15 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
     preview.style.setProperty('--wallpaper-filter', previewBlur ? `blur(${previewBlur}px)` : 'none');
     preview.style.setProperty('--wallpaper-bleed', `${previewBlur * 3}px`);
     preview.dataset.solid = String(visibility === 0);
-    caption.textContent = visibility === 0 ? 'Solid background' : `${dayName} · ${wallpaperPeriods.find(item => item.id === period)?.label ?? period}`;
+    caption.textContent = visibility === 0 ? t('Solid background') : t`${dayName} · ${wallpaperPeriods.find(item => item.id === period)?.label ?? period}`;
     if (slider.value !== String(sliderVisibility)) slider.value = String(sliderVisibility);
     slider.style.setProperty('--wallpaper-range-value', `${sliderVisibility}%`);
-    slider.setAttribute('aria-valuetext', sliderVisibility === 0 ? 'Solid background, 0 percent wallpaper' : sliderVisibility === 100 ? 'Full wallpaper, 100 percent' : `${sliderVisibility} percent wallpaper`);
+    slider.setAttribute('aria-valuetext', sliderVisibility === 0 ? t('Solid background, 0 percent wallpaper') : sliderVisibility === 100 ? t('Full wallpaper, 100 percent') : t`${sliderVisibility} percent wallpaper`);
     output.value = `${sliderVisibility}%`;
     if (blurSlider.value !== String(preferences.blur)) blurSlider.value = String(preferences.blur);
     blurSlider.style.setProperty('--wallpaper-range-value', `${preferences.blur / 24 * 100}%`);
-    blurSlider.setAttribute('aria-valuetext', preferences.blur ? `${preferences.blur} pixels of blur` : 'Off, sharp wallpaper');
-    blurOutput.value = preferences.blur ? `${preferences.blur} px` : 'Off';
+    blurSlider.setAttribute('aria-valuetext', preferences.blur ? t`${preferences.blur} pixels of blur` : t('Off, sharp wallpaper'));
+    blurOutput.value = preferences.blur ? `${preferences.blur} px` : t('Off');
     accessibility.hidden = !controller.accessibilityOverride;
     for (const button of setButtons) button.setAttribute('aria-pressed', String(button.dataset.wallpaperSet === preferences.set));
     const shownSet = displaySet(preferences);
@@ -104,7 +105,7 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
     for (const button of periodButtons) {
       const time = button.dataset.wallpaperPeriod!;
       const scene = `${shownSet}-${time}`;
-      button.setAttribute('aria-label', `Set ${shownName} ${time} as default`);
+      button.setAttribute('aria-label', t`Set ${shownName} ${time} as default`);
       button.setAttribute('aria-pressed', String(preferences.pinned === scene));
       const image = button.querySelector<HTMLImageElement>('img')!;
       if (button.dataset.wallpaper !== scene) {
@@ -114,9 +115,9 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
     }
     resume.hidden = !preferences.pinned;
     const pinnedPeriod = preferences.pinned?.split('-')[1];
-    const description = preferences.pinned ? `${shownName} ${pinnedPeriod} is your default. It stays until you change it.`
-      : preferences.set === 'automatic' ? 'Follows the day of the week and your local time.'
-      : `${shownName} scenes follow your local time, every day.`;
+    const description = preferences.pinned ? t`${shownName} ${pinnedPeriod} is your default. It stays until you change it.`
+      : preferences.set === 'automatic' ? t('Follows the day of the week and your local time.')
+      : t`${shownName} scenes follow your local time, every day.`;
     if (schedule.textContent !== description) schedule.textContent = description;
   }
 

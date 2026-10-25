@@ -3,6 +3,7 @@
 import './office-viewer.css';
 import { escape } from './dom';
 import { checkUnzippedSize } from './zip-limit';
+import { t } from './i18n.ts';
 
 export type OfficeKind = 'pdf' | 'docx' | 'sheet' | 'image';
 /** Spreadsheets show this many rows per sheet; the rest are counted, not drawn. */
@@ -13,7 +14,7 @@ const PDF_PAGES = 5000;
 const CANVAS_PIXELS = 16_000_000;
 
 export async function renderOffice(host: HTMLElement, kind: OfficeKind, bytes: ArrayBuffer, path = ''): Promise<() => void> {
-  host.innerHTML = '<div class="office-viewer"><div class="inspector-empty" role="status">Opening…</div></div>';
+  host.innerHTML = `<div class="office-viewer"><div class="inspector-empty" role="status">${t('Opening…')}</div></div>`;
   const viewer = host.firstElementChild as HTMLElement;
   // Web links open in the browser (mountExternalLinks); anything else must not navigate the app.
   // composedPath reaches links inside the Word document's shadow root.
@@ -42,7 +43,7 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
   const first = (await doc.getPage(1)).getViewport({ scale: 1 });
   const count = Math.min(doc.numPages, PDF_PAGES);
   viewer.dataset.kind = 'pdf';
-  viewer.innerHTML = `<div class="office-bar">${doc.numPages.toLocaleString()} page${doc.numPages === 1 ? '' : 's'}${count < doc.numPages ? `<span>Showing the first ${count.toLocaleString()}.</span>` : ''}</div><div class="pdf-pages"></div>`;
+  viewer.innerHTML = `<div class="office-bar">${doc.numPages.toLocaleString()} ${doc.numPages === 1 ? t('page') : t('pages')}${count < doc.numPages ? `<span>${t`Showing the first ${count.toLocaleString()}.`}</span>` : ''}</div><div class="pdf-pages"></div>`;
   const pages = viewer.querySelector<HTMLElement>('.pdf-pages')!;
   // Pages draw as they come near the screen, so a long PDF opens as fast as a short one.
   const observer = new IntersectionObserver(entries => {
@@ -67,7 +68,7 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
   for (let number = 1; number <= count; number++) {
     const slot = document.createElement('div');
     slot.className = 'pdf-page'; slot.dataset.page = String(number);
-    slot.setAttribute('aria-label', `Page ${number}`);
+    slot.setAttribute('aria-label', t`Page ${number}`);
     slot.style.aspectRatio = `${first.width} / ${first.height}`;
     pages.append(slot); observer.observe(slot);
   }
@@ -108,8 +109,8 @@ async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() 
     const tabs = book.SheetNames.map((sheetName, i) => `<button type="button" data-sheet="${i}" aria-pressed="${i === index}">${escape(sheetName)}</button>`).join('');
     // sheetRows trims !ref while parsing; !fullref keeps the real size.
     const full = utils.decode_range(String(sheet['!fullref'] ?? sheet['!ref'] ?? 'A1'));
-    const more = full.e.r - full.s.r + 1 > SHEET_ROWS || full.e.c - full.s.c + 1 > SHEET_COLUMNS ? `<span>Showing the first ${SHEET_ROWS.toLocaleString()} rows and ${SHEET_COLUMNS} columns.</span>` : '';
-    viewer.innerHTML = `<div class="office-bar sheet-tabs" role="group" aria-label="Sheets">${tabs}${more}</div><div class="sheet-scroll"><table class="sheet-grid" aria-label="${escape(name)}"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+    const more = full.e.r - full.s.r + 1 > SHEET_ROWS || full.e.c - full.s.c + 1 > SHEET_COLUMNS ? `<span>${t`Showing the first ${SHEET_ROWS.toLocaleString()} rows and ${SHEET_COLUMNS} columns.`}</span>` : '';
+    viewer.innerHTML = `<div class="office-bar sheet-tabs" role="group" aria-label="${t('Sheets')}">${tabs}${more}</div><div class="sheet-scroll"><table class="sheet-grid" aria-label="${escape(name)}"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   };
   viewer.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLElement>('[data-sheet]');
@@ -133,12 +134,12 @@ async function renderImage(viewer: HTMLElement, bytes: ArrayBuffer, path: string
   const image = new Image();
   image.alt = path.split('/').pop() ?? path;
   image.src = url;
-  await image.decode().catch(() => { throw new Error('The image could not be decoded.'); });
+  await image.decode().catch(() => { throw new Error(t('The image could not be decoded.')); });
   viewer.dataset.kind = 'image';
-  viewer.innerHTML = `<div class="office-bar sheet-tabs">${image.naturalWidth.toLocaleString()} × ${image.naturalHeight.toLocaleString()} px<button type="button" data-zoom aria-pressed="false">Actual size</button></div><div class="image-stage"></div>`;
+  viewer.innerHTML = `<div class="office-bar sheet-tabs">${image.naturalWidth.toLocaleString()} × ${image.naturalHeight.toLocaleString()} px<button type="button" data-zoom aria-pressed="false">${t('Actual size')}</button></div><div class="image-stage"></div>`;
   const zoom = viewer.querySelector<HTMLElement>('[data-zoom]')!;
   const toggle = () => zoom.setAttribute('aria-pressed', String(viewer.toggleAttribute('data-actual')));
-  image.title = 'Click to toggle actual size';
+  image.title = t('Click to toggle actual size');
   image.addEventListener('click', toggle); zoom.addEventListener('click', toggle);
   viewer.querySelector('.image-stage')!.append(image);
   return () => {};

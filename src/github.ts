@@ -1,5 +1,6 @@
 import './github.css';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import type { FileEntry, GithubIssue, GithubItem, GithubReference, GithubStatus, Project, Session, TaskLink } from './types';
 
 /* GitHub through the user's signed-in `gh`. Everything here is optional: when the
@@ -103,7 +104,7 @@ export function createGithub(host: GithubHost) {
       path: `#${item.number}`,
       isDir: false,
       mention: `#${item.number}`,
-      detail: `${item.kind === 'pull' ? 'Pull request' : 'Issue'} · ${item.state}${item.author ? ` · ${item.author}` : ''}`,
+      detail: `${item.kind === 'pull' ? t('Pull request') : t('Issue')} · ${item.state}${item.author ? ` · ${item.author}` : ''}`,
       icon: item.kind === 'pull' ? 'pull' : 'issue',
     }));
   }
@@ -126,12 +127,12 @@ export function createGithub(host: GithubHost) {
     const value = cached(session.projectId);
     if (!githubEnabled() || !value?.repo) return [];
     const items: ChoiceItem[] = [];
-    if (!session.pullRequest) items.push({ id: 'github-pull-request', label: 'Push & open pull request…', description: `Against ${value.repo.defaultBranch} in ${value.repo.nameWithOwner}.`, icon: 'upload' });
-    if (!session.pullRequest) items.push({ id: 'github-link-pull', label: 'Link pull request…', description: 'Attach an existing pull request to this task.', icon: 'pull' });
-    if (session.issue) items.push({ id: 'github-open-issue', label: `Open issue #${session.issue.number}`, description: session.issue.title, icon: 'issue' });
-    if (session.pullRequest) items.push({ id: 'github-view-pull', label: `View pull request #${session.pullRequest.number}`, description: `${session.pullRequest.state} · ${session.pullRequest.title}`, icon: 'pull' });
-    if (session.pullRequest) items.push({ id: 'github-open-pull', label: `Open pull request #${session.pullRequest.number}`, description: 'On GitHub', icon: 'globe' });
-    items.push({ id: 'github-open-repo', label: 'Open repository on GitHub', description: value.repo.nameWithOwner, icon: 'globe' });
+    if (!session.pullRequest) items.push({ id: 'github-pull-request', label: t('Push & open pull request…'), description: t`Against ${value.repo.defaultBranch} in ${value.repo.nameWithOwner}.`, icon: 'upload' });
+    if (!session.pullRequest) items.push({ id: 'github-link-pull', label: t('Link pull request…'), description: t('Attach an existing pull request to this task.'), icon: 'pull' });
+    if (session.issue) items.push({ id: 'github-open-issue', label: t`Open issue #${session.issue.number}`, description: session.issue.title, icon: 'issue' });
+    if (session.pullRequest) items.push({ id: 'github-view-pull', label: t`View pull request #${session.pullRequest.number}`, description: `${session.pullRequest.state} · ${session.pullRequest.title}`, icon: 'pull' });
+    if (session.pullRequest) items.push({ id: 'github-open-pull', label: t`Open pull request #${session.pullRequest.number}`, description: t('On GitHub'), icon: 'globe' });
+    items.push({ id: 'github-open-repo', label: t('Open repository on GitHub'), description: value.repo.nameWithOwner, icon: 'globe' });
     return items;
   }
   async function onMenu(id: string, session: Session): Promise<void> {
@@ -154,8 +155,8 @@ export function createGithub(host: GithubHost) {
   function issueDescription(issue: GithubIssue): string { return `${issue.body.trim()}\n\nGitHub issue: ${issue.url}`.trim(); }
   function showImport(projectId: string): void {
     const project = host.project(projectId), value = cached(projectId);
-    if (!project || !value?.repo) { host.notify('Connect GitHub in Settings to import issues.'); return; }
-    const dialog = host.modal('Import from GitHub', `<form id="github-import-form" data-project-id="${escape(projectId)}"><p class="dialog-description">Open issues in <strong>${escape(value.repo.nameWithOwner)}</strong> become Pending tasks in <strong>${escape(project.name)}</strong>. Nothing runs until you start them.</p><div class="github-filters"><label class="github-filter-toggle"><input type="checkbox" name="mine"><span>Assigned to me</span></label><input name="label" placeholder="Label" aria-label="Filter by label" autocomplete="off" maxlength="100"><input name="query" type="search" placeholder="Search issues…" aria-label="Search issues" autocomplete="off" maxlength="200"></div><div class="github-issue-list" role="group" aria-label="Open issues" aria-busy="true"><p class="github-import-status" role="status">Loading issues…</p></div><div class="dialog-footer"><span class="github-import-count"></span><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" disabled>Import</button></div></form>`, 'settings-dialog github-import-dialog');
+    if (!project || !value?.repo) { host.notify(t('Connect GitHub in Settings to import issues.')); return; }
+    const dialog = host.modal(t('Import from GitHub'), `<form id="github-import-form" data-project-id="${escape(projectId)}"><p class="dialog-description">${t('Open issues in ')}<strong>${escape(value.repo.nameWithOwner)}</strong>${t(' become Pending tasks in ')}<strong>${escape(project.name)}</strong>${t('. Nothing runs until you start them.')}</p><div class="github-filters"><label class="github-filter-toggle"><input type="checkbox" name="mine"><span>${t('Assigned to me')}</span></label><input name="label" placeholder="${t('Label')}" aria-label="${t('Filter by label')}" autocomplete="off" maxlength="100"><input name="query" type="search" placeholder="${t('Search issues…')}" aria-label="${t('Search issues')}" autocomplete="off" maxlength="200"></div><div class="github-issue-list" role="group" aria-label="${t('Open issues')}" aria-busy="true"><p class="github-import-status" role="status">${t('Loading issues…')}</p></div><div class="dialog-footer"><span class="github-import-count"></span><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button" disabled>${t('Import')}</button></div></form>`, 'settings-dialog github-import-dialog');
     const form = dialog.querySelector<HTMLFormElement>('#github-import-form')!;
     let timer = 0;
     const load = () => {
@@ -177,20 +178,20 @@ export function createGithub(host: GithubHost) {
   function updateCount(form: HTMLFormElement): void {
     const selected = form.querySelectorAll<HTMLInputElement>('input[name="issue"]:checked').length;
     form.querySelector<HTMLButtonElement>('.primary-button')!.disabled = !selected;
-    form.querySelector<HTMLElement>('.github-import-count')!.textContent = selected ? `${selected} selected` : '';
-    form.querySelector<HTMLButtonElement>('.primary-button')!.textContent = selected > 1 ? `Import ${selected} issues` : 'Import';
+    form.querySelector<HTMLElement>('.github-import-count')!.textContent = selected ? t`${selected} selected` : '';
+    form.querySelector<HTMLButtonElement>('.primary-button')!.textContent = selected > 1 ? t`Import ${selected} issues` : t('Import');
   }
   function renderIssues(form: HTMLFormElement, projectId: string): void {
     const list = form.querySelector<HTMLElement>('.github-issue-list')!;
     list.setAttribute('aria-busy', 'false');
-    if (!importIssues.length) { list.innerHTML = '<p class="github-import-status" role="status">No open issues match these filters.</p>'; updateCount(form); return; }
+    if (!importIssues.length) { list.innerHTML = `<p class="github-import-status" role="status">${t('No open issues match these filters.')}</p>`; updateCount(form); return; }
     list.innerHTML = importIssues.map(issue => {
       const linked = linkedTask(projectId, issue.number);
       // Card previews carry only the first 512 characters, so compare the prefix.
       const changed = linked && (linked.title !== issue.title || !issueDescription(issue).startsWith(linked.taskDescription ?? ''));
       const unstarted = linked && (linked.taskStage ?? 'pending') === 'pending' && !linked.resumeId;
-      const badge = linked ? unstarted && changed ? `<button type="button" class="secondary-button github-issue-update" data-github-update="${issue.number}">Update task</button>` : '<span class="github-issue-badge">On board</span>' : '';
-      return `<label class="github-issue ${linked ? 'github-issue-linked' : ''}"><input type="checkbox" name="issue" value="${issue.number}" ${linked ? 'disabled' : ''} aria-label="Import #${issue.number} ${escape(issue.title)}"><span class="github-issue-copy"><strong>#${issue.number} ${escape(issue.title)}</strong><small>${escape([...issue.labels, issue.updatedAt ? `updated ${new Date(issue.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : ''].filter(Boolean).join(' · '))}</small></span>${badge}</label>`;
+      const badge = linked ? unstarted && changed ? `<button type="button" class="secondary-button github-issue-update" data-github-update="${issue.number}">${t('Update task')}</button>` : `<span class="github-issue-badge">${t('On board')}</span>` : '';
+      return `<label class="github-issue ${linked ? 'github-issue-linked' : ''}"><input type="checkbox" name="issue" value="${issue.number}" ${linked ? 'disabled' : ''} aria-label="${t`Import #${issue.number} ${escape(issue.title)}`}"><span class="github-issue-copy"><strong>#${issue.number} ${escape(issue.title)}</strong><small>${escape([...issue.labels, issue.updatedAt ? t`updated ${new Date(issue.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}` : ''].filter(Boolean).join(' · '))}</small></span>${badge}</label>`;
     }).join('');
     updateCount(form);
   }
@@ -202,7 +203,7 @@ export function createGithub(host: GithubHost) {
       const saved = await host.call<Session>('update_task_details', { sessionId: linked.id, title: issue.title, description: issueDescription(issue) });
       const relinked = await host.call<Session>('set_task_link', { sessionId: saved.id, kind: 'issue', link: { kind: 'issue', number: issue.number, url: issue.url, title: issue.title, state: issue.state, checkedAt: 0 } });
       host.upsert(relinked); host.changed();
-      button.replaceWith(Object.assign(document.createElement('span'), { className: 'github-issue-badge', textContent: 'Updated' }));
+      button.replaceWith(Object.assign(document.createElement('span'), { className: 'github-issue-badge', textContent: t('Updated') }));
     } catch (error) { button.disabled = false; host.notify(error instanceof Error ? error.message : String(error)); }
   }
   async function submitImport(form: HTMLFormElement, data: FormData): Promise<void> {
@@ -219,16 +220,16 @@ export function createGithub(host: GithubHost) {
       host.upsert(linked); imported++;
     }
     host.closeModal(); host.changed();
-    host.notify(imported ? `Imported ${imported} issue${imported === 1 ? '' : 's'} to Pending.` : 'Those issues are already on the board.');
+    host.notify(imported ? imported === 1 ? t`Imported 1 issue to Pending.` : t`Imported ${imported} issues to Pending.` : t('Those issues are already on the board.'));
   }
 
   /* Pull requests: push the branch, open the PR, link it to the task. */
   function showPullRequest(session: Session): void {
     const value = cached(session.projectId);
-    if (!value?.repo) { host.notify('Connect GitHub in Settings to open pull requests.'); return; }
+    if (!value?.repo) { host.notify(t('Connect GitHub in Settings to open pull requests.')); return; }
     const closes = session.issue ? `\n\nCloses #${session.issue.number}` : '';
     const body = `${session.taskDescription?.trim() ?? ''}${closes}`.trim();
-    const dialog = host.modal('Push & open pull request', `<form id="github-pr-form" data-session-id="${escape(session.id)}"><p class="dialog-description">Pushes <code>${escape(session.worktreeBranch || 'the current branch')}</code> to its remote and opens a pull request in <strong>${escape(value.repo.nameWithOwner)}</strong>. Uncommitted changes stop it; commit them in the Changes tab first.</p><label class="field-label" for="pr-title">Title</label><input id="pr-title" name="title" value="${escape(session.title === 'New conversation' ? '' : session.title)}" maxlength="256" required autocomplete="off"><label class="field-label" for="pr-body">Description</label><textarea id="pr-body" name="body" rows="6" maxlength="65536" placeholder="What changed and why.">${escape(body)}</textarea><label class="field-label" for="pr-base">Base branch</label><select id="pr-base" name="base"><option value="${escape(value.repo.defaultBranch)}">${escape(value.repo.defaultBranch)}</option></select><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${icon('upload')}Push & open pull request</button></div></form>`, 'settings-dialog github-pr-dialog');
+    const dialog = host.modal(t('Push & open pull request'), `<form id="github-pr-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${t('Pushes ')}<code>${escape(session.worktreeBranch || t('the current branch'))}</code>${t(' to its remote and opens a pull request in ')}<strong>${escape(value.repo.nameWithOwner)}</strong>${t('. Uncommitted changes stop it; commit them in the Changes tab first.')}</p><label class="field-label" for="pr-title">${t('Title')}</label><input id="pr-title" name="title" value="${escape(session.title === 'New conversation' ? '' : session.title)}" maxlength="256" required autocomplete="off"><label class="field-label" for="pr-body">${t('Description')}</label><textarea id="pr-body" name="body" rows="6" maxlength="65536" placeholder="${t('What changed and why.')}">${escape(body)}</textarea><label class="field-label" for="pr-base">${t('Base branch')}</label><select id="pr-base" name="base"><option value="${escape(value.repo.defaultBranch)}">${escape(value.repo.defaultBranch)}</option></select><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button">${icon('upload')}${t('Push & open pull request')}</button></div></form>`, 'settings-dialog github-pr-dialog');
     const select = dialog.querySelector<HTMLSelectElement>('#pr-base')!;
     void host.call<{ current: string; branches: string[] }>('git_branches', { projectId: session.projectId, sessionId: session.id }).then(list => {
       if (!select.isConnected) return;
@@ -241,7 +242,7 @@ export function createGithub(host: GithubHost) {
     try {
       const saved = await host.call<Session>('github_create_pull_request', { sessionId: form.dataset.sessionId, title: String(data.get('title') ?? '').trim(), body: String(data.get('body') ?? ''), base: String(data.get('base') ?? '') });
       host.upsert(saved); host.closeModal(); host.changed();
-      host.notify(saved.pullRequest ? `Pull request #${saved.pullRequest.number} opened` : 'Pull request opened');
+      host.notify(saved.pullRequest ? t`Pull request #${saved.pullRequest.number} opened` : t('Pull request opened'));
       if (saved.pullRequest) host.showPull(saved);
     } catch (cause) { error.textContent = cause instanceof Error ? cause.message : String(cause); error.hidden = false; }
   }
@@ -249,8 +250,8 @@ export function createGithub(host: GithubHost) {
   /* Link an existing pull request: pick an open one, or paste a number or URL. */
   function showLinkPull(session: Session): void {
     const value = cached(session.projectId);
-    if (!value?.repo) { host.notify('Connect GitHub in Settings to link pull requests.'); return; }
-    const dialog = host.modal('Link pull request', `<form id="github-link-pull-form" data-session-id="${escape(session.id)}"><p class="dialog-description">Shows the pull request in this task's inspector and on its card.</p><label class="field-label" for="link-pull-reference">Number or URL</label><input id="link-pull-reference" name="reference" placeholder="#123 or ${escape(value.repo.url)}/pull/123" maxlength="512" required autocomplete="off"><div class="github-issue-list github-pull-list" role="group" aria-label="Open pull requests" aria-busy="true"><p class="github-import-status" role="status">Loading open pull requests…</p></div><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${icon('pull')}Link</button></div></form>`, 'settings-dialog github-pr-dialog');
+    if (!value?.repo) { host.notify(t('Connect GitHub in Settings to link pull requests.')); return; }
+    const dialog = host.modal(t('Link pull request'), `<form id="github-link-pull-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${t('Shows the pull request in this task’s inspector and on its card.')}</p><label class="field-label" for="link-pull-reference">${t('Number or URL')}</label><input id="link-pull-reference" name="reference" placeholder="${t`#123 or ${escape(value.repo.url)}/pull/123`}" maxlength="512" required autocomplete="off"><div class="github-issue-list github-pull-list" role="group" aria-label="${t('Open pull requests')}" aria-busy="true"><p class="github-import-status" role="status">${t('Loading open pull requests…')}</p></div><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button class="primary-button">${icon('pull')}${t('Link')}</button></div></form>`, 'settings-dialog github-pr-dialog');
     const form = dialog.querySelector<HTMLFormElement>('#github-link-pull-form')!, input = form.querySelector<HTMLInputElement>('#link-pull-reference')!;
     const list = form.querySelector<HTMLElement>('.github-pull-list')!;
     form.addEventListener('click', event => {
@@ -261,8 +262,8 @@ export function createGithub(host: GithubHost) {
       if (!list.isConnected) return;
       const pulls = items.filter(item => item.kind === 'pull');
       list.setAttribute('aria-busy', 'false');
-      list.innerHTML = pulls.length ? pulls.map(pull => `<button type="button" class="github-issue github-pull-pick" data-pull-number="${pull.number}"><span class="github-issue-copy"><strong>#${pull.number} ${escape(pull.title)}</strong><small>${escape([pull.state, pull.author].filter(Boolean).join(' · '))}</small></span></button>`).join('') : '<p class="github-import-status" role="status">No open pull requests. Paste a number or URL above.</p>';
-    }).catch(() => { if (list.isConnected) { list.setAttribute('aria-busy', 'false'); list.innerHTML = '<p class="github-import-status" role="status">Could not list pull requests. Paste a number or URL above.</p>'; } });
+      list.innerHTML = pulls.length ? pulls.map(pull => `<button type="button" class="github-issue github-pull-pick" data-pull-number="${pull.number}"><span class="github-issue-copy"><strong>#${pull.number} ${escape(pull.title)}</strong><small>${escape([pull.state, pull.author].filter(Boolean).join(' · '))}</small></span></button>`).join('') : `<p class="github-import-status" role="status">${t('No open pull requests. Paste a number or URL above.')}</p>`;
+    }).catch(() => { if (list.isConnected) { list.setAttribute('aria-busy', 'false'); list.innerHTML = `<p class="github-import-status" role="status">${t('Could not list pull requests. Paste a number or URL above.')}</p>`; } });
     input.focus();
   }
   async function submitLinkPull(form: HTMLFormElement, data: FormData): Promise<void> {
@@ -270,7 +271,7 @@ export function createGithub(host: GithubHost) {
     try {
       const saved = await host.call<Session>('github_link_pull_request', { sessionId: form.dataset.sessionId, reference: String(data.get('reference') ?? '').trim() });
       host.upsert(saved); host.closeModal(); host.changed();
-      host.notify(`Linked pull request #${saved.pullRequest?.number ?? ''}`);
+      host.notify(t`Linked pull request #${saved.pullRequest?.number ?? ''}`);
       if (saved.pullRequest) host.showPull(saved);
     } catch (cause) { error.textContent = cause instanceof Error ? cause.message : String(cause); error.hidden = false; }
   }
@@ -303,19 +304,19 @@ export function createGithub(host: GithubHost) {
 
   /** Settings row: the switch and the connection line for the current project. */
   function mountSettings(target: HTMLElement, projectId: string): () => void {
-    target.innerHTML = `<div class="settings-group settings-github"><div class="setting-row"><div><strong>GitHub</strong><small class="github-settings-status">Checking GitHub CLI…</small></div><input type="checkbox" class="settings-switch" id="github-enabled" aria-label="GitHub integration" ${githubEnabled() ? 'checked' : ''}></div></div>`;
+    target.innerHTML = `<div class="settings-group settings-github"><div class="setting-row"><div><strong>GitHub</strong><small class="github-settings-status">${t('Checking GitHub CLI…')}</small></div><input type="checkbox" class="settings-switch" id="github-enabled" aria-label="${t('GitHub integration')}" ${githubEnabled() ? 'checked' : ''}></div></div>`;
     const line = target.querySelector<HTMLElement>('.github-settings-status')!, toggle = target.querySelector<HTMLInputElement>('#github-enabled')!;
     // One line beside the title; the full status is a hover away.
     const describe = (value: GithubStatus | null): string => {
-      if (!githubEnabled()) return 'Off · no gh commands run';
-      if (!value) return projectId ? 'Could not check the GitHub CLI' : 'Open a project to check its connection';
-      if (!value.installed) return 'Install the GitHub CLI (gh) to connect';
-      if (!value.authenticated) return `Run gh auth login to connect${value.version ? ` · gh ${value.version}` : ''}`;
-      const who = value.login ? `Connected as ${value.login}` : 'Connected';
-      return value.repo ? `${who} · ${value.repo.nameWithOwner}` : `${who} · no GitHub remote here`;
+      if (!githubEnabled()) return t('Off · no gh commands run');
+      if (!value) return projectId ? t('Could not check the GitHub CLI') : t('Open a project to check its connection');
+      if (!value.installed) return t('Install the GitHub CLI (gh) to connect');
+      if (!value.authenticated) return value.version ? t`Run gh auth login to connect · gh ${value.version}` : t('Run gh auth login to connect');
+      const who = value.login ? t`Connected as ${value.login}` : t('Connected');
+      return value.repo ? t`${who} · ${value.repo.nameWithOwner}` : t`${who} · no GitHub remote here`;
     };
     let disposed = false;
-    const show = (value: GithubStatus | null) => { line.textContent = describe(value); line.title = value?.repo ? `Default branch ${value.repo.defaultBranch}` : ''; };
+    const show = (value: GithubStatus | null) => { line.textContent = describe(value); line.title = value?.repo ? t`Default branch ${value.repo.defaultBranch}` : ''; };
     const render = () => { if (!disposed) void status(projectId).then(value => { if (!disposed) show(value); }); };
     const onToggle = () => { setEnabled(toggle.checked); if (toggle.checked) render(); else show(null); };
     toggle.addEventListener('change', onToggle);

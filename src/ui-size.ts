@@ -1,6 +1,7 @@
 import './ui-size.css';
 import { preview } from './bridge';
 import { commandKey } from './platform';
+import { t } from './i18n.ts';
 
 /* Interface size. In the app it zooms the whole webview, like Safari's ⌘+, so icons, spacing and
  * layout grow with the text. The browser preview has no native zoom and scales only the root font. */
@@ -49,7 +50,7 @@ export function changeUiScale(direction: -1 | 1): void { setUiScale(scale + dire
 
 export function uiSizeControls(): string {
   const modifier = commandKey;
-  return `<div class="setting-row text-size-setting"><div><strong>Interface size</strong><small>${modifier} + / − to resize · ${modifier} 0 to reset</small></div><div class="text-size-controls" role="group" aria-label="Interface size"><button type="button" data-action="ui-size-decrease" aria-label="Decrease interface size" title="Decrease interface size (${modifier} −)" ${scale === minimum ? 'disabled' : ''}>A−</button><output data-ui-size-value aria-label="Current interface size" aria-live="polite">${Math.round(scale * 100)}%</output><button type="button" data-action="ui-size-increase" aria-label="Increase interface size" title="Increase interface size (${modifier} +)" ${scale === maximum ? 'disabled' : ''}>A+</button><button type="button" class="text-size-reset" data-action="ui-size-reset" aria-label="Reset interface size" title="Reset interface size (${modifier} 0)">Reset</button></div></div>`;
+  return `<div class="setting-row text-size-setting"><div><strong>${t('Interface size')}</strong><small>${t`${modifier} + / − to resize · ${modifier} 0 to reset`}</small></div><div class="text-size-controls" role="group" aria-label="${t('Interface size')}"><button type="button" data-action="ui-size-decrease" aria-label="${t('Decrease interface size')}" title="${t`Decrease interface size (${modifier} −)`}" ${scale === minimum ? 'disabled' : ''}>A−</button><output data-ui-size-value aria-label="${t('Current interface size')}" aria-live="polite">${Math.round(scale * 100)}%</output><button type="button" data-action="ui-size-increase" aria-label="${t('Increase interface size')}" title="${t`Increase interface size (${modifier} +)`}" ${scale === maximum ? 'disabled' : ''}>A+</button><button type="button" class="text-size-reset" data-action="ui-size-reset" aria-label="${t('Reset interface size')}" title="${t`Reset interface size (${modifier} 0)`}">${t('Reset')}</button></div></div>`;
 }
 
 export function initializeUiSizing(): () => void {

@@ -1,16 +1,17 @@
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import './message-actions.css';
 
 /** Keys identify saved messages or a live text buffer; never embed message text. */
 export function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false): string {
   const data = `data-message-session="${escape(sessionId)}" data-message-key="${escape(key)}"`;
-  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message" title="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" title="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" title="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
+  return `<div class="message-actions" role="group" aria-label="${t('Message actions')}"><button type="button" data-message-action="copy" ${data} aria-label="${t('Copy message')}" title="${t('Copy message')}">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="${t('Fork from here')}" title="${t('Fork through this message into a new task in the same checkout')}">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="${t('Edit and resend')}" title="${t('Rewind to before this message in a new task and edit it there')}">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
 }
 
 /** Clipboard APIs can be unavailable in older desktop webviews. */
 async function copyText(value: string | undefined | Promise<string | undefined>): Promise<void> {
   const resolved = Promise.resolve(value).then(text => {
-    if (text === undefined) throw new Error('This message is no longer available. Please reopen the conversation.');
+    if (text === undefined) throw new Error(t('This message is no longer available. Please reopen the conversation.'));
     return text;
   });
   // Begin the write during the click itself. WebKit requires user activation,
@@ -37,7 +38,7 @@ async function copyText(value: string | undefined | Promise<string | undefined>)
   (focused?.closest('dialog[open]') ?? document.body).append(field);
   try {
     field.select();
-    if (!document.execCommand('copy')) throw new Error('Could not copy this message. Please select its text and copy it manually.');
+    if (!document.execCommand('copy')) throw new Error(t('Could not copy this message. Please select its text and copy it manually.'));
   } finally {
     field.remove();
     focused?.focus({ preventScroll: true });
@@ -74,12 +75,12 @@ export function bindMessageActions(root: HTMLElement, options: {
       if (action !== 'copy' || !button.isConnected) return;
       clearTimeout(feedback.get(button));
       button.innerHTML = icon('check'); button.dataset.copied = 'true';
-      button.title = 'Copied'; button.setAttribute('aria-label', 'Copied');
+      button.title = t('Copied'); button.setAttribute('aria-label', t('Copied'));
       const status = button.parentElement?.querySelector<HTMLElement>('.message-action-status');
-      if (status) status.textContent = 'Message copied';
+      if (status) status.textContent = t('Message copied');
       feedback.set(button, setTimeout(() => {
         feedback.delete(button); delete button.dataset.copied;
-        button.innerHTML = icon('copy'); button.title = 'Copy message'; button.setAttribute('aria-label', 'Copy message');
+        button.innerHTML = icon('copy'); button.title = t('Copy message'); button.setAttribute('aria-label', t('Copy message'));
         if (status) status.textContent = '';
       }, 1600));
     }).catch(options.report).finally(() => {

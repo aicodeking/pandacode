@@ -1,6 +1,6 @@
 @import "./tokens.css";
 /* Menu bar popover: one sheet of the warm glass (motion.css), sized to its content. */
-:root{font:var(--text-md)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark;--tray-text:#f4f3ee;--tray-muted:rgb(244 243 238 / .56);--tray-hover:rgb(255 255 255 / .075);--success:#83cf9c;--danger:#ff9e96;--tray-warn:var(--warning);--tray-danger:var(--danger);--tray-success:var(--success)}
+:root{font:var(--text-md)/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","PingFang TC","Microsoft YaHei","Microsoft JhengHei",sans-serif;color-scheme:dark;--tray-text:#f4f3ee;--tray-muted:rgb(244 243 238 / .56);--tray-hover:rgb(255 255 255 / .075);--success:#83cf9c;--danger:#ff9e96;--tray-warn:var(--warning);--tray-danger:var(--danger);--tray-success:var(--success)}
 :root[data-theme=light]{color-scheme:light;--tray-text:#242423;--tray-muted:rgb(36 36 35 / .56);--tray-hover:rgb(20 18 8 / .055);--success:#237345;--danger:#b03535}
 *{box-sizing:border-box}html,body{margin:0;background:transparent;overflow:hidden;color:var(--tray-text);-webkit-font-smoothing:antialiased}
 button{font:inherit;color:inherit;border:0;background:transparent;cursor:default;padding:0;-webkit-tap-highlight-color:transparent}

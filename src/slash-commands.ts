@@ -1,5 +1,6 @@
 import './slash-commands.css';
 import { icon } from './dom';
+import { t } from './i18n.ts';
 import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import type { ProviderId } from './types';
@@ -15,8 +16,8 @@ let nextPickerId = 0;
 export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Options): { refresh(force?: boolean): void; dispose(): void } {
   const panel = document.createElement('section');
   panel.className = 'slash-menu floating-menu';
-  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Slash commands');
-  panel.innerHTML = `<header class="slash-menu-header"><span class="slash-menu-logo"></span><strong>Commands</strong><button type="button" class="icon-button" aria-label="Refresh commands" title="Refresh commands">${icon('refresh')}</button></header><div class="slash-menu-list" id="slash-commands-${++nextPickerId}" role="listbox" aria-label="Available commands"></div><p class="slash-menu-status" role="status" aria-live="polite"></p><p class="slash-menu-warning"></p><footer class="slash-menu-footer"><span>↑ ↓ navigate</span><span>Tab or ↵ insert</span></footer>`;
+  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', t('Slash commands'));
+  panel.innerHTML = `<header class="slash-menu-header"><span class="slash-menu-logo"></span><strong>${t('Commands')}</strong><button type="button" class="icon-button" aria-label="${t('Refresh commands')}" title="${t('Refresh commands')}">${icon('refresh')}</button></header><div class="slash-menu-list" id="slash-commands-${++nextPickerId}" role="listbox" aria-label="${t('Available commands')}"></div><p class="slash-menu-status" role="status" aria-live="polite"></p><p class="slash-menu-warning"></p><footer class="slash-menu-footer"><span>${t('↑ ↓ navigate')}</span><span>${t('Tab or ↵ insert')}</span></footer>`;
   const list = panel.querySelector<HTMLElement>('.slash-menu-list')!;
   const status = panel.querySelector<HTMLElement>('.slash-menu-status')!;
   const warning = panel.querySelector<HTMLElement>('.slash-menu-warning')!;
@@ -93,7 +94,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
         const name = document.createElement('strong'); name.textContent = command.name;
         title.append(name);
         if (command.argumentHint) { const hint = document.createElement('span'); hint.textContent = command.argumentHint; title.append(hint); }
-        const description = document.createElement('small'); description.textContent = command.kind === 'unsupported' ? command.reason || 'This command is not available in the app yet.' : command.description;
+        const description = document.createElement('small'); description.textContent = command.kind === 'unsupported' ? command.reason || t('This command is not available in the app yet.') : command.description;
         copy.append(title, description);
         const source = document.createElement('span'); source.className = 'slash-menu-source'; source.textContent = command.source; source.title = command.source;
         row.append(copy, source); row.disabled = command.kind === 'unsupported'; row.setAttribute('aria-disabled', String(row.disabled));
@@ -107,10 +108,11 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     const enabled = visibleCommands.filter(command => command.kind !== 'unsupported');
     setActive(enabled.some(command => command.id === active) ? active : enabled[0]?.id ?? '');
     refreshButton.disabled = loading;
-    refreshButton.setAttribute('aria-label', loadError ? 'Retry commands' : 'Refresh commands');
-    refreshButton.title = loadError ? 'Retry commands' : 'Refresh commands';
+    refreshButton.setAttribute('aria-label', loadError ? t('Retry commands') : t('Refresh commands'));
+    refreshButton.title = loadError ? t('Retry commands') : t('Refresh commands');
     list.setAttribute('aria-busy', String(loading && !commands.length));
-    status.textContent = loading ? `${slow ? 'Waiting for the harness to start…' : 'Loading commands…'}${commands.length ? ' Available commands can be used now.' : ''}` : loadError || (!matches.length ? query ? `Unknown command /${query}. Refresh commands or edit the name.` : 'No commands are available for this agent.' : `${visibleCommands.length}${matches.length > visibleCommands.length ? ` of ${matches.length}` : ''} command${matches.length === 1 ? '' : 's'}`);
+    const count = `${visibleCommands.length}${matches.length > visibleCommands.length ? t` of ${matches.length}` : ''}`;
+    status.textContent = loading ? `${slow ? t('Waiting for the harness to start…') : t('Loading commands…')}${commands.length ? t(' Available commands can be used now.') : ''}` : loadError || (!matches.length ? query ? t`Unknown command /${query}. Refresh commands or edit the name.` : t('No commands are available for this agent.') : matches.length === 1 ? t`${count} command` : t`${count} commands`);
     warning.hidden = !warnings.length;
     warning.textContent = warnings.slice(0, 3).join('\n');
     position();
@@ -143,7 +145,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
         return options.load(force);
       };
       const result = await Promise.race([discovery(), new Promise<never>((_, reject) => {
-        timeoutTimer = window.setTimeout(() => reject(new Error('Command discovery took too long. Retry to load harness commands.')), 75_000);
+        timeoutTimer = window.setTimeout(() => reject(new Error(t('Command discovery took too long. Retry to load harness commands.'))), 75_000);
       })]);
       if (!current()) return;
       accept(result); loadedAt = Date.now();
@@ -203,7 +205,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
       event.preventDefault(); event.stopPropagation();
       const selected = enabled.find(command => command.id === active);
       if (selected) choose(selected);
-      else if (!loading) status.textContent = visibleCommands[0]?.reason || 'Choose an available command or edit the name before sending.';
+      else if (!loading) status.textContent = visibleCommands[0]?.reason || t('Choose an available command or edit the name before sending.');
     }
   }
   function outside(event: PointerEvent): void {

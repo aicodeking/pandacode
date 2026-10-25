@@ -1,4 +1,5 @@
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
+import { t } from './i18n.ts';
 import { advertisedModelsOnly, fallbackModel, modelChoices, tokenCount } from './model-catalog';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
@@ -67,8 +68,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const panel = document.createElement('section');
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.setAttribute('aria-label', t('Harness and model'));
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="${t('Search harnesses and models')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>${t('Applying…')}</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const rail = panel.querySelector<HTMLElement>('.model-menu-rail')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
@@ -79,7 +80,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const anchorAction = anchor.dataset.action;
   const originalExpanded = anchor.getAttribute('aria-expanded');
   let pending = false;
-  let providersStatus = options.loadProviders ? 'Loading…' : '';
+  let providersStatus = options.loadProviders ? t('Loading…') : '';
   let closed = false;
   let activeKey = '';
   let positionFrame = 0;
@@ -363,10 +364,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     settings.hidden = !canSetEffort && !teamSelected;
     const disabled = pending || !provider?.installed;
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
-    const choices = [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts];
+    const choices = [{ id: '', name: t('Default'), description: t`Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts];
     const markup = teamSelected
-      ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
-      : canSetEffort ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-effort">Effort</span><div class="model-menu-effort" role="radiogroup" aria-labelledby="${uid}-effort">${choices.map(effort => `<button type="button" role="radio" data-effort="${escape(effort.id)}" title="${escape(effort.description || effort.name)}"${effort.id && effort.id === model.defaultReasoningEffort ? ' data-model-default=""' : ''}>${escape(effort.name)}</button>`).join('')}</div></div><p class="model-menu-effort-hint"></p>` : '';
+      ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label">${t('Effort')}</span><span class="model-menu-effort-note">${t('Set per worker')}</span></div>`
+      : canSetEffort ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-effort">${t('Effort')}</span><div class="model-menu-effort" role="radiogroup" aria-labelledby="${uid}-effort">${choices.map(effort => `<button type="button" role="radio" data-effort="${escape(effort.id)}" title="${escape(effort.description || effort.name)}"${effort.id && effort.id === model.defaultReasoningEffort ? ' data-model-default=""' : ''}>${escape(effort.name)}</button>`).join('')}</div></div><p class="model-menu-effort-hint"></p>` : '';
     if (markup !== settingsKey) {
       const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
@@ -405,7 +406,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const supported = provider.models.find(model => model.id === current.model)?.reasoningEfforts ?? [];
     if (effort !== null && !supported.some(choice => choice.id === effort)) {
       if (effort === current.reasoningEffort) return;
-      error.textContent = 'This reasoning effort is no longer available. Choose another level.';
+      error.textContent = t('This reasoning effort is no longer available. Choose another level.');
       error.hidden = false;
       renderSettings();
       return;
@@ -573,7 +574,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     void options.loadProviders().then(found => {
       if (closed) return;
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
-      providersStatus = providers.length ? '' : 'No harnesses on this computer';
+      providersStatus = providers.length ? '' : t('No harnesses on this computer');
       loadCatalogs();
     }).catch(failure => {
       if (closed) return;

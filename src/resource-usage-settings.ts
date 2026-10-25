@@ -1,17 +1,18 @@
 import { call, preview } from './bridge';
 import { escape, icon } from './dom';
 import type { Metrics } from './types';
+import { t } from './i18n.ts';
 
 const megabytes = (value: number) => `${(value / 1048576).toFixed(1)} MB`;
 
 /** Settings → About: a snapshot of PandaCode's own resource use, refreshed on demand. */
 export function resourceUsageHtml(): string {
   return `<div class="settings-group settings-resources" aria-labelledby="settings-resources-heading">
-    <div class="setting-row"><div><strong id="settings-resources-heading">Resource usage</strong><small>${preview ? 'Sample mode. Native memory measurements are available in the desktop app.' : 'A snapshot of the native core. The system webview and agent processes are not included in core memory.'}</small></div><button type="button" class="secondary-button settings-resources-refresh">${icon('refresh')}Refresh</button></div>
-    <div class="setting-row"><div><strong>Native core memory</strong></div><span class="settings-metric" data-metric="coreRssBytes">…</span></div>
-    <div class="setting-row"><div><strong>Active agents</strong></div><span class="settings-metric" data-metric="activeAgents">…</span></div>
-    <div class="setting-row"><div><strong>Open terminals</strong></div><span class="settings-metric" data-metric="activeTerminals">…</span></div>
-    <div class="setting-row"><div><strong>Local database</strong></div><span class="settings-metric" data-metric="databaseBytes">…</span></div>
+    <div class="setting-row"><div><strong id="settings-resources-heading">${t('Resource usage')}</strong><small>${preview ? t('Sample mode. Native memory measurements are available in the desktop app.') : t('A snapshot of the native core. The system webview and agent processes are not included in core memory.')}</small></div><button type="button" class="secondary-button settings-resources-refresh">${icon('refresh')}${t('Refresh')}</button></div>
+    <div class="setting-row"><div><strong>${t('Native core memory')}</strong></div><span class="settings-metric" data-metric="coreRssBytes">…</span></div>
+    <div class="setting-row"><div><strong>${t('Active agents')}</strong></div><span class="settings-metric" data-metric="activeAgents">…</span></div>
+    <div class="setting-row"><div><strong>${t('Open terminals')}</strong></div><span class="settings-metric" data-metric="activeTerminals">…</span></div>
+    <div class="setting-row"><div><strong>${t('Local database')}</strong></div><span class="settings-metric" data-metric="databaseBytes">…</span></div>
   </div>`;
 }
 
@@ -32,7 +33,7 @@ export function mountResourceUsage(host: HTMLElement): () => void {
       for (const cell of cells) cell.textContent = format(cell.dataset.metric as keyof Metrics, metrics);
     } catch (cause) {
       console.error('Reading resource usage failed', cause);
-      if (!disposed) for (const cell of cells) cell.innerHTML = `<span title="${escape(String(cause))}">Unavailable</span>`;
+      if (!disposed) for (const cell of cells) cell.innerHTML = `<span title="${escape(String(cause))}">${t('Unavailable')}</span>`;
     } finally {
       if (!disposed) button.disabled = false;
     }

@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './sketch.css';
 import { escape, icon } from './dom';
 import type { PromptImage } from './attachments';
@@ -21,21 +22,21 @@ export type SketchOptions = {
 };
 
 const PRESETS: { id: string; label: string; width: number; height: number }[] = [
-  { id: 'desktop', label: 'Desktop', width: 1280, height: 800 },
-  { id: 'tablet', label: 'Tablet', width: 834, height: 1112 },
-  { id: 'phone', label: 'Phone', width: 390, height: 844 },
-  { id: 'square', label: 'Square', width: 800, height: 800 },
+  { id: 'desktop', label: t('Desktop'), width: 1280, height: 800 },
+  { id: 'tablet', label: t('Tablet'), width: 834, height: 1112 },
+  { id: 'phone', label: t('Phone'), width: 390, height: 844 },
+  { id: 'square', label: t('Square'), width: 800, height: 800 },
 ];
-const COLORS = [['#1d1d1b', 'Ink'], ['#8a8a85', 'Gray'], ['#c99a00', 'Yellow'], ['#2f6fdd', 'Blue'], ['#d0453a', 'Red'], ['#2e8b57', 'Green']] as const;
+const COLORS = [['#1d1d1b', t('Ink')], ['#8a8a85', t('Gray')], ['#c99a00', t('Yellow')], ['#2f6fdd', t('Blue')], ['#d0453a', t('Red')], ['#2e8b57', t('Green')]] as const;
 const TOOLS: { id: Tool; label: string; key: string; icon: string }[] = [
-  { id: 'select', label: 'Select', key: 'V', icon: 'select' }, { id: 'pen', label: 'Pen', key: 'P', icon: 'edit' }, { id: 'rect', label: 'Rectangle', key: 'R', icon: 'square' },
-  { id: 'ellipse', label: 'Ellipse', key: 'O', icon: 'circle' }, { id: 'line', label: 'Line', key: 'L', icon: 'line' }, { id: 'arrow', label: 'Arrow', key: 'A', icon: 'arrow-right' }, { id: 'text', label: 'Text', key: 'T', icon: 'text' },
+  { id: 'select', label: t('Select'), key: 'V', icon: 'select' }, { id: 'pen', label: t('Pen'), key: 'P', icon: 'edit' }, { id: 'rect', label: t('Rectangle'), key: 'R', icon: 'square' },
+  { id: 'ellipse', label: t('Ellipse'), key: 'O', icon: 'circle' }, { id: 'line', label: t('Line'), key: 'L', icon: 'line' }, { id: 'arrow', label: t('Arrow'), key: 'A', icon: 'arrow-right' }, { id: 'text', label: t('Text'), key: 'T', icon: 'text' },
 ];
 const STENCILS: { id: Stencil; label: string; w: number; h: number; text?: string }[] = [
-  { id: 'heading', label: 'Heading', w: 320, h: 44, text: 'Heading' }, { id: 'button', label: 'Button', w: 140, h: 40, text: 'Button' }, { id: 'input', label: 'Input', w: 260, h: 40, text: 'Placeholder' },
-  { id: 'checkbox', label: 'Checkbox', w: 180, h: 28, text: 'Option' }, { id: 'toggle', label: 'Toggle', w: 180, h: 28, text: 'Setting' }, { id: 'image', label: 'Image', w: 220, h: 150 },
-  { id: 'card', label: 'Card', w: 260, h: 160, text: 'Card title' }, { id: 'navbar', label: 'Nav bar', w: 720, h: 56, text: 'Logo' }, { id: 'avatar', label: 'Avatar', w: 48, h: 48 },
-  { id: 'tabs', label: 'Tabs', w: 320, h: 40, text: 'Overview, Activity, Settings' }, { id: 'list', label: 'List', w: 280, h: 120, text: 'First item\nSecond item\nThird item' },
+  { id: 'heading', label: t('Heading'), w: 320, h: 44, text: 'Heading' }, { id: 'button', label: t('Button'), w: 140, h: 40, text: 'Button' }, { id: 'input', label: t('Input'), w: 260, h: 40, text: 'Placeholder' },
+  { id: 'checkbox', label: t('Checkbox'), w: 180, h: 28, text: 'Option' }, { id: 'toggle', label: t('Toggle'), w: 180, h: 28, text: 'Setting' }, { id: 'image', label: t('Image'), w: 220, h: 150 },
+  { id: 'card', label: t('Card'), w: 260, h: 160, text: 'Card title' }, { id: 'navbar', label: t('Nav bar'), w: 720, h: 56, text: 'Logo' }, { id: 'avatar', label: t('Avatar'), w: 48, h: 48 },
+  { id: 'tabs', label: t('Tabs'), w: 320, h: 40, text: 'Overview, Activity, Settings' }, { id: 'list', label: t('List'), w: 280, h: 120, text: 'First item\nSecond item\nThird item' },
 ];
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const HISTORY_LIMIT = 100;
@@ -204,8 +205,8 @@ function handlePoints(b: { x: number; y: number; w: number; h: number }): [numbe
 function hit(shape: Shape, x: number, y: number): boolean {
   const b = bounds(shape), pad = 6;
   if (shape.type === 'line' || shape.type === 'arrow') {
-    const len = Math.hypot(shape.w, shape.h) || 1, t = Math.max(0, Math.min(1, ((x - shape.x) * shape.w + (y - shape.y) * shape.h) / (len * len)));
-    return Math.hypot(x - (shape.x + t * shape.w), y - (shape.y + t * shape.h)) <= pad + shape.weight;
+    const len = Math.hypot(shape.w, shape.h) || 1, at = Math.max(0, Math.min(1, ((x - shape.x) * shape.w + (y - shape.y) * shape.h) / (len * len)));
+    return Math.hypot(x - (shape.x + at * shape.w), y - (shape.y + at * shape.h)) <= pad + shape.weight;
   }
   if (shape.type === 'pen') {
     const p = shape.points ?? [];
@@ -225,21 +226,21 @@ export function showSketch(options: SketchOptions): void {
   let selected = '', draft: Shape | undefined, history: Scene[] = [], future: Scene[] = [], dirty = false, busy = false;
   let drag: { mode: 'move' | 'resize' | 'draw'; handle?: Handle; startX: number; startY: number; origin: Shape } | undefined;
 
-  const dialog = options.modal(options.existing ? 'Edit mockup' : 'Sketch a mockup', `
+  const dialog = options.modal(options.existing ? t('Edit mockup') : t('Sketch a mockup'), `
     <div class="sketch-editor" data-tool="select">
-      <div class="sketch-toolbar" role="toolbar" aria-label="Drawing tools">
-        <div class="sketch-group" role="group" aria-label="Tools">${TOOLS.map(t => `<button type="button" class="sketch-tool" data-tool="${t.id}" aria-label="${t.label} (${t.key})" title="${t.label} · ${t.key}" aria-pressed="${t.id === 'select'}">${icon(t.icon)}</button>`).join('')}</div>
-        <div class="sketch-group" role="group" aria-label="Color">${COLORS.map(([value, name]) => `<button type="button" class="sketch-swatch" data-color="${value}" style="--swatch:${value}" aria-label="${name}" title="${name}" aria-pressed="${value === COLORS[0][0]}"></button>`).join('')}</div>
-        <div class="sketch-group" role="group" aria-label="Fill"><button type="button" class="sketch-option" data-fill="none" aria-pressed="true" title="No fill">Outline</button><button type="button" class="sketch-option" data-fill="tint" aria-pressed="false" title="Tinted fill">Tint</button><button type="button" class="sketch-option" data-fill="white" aria-pressed="false" title="White fill">Solid</button></div>
-        <div class="sketch-group" role="group" aria-label="Line weight"><button type="button" class="sketch-option" data-weight="1.5" aria-pressed="false" title="Thin">Thin</button><button type="button" class="sketch-option" data-weight="2" aria-pressed="true" title="Regular">Regular</button><button type="button" class="sketch-option" data-weight="3.5" aria-pressed="false" title="Bold">Bold</button></div>
-        <div class="sketch-group sketch-group-end" role="group" aria-label="History"><button type="button" class="icon-button" data-history="undo" aria-label="Undo (⌘Z)" title="Undo · ⌘Z" disabled>${icon('undo')}</button><button type="button" class="icon-button" data-history="redo" aria-label="Redo (⇧⌘Z)" title="Redo · ⇧⌘Z" disabled>${icon('redo')}</button><button type="button" class="icon-button" data-edit="duplicate" aria-label="Duplicate (⌘D)" title="Duplicate · ⌘D" disabled>${icon('copy')}</button><button type="button" class="icon-button" data-edit="delete" aria-label="Delete selection" title="Delete" disabled>${icon('trash')}</button></div>
+      <div class="sketch-toolbar" role="toolbar" aria-label="${t('Drawing tools')}">
+        <div class="sketch-group" role="group" aria-label="${t('Tools')}">${TOOLS.map(t => `<button type="button" class="sketch-tool" data-tool="${t.id}" aria-label="${t.label} (${t.key})" title="${t.label} · ${t.key}" aria-pressed="${t.id === 'select'}">${icon(t.icon)}</button>`).join('')}</div>
+        <div class="sketch-group" role="group" aria-label="${t('Color')}">${COLORS.map(([value, name]) => `<button type="button" class="sketch-swatch" data-color="${value}" style="--swatch:${value}" aria-label="${name}" title="${name}" aria-pressed="${value === COLORS[0][0]}"></button>`).join('')}</div>
+        <div class="sketch-group" role="group" aria-label="${t('Fill')}"><button type="button" class="sketch-option" data-fill="none" aria-pressed="true" title="${t('No fill')}">${t('Outline')}</button><button type="button" class="sketch-option" data-fill="tint" aria-pressed="false" title="${t('Tinted fill')}">${t('Tint')}</button><button type="button" class="sketch-option" data-fill="white" aria-pressed="false" title="${t('White fill')}">${t('Solid')}</button></div>
+        <div class="sketch-group" role="group" aria-label="${t('Line weight')}"><button type="button" class="sketch-option" data-weight="1.5" aria-pressed="false" title="${t('Thin')}">${t('Thin')}</button><button type="button" class="sketch-option" data-weight="2" aria-pressed="true" title="${t('Regular')}">${t('Regular')}</button><button type="button" class="sketch-option" data-weight="3.5" aria-pressed="false" title="${t('Bold')}">${t('Bold')}</button></div>
+        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('History')}"><button type="button" class="icon-button" data-history="undo" aria-label="${t('Undo (⌘Z)')}" title="${t('Undo · ⌘Z')}" disabled>${icon('undo')}</button><button type="button" class="icon-button" data-history="redo" aria-label="${t('Redo (⇧⌘Z)')}" title="${t('Redo · ⇧⌘Z')}" disabled>${icon('redo')}</button><button type="button" class="icon-button" data-edit="duplicate" aria-label="${t('Duplicate (⌘D)')}" title="${t('Duplicate · ⌘D')}" disabled>${icon('copy')}</button><button type="button" class="icon-button" data-edit="delete" aria-label="${t('Delete selection')}" title="${t('Delete')}" disabled>${icon('trash')}</button></div>
       </div>
       <div class="sketch-toolbar sketch-toolbar-secondary">
-        <div class="sketch-group" role="group" aria-label="Add a component"><span class="sketch-group-label">${icon('widget')}Add</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="Add ${s.label.toLowerCase()}" title="Add ${s.label.toLowerCase()}">${s.label}</button>`).join('')}</div>
-        <div class="sketch-group sketch-group-end" role="group" aria-label="Canvas"><label class="sketch-select">Canvas<select aria-label="Canvas size">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="Toggle grid">${icon('grid')}Grid</button><button type="button" class="sketch-option" data-edit="clear" title="Clear the canvas">Clear</button></div>
+        <div class="sketch-group" role="group" aria-label="${t('Add a component')}"><span class="sketch-group-label">${icon('widget')}${t('Add')}</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="${t`Add ${s.label.toLowerCase()}`}" title="${t`Add ${s.label.toLowerCase()}`}">${s.label}</button>`).join('')}</div>
+        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('Canvas')}"><label class="sketch-select">${t('Canvas')}<select aria-label="${t('Canvas size')}">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="${t('Toggle grid')}">${icon('grid')}${t('Grid')}</button><button type="button" class="sketch-option" data-edit="clear" title="${t('Clear the canvas')}">${t('Clear')}</button></div>
       </div>
-      <div class="sketch-stage"><div class="sketch-paper"><canvas role="img" aria-label="Mockup canvas"></canvas></div></div>
-      <div class="dialog-footer sketch-footer"><span class="sketch-hint" role="status">Drag to draw. Double-click a component or text to edit its label.</span><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="button" class="primary-button sketch-attach">${options.existing ? 'Update mockup' : 'Attach to message'}</button></div>
+      <div class="sketch-stage"><div class="sketch-paper"><canvas role="img" aria-label="${t('Mockup canvas')}"></canvas></div></div>
+      <div class="dialog-footer sketch-footer"><span class="sketch-hint" role="status">${t('Drag to draw. Double-click a component or text to edit its label.')}</span><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="button" class="primary-button sketch-attach">${options.existing ? t('Update mockup') : t('Attach to message')}</button></div>
     </div>`, 'sketch-dialog');
   const editor = dialog.querySelector<HTMLElement>('.sketch-editor')!;
   const paper = editor.querySelector<HTMLElement>('.sketch-paper')!;
@@ -267,7 +268,7 @@ export function showSketch(options: SketchOptions): void {
     editor.querySelector<HTMLButtonElement>('[data-history=undo]')!.disabled = !history.length;
     editor.querySelector<HTMLButtonElement>('[data-history=redo]')!.disabled = !future.length;
     for (const button of editor.querySelectorAll<HTMLButtonElement>('[data-edit=duplicate],[data-edit=delete]')) button.disabled = !shape;
-    canvas.setAttribute('aria-label', `Mockup canvas, ${scene.shapes.length} ${scene.shapes.length === 1 ? 'shape' : 'shapes'}${shape ? `, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
+    canvas.setAttribute('aria-label', `${t('Mockup canvas')}, ${scene.shapes.length === 1 ? t`${scene.shapes.length} shape` : t`${scene.shapes.length} shapes`}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
     editor.dataset.tool = tool; editor.dataset.selection = shape ? 'true' : 'false';
     drafts.set(options.taskId, clone(scene));
   }
@@ -286,7 +287,7 @@ export function showSketch(options: SketchOptions): void {
   function setTool(next: Tool): void {
     tool = next;
     for (const button of editor.querySelectorAll<HTMLButtonElement>('.sketch-tool')) button.setAttribute('aria-pressed', String(button.dataset.tool === next));
-    hint.textContent = next === 'select' ? 'Drag to move. Drag a handle to resize. Double-click a component or text to edit its label.' : next === 'text' ? 'Click where the text should start, then type. Enter adds a line; Escape finishes.' : next === 'pen' ? 'Draw freely. Hold Alt to ignore the grid with other tools.' : `Drag to draw ${next === 'ellipse' ? 'an' : 'a'} ${next}. Hold Alt to ignore the grid.`;
+    hint.textContent = next === 'select' ? t('Drag to move. Drag a handle to resize. Double-click a component or text to edit its label.') : next === 'text' ? t('Click where the text should start, then type. Enter adds a line; Escape finishes.') : next === 'pen' ? t('Draw freely. Hold Alt to ignore the grid with other tools.') : t`Drag to draw ${next === 'ellipse' ? 'an' : 'a'} ${next}. Hold Alt to ignore the grid.`;
     render();
   }
   function applyStyle(patch: Partial<Pick<Shape, 'stroke' | 'fill' | 'weight' | 'fontSize'>>): void {
@@ -309,7 +310,7 @@ export function showSketch(options: SketchOptions): void {
     if (shape.type === 'stencil' && (shape.stencil === 'image' || shape.stencil === 'avatar')) return;
     const b = bounds(shape), rect = canvas.getBoundingClientRect(), scale = rect.width / scene.width;
     const area = document.createElement('textarea');
-    area.className = 'sketch-text-editor'; area.setAttribute('aria-label', shape.type === 'text' ? 'Text' : 'Label'); area.value = shape.text ?? '';
+    area.className = 'sketch-text-editor'; area.setAttribute('aria-label', shape.type === 'text' ? t('Text') : t('Label')); area.value = shape.text ?? '';
     area.style.left = `${b.x * scale}px`; area.style.top = `${b.y * scale}px`; area.style.width = `${Math.max(120, b.w * scale)}px`; area.style.height = `${Math.max(32, Math.min(b.h, 200) * scale)}px`; area.style.fontSize = `${Math.max(12, shape.fontSize * scale)}px`;
     let done = false;
     const finish = (cancel: boolean) => {
@@ -474,7 +475,7 @@ export function showSketch(options: SketchOptions): void {
 
   async function attach(): Promise<void> {
     if (busy) return;
-    if (!scene.shapes.length) { hint.textContent = 'Draw something first.'; return; }
+    if (!scene.shapes.length) { hint.textContent = t('Draw something first.'); return; }
     busy = true; editor.classList.add('sketch-busy');
     try {
       const scale = Math.min(2, MAX_EXPORT_EDGE / Math.max(scene.width, scene.height));

@@ -1,4 +1,5 @@
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { showPopover, hidePopover } from './popover-motion';
 import type { TerminalActivity, TerminalContext, TerminalController } from './terminal';
 import './terminal-panel.css';
@@ -62,11 +63,11 @@ export class TerminalPanel {
     const groupKey = this.key;
     await this.add(undefined, true, requestId);
     const tab = this.groups.get(groupKey)?.tabs.find(tab => tab.context.runScript);
-    if (!tab?.controller) throw new Error('Run terminal could not be started.');
+    if (!tab?.controller) throw new Error(t('Run terminal could not be started.'));
     return () => tab.removed || Boolean(tab.controller?.exited);
   }
   async add(harness?: TerminalContext['harness'], runScript = false, requestId?: string): Promise<void> {
-    if (!this.context) throw new Error('Open a project before starting a terminal.');
+    if (!this.context) throw new Error(t('Open a project before starting a terminal.'));
     this.cancelClose();
     const key = this.key;
     let group = this.group();
@@ -92,8 +93,8 @@ export class TerminalPanel {
     const host = document.createElement('div'); host.className = 'terminal-tab-surface';
     const id = `terminal-tab-${crypto.randomUUID()}`;
     host.id = id; host.setAttribute('role', 'tabpanel'); host.setAttribute('aria-labelledby', `${id}-label`);
-    host.textContent = 'Starting terminal…'; this.host.append(host);
-    const tab: Tab = { id, title: runScript ? 'Run' : harness ? `${harness.provider} console` : `Terminal ${++group.sequence}`, label: this.label,
+    host.textContent = t('Starting terminal…'); this.host.append(host);
+    const tab: Tab = { id, title: runScript ? t('Run') : harness ? t`${harness.provider} console` : t`Terminal ${++group.sequence}`, label: this.label,
       context: { ...this.context, ...(harness ? { harness } : {}), ...(runScript ? { runScript: true, runRequestId: requestId } : {}) }, host, removed: false, ready: Promise.resolve() };
     group.tabs.push(tab); group.active = id; group.open = true; this.paint();
     const owner = group;
@@ -161,8 +162,8 @@ export class TerminalPanel {
     for (const owner of this.groups.values()) for (const tab of owner.tabs) tab.host.hidden = owner !== group || tab !== active;
     const label = this.drawer.querySelector<HTMLElement>('#terminal-project')!;
     label.textContent = active?.label ?? this.label;
-    label.title = active?.host.dataset.terminalSettings ? `Appearance from ${active.host.dataset.terminalSettings}` : '';
-    const markup = (group?.tabs ?? []).map(tab => `<div class="terminal-tab${tab === active ? ' selected' : ''}"><button role="tab" id="${tab.id}-label" aria-controls="${tab.id}" aria-selected="${tab === active}" tabindex="${tab === active ? 0 : -1}" data-terminal-action="select" data-tab="${tab.id}">${escape(tab.title)}</button><button class="icon-button" aria-label="Close ${escape(tab.title)}" data-terminal-action="close" data-tab="${tab.id}">${icon('close')}</button></div>`).join('');
+    label.title = active?.host.dataset.terminalSettings ? t`Appearance from ${active.host.dataset.terminalSettings}` : '';
+    const markup = (group?.tabs ?? []).map(tab => `<div class="terminal-tab${tab === active ? ' selected' : ''}"><button role="tab" id="${tab.id}-label" aria-controls="${tab.id}" aria-selected="${tab === active}" tabindex="${tab === active ? 0 : -1}" data-terminal-action="select" data-tab="${tab.id}">${escape(tab.title)}</button><button class="icon-button" aria-label="${t`Close ${escape(tab.title)}`}" data-terminal-action="close" data-tab="${tab.id}">${icon('close')}</button></div>`).join('');
     if (markup !== this.tabsMarkup) { this.cancelClose(); this.tabsMarkup = markup; this.tabs.innerHTML = markup; }
     const toggle = document.querySelector<HTMLElement>('#terminal-toggle');
     toggle?.setAttribute('aria-expanded', String(this.open)); toggle?.classList.toggle('active', this.open);
@@ -172,9 +173,9 @@ export class TerminalPanel {
 
 function closePopover(anchor: HTMLElement, activity: TerminalActivity, choose: (choice: 'minimize' | 'close') => void): () => void {
   const panel = document.createElement('section'); panel.className = 'floating-menu terminal-close-popover';
-  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Close terminal?'); panel.tabIndex = -1;
-  const title = activity.uncertain ? 'Keep this terminal running?' : 'Processes are still running';
-  panel.innerHTML = `<strong>${title}</strong><p>Closing may stop ${activity.processNames.length ? escape(activity.processNames.slice(0, 3).join(', ')) : 'running processes'}. Minimize to keep them running.</p><div><button class="primary-button" data-choice="minimize">Minimize instead</button><button class="secondary-button" data-choice="close">Close terminal</button></div>`;
+  panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', t('Close terminal?')); panel.tabIndex = -1;
+  const title = activity.uncertain ? t('Keep this terminal running?') : t('Processes are still running');
+  panel.innerHTML = `<strong>${title}</strong><p>${t`Closing may stop ${activity.processNames.length ? escape(activity.processNames.slice(0, 3).join(', ')) : t('running processes')}. Minimize to keep them running.`}</p><div><button class="primary-button" data-choice="minimize">${t('Minimize instead')}</button><button class="secondary-button" data-choice="close">${t('Close terminal')}</button></div>`;
   let closed = false;
   const position = () => {
     if (!anchor.isConnected) { close(false); return; }
