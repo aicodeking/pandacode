@@ -23,6 +23,7 @@ import { ADD_PROJECT_CHOICE, canStartWith, CHAT_CHOICE, projectChoices } from '.
 import { MODES } from '../ui/status.tsx';
 import { HeaderActions, type HeaderItem } from '../ui/HeaderActions.tsx';
 import { useColors } from '../ui/theme.ts';
+import { useT } from '../ui/language.ts';
 import { useNewTask } from '../ui/useNewTask.ts';
 
 const PROMPT_HEIGHT = 110;
@@ -75,7 +76,7 @@ export default function NewTask() {
       router.push({ pathname: '/task/[device]/[session]', params: { device: deviceId, session } });
       if (typeof note === 'string' && note) Alert.alert('Started in a worktree', note.replace(/^Started in a worktree: /, ''));
     } catch (e) {
-      Alert.alert('Could not start the task', (e as Error).message);
+      Alert.alert(t('Could not start the task'), (e as Error).message);
     }
   };
 

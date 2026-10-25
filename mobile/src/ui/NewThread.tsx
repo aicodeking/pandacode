@@ -32,6 +32,7 @@ import { toggleSidebar, useSidebar } from './split.tsx';
 import { MODES } from './status.tsx';
 import { useColors } from './theme.ts';
 import { useNewTask } from './useNewTask.ts';
+import { useT } from './language.ts';
 
 /** A picker's row in the card: what it picks on the left, the native menu on the right. */
 function PickerRow({ leading, label, children }: { leading: ReactNode; label: string; children: ReactNode }) {
@@ -46,6 +47,7 @@ function PickerRow({ leading, label, children }: { leading: ReactNode; label: st
 }
 
 export function NewThread() {
+  const t = useT();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const form = useNewTask();
@@ -84,7 +86,7 @@ export function NewThread() {
       router.push({ pathname: '/task/[device]/[session]', params: { device: deviceId, session } });
       if (typeof note === 'string' && note) Alert.alert('Started in a worktree', note.replace(/^Started in a worktree: /, ''));
     } catch (e) {
-      Alert.alert('Could not start the task', (e as Error).message);
+      Alert.alert(t('Could not start the task'), (e as Error).message);
     }
   };
 
@@ -94,6 +96,8 @@ export function NewThread() {
     ...(gates.addProject.shown ? [{ label: 'Add project…', ios: 'plus', android: 'add', section: 'More', ...gated(gates.addProject, () => router.push({ pathname: '/add-project', params: { device: deviceId } })) } satisfies MenuItem] : []),
   ];
   const computerItems: MenuItem[] = hosts.map(h => ({ label: h.name, ios: 'desktopcomputer', android: 'computer', checked: h.id === deviceId, onPress: () => form.pickDevice(h.id) }));
+  // MODES labels are data; the render site maps ids to translated labels.
+  const modeLabels: Record<string, string> = { ask: t('Standard'), auto: t('Auto-approve edits'), plan: t('Plan only'), full: t('Full access') };
   const optionItems: MenuItem[] = [
     ...(chat || form.team || form.cloud ? [] : [{ label: 'New worktree', ios: 'arrow.triangle.branch', android: 'call_split', checked: worktree, onPress: () => form.setWorktree(w => !w) } satisfies MenuItem]),
     ...(chat || form.cloud || !gates.team.shown ? [] : [{ label: 'Team', ios: 'person.3', android: 'groups', checked: form.team, ...gated(gates.team, () => form.setTeamOn(on => !on)) } satisfies MenuItem]),
@@ -103,9 +107,9 @@ export function NewThread() {
     ...efforts.map(e => ({ label: e.label, section: 'Effort', checked: e.value === effort, onPress: () => pick({ effort: e.value }) })),
   ];
   const harnessItems: MenuItem[] = [
-    ...options.harnesses.map(h => ({ label: h.label, section: 'Harness', checked: h.value === provider, onPress: () => form.pickProvider(h.value) })),
-    ...[{ value: 'default', label: 'Default' }, ...options.models.filter(m => m.value !== 'default')]
-      .map(m => ({ label: m.label, section: 'Model', checked: m.value === model, onPress: () => form.pickModel(m.value) })),
+    ...options.harnesses.map(h => ({ label: h.label, section: t('Harness'), checked: h.value === provider, onPress: () => form.pickProvider(h.value) })),
+    ...[{ value: 'default', label: t('Default') }, ...options.models.filter(m => m.value !== 'default')]
+      .map(m => ({ label: m.label, section: t('Model'), checked: m.value === model, onPress: () => form.pickModel(m.value) })),
   ];
 
   return (
@@ -114,7 +118,7 @@ export function NewThread() {
       <Stack.Screen options={{ title: 'New thread', headerTitle: 'New thread', headerLargeTitle: false, headerSearchBarOptions: undefined }} />
       {/* Native items, so iOS puts them in the rail; only the Duo's split view shows this pane. */}
       <Stack.Toolbar placement="left">
-        <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? 'Show sidebar' : 'Hide sidebar'} onPress={toggleSidebar} />
+        <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? t('Show sidebar') : t('Hide sidebar')} onPress={toggleSidebar} />
       </Stack.Toolbar>
       <View style={styles.center}>
         <Text accessibilityRole="header" style={[type.largeTitle, styles.title, { color: colors.text }]}>What should we work on?</Text>
@@ -149,14 +153,14 @@ export function NewThread() {
         <TextInput value={prompt} onChangeText={setPrompt} placeholder={starting ? 'Starting on the computer…' : form.team ? 'Ask the team…' : 'Ask the agent…'} placeholderTextColor={colors.faint}
           multiline editable={!starting} style={[type.callout, styles.input, { color: colors.text }]} accessibilityLabel="Message" />
         <View style={styles.row}>
-          <Menu ios="plus" android="add" color={colors.text} label="More options" items={optionItems}
+          <Menu ios="plus" android="add" color={colors.text} label={t('More options')} items={optionItems}
             modifiers={nativeGlass ? [frame({ width: SIZE, height: SIZE }), interactiveGlass('circle')] : undefined}>
             {icon => (nativeGlass ? icon : <View style={[styles.round, { backgroundColor: colors.fill }]}>{icon}</View>)}
           </Menu>
           <AttachButton items={attach.items} disabled={starting} />
           <View style={styles.spacer} />
           {!!provider && (
-            <ViewMenu label={`${harnessName(provider)} model`} items={harnessItems}>
+            <ViewMenu label={t`${harnessName(provider)} model`} items={harnessItems}>
               <View style={styles.harness}>
                 <HarnessLogo id={provider} size={18} />
                 <Icon ios="chevron.down" android="expand_more" size={11} color={colors.muted} />
