@@ -81,6 +81,13 @@
           "enablePushNotifications": false,
           "frequentUpdates": false
         }
+      ],
+      [
+"expo-speech-recognition",
+        {
+          "microphonePermission": "Allow PandaCode to use the microphone when you dictate a message to your agent.",
+          "speechRecognitionPermission": "Allow PandaCode to use speech recognition to turn your dictation into text."
+        }
       ]
     ],
     "experiments": {

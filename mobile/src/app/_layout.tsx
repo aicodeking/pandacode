@@ -10,6 +10,7 @@ import { useStatus } from '../store/index.ts';
 import { useOutboxFlusher } from '../store/local.ts';
 import { usePushNotifications } from '../ui/push.ts';
 import { loadAppearance } from '../ui/appearance.ts';
+import { loadVoicePreference } from '../ui/speech.ts';
 import { useWallpaperShown, WallpaperLayer } from '../ui/Backdrop.tsx';
 import { hasGlass } from '../ui/Glass.tsx';
 import { MenuHost } from '../ui/Menu.tsx';
@@ -46,6 +47,7 @@ export default function RootLayout() {
   const sidebar = split && !collapsed;
   useEffect(() => {
     void loadAppearance();
+    void loadVoicePreference();
     void connect.init(); // or demo mode (src/demo.ts)
   }, []);
   useOutboxFlusher();
