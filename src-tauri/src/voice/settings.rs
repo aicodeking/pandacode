@@ -17,6 +17,12 @@ pub const ENGINE_SHERPA: &str = "sherpa";
 pub const INTERACTION_TOGGLE: &str = "toggle";
 pub const INTERACTION_HOLD: &str = "hold";
 
+/// Where transcription happens: `offline` (default), `online` (a configured
+/// provider), or `online-fallback` (online first, the offline engine settles).
+pub const MODE_OFFLINE: &str = "offline";
+pub const MODE_ONLINE: &str = "online";
+pub const MODE_ONLINE_FALLBACK: &str = "online-fallback";
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -33,6 +39,14 @@ pub struct Settings {
     /// Skip the offline final pass and keep the streaming result: fastest
     /// stop-to-text, slightly lower quality.
     pub fast_mode: bool,
+    /// `offline`, `online`, or `online-fallback` (constants above).
+    pub mode: String,
+    /// Online provider id (`providers::find`); empty means none configured.
+    pub online_provider: String,
+    /// Online model override; empty uses the provider preset's default.
+    pub online_model: String,
+    /// Base URL override (required for `custom`; optional elsewhere).
+    pub online_base_url: String,
 }
 
 impl Default for Settings {
@@ -44,6 +58,10 @@ impl Default for Settings {
             language: "auto".into(),
             interaction: INTERACTION_TOGGLE.into(),
             fast_mode: false,
+            mode: MODE_OFFLINE.into(),
+            online_provider: String::new(),
+            online_model: String::new(),
+            online_base_url: String::new(),
         }
     }
 }
@@ -91,7 +109,28 @@ impl Settings {
         if self.interaction != INTERACTION_TOGGLE && self.interaction != INTERACTION_HOLD {
             self.interaction = INTERACTION_TOGGLE.into();
         }
+        if self.mode != MODE_ONLINE && self.mode != MODE_ONLINE_FALLBACK {
+            self.mode = MODE_OFFLINE.into();
+        }
+        if !super::providers::find(&self.online_provider).is_some() {
+            self.online_provider.clear();
+            self.online_model.clear();
+            self.online_base_url.clear();
+        }
+        if self.online_provider.is_empty() {
+            self.mode = MODE_OFFLINE.into();
+        }
         self
+    }
+
+    /// True when the saved mode wants a network provider first.
+    pub fn online_first(&self) -> bool {
+        self.mode == MODE_ONLINE || self.mode == MODE_ONLINE_FALLBACK
+    }
+
+    /// True when a failed online attempt should settle on the offline engine.
+    pub fn fallback_allowed(&self) -> bool {
+        self.mode == MODE_ONLINE_FALLBACK
     }
 }
 

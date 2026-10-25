@@ -141,7 +141,7 @@ fn punct_dir(models: &Path) -> std::path::PathBuf {
     models.join(model::PUNCT_DEFAULT)
 }
 
-fn load_offline(models: &Path, settings: &Settings) -> Option<OfflineRecognizer> {
+pub(crate) fn load_offline(models: &Path, settings: &Settings) -> Option<OfflineRecognizer> {
     let id = settings
         .resolved_model(&|id| model::installed(models, id));
     let entry = model::find(&id)?;
@@ -295,6 +295,22 @@ impl SherpaRecorder {
             None => trimmed.to_string(),
         }
     }
+}
+
+/// The offline quality pass alone, without the streaming stage — used by the
+/// online-with-fallback mode to settle a recording when the provider failed.
+/// Returns `None` when no quality model is installed.
+pub(crate) fn finalize_buffer(dir: &Path, settings: &Settings, samples: &[f32]) -> Option<String> {
+    if samples.is_empty() {
+        return None;
+    }
+    let models = dir.join("voice").join("models");
+    let offline = load_offline(&models, settings)?;
+    let stream = offline.create_stream();
+    stream.accept_waveform(SAMPLE_RATE, samples);
+    offline.decode(&stream);
+    let text = stream.get_result()?.text.trim().to_string();
+    if text.is_empty() { None } else { Some(text) }
 }
 
 #[cfg(test)]

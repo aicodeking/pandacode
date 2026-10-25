@@ -17,6 +17,8 @@ use super::{ActiveSession, Voice, EVENT_DOWNLOAD};
 /// Cadence of the recording loop and the level meter.
 const TICK: Duration = Duration::from_millis(80);
 const LEVEL_EVERY: Duration = Duration::from_millis(100);
+/// Session-engine label for the online modes (the provider id is in settings).
+const ONLINE: &str = "online";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +28,8 @@ pub struct VoiceState {
     pub recording: Option<String>,
     pub apple_available: bool,
     pub microphone_available: bool,
+    /// Provider ids with a saved API key (ids only, never values).
+    pub keys: Vec<String>,
 }
 
 fn status_models(state: &Voice) -> Vec<ModelStatus> {
@@ -70,6 +74,7 @@ pub fn voice_state(voice: State<'_, Voice>) -> VoiceState {
         recording,
         apple_available: super::apple_available(),
         microphone_available: microphone_available(),
+        keys: voice_keys(),
     }
 }
 
@@ -86,8 +91,123 @@ pub fn voice_save_settings(voice: State<'_, Voice>, settings: Settings) -> Resul
     Ok(settings)
 }
 
-/// Starts recording with the configured engine. Errors when a recording is
-/// already running; the UI hides the button in that case anyway.
+/// Secret-store service for online provider keys (own namespace; the values
+/// never reach the webview).
+const KEY_SERVICE: &str = "app.pandacode.voice";
+
+fn key_account(provider: &str) -> String {
+    format!("key.{provider}")
+}
+
+/// The provider registry for the Settings picker (no secrets).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInfo {
+    pub id: String,
+    pub label: String,
+    pub base_url: String,
+    pub default_model: String,
+    pub models: Vec<String>,
+    /// Streaming providers transcribe live; multipart ones finalize on stop.
+    pub streaming: bool,
+}
+
+#[tauri::command]
+pub fn voice_providers() -> Vec<ProviderInfo> {
+    use super::providers::Transport;
+    super::providers::PROVIDERS
+        .iter()
+        .map(|provider| ProviderInfo {
+            id: provider.id.into(),
+            label: provider.label.into(),
+            base_url: provider.base_url.into(),
+            default_model: provider.default_model.into(),
+            models: provider.models.iter().map(|model| model.to_string()).collect(),
+            streaming: provider.transport != Transport::Multipart,
+        })
+        .collect()
+}
+
+/// Saves (or, with an empty key, forgets) one provider's API key.
+#[tauri::command]
+pub fn voice_set_key(provider: String, key: String) -> Result<(), String> {
+    let entry = super::providers::find(&provider).ok_or("Unknown voice provider.")?;
+    if key.trim().is_empty() {
+        crate::secret_store::remove(KEY_SERVICE, &key_account(entry.id));
+        return Ok(());
+    }
+    crate::secret_store::set(KEY_SERVICE, &key_account(entry.id), key.trim())
+        .map_err(|e| e.to_string())
+}
+
+/// Provider ids that currently have a saved key (ids only, never values).
+#[tauri::command]
+pub fn voice_keys() -> Vec<String> {
+    super::providers::PROVIDERS
+        .iter()
+        .filter(|provider| crate::secret_store::get(KEY_SERVICE, &key_account(provider.id)).is_some())
+        .map(|provider| provider.id.to_string())
+        .collect()
+}
+
+/// A connectivity test: silence in, an HTTP 200 / clean session out.
+#[tauri::command]
+pub async fn voice_test_provider(
+    voice: State<'_, Voice>,
+    provider: String,
+) -> Result<String, String> {
+    let settings = voice.settings.lock().expect("settings lock").clone();
+    let entry = super::providers::find(&provider).ok_or("Unknown voice provider.")?;
+    let key = crate::secret_store::get(KEY_SERVICE, &key_account(entry.id))
+        .ok_or("Save an API key first.")?;
+    let model = super::providers::resolved_model(entry, &settings.online_model);
+    // A quiet half second: enough to exercise the whole path.
+    let samples = vec![0.0f32; super::online::SAMPLE_RATE as usize / 2];
+    match entry.transport {
+        super::providers::Transport::Multipart => {
+            transcribe_or_probe(entry, &settings.online_base_url, model, &key, &samples, true).await
+        }
+        super::providers::Transport::DeepgramWs => {
+            let url = super::providers::deepgram_url(entry, &settings.online_base_url, model);
+            let mut stream = super::online::connect_deepgram(&url, &key, |_| {}).await?;
+            stream.feed(&samples).await?;
+            stream.finish().await.map(|_| format!("{label} is connected.", label = entry.label))
+        }
+        super::providers::Transport::RealtimeWs => {
+            let url = super::providers::realtime_url(entry, &settings.online_base_url, model);
+            let mut stream = super::online::connect_realtime(&url, &key, model, |_| {}).await?;
+            stream.feed(&samples).await?;
+            stream.finish().await.map(|_| format!("{label} is connected.", label = entry.label))
+        }
+    }
+}
+
+/// Multipart call; `probe` treats a well-formed (even empty) answer as success
+/// so a connectivity test with silence does not read as a failure.
+async fn transcribe_or_probe(
+    entry: &'static super::providers::Provider,
+    base_override: &str,
+    model: &str,
+    key: &str,
+    samples: &[f32],
+    probe: bool,
+) -> Result<String, String> {
+    let result = super::online::transcribe_multipart(entry, base_override, model, key, samples).await;
+    match result {
+        Ok(text) => Ok(if probe && text.is_empty() { format!("{} is connected.", entry.label) } else { text }),
+        Err(error) => {
+            if probe && error.contains("returned no transcript") {
+                Ok(format!("{} is connected.", entry.label))
+            } else {
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Starts recording with the configured engine and mode. Configuration
+/// problems (no provider, no key) reject synchronously; connection failures
+/// surface as `voice-error` so the UI resets without a stuck session.
 #[tauri::command]
 pub fn voice_start(app: AppHandle, voice: State<'_, Voice>) -> Result<(), String> {
     let mut session = voice.session.lock().expect("session lock");
@@ -100,7 +220,11 @@ pub fn voice_start(app: AppHandle, voice: State<'_, Voice>) -> Result<(), String
     }
     let stop = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
-    let engine = settings.resolved_engine();
+    let engine = if settings.online_first() {
+        ONLINE
+    } else {
+        settings.resolved_engine()
+    };
     let worker = match engine {
         super::settings::ENGINE_APPLE => {
             #[cfg(target_os = "macos")]
@@ -118,6 +242,13 @@ pub fn voice_start(app: AppHandle, voice: State<'_, Voice>) -> Result<(), String
                 return Err("The Apple Speech engine is only on macOS.".into());
             }
         }
+        ONLINE => online_start_recording(
+            app.clone(),
+            voice.dir.clone(),
+            settings.clone(),
+            stop.clone(),
+            cancel.clone(),
+        )?,
         _ => sherpa_start_recording(
             app.clone(),
             voice.dir.clone(),
@@ -129,6 +260,8 @@ pub fn voice_start(app: AppHandle, voice: State<'_, Voice>) -> Result<(), String
     *session = Some(ActiveSession {
         engine: if engine == super::settings::ENGINE_APPLE {
             super::settings::ENGINE_APPLE
+        } else if engine == ONLINE {
+            ONLINE
         } else {
             super::settings::ENGINE_SHERPA
         },
@@ -352,6 +485,175 @@ fn sherpa_start_recording(
     }))
 }
 
+/// The online recording path: capture locally while a streaming provider
+/// transcribes live (or, for multipart providers, buffer until stop and send
+/// once). A failed online attempt settles on the offline engine when the mode
+/// allows fallback; otherwise the error surfaces and the take is kept only in
+/// the recording bar's toast.
+fn online_start_recording(
+    app: AppHandle,
+    dir: std::path::PathBuf,
+    settings: Settings,
+    stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
+) -> Result<tauri::async_runtime::JoinHandle<()>, String> {
+    let provider = super::providers::find(&settings.online_provider)
+        .ok_or("Choose an online provider in Settings → Voice.")?;
+    let key = crate::secret_store::get(KEY_SERVICE, &key_account(provider.id))
+        .ok_or(format!("Save an API key for {} first.", provider.label))?;
+    let model = super::providers::resolved_model(provider, &settings.online_model).to_string();
+    let capture = super::capture::Capture::start()?;
+    Ok(tauri::async_runtime::spawn(async move {
+        let app = &app;
+        let mut last_level = Instant::now() - LEVEL_EVERY;
+        let mut buffer: Vec<f32> = Vec::new();
+        // Streaming providers connect now; multipart providers connect on stop.
+        let mut stream: Option<super::online::OnlineStream> = match provider.transport {
+            super::providers::Transport::Multipart => None,
+            super::providers::Transport::DeepgramWs => {
+                let url = super::providers::deepgram_url(provider, &settings.online_base_url, &model);
+                match super::online::connect_deepgram(&url, &key, {
+                    let app = app.clone();
+                    move |text| super::emit(&app, super::EVENT_PARTIAL, serde_json::json!({ "text": text }))
+                })
+                .await
+                {
+                    Ok(stream) => Some(stream),
+                    Err(error) => {
+                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
+                        clear_session(app);
+                        return;
+                    }
+                }
+            }
+            super::providers::Transport::RealtimeWs => {
+                let url = super::providers::realtime_url(provider, &settings.online_base_url, &model);
+                match super::online::connect_realtime(&url, &key, &model, {
+                    let app = app.clone();
+                    move |text| super::emit(&app, super::EVENT_PARTIAL, serde_json::json!({ "text": text }))
+                })
+                .await
+                {
+                    Ok(stream) => Some(stream),
+                    Err(error) => {
+                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
+                        clear_session(app);
+                        return;
+                    }
+                }
+            }
+        };
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            tokio::time::sleep(TICK).await;
+            let chunk = capture.drain_16k();
+            buffer.extend_from_slice(&chunk);
+            let mut feed_error = None;
+            if let Some(active) = stream.as_mut() {
+                if let Err(error) = active.feed(&chunk).await {
+                    // Keep capturing; the offline settle happens on stop.
+                    feed_error = Some(error);
+                }
+            }
+            if let Some(error) = feed_error {
+                stream = None;
+                super::emit(
+                    app,
+                    super::EVENT_ERROR,
+                    serde_json::json!({ "message": online_note(&settings, &error) }),
+                );
+            }
+            if last_level.elapsed() >= LEVEL_EVERY {
+                super::emit(app, super::EVENT_LEVEL, capture.level());
+                last_level = Instant::now();
+            }
+        }
+        if cancel.load(Ordering::SeqCst) {
+            clear_session(app);
+            return;
+        }
+        // Streaming: flush and await the provider's final transcript.
+        if let Some(stream) = stream {
+            match stream.finish().await {
+                Ok(text) if !text.trim().is_empty() => {
+                    super::emit(
+                        app,
+                        super::EVENT_RESULT,
+                        serde_json::json!({ "text": text, "engine": provider.id, "fallback": false }),
+                    );
+                    clear_session(app);
+                    return;
+                }
+                Ok(_) => super::emit(
+                    app,
+                    super::EVENT_ERROR,
+                    serde_json::json!({ "message": "No speech was detected." }),
+                ),
+                Err(error) => settle_offline_or_fail(app, &dir, &settings, &buffer, error).await,
+            }
+            clear_session(app);
+            return;
+        }
+        // Multipart: one request with the whole take.
+        match super::online::transcribe_multipart(provider, &settings.online_base_url, &model, &key, &buffer).await {
+            Ok(text) => super::emit(
+                app,
+                super::EVENT_RESULT,
+                serde_json::json!({ "text": text, "engine": provider.id, "fallback": false }),
+            ),
+            Err(error) => settle_offline_or_fail(app, &dir, &settings, &buffer, error).await,
+        }
+        clear_session(app);
+    }))
+}
+
+/// Fallback settle: decode the local buffer with the offline engine; without
+/// fallback (or models) the original online error becomes the outcome.
+async fn settle_offline_or_fail(
+    app: &AppHandle,
+    dir: &std::path::Path,
+    settings: &Settings,
+    buffer: &[f32],
+    online_error: String,
+) {
+    let note = online_note(settings, &online_error);
+    if settings.fallback_allowed() {
+        let dir = dir.to_path_buf();
+        let settings = settings.clone();
+        let samples = buffer.to_vec();
+        let settled = tauri::async_runtime::spawn_blocking(move || {
+            super::sherpa::finalize_buffer(&dir, &settings, &samples)
+        })
+        .await
+        .unwrap_or(None);
+        if let Some(text) = settled {
+            super::emit(
+                app,
+                super::EVENT_RESULT,
+                serde_json::json!({ "text": text, "engine": "sherpa", "fallback": true }),
+            );
+            super::emit(
+                app,
+                super::EVENT_ERROR,
+                serde_json::json!({ "message": note }),
+            );
+            return;
+        }
+    }
+    super::emit(app, super::EVENT_ERROR, serde_json::json!({ "message": note }));
+}
+
+/// Fallback failures mention what happened next; plain failures stand alone.
+fn online_note(settings: &Settings, error: &str) -> String {
+    if settings.fallback_allowed() {
+        format!("{error} Settled with the local model where it could.")
+    } else {
+        error.to_string()
+    }
+}
+
 /// Workers clear the session themselves so stop/cancel remain fire-and-forget.
 pub(crate) fn clear_session(app: &AppHandle) {
     if let Some(state) = app.try_state::<Voice>() {
@@ -371,6 +673,7 @@ mod tests {
             recording: None,
             apple_available: false,
             microphone_available: true,
+            keys: Vec::new(),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert!(json.get("appleAvailable").is_some());
