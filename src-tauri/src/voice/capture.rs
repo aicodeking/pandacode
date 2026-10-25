@@ -20,6 +20,8 @@ pub struct Capture {
     pub sample_rate: u32,
     pub channels: u16,
     /// Callbacks whose samples were dropped because the consumer held the lock.
+    /// Diagnostics only; the streaming models tolerate small gaps.
+    #[allow(dead_code)]
     pub dropped: Arc<AtomicU64>,
 }
 
@@ -64,11 +66,6 @@ impl Capture {
     /// Latest input level, 0..1.
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
-    }
-
-    /// Keeps the stream alive until dropped.
-    pub fn is_active(&self) -> bool {
-        true
     }
 }
 
