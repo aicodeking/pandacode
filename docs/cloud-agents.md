@@ -2,8 +2,8 @@
 
 A task can run its agent on a cloud machine instead of this computer. In a New task, the
 context bar's computer menu ("This computer", other Connect computers) also lists
-**Cloud** targets: every provider connected in Settings → Cloud (Daytona, Cloudflare,
-AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
+**Cloud** targets: every provider connected in Settings → Cloud (Daytona, DigitalOcean,
+Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel,
 Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
 queue, model picker. It keeps running when the laptop sleeps or PandaCode quits, and
@@ -89,6 +89,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 
 | Provider | Key | Options |
 | --- | --- | --- |
+| digitalocean | API token | `region` (default `nyc1`). Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
 | e2b | API key | — |
 | modal | token secret | `tokenId` (required), `environment` |
 | codesandbox | API key | — |

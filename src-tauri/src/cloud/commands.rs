@@ -312,7 +312,7 @@ pub fn machines() -> Machines {
     }
     // Google Cloud is also a deploy-only connection; list its VMs only once a cloud-agent zone is chosen.
     let gcloud_agents = super::settings().providers.get("gcloud").is_some_and(|o| o.contains_key("zone"));
-    for provider in ["gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"] {
+    for provider in ["gcloud", "digitalocean", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"] {
         if provider == "gcloud" && !gcloud_agents { continue; }
         if let Ok(sandbox) = super::sandbox::connected(provider) {
             match sandbox.list() {
