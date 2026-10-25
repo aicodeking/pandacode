@@ -217,4 +217,17 @@ mod tests {
         assert!((out[0] - 0.3).abs() < 1e-6);
         assert!((out[1] - 0.7).abs() < 1e-6);
     }
+
+    /// Against a real microphone (speak during the two seconds):
+    /// `PANDACODE_MIC=1 cargo test --lib -- --ignored voice::capture::tests::live_microphone`
+    #[test]
+    #[ignore]
+    fn live_microphone() {
+        std::env::var("PANDACODE_MIC").expect("set PANDACODE_MIC=1 to run the live microphone test");
+        let capture = Capture::start().expect("open the microphone");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let chunk = capture.drain_16k();
+        assert!(!chunk.is_empty(), "two seconds of capture produced no samples");
+        println!("captured {} samples (16 kHz), level {:.3}", chunk.len(), capture.level());
+    }
 }
