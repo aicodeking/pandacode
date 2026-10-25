@@ -2,14 +2,16 @@
 //!
 //! Nothing is bundled and nothing phones home: the Apple Speech engine uses
 //! the OS, the sherpa engine runs models the user downloaded once
-//! ([`model`]), and online engines (separate change) only talk to providers
-//! the user configured. Design notes in docs/voice.md.
+//! ([`model`]), and the online engines only talk to the provider the user
+//! configured (settings → Voice). Design notes in docs/voice.md.
 
 #[cfg(target_os = "macos")]
 pub mod apple;
 pub mod capture;
 pub mod commands;
 pub mod model;
+pub mod online;
+pub mod providers;
 pub mod sherpa;
 pub mod settings;
 
