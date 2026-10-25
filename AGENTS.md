@@ -26,6 +26,7 @@ Rules an agent needs before writing any code. Detailed subsystem notes are in [d
 - Segmented controls (`.settings-tabs`) hand their highlight to `.segment-thumb` via `trackSegment()`; the thumb is placed with the `translate` property (never `transform`, which the size FLIP's `scale` would compose with), so it slides evenly between options of different widths.
 - Anything rendered by the composer must be styled from an always-loaded stylesheet: `architect.css` (and other lazily imported CSS) only arrives with its module, which is how the Team button once changed size on first click.
 - Text entry: any handler that submits or cancels on Enter or Escape checks `isImeKey()` (`src/dom.ts`): WKWebView sends the committing Enter after compositionend with keyCode 229.
+- Language (i18n): wrap user-visible UI strings in `t()` from `src/i18n.ts` (tagged `` t`… ${value}` `` for interpolation; source English is the key). New strings need entries in every full catalog under `src/locales/` — `tests/i18n.test.mjs` fails until they do. Conventions and untranslated surfaces: [src/locales/GLOSSARY.md](src/locales/GLOSSARY.md).
 
 ## Native and data
 
