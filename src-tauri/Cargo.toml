@@ -48,6 +48,12 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-updater = ">=2, <2.10"
 tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
+cpal = "0.18.2"
+hound = "3.5.1"
+sherpa-onnx = "2.0.0"
+tar = "0.4.46"
+bzip2 = "0.6.1"
+num-traits = "0.2.19"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
 
@@ -58,13 +64,16 @@ libm = "0.2"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 objc2 = "0.6.4"
 block2 = "0.6"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKSnapshotConfiguration", "WKNavigation", "block2", "objc2-app-kit"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAccessibility", "NSAppearance", "NSColor", "NSGlassEffectView", "NSResponder", "NSView", "NSVisualEffectView", "NSWindow", "NSWorkspace", "objc2-core-foundation", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphics"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSGeometry", "NSData", "NSDictionary", "NSString", "NSError", "NSURL"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSObject", "NSGeometry", "NSData", "NSDictionary", "NSString", "NSError", "NSURL", "NSBundle"] }
+objc2-speech = "0.3.2"
+objc2-avf-audio = "0.3.2"
 
 # These use the platform webview already required by Tauri; none enters the Mac build.
 [target.'cfg(target_os = "windows")'.dependencies]
