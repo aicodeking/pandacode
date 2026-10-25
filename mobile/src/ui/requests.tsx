@@ -9,16 +9,18 @@ import { initial, parseSchema, range, readForm, type Field } from './form-schema
 import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
+import { useT } from './language.ts';
 import { mono, useColors, type Colors } from './theme.ts';
 
 interface Question { id: string; header?: string; question: string; options?: { label: string; description?: string }[]; isOther?: boolean; isSecret?: boolean; multiSelect?: boolean }
 type Input = { kind: 'questions'; questions: Question[] } | { kind: 'form'; message: string; schema: unknown } | { kind: 'url'; message: string; url: string };
 
 function useSend() {
+  const t = useT();
   const [busy, setBusy] = useState(false);
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
-    try { await action(); } catch (error) { Alert.alert('Could not send', (error as Error).message); setBusy(false); }
+    try { await action(); } catch (error) { Alert.alert(t('Could not send'), (error as Error).message); setBusy(false); }
   };
   return [busy, run] as const;
 }
@@ -38,6 +40,7 @@ export function Button({ label, onPress, kind = 'plain', disabled, icon }: { lab
 }
 
 export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: string; sessionId: string; request: PendingRequest }) {
+  const t = useT();
   const colors = useColors();
   const [busy, send] = useSend();
   const answer = (approve: boolean) => send(async () => {
@@ -46,13 +49,13 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
   });
   return (
     <Glass style={styles.card}>
-      <Heading icon={{ ios: 'hand.raised.fill', android: 'front_hand' }} title="Approval needed" color={colors.orange} />
-      <Markdown text={request.text || 'The agent asks to continue.'} />
+      <Heading icon={{ ios: 'hand.raised.fill', android: 'front_hand' }} title={t('Approval needed')} color={colors.orange} />
+      <Markdown text={request.text || t('The agent asks to continue.')} />
       {!!request.tool && <Text style={[styles.tool, { color: colors.text, backgroundColor: colors.fill, fontFamily: mono }]} numberOfLines={6} selectable>{request.tool.name}{request.tool.input ? `\n${request.tool.input}` : ''}</Text>}
       <View style={styles.actions}>
         {busy ? <ActivityIndicator /> : <>
-          <Button label="Deny" kind="danger" icon={{ ios: 'xmark', android: 'close' }} onPress={() => answer(false)} />
-          <Button label="Approve" kind="primary" icon={{ ios: 'checkmark', android: 'check' }} onPress={() => answer(true)} />
+          <Button label={t('Deny')} kind="danger" icon={{ ios: 'xmark', android: 'close' }} onPress={() => answer(false)} />
+          <Button label={t('Approve')} kind="primary" icon={{ ios: 'checkmark', android: 'check' }} onPress={() => answer(true)} />
         </>}
       </View>
     </Glass>
@@ -60,6 +63,7 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
 }
 
 export function InputCard({ deviceId, sessionId, request }: { deviceId: string; sessionId: string; request: PendingRequest }) {
+  const t = useT();
   const colors = useColors();
   const [busy, send] = useSend();
   const input = request.data as Input | undefined;
@@ -75,25 +79,25 @@ export function InputCard({ deviceId, sessionId, request }: { deviceId: string; 
   else if (input?.kind === 'url' && typeof input.url === 'string') body = (
     <>
       <Markdown text={input.message} />
-      <Button label="Open link" onPress={() => { if (/^https?:\/\//i.test(input.url)) void Linking.openURL(input.url); }} />
+      <Button label={t('Open link')} onPress={() => { if (/^https?:\/\//i.test(input.url)) void Linking.openURL(input.url); }} />
       <Actions busy={busy}>
-        <Button label="Cancel" onPress={cancel} />
-        <Button label="Decline" kind="danger" onPress={decline} />
-        <Button label="Continue" kind="primary" onPress={() => respond({ action: 'accept' })} />
+        <Button label={t('Cancel')} onPress={cancel} />
+        <Button label={t('Decline')} kind="danger" onPress={decline} />
+        <Button label={t('Continue')} kind="primary" onPress={() => respond({ action: 'accept' })} />
       </Actions>
     </>
   );
   else if (input?.kind === 'form') body = <Form message={input.message} schema={input.schema} busy={busy} colors={colors} onSubmit={content => respond({ action: 'accept', content })} onDecline={decline} onCancel={cancel} />;
   else body = (
     <>
-      <Markdown text={request.text || 'The agent is waiting for an answer.'} />
-      <Text style={[styles.error, { color: colors.red }]}>This input format is not supported. Cancel to let the agent continue.</Text>
-      <Actions busy={busy}><Button label="Cancel" onPress={cancel} /></Actions>
+      <Markdown text={request.text || t('The agent is waiting for an answer.')} />
+      <Text style={[styles.error, { color: colors.red }]}>{t('This input format is not supported. Cancel to let the agent continue.')}</Text>
+      <Actions busy={busy}><Button label={t('Cancel')} onPress={cancel} /></Actions>
     </>
   );
   return (
     <Glass style={styles.card}>
-      <Heading icon={{ ios: 'questionmark', android: 'question_mark' }} title={input?.kind === 'questions' ? 'A quick question' : 'Input needed'} color={colors.orange} />
+      <Heading icon={{ ios: 'questionmark', android: 'question_mark' }} title={input?.kind === 'questions' ? t('A quick question') : t('Input needed')} color={colors.orange} />
       {body}
     </Glass>
   );
@@ -113,6 +117,7 @@ function Actions({ busy, children }: { busy: boolean; children: ReactNode }) {
 }
 
 function Questions({ questions, busy, colors, onSubmit, onCancel }: { questions: Question[]; busy: boolean; colors: Colors; onSubmit: (answers: Record<string, string[]>) => void; onCancel: () => void }) {
+  const t = useT();
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
   const toggle = (q: Question, label: string) => {
@@ -144,28 +149,29 @@ function Questions({ questions, busy, colors, onSubmit, onCancel }: { questions:
             })}
           </View>
           {(q.isOther || !q.options?.length) && (
-            <TextInput value={other[q.id] ?? ''} onChangeText={t => setOther(o => ({ ...o, [q.id]: t }))} placeholder={q.options?.length ? 'Other…' : 'Your answer'}
+            <TextInput value={other[q.id] ?? ''} onChangeText={t => setOther(o => ({ ...o, [q.id]: t }))} placeholder={q.options?.length ? t('Other…') : t('Your answer')}
               placeholderTextColor={colors.tertiary as string} secureTextEntry={q.isSecret} style={[styles.field, { color: colors.text, backgroundColor: colors.fill }]} />
           )}
         </View>
       ))}
       <Actions busy={busy}>
-        <Button label="Cancel" onPress={onCancel} />
-        <Button label="Send answer" kind="primary" disabled={!ready} onPress={() => onSubmit(answers)} />
+        <Button label={t('Cancel')} onPress={onCancel} />
+        <Button label={t('Send answer')} kind="primary" disabled={!ready} onPress={() => onSubmit(answers)} />
       </Actions>
     </>
   );
 }
 
 function Form({ message, schema, busy, colors, onSubmit, onDecline, onCancel }: { message: string; schema: unknown; busy: boolean; colors: Colors; onSubmit: (content: Record<string, unknown>) => void; onDecline: () => void; onCancel: () => void }) {
+  const t = useT();
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [error, setError] = useState('');
   let fields: Field[] = [];
   let unsupported = '';
-  try { fields = parseSchema(schema); } catch (e) { unsupported = (e as Error).message; }
+  try { fields = parseSchema(schema, t); } catch (e) { unsupported = (e as Error).message; }
   const set = (name: string, value: unknown) => { setValues(v => ({ ...v, [name]: value })); setError(''); };
   const submit = () => {
-    try { onSubmit(readForm(fields, values)); } catch (e) { setError((e as Error).message); }
+    try { onSubmit(readForm(fields, values, t)); } catch (e) { setError((e as Error).message); }
   };
   const field = { color: colors.text, backgroundColor: colors.fill };
   return (
@@ -173,13 +179,13 @@ function Form({ message, schema, busy, colors, onSubmit, onDecline, onCancel }: 
       <Markdown text={message} />
       {fields.map(f => {
         const value = values[f.name] ?? initial(f);
-        const hint = f.kind === 'number' && (typeof f.schema.minimum === 'number' || typeof f.schema.maximum === 'number') ? ` (${range(f.schema)})` : '';
+        const hint = f.kind === 'number' && (typeof f.schema.minimum === 'number' || typeof f.schema.maximum === 'number') ? ` (${range(f.schema, t)})` : '';
         return (
           <View key={f.name} style={styles.question}>
-            <Text style={[styles.header, { color: colors.secondary }]}>{f.title}{f.required ? '' : ' (optional)'}{hint}</Text>
+            <Text style={[styles.header, { color: colors.secondary }]}>{f.title}{f.required ? '' : ` ${t('(optional)')}`}{hint}</Text>
             {!!f.description && <Text style={[styles.optionDetail, { color: colors.secondary }]}>{f.description}</Text>}
             {f.kind === 'boolean' ? <Switch value={value === true} onValueChange={v => set(f.name, v)} accessibilityLabel={f.title} />
-              : f.kind === 'enum' ? <Choice value={String(value)} options={[{ value: '', label: 'Choose…' }, ...f.options.map((o, i) => ({ value: String(i), label: o.label }))]} onChange={v => set(f.name, v)} />
+              : f.kind === 'enum' ? <Choice value={String(value)} options={[{ value: '', label: t('Choose…') }, ...f.options.map((o, i) => ({ value: String(i), label: o.label }))]} onChange={v => set(f.name, v)} />
               : f.kind === 'multi' ? (
                 <View style={styles.options}>
                   {f.options.map(o => {
@@ -204,9 +210,9 @@ function Form({ message, schema, busy, colors, onSubmit, onDecline, onCancel }: 
       })}
       {!!(error || unsupported) && <Text style={[styles.error, { color: colors.red }]} accessibilityRole="alert">{error || unsupported}</Text>}
       <Actions busy={busy}>
-        <Button label="Cancel" onPress={onCancel} />
-        {!unsupported && <Button label="Decline" kind="danger" onPress={onDecline} />}
-        {!unsupported && <Button label="Submit" kind="primary" onPress={submit} />}
+        <Button label={t('Cancel')} onPress={onCancel} />
+        {!unsupported && <Button label={t('Decline')} kind="danger" onPress={onDecline} />}
+        {!unsupported && <Button label={t('Submit')} kind="primary" onPress={submit} />}
       </Actions>
     </>
   );

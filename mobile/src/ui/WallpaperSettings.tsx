@@ -6,26 +6,31 @@ import type { ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, useColorScheme, View, type ColorValue } from 'react-native';
 import { setWallpaper, THUMBNAILS, useBackdrop, useWallpaper } from './Backdrop.tsx';
 import { Icon } from './Icon.tsx';
-import { PHONE_DEFAULTS, sceneIds, wallpaperAt, wallpaperPeriods, wallpaperSets } from './wallpaper.ts';
+import { useT } from './language.ts';
+import { PHONE_DEFAULTS, sceneIds, wallpaperAt, wallpaperSets } from './wallpaper.ts';
 
 const SETS = [{ id: 'automatic', label: 'Automatic' }, ...wallpaperSets] as const;
-const label = (id: string) => {
-  const [day, period] = id.split('-');
-  return `${wallpaperSets.find(d => d.id === day)?.label.slice(0, 3)} ${wallpaperPeriods.find(p => p.id === period)?.label.toLowerCase()}`;
-};
 
 export function WallpaperSettings() {
+  const t = useT();
   const colors = useBackdrop();
   const { preferences, reduceTransparency } = useWallpaper();
   const on = preferences.enabled && preferences.visibility > 0;
   const current = wallpaperAt(new Date(), preferences);
+  // Day and period labels are const data (wallpaper.ts); the render site maps ids to translations.
+  const setLabels: Record<string, string> = { automatic: t('Automatic'), mon: t('Monday'), tue: t('Tuesday'), wed: t('Wednesday'), thu: t('Thursday'), fri: t('Friday'), sat: t('Saturday'), sun: t('Sunday') };
+  const periodLabels: Record<string, string> = { morning: t('Morning'), afternoon: t('Afternoon'), night: t('Night') };
+  const label = (id: string) => {
+    const [day, period] = id.split('-');
+    return `${setLabels[day]?.slice(0, 3)} ${periodLabels[period]?.toLowerCase()}`;
+  };
   return (
     <>
       <View style={styles.row}>
-        <Text style={[styles.value, { color: colors.text }]}>Daily wallpaper</Text>
+        <Text style={[styles.value, { color: colors.text }]}>{t('Daily wallpaper')}</Text>
         <Switch value={on} onValueChange={enabled => setWallpaper({ enabled, visibility: preferences.visibility || PHONE_DEFAULTS.visibility })} />
       </View>
-      {reduceTransparency && <Text style={[styles.small, { color: colors.secondary }]}>Hidden while Reduce Transparency is on.</Text>}
+      {reduceTransparency && <Text style={[styles.small, { color: colors.secondary }]}>{t('Hidden while Reduce Transparency is on.')}</Text>}
       {on && <>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.strip}>
           {SETS.map(set => {
@@ -33,7 +38,7 @@ export function WallpaperSettings() {
             return (
               <Pressable key={set.id} onPress={() => setWallpaper({ set: set.id, pinned: null })} accessibilityRole="button" accessibilityState={{ selected }}
                 style={[styles.chip, { backgroundColor: selected ? colors.tint : colors.fill }]}>
-                <Text style={[styles.chipText, { color: selected ? colors.onTint : colors.text }]}>{set.label}</Text>
+                <Text style={[styles.chipText, { color: selected ? colors.onTint : colors.text }]}>{setLabels[set.id]}</Text>
               </Pressable>
             );
           })}
@@ -43,7 +48,7 @@ export function WallpaperSettings() {
             const pinned = preferences.pinned === id;
             return (
               <Pressable key={id} onPress={() => setWallpaper({ pinned: pinned ? null : id })} accessibilityRole="button"
-                accessibilityLabel={label(id)} accessibilityHint={pinned ? 'Resumes the rotation' : 'Keeps this scene'} accessibilityState={{ selected: pinned }} style={styles.scene}>
+                accessibilityLabel={label(id)} accessibilityHint={pinned ? t('Resumes the rotation') : t('Keeps this scene')} accessibilityState={{ selected: pinned }} style={styles.scene}>
                 <Image source={THUMBNAILS[id]} style={[styles.thumb, { borderColor: id === current ? colors.tint : 'transparent' }]} contentFit="cover" />
                 <View style={styles.caption}>
                   {pinned && <Icon ios="pin.fill" android="push_pin" size={10} color={colors.tint} />}
@@ -53,10 +58,10 @@ export function WallpaperSettings() {
             );
           })}
         </ScrollView>
-        <Labeled title="Visibility" value={`${preferences.visibility}%`} color={colors.text} muted={colors.secondary}>
+        <Labeled title={t('Visibility')} value={`${preferences.visibility}%`} color={colors.text} muted={colors.secondary}>
           <NativeSlider value={preferences.visibility} max={100} onChange={visibility => setWallpaper({ visibility })} />
         </Labeled>
-        <Labeled title="Blur" value={`${preferences.blur} px`} color={colors.text} muted={colors.secondary}>
+        <Labeled title={t('Blur')} value={t`${preferences.blur} px`} color={colors.text} muted={colors.secondary}>
           <NativeSlider value={preferences.blur} max={24} onChange={blur => setWallpaper({ blur })} />
         </Labeled>
       </>}
