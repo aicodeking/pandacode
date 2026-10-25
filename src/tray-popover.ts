@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './motion.css';
 import './tray-popover.css';
 import { accentTokens } from './palette-core';
@@ -26,8 +27,8 @@ function refreshTheme(): void {
   }
 }
 refreshTheme();
-// The workspace changed light/dark or its palette: start over with the new colors.
-window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') location.reload(); });
+// The workspace changed light/dark, its palette or the UI language: start over with the new look.
+window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette' || event.key === 'pandacode.language') location.reload(); });
 
 const host = document.querySelector<HTMLDivElement>('#app')!;
 host.innerHTML = `<main class="tray" aria-label="PandaCode"><header class="tray-header"><img class="tray-mark" src="/icon.svg" alt=""><strong>PandaCode</strong><span class="tray-summary"></span><button type="button" class="tray-icon-button tray-open-app" aria-label="Open PandaCode" title="Open PandaCode">${icon('external')}</button></header><div class="tray-alert"><span class="tray-alert-icon" data-state-tone="danger" aria-hidden="true" hidden>${icon('alert')}</span><span class="tray-alert-text" role="alert"></span><button type="button" class="tray-icon-button tray-alert-dismiss" aria-label="Dismiss error" hidden>${icon('close')}</button></div><div class="tray-body"></div><footer class="tray-footer"><button type="button" class="tray-open-app">Open PandaCode</button><button type="button" class="tray-quit">Quit</button></footer></main>`;
@@ -48,18 +49,18 @@ function resetLabel(value?: string | null): string {
   const reset = value ? new Date(value).getTime() : NaN;
   if (!Number.isFinite(reset)) return '';
   const left = reset - Date.now();
-  return left <= 0 ? 'reset due' : left < 86_400_000 ? `resets in ${duration(left)}` : `resets ${new Date(reset).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
+  return left <= 0 ? t('reset due') : left < 86_400_000 ? t`resets in ${duration(left)}` : t`resets ${new Date(reset).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
 }
 const tone = (value: number) => value >= 95 ? 'exhausted' : value >= 80 ? 'high' : 'normal';
 const name = (id: string) => NAMES[id as ProviderId] ?? id;
 
 function row(task: TrayTask, kind: 'running' | 'waiting' | 'finished'): string {
   const elapsed = duration(Date.now() - task.at);
-  const sub = [task.project, kind === 'finished' ? (elapsed === 'now' ? 'just now' : `${elapsed} ago`) : elapsed].filter(Boolean).join(' · ');
-  const status = kind === 'running' ? '<span class="tray-spinner" aria-label="Running"></span>'
-    : kind === 'waiting' ? '<span class="tray-pill">Respond</span>'
-    : task.failed ? `<span class="tray-result failed" aria-label="Failed">${icon('close')}</span>` : `<span class="tray-result" aria-label="Done">${icon('check')}</span>`;
-  return `<button type="button" class="tray-row" data-id="${escape(task.id)}"><span class="tray-logo">${providerLogo(task.provider)}</span><span class="tray-text"><span class="tray-title">${escape(task.title || 'Untitled task')}</span><span class="tray-sub">${escape(sub)}</span></span>${status}</button>`;
+  const sub = [task.project, kind === 'finished' ? (elapsed === 'now' ? t('just now') : t`${elapsed} ago`) : elapsed].filter(Boolean).join(' · ');
+  const status = kind === 'running' ? `<span class="tray-spinner" aria-label="${t('Running')}"></span>`
+    : kind === 'waiting' ? `<span class="tray-pill">${t('Respond')}</span>`
+    : task.failed ? `<span class="tray-result failed" aria-label="${t('Failed')}">${icon('close')}</span>` : `<span class="tray-result" aria-label="${t('Done')}">${icon('check')}</span>`;
+  return `<button type="button" class="tray-row" data-id="${escape(task.id)}"><span class="tray-logo">${providerLogo(task.provider)}</span><span class="tray-text"><span class="tray-title">${escape(task.title || t('Untitled task'))}</span><span class="tray-sub">${escape(sub)}</span></span>${status}</button>`;
 }
 
 /** While PandaCode runs Claude Code for the Claude check, its row says so (and appears for it if it had none). */
@@ -117,7 +118,7 @@ function render(): void {
     .map(([label, tasks, kind]) => `<section class="tray-section"><h2>${label}</h2>${tasks.map(task => row(task, kind)).join('')}</section>`).join('');
   const usageBody = usage.length ? usage.map(item => usageBlock(item, Boolean(snapshot!.askingClaude))).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;
   const focused = (document.activeElement as HTMLElement | null)?.dataset.id;
-  body.innerHTML = `${sections || '<p class="tray-quiet tray-empty">No agents running.</p>'}<section class="tray-section tray-plan"><h2>Plan usage<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="Refresh usage" title="Refresh usage"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
+  body.innerHTML = `${sections || `<p class="tray-quiet tray-empty">${t('No agents running.')}</p>`}<section class="tray-section tray-plan"><h2>${t('Plan usage')}<button type="button" class="tray-icon-button tray-refresh${checking ? ' checking' : ''}" aria-label="${t('Refresh usage')}" title="${t('Refresh usage')}"${checking ? ' aria-busy="true"' : ''}>${icon('refresh')}</button></h2>${usageBody}</section>`;
   if (focused) body.querySelector<HTMLElement>(`.tray-row[data-id="${CSS.escape(focused)}"]`)?.focus();
   resize();
 }

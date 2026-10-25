@@ -3,6 +3,7 @@ import { accountSignedOut, accountEmail, accountStatusIcon, accountPlan, account
 import { call, preview } from './bridge';
 import type { ConnectionSnapshot } from './connections';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
@@ -92,7 +93,7 @@ function accountHeading(id: string, name: string): string {
 }
 function pricingNote(ledger: Ledger): string {
   const when = ledger.pricing.fetchedAt ? new Date(ledger.pricing.fetchedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
-  return { live: `Prices: LiteLLM public price list, updated ${when}.`, saved: `Prices: saved LiteLLM price list from ${when}.`, bundled: 'Prices: the list bundled with PandaCode (offline).' }[ledger.pricing.source];
+  return { live: t`Prices: LiteLLM public price list, updated ${when}.`, saved: t`Prices: saved LiteLLM price list from ${when}.`, bundled: t('Prices: the list bundled with PandaCode (offline).') }[ledger.pricing.source];
 }
 
 /** Keeps keyboard focus on the same control when a section re-renders. */
@@ -117,14 +118,14 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   let summaryCache: { ledger: Ledger; range: Range; summary: Summary } | null = null;
 
   host.classList.add('agent-usage');
-  const tabs = [{ id: 'overview' as Tab, label: 'Overview', logo: icon('activity') }, ...installed.map(provider => ({ id: provider.id as Tab, label: shortNames[provider.id] ?? provider.name, logo: providerLogo(provider.id) }))];
-  host.innerHTML = `<div class="usage-toolbar"><div class="usage-tabs" role="tablist" aria-label="Usage views">${tabs.map(entry => `<button type="button" role="tab" id="usage-tab-${entry.id}" aria-controls="usage-panel-${entry.id}" aria-selected="${entry.id === 'overview'}" tabindex="${entry.id === 'overview' ? 0 : -1}" data-tab="${entry.id}" aria-label="${escape(entry.label)}" title="${escape(entry.label)}">${entry.logo}<span>${escape(entry.label)}</span></button>`).join('')}</div>
-      <button type="button" class="icon-button usage-refresh" aria-label="Refresh usage" title="Refresh">${icon('refresh')}</button></div>
+  const tabs = [{ id: 'overview' as Tab, label: t('Overview'), logo: icon('activity') }, ...installed.map(provider => ({ id: provider.id as Tab, label: shortNames[provider.id] ?? provider.name, logo: providerLogo(provider.id) }))];
+  host.innerHTML = `<div class="usage-toolbar"><div class="usage-tabs" role="tablist" aria-label="${t('Usage views')}">${tabs.map(entry => `<button type="button" role="tab" id="usage-tab-${entry.id}" aria-controls="usage-panel-${entry.id}" aria-selected="${entry.id === 'overview'}" tabindex="${entry.id === 'overview' ? 0 : -1}" data-tab="${entry.id}" aria-label="${escape(entry.label)}" title="${escape(entry.label)}">${entry.logo}<span>${escape(entry.label)}</span></button>`).join('')}</div>
+      <button type="button" class="icon-button usage-refresh" aria-label="${t('Refresh usage')}" title="${t('Refresh')}">${icon('refresh')}</button></div>
     <div class="usage-panel usage-overview" role="tabpanel" id="usage-panel-overview" aria-labelledby="usage-tab-overview">
       <div class="usage-heroes"><div class="usage-hero usage-cost-hero"></div><div class="usage-hero usage-limit-hero"></div></div>
-      <div class="usage-range-row"><span class="usage-caption">Agents ${infoMark(help, 'About agent usage')}</span><div class="usage-segmented usage-range" role="group" aria-label="Period">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
+      <div class="usage-range-row"><span class="usage-caption">${t('Agents ')}${infoMark(help, t('About agent usage'))}</span><div class="usage-segmented usage-range" role="group" aria-label="${t('Period')}">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
       <div class="usage-agents"></div><div class="usage-cost-details"></div>
-    </div><p class="usage-footer" role="status"></p>${preview ? '<p class="usage-preview">Browser preview · sample limits and costs</p>' : ''}`;
+    </div><p class="usage-footer" role="status"></p>${preview ? `<p class="usage-preview">${t('Browser preview · sample limits and costs')}</p>` : ''}`;
   const toolbarTabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
   const overview = host.querySelector<HTMLElement>('.usage-overview')!;
   const costHero = host.querySelector<HTMLElement>('.usage-cost-hero')!;
@@ -243,9 +244,9 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     for (const [id, card] of cards) {
       const slot = card.querySelector<HTMLElement>('.usage-card-calendar')!;
       const calendar = calendarFor(id, ledger, prompts);
-      if (!calendar) { slot.innerHTML = ledger || prompts ? '<p class="usage-calendar-empty">No activity recorded for this agent yet.</p>' : ''; continue; }
-      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: `${nameOf(id)} daily ${calendar.unit}` });
-      if (calendar.unit === 'prompts') heatmap.querySelector('.heatmap-heading h3')?.insertAdjacentHTML('beforeend', ` ${infoMark('This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.', 'About this calendar')}`);
+      if (!calendar) { slot.innerHTML = ledger || prompts ? `<p class="usage-calendar-empty">${t('No activity recorded for this agent yet.')}</p>` : ''; continue; }
+      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: calendar.unit === 'prompts' ? t`${nameOf(id)} daily prompts` : t`${nameOf(id)} daily tokens` });
+      if (calendar.unit === 'prompts') heatmap.querySelector('.heatmap-heading h3')?.insertAdjacentHTML('beforeend', ` ${infoMark(t('This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.'), t('About this calendar'))}`);
       slot.replaceChildren(heatmap);
     }
   }
@@ -366,159 +367,4 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       ledger = nextLedger; prompts = nextPrompts; ledgerError = null;
     } catch (cause) {
       if (disposed) return;
-      ledgerError = ledger ? null : reason(cause, 'Could not read local agent logs.');
-    } finally { ledgerPending = false; }
-    renderOverview(); renderCalendars();
-  }
-  async function load(force: boolean): Promise<void> {
-    if (pending || disposed || !installed.length) return;
-    const restoreRefreshFocus = document.activeElement === refresh;
-    pending = true; refresh.disabled = true; refresh.setAttribute('aria-busy', 'true');
-    footer.textContent = 'Checking account limits…';
-    const estimate = loadLedger(force);
-    if (force) await refreshMembers();
-    await loadLimits(force);
-    if (disposed) return;
-    pending = false; refresh.disabled = false; refresh.removeAttribute('aria-busy');
-    if (restoreRefreshFocus && document.activeElement === document.body) refresh.focus({ preventScroll: true });
-    footer.textContent = 'Updated on demand';
-    await estimate;
-  }
-
-  function click(event: MouseEvent): void {
-    const target = event.target instanceof Element ? event.target : null;
-    const tabButton = target?.closest<HTMLButtonElement>('[role="tab"]');
-    if (tabButton && toolbarTabs.includes(tabButton)) { select(tabButton.dataset.tab as Tab); return; }
-    const cardRefresh = target?.closest<HTMLButtonElement>('[data-usage-refresh]');
-    if (cardRefresh) { void refreshCard(cardRefresh); return; }
-    const copy = target?.closest<HTMLButtonElement>('[data-usage-copy]');
-    if (copy) { copyCommand(copy); return; }
-    const row = target?.closest<HTMLButtonElement>('.usage-agent-row');
-    if (row) { select(row.dataset.provider as ProviderId, true); return; }
-    const rangeButton = target?.closest<HTMLButtonElement>('[data-range]');
-    if (rangeButton && rangeButton.dataset.range !== range) {
-      range = rangeButton.dataset.range as Range;
-      rangeGroup.querySelectorAll('[data-range]').forEach(button => button.setAttribute('aria-pressed', String(button === rangeButton)));
-      trackSegment(rangeGroup, rangeButton); renderOverview(); return;
-    }
-    const breakdownButton = target?.closest<HTMLButtonElement>('[data-breakdown]');
-    if (breakdownButton && breakdownButton.dataset.breakdown !== breakdown) { breakdown = breakdownButton.dataset.breakdown as 'model' | 'day'; renderOverview(); }
-  }
-  function keydown(event: KeyboardEvent): void {
-    const index = toolbarTabs.indexOf(event.target as HTMLButtonElement);
-    if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const next = event.key === 'Home' ? 0 : event.key === 'End' ? toolbarTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + toolbarTabs.length) % toolbarTabs.length;
-    select(toolbarTabs[next].dataset.tab as Tab, true);
-  }
-  const reload = () => { void load(true); };
-  host.addEventListener('click', click);
-  host.addEventListener('keydown', keydown);
-  refresh.addEventListener('click', reload);
-  refresh.disabled = !installed.length;
-  renderOverview();
-  select(tab);
-  trackSegment(rangeGroup, rangeGroup.querySelector<HTMLElement>('[aria-pressed="true"]'));
-  void load(false);
-  return () => {
-    disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear();
-    waiting.clear(); window.clearInterval(waitTimer);
-    for (const timer of dueTimers) window.clearTimeout(timer);
-    dueTimers.clear();
-  };
-}
-
-/** What a Claude card still checking learns from one poll (`agent_usage_asking_claude`). */
-interface ClaudeWaiting { asking: boolean; saved: AgentUsage | null }
-
-/** A Claude card still checking: its saved reading (stale) at once, with "Checking limits…" (or "Asking Claude Code…") under it; a card already showing limits (its own Refresh) keeps them and gets the line. */
-function showWaiting(scope: HTMLElement, body: HTMLElement, provider: Provider, answer: ClaudeWaiting, dir?: string): void {
-  if (body.dataset.loading !== 'true') return;
-  const line = answer.asking ? 'Asking Claude Code…' : 'Checking limits…';
-  const saved = answer.saved && Array.isArray(answer.saved.windows) && answer.saved.windows.length ? answer.saved : null;
-  if (saved && !body.querySelector('.usage-windows')) {
-    renderCard(scope, provider, { ...saved, stale: true }, undefined, dir);
-    body.dataset.loading = 'true'; body.setAttribute('role', 'status');
-  }
-  const windows = body.querySelector('.usage-windows');
-  if (!windows) { if (answer.asking) body.textContent = line; return; }
-  let note = body.querySelector<HTMLElement>('.usage-checking');
-  if (!note) { note = document.createElement('p'); note.className = 'usage-checking'; windows.after(note); }
-  note.textContent = line;
-}
-
-/** Copies a fix's command (`data-usage-copy`) and says so on the button for a moment. */
-function copyCommand(button: HTMLButtonElement): void {
-  const label = button.textContent;
-  const say = (text: string) => {
-    button.textContent = text;
-    dueTimers.add(window.setTimeout(() => { if (button.isConnected) button.textContent = label; }, 1500));
-  };
-  void navigator.clipboard.writeText(button.dataset.usageCopy ?? '').then(() => say('Copied'), () => say('Copy failed'));
-}
-
-/** Timers of the open panel's cards (`updateWhenDue`, `copyCommand`), cleared when it closes. */
-const dueTimers = new Set<number>();
-
-function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage, member?: PoolMember, dir?: string): void {
-  const plan = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-plan');
-  if (plan) { plan.textContent = result.plan ?? ''; plan.title = result.plan ?? ''; }
-  const windows = shownWindows(provider.id, result);
-  const body = card.querySelector<HTMLElement>('.usage-card-body')!;
-  delete body.dataset.loading;
-  // One "Checked" time and source per harness, in the card header; account sections leave theirs out.
-  const checked = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-card-checked');
-  if (checked) checked.innerHTML = `${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(clockLabel(result.checkedAt))}` : ''}${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}`;
-  body.removeAttribute('role');
-  const status = statusLabel(result);
-  const retry = retryText(result);
-  card.classList.toggle('usage-stale', result.stale);
-  body.innerHTML = `${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window, member)).join('')}</div>` : ''}
-    ${status || result.message || !windows.length ? `<div class="usage-notice">${status ? `<span class="usage-state">${escape(status)}</span>` : ''}${result.message ? `<p>${escape(result.message)}</p>` : !windows.length ? '<p>This account did not report any usage windows.</p>' : ''}${retry ? `<p class="usage-retry">${escape(retry)}</p>` : ''}${status ? fixButton(result.action, result.retryAt, Date.now(), dir) : ''}</div>` : ''}
-    <div class="usage-card-footer">${dashboardLink(result.dashboardUrl)}</div>`;
-  updateWhenDue(body, result);
-}
-
-/** As each time a card names passes (`retryAt`, `autoRetryAt`), its label, retry line and Refresh are brought up to then: "Next try after" goes back to its plain state, "Opening this panel after HH:MM…" changes or goes, and a rate limit's Refresh is enabled. A card rendered again since is left alone; closing the panel clears the timers. */
-function updateWhenDue(body: HTMLElement, result: AgentUsage): void {
-  const [state, line, button] = ['.usage-state', '.usage-retry', '[data-usage-refresh][data-until]'].map(selector => body.querySelector<HTMLElement>(selector));
-  for (const at of [result.retryAt, result.autoRetryAt]) {
-    if (!at || at <= Date.now()) continue;
-    dueTimers.add(window.setTimeout(() => {
-      if (button?.isConnected && Number(button.dataset.until) <= at) {
-        delete button.dataset.until;
-        if ('wait' in button.dataset) { delete button.dataset.wait; (button as HTMLButtonElement).disabled = false; }
-      }
-      if (state?.isConnected) state.textContent = statusLabel(result, at);
-      const text = retryText(result, at);
-      if (line?.isConnected) { if (text) line.textContent = text; else line.remove(); }
-    }, at - Date.now()));
-  }
-}
-
-/** One window: label, percent, meter and reset. Its detail rides on the reset text's title, so a card keeps one ⓘ. */
-function renderWindow(provider: Provider, window: UsageWindow, member?: PoolMember): string {
-  const value = Math.min(100, Math.max(0, window.usedPercent));
-  const tone = meterTone(value, member, window.label);
-  const reset = window.resetsAt ? new Date(window.resetsAt) : null;
-  const validReset = reset && Number.isFinite(reset.getTime()) ? reset : null;
-  // Without a timestamp, reset text Claude Code printed is shown itself (not repeated in the tooltip).
-  const printed = printedReset(window);
-  const detail = printed ? '' : [window.detail, validReset ? `Resets ${validReset.toLocaleString()}` : ''].filter(Boolean).join('. ');
-  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span${detail ? ` title="${escape(detail)}"` : ''}>${validReset ? resetLabel(validReset) : escape(printed || 'Reset time not reported')}</span>${detail ? `<span class="sr-only">. ${escape(detail)}</span>` : ''}</div></div>`;
-}
-
-/** 'Resets 1:31 PM' or 'Resets Sat 11:24 AM', as Settings and the pool chip say it. */
-function resetLabel(reset: Date): string {
-  const text = resetsAt(reset.getTime());
-  return text === 'reset due' ? 'Reset due · refresh to check' : `R${text.slice(1)}`;
-}
-
-function dashboardLink(value?: string | null): string {
-  if (!value) return '';
-  try {
-    const url = new URL(value);
-    if (url.protocol !== 'https:' || url.username || url.password) return '';
-    return `<button type="button" class="usage-dashboard" data-action="open-url" data-url="${escape(url.href)}">View account ${icon('forward')}</button>`;
-  } catch { return ''; }
-}
+      ledgerError = ledger ? null : cause instanceof Error && cause.message ? cause.message : t('Could not read local agent logs.');

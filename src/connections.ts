@@ -11,6 +11,7 @@ import { isWindows } from './platform';
 import { signInCommand } from './usage-labels';
 import { infoMark } from './tooltip';
 import type { ProviderId } from './types';
+import { t } from './i18n.ts';
 
 export interface Connection { id: string; provider: ProviderId; name: string; executable?: string | null; args: string[]; env: Record<string, string>; secretEnv: string[]; configDir?: string | null; revision: number; }
 export interface ConnectionSnapshot { connections: Connection[]; tasks: Record<string, string>; pools?: string[]; poolExcluded?: string[]; }
@@ -240,26 +241,26 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
     }
   }
   function envRow(row: EnvRow): string {
-    return `<div class="connection-input-row" data-env-row><input aria-label="Variable name" data-env-name value="${escape(row.name)}" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="128"><input aria-label="Value" data-env-value type="${row.secret ? 'password' : 'text'}" value="${escape(row.value)}" placeholder="${row.saved ? 'Saved · leave empty to keep' : 'value'}" autocomplete="off" spellcheck="false" maxlength="4096"><label class="connection-secret"><input type="checkbox" data-env-secret ${row.secret ? 'checked' : ''}${row.saved ? ' data-saved' : ''}> Secret</label><button type="button" class="secondary-button" data-remove-env aria-label="Remove variable">Remove</button></div>`;
+    return `<div class="connection-input-row" data-env-row><input aria-label="${t('Variable name')}" data-env-name value="${escape(row.name)}" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="128"><input aria-label="${t('Value')}" data-env-value type="${row.secret ? 'password' : 'text'}" value="${escape(row.value)}" placeholder="${row.saved ? t('Saved · leave empty to keep') : 'value'}" autocomplete="off" spellcheck="false" maxlength="4096"><label class="connection-secret"><input type="checkbox" data-env-secret ${row.secret ? 'checked' : ''}${row.saved ? ' data-saved' : ''}> ${t('Secret')}</label><button type="button" class="secondary-button" data-remove-env aria-label="${t('Remove variable')}">${t('Remove')}</button></div>`;
   }
   function form(connection: Connection | null): string {
     const options = harnesses.map(h => `<option value="${h.id}" ${connection?.provider === h.id ? 'selected' : ''}>${escape(h.name)}</option>`).join('');
     const env: EnvRow[] = connection ? [...Object.entries(connection.env).map(([name, value]) => ({ name, value, secret: false, saved: false })), ...connection.secretEnv.map(name => ({ name, value: '', secret: true, saved: true }))] : [];
-    return `<form class="named-connection-form" aria-label="${connection ? 'Edit connection' : 'New connection'}">
-      <label for="connection-provider">Harness</label><div class="connection-select"><select id="connection-provider" ${connection ? 'disabled' : ''}>${options}</select></div>
-      <label for="connection-name">Name</label><div class="connection-input-row"><input id="connection-name" required maxlength="60" value="${escape(connection?.name ?? '')}" placeholder="Claude Work" autocomplete="off"></div>
-      <label for="connection-executable">Executable</label><div class="connection-input-row"><input id="connection-executable" value="${escape(connection?.executable ?? '')}" placeholder="Leave empty to use the harness's executable" autocomplete="off" spellcheck="false"></div>
-      <label for="connection-args">Extra arguments, one per line</label><textarea id="connection-args" rows="2" spellcheck="false">${escape((connection?.args ?? []).join('\n'))}</textarea>
-      <label for="connection-config-dir">Config folder <small data-config-var data-live></small></label><div class="connection-input-row"><input id="connection-config-dir" value="${escape(connection?.configDir ?? '')}" placeholder="/Users/you/.claude-work" autocomplete="off" spellcheck="false"></div>
-      <label>Environment</label><div data-env-rows>${env.map(envRow).join('')}</div><button type="button" class="secondary-button" data-add-env>Add variable</button>
-      <div class="dialog-footer"><button type="button" class="secondary-button" data-cancel-connection>Cancel</button><button type="submit" class="primary-button">Save connection</button></div></form>`;
+    return `<form class="named-connection-form" aria-label="${connection ? t('Edit connection') : t('New connection')}">
+      <label for="connection-provider">${t('Harness')}</label><div class="connection-select"><select id="connection-provider" ${connection ? 'disabled' : ''}>${options}</select></div>
+      <label for="connection-name">${t('Name')}</label><div class="connection-input-row"><input id="connection-name" required maxlength="60" value="${escape(connection?.name ?? '')}" placeholder="${t('Claude Work')}" autocomplete="off"></div>
+      <label for="connection-executable">${t('Executable')}</label><div class="connection-input-row"><input id="connection-executable" value="${escape(connection?.executable ?? '')}" placeholder="${t("Leave empty to use the harness's executable")}" autocomplete="off" spellcheck="false"></div>
+      <label for="connection-args">${t('Extra arguments, one per line')}</label><textarea id="connection-args" rows="2" spellcheck="false">${escape((connection?.args ?? []).join('\n'))}</textarea>
+      <label for="connection-config-dir">${t('Config folder')} <small data-config-var data-live></small></label><div class="connection-input-row"><input id="connection-config-dir" value="${escape(connection?.configDir ?? '')}" placeholder="/Users/you/.claude-work" autocomplete="off" spellcheck="false"></div>
+      <label>${t('Environment')}</label><div data-env-rows>${env.map(envRow).join('')}</div><button type="button" class="secondary-button" data-add-env>${t('Add variable')}</button>
+      <div class="dialog-footer"><button type="button" class="secondary-button" data-cancel-connection>${t('Cancel')}</button><button type="submit" class="primary-button">${t('Save connection')}</button></div></form>`;
   }
   function syncConfigVar(): void {
     const provider = host.querySelector<HTMLSelectElement>('#connection-provider')?.value as ProviderId | undefined;
     const hint = host.querySelector<HTMLElement>('[data-config-var]'), input = host.querySelector<HTMLInputElement>('#connection-config-dir');
     if (!provider || !hint || !input) return;
     const variable = CONFIG_DIR[provider];
-    hint.textContent = variable ? `(sets ${variable})` : '(set it under Environment for this harness)';
+    hint.textContent = variable ? t`(sets ${variable})` : t('(set it under Environment for this harness)');
     input.disabled = !variable;
   }
   const providerOf = (id: string) => snapshot.connections.find(c => c.id === id)?.provider;
