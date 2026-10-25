@@ -73,6 +73,7 @@ fn get(store: &Store, id: &str) -> Result<QueuedMessage> {
 
 pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
     store.session(session_id)?;
+    store.ensure_writable(session_id)?;
     let encoded = validate(text, attachments)?;
     let count: i64 = store.db.query_row("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     if count >= MAX_PER_TASK {
@@ -200,6 +201,7 @@ pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, sessi
     if text.is_empty() {
         return Err("Write a message to steer with.".into());
     }
+    state.store.lock().map_err(|e| e.to_string())?.ensure_writable(&session_id)?;
     // A task on another computer steers there and saves the message in its own history.
     if let Some(reply) = crate::remote::route(&app, &state, &session_id, "task.steer", serde_json::json!({"text": text})).await? {
         return Ok(reply);

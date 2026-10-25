@@ -4,7 +4,7 @@ import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import type { ProviderId, Session } from './types';
 
-export type ImportSource = 'claude' | 'codex';
+export type ImportSource = 'claude' | 'codex' | 'github-copilot';
 export interface Importable {
   id: string;
   title: string;
@@ -14,6 +14,8 @@ export interface Importable {
   model: string | null;
   importedTaskId: string | null;
   unavailable: string | null;
+  sourceKind: 'local' | 'synced' | 'hosted';
+  transcriptOnly: boolean;
 }
 export interface ImportPage { items: Importable[]; cursor: string | null; note: string | null; }
 export interface ImportResult { imported: Session[]; existing: string[]; failed: { id: string; message: string }[]; }
@@ -26,7 +28,7 @@ export interface ImportOptions {
   openTask(id: string): void;
 }
 
-const SOURCES: { id: ImportSource; label: string }[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }];
+const SOURCES: { id: ImportSource; label: string }[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }, { id: 'github-copilot', label: 'GitHub Copilot CLI' }];
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' });
 const MAX_SELECTION = 50;
 
@@ -42,14 +44,16 @@ function folderName(path: string): string { return path.split(/[\\/]/).filter(Bo
 
 /** The Import conversations window: pick a source, search, check conversations, import. */
 export function mountConversationImport(host: HTMLElement, options: ImportOptions): () => void {
-  let source: ImportSource = options.installed.includes('claude') || !options.installed.includes('codex') ? 'claude' : 'codex';
+  let source: ImportSource = options.installed.includes('claude') ? 'claude' : options.installed.includes('codex') ? 'codex' : options.installed.includes('github-copilot') ? 'github-copilot' : 'claude';
+  let includeCloud = false;
   let items: Importable[] = [], cursor: string | null = null, note: string | null = null;
   let loading = false, importing = false, disposed = false, request = 0, searchTimer = 0;
   const selected = new Set<string>();
   host.classList.add('conversation-import');
-  host.innerHTML = `<p class="dialog-description">Bring conversations you started in Claude Code or Codex into PandaCode. Each continues its own session, in the project for its folder.</p>
+  host.innerHTML = `<p class="dialog-description">Bring conversations from Claude Code, Codex, or GitHub Copilot CLI into PandaCode. Copilot shows local sessions first; cloud sessions are requested only when you include them.</p>
     <div class="import-controls"><div class="import-sources" role="group" aria-label="Import from">${SOURCES.map(item => `<button type="button" data-source="${item.id}" aria-pressed="${item.id === source}">${providerLogo(item.id)}<span>${item.label}</span></button>`).join('')}</div>
       <label class="import-search">${icon('search')}<input type="search" placeholder="Search conversations" aria-label="Search conversations" autocomplete="off"></label></div>
+    <label class="import-cloud" ${source === 'github-copilot' ? '' : 'hidden'}><input type="checkbox" aria-label="Include cloud sessions"><span>Include cloud sessions</span><small>Uses your existing Copilot CLI sign-in when enabled.</small></label>
     <div class="import-bar"><label class="import-all"><input type="checkbox" aria-label="Select all shown conversations"><span>Select all</span></label><span class="import-count" role="status"></span></div>
     <div class="import-list" role="group" aria-label="Conversations"></div>
     <p class="import-error" role="alert" hidden></p>
@@ -61,6 +65,8 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
   const count = host.querySelector<HTMLElement>('.import-count')!;
   const error = host.querySelector<HTMLElement>('.import-error')!;
   const commit = host.querySelector<HTMLButtonElement>('.import-commit')!;
+  const cloudToggle = host.querySelector<HTMLInputElement>('.import-cloud input')!;
+  const cloudLabel = host.querySelector<HTMLElement>('.import-cloud')!;
 
   const selectable = () => items.filter(item => !item.importedTaskId && !item.unavailable);
   function sync(): void {
@@ -74,17 +80,20 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     count.textContent = loading ? 'Loading…' : items.length ? `${items.length}${cursor ? '+' : ''} found${selected.size ? ` · ${selected.size} selected` : ''}` : '';
   }
   function row(item: Importable): string {
-    const meta = [escape(folderName(item.folder) || 'Unknown folder'), item.messages ? `${item.messages} messages` : '', age(item.updatedAt)].filter(Boolean).join(' · ');
+    const location = item.sourceKind === 'local' ? folderName(item.folder) : item.folder;
+    const meta = [escape(location || 'Unknown folder'), item.messages ? `${item.messages} messages` : '', age(item.updatedAt)].filter(Boolean).join(' · ');
+    const sourceLabel = item.sourceKind === 'hosted' ? 'GitHub-hosted agent' : item.sourceKind === 'synced' ? 'Synced CLI session' : source === 'github-copilot' ? 'Local Copilot session' : '';
+    const badges = `${sourceLabel ? `<span class="import-source-badge">${escape(sourceLabel)}</span>` : ''}${item.transcriptOnly ? '<span class="import-archive-badge">Read-only archive</span>' : ''}`;
     const state = item.importedTaskId ? `<button type="button" class="import-open" data-open="${escape(item.importedTaskId)}">In PandaCode${icon('forward')}</button>`
       : item.unavailable ? `<span class="import-unavailable" title="${escape(item.unavailable)}">Unavailable</span>` : '';
     const disabled = Boolean(item.importedTaskId || item.unavailable);
     return `<label class="import-row ${disabled ? 'disabled' : ''}" data-id="${escape(item.id)}" title="${escape(item.folder)}"><input type="checkbox" value="${escape(item.id)}" ${selected.has(item.id) ? 'checked' : ''} ${disabled || importing ? 'disabled' : ''}>
-      <span class="import-copy"><strong>${escape(item.title)}</strong><small>${meta}${item.unavailable ? ` · ${escape(item.unavailable)}` : ''}</small></span>${state}</label>`;
+      <span class="import-copy"><strong>${escape(item.title)}${badges}</strong><small>${meta}${item.unavailable ? ` · ${escape(item.unavailable)}` : ''}</small></span>${state}</label>`;
   }
   function render(): void {
     const installed = options.installed.includes(source);
     list.innerHTML = loading && !items.length ? '<p class="import-empty">Reading conversations…</p>'
-      : items.length ? items.map(row).join('') + (cursor ? '<button type="button" class="secondary-button import-more">Load more</button>' : '')
+      : items.length ? items.map(row).join('') + (note ? `<p class="import-note" role="status">${escape(note)}</p>` : '') + (cursor ? '<button type="button" class="secondary-button import-more">Load more</button>' : '')
         : `<p class="import-empty">${escape(note ?? (installed ? 'No conversations match.' : `${SOURCES.find(item => item.id === source)!.label} is not installed on this computer.`))}</p>`;
     sync();
   }
@@ -94,7 +103,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     if (!more) { items = []; cursor = null; note = null; }
     render();
     try {
-      const page = await options.call<ImportPage>('list_importable_conversations', { provider: source, search: search.value.trim() || null, cursor: more ? cursor : null });
+      const page = await options.call<ImportPage>('list_importable_conversations', { provider: source, search: search.value.trim() || null, cursor: more ? cursor : null, includeCloud });
       if (disposed || ticket !== request) return;
       const known = new Set(items.map(item => item.id));
       items = [...items, ...page.items.filter(item => !known.has(item.id))];
@@ -110,7 +119,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     if (!selected.size || importing) return;
     importing = true; error.hidden = true; render();
     try {
-      const result = await options.call<ImportResult>('import_conversations', { provider: source, ids: [...selected], model: options.defaultModel(source) });
+      const result = await options.call<ImportResult>('import_conversations', { provider: source, ids: [...selected], model: options.defaultModel(source), includeCloud });
       if (disposed) return;
       const failed = new Set(result.failed.map(item => item.id));
       for (const id of [...selected]) if (!failed.has(id)) selected.delete(id);
@@ -129,6 +138,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
 
   function change(event: Event): void {
     const input = event.target as HTMLInputElement;
+    if (input === cloudToggle) return;
     if (input === all) {
       const choices = selectable();
       if (all.checked) for (const item of choices.slice(0, MAX_SELECTION)) selected.add(item.id); else for (const item of choices) selected.delete(item.id);
@@ -145,6 +155,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     const sourceButton = target?.closest<HTMLButtonElement>('[data-source]');
     if (sourceButton && sourceButton.dataset.source !== source && !importing) {
       source = sourceButton.dataset.source as ImportSource; selected.clear();
+      cloudLabel.hidden = source !== 'github-copilot';
       sources.querySelectorAll('[data-source]').forEach(button => button.setAttribute('aria-pressed', String(button === sourceButton)));
       trackSegment(sources, sourceButton); void load(); return;
     }
@@ -153,12 +164,17 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     if (target?.closest('.import-more')) { void load(true); return; }
     if (target?.closest('.import-commit')) void importSelected();
   }
+  function cloudChange(): void {
+    if (importing || !cloudLabel.isConnected) return;
+    includeCloud = cloudToggle.checked; selected.clear(); void load();
+  }
   const typed = () => { window.clearTimeout(searchTimer); searchTimer = window.setTimeout(() => { selected.clear(); void load(); }, 250); };
   host.addEventListener('change', change);
+  cloudToggle.addEventListener('change', cloudChange);
   host.addEventListener('click', click);
   search.addEventListener('input', typed);
   trackSegment(sources, sources.querySelector<HTMLElement>('[aria-pressed="true"]'));
   void load();
   search.focus({ preventScroll: true });
-  return () => { disposed = true; window.clearTimeout(searchTimer); host.removeEventListener('change', change); host.removeEventListener('click', click); search.removeEventListener('input', typed); };
+  return () => { disposed = true; window.clearTimeout(searchTimer); host.removeEventListener('change', change); host.removeEventListener('click', click); cloudToggle.removeEventListener('change', cloudChange); search.removeEventListener('input', typed); };
 }

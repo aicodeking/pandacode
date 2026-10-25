@@ -1529,6 +1529,7 @@ function renderComposer(): void {
   const s = session();
   if (!s) { $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
   syncOverlayContext({ projectId: s.projectId, provider: s.provider, model: s.model || 'default', mode: s.mode, reasoningEffort: s.reasoningEffort ?? null });
+  if (s.transcriptOnly) { $('#composer-area').innerHTML = '<div class="board-completed-note transcript-archive-note"><strong>Read-only archive</strong><span>This imported Copilot transcript cannot be resumed. You can review the conversation, but it will not accept messages.</span></div>'; browserPanel?.refresh(); return; }
   if (taskStage(s) === 'completed' || s.archived) { $('#composer-area').innerHTML = `<div class="board-completed-note">${s.archived ? 'This task is archived.' : 'This task is complete.'}${state.view === 'conversation' ? `<button type="button" class="secondary-button" data-action="${s.archived ? 'archive-task' : 'board-reopen'}">${s.archived ? 'Restore task' : 'Reopen task'}</button>` : s.archived ? '' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
@@ -2161,6 +2162,7 @@ function clearComposer(s: Session): void {
 /** Queues the composer's message to send when the agent finishes. */
 async function enqueueFromComposer(): Promise<void> {
   const s = session(); if (!s) return;
+  if (s.transcriptOnly) return;
   const { text, items } = composerPayload(s);
   if (!text && !items.length) return;
   // Clear at once so the next message can be typed while this one is saved.
@@ -2224,6 +2226,7 @@ function steerStateHtml(m: Message): string {
 /** Sends the composer's text into the running turn; anything that cannot steer is queued instead. */
 async function steerFromComposer(): Promise<void> {
   const s = session(); if (!s) return;
+  if (s.transcriptOnly) return;
   const { text, items } = composerPayload(s);
   if (!text) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
   if (items.length || teams.get(s.id)) {
@@ -2412,7 +2415,7 @@ async function fileContext(s: Session, path: string): Promise<string> {
 }
 async function send(): Promise<void> {
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
-  if (!text || !s || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
+  if (!text || !s || s.transcriptOnly || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   const target = !s.remoteDevice && newTaskView() ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
   if (target) return sendRemote(s, target, draft, text);
   // A failed start elsewhere no longer applies once this task is sent another way.

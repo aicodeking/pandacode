@@ -147,6 +147,8 @@ information:
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Remote access; nothing before |
 
+Importing Copilot cloud conversations is user initiated. Enabling **Include cloud sessions** asks the installed Copilot CLI to list synced and GitHub-hosted sessions; importing a selected session requests its transcript. It uses your existing Copilot CLI sign-in and does not scan in the background.
+
 ## Install
 
 Download the latest build from

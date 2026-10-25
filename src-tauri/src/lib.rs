@@ -303,6 +303,42 @@ mod task_agent_tests {
     use super::*;
 
     #[test]
+    fn shared_task_launch_path_rejects_read_only_import_archives() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let archive = store
+            .import_copilot_task(
+                &project.id,
+                "default",
+                "Hosted review",
+                "copilot-hosted-launch-guard",
+                None,
+                true,
+                1_000,
+                &[],
+            )
+            .unwrap();
+        let state = AppState {
+            store: Arc::new(Mutex::new(store)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        };
+        let (tx, _rx) = unbounded_channel();
+        let error = prepare_task_run(
+            &state,
+            archive.id,
+            Some("append a new prompt".into()),
+            Vec::new(),
+            tx,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("read-only archive"));
+    }
+
+    #[test]
     fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tools() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -1220,6 +1256,7 @@ async fn send_message(
     let (target, project_id) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
+        store.ensure_writable(&session_id)?;
         if let Some(ids) = moodboard_ids.as_deref().filter(|ids| !ids.is_empty()) {
             text.push_str(&moodboards::resolve_refs(&store, &task.project_id, ids)?);
         }
@@ -1262,6 +1299,7 @@ async fn start_task(
 ) -> Result<()> {
     let team_prompt = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.ensure_writable(&session_id)?;
         if architect::load(&store, &session_id)?.is_some() {
             let task = store.session(&session_id)?;
             Some(if task.task_description.trim().is_empty() {
@@ -1343,6 +1381,10 @@ fn prepare_task_run_in_project(
         return Err("This task is already running in an agent or harness console.".into());
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
+    // This is the shared execution claim used by commands and agent task tools.
+    // Keep transcript-only imported archives from being launched through a caller
+    // that bypasses the send_message IPC guard.
+    store.ensure_writable(&session_id)?;
     architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
     if admission.cloud_attach {

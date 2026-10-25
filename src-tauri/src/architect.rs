@@ -707,6 +707,7 @@ pub(crate) async fn architect_start_in_project(
     expected_project: Option<String>,
 ) -> Result<()> {
     text_check(&text)?;
+    state.store.lock().map_err(|e| e.to_string())?.ensure_writable(&session_id)?;
     let (team, admission) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
     emit(&app, &team);
     if let Err(error) = crate::launch_team_task(

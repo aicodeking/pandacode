@@ -4,6 +4,7 @@
 //! session on the next prompt. Nothing is sent to a model while importing.
 
 mod claude;
+mod copilot;
 #[cfg(test)]
 mod tests;
 
@@ -17,6 +18,7 @@ use tauri::{Emitter, Manager};
 
 const CLAUDE_SCAN_LIMIT: usize = 400;
 const MAX_IMPORT: usize = 50;
+const COPILOT_SCAN_LIMIT: usize = 400;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +33,10 @@ pub struct Importable {
     imported_task_id: Option<String>,
     /// Why it cannot be imported, such as a folder that no longer exists.
     unavailable: Option<String>,
+    /// `local`, `synced`, or `hosted`; shown as a source badge in the picker.
+    source_kind: String,
+    /// The transcript can be imported but the existing harness cannot resume it.
+    transcript_only: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +118,8 @@ fn claude_items(state: &AppState, search: &Option<String>) -> Result<Vec<Importa
             updated_at: summary.updated_at,
             messages: Some(summary.messages),
             model: summary.model,
+            source_kind: "local".into(),
+            transcript_only: false,
         });
     }
     items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
@@ -149,13 +157,15 @@ async fn codex_page(state: &AppState, search: &Option<String>, cursor: &Option<S
             model: command_operations::nonempty(&thread["model"], 160),
             folder,
             id,
+            source_kind: "local".into(),
+            transcript_only: false,
         });
     }
     Ok(ImportPage { items, cursor: command_operations::nonempty(&response["nextCursor"], 4096), note: None })
 }
 
 #[tauri::command]
-pub async fn list_importable_conversations(app: tauri::AppHandle, window: tauri::WebviewWindow, provider: String, search: Option<String>, cursor: Option<String>) -> Result<ImportPage> {
+pub async fn list_importable_conversations(app: tauri::AppHandle, window: tauri::WebviewWindow, provider: String, search: Option<String>, cursor: Option<String>, include_cloud: Option<bool>) -> Result<ImportPage> {
     if window.label() != "main" {
         return Err("Conversations can be imported only from the main window.".into());
     }
@@ -171,8 +181,108 @@ pub async fn list_importable_conversations(app: tauri::AppHandle, window: tauri:
             .await
         }
         "codex" => codex_page(&app.state::<AppState>(), &search, &cursor).await,
-        _ => Err("Import conversations from Claude Code or Codex.".into()),
+        "github-copilot" => {
+            // Reading and parsing the logs is disk work; keep it off the async
+            // runtime and out of every search keystroke, like the Claude path.
+            let listed = crate::blocking(move || Ok(copilot::prepared_logs(&copilot::home(), COPILOT_SCAN_LIMIT))).await?;
+            copilot_page(&app.state::<AppState>(), &search, include_cloud.unwrap_or(false), listed).await
+        }
+        _ => Err("Import conversations from Claude Code, Codex, or GitHub Copilot CLI.".into()),
     }
+}
+
+fn project_for_repository(store: &crate::storage::Store, repository: &str) -> Result<Option<String>> {
+    Ok(store.projects()?.into_iter().find_map(|project| {
+        crate::github_hub::project_repo(Path::new(&project.path))
+            .filter(|candidate| candidate.eq_ignore_ascii_case(repository))
+            .map(|_| project.id)
+    }))
+}
+
+async fn copilot_page(state: &AppState, search: &Option<String>, include_cloud: bool, listed: Vec<(String, copilot::Prepared)>) -> Result<ImportPage> {
+    let root = copilot::home();
+    let mut items = Vec::new();
+    let mut local_ids = std::collections::HashSet::new();
+    for (id, parsed) in listed {
+        local_ids.insert(id.clone());
+        let Some(summary) = parsed.summary else {
+            let Some(message) = parsed.unavailable else { continue };
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let imported_task_id = store.imported_task("github-copilot", &id)?;
+            items.push(Importable {
+                id,
+                title: "Copilot session cannot be imported".into(),
+                folder: String::new(),
+                updated_at: 0,
+                messages: None,
+                model: None,
+                imported_task_id,
+                unavailable: Some(message),
+                source_kind: "local".into(),
+                transcript_only: false,
+            });
+            continue;
+        };
+        if !matches(search, &[&summary.title, &summary.folder]) {
+            continue;
+        }
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        items.push(Importable {
+            imported_task_id: store.imported_task("github-copilot", &summary.id)?,
+            unavailable: folder_problem(&summary.folder),
+            id: summary.id,
+            title: summary.title,
+            folder: summary.folder,
+            updated_at: summary.updated_at,
+            messages: Some(summary.messages),
+            model: summary.model,
+            source_kind: "local".into(),
+            transcript_only: false,
+        });
+    }
+
+    let mut note = None;
+    if include_cloud {
+        if let Some(program) = crate::providers::executable("github-copilot") {
+            match copilot::cloud_sessions(&root, &program, &local_ids).await {
+                Ok(sessions) if sessions.is_empty() => note = Some("Copilot CLI did not return any synced or GitHub-hosted sessions. Update Copilot CLI if you expected cloud sessions here.".into()),
+                Ok(sessions) => {
+                    let store = state.store.lock().map_err(|e| e.to_string())?;
+                    for cloud in sessions {
+                        if !matches(search, &[&cloud.title]) {
+                            continue;
+                        }
+                        items.push(Importable {
+                            imported_task_id: store.imported_task("github-copilot", &cloud.id)?,
+                            id: cloud.id,
+                            title: cloud.title,
+                            // Session metadata omits repository context. Resolve it from
+                            // the transcript only after the user selects the session.
+                            folder: "Repository checked on import".into(),
+                            updated_at: cloud.updated_at,
+                            messages: None,
+                            model: None,
+                            unavailable: None,
+                            source_kind: copilot::cloud_source_kind(cloud.is_remote).into(),
+                            transcript_only: cloud.is_remote,
+                        });
+                    }
+                }
+                Err(message) => note = Some(message),
+            }
+        } else {
+            note = Some("GitHub Copilot CLI is not installed or its executable is not configured.".into());
+        }
+    }
+    items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
+    if items.is_empty() && note.is_none() {
+        note = Some(if include_cloud {
+            "No local or cloud Copilot CLI conversations were found.".into()
+        } else {
+            "No local Copilot CLI conversations were found on this computer.".into()
+        });
+    }
+    Ok(ImportPage { items, cursor: None, note })
 }
 
 fn project_for(store: &crate::storage::Store, folder: &str) -> Result<String> {
@@ -233,21 +343,64 @@ async fn import_codex(state: &AppState, id: &str, fallback_model: &str) -> Resul
     store.import_task(&project, "codex", &model, &title, id, effort.as_deref(), created, &entries)
 }
 
+async fn import_copilot(state: &AppState, id: &str, include_cloud: bool, fallback_model: &str) -> Result<Session> {
+    if !copilot::valid_id(id) {
+        return Err("Not a valid Copilot conversation identifier.".into());
+    }
+    let root = copilot::home();
+    if let Some((_, path)) = copilot::logs(&root, usize::MAX).into_iter().find(|(candidate, _)| candidate == id) {
+        let events = copilot::read_events(&path)?;
+        let summary = copilot::summarize(id, &events).ok_or("This Copilot conversation has no readable messages.")?;
+        if let Some(problem) = folder_problem(&summary.folder) {
+            return Err(problem);
+        }
+        let entries = copilot::history(&events);
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let project = project_for(&store, &summary.folder)?;
+        let model = summary.model.as_deref().unwrap_or(fallback_model);
+        return store.import_copilot_task(&project, model, &summary.title, id, Some(id), false, summary.created_at, &entries);
+    }
+    if !include_cloud {
+        return Err("Cloud sessions are hidden until Include cloud sessions is enabled.".into());
+    }
+    let program = crate::providers::executable("github-copilot").ok_or("GitHub Copilot CLI is not installed or its executable is not configured.")?;
+    let (cloud, events) = copilot::cloud_session_with_transcript(&root, &program, id).await?;
+    let entries = copilot::history(&events);
+    if entries.is_empty() {
+        return Err("Copilot did not provide a readable transcript for this session.".into());
+    }
+    let repository = copilot::repository(&events).ok_or("Copilot did not provide a repository for this cloud session. Open its repository as a project, then import again.")?;
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let project = project_for_repository(&store, &repository)?.ok_or_else(|| format!("Open {repository} as a project before importing this cloud session."))?;
+    let transcript_only = cloud.is_remote;
+    store.import_copilot_task(
+        &project,
+        fallback_model,
+        &cloud.title,
+        id,
+        (!transcript_only).then_some(id),
+        transcript_only,
+        cloud.created_at,
+        &entries,
+    )
+}
+
 #[tauri::command]
-pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewWindow, provider: String, ids: Vec<String>, model: Option<String>) -> Result<ImportResult> {
+pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewWindow, provider: String, ids: Vec<String>, model: Option<String>, include_cloud: Option<bool>) -> Result<ImportResult> {
     if window.label() != "main" {
         return Err("Conversations can be imported only from the main window.".into());
     }
     if ids.is_empty() || ids.len() > MAX_IMPORT {
         return Err(format!("Choose between 1 and {MAX_IMPORT} conversations to import."));
     }
-    if !matches!(provider.as_str(), "claude" | "codex") {
-        return Err("Import conversations from Claude Code or Codex.".into());
+    if !matches!(provider.as_str(), "claude" | "codex" | "github-copilot") {
+        return Err("Import conversations from Claude Code, Codex, or GitHub Copilot CLI.".into());
     }
+    let include_cloud = include_cloud.unwrap_or(false);
     let fallback = model.filter(|model| !model.trim().is_empty() && model.len() <= 200).unwrap_or_else(|| "default".into());
     let mut result = ImportResult::default();
     for id in ids {
-        if uuid::Uuid::parse_str(&id).is_err() {
+        if (provider == "github-copilot" && !copilot::valid_id(&id)) || (provider != "github-copilot" && uuid::Uuid::parse_str(&id).is_err()) {
             result.failed.push(ImportFailure { id, message: "Not a valid conversation identifier.".into() });
             continue;
         }
@@ -260,6 +413,8 @@ pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewW
         let imported = if provider == "claude" {
             let (app, id, fallback) = (app.clone(), id.clone(), fallback.clone());
             crate::blocking(move || import_claude(&app.state::<AppState>(), &id, &fallback)).await
+        } else if provider == "github-copilot" {
+            import_copilot(&state, &id, include_cloud, &fallback).await
         } else {
             import_codex(&state, &id, &fallback).await
         };
