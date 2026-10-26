@@ -2,6 +2,8 @@
 
 The activity icon beside Help and Settings opens **Agent usage**. It remains available in the header when the sidebar is collapsed or the board is open. Installed harnesses appear independently with their account limits, plan when reported, and reset times. Every bar represents **percentage used**, never percentage remaining. Missing values stay unavailable rather than appearing as zero.
 
+The composer for project tasks also shows a compact **Used** strip on the right of the project and branch row. It shows only default setups that report a valid usage percentage, using the most-used window. Providers without readable account limits, signed-out accounts and unsupported providers stay hidden; a reported 0% remains visible. If no provider reports limits, the strip leaves no empty space. When the full strip would exceed half the row, it folds into overlapping provider icons. Hover, keyboard focus or a tap reveals the full strip without moving the checkout controls. Each provider's details identify its default setup and list all reported windows with their reset times; missing resets say they were not reported. The detailed Agent usage panel remains available for account diagnostics. Refresh updates the snapshot explicitly.
+
 The panel opens on **Overview**:
 - **Estimated API cost** for the chosen week, month or year.
 - **Average limit use**: the mean of each reporting agent's most-used window.
@@ -10,7 +12,7 @@ The panel opens on **Overview**:
 
 Each agent has a tab with its limit windows, its cost for the period and a year activity calendar.
 
-The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. Checks still run only when the panel opens or on Refresh. Limits may include usage from the same account in other applications.
+The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. The compact strip checks default setups when it first appears, provider settings change or the installed harness list changes; the panel and menu bar item check when opened. Further checks require Refresh. Limits may include usage from the same account in other applications.
 
 ## Estimated API cost
 
@@ -59,7 +61,7 @@ OpenCode authentication content takes precedence over its saved file, and saved 
 
 ## Performance and privacy
 
-- The UI and its stylesheet load only when opened. No usage requests run at startup or on a background timer.
+- The detailed panel and its stylesheet load only when opened. The compact composer strip reads a default-account snapshot when first mounted and when provider settings or the installed harness list change, reuses it across thread switches, and reads again on explicit Refresh. Neither surface polls on a background timer. The strip does not scan local logs or fetch cost estimates.
 - Provider cards settle independently with at most three reads in flight. Closing the panel stops its queued reads and ignores late responses.
 - The native cache coalesces concurrent reads per provider, caches for 60 seconds, and limits explicit refresh to one attempt every 10 seconds. Configuration changes in PandaCode invalidate the relevant entry.
 - Only bounded local credential files and fixed HTTPS quota endpoints are used. Requests have time and response-size limits and do not follow redirects carrying credentials.
@@ -72,11 +74,13 @@ OpenCode authentication content takes precedence over its saved file, and saved 
 ## Code and verification
 
 - `src/agent-usage.ts` / `src/agent-usage.css`: lazy modal content, tabs, per-provider loading, accessible meters and reset details.
+- `src/chat-usage.ts` / `src/chat-usage.css`: the composer strip, responsive provider stack, and hover/focus account details.
 - `src/usage-overview.ts`, `src/usage-cost-chart.ts`, `src/usage-ledger.ts`, `src/usage-heatmap.ts`: the overview, the cost chart, local-day grouping, and the activity calendar. Agents keep one fixed color each, in the validated categorical order.
 - `src-tauri/src/usage_ledger.rs` and `usage_ledger/`: log discovery, incremental parsing, pricing, and the `usage_ledger` IPC command.
 - `src-tauri/src/agent_usage.rs`: guarded IPC, cache, request bounds, Codex and Claude readers.
 - `src-tauri/src/usage_keychain.rs`: isolated, noninteractive macOS credential reader.
 - `src-tauri/src/agent_usage_providers.rs`: Kimi, GLM, OpenCode and standalone Antigravity readers.
 - `tests/agent-usage.spec.ts`: lazy loading, bounded concurrency, refresh, partial failures, close/reopen races, sidebar/board access, narrow layouts, cost ranges, breakdowns, tabs and calendars. `tests/usage-ledger.test.mjs` covers range and day grouping.
+- `tests/chat-usage.spec.ts`: compact-strip placement, responsive collapse, pointer and keyboard expansion, resets, unavailable values, refresh and remount races.
 
 Run `npx tsc --noEmit`, `cargo test --manifest-path src-tauri/Cargo.toml agent_usage usage_ledger`, and the focused Chrome/WebKit Playwright suites. Live account checks are opt-in and never part of the ordinary test suite; `cargo test --lib live_local_logs -- --ignored --nocapture` prints totals from this computer's logs.

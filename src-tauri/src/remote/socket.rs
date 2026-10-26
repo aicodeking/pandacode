@@ -44,6 +44,9 @@ const PEER_QUEUE: usize = 64;
 const MAX_PEERS: usize = 64;
 const MAX_STARTS: usize = 4;
 static STARTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+
+type PeerQueueState = (u64, HashMap<String, mpsc::Sender<Request>>);
+
 /// Relay close codes: another socket replaced this one, or the device was revoked.
 const REPLACED: u16 = 4000;
 const REVOKED: u16 = 4001;
@@ -551,8 +554,8 @@ fn answers() -> std::sync::MutexGuard<'static, Answers> {
 }
 
 /// One ordered request queue per peer, shared by the relay and direct links, for one sign-in.
-fn peers() -> std::sync::MutexGuard<'static, (u64, HashMap<String, mpsc::Sender<Request>>)> {
-    static PEERS: std::sync::OnceLock<std::sync::Mutex<(u64, HashMap<String, mpsc::Sender<Request>>)>> = std::sync::OnceLock::new();
+fn peers() -> std::sync::MutexGuard<'static, PeerQueueState> {
+    static PEERS: std::sync::OnceLock<std::sync::Mutex<PeerQueueState>> = std::sync::OnceLock::new();
     PEERS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 

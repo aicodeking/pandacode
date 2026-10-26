@@ -447,7 +447,9 @@ mod tests {
     fn the_frame_budget_spends_a_burst_then_refills_below_the_relay_rate() {
         let start = Instant::now();
         let mut budget = Budget::new(start);
-        assert!(BURST < 100.0 && RATE < 20.0, "headroom under the relay's 100 burst and 20/s");
+        const {
+            assert!(BURST < 100.0 && RATE < 20.0, "headroom under the relay's 100 burst and 20/s");
+        }
         for _ in 0..BURST as usize {
             assert_eq!(budget.take(start), Duration::ZERO);
         }

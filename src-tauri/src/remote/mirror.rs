@@ -51,6 +51,8 @@ const MAX_HELD: usize = 4096;
 const SAVE_EVERY: Duration = Duration::from_secs(5);
 const NO_REPO: &str = "This project has no GitHub origin, so it can't run on another computer. Add a GitHub remote named origin first.";
 
+type UnsavedHostState = (String, String, Vec<(String, u64)>);
+
 #[derive(Debug)]
 pub(crate) struct Mirror {
     pub device: String,
@@ -268,7 +270,7 @@ impl Viewer {
     }
 
     /// What to save: each changed host's epoch and positions.
-    fn unsaved(&mut self) -> Vec<(String, String, Vec<(String, u64)>)> {
+    fn unsaved(&mut self) -> Vec<UnsavedHostState> {
         let dirty = std::mem::take(&mut self.dirty);
         dirty.into_iter().filter_map(|device| {
             let epoch = self.epochs.get(&device)?.clone();

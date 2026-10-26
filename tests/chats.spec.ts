@@ -20,6 +20,7 @@ test('a new chat lists under Chats, not projects, without project affordances', 
   await expect(page.locator('#breadcrumb')).toHaveText('Chat');
   await expect(page.locator('#deploy-button')).toBeHidden();
   await expect(page.locator('#composer-area .composer-context')).toBeHidden();
+  await expect(page.locator('#chat-usage-host')).toHaveCount(0);
   await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask anything…');
 
   // Leaving the chat brings the project affordances back.
