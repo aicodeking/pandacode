@@ -91,8 +91,8 @@ function actions(row: Row, snoozed: boolean, caps: Caps, leave?: () => void): It
   if (row.outboxId) {
     const id = row.outboxId;
     return [
-      { label: 'Send now', ios: 'arrow.up.circle', android: 'send', onPress: () => retryOutbox(id) },
-      { label: 'Delete message', ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(id) },
+      { label: t('Send now'), ios: 'arrow.up.circle', android: 'send', onPress: () => retryOutbox(id) },
+      { label: t('Delete message'), ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(id) },
     ];
   }
   const answers: Item[] = row.badge === 'approval' && !seenActive(row)
@@ -104,8 +104,8 @@ function actions(row: Row, snoozed: boolean, caps: Caps, leave?: () => void): It
   const items: Item[] = snoozed
     ? [{ label: 'Unsnooze', ios: 'bell', android: 'notifications', onPress: tap(() => unsnooze(row.key)) }]
     : [
-      { label: 'Snooze 1 hour', ios: 'moon.zzz', android: 'snooze', onPress: tap(() => snooze(row.key, Date.now() + HOUR)) },
-      { label: 'Snooze until tomorrow', ios: 'sunrise', android: 'wb_twilight', onPress: tap(() => snooze(row.key, tomorrowMorning(Date.now()))) },
+      { label: t('Snooze 1 hour'), ios: 'moon.zzz', android: 'snooze', onPress: tap(() => snooze(row.key, Date.now() + HOUR)) },
+      { label: t('Snooze until tomorrow'), ios: 'sunrise', android: 'wb_twilight', onPress: tap(() => snooze(row.key, tomorrowMorning(Date.now()))) },
     ];
   items.push({ label: row.pinned ? 'Unpin' : 'Pin', ios: row.pinned ? 'pin.slash' : 'pin', android: 'push_pin', onPress: tap(() => pin(row)) });
   if (row.badge === 'working' || row.badge === 'approval' || row.badge === 'question') {
@@ -143,7 +143,7 @@ const clockTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'n
 const seenActive = (row: Row) => row.task.seenAt !== undefined && (row.badge === 'working' || row.badge === 'approval' || row.badge === 'question');
 
 const lastSeen = (at: number) => { const when = ago(at); return when === 'now' ? 'Last seen just now' : `Last seen ${when} ago`; };
-
+}
 const BADGES: Partial<Record<NonNullable<Row['badge']>, { ios: MenuItem['ios']; android: MenuItem['android']; tone?: Tone; text: string }>> = {
   approval: { ios: 'hand.raised.fill', android: 'front_hand', tone: 'warning', text: 'Approval' },
   question: { ios: 'questionmark.bubble.fill', android: 'help', tone: 'warning', text: 'Question' },
