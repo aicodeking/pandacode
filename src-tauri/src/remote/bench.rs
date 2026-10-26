@@ -457,7 +457,18 @@ impl Peer {
             tx
         });
         let parsed: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
-        let reader = tokio::spawn(read_loop(read, me.id.clone(), keys.clone(), pending.clone(), event_tx, presence_tx, worker, parsed.clone()));
+        let reader = tokio::spawn(read_loop(
+            read,
+            ReadLoopContext {
+                me: me.id.clone(),
+                keys: keys.clone(),
+                pending: pending.clone(),
+                events: event_tx,
+                presence: presence_tx,
+                worker,
+                parsed: parsed.clone(),
+            },
+        ));
         presence.recv().await;
         let took = started.elapsed();
         (Peer { id: me.id.clone(), keys, out, pending, events: tokio::sync::Mutex::new(events), tasks: vec![writer, reader], z: false, parsed }, took)
@@ -496,8 +507,7 @@ async fn wait(answer: Answer) -> Result<Value, String> {
     }
 }
 
-async fn read_loop<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
-    mut read: S,
+struct ReadLoopContext {
     me: String,
     keys: HashMap<String, crypto::Key>,
     pending: Pending,
@@ -505,7 +515,13 @@ async fn read_loop<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
     presence: mpsc::UnboundedSender<Instant>,
     worker: Option<std::sync::mpsc::Sender<(String, crypto::Key, Value)>>,
     parsed: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+async fn read_loop<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin>(
+    mut read: S,
+    context: ReadLoopContext,
 ) {
+    let ReadLoopContext { me, keys, pending, events, presence, worker, parsed } = context;
     let mut replay = host::Replay::default();
     while let Some(Ok(message)) = read.next().await {
         let Message::Text(text) = message else { continue };
@@ -1416,7 +1432,7 @@ impl Writer {
                 0 => match self.rng.next() % 30 {
                     0 => format!("    Finished `test` profile [unoptimized + debuginfo] target(s) in {}.{:02}s", self.rng.next() % 90, self.rng.next() % 100),
                     1 => format!("thread '{}::{}' panicked at {}:{}:{}:\n{}", self.word(), self.ident(), self.path(), self.rng.next() % 900, self.rng.next() % 80, self.sentence()),
-                    _ => format!("test {}::{}::{} ... {}", self.word(), self.word(), self.ident(), if self.rng.next() % 40 == 0 { "FAILED" } else { "ok" }),
+                    _ => format!("test {}::{}::{} ... {}", self.word(), self.word(), self.ident(), if self.rng.next().is_multiple_of(40) { "FAILED" } else { "ok" }),
                 },
                 1 => match self.rng.next() % 6 {
                     0 => format!("warning: unused variable: `{}`\n  --> {}:{}:{}", self.ident(), self.path(), self.rng.next() % 900, self.rng.next() % 80),

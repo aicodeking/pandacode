@@ -23,6 +23,7 @@ html[data-theme="dark"] .composer-context-row {
   margin: 0 !important;
   background: transparent !important;
   border: 0 !important;
+  border-color: transparent !important;
   border-radius: 0 !important;
 }
 #chat-usage-host {
