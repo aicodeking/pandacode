@@ -13,7 +13,8 @@
 .branch-chip>.icon:last-child{width:11px;height:11px;color:var(--muted);flex-shrink:0}
 .branch-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:.94em;font-weight:500}
 .branch-chip:not(:disabled):hover{background:var(--raised)}
-.branch-chip[aria-expanded="true"]{background:#fff1b9;box-shadow:inset 0 0 0 1px rgb(177 132 16 / .13)}
+/* Open like the other pickers (styles.css). */
+.branch-chip[aria-expanded="true"]{background:var(--accent-tint);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .18)}
 .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 52%,var(--bg))}
 .branch-chip-missing{color:var(--danger)}
 .branch-chip-fixed{cursor:default}
@@ -25,7 +26,7 @@
 .composer-computer-fixed{cursor:default}
 .branch-chip-missing>.icon:first-child{color:var(--danger)}
 html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .14)}
-html[data-theme="dark"] .branch-chip:not(:disabled):active{background:#5b4b20}
+html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 35%,var(--bg))}
 .workspace[data-wallpaper] .conversation-pane .branch-chip:is(:active,[aria-expanded="true"]){background:var(--thread-accent)}
 .workspace[data-wallpaper] .conversation-pane .branch-chip:hover{background:var(--thread-hover)}
 

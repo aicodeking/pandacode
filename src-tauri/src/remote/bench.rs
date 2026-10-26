@@ -30,7 +30,9 @@ use tokio_tungstenite::tungstenite::{
 // Production values that are private to their modules; keep them in sync.
 /// images.rs `PACE` before the pipelined upload replaced it.
 const PACE: Duration = Duration::from_millis(75);
-/// socket.rs `run`: the first retry waits this long.
+/// The phone's first retry after a drop before it went at once (socket.ts `delay`, 1 s); the
+/// "before" and "previous" 3G rows and `reconnect_resume` keep it. socket.rs `run` and now
+/// socket.ts retry a dropped stable socket at once.
 const FIRST_BACKOFF: Duration = Duration::from_secs(1);
 /// socket.rs `PING` and `SILENT`.
 const PING_S: u64 = 30;
@@ -61,6 +63,25 @@ const LOOPBACK: Profile = Profile { name: "loopback", one_way: Duration::ZERO, b
 /// Modeled: each computer 20 ms from the relay (80 ms per request/response), 50 Mbit/s down.
 const WAN: Profile = Profile { name: "wan", one_way: Duration::from_millis(20), bytes_per_sec: Some(50e6 / 8.0) };
 const PROFILES: [Profile; 2] = [LOOPBACK, WAN];
+
+/// One computer's link to the relay. Every device gets its profile's link unless the relay
+/// is started with an override (the 3G viewer).
+#[derive(Clone, Copy)]
+struct Link {
+    one_way: Duration,
+    down: Option<f64>,
+    up: Option<f64>,
+}
+
+impl Profile {
+    fn link(self) -> Link {
+        Link { one_way: self.one_way, down: self.bytes_per_sec, up: None }
+    }
+}
+
+fn transfer(bytes: usize, rate: Option<f64>) -> Duration {
+    rate.map_or(Duration::ZERO, |rate| Duration::from_secs_f64(bytes as f64 / rate))
+}
 
 // ---------------------------------------------------------------------------------------
 // Reporting
@@ -153,12 +174,25 @@ struct RelayState {
     devices: Vec<(String, String)>,
     sockets: HashMap<String, Outbox>,
     buckets: HashMap<String, (f64, Instant)>,
+    links: HashMap<String, Link>,
+    /// WebSocket payload bytes per device: (to it, from it).
+    wire: HashMap<String, (usize, usize)>,
 }
 
 struct Relay {
     addr: SocketAddr,
-    profile: Profile,
+    state: Arc<Mutex<RelayState>>,
     task: JoinHandle<()>,
+}
+
+impl Relay {
+    fn link(&self, device: &str) -> Link {
+        self.state.lock().unwrap().links[device]
+    }
+
+    fn wire(&self, device: &str) -> (usize, usize) {
+        self.state.lock().unwrap().wire.get(device).copied().unwrap_or_default()
+    }
 }
 
 impl Drop for Relay {
@@ -168,25 +202,31 @@ impl Drop for Relay {
 }
 
 async fn start_relay(profile: Profile, devices: &[&Identity]) -> Relay {
+    start_relay_with(profile, devices, &[]).await
+}
+
+async fn start_relay_with(profile: Profile, devices: &[&Identity], overrides: &[(&Identity, Link)]) -> Relay {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let mut links: HashMap<String, Link> = devices.iter().map(|d| (d.id.clone(), profile.link())).collect();
+    links.extend(overrides.iter().map(|(d, link)| (d.id.clone(), *link)));
     let devices = devices.iter().map(|d| (d.id.clone(), d.public())).collect();
-    let state = Arc::new(Mutex::new(RelayState { devices, sockets: HashMap::new(), buckets: HashMap::new() }));
+    let state = Arc::new(Mutex::new(RelayState { devices, sockets: HashMap::new(), buckets: HashMap::new(), links, wire: HashMap::new() }));
+    let shared = state.clone();
     let task = tokio::spawn(async move {
         while let Ok((tcp, _)) = listener.accept().await {
             let _ = tcp.set_nodelay(true);
-            tokio::spawn(serve(tcp, state.clone(), profile));
+            tokio::spawn(serve(tcp, shared.clone()));
         }
     });
-    Relay { addr, profile, task }
+    Relay { addr, state, task }
 }
 
 /// Delivers frames after the modeled propagation, one at a time over the modeled downlink.
-async fn write_delayed<S: Sink<Message> + Unpin>(mut write: S, mut rx: mpsc::UnboundedReceiver<(tokio::time::Instant, Message)>, profile: Profile) {
+async fn write_delayed<S: Sink<Message> + Unpin>(mut write: S, mut rx: mpsc::UnboundedReceiver<(tokio::time::Instant, Message)>, down: Option<f64>) {
     let mut free = tokio::time::Instant::now();
     while let Some((at, message)) = rx.recv().await {
-        let transfer = profile.bytes_per_sec.map_or(Duration::ZERO, |rate| Duration::from_secs_f64(message.len() as f64 / rate));
-        free = free.max(at) + transfer;
+        free = free.max(at) + transfer(message.len(), down);
         // Tokio's timer rounds up to 1 ms, so a frame already due goes out at once.
         if free > tokio::time::Instant::now() {
             tokio::time::sleep_until(free).await;
@@ -197,8 +237,10 @@ async fn write_delayed<S: Sink<Message> + Unpin>(mut write: S, mut rx: mpsc::Unb
     }
 }
 
-fn broadcast_presence(state: &RelayState, hop: Duration) {
-    let at = tokio::time::Instant::now() + hop;
+/// Presence reaches each socket one round trip of its own link later (the connecting one's
+/// upgrade request and response).
+fn broadcast_presence(state: &mut RelayState) {
+    let now = tokio::time::Instant::now();
     let devices: Vec<Value> = state
         .devices
         .iter()
@@ -208,12 +250,13 @@ fn broadcast_presence(state: &RelayState, hop: Duration) {
         })
         .collect();
     let frame = json!({"kind": "presence", "devices": devices}).to_string();
-    for out in state.sockets.values() {
-        let _ = out.send((at, Message::text(frame.clone())));
+    for (id, out) in &state.sockets {
+        let _ = out.send((now + state.links[id].one_way * 2, Message::text(frame.clone())));
+        state.wire.entry(id.clone()).or_default().0 += frame.len();
     }
 }
 
-async fn serve(tcp: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>, profile: Profile) {
+async fn serve(tcp: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>) {
     let mut device = String::new();
     // tungstenite requires this large response error type in its callback signature.
     #[allow(clippy::result_large_err)]
@@ -225,30 +268,34 @@ async fn serve(tcp: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>, profil
     if !state.lock().unwrap().devices.iter().any(|(id, _)| *id == device) {
         return;
     }
-    // A frame crosses two hops: sender to relay, relay to receiver.
-    let hop = profile.one_way * 2;
+    let link = state.lock().unwrap().links[&device];
     let (write, mut read) = ws.split();
     let (tx, rx) = mpsc::unbounded_channel();
-    tokio::spawn(write_delayed(write, rx, profile));
+    tokio::spawn(write_delayed(write, rx, link.down));
     {
         let mut s = state.lock().unwrap();
         s.sockets.insert(device.clone(), tx.clone());
         s.buckets.entry(device.clone()).or_insert((RATE_BURST, Instant::now()));
-        broadcast_presence(&s, hop);
+        broadcast_presence(&mut s);
     }
+    // The sender's uplink, one frame at a time; then its leg to the relay.
+    let mut up_free = tokio::time::Instant::now();
     while let Some(Ok(message)) = read.next().await {
         let text = match message {
             Message::Text(text) => text,
             Message::Close(_) => break,
             _ => continue,
         };
-        let at = tokio::time::Instant::now() + hop;
+        up_free = up_free.max(tokio::time::Instant::now()) + transfer(text.len(), link.up);
+        let arrived = up_free + link.one_way;
+        let at = arrived + link.one_way;
         // The relay's auto-response answers pings without spending a token.
         if text.as_str() == "ping" {
             let _ = tx.send((at, Message::text("pong")));
             continue;
         }
         let s = &mut *state.lock().unwrap();
+        s.wire.entry(device.clone()).or_default().1 += text.len();
         // relay/src/bucket.ts: refill by elapsed time, then spend one token.
         let now = Instant::now();
         let bucket = s.buckets.get_mut(&device).unwrap();
@@ -264,7 +311,10 @@ async fn serve(tcp: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>, profil
         }
         match s.sockets.get(&to) {
             Some(target) => {
-                let _ = target.send((at, Message::text(json!({"from": device, "to": to, "body": frame["body"]}).to_string())));
+                let forwarded = json!({"from": device, "to": to, "body": frame["body"]}).to_string();
+                let len = forwarded.len();
+                let _ = target.send((arrived + s.links[&to].one_way, Message::text(forwarded)));
+                s.wire.entry(to.clone()).or_default().0 += len;
             }
             None => {
                 let _ = tx.send((at, undeliverable("offline")));
@@ -274,7 +324,7 @@ async fn serve(tcp: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>, profil
     let mut s = state.lock().unwrap();
     if s.sockets.get(&device).is_some_and(|out| out.same_channel(&tx)) {
         s.sockets.remove(&device);
-        broadcast_presence(&s, hop);
+        broadcast_presence(&mut s);
     }
 }
 
@@ -322,10 +372,16 @@ fn now_ms() -> i64 {
 
 /// socket.rs `send_sealed`: stamp `ts` and `nonce`, seal, wrap as `{to, body, ref}`.
 fn seal_frame(key: &crypto::Key, me: &str, to: &str, message: &Value) -> String {
+    seal_packed(key, me, to, message, false)
+}
+
+/// `seal_frame`, packing the plaintext (socket.rs `outgoing`) when the peer asked with `"z": 1`.
+fn seal_packed(key: &crypto::Key, me: &str, to: &str, message: &Value, pack: bool) -> String {
     let mut stamped = message.clone();
     stamped["ts"] = json!(now_ms());
     stamped["nonce"] = json!(uuid::Uuid::new_v4().simple().to_string());
-    let body = crypto::seal(key, me, to, stamped.to_string().as_bytes()).unwrap();
+    let plain = stamped.to_string().into_bytes();
+    let body = crypto::seal(key, me, to, &if pack { crypto::pack(&plain) } else { plain }).unwrap();
     let mut frame = json!({"to": to, "body": body});
     if let Some(id) = message["id"].as_str() {
         frame["ref"] = json!(id);
@@ -340,6 +396,10 @@ struct Peer {
     pending: Pending,
     events: tokio::sync::Mutex<mpsc::UnboundedReceiver<(Instant, Value)>>,
     tasks: Vec<JoinHandle<()>>,
+    /// Requests say `"z": 1` (this peer opens packed replies), as socket.rs `stamp` does now.
+    z: bool,
+    /// Plaintext JSON bytes this peer opened (after inflating).
+    parsed: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Drop for Peer {
@@ -357,7 +417,7 @@ impl Peer {
         let keys: HashMap<String, crypto::Key> = others.iter().map(|o| (o.id.clone(), crypto::pair_key(&me.secret, &me.id, &o.public(), &o.id).unwrap())).collect();
         let started = Instant::now();
         // Modeled TCP and TLS 1.3 set-up: two round trips that loopback can't show.
-        tokio::time::sleep(relay.profile.one_way * 4).await;
+        tokio::time::sleep(relay.link(&me.id).one_way * 4).await;
         let mut request = format!("ws://{}/v1/connect?host=1", relay.addr).into_client_request().unwrap();
         request.headers_mut().insert("Authorization", format!("Bearer {}", me.id).parse().unwrap());
         let (stream, _) = tokio_tungstenite::connect_async_with_config(request, None, !nagle).await.unwrap();
@@ -383,22 +443,24 @@ impl Peer {
                         Ok(result) => json!({"type": "res", "id": message["id"], "ok": true, "result": result}),
                         Err(error) => json!({"type": "res", "id": message["id"], "ok": false, "error": error}),
                     };
-                    let _ = out.send(seal_frame(&key, &me, &from, &response));
+                    let pack = message["z"] == 1;
+                    let _ = out.send(seal_packed(&key, &me, &from, &response, pack));
                     if let Some((delay, event)) = reply.event {
                         let (out, me) = (out.clone(), me.clone());
                         std::thread::spawn(move || {
                             std::thread::sleep(delay);
-                            let _ = out.send(seal_frame(&key, &me, &from, &event));
+                            let _ = out.send(seal_packed(&key, &me, &from, &event, pack));
                         });
                     }
                 }
             });
             tx
         });
-        let reader = tokio::spawn(read_loop(read, me.id.clone(), keys.clone(), pending.clone(), event_tx, presence_tx, worker));
+        let parsed: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
+        let reader = tokio::spawn(read_loop(read, me.id.clone(), keys.clone(), pending.clone(), event_tx, presence_tx, worker, parsed.clone()));
         presence.recv().await;
         let took = started.elapsed();
-        (Peer { id: me.id.clone(), keys, out, pending, events: tokio::sync::Mutex::new(events), tasks: vec![writer, reader] }, took)
+        (Peer { id: me.id.clone(), keys, out, pending, events: tokio::sync::Mutex::new(events), tasks: vec![writer, reader], z: false, parsed }, took)
     }
 
     /// Queues a request now (frames leave in call order) and returns its answer.
@@ -406,7 +468,11 @@ impl Peer {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id.clone(), tx);
-        let frame = seal_frame(&self.keys[to], &self.id, to, &json!({"type": "req", "id": id, "method": method, "params": params}));
+        let mut message = json!({"type": "req", "id": id, "method": method, "params": params});
+        if self.z {
+            message["z"] = json!(1);
+        }
+        let frame = seal_frame(&self.keys[to], &self.id, to, &message);
         assert!(frame.len() <= MAX_FRAME, "frame too large: {}", frame.len());
         let _ = self.out.send(frame);
         rx
@@ -438,6 +504,7 @@ async fn read_loop<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
     events: mpsc::UnboundedSender<(Instant, Value)>,
     presence: mpsc::UnboundedSender<Instant>,
     worker: Option<std::sync::mpsc::Sender<(String, crypto::Key, Value)>>,
+    parsed: Arc<std::sync::atomic::AtomicUsize>,
 ) {
     let mut replay = host::Replay::default();
     while let Some(Ok(message)) = read.next().await {
@@ -457,6 +524,7 @@ async fn read_loop<S: Stream<Item = Result<Message, tungstenite::Error>> + Unpin
                 let (Some(from), Some(body)) = (frame["from"].as_str(), frame["body"].as_str()) else { continue };
                 let Some(key) = keys.get(from) else { continue };
                 let Ok(plain) = crypto::open(key, from, &me, body) else { continue };
+                parsed.fetch_add(plain.len(), std::sync::atomic::Ordering::Relaxed);
                 let Ok(message) = serde_json::from_slice::<Value>(&plain) else { continue };
                 if replay.check(message["ts"].as_i64(), message["nonce"].as_str(), now_ms()).is_err() {
                     continue;
@@ -785,7 +853,7 @@ fn task_start_phases() {
         .collect();
     let find: Vec<_> = (0..5).map(|_| time(|| projects.iter().filter_map(|p| crate::github_hub::project_repo(p)).count()).1).collect();
     table.add("finding: project_repo over 10 projects (before)", &find, "one `git config` per project, serial");
-    let listed: Vec<crate::storage::Project> = projects.iter().enumerate().map(|(n, path)| crate::storage::Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned() }).collect();
+    let listed: Vec<crate::storage::Project> = projects.iter().enumerate().map(|(n, path)| crate::storage::Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned(), added_order: n as i64 }).collect();
     let found: Vec<_> = (0..5).map(|_| time(|| start::origins(listed.clone()).into_iter().filter(|(_, origin)| origin.is_some()).count()).1).collect();
     table.add("finding: start::origins over 10 projects (now)", &found, "reads .git/config; git only for unusual configs");
     let mut installed = 0;
@@ -1027,10 +1095,15 @@ struct Synced {
 
 /// mirror.rs `sync`: page by page after the stored position, at most `MAX_PAGES`.
 async fn sync(viewer: &Peer, host: &str, remote: &str, store: &Store, local: &str) -> Synced {
+    sync_with(viewer, host, remote, store, local, None).await
+}
+
+/// [`sync`] asking for pages of `budget` JSON bytes, as mirror.rs does now.
+async fn sync_with(viewer: &Peer, host: &str, remote: &str, store: &Store, local: &str, budget: Option<usize>) -> Synced {
     let mut stats = Synced::default();
     for _ in 0..MAX_PAGES {
         let after = synced(store, local);
-        let page = viewer.call(host, "task.messages", json!({"sessionId": remote, "afterId": after})).await.unwrap();
+        let page = viewer.call(host, "task.messages", budgeted(json!({"sessionId": remote, "afterId": after}), budget)).await.unwrap();
         stats.pages += 1;
         stats.bytes += page.to_string().len();
         let (more, took) = time(|| mirror::store_page(store, local, after, &page).unwrap());
@@ -1046,7 +1119,20 @@ fn history_host(store: Arc<Mutex<Store>>, remote: String) -> Handler {
     Arc::new(move |_, method, params| {
         let store = store.lock().unwrap();
         match method {
-            "task.messages" => host::messages_page(&store.db, params["sessionId"].as_str().unwrap_or_default(), params["afterId"].as_i64().unwrap_or(0)).map_or_else(refuse, ok),
+            "task.messages" => {
+                // host.rs `message_paging` (tail, beforeId, else afterId) and `page_budget`.
+                let session = params["sessionId"].as_str().unwrap_or_default();
+                let limit = params["limit"].as_i64().unwrap_or(100);
+                let budget = host::page_budget(params).unwrap();
+                let page = if params["tail"] == true {
+                    host::messages_page_fit(&store.db, session, host::MessagePaging::Tail { limit }, budget)
+                } else if let Some(before_id) = params["beforeId"].as_i64() {
+                    host::messages_page_fit(&store.db, session, host::MessagePaging::Before { before_id, limit }, budget)
+                } else {
+                    host::messages_page_fit(&store.db, session, host::MessagePaging::After { after_id: params["afterId"].as_i64().unwrap_or(0), limit: 400 }, budget)
+                };
+                page.map_or_else(refuse, ok)
+            }
             "subscribe" => {
                 let last: i64 = store.db.query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1", [&remote], |r| r.get(0)).unwrap();
                 ok(json!({"tasks": [{"sessionId": remote, "status": "idle", "lastId": last}]}))
@@ -1158,4 +1244,571 @@ async fn reconnect_resume() {
     }
     table.print();
     println!("\nHalf-open socket (no FIN): socket.rs pings every {PING_S} s and gives up after {SILENT_S} s silent, so a dead link is noticed after {SILENT_S}-{} s (computed from constants, not measured).", SILENT_S + PING_S);
+}
+
+// ---------------------------------------------------------------------------------------
+// 8. A viewer on 3G: cold open, reconnect and thread opens, before (v0.3.49) and now
+
+/// The viewer's 3G link: 400 kbit/s each way, 400 ms round trip to the relay. The host keeps
+/// the WAN link.
+const THREE_G: Link = Link { one_way: Duration::from_millis(200), down: Some(400e3 / 8.0), up: Some(400e3 / 8.0) };
+use mirror::{OLDER_PAGE, PACKED_BUDGET, TAIL_BUDGET, TAIL_PAGE};
+/// mobile/src/connect/client.ts `TAIL` and `TAIL_BUDGET`.
+const PHONE_TAIL: i64 = 60;
+const PHONE_TAIL_BUDGET: usize = 32 * 1024;
+
+/// A request's params with `budget` set, when there is one.
+fn budgeted(mut params: Value, budget: Option<usize>) -> Value {
+    if let Some(budget) = budget {
+        params["budget"] = json!(budget);
+    }
+    params
+}
+
+/// The 3G bench's viewers: v0.3.49 (plain frames, afterId from 0), the previous step (packed
+/// frames, tail 30, pages of `PAGE_BUDGET`), and now (byte-capped tail, bigger packed pages).
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    Before,
+    Previous,
+    Now,
+}
+
+impl Mode {
+    fn label(self) -> &'static str {
+        match self {
+            Mode::Before => "before",
+            Mode::Previous => "previous",
+            Mode::Now => "now",
+        }
+    }
+
+    /// (desktop tail, desktop afterId/older pages, phone tail) budgets.
+    fn budgets(self) -> (Option<usize>, Option<usize>, Option<usize>) {
+        match self {
+            Mode::Now => (Some(TAIL_BUDGET), Some(PACKED_BUDGET), Some(PHONE_TAIL_BUDGET)),
+            _ => (None, None, None),
+        }
+    }
+
+    /// `PANDACODE_BENCH_MODES=previous,now` runs only those; all three by default.
+    fn chosen() -> Vec<Mode> {
+        let all = [Mode::Before, Mode::Previous, Mode::Now];
+        match std::env::var("PANDACODE_BENCH_MODES") {
+            Ok(list) => all.into_iter().filter(|mode| list.split(',').any(|name| name.trim() == mode.label())).collect(),
+            Err(_) => all.to_vec(),
+        }
+    }
+}
+
+const VOCAB: &str = "a about above accept access account across action add after again agent ahead all allow already also always an and another answer any app apply approach are around array as ask async at attach auth await back background base be because been before begin behavior below better between binary both bound branch break browser buffer bug build but by cache call caller can cannot case catch cause change channel check child class clean clear client close code column command comment commit common compile complete config connect const context continue copy correct could count create current data database debug default define delete depend detail diff different directory does done down drop during each edge either else empty encode end enough entry error even event every example exist expect explicit export fail false fast feature fetch field file filter final find first fix flag focus follow for format found frame from full function get given global handle has have header here hold host how however if image implement import in index inside instead into issue it item its just keep key large last later layout leave length less let level library like limit line link list load local lock log long look loop main make many map match may memory merge message method might migration missing mode model module more most move must name need network never new next no node none not note nothing now null number object of off old on once one only open option or order other out output over own package page panel parse part pass path pattern pending per place plan point pool possible prefer present prevent previous print problem process project prompt property provide pull push query queue quick rather read ready real reason receive record reduce refactor reference relay release remote remove render replace reply report request require reset resolve response result return review right root route row rule run runtime safe same save scope screen search second section see select send separate server session set setting should show side signal simple since single size skip slow small so socket some source space split stack start state status step still stop storage store stream string struct style such support sure switch sync system table take target task test text than that the their them then there these they thing this those though thread through time timeout to token too tool top trace track tree true try turn type under unit until up update use user using value variable version via view wait want warning was watch way we what when where whether which while why will window with within without work worker would write wrong yet you";
+
+fn pick<'a>(rng: &mut Rng, list: &[&'a str]) -> &'a str {
+    list[(rng.next() % list.len() as u64) as usize]
+}
+
+fn between(rng: &mut Rng, low: usize, high: usize) -> usize {
+    low + (rng.next() % (high - low) as u64) as usize
+}
+
+/// Realistic agent transcript text: a 400-word vocabulary, identifiers, paths, numbers and
+/// hashes, so deflate sees what real threads give it rather than 32 repeated words.
+struct Writer {
+    rng: Rng,
+    words: Vec<&'static str>,
+}
+
+impl Writer {
+    fn word(&mut self) -> &'static str {
+        pick(&mut self.rng, &self.words)
+    }
+
+    fn ident(&mut self) -> String {
+        format!("{}_{}", self.word(), self.word())
+    }
+
+    fn path(&mut self) -> String {
+        let ext = pick(&mut self.rng, &["rs", "ts", "tsx", "css", "md"]);
+        format!("src/{}/{}_{}.{ext}", self.word(), self.word(), self.word())
+    }
+
+    fn hex(&mut self, len: usize) -> String {
+        let mut out = String::new();
+        while out.len() < len {
+            out.push_str(&format!("{:016x}", self.rng.next()));
+        }
+        out.truncate(len);
+        out
+    }
+
+    fn sentence(&mut self) -> String {
+        let count = between(&mut self.rng, 6, 20);
+        let mut words = Vec::new();
+        for _ in 0..count {
+            words.push(match self.rng.next() % 24 {
+                0..=1 => format!("`{}`", self.ident()),
+                2 => format!("`{}`", self.path()),
+                3 => (self.rng.next() % 500).to_string(),
+                _ => self.word().to_owned(),
+            });
+        }
+        let mut text = words.join(" ");
+        if let Some(first) = text.get_mut(0..1) {
+            first.make_ascii_uppercase();
+        }
+        text.push('.');
+        text
+    }
+
+    fn code_line(&mut self) -> String {
+        let n = self.rng.next() % 1000;
+        let ty = pick(&mut self.rng, &["String", "Value", "PathBuf", "Vec<u8>", "Store", "Session", "Message", "usize"]);
+        match self.rng.next() % 10 {
+            0 => format!("fn {}({}: &{ty}) -> Result<{ty}> {{", self.ident(), self.word()),
+            1 => format!("    let {} = {}.{}(&{})?;", self.ident(), self.word(), self.ident(), self.word()),
+            2 => format!("    if {}.is_empty() {{ return Err(\"{}\".into()); }}", self.word(), self.sentence()),
+            3 => format!("    for {} in {}.iter().filter(|x| x.{} > {n}) {{", self.word(), self.ident(), self.word()),
+            4 => format!("        {}.push({}::{}({n}));", self.ident(), self.word(), self.ident()),
+            5 => format!("  const {} = await {}({}, {{ {}: {n} }});", self.ident(), self.ident(), self.word(), self.word()),
+            6 => format!("    // {}", self.sentence()),
+            7 => format!("const {}: usize = {n};", self.ident().to_uppercase()),
+            8 => "    }".to_owned(),
+            _ => format!("    {}.{}(\"{}\", {n})", self.word(), self.ident(), self.path()),
+        }
+    }
+
+    fn code(&mut self, lines: usize) -> String {
+        (0..lines).map(|_| self.code_line()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// An assistant reply: paragraphs, lists, headings and code blocks.
+    fn reply(&mut self, bytes: usize) -> String {
+        let mut text = String::new();
+        while text.len() < bytes {
+            match self.rng.next() % 20 {
+                0..=11 => text.push_str(&(0..between(&mut self.rng, 2, 5)).map(|_| self.sentence()).collect::<Vec<_>>().join(" ")),
+                12..=15 => text.push_str(&(0..between(&mut self.rng, 3, 6)).map(|_| format!("- {}", self.sentence())).collect::<Vec<_>>().join("\n")),
+                16 => text.push_str(&format!("## {}", self.sentence().trim_end_matches('.'))),
+                _ => {
+                    let lines = between(&mut self.rng, 5, 25);
+                    text.push_str(&format!("```rust\n{}\n```", self.code(lines)));
+                }
+            }
+            text.push_str("\n\n");
+        }
+        text
+    }
+
+    /// A tool call as PandaCode stores it: JSON with the tool, its input and its output.
+    fn tool(&mut self, bytes: usize) -> String {
+        let mut out = String::new();
+        let kind = self.rng.next() % 5;
+        let (tool, input) = match kind {
+            0 => ("Bash", json!({"command": format!("cargo test -p {} {}", self.word(), self.ident())})),
+            1 => ("Bash", json!({"command": "npm run build"})),
+            2 => ("Read", json!({"file_path": self.path()})),
+            3 => ("Grep", json!({"pattern": self.ident(), "path": "src"})),
+            _ => ("Bash", json!({"command": "git log -p -3"})),
+        };
+        let mut line = 1;
+        while out.len() < bytes {
+            let next = match kind {
+                0 => match self.rng.next() % 30 {
+                    0 => format!("    Finished `test` profile [unoptimized + debuginfo] target(s) in {}.{:02}s", self.rng.next() % 90, self.rng.next() % 100),
+                    1 => format!("thread '{}::{}' panicked at {}:{}:{}:\n{}", self.word(), self.ident(), self.path(), self.rng.next() % 900, self.rng.next() % 80, self.sentence()),
+                    _ => format!("test {}::{}::{} ... {}", self.word(), self.word(), self.ident(), if self.rng.next() % 40 == 0 { "FAILED" } else { "ok" }),
+                },
+                1 => match self.rng.next() % 6 {
+                    0 => format!("warning: unused variable: `{}`\n  --> {}:{}:{}", self.ident(), self.path(), self.rng.next() % 900, self.rng.next() % 80),
+                    1 => format!("{} INFO {}: {} request_id={}", chrono::DateTime::from_timestamp(1_790_000_000 + (self.rng.next() % 100_000) as i64, 0).unwrap().to_rfc3339(), self.word(), self.sentence(), self.hex(16)),
+                    _ => format!("   Compiling {}-{} v{}.{}.{}", self.word(), self.word(), self.rng.next() % 3, self.rng.next() % 40, self.rng.next() % 20),
+                },
+                2 => {
+                    line += 1;
+                    format!("{line:>6}\t{}", self.code_line())
+                }
+                3 => format!("{}:{}:{}", self.path(), self.rng.next() % 900, self.code_line().trim_start()),
+                _ => match self.rng.next() % 12 {
+                    0 => format!("commit {}\nAuthor: {} <{}@example.com>\n\n    {}", self.hex(40), self.word(), self.word(), self.sentence()),
+                    1 => format!("diff --git a/{0} b/{0}\nindex {1}..{2} 100644", self.path(), self.hex(7), self.hex(7)),
+                    2..=5 => format!("-{}", self.code_line()),
+                    _ => format!("+{}", self.code_line()),
+                },
+            };
+            out.push_str(&next);
+            out.push('\n');
+        }
+        json!({"tool": tool, "input": input, "output": out}).to_string()
+    }
+
+    /// One turn: a prompt, tool calls with short notes between them, a final reply.
+    fn turn(&mut self) -> Vec<(&'static str, String)> {
+        let prompt = between(&mut self.rng, 150, 900);
+        let mut turn = vec![("user", self.reply(prompt))];
+        for _ in 0..between(&mut self.rng, 2, 8) {
+            let note = between(&mut self.rng, 80, 400);
+            turn.push(("assistant", self.sentence().chars().cycle().take(note).collect()));
+            let size = match self.rng.next() % 20 {
+                0 => between(&mut self.rng, 30_000, 90_000),
+                1..=5 => between(&mut self.rng, 8_000, 30_000),
+                _ => between(&mut self.rng, 500, 8_000),
+            };
+            turn.push(("tool", self.tool(size)));
+        }
+        let reply = between(&mut self.rng, 600, 4000);
+        turn.push(("assistant", self.reply(reply)));
+        turn
+    }
+}
+
+fn writer(seed: u64) -> Writer {
+    Writer { rng: Rng(seed | 1), words: VOCAB.split(' ').collect() }
+}
+
+/// Whole turns until the thread's task.messages JSON reaches about `target` bytes.
+fn add_turns(store: &Store, session: &str, target: usize, writer: &mut Writer) {
+    let mut total = 0;
+    while total < target {
+        for (role, content) in writer.turn() {
+            // + the message's id, role, createdAt, attachments and separators.
+            total += serde_json::to_string(&content).unwrap().len() + 170;
+            store.message(session, role, &content).unwrap();
+        }
+    }
+}
+
+/// The thread's whole afterId read on the host: (task.messages JSON bytes, messages, packed bytes).
+fn thread_size(store: &Store, session: &str) -> (usize, usize, usize) {
+    let (mut after, mut json_bytes, mut count, mut packed) = (0, 0, 0, 0);
+    loop {
+        let page = host::messages_page(&store.db, session, after).unwrap();
+        let text = page.to_string();
+        json_bytes += text.len();
+        packed += crypto::pack(text.as_bytes()).len();
+        let messages = page["messages"].as_array().unwrap();
+        count += messages.len();
+        after = messages.last().and_then(|m| m["id"].as_i64()).unwrap_or(after);
+        if page["hasMore"] != true {
+            return (json_bytes, count, packed);
+        }
+    }
+}
+
+fn copied(store: &Store, local: &str) -> i64 {
+    store.db.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1", [local], |r| r.get(0)).unwrap()
+}
+
+/// mirror.rs `oldest_copied`: (backfill base, oldest host id copied) while older pages remain.
+fn oldest_copied(store: &Store, local: &str) -> Option<(i64, i64)> {
+    let base: Option<i64> = store.db.query_row("SELECT remote_backfill_base FROM sessions WHERE id=?1", [local], |r| r.get(0)).unwrap();
+    let oldest: Option<i64> = store.db.query_row("SELECT MIN(id) FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![local, base?], |r| r.get(0)).unwrap();
+    oldest.map(|id| (base.unwrap(), id - base.unwrap()))
+}
+
+/// Elapsed time and the viewer's bytes at one moment of a run.
+#[derive(Clone, Copy, Default)]
+struct Point {
+    at: Duration,
+    down: usize,
+    up: usize,
+    parsed: usize,
+}
+
+struct Meter<'a> {
+    relay: &'a Relay,
+    viewer: String,
+    started: Instant,
+    base: (usize, usize),
+}
+
+impl<'a> Meter<'a> {
+    fn start(relay: &'a Relay, viewer: &Identity) -> Self {
+        Meter { relay, viewer: viewer.id.clone(), started: Instant::now(), base: relay.wire(&viewer.id) }
+    }
+
+    /// `parsed` is counted per peer; pass what the peers in this run have opened.
+    fn mark(&self, parsed: usize) -> Point {
+        let (down, up) = self.relay.wire(&self.viewer);
+        Point { at: self.started.elapsed(), down: down - self.base.0, up: up - self.base.1, parsed }
+    }
+}
+
+fn parsed(peer: &Peer) -> usize {
+    peer.parsed.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// v0.3.49 mirror.rs `sync` for a new mirror: afterId pages from 0, oldest first. The newest
+/// messages show only with the last page.
+async fn open_before(viewer: &Peer, host: &str, remote: &str, meter: &Meter<'_>, base: usize) -> (Point, Point, i64) {
+    let (store, local) = mirror_store(0);
+    sync(viewer, host, remote, &store, &local).await;
+    let full = meter.mark(parsed(viewer) - base);
+    (full, full, copied(&store, &local))
+}
+
+/// mirror.rs `sync` for a new mirror since newest-first paging: the newest page (tail 30), the
+/// afterId catch-up after it, then `backfill`: beforeId pages of 200, newest first. `mode`
+/// adds this step's budgets. `tail` is that page when it was already asked (with `subscribe`).
+async fn open_now(viewer: &Peer, host: &str, remote: &str, meter: &Meter<'_>, base: usize, mode: Mode, tail: Option<Value>) -> (Point, Point, i64) {
+    let (tail_budget, page_budget, _) = mode.budgets();
+    let (store, local) = mirror_store(0);
+    let tail = match tail {
+        Some(tail) => tail,
+        None => viewer.call(host, "task.messages", tail_params(remote, tail_budget)).await.unwrap(),
+    };
+    assert!(mirror::store_tail(&store, &local, &tail).unwrap());
+    let visible = meter.mark(parsed(viewer) - base);
+    // The tail's newest message, when the host cut it to fit (`cut: true`): (local id, host id).
+    let cut = tail["messages"].as_array().and_then(|messages| messages.last()).filter(|message| message["cut"] == true).map(|message| {
+        (store.db.query_row("SELECT MAX(id) FROM messages WHERE session_id=?1", [&local], |r| r.get::<_, i64>(0)).unwrap(), message["id"].as_i64().unwrap())
+    });
+    sync_with(viewer, host, remote, &store, &local, page_budget).await;
+    // mirror.rs `uncut`: that message is fetched whole after the catch-up.
+    if let Some((id, host_id)) = cut {
+        let page = viewer.call(host, "task.messages", budgeted(json!({"sessionId": remote, "afterId": host_id - 1, "limit": 1}), page_budget)).await.unwrap();
+        mirror::replace_cut(&store, &local, (id, host_id), &page).unwrap();
+    }
+    while let Some(oldest) = oldest_copied(&store, &local) {
+        let page = viewer.call(host, "task.messages", budgeted(json!({"sessionId": remote, "beforeId": oldest.1, "limit": OLDER_PAGE}), page_budget)).await.unwrap();
+        if !mirror::store_older(&store, &local, oldest, &page).unwrap() {
+            break;
+        }
+    }
+    (visible, meter.mark(parsed(viewer) - base), copied(&store, &local))
+}
+
+fn tail_params(remote: &str, budget: Option<usize>) -> Value {
+    budgeted(json!({"sessionId": remote, "tail": true, "limit": TAIL_PAGE}), budget)
+}
+
+/// The phone's first open (client.ts `loadMessages` with nothing cached): one tail page of 60.
+async fn open_phone(viewer: &Peer, host: &str, remote: &str, meter: &Meter<'_>, base: usize, mode: Mode) -> Point {
+    let page = viewer.call(host, "task.messages", budgeted(json!({"sessionId": remote, "tail": true, "limit": PHONE_TAIL}), mode.budgets().2)).await.unwrap();
+    assert!(!page["messages"].as_array().unwrap().is_empty());
+    meter.mark(parsed(viewer) - base)
+}
+
+struct ThreeG {
+    relay: Relay,
+    host_identity: Identity,
+    viewer_identity: Identity,
+    host: Peer,
+}
+
+async fn three_g_relay(handler: Handler) -> ThreeG {
+    let (host_identity, viewer_identity) = (Identity::new(), Identity::new());
+    let relay = start_relay_with(WAN, &[&host_identity, &viewer_identity], &[(&viewer_identity, THREE_G)]).await;
+    let (host, _) = Peer::connect(&relay, &host_identity, &[&viewer_identity], Some(handler), true).await;
+    ThreeG { relay, host_identity, viewer_identity, host }
+}
+
+impl ThreeG {
+    async fn viewer(&self, z: bool) -> Peer {
+        let (mut peer, _) = Peer::connect(&self.relay, &self.viewer_identity, &[&self.host_identity], None, true).await;
+        peer.z = z;
+        peer
+    }
+}
+
+/// Median of each field over the runs.
+#[derive(Default)]
+struct Runs {
+    visible: Vec<Point>,
+    full: Vec<Point>,
+}
+
+impl Runs {
+    fn push(&mut self, visible: Point, full: Option<Point>) {
+        self.visible.push(visible);
+        self.full.extend(full);
+    }
+
+    fn median(points: &[Point]) -> Option<Point> {
+        if points.is_empty() {
+            return None;
+        }
+        let mid = |f: &dyn Fn(&Point) -> usize| {
+            let mut v: Vec<usize> = points.iter().map(f).collect();
+            v.sort();
+            v[v.len() / 2]
+        };
+        let at = median(&points.iter().map(|p| p.at).collect::<Vec<_>>());
+        Some(Point { at, down: mid(&|p| p.down), up: mid(&|p| p.up), parsed: mid(&|p| p.parsed) })
+    }
+}
+
+fn runs() -> usize {
+    std::env::var("PANDACODE_BENCH_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(3)
+}
+
+struct Summary(Vec<String>);
+
+impl Summary {
+    fn add(&mut self, case: &str, target: &str, runs: &Runs) {
+        let cell = |p: Option<Point>| p.map_or("-".to_owned(), |p| format!("{:.2} s", p.at.as_secs_f64()));
+        let bytes = |p: Option<Point>| p.map_or("-".to_owned(), |p| format!("{} / {} / {}", size(p.down), size(p.up), size(p.parsed)));
+        let (visible, full) = (Runs::median(&runs.visible), Runs::median(&runs.full));
+        let samples: Vec<String> = runs.visible.iter().map(|p| format!("{:.2}", p.at.as_secs_f64())).collect();
+        self.0.push(format!("| {case} | {target} | {} | {} | {} | {} | {} |", cell(visible), cell(full), bytes(visible), bytes(full), samples.join(", ")));
+    }
+
+    fn print(&self, title: &str) {
+        println!("\n### {title}\n\n| case | target | newest visible | full history | bytes to newest (down / up / parsed) | bytes to full (down / up / parsed) | runs, newest s |\n|---|---|---:|---:|---|---|---|");
+        for row in &self.0 {
+            println!("{row}");
+        }
+    }
+}
+
+/// Builds threads A (5.4 MB), B (5.2 MB) and C (3.6 MB) of task.messages JSON on one host store.
+fn three_g_threads() -> (Arc<Mutex<Store>>, Vec<(&'static str, String)>) {
+    let (store, a) = host_store();
+    let project = store.projects().unwrap()[0].id.clone();
+    let mut threads = vec![("A", a)];
+    threads.push(("B", store.create_session(&project, "claude", "sonnet", "full").unwrap().id));
+    threads.push(("C", store.create_session(&project, "claude", "sonnet", "full").unwrap().id));
+    let mut text = writer(0x3a);
+    for ((name, session), target) in threads.iter().zip([5.4, 5.2, 3.6]) {
+        add_turns(&store, session, (target * 1e6) as usize, &mut text);
+        let (json_bytes, count, packed) = thread_size(&store, session);
+        let tail = host::messages_page_with(&store.db, session, host::MessagePaging::Tail { limit: TAIL_PAGE }).unwrap().to_string();
+        let phone = host::messages_page_with(&store.db, session, host::MessagePaging::Tail { limit: PHONE_TAIL }).unwrap().to_string();
+        let capped = host::messages_page_fit(&store.db, session, host::MessagePaging::Tail { limit: TAIL_PAGE }, TAIL_BUDGET).unwrap();
+        let packed_page = host::messages_page_fit(&store.db, session, host::MessagePaging::Tail { limit: OLDER_PAGE }, PACKED_BUDGET).unwrap();
+        println!(
+            "thread {name}: tail {TAIL_PAGE} in {}: {} msgs, {} JSON -> {} deflated; a {} packed page: {} msgs, {} JSON -> {} deflated",
+            size(TAIL_BUDGET),
+            capped["messages"].as_array().unwrap().len(),
+            size(capped.to_string().len()),
+            size(crypto::pack(capped.to_string().as_bytes()).len()),
+            size(PACKED_BUDGET),
+            packed_page["messages"].as_array().unwrap().len(),
+            size(packed_page.to_string().len()),
+            size(crypto::pack(packed_page.to_string().as_bytes()).len()),
+        );
+        println!(
+            "thread {name}: {count} messages, task.messages JSON {:.2} MB, deflated {:.2} MB ({:.1}x); tail {TAIL_PAGE}: {} JSON -> {} deflated; tail {PHONE_TAIL}: {} -> {}",
+            json_bytes as f64 / 1e6,
+            packed as f64 / 1e6,
+            json_bytes as f64 / packed as f64,
+            size(tail.len()),
+            size(crypto::pack(tail.as_bytes()).len()),
+            size(phone.len()),
+            size(crypto::pack(phone.as_bytes()).len()),
+        );
+    }
+    (Arc::new(Mutex::new(store)), threads)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn three_g() {
+    let n = runs();
+    println!("\n3G viewer: 400 kbit/s down and up, 400 ms RTT to the relay; host on the WAN link (20 ms, 50 Mbit/s). Median of {n} runs.");
+    let (store, threads) = three_g_threads();
+    let a = threads[0].1.clone();
+    let handler = history_host(store.clone(), a.clone());
+    let expected: Vec<i64> = threads.iter().map(|(_, session)| thread_size(&store.lock().unwrap(), session).1 as i64).collect();
+    let mut summary = Summary(Vec::new());
+
+    // 1. Cold connect (TCP + TLS 1.3 + WS upgrade, presence), subscribe, open thread A.
+    for mode in Mode::chosen() {
+        let z = mode != Mode::Before;
+        let mut desktop = Runs::default();
+        let mut phone = Runs::default();
+        for _ in 0..n {
+            let net = three_g_relay(handler.clone()).await;
+            let meter = Meter::start(&net.relay, &net.viewer_identity);
+            let viewer = net.viewer(z).await;
+            // Now: a mirror with nothing copied asks its tail right behind subscribe (mirror.rs `pipelined`).
+            let tail = if mode == Mode::Now {
+                let subscribe = viewer.request(&net.host.id, "subscribe", json!({"sessionIds": [a]}));
+                let tail = viewer.request(&net.host.id, "task.messages", tail_params(&a, mode.budgets().0));
+                wait(subscribe).await.unwrap();
+                Some(wait(tail).await.unwrap())
+            } else {
+                viewer.call(&net.host.id, "subscribe", json!({"sessionIds": [a]})).await.unwrap();
+                None
+            };
+            let (visible, full, count) = if z { open_now(&viewer, &net.host.id, &a, &meter, 0, mode, tail).await } else { open_before(&viewer, &net.host.id, &a, &meter, 0).await };
+            assert_eq!(count, expected[0], "the whole thread was copied");
+            desktop.push(visible, Some(full));
+            drop(viewer);
+            let net = three_g_relay(handler.clone()).await;
+            let meter = Meter::start(&net.relay, &net.viewer_identity);
+            let viewer = net.viewer(z).await;
+            phone.push(open_phone(&viewer, &net.host.id, &a, &meter, 0, mode).await, None);
+        }
+        let label = mode.label();
+        summary.add(&format!("1. desktop cold connect + open A, {label}"), "3.6 s", &desktop);
+        summary.add(&format!("1. phone cold connect + open A (tail {PHONE_TAIL}), {label}"), "3.6 s / 490 KB parsed", &phone);
+    }
+
+    // 2. Reconnect: drop the socket, back off, connect, subscribe, copy 20 new messages. Now:
+    // no backoff, and the afterId page leaves right behind subscribe (mirror.rs `follow_host`
+    // on the socket's first presence; client.ts `earlyCopies` on the phone).
+    let (reconnect_store, r) = host_store();
+    let mut text = writer(0x51);
+    add_turns(&reconnect_store, &r, 300_000, &mut text);
+    let from: i64 = reconnect_store.db.query_row("SELECT MAX(id) FROM messages WHERE session_id=?1", [&r], |row| row.get(0)).unwrap();
+    // The next 20 messages of the transcript: prompt, notes, tool calls and replies.
+    for (role, content) in std::iter::repeat_with(|| text.turn()).flatten().take(20) {
+        reconnect_store.message(&r, role, &content).unwrap();
+    }
+    let reconnect_store = Arc::new(Mutex::new(reconnect_store));
+    let reconnect_handler = history_host(reconnect_store.clone(), r.clone());
+    for mode in Mode::chosen() {
+        let z = mode != Mode::Before;
+        let (mut runs_without, mut runs_total) = (Runs::default(), Runs::default());
+        for _ in 0..n {
+            let net = three_g_relay(reconnect_handler.clone()).await;
+            let viewer = net.viewer(z).await;
+            let (mirror, local) = mirror_store(from);
+            let meter = Meter::start(&net.relay, &net.viewer_identity);
+            drop(viewer);
+            let now = mode == Mode::Now;
+            tokio::time::sleep(if now { Duration::ZERO } else { FIRST_BACKOFF }).await;
+            let resumed = Instant::now();
+            let viewer = net.viewer(z).await;
+            let reply = if now {
+                let after = synced(&mirror, &local);
+                let subscribe = viewer.request(&net.host.id, "subscribe", json!({"sessionIds": [r]}));
+                let early = viewer.request(&net.host.id, "task.messages", budgeted(json!({"sessionId": r, "afterId": after}), mode.budgets().1));
+                let (reply, page) = (wait(subscribe).await.unwrap(), wait(early).await.unwrap());
+                mirror::store_page(&mirror, &local, after, &page).unwrap();
+                reply
+            } else {
+                viewer.call(&net.host.id, "subscribe", json!({"sessionIds": [r]})).await.unwrap()
+            };
+            if reply["tasks"][0]["lastId"].as_i64().unwrap() > synced(&mirror, &local) {
+                sync_with(&viewer, &net.host.id, &r, &mirror, &local, mode.budgets().1).await;
+            }
+            assert_eq!(copied(&mirror, &local), 20);
+            let total = meter.mark(parsed(&viewer));
+            runs_total.push(total, None);
+            runs_without.push(Point { at: resumed.elapsed(), ..total }, None);
+        }
+        let label = mode.label();
+        summary.add(&format!("2. reconnect, 20 new msgs, excl. backoff, {label}"), "1.3 s", &runs_without);
+        summary.add(&format!("2. reconnect, 20 new msgs, incl. backoff (1 s before, none now), {label}"), "1.3 s", &runs_total);
+    }
+
+    // 3. Open A, B and C on a connected viewer.
+    for (index, ((name, session), target)) in threads.iter().zip(["2.3 s", "4.5 s", "1.6 s"]).enumerate() {
+        for mode in Mode::chosen() {
+            let z = mode != Mode::Before;
+            let mut runs = Runs::default();
+            for _ in 0..n {
+                let net = three_g_relay(handler.clone()).await;
+                let viewer = net.viewer(z).await;
+                let meter = Meter::start(&net.relay, &net.viewer_identity);
+                let base = parsed(&viewer);
+                let (visible, full, count) = if z { open_now(&viewer, &net.host.id, session, &meter, base, mode, None).await } else { open_before(&viewer, &net.host.id, session, &meter, base).await };
+                assert_eq!(count, expected[index], "the whole thread was copied");
+                runs.push(visible, Some(full));
+            }
+            summary.add(&format!("3. open thread {name}, {}", mode.label()), target, &runs);
+        }
+    }
+    summary.print("3G viewer: before (v0.3.49: plain frames, afterId from 0), previous (packed frames, newest page first), now (byte-capped first page, bigger packed pages)");
 }

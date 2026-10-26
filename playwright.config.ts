@@ -1,8 +1,13 @@
 import { defineConfig } from '@playwright/test';
 
+// PW_PORT points the suite at another dev server. A server already on the port is reused, so in a
+// second checkout pick a free port: 1420 may be serving a different checkout's code.
+const port = Number(process.env.PW_PORT ?? 1420);
+const baseURL = `http://127.0.0.1:${port}`;
+
 export default defineConfig({
   testDir: './tests',
-  testMatch: ['**/external-links.spec.ts', '**/remove-project.spec.ts', '**/run-project.spec.ts', '**/terminal.spec.ts', '**/thread-order.spec.ts', '**/sidebar-sections.spec.ts', '**/thread-panels.spec.ts', '**/agent-updates.spec.ts', '**/thread-deletion.spec.ts', '**/agent-usage.spec.ts', '**/chat-usage.spec.ts', '**/grok.spec.ts', '**/compact-menus.spec.ts', '**/attachments.spec.ts', '**/sketch.spec.ts', '**/worktrees.spec.ts', '**/github.spec.ts', '**/github-hub.spec.ts', '**/remote.spec.ts', '**/simulator.spec.ts', '**/colors.spec.ts', '**/token-saver.spec.ts', '**/support.spec.ts', '**/jev-live.spec.ts', '**/jev-assist.spec.ts', '**/jev.spec.ts', '**/message-actions.spec.ts', '**/opencode-models.spec.ts', '**/overlay.spec.ts', '**/moodboards.spec.ts', '**/provider-settings.spec.ts', '**/ui.spec.ts', '**/browser.spec.ts', '**/board.spec.ts', '**/streaming.spec.ts', '**/provider-handoff.spec.ts', '**/concurrency.spec.ts', '**/subagents.spec.ts', '**/architect.spec.ts', '**/team-profiles.spec.ts', '**/agent-teams.spec.ts', '**/vm.spec.ts', '**/deploy.spec.ts', '**/turn-changes.spec.ts', '**/wallpapers.spec.ts', '**/wallpaper-settings.spec.ts', '**/settings.spec.ts', '**/layout-preferences.spec.ts', '**/agent-input.spec.ts', '**/agent-tools.spec.ts', '**/slash-commands.spec.ts', '**/file-mentions.spec.ts', '**/command-center.spec.ts', '**/goal-workflow.spec.ts', '**/conversation-import.spec.ts', '**/message-queue.spec.ts', '**/steering.spec.ts', '**/usage-limit.spec.ts', '**/bots.spec.ts', '**/bots-web.spec.ts', '**/markdown.spec.ts', '**/document-viewer.spec.ts', '**/office-viewer.spec.ts', '**/generative-ui.spec.ts', '**/search-panel.spec.ts', '**/design-canvas.spec.ts', '**/skills-library.spec.ts', '**/jj.spec.ts', '**/capabilities.spec.ts', '**/recipes.spec.ts', '**/github-hub-keyboard.spec.ts', '**/chats.spec.ts', '**/connections.spec.ts', '**/inspector-new-task.spec.ts', '**/inspector-tabs.spec.ts', '**/changes-view.spec.ts', '**/cloud-agents.spec.ts', '**/tray-popover.spec.ts', '**/model-picker.spec.ts', '**/remote-progress.spec.ts', '**/remote-images.spec.ts', '**/remote-first-message.spec.ts', '**/remote-connect-ux.spec.ts', '**/remote-pairing.spec.ts', '**/remote-diagnostics.spec.ts', '**/agent-traces.spec.ts'],
+  testMatch: ['**/external-links.spec.ts', '**/remove-project.spec.ts', '**/run-project.spec.ts', '**/terminal.spec.ts', '**/thread-order.spec.ts', '**/sidebar-sections.spec.ts', '**/thread-panels.spec.ts', '**/agent-updates.spec.ts', '**/thread-deletion.spec.ts', '**/agent-usage.spec.ts', '**/chat-usage.spec.ts', '**/grok.spec.ts', '**/compact-menus.spec.ts', '**/attachments.spec.ts', '**/sketch.spec.ts', '**/worktrees.spec.ts', '**/github.spec.ts', '**/github-hub.spec.ts', '**/remote.spec.ts', '**/simulator.spec.ts', '**/colors.spec.ts', '**/token-saver.spec.ts', '**/support.spec.ts', '**/jev-live.spec.ts', '**/jev-assist.spec.ts', '**/jev.spec.ts', '**/message-actions.spec.ts', '**/opencode-models.spec.ts', '**/overlay.spec.ts', '**/moodboards.spec.ts', '**/provider-settings.spec.ts', '**/ui.spec.ts', '**/browser.spec.ts', '**/board.spec.ts', '**/streaming.spec.ts', '**/provider-handoff.spec.ts', '**/concurrency.spec.ts', '**/subagents.spec.ts', '**/architect.spec.ts', '**/team-profiles.spec.ts', '**/agent-teams.spec.ts', '**/vm.spec.ts', '**/deploy.spec.ts', '**/turn-changes.spec.ts', '**/wallpapers.spec.ts', '**/wallpaper-settings.spec.ts', '**/settings.spec.ts', '**/layout-preferences.spec.ts', '**/agent-input.spec.ts', '**/agent-tools.spec.ts', '**/slash-commands.spec.ts', '**/file-mentions.spec.ts', '**/command-center.spec.ts', '**/goal-workflow.spec.ts', '**/conversation-import.spec.ts', '**/message-queue.spec.ts', '**/steering.spec.ts', '**/usage-limit.spec.ts', '**/bots.spec.ts', '**/bots-web.spec.ts', '**/markdown.spec.ts', '**/document-viewer.spec.ts', '**/office-viewer.spec.ts', '**/generative-ui.spec.ts', '**/search-panel.spec.ts', '**/design-canvas.spec.ts', '**/skills-library.spec.ts', '**/jj.spec.ts', '**/capabilities.spec.ts', '**/recipes.spec.ts', '**/github-hub-keyboard.spec.ts', '**/chats.spec.ts', '**/connections.spec.ts', '**/inspector-new-task.spec.ts', '**/inspector-tabs.spec.ts', '**/changes-view.spec.ts', '**/cloud-agents.spec.ts', '**/tray-popover.spec.ts', '**/model-picker.spec.ts', '**/remote-progress.spec.ts', '**/remote-images.spec.ts', '**/remote-first-message.spec.ts', '**/remote-connect-ux.spec.ts', '**/remote-pairing.spec.ts', '**/remote-diagnostics.spec.ts', '**/remote-thread-open.spec.ts', '**/agent-traces.spec.ts', '**/sidebar-keyboard.spec.ts'],
   fullyParallel: true,
   workers: Number(process.env.PW_WORKERS ?? 4),
   timeout: 20_000,
@@ -10,7 +15,7 @@ export default defineConfig({
   reporter: 'list',
   outputDir: 'test-results',
   use: {
-    baseURL: 'http://127.0.0.1:1420',
+    baseURL,
     viewport: { width: 1440, height: 940 },
     headless: true,
     launchOptions: {
@@ -21,8 +26,8 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: 'npm run dev',
-    url: 'http://127.0.0.1:1420',
+    command: port === 1420 ? 'npm run dev' : `npx vite --host 127.0.0.1 --port ${port} --strictPort`,
+    url: baseURL,
     reuseExistingServer: true,
     timeout: 30_000,
   },

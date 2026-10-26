@@ -110,7 +110,7 @@ test('setting rows on the Settings page stay one line tall with notes and live s
   await expect(github.locator('.info-mark')).toHaveCount(0);
 });
 
-test('the project menu is solid and borderless, with equal insets, a slim underlined search and no tick', async ({ page }) => {
+test('the project menu is warm glass with equal insets, a slim underlined search and a trailing check on the choice', async ({ page }) => {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.locator('#project-filter').click();
@@ -124,12 +124,14 @@ test('the project menu is solid and borderless, with equal insets, a slim underl
     return {
       insets: [search.getBoundingClientRect().top - box.top, rows[0].left - box.left, box.right - rows[0].right, box.bottom - rows[rows.length - 1].bottom].map(value => Math.round(value - border)),
       searchBorders: [style.borderTopWidth, style.borderLeftWidth, style.borderRightWidth, style.borderBottomWidth],
-      ticks: [...element.querySelectorAll('[aria-checked="true"]>.icon:last-child,[aria-selected="true"]>.icon:last-child')].filter(icon => (icon as HTMLElement).offsetParent).length,
-      surface: { image: getComputedStyle(element).backgroundImage, alpha: getComputedStyle(element).backgroundColor.startsWith('rgba') ? 'translucent' : 'solid', border: getComputedStyle(element).borderTopColor, blur: getComputedStyle(element).backdropFilter },
+      ticks: [...element.querySelectorAll('[aria-checked="true"]>.icon:last-child,[aria-selected="true"]>.icon:last-child')].filter(icon => icon.getClientRects().length > 0).length,
+      surface: { glass: getComputedStyle(element).backgroundImage.includes('gradient'), blur: getComputedStyle(element).backdropFilter.includes('blur'), width: Math.round(box.width) },
     };
   });
   expect(new Set(layout.insets).size).toBe(1);
   expect(layout.searchBorders).toEqual(['0px', '0px', '0px', '1px']);
-  expect(layout.ticks).toBe(0);
-  expect(layout.surface).toEqual({ image: 'none', alpha: 'solid', border: 'rgba(0, 0, 0, 0)', blur: 'none' });
+  // "All projects" is the current choice: one trailing check, no filled row.
+  expect(layout.ticks).toBe(1);
+  // The --glass-* material (AGENTS.md); reduced transparency/contrast fall back to a solid panel.
+  expect(layout.surface).toEqual({ glass: true, blur: true, width: 300 });
 });

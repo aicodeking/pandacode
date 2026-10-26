@@ -71,7 +71,6 @@ for (const s of sessions) {
   s.taskDescription = '';
   s.completedAt = null;
 }
-loadThreadOrder();
 // One sample task already tracks a GitHub issue so chips have something to show.
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 // Sidebar sections showcase: opt in with ?sections so default session counts stay unchanged.
@@ -85,10 +84,24 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).has(
     sample('sections-done-1', 'project-1', 'Add dark mode tokens', { taskStage: 'completed', lastResponseAt: now - 90000000, completedAt: now - 86000000 }),
     sample('sections-done-2', 'project-2', 'Remove the old onboarding', { taskStage: 'completed', lastResponseAt: now - 200000000, completedAt: now - 190000000 }),
     sample('sections-done-3', 'project-1', 'Document the keyboard map', { provider: 'kimi', model: '', taskStage: 'completed', lastResponseAt: now - 300000000, completedAt: now - 290000000 }),
+    // Needs you without running: a failed run you have not seen, and a usage limit.
+    sample('sections-failed', 'project-2', 'Upgrade the build toolchain', { status: 'error', lastPromptAt: now - 900000, lastResponseAt: now - 600000 }),
+    sample('sections-limited', 'project-1', 'Profile startup time', { lastPromptAt: now - 1800000, lastResponseAt: now - 1700000, limitedAt: now - 1700000, limitedUntil: now + 3600000 }),
+    sample('sections-pinned', 'project-1', 'Release checklist for 1.0', { pinned: true, sidebarOrder: 0, lastResponseAt: now - 432000000 }),
+    // A long title on a worktree branch with a linked pull request.
+    sample('sections-long', 'project-2', 'Redesign the sidebar rows so long titles, branches and pull requests all fit on one line', { worktreePath: '/Users/you/Projects/pandacode-worktrees/sidebar', worktreeBranch: 'pandacode/sidebar-redesign-compact-rows', pullRequest: { kind: 'pull', number: 482, url: 'https://github.com/aicodeking/pandacode/pull/482', title: 'Compact sidebar rows', state: 'open', checkedAt: now }, lastPromptAt: now - 172000000, lastResponseAt: now - 170000000 }),
+    sample('sections-chat', 'sections-chat-project', 'Explain the borrow checker', { lastPromptAt: now - 7000000, lastResponseAt: now - 6900000 }),
+    ...['Compare two date libraries', 'Draft a short changelog', 'Name the new CLI flag'].map((title, index) => sample(`sections-chat-${index + 2}`, 'sections-chat-project', title, { lastPromptAt: now - 9000000 - index * 3600000, lastResponseAt: now - 8900000 - index * 3600000 })),
+    // Enough threads for "Show more" in a folder and paging in Completed.
+    ...['Tidy the logger', 'Rename the config keys', 'Split the router', 'Cache the icon lookups', 'Drop the legacy flag', 'Add a retry to uploads', 'Trim the bundle'].map((title, index) => sample(`sections-many-${index}`, 'project-1', title, { lastResponseAt: now - 200000000 - index * 9000000 })),
+    ...['Pin the Node version', 'Fix the tooltip offset', 'Translate the menus', 'Audit the CSP', 'Retire the old icons', 'Speed up cold start', 'Archive old logs', 'Bump the parser', 'Clean the fixtures'].map((title, index) => sample(`sections-old-${index}`, index % 2 ? 'project-2' : 'project-1', title, { taskStage: 'completed', lastResponseAt: now - 310000000 - index * 30000000, completedAt: now - 300000000 - index * 30000000 })),
   );
-  // These two finished while another thread was open, so they wait in Needs review.
-  localStorage.setItem('pandacode.sidebar.unreviewed', JSON.stringify(['sections-review-1', 'sections-review-2']));
+  projects.push({ id: 'sections-chat-project', name: 'Chat', path: '/Users/you/PandaCode Chats/chat-5ec7105a' });
+  // These finished while another thread was open, so they wait in Needs review (or Active, if they failed).
+  localStorage.setItem('pandacode.sidebar.unreviewed', JSON.stringify(['sections-review-1', 'sections-review-2', 'sections-failed']));
 }
+// Saved pins and ranks apply to every sample, the ?sections ones included.
+loadThreadOrder();
 let id = 10;
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
 const traceRoot = '/Users/you/Projects/orbit';
@@ -486,6 +499,20 @@ function finishTiming(sessionId: string): void {
  * from the host, which happens when a run ends (just before its `done`). */
 const mirrorSynced = new Map<string, number>();
 function syncMirror(sessionId: string): void { if (mirrorSynced.has(sessionId)) mirrorSynced.set(sessionId, id); }
+/* tests: a long mirror thread copied newest page first; older pages land below it with lower
+ * ids (`remote_backfill_base + host id` natively) and announce themselves by `mirror-messages`. */
+(window as any).__previewMirrorThread = (total: number, tail: number) => {
+  const sessionId = 'mirror-long', at = (i: number): Message => ({ id: 100000 + i, sessionId, role: i % 2 ? 'assistant' : 'user', content: `Message ${String(i).padStart(3, '0')}`, createdAt: now - (total - i) * 1000 });
+  sessions.unshift({ ...sessions[0], id: sessionId, title: 'Long remote thread', resumeId: null, remoteDevice: { id: 'dev-studio', name: 'Studio iMac' }, lastResponseAt: now });
+  messages[sessionId] = Array.from({ length: tail }, (_, k) => at(total - tail + k));
+  let oldest = total - tail;
+  (window as any).__previewMirrorBackfill = (count: number) => {
+    const from = Math.max(0, oldest - count);
+    messages[sessionId] = [...Array.from({ length: oldest - from }, (_, k) => at(from + k)), ...messages[sessionId]];
+    oldest = from; emit('mirror-messages', { sessionId, older: true });
+  };
+  emit('sessions-changed', {});
+};
 function finish(sessionId: string, content: string) { const time = Date.now(); messages[sessionId].push({ id: ++id, sessionId, role: 'assistant', content, createdAt: time }); finishTiming(sessionId); const s = session(sessionId); if (content.trim()) s.lastResponseAt = time; s.status = 'idle'; s.taskStage = 'review'; s.updatedAt = time; timers.delete(sessionId); activeTools.delete(sessionId); syncMirror(sessionId); agent({ sessionId, kind: 'done', text: '' }); }
 /** Replays the Morning brief reference: five MCP tools (running, then completed), then the answer in chunks. `?replay=N` scales the pace. */
 function replayBrief(s: Session): void {
@@ -987,7 +1014,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'browser_bounds': break;
     case 'browser_close': browserHistory = []; browserIndex = -1; browserState = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false }; browserChanged(); break;
     case 'browser_capture': result = { id: crypto.randomUUID(), name: 'Sample screenshot', path: '/sample/browser-capture.png', mimeType: 'image/png', url: browserState.url, title: browserState.title, width: 1280, height: 800, dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' }; break;
-    case 'list_projects': result = projects; break;
+    // Like the native rowid: projects are pushed in the order they were added.
+    case 'list_projects': result = projects.map((project, index) => ({ ...project, addedOrder: index + 1 })); break;
     case 'list_sessions': archiveCompletedTasks(); sessions.forEach(settleDraft); result = [...sessions].filter(task => !task.draft).sort(compareThreadOrder).map(taskSummary); break;
     case 'set_resume_at_reset': {
       const s = session(args.sessionId);
@@ -1172,7 +1200,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const s = session(args.sessionId); assertIdle(s);
       if (s.archived) throw new Error('Restore this task before changing its stage.');
       const stage = args.stage as TaskStage;
-      if (!['pending', 'review', 'completed'].includes(stage)) throw new Error('Start the task to move it to work in progress.');
+      // Like the native store: work in progress only by undoing the completion of a stopped run.
+      const undoing = s.taskStage === 'completed' && ['error', 'interrupted'].includes(s.status);
+      if (!['pending', 'review', 'completed'].includes(stage) && !(stage === 'in_progress' && undoing)) throw new Error('Start the task to move it to work in progress.');
       s.completedAt = stage === 'completed' ? s.completedAt ?? Date.now() : null;
       s.taskStage = stage; s.updatedAt = Date.now(); result = s; break;
     }

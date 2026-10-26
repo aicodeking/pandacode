@@ -4,6 +4,7 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { Inflate } from 'fflate';
 
 const INFO = new TextEncoder().encode('pandacode-remote v1');
 const NONCE = 24;
@@ -75,10 +76,37 @@ export function seal(key: Uint8Array, from: string, to: string, plaintext: strin
   return toBase64(out);
 }
 
-/** Opens a body; throws on anything unreadable or forged. */
+/** Opens a body, inflating a packed plaintext; throws on anything unreadable, forged or too large. */
 export function open(key: Uint8Array, from: string, to: string, body: string): string {
   const bytes = fromBase64(body);
   if (bytes.length < NONCE + 16) throw new Error('Unreadable frame.');
   const plain = xchacha20poly1305(key, bytes.subarray(0, NONCE), aad(from, to)).decrypt(bytes.subarray(NONCE));
-  return new TextDecoder().decode(plain);
+  return new TextDecoder().decode(plain[0] === PACKED ? unpack(plain.subarray(1)) : plain);
+}
+
+/** A packed plaintext (sent only after a request's `z: 1`) is `z` + raw deflate; JSON starts with `{`. */
+const PACKED = 0x7a;
+/** The most a packed frame may inflate to (zip bombs), as on the desktop. */
+export const MAX_UNPACKED = 2 * 1024 * 1024;
+/** Input fed to the inflater per push: deflate expands at most ~1032x, so one slice can overshoot
+ * the cap by about 2 MB before the check stops it (a whole-frame push would inflate it all first). */
+const SLICE = 2 * 1024;
+
+export function unpack(deflated: Uint8Array): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  let done = false;
+  const inflate = new Inflate((chunk, final) => {
+    size += chunk.length;
+    if (size > MAX_UNPACKED) throw new Error('A frame was too large.');
+    chunks.push(chunk);
+    done = final;
+  });
+  for (let at = 0; at < deflated.length || at === 0; at += SLICE) {
+    inflate.push(deflated.subarray(at, at + SLICE), at + SLICE >= deflated.length);
+  }
+  if (!done) throw new Error('Unreadable frame.');
+  const out = new Uint8Array(size);
+  chunks.reduce((at, chunk) => (out.set(chunk, at), at + chunk.length), 0);
+  return out;
 }

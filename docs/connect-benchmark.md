@@ -31,6 +31,7 @@ to use another repo. Every bench writes only under the system temp directory and
 | `image_upload` | the real `images::chunks`, `parse_chunk`, `Uploads`, `store` and `images::upload`, sent through the relay (unpaced as the control, and with `PANDACODE_BENCH_OLD=1` the old pacing), for 1 and 4 images of 1 MB and 5 MB |
 | `history_sync` | `mirror::sync` over `host::messages_page` + `mirror::store_page`, first sync of 200/1000/3000 messages and a 30-message run-end sync |
 | `reconnect_resume` | drop the viewer socket, then backoff, reconnect, `subscribe`, catch-up sync |
+| `three_g` | a viewer on 3G (400 kbit/s each way, 400 ms RTT): cold connect + open a 5.4 MB thread, reconnect, open threads of 5.4/5.2/3.6 MB, before (plain frames, afterId from 0), previous (packed frames, newest page first) and now (byte-capped first page, bigger packed pages), and the phone's tail-60 open; see [3G viewer](#3g-viewer). Takes about 70 min at 3 runs (`PANDACODE_BENCH_RUNS=1` for one, `PANDACODE_BENCH_MODES=previous,now` to skip modes) |
 
 ### What is real and what is modeled
 
@@ -209,6 +210,138 @@ These are the numbers before the fixes; see the table above for the changed rows
      (64 B RPC 0.67 vs 0.71 ms loopback, 84.7 vs 84.7 ms `wan`).
    - Host image store: 5.6 ms for 1 MB and 14 ms for 5 MB (decode, PNG kept, write).
    - Viewer `store_page`: about 1 ms per page.
+
+## 3G viewer
+
+`three_g` puts the viewer on a modeled 3G link and keeps the host on the WAN link, to compare with the
+external chart's method:
+
+- **Viewer link:** 400 kbit/s down and 400 kbit/s up, 400 ms RTT to the relay (200 ms each way). Every
+  frame is serialized over the uplink at the sender, then over the downlink at the receiver (`Link`,
+  `start_relay_with`). Relay to host is the 20 ms, 50 Mbit/s `wan` hop.
+- **Cold connect:** a new connection each run. It counts TCP, TLS 1.3 and the WebSocket upgrade as three
+  round trips, up to the first presence frame. TLS certificate bytes and TCP slow start are not modeled.
+  At this BDP (20 KB) slow start would add about one RTT to the first large reply.
+- **Median of 3 runs,** each on a fresh relay (`PANDACODE_BENCH_RUNS` overrides). The spread was under 1 %.
+- **Threads:** a synthetic transcript of whole turns: prompts, Markdown replies with code blocks, short
+  notes, and tool calls stored as JSON (`{"tool", "input", "output"}`) with test logs, build logs,
+  numbered file reads, grep hits and `git log -p` (hashes, paths, timestamps). The vocabulary has 400
+  words. A, B and C total 5.50, 5.16 and 3.57 MB of `task.messages` JSON (1006, 968 and 660
+  messages). They deflate 2.9-3.0x. Real threads with less random text likely compress somewhat better.
+- **Before** is the v0.3.49 behavior: plain frames (no `"z": 1`), and the desktop's `mirror::sync`
+  copies afterId pages from 0, oldest first. The newest messages show only when the last page lands.
+  **Previous** is the step before byte budgets: requests carry `"z": 1`, the host packs replies (`crypto::pack`, as
+  `socket.rs` `outgoing`), and the desktop takes the tail (30), then the afterId catch-up (one empty
+  page), then `backfill` (beforeId, 200 per page) through the real `mirror::store_tail`/`store_older`.
+  The host side is the real `host::messages_page_with` (`PAGE_BUDGET` 180 KB).
+- **Phone:** client.ts `loadMessages` with nothing cached: one `task.messages {tail: true, limit: 60}`
+  after connect. The phone has no full copy, because it pages older messages as you scroll. The
+  phone's `tasks.list` before opening is not counted.
+- **Desktop cold open** is connect, then `subscribe`, then the sync, as `subscribe_all` does.
+  **Reconnect** drops the socket, waits `FIRST_BACKOFF` (1 s; before and previous only), connects,
+  subscribes, and copies the 20 new messages (the next 20 of a transcript, 62 KB of JSON) with one
+  afterId page. **Now** retries at once and sends that afterId page right behind `subscribe`
+  instead of after its reply (mirror.rs `follow_host` on the socket's first presence, client.ts
+  `earlyCopies` on the phone), then checks the reply's `lastId` against what the page stored. **Thread opens** run
+  on a viewer that is already connected.
+- **Bytes:** "down / up" are WebSocket payload bytes to and from the viewer at the relay, including
+  presence. TCP/TLS/WS framing adds about 3 %. "Parsed" is the plaintext JSON the viewer opens
+  after inflating.
+
+- **Now** adds `budget` to `task.messages`: the desktop's tail asks for 32 KB of JSON (mirror.rs
+  `TAIL_BUDGET`), the phone's too (client.ts `TAIL_BUDGET`), and the desktop's afterId and beforeId
+  pages ask for 1 MB, which the host cuts until the page packs into 180 KB (`messages_page_fit`).
+  On these threads that tail is 3-9 messages, 14-29 KB of JSON, 6-11 KB packed (8-15 KB on the wire),
+  and a 1 MB page holds 69-113 messages, about 485 KB of JSON packed to 160-167 KB.
+
+### 3G viewer: before (v0.3.49) / previous (packed, newest page first) / now (byte-capped first page, bigger packed pages)
+
+Newest visible, then full history, median of 3 runs. **Now** is the final rerun (`PANDACODE_BENCH_MODES=now`,
+3 runs, after the final review fixes below); earlier "now" figures are in the next section. **Before** is the earlier run of this table
+(v0.3.49 behavior, not rerun; its spread was under 1 %). **Previous** and **now** were rerun together,
+3 runs each, while other work shared the machine; their spread was up to 4 % for previous and up to
+19 % for now's sub-second opens (0.67-0.82 s for B).
+
+| case | target | before | previous | now | bytes to newest, previous → now (down / parsed) | runs, newest s (now) |
+|---|---|---:|---:|---:|---|---|
+| 1. desktop cold connect + open A, newest | 3.6 s | 164.11 s | 3.39 s | **2.02 s** | 59 KB / 125 KB → 15 KB / 27 KB | 2.05, 2.01, 2.02 |
+| 1. desktop cold connect + open A, full | - | 164.11 s | 68.36 s | 62.57 s | 2.4 MB / 5.3 MB → 2.3 MB / 5.2 MB | - |
+| 1. phone cold connect + open A (tail 60) | 3.6 s / 490 KB parsed | 5.11 s | 2.91 s | **2.01 s** | 58 KB / 125 KB → 15 KB / 27 KB | 2.01, 2.01, 2.14 |
+| 2. reconnect, 20 new msgs, excl. backoff | 1.3 s | 3.84 s | 2.70 s | **2.28 s** (2.71 s before pipelining) | 28 KB / 62 KB (same) | 2.30, 2.27, 2.28 |
+| 2. reconnect, 20 new msgs, incl. backoff (1 s before, none now) | 1.3 s | 4.84 s | 3.71 s | **2.29 s** (3.71 s) | 28 KB / 62 KB (same) | 2.30, 2.27, 2.29 |
+| 3. open thread A, newest | 2.3 s | 162.44 s | 1.68 s | **0.85 s** | 58 KB / 125 KB → 15 KB / 27 KB | 0.80, 0.88, 0.85 |
+| 3. open thread A, full | - | 162.44 s | 66.54 s | 59.53 s | 2.4 MB → 2.3 MB | - |
+| 3. open thread B, newest | 4.5 s | 152.89 s | 1.75 s | **0.66 s** | 60 KB / 139 KB → 8 KB / 14 KB | 0.65, 0.66, 0.77 |
+| 3. open thread B, full | - | 152.89 s | 63.83 s | 55.70 s | 2.2 MB (same) | - |
+| 3. open thread C, newest | 1.6 s | 106.15 s | 1.83 s | **0.80 s** | 65 KB / 147 KB → 15 KB / 29 KB | 0.82, 0.79, 0.80 |
+| 3. open thread C, full | - | 106.15 s | 43.84 s | 39.25 s | 1.5 MB (same) | - |
+
+**Where the time goes (now, 3G).** One round trip is 0.4 s, and 1 KB down takes about 20 ms.
+Packed bytes are base64'd when sealed, which adds 33 %.
+
+- **Cold connect + open A, 2.02 s (target 3.6 s, met):** 3 RTTs to connect (1.2 s), then
+  `subscribe` with the tail RPC pipelined behind it (0.4 s); the 15 KB tail is about 0.3 s.
+- **Phone, 2.01 s and 27 KB parsed (targets met):** connect + tail, 1.6 s of round trips. The tail
+  holds the newest 3 messages of A (its newest turns carry big tool outputs); older ones load on scroll.
+- **Thread opens, 0.66-0.85 s (all targets met, C's 1.6 s too):** one round trip plus 8-15 KB.
+- **Reconnect, 2.28 s (target 1.3 s, still missed; was 2.71 s, 3.71 s with the backoff):** 4 round
+  trips (connect 3, then `subscribe` and the afterId page together) are 1.6 s and 28 KB is about
+  0.6 s. What changed, rerun with `PANDACODE_BENCH_MODES=now`, 3 runs (the other columns are the
+  earlier run):
+  - The afterId page goes right behind `subscribe` (one RTT, 0.4 s). Old hosts take it too: it is
+    an ordinary `task.messages`, and the reply's `lastId` is checked only after the page is stored,
+    so a page the host read before newer messages still leads to the usual copy.
+  - No backoff before the first retry (1 s on the phone before; the desktop already retried at once,
+    so its old "incl." figure was really the phone's). Covered by `mobile/tests/backoff.test.ts`.
+  - The desktop's first subscribe round after a connect no longer waits the 250 ms presence
+    debounce. The bench never modeled that wait, so the desktop was 0.25 s slower than its old row.
+  - Not modeled, so not in the numbers: one shared rustls config (socket.rs `tls()`) resumes the TLS
+    session, which skips the certificate chain (a few KB, roughly 0.05-0.1 s at 400 kbit/s) and its
+    check, but TLS 1.3 takes one round trip either way.
+  - Not done: 0-RTT early data. A captured upgrade (bearer token in it) could be replayed to
+    replace the device's socket at the relay (close 4000 and a 60 s wait), the relay can't detect
+    replays, and Cloudflare needs a zone setting for it. Presence is no wait: the relay sends it
+    with the upgrade reply. Token refresh runs beside the socket, and pair keys come from cached
+    presence keys, so neither adds a round trip.
+  1.3 s would need a connect of at most about 2 RTTs (TCP Fast Open or QUIC, neither of which the
+  relay or the clients use) and fewer bytes.
+- **Full history** (A 60.2 s, B 55.6 s, C 38.3 s, from 66.5/63.8/43.8 s): A moves 2.3 MB on the wire
+  (about 46 s at 400 kbit/s) in about 12 pages instead of 30, so round trips fall from about 12 s
+  to 5 s. Bytes dominate; base64 is the largest part left.
+
+### 3G viewer: after the review fixes (now, rerun)
+
+Rerun with `PANDACODE_BENCH_MODES=now`, 3 runs, after the host and desktop review fixes: message pages
+are read once under the store lock (one attachment query) and fitted without it, with the packed size
+estimated by fast deflate and corrected at most once; a small first page cuts its one oversized message
+to the budget (`cut: true`, fetched whole after the catch-up, which the bench now models); event
+pacing counts frames; replays are bigger for packing viewers; inflate is capped at 2 MB. Every run was
+identical to 10 ms.
+
+| case | before the fixes (now) | after | final fixes |
+|---|---:|---:|---:|
+| 1. desktop cold connect + open A, newest / full | 2.51 / 59.07 s | 2.44 / 59.58 s | 2.02 / 62.57 s |
+| 1. phone cold connect + open A (tail 60) | 1.98 s | 1.98 s | 2.01 s |
+| 2. reconnect, 20 new msgs | 2.27 s | 2.25 s | 2.28 s |
+| 3. open thread A, newest / full | 0.80 / 60.22 s | 0.77 / 58.05 s | 0.85 / 59.53 s |
+| 3. open thread B, newest / full | 0.73 / 55.60 s | 0.63 / 55.07 s | 0.66 / 55.70 s |
+| 3. open thread C, newest / full | 0.81 / 38.34 s | 0.77 / 38.31 s | 0.80 / 39.25 s |
+
+The 1 MB page now holds 53-73 messages, 294-342 KB of JSON packed to 98-117 KB (was 69-113 messages
+packed to 160-167 KB): fast deflate packs worse than the socket's level 6, so the estimate is
+conservative and pages come out smaller. Full history is unchanged within noise because bytes, not
+round trips, dominate it; tightening the estimate (the measured level-6 ratio) would save a few round
+trips. Earlier "now" figures came from runs sharing the machine with other work, so the sub-second
+deltas are mostly that.
+
+**Final fixes** (rerun with `PANDACODE_BENCH_MODES=now`, 3 runs; spread under 0.15 s on the newest
+figures): pages are sized by packing at the socket's level 6, not fast deflate, so a 1 MB page holds
+105-112 messages, 480-486 KB of JSON packed to 159-161 KB (was 53-73 messages, 98-117 KB); a mirror
+with nothing copied asks its tail right behind the first `subscribe` (mirror.rs `pipelined`), which
+takes one round trip off the desktop's cold open (2.44 → 2.02 s, now the same as the phone); backfill
+keeps going in rounds until the history is whole; replies are packed by their own request's `"z"`.
+Full history did not get faster: fewer pages, but bytes still dominate, and the full-history figures
+moved by up to +3 s between runs on a shared machine, which is within that noise.
 
 ## Raw output, before the fixes
 

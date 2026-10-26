@@ -625,7 +625,7 @@ mod tests {
     use super::*;
 
     fn project(id: &str) -> Project {
-        Project { id: id.into(), name: id.into(), path: format!("/p/{id}") }
+        Project { id: id.into(), name: id.into(), path: format!("/p/{id}"), added_order: 0 }
     }
 
     #[test]
@@ -781,7 +781,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         let missing = base.join("missing");
         let folders = [&main, &linked, &included, &bare, &sub, &missing];
-        let projects: Vec<Project> = folders.iter().enumerate().map(|(n, path)| Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned() }).collect();
+        let projects: Vec<Project> = folders.iter().enumerate().map(|(n, path)| Project { id: n.to_string(), name: n.to_string(), path: path.to_string_lossy().into_owned(), added_order: n as i64 }).collect();
         assert_eq!(config_path(&main).as_deref(), Some(main.join(".git/config")).as_deref());
         assert!(config_path(&linked).is_some_and(|path| path == main.join(".git").join("config") || path.canonicalize().ok() == main.join(".git/config").canonicalize().ok()));
         assert_eq!(config_path(&sub), None);

@@ -71,7 +71,8 @@ html[data-native-platform=macos] .board-view .workspace-header{padding-left:var(
 .task-comments-label{font-size:.74rem;font-weight:550;padding:10px 0;border-top:1px solid var(--border)}
 .side-thread .transcript{padding:6px 24px 18px;scrollbar-gutter:auto}
 .side-thread .message{margin:10px 0 18px}
-.side-thread .message-content,.side-thread .user-message .message-content{font-size:.82rem;line-height:1.65;padding-left:28px}
+.side-thread{--thread-font:.82rem}
+.side-thread .message-content,.side-thread .user-message .message-content{line-height:1.65;padding-left:28px}
 .side-thread .message-meta{font-size:.75rem;gap:6px;margin-bottom:6px}
 .side-thread .message-meta time,.side-thread .streaming-label{font-size:.65rem}
 .side-thread .message-avatar{width:22px;height:22px}

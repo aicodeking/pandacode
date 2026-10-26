@@ -92,13 +92,15 @@ export function choreograph(host: HTMLElement, turnKey: string, options: { answe
     known.add(key);
   }
   if (options.expandAll) return;
-  const withCard = tools.filter(tool => tool.dataset.toolStatus !== 'running' && tool.querySelector(':scope > .tool-activity-body > :not(.tool-activity-note, .tool-trace-raw)'));
+  // Cards in steps the agent has narrated past stay folded (see paintLiveActivity).
+  const withCard = tools.filter(tool => tool.dataset.toolStatus !== 'running' && !tool.closest('.tool-group[data-earlier]') && tool.querySelector(':scope > .tool-activity-body > :not(.tool-activity-note, .tool-trace-raw)'));
   const keep = new Set(options.answering ? [] : withCard.slice(-OPEN_CARDS));
   for (const tool of tools) {
     // `data-auto` marks cards opened for the reader; their raw record stays out of the way (tool-trace.css).
     if (pinned.get(turnKey)?.has(tool.dataset.toolKey!)) { delete tool.dataset.auto; continue; }
     tool.dataset.auto = '';
     const want = keep.has(tool);
+    if (!want && tool.closest('.tool-group[data-earlier]:not([open])')) { tool.open = false; delete tool.dataset.closing; continue; }
     if (want && (!tool.open || tool.dataset.closing !== undefined)) expand(tool);
     else if (!want && tool.open) first ? (tool.open = false) : collapse(tool);
   }

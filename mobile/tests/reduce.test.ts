@@ -147,3 +147,14 @@ test('host activity fields fill in times and subagents; older hosts change nothi
   assert.equal(fromList(undefined, 'running', [], { runStartedAt: 1_800_000_000_000 })?.startedAt, 1_800_000_000_000);
   assert.equal(fromSubscribe(idleLive(), 'running', undefined, { subagents: [agent('b', 'waiting', 1)] }).subagents?.[0].id, 'b');
 });
+
+test('a whole copy replaces a held message the host had cut', () => {
+  const cut = { ...m(2), content: 'm2 (cut)', cut: true };
+  const held = [m(1), cut];
+  assert.equal(mergeMessages(held, [{ ...m(2), cut: true }]), held, 'still cut: unchanged');
+  const merged = mergeMessages(held, [m(2), m(3)]);
+  assert.deepEqual(merged.map(x => [x.id, x.content, x.cut]), [[1, 'm1', undefined], [2, 'm2', undefined], [3, 'm3', undefined]]);
+  assert.deepEqual(held[1], cut, 'not mutated');
+  const whole = [m(1), m(2)];
+  assert.equal(mergeMessages(whole, [{ ...m(2), content: 'other' }]), whole, 'whole messages are never replaced');
+});

@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "pandacode"
-version = "0.3.50"
+version = "0.3.55"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -3011,6 +3011,7 @@ dependencies = [
  "chrono",
  "des",
  "dunce",
+ "flate2",
  "futures-util",
  "gio",
  "hkdf",
@@ -3046,6 +3047,7 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "uuid",
  "webkit2gtk",
+ "webpki-roots 0.26.11",
  "webview2-com",
  "windows",
  "x25519-dalek",

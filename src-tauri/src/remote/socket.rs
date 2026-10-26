@@ -184,7 +184,7 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
     request.headers_mut().insert("Authorization", authorization);
     // Nothing legitimate is larger than the relay's frame limit.
     let limits = tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(MAX_FRAME + 4096)).max_frame_size(Some(MAX_FRAME + 4096));
-    let stream = match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async_with_config(request, Some(limits), false)).await {
+    let stream = match tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async_tls_with_config(request, Some(limits), false, Some(tls()))).await {
         Ok(Ok((stream, _))) => stream,
         Ok(Err(tungstenite::Error::Http(response))) if matches!(response.status().as_u16(), 401 | 403) => return Outcome::Unauthorized,
         _ => return Outcome::Failed,
@@ -263,6 +263,20 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
             }
         }
     }
+}
+
+/// One TLS config for every relay connect: rustls keeps session tickets in it, so a reconnect
+/// resumes instead of receiving and checking the certificate chain again. That saves bytes and
+/// CPU, not a round trip (TLS 1.3 takes one either way). 0-RTT early data is not used: a
+/// replayed upgrade would replace this device's socket at the relay (close 4000, a minute's
+/// backoff), and the relay can't tell a replay apart.
+fn tls() -> tokio_tungstenite::Connector {
+    static CONFIG: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    let config = CONFIG.get_or_init(|| {
+        let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+        std::sync::Arc::new(rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth())
+    });
+    tokio_tungstenite::Connector::Rustls(config.clone())
 }
 
 /// Trades a token in its last week for a fresh 30-day one (`POST /v1/token`). Failures are
@@ -398,12 +412,14 @@ pub(super) fn sealed(app: &tauri::AppHandle, from: &str, to: &str, body: &str) {
         return;
     }
     let Ok(key) = peer_key(app, from) else { return };
-    let Ok(plain) = crypto::open(&key, from, to, body) else { return };
+    let Ok((plain, packed)) = crypto::open_packed(&key, from, to, body) else { return };
     let Ok(message) = serde_json::from_slice::<Value>(&plain) else { return };
     if matches!(message["type"].as_str(), Some("res" | "event")) && !fresh(app, from, &message) {
         return;
     }
     match message["type"].as_str() {
+        // No viewer packs requests: one that comes packed is refused like any unreadable frame.
+        Some("req") if packed => {}
         Some("req") => queue(app, from, (message, key)),
         Some("res") => super::client::resolve(app, from, &message),
         Some("event") => match message["name"].as_str() {
@@ -505,6 +521,33 @@ impl Answers {
     }
 }
 
+/// Peers whose latest request said they open packed (deflated) frames (`"z": 1`); only they
+/// get replies and events packed. An older app never says so, and is forgotten at its next request.
+fn packing() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static PACKING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+    PACKING.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn packs(peer: &str, accepts: bool) {
+    let mut packing = packing();
+    if accepts {
+        packing.insert(peer.to_owned());
+    } else {
+        packing.remove(peer);
+    }
+}
+
+/// A plaintext as it is sealed: replies and events to a packing peer are packed. A reply
+/// carries its request's `"z"` (`packs`), so a presence prune between the request and its
+/// reply never sends a page sized for packing plain.
+fn outgoing(to: &str, message: &Value, plain: String, packs: Option<bool>) -> Vec<u8> {
+    if message["type"] != "req" && packs.unwrap_or_else(|| packing().contains(to)) {
+        crypto::pack(plain.as_bytes())
+    } else {
+        plain.into_bytes()
+    }
+}
+
 fn answers() -> std::sync::MutexGuard<'static, Answers> {
     static ANSWERS: std::sync::OnceLock<std::sync::Mutex<Answers>> = std::sync::OnceLock::new();
     ANSWERS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
@@ -528,7 +571,7 @@ fn queue(app: &tauri::AppHandle, from: &str, (message, key): (Value, crypto::Key
             Repeat::Answered(answer) => {
                 // The device may have lost access since: check as a new request would be.
                 let answer = cached_reply(id, answer, still_allowed(app, from, &request.message));
-                let _ = send_sealed(app, from, &request.key, &answer);
+                let _ = send_reply(app, from, &request, &answer);
                 return;
             }
         }
@@ -541,6 +584,8 @@ fn queue(app: &tauri::AppHandle, from: &str, (message, key): (Value, crypto::Key
     if let Err(error) = fresh {
         return refuse(app, from, request, &error);
     }
+    // Only a fresh request may change how this peer's replies are sealed.
+    packs(from, request.message["z"] == 1);
     let refused = {
         let mut peers = peers();
         if peers.0 != generation {
@@ -601,7 +646,7 @@ fn busy(app: &tauri::AppHandle, from: &str, request: Request) {
 
 fn refuse(app: &tauri::AppHandle, from: &str, request: Request, error: &str) {
     let failure = json!({"type": "res", "id": request.message["id"], "ok": false, "error": error});
-    let _ = send_sealed(app, from, &request.key, &failure);
+    let _ = send_reply(app, from, &request, &failure);
 }
 
 /// Whether a request waited so long that its caller gave up; running it now could run a
@@ -673,7 +718,6 @@ async fn answer(app: &tauri::AppHandle, from: &str, request: Request) {
     if expired(&method, queue_wait) {
         return refuse(app, from, request, "This request waited too long on the other computer and was dropped. Try again.");
     }
-    let Request { message, key, .. } = request;
     let method = method.as_str();
     let start_waiting = Instant::now();
     let _start_permit = if method == "task.start" {
@@ -683,15 +727,15 @@ async fn answer(app: &tauri::AppHandle, from: &str, request: Request) {
     };
     let start_slot_wait = if method == "task.start" { start_waiting.elapsed() } else { Duration::ZERO };
     let handling = Instant::now();
-    let response = host::handle(app, from, &message).await;
+    let response = host::handle(app, from, &request.message).await;
     let handle_time = handling.elapsed();
     let mut send_stats = None;
     if let Some(response) = response {
-        match send_sealed(app, from, &key, &response) {
+        match send_reply(app, from, &request, &response) {
             Ok(stats) => send_stats = Some(stats),
             Err(error) => {
                 let failure = json!({"type": "res", "id": response["id"], "ok": false, "error": error});
-                send_stats = send_sealed(app, from, &key, &failure).ok();
+                send_stats = send_reply(app, from, &request, &failure).ok();
             }
         }
     }
@@ -713,11 +757,14 @@ async fn answer(app: &tauri::AppHandle, from: &str, request: Request) {
 /// Applies a presence list, which carries the full device rows. A host that comes online (or restarted, forgetting subscriptions) is subscribed again.
 fn presence(app: &tauri::AppHandle, list: &Value) {
     let Some(list) = list.as_array() else { return };
-    let renamed = {
+    // The socket's first presence: subscribe at once, with the catch-up alongside.
+    let (renamed, first) = {
         let state = remote(app);
         let mut inner = state.lock();
+        let first = !inner.presence;
         apply_presence(&mut inner, list);
-        super::remember_names(&inner.devices)
+        prune_packing(&mut packing(), &inner.devices);
+        (super::remember_names(&inner.devices), first)
     };
     emit_presence(app);
     if renamed {
@@ -725,7 +772,11 @@ fn presence(app: &tauri::AppHandle, list: &Value) {
         let _ = app.emit("sessions-changed", ());
     }
     super::grants::presence(app);
-    mirror::subscribe_soon(app);
+    if first {
+        mirror::subscribe_reconnected(app);
+    } else {
+        mirror::subscribe_soon(app);
+    }
     routes::presence(app);
 }
 
@@ -743,6 +794,11 @@ fn apply_presence(inner: &mut Inner, list: &[Value]) {
     let Inner { devices, subscribers, keys, .. } = inner;
     subscribers.retain(|id, _| devices.iter().any(|d| &d.id == id));
     keys.retain(|id, _| devices.iter().any(|d| &d.id == id));
+}
+
+/// A device gone from presence is forgotten as a packing peer too.
+fn prune_packing(packing: &mut std::collections::HashSet<String>, devices: &[Device]) {
+    packing.retain(|id| devices.iter().any(|d| &d.id == id));
 }
 
 fn parse_devices(list: &[Value]) -> Vec<Device> {
@@ -792,11 +848,15 @@ pub(super) fn peer_key(app: &tauri::AppHandle, device_id: &str) -> Result<crypto
     Ok(key)
 }
 
-/// Adds `ts` and a fresh `nonce`, so the receiver can refuse replays (docs/remote-access.md).
+/// Adds `ts` and a fresh `nonce`, so the receiver can refuse replays (docs/remote-access.md),
+/// and on requests `"z": 1`: this computer opens packed replies and events.
 fn stamp(message: &Value, now_ms: i64) -> Value {
     let mut message = message.clone();
     message["ts"] = json!(now_ms);
     message["nonce"] = json!(uuid::Uuid::new_v4().simple().to_string());
+    if message["type"] == "req" {
+        message["z"] = json!(1);
+    }
     message
 }
 
@@ -804,17 +864,22 @@ fn stamp(message: &Value, now_ms: i64) -> Value {
 /// device's direct link when one is up, else on the relay socket. Replies go straight out;
 /// only mirrored event frames use the 100 ms flush.
 fn send_sealed(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Value) -> Result<SendStats> {
-    seal_and_send(app, to, key, message, true)
+    seal_and_send(app, to, key, message, true, None)
 }
 
-fn seal_and_send(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Value, direct: bool) -> Result<SendStats> {
+/// [`send_sealed`] for a reply to `request`, packed exactly when the request said `"z": 1`.
+fn send_reply(app: &tauri::AppHandle, to: &str, request: &Request, message: &Value) -> Result<SendStats> {
+    seal_and_send(app, to, &request.key, message, true, Some(request.message["z"] == 1))
+}
+
+fn seal_and_send(app: &tauri::AppHandle, to: &str, key: &crypto::Key, message: &Value, direct: bool, packs: Option<bool>) -> Result<SendStats> {
     let me = remote(app).device_id();
     let json_started = Instant::now();
     let plain = stamp(message, chrono::Utc::now().timestamp_millis()).to_string();
     let payload_bytes = plain.len();
     let mut json_micros = json_started.elapsed().as_micros();
     let seal_started = Instant::now();
-    let body = crypto::seal(key, &me, to, plain.as_bytes())?;
+    let body = crypto::seal(key, &me, to, &outgoing(to, message, plain, packs))?;
     let seal_micros = seal_started.elapsed().as_micros();
     let mut frame = json!({"to": to, "body": body});
     if let Some(id) = message["id"].as_str() {
@@ -865,12 +930,36 @@ pub(crate) fn send_to_device(app: &tauri::AppHandle, to: &str, message: &Value) 
 pub(super) fn send_relay(app: &tauri::AppHandle, to: &str, message: &Value) -> Result<()> {
     remote(app).lock().callable(to)?;
     let key = peer_key(app, to)?;
-    seal_and_send(app, to, &key, message, false).map(|_| ())
+    seal_and_send(app, to, &key, message, false, None).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_peers_that_ask_get_packed_frames() {
+        let event = json!({"type": "event", "name": "agent.events", "data": {"events": vec!["same text"; 500]}});
+        let plain = event.to_string();
+        assert_eq!(stamp(&json!({"type": "req"}), 1)["z"], 1);
+        assert!(stamp(&event, 1).get("z").is_none());
+        // An older app never sent "z": it gets plain JSON.
+        assert_eq!(outgoing("old-peer", &event, plain.clone(), None), plain.as_bytes());
+        packs("new-peer", true);
+        assert_eq!(outgoing("new-peer", &event, plain.clone(), None)[0], b'z');
+        // Requests and small frames stay plain; a downgrade is noticed at the next request.
+        assert_eq!(outgoing("new-peer", &json!({"type": "req"}), plain.clone(), None), plain.as_bytes());
+        assert_eq!(outgoing("new-peer", &event, "{}".into(), None), b"{}");
+        packs("new-peer", false);
+        assert_eq!(outgoing("new-peer", &event, plain.clone(), None), plain.as_bytes());
+        // A reply follows its own request, whatever the set says by the time it goes out.
+        let reply = json!({"type": "res", "result": {"messages": vec!["same text"; 500]}});
+        let text = reply.to_string();
+        assert_eq!(outgoing("new-peer", &reply, text.clone(), Some(true))[0], b'z', "a prune after the request still packs its reply");
+        packs("new-peer", true);
+        assert_eq!(outgoing("new-peer", &reply, text.clone(), Some(false)), text.as_bytes());
+        packs("new-peer", false);
+    }
 
     #[test]
     fn state_changing_requests_keep_arrival_order_while_reads_use_a_separate_lane() {
@@ -954,6 +1043,13 @@ mod tests {
     }
 
     #[test]
+    fn reconnects_share_one_tls_config_for_resumption() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let (tokio_tungstenite::Connector::Rustls(a), tokio_tungstenite::Connector::Rustls(b)) = (tls(), tls()) else { panic!("rustls") };
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
     fn backoff_resets_only_after_a_stable_socket() {
         let s = Duration::from_secs;
         assert_eq!(backoff(s(8), &Outcome::Failed), Some((s(8), s(16))));
@@ -983,6 +1079,15 @@ mod tests {
         assert_eq!(inner.subscribers.keys().collect::<Vec<_>>(), ["a"]);
         apply_presence(&mut inner, &[]);
         assert!(inner.devices.is_empty() && inner.subscribers.is_empty());
+    }
+
+    #[test]
+    fn a_device_gone_from_presence_is_no_longer_packed_for() {
+        let mut inner = Inner::default();
+        apply_presence(&mut inner, &[json!({"id": "kept", "online": true, "host": false})]);
+        let mut set: std::collections::HashSet<String> = ["kept".into(), "gone".into()].into();
+        prune_packing(&mut set, &inner.devices);
+        assert_eq!(set, ["kept".to_string()].into());
     }
 
     #[test]

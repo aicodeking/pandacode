@@ -2,17 +2,16 @@
 // The relay reads the bearer token from the upgrade request's Authorization header
 // (relay/src/index.ts), which React Native's WebSocket can set.
 import { AppState, type AppStateStatus } from 'react-native';
+import { backoff, REVOKED } from '../store/backoff.ts';
 
 const PING_MS = 30_000;
 const SILENT_MS = 75_000;
-const STABLE_MS = 30_000;
-const MAX_BACKOFF_MS = 60_000;
 /** Background longer than this closes the socket; foreground reconnects. */
 const BACKGROUND_MS = 30_000;
 /** A socket kept through a short background must answer a ping this fast, else it reconnects (iOS may have dropped it). */
 const PROBE_MS = 4_000;
-const REPLACED = 4000;
-const REVOKED = 4001;
+/** A socket still connecting after this (captive portal, blackholed route) is closed and retried with backoff. */
+export const CONNECT_MS = 12_000;
 
 export interface SocketHandlers {
   /** The current token, or null when signed out (stops the socket). */
@@ -25,17 +24,9 @@ export interface SocketHandlers {
   onRefused(token: string, revoked: boolean): void;
 }
 
-/** (wait now, base for the next failure), or null to stop (revoked). */
-export function backoff(delay: number, outcome: { opened: boolean; upMs: number; code?: number }): [number, number] | null {
-  if (outcome.code === REVOKED) return null;
-  const base = outcome.opened && outcome.upMs >= STABLE_MS ? 1000 : delay;
-  const wait = outcome.code === REPLACED ? Math.max(base, MAX_BACKOFF_MS) : base;
-  return [wait, Math.min(base * 2, MAX_BACKOFF_MS)];
-}
-
 export class RelaySocket {
   private ws: WebSocket | null = null;
-  private delay = 1000;
+  private delay = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private ping: ReturnType<typeof setInterval> | null = null;
   private backgroundTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,7 +89,9 @@ export class RelaySocket {
     const ws = new RNWebSocket(this.handlers.url(), null, { headers: { Authorization: `Bearer ${token}` } });
     this.ws = ws;
     let openedAt = 0;
+    const stuck = setTimeout(() => { if (ws.readyState === WebSocket.CONNECTING) closed(1006); }, CONNECT_MS);
     ws.onopen = () => {
+      clearTimeout(stuck);
       openedAt = this.heard = Date.now();
       this.ping = setInterval(() => {
         if (Date.now() - this.heard > SILENT_MS) return this.reconnectNow();
@@ -110,22 +103,26 @@ export class RelaySocket {
       this.heard = Date.now();
       if (typeof event.data === 'string' && event.data !== 'pong') this.handlers.onText(event.data);
     };
-    ws.onclose = event => {
+    const closed = (code: number) => {
+      clearTimeout(stuck);
       if (this.ws !== ws) return;
       this.drop();
-      const outcome = { opened: openedAt > 0, upMs: openedAt ? Date.now() - openedAt : 0, code: event.code };
+      const outcome = { opened: openedAt > 0, upMs: openedAt ? Date.now() - openedAt : 0, code };
       if (outcome.code === REVOKED || !outcome.opened) this.handlers.onRefused(token, outcome.code === REVOKED);
       const next = backoff(this.delay, outcome);
       if (!next || !this.running) return;
       this.delay = next[1];
+      // A first retry goes at once (no timer turn either).
+      if (next[0] === 0) return this.connect();
       this.retry = setTimeout(() => this.connect(), next[0]);
     };
+    ws.onclose = event => closed(event.code);
   }
 
   private reconnectNow() {
     this.drop();
     this.clearRetry();
-    this.delay = 1000;
+    this.delay = 0;
     this.connect();
   }
 

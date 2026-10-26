@@ -232,6 +232,16 @@ test.describe('streamed responses', () => {
 
       const firstGroup = liveGroups(page).first();
       const firstTool = page.locator(`#stream-region .tool-activity[data-tool-key="tool:${firstToolId}"]`);
+      // Steps narrated past fold to their summary in the conversation and stay folded as new work arrives.
+      if (view === 'conversation') {
+        await expect(firstGroup).not.toHaveAttribute('open', '');
+        await expect(firstGroup.locator('.tool-group-summary')).toBeVisible();
+        await page.evaluate(({ id, thirdToolId }) => (window as any).__streamFixtures[id].updateTool('running', thirdToolId), { id, thirdToolId });
+        await expect(firstGroup).not.toHaveAttribute('open', '');
+        await expect(firstTool).not.toHaveAttribute('open', '');
+        await firstGroup.locator('.tool-group-summary').click();
+      }
+      await expect(firstGroup).toHaveAttribute('open', '');
       await firstTool.locator(':scope > summary').click();
       await firstTool.locator('.tool-trace-raw > summary').click();
       await page.evaluate(({ id, toolId }) => (window as any).__streamFixtures[id].updateTool('running', toolId), { id, toolId: firstToolId });
@@ -292,7 +302,12 @@ test.describe('streamed responses', () => {
       await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['Read 5 files', 'Read 1 file', 'Read 1 file']);
       await expect.poll(() => liveSequence(page)).toEqual(['I’m checking the project files.', '5 tools', '1 tool', 'The files look good. I’m checking one last detail.', '1 tool']);
       await expect(page.locator('#stream-region .tool-activity')).toHaveCount(7);
-      for (const group of await liveGroups(page).all()) await expect(group).toHaveAttribute('open', '');
+      // In the conversation, groups the agent narrated past fold to their summary; the board keeps every group open.
+      const groups = await liveGroups(page).all();
+      for (const [index, group] of groups.entries()) {
+        if (view === 'board' || index === groups.length - 1) await expect(group).toHaveAttribute('open', '');
+        else await expect(group).not.toHaveAttribute('open', '');
+      }
       await expect(page.locator('#stream-region [data-commentary]')).toBeVisible();
       await expect(live(page)).toBeVisible();
       if (view === 'board') {

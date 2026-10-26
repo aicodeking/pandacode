@@ -224,4 +224,160 @@ test.describe('thread order', () => {
     await expect(row(page, 'session-2')).toHaveAttribute('aria-current', 'page');
     expect((await saved(page)).find(task => task.id === 'session-2').pinned).toBe(true);
   });
+
+  test('a task created after a manual reorder appears at the top of its folder', async ({ page }) => {
+    await open(page);
+    await dragBefore(page, 'session-3', 'session-1');
+    await expect.poll(() => ids(page, ORBIT)).toEqual(['session-3', 'session-1', 'session-2']);
+    const created = await page.evaluate(async () => {
+      const preview = await import((window as any).__threadOrderUrl);
+      const task = await preview.invoke('create_board_task', { projectId: 'project-1', provider: 'claude', model: 'sonnet', mode: 'full', title: 'Brand new task', description: '' });
+      (window as any).__threadOrderEmit('sessions-changed', {});
+      return task.id as string;
+    });
+    await expect.poll(() => ids(page, ORBIT)).toEqual([created, 'session-3', 'session-1', 'session-2']);
+  });
+
+  test('the sort menu orders tasks by activity or creation, turns off dragging, and is remembered', async ({ page }) => {
+    await open(page, `session('session-2').createdAt = now - 400000;`);
+    await dragBefore(page, 'session-3', 'session-1');
+    await expect.poll(() => ids(page, ORBIT)).toEqual(['session-3', 'session-1', 'session-2']);
+    const sort = page.getByRole('button', { name: 'Sort and view', exact: true });
+    const choose = async (group: string, label: string) => {
+      await sort.click();
+      await page.getByRole('dialog', { name: 'Sort and view', exact: true }).getByRole('group', { name: group, exact: true }).getByRole('menuitemradio', { name: label, exact: true }).click();
+    };
+    await choose('Sort tasks', 'Recent activity');
+    await expect.poll(() => ids(page, ORBIT)).toEqual(['session-1', 'session-2', 'session-3']);
+    await expect(row(page, 'session-1')).toHaveAttribute('draggable', 'false');
+    await row(page, 'session-1').click({ button: 'right' });
+    await expect(menu(page).getByRole('menuitem', { name: 'Move down', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await choose('Sort tasks', 'Created');
+    await expect.poll(() => ids(page, ORBIT)).toEqual(['session-2', 'session-1', 'session-3']);
+    const created = await ids(page, ORBIT);
+    await choose('Show per project', '3 tasks');
+    await page.reload();
+    await expect.poll(() => ids(page, ORBIT)).toEqual(created);
+    await sort.click();
+    const dialog = page.getByRole('dialog', { name: 'Sort and view', exact: true });
+    await expect(dialog.getByRole('group', { name: 'Sort tasks', exact: true }).getByRole('menuitemradio', { name: 'Created', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(dialog.getByRole('group', { name: 'Show per project', exact: true }).getByRole('menuitemradio', { name: '3 tasks', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await dialog.getByRole('group', { name: 'Sort tasks', exact: true }).getByRole('menuitemradio', { name: 'Manual', exact: true }).click();
+    await expect.poll(() => ids(page, ORBIT)).toEqual(['session-3', 'session-1', 'session-2']);
+    await expect(row(page, 'session-1')).toHaveAttribute('draggable', 'true');
+  });
+
+  test('projects sort by name and keep their place when a task starts running', async ({ page }) => {
+    await open(page);
+    const folders = () => page.locator('#navigation .folder-group').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.project));
+    await page.getByRole('button', { name: 'Sort and view', exact: true }).click();
+    await page.getByRole('group', { name: 'Sort projects', exact: true }).getByRole('menuitemradio', { name: 'Name', exact: true }).click();
+    await expect.poll(folders).toEqual(['project-1', 'project-2']);
+    await expect(page.locator('.folder-heading').first()).toContainText('orbit');
+  });
+
+  test('a flat list replaces folders and names each row’s project; selected options show a trailing check', async ({ page }) => {
+    await open(page);
+    const sort = page.getByRole('button', { name: 'Sort and view', exact: true });
+    await sort.click();
+    const dialog = page.getByRole('dialog', { name: 'Sort and view', exact: true });
+    const manual = dialog.getByRole('group', { name: 'Sort tasks', exact: true }).getByRole('menuitemradio', { name: 'Manual', exact: true });
+    await expect(manual).toHaveAttribute('aria-checked', 'true');
+    await expect(manual.locator('svg.icon').last()).toBeVisible();
+    // On, but not the highlighted row: no fill, only the check.
+    const recent = dialog.getByRole('group', { name: 'Sort projects', exact: true }).getByRole('menuitemradio', { name: 'Recent activity', exact: true });
+    await expect(recent).toHaveAttribute('aria-checked', 'true');
+    await expect(recent).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(recent.locator('svg.icon').last()).toBeVisible();
+    expect((await dialog.boundingBox())!.width).toBe(280);
+    await dialog.getByRole('group', { name: 'Group', exact: true }).getByRole('menuitemradio', { name: 'Flat list', exact: true }).click();
+    await expect(page.locator('#navigation .folder-heading')).toHaveCount(0);
+    await expect.poll(() => ids(page, 'all')).toEqual(['session-1', 'session-2', 'session-3', 'session-4']);
+    // At the default width titles come first: the name hides (the tooltip keeps it), the icon stays.
+    await expect(row(page, 'session-4').locator('.task-project-name')).toBeHidden();
+    await expect(row(page, 'session-4').locator('.task-app-icon')).toBeVisible();
+    await expect(row(page, 'session-4')).toHaveAttribute('title', /\npandacode/);
+    // A wider sidebar shows the name in full.
+    await page.evaluate(() => document.querySelector<HTMLElement>('.workspace')!.style.setProperty('--sidebar-width', '320px'));
+    await expect(row(page, 'session-4').locator('.task-project-name')).toHaveText('pandacode');
+    const name = await row(page, 'session-4').locator('.task-project-name').evaluate(node => node.scrollWidth <= node.clientWidth);
+    expect(name).toBe(true);
+    await page.reload();
+    await expect(page.locator('#navigation .folder-heading')).toHaveCount(0);
+  });
+
+  test('projects can be arranged by hand: Alt+arrows move a folder and the order is remembered', async ({ page }) => {
+    await open(page);
+    const folders = () => page.locator('#navigation .folder-heading').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.project));
+    expect(await folders()).toEqual(['project-1', 'project-2']);
+    await expect(page.locator('.folder-heading').first()).toHaveAttribute('draggable', 'false');
+    await page.getByRole('button', { name: 'Sort and view', exact: true }).click();
+    await page.getByRole('group', { name: 'Sort projects', exact: true }).getByRole('menuitemradio', { name: 'Manual', exact: true }).click();
+    await expect(page.locator('.folder-heading').first()).toHaveAttribute('draggable', 'true');
+    expect(await folders()).toEqual(['project-1', 'project-2']);
+    await page.locator('.folder-heading[data-project="project-1"]').focus();
+    await page.keyboard.press('Alt+ArrowDown');
+    await expect.poll(folders).toEqual(['project-2', 'project-1']);
+    await expect(page.locator('.folder-heading[data-project="project-1"]')).toBeFocused();
+    await page.reload();
+    await expect.poll(folders).toEqual(['project-2', 'project-1']);
+    // Dragging a folder heading moves it too.
+    await page.locator('.folder-heading[data-project="project-1"]').dragTo(page.locator('.folder-heading[data-project="project-2"]'), { targetPosition: { x: 30, y: 3 } });
+    await expect.poll(folders).toEqual(['project-1', 'project-2']);
+  });
+
+  test('picking Projects: Manual from a flat list saves every project in its current order', async ({ page }) => {
+    await open(page);
+    const choose = async (group: string, name: string) => {
+      await page.getByRole('button', { name: 'Sort and view', exact: true }).click();
+      await page.getByRole('group', { name: group, exact: true }).getByRole('menuitemradio', { name, exact: true }).click();
+    };
+    await choose('Group', 'Flat list');
+    await expect(page.locator('#navigation .folder-heading')).toHaveCount(0);
+    await choose('Sort projects', 'Manual');
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.sidebar.projectOrder') ?? '[]'));
+    expect(saved).toEqual(['project-1', 'project-2']);
+    await choose('Group', 'By project');
+    await expect.poll(() => page.locator('#navigation .folder-heading').evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.project))).toEqual(['project-1', 'project-2']);
+  });
+
+  test('a right-click opens the task menu at the pointer; the … button keeps it on the row', async ({ page }) => {
+    await open(page);
+    const box = (await row(page, 'session-2').boundingBox())!;
+    await row(page, 'session-2').click({ button: 'right', position: { x: 60, y: 6 } });
+    let panel = (await menu(page).boundingBox())!;
+    expect(Math.abs(panel.x - (box.x + 60))).toBeLessThan(2);
+    expect(panel.y).toBeGreaterThan(box.y + 6);
+    await page.keyboard.press('Escape');
+    await expect(menu(page)).toBeHidden();
+    await row(page, 'session-2').hover();
+    await page.locator('#task-row-session-2 .task-more').click();
+    panel = (await menu(page).boundingBox())!;
+    expect(Math.abs(panel.x - box.x)).toBeLessThan(2);
+    expect(panel.y).toBeGreaterThanOrEqual(box.y + box.height);
+  });
+
+  test('a right-click on a row’s tick, … or the gap beside them opens the app menu; again moves it', async ({ page }) => {
+    await open(page);
+    const actions = page.locator('#task-row-session-2 .task-actions');
+    await row(page, 'session-2').hover();
+    const area = (await actions.boundingBox())!;
+    // The padding gap before the tick: the actions span itself, not a button.
+    await actions.click({ button: 'right', position: { x: 4, y: area.height / 2 } });
+    await expect(menu(page)).toBeVisible();
+    await expect(menu(page).getByRole('menuitem', { name: 'Pin task', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await row(page, 'session-2').hover();
+    await page.locator('#task-row-session-2 .task-more').click({ button: 'right' });
+    await expect(menu(page)).toBeVisible();
+    const first = (await menu(page).boundingBox())!;
+    // Right-clicking the same row elsewhere moves the open menu to the pointer instead of closing it.
+    const box = (await row(page, 'session-2').boundingBox())!;
+    await row(page, 'session-2').click({ button: 'right', position: { x: 30, y: 6 } });
+    await expect(menu(page)).toBeVisible();
+    await expect.poll(async () => Math.round((await menu(page).boundingBox())!.x)).toBe(Math.round(box.x + 30));
+    expect(Math.round(first.x)).not.toBe(Math.round(box.x + 30));
+    await expect(menu(page)).toHaveCount(1);
+  });
 });

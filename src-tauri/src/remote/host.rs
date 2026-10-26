@@ -34,6 +34,8 @@ const JOURNAL_TASKS: usize = 2048;
 /// The part of a subscribe reply that replayed events may fill; the rest comes in later
 /// pages (`more`), each another subscribe from where the viewer now is.
 const REPLAY_BUDGET: usize = PAGE_BUDGET / 3;
+/// The replay a viewer that opens packed frames gets, while the packed reply fits [`PAGE_BUDGET`].
+const PACKED_REPLAY_BUDGET: usize = PAGE_BUDGET;
 const MISSING_BUDGET: usize = 24 * 1024;
 /// A finished start is remembered this long for a repeated `task.start` or `task.startStatus`.
 const START_MEMORY: Duration = Duration::from_secs(3600);
@@ -63,6 +65,10 @@ const PULL_CACHE_TTL: Duration = Duration::from_secs(30);
 const MAX_PULL_CACHE_ENTRIES: usize = 64;
 /// A single message or event larger than this is cut, with [`CUT`] marking the cut.
 const MAX_MESSAGE: usize = 120 * 1024;
+/// The smallest `budget` a `task.messages` page may ask for, and the largest a viewer that opens
+/// packed frames (`"z": 1`) may: such a page is cut until it packs into [`PAGE_BUDGET`].
+const MIN_PAGE_BUDGET: usize = 4 * 1024;
+pub(crate) const PACKED_PAGE_MAX: usize = 1024 * 1024;
 /// Messages read per legacy `afterId` `task.messages` page before the budget trims it.
 const PAGE_ROWS: i64 = 400;
 
@@ -120,7 +126,8 @@ pub(crate) fn valid_id(id: &str) -> Result<()> {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Call {
-    Subscribe { session_ids: Vec<String>, after: HashMap<String, u64>, epoch: Option<String> },
+    /// `replay`: the JSON the replayed events may fill ([`REPLAY_BUDGET`], more for a packing viewer).
+    Subscribe { session_ids: Vec<String>, after: HashMap<String, u64>, epoch: Option<String>, replay: usize },
     TasksList { limit: usize },
     ProjectIcons { project_ids: Vec<String> },
     Providers { force: bool },
@@ -128,7 +135,8 @@ pub(crate) enum Call {
     Start(start::Start),
     StartStatus { start_id: String },
     CancelStart { start_id: String },
-    Messages { session_id: String, page: MessagePaging },
+    /// `budget`: the page's JSON bytes ([`page_budget`]).
+    Messages { session_id: String, page: MessagePaging, budget: usize },
     Team { session_id: String },
     WorkerMessages { session_id: String, worker_id: String, after_id: i64, limit: i64 },
     Attachment { session_id: String, id: String, variant: crate::attachments::Variant, offset: u64 },
@@ -320,6 +328,26 @@ fn message_paging(params: &Value) -> Result<MessagePaging> {
     })
 }
 
+/// A `task.messages` page's JSON budget: [`PAGE_BUDGET`] unless asked, clamped to
+/// [`MIN_PAGE_BUDGET`]..[`PACKED_PAGE_MAX`]; [`plain_budget`] holds plain viewers to [`PAGE_BUDGET`].
+pub(crate) fn page_budget(params: &Value) -> Result<usize> {
+    match params.get("budget").filter(|value| !value.is_null()) {
+        None => Ok(PAGE_BUDGET),
+        Some(value) => Ok(value.as_u64().ok_or("Invalid budget.")?.clamp(MIN_PAGE_BUDGET as u64, PACKED_PAGE_MAX as u64) as usize),
+    }
+}
+
+/// A viewer that does not open packed frames gets pages of at most [`PAGE_BUDGET`]; one that
+/// does gets a bigger replay. A batch's calls stay plain-sized: its reply is measured plain.
+fn plain_budget(call: Call, packs: bool) -> Call {
+    match call {
+        Call::Messages { session_id, page, budget } if !packs => Call::Messages { session_id, page, budget: budget.min(PAGE_BUDGET) },
+        Call::Subscribe { session_ids, after, epoch, .. } => Call::Subscribe { session_ids, after, epoch, replay: if packs { PACKED_REPLAY_BUDGET } else { REPLAY_BUDGET } },
+        Call::Batch(calls) => Call::Batch(calls.into_iter().map(|call| call.map(|call| plain_budget(call, false))).collect()),
+        other => other,
+    }
+}
+
 fn path_param(params: &Value, key: &str) -> Result<Option<String>> {
     match params.get(key).filter(|value| !value.is_null()) {
         None => Ok(None),
@@ -398,7 +426,7 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
             // Newer viewers say where they left off; anything malformed is ignored (no replay).
             let after = params["afterSeq"].as_object().map(|after| after.iter().filter(|(id, _)| session_ids.contains(id)).filter_map(|(id, seq)| Some((id.clone(), seq.as_u64()?))).collect()).unwrap_or_default();
             let epoch = params["epoch"].as_str().filter(|epoch| valid_id(epoch).is_ok() && epoch.len() <= 64).map(str::to_owned);
-            Call::Subscribe { session_ids, after, epoch }
+            Call::Subscribe { session_ids, after, epoch, replay: REPLAY_BUDGET }
         }
         "tasks.list" => Call::TasksList { limit: task_limit(params)? },
         "projects.icons" => Call::ProjectIcons { project_ids: project_icon_ids(params)? },
@@ -413,7 +441,7 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         "task.start" => Call::Start(start::parse(params)?),
         "task.startStatus" => Call::StartStatus { start_id: id_param(params, "startId")? },
         "task.cancelStart" => Call::CancelStart { start_id: id_param(params, "startId")? },
-        "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, page: message_paging(params)? },
+        "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, page: message_paging(params)?, budget: page_budget(params)? },
         "task.team" => Call::Team { session_id: id_param(params, "sessionId")? },
         "task.workerMessages" => {
             let after_id = match params.get("afterId").filter(|value| !value.is_null()) {
@@ -558,7 +586,7 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value) 
         }
         Ok(full_access)
     });
-    let call = admitted.and_then(|full_access| parse(true, method, &message["params"]).and_then(|call| cap_mode(call, full_access)).map(|call| (call, full_access)));
+    let call = admitted.and_then(|full_access| parse(true, method, &message["params"]).map(|call| plain_budget(call, message["z"] == 1)).and_then(|call| cap_mode(call, full_access)).map(|call| (call, full_access)));
     let result = match call {
         Ok((call, full_access)) => run(app, from, call, full_access).await,
         Err(error) => Err(error),
@@ -983,27 +1011,23 @@ fn fit_worker_message_page(
     has_older: bool,
     fetched_more: bool,
 ) -> Value {
-    let mut kept = Vec::new();
-    let mut has_more = fetched_more;
+    // Measured once each; `false` is the longer `hasMore`, so the sum never undercounts.
+    let envelope = json!({"messages": [], "hasMore": false, "hasOlder": has_older, "title": title, "lastId": last_id}).to_string().len();
+    let (mut kept, mut size, mut has_more) = (Vec::new(), envelope, fetched_more);
     for mut message in values {
         shrink(&mut message, MAX_MESSAGE);
-        let mut candidate = json!({"messages": &kept, "hasMore": has_more, "hasOlder": has_older, "title": title, "lastId": last_id});
-        candidate["messages"]
-            .as_array_mut()
-            .unwrap()
-            .push(message.clone());
-        if candidate.to_string().len() > PAGE_BUDGET {
+        let length = message.to_string().len() + 1;
+        if size + length > PAGE_BUDGET {
             if kept.is_empty() {
-                let envelope = json!({"messages": [], "hasMore": true, "hasOlder": has_older, "title": title, "lastId": last_id}).to_string().len();
                 shrink(&mut message, PAGE_BUDGET.saturating_sub(envelope + 8));
-                let candidate = json!({"messages": [message], "hasMore": true, "hasOlder": has_older, "title": title, "lastId": last_id});
-                if candidate.to_string().len() <= PAGE_BUDGET {
-                    kept = candidate["messages"].as_array().unwrap().clone();
+                if envelope + message.to_string().len() <= PAGE_BUDGET {
+                    kept.push(message);
                 }
             }
             has_more = true;
             break;
         }
+        size += length;
         kept.push(message);
     }
     json!({"messages": kept, "hasMore": has_more, "hasOlder": has_older, "title": title, "lastId": last_id})
@@ -1227,7 +1251,7 @@ fn watch_team_events(app: &tauri::AppHandle) {
 async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bool) -> Result<Value> {
     let state = app.state::<AppState>();
     match call {
-        Call::Subscribe { session_ids, after, epoch } => {
+        Call::Subscribe { session_ids, after, epoch, replay: budget } => {
             watch_team_events(app);
             let handle = app.clone();
             let requested = session_ids.clone();
@@ -1246,14 +1270,21 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             }
             subscriber.until = Some(Instant::now() + SUBSCRIPTION);
             subscriber.sessions.extend(session_ids);
-            let replay = inner.journal.resume(&mut tasks, &after, epoch.as_deref());
+            // The plain-sized replay, read at the same journal position, is the fallback for
+            // events that pack poorly; it always fits. Measured after the lock is released.
+            let fallback = (budget > REPLAY_BUDGET).then(|| tasks.clone()).map(|mut tasks| {
+                let replay = inner.journal.resume(&mut tasks, &after, epoch.as_deref(), REPLAY_BUDGET);
+                (subscribe_reply(tasks, &missing, &replay), replay)
+            });
+            let replay = inner.journal.resume(&mut tasks, &after, epoch.as_deref(), budget);
             drop(inner);
+            let reply = subscribe_reply(tasks, &missing, &replay);
+            let (reply, replay) = match fallback {
+                Some(plain) if packed_len(&reply) > PAGE_BUDGET => plain,
+                _ => (reply, replay),
+            };
             if replay.gaps > 0 {
                 super::diagnostics::record("replay.gap", format!("{} of {} tasks for {from}", replay.gaps, after.len()));
-            }
-            let mut reply = json!({"tasks": tasks, "missing": missing, "epoch": replay.epoch});
-            if replay.more {
-                reply["more"] = json!(true);
             }
             Ok(reply)
         }
@@ -1300,16 +1331,16 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                 }
             })
         }
-        Call::Messages { session_id, page } => {
+        Call::Messages { session_id, page, budget } => {
             let handle = app.clone();
             crate::blocking(move || {
                 let state = handle.state::<AppState>();
-                let store = state.store.lock().map_err(|e| e.to_string())?;
-                local_session_from(&store, &session_id)?;
-                match page {
-                    MessagePaging::After { after_id, limit } if limit == PAGE_ROWS => messages_page(&store.db, &session_id, after_id),
-                    page => messages_page_with(&store.db, &session_id, page),
-                }
+                let rows = {
+                    let store = state.store.lock().map_err(|e| e.to_string())?;
+                    local_session_from(&store, &session_id)?;
+                    read_page(&store.db, &session_id, page)?
+                };
+                Ok(fit_page(rows, budget))
             })
             .await
         }
@@ -1761,16 +1792,16 @@ impl Journal {
     /// left off (same `epoch`), the events it missed or `gap: true`. The replay fills at most
     /// [`REPLAY_BUDGET`]: a task whose replay goes on is marked `more` and its `seq` is the
     /// last one replayed, so the viewer's next subscribe continues from there.
-    fn resume(&mut self, tasks: &mut [Value], after: &HashMap<String, u64>, epoch: Option<&str>) -> Resumed {
+    fn resume(&mut self, tasks: &mut [Value], after: &HashMap<String, u64>, epoch: Option<&str>, budget: usize) -> Resumed {
         let same = epoch == Some(self.epoch.as_str());
-        let (mut room, mut more, mut gaps) = (REPLAY_BUDGET, false, 0);
+        let (mut room, mut more, mut gaps) = (budget, false, 0);
         for task in tasks {
             let Some(id) = task["sessionId"].as_str().map(str::to_owned) else { continue };
             self.watch(&id);
             task["seq"] = json!(self.seq);
             let Some(&after) = after.get(&id) else { continue };
             // Past the room, a task's replay starts in the next page.
-            match if same { self.missed(&id, after, room, room == REPLAY_BUDGET) } else { Missed::Gap } {
+            match if same { self.missed(&id, after, room, room == budget) } else { Missed::Gap } {
                 Missed::Events { events, more: rest, last } => {
                     if !events.is_empty() {
                         room = room.saturating_sub(json!(events).to_string().len());
@@ -2453,6 +2484,14 @@ fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<(Vec<Value>, Vec
     Ok((tasks, missing))
 }
 
+fn subscribe_reply(tasks: Vec<Value>, missing: &[Value], replay: &Resumed) -> Value {
+    let mut reply = json!({"tasks": tasks, "missing": missing, "epoch": replay.epoch});
+    if replay.more {
+        reply["more"] = json!(true);
+    }
+    reply
+}
+
 /// Clones the currently answerable events into a small JSON shape for late subscribers.
 fn pending_items(requests: &HashMap<String, AgentEvent>) -> Vec<Value> {
     let mut items: Vec<Value> = requests
@@ -2528,18 +2567,42 @@ fn message_exists(db: &rusqlite::Connection, session_id: &str, id: i64, older: b
 }
 
 /// Legacy `afterId` page entrypoint used by mirror copies and tests.
+#[cfg(test)]
 pub(crate) fn messages_page(db: &rusqlite::Connection, session_id: &str, after_id: i64) -> Result<Value> {
     messages_page_with(db, session_id, MessagePaging::After { after_id, limit: PAGE_ROWS })
 }
 
 /// Reads a message page oldest first, cutting individual messages and the page to fit one frame.
 /// `hasMore` means newer rows follow the page; `hasOlder` means older rows precede its first id.
+#[cfg(test)]
 pub(crate) fn messages_page_with(db: &rusqlite::Connection, session_id: &str, page: MessagePaging) -> Result<Value> {
+    messages_page_fit(db, session_id, page, PAGE_BUDGET)
+}
+
+/// [`messages_page_with`] in `budget` JSON bytes (the newest that fit, for newest-first pages;
+/// always at least one message). Over [`PAGE_BUDGET`] the page is for a viewer that opens packed
+/// frames, and is cut until it packs into [`PAGE_BUDGET`], so the sealed frame fits the relay.
+#[cfg(test)]
+pub(crate) fn messages_page_fit(db: &rusqlite::Connection, session_id: &str, page: MessagePaging, budget: usize) -> Result<Value> {
+    Ok(fit_page(read_page(db, session_id, page)?, budget))
+}
+
+/// A message page's rows and bounds, read in one pass under the store lock; [`fit_page`]
+/// fits them to a budget without it.
+pub(crate) struct PageRows {
+    page: MessagePaging,
+    title: String,
+    /// The session's lowest and highest message ids.
+    first_id: Option<i64>,
+    last_id: Option<i64>,
+    rows: Vec<Value>,
+}
+
+pub(crate) fn read_page(db: &rusqlite::Connection, session_id: &str, page: MessagePaging) -> Result<PageRows> {
     let title: String = db.query_row("SELECT title FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Conversation not found.")?;
-    let last_id: Option<i64> = db
-        .query_row("SELECT MAX(id) FROM messages WHERE session_id=?1", [session_id], |row| row.get(0))
+    let (first_id, last_id): (Option<i64>, Option<i64>) = db
+        .query_row("SELECT MIN(id),MAX(id) FROM messages WHERE session_id=?1", [session_id], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| e.to_string())?;
-    let newest_first = matches!(page, MessagePaging::Tail { .. } | MessagePaging::Before { .. });
     let mut statement = match page {
         MessagePaging::After { .. } => db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id>?2 ORDER BY id LIMIT ?3"),
         MessagePaging::Tail { .. } => db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2"),
@@ -2553,51 +2616,124 @@ pub(crate) fn messages_page_with(db: &rusqlite::Connection, session_id: &str, pa
     }
     .map_err(|e| e.to_string())?;
     let mut rows: Vec<Value> = mapped.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?;
-    let fetched = rows.len();
-    let has_attachment_table: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let mut attachments = page_attachments(db, session_id, &rows)?;
     for message in &mut rows {
         let message_id = message["id"].as_i64().unwrap_or_default();
-        let mut attachments = if has_attachment_table {
-            crate::attachments::message_attachment_rows(db, session_id, message_id)?
-        } else { Vec::new() };
+        let mut list = attachments.remove(&message_id).unwrap_or_default();
         if message["role"] == "user" {
-            let content = message["content"].as_str().unwrap_or_default();
-            attachments.extend(context_attachments(message_id, content));
+            list.extend(context_attachments(message_id, message["content"].as_str().unwrap_or_default()));
         }
-        message["attachments"] = json!(attachments);
+        message["attachments"] = json!(list);
     }
-    let mut room = PAGE_BUDGET.saturating_sub(json!({"messages": [], "hasMore": false, "hasOlder": false, "title": &title, "lastId": last_id}).to_string().len());
-    let mut kept = Vec::new();
-    for mut message in rows {
-        if message.to_string().len() > MAX_MESSAGE {
-            fit_message(&mut message);
+    Ok(PageRows { page, title, first_id, last_id, rows })
+}
+
+/// The page's image attachments by message id, in one query over the page's id range.
+fn page_attachments(db: &rusqlite::Connection, session_id: &str, rows: &[Value]) -> Result<HashMap<i64, Vec<Value>>> {
+    let ids = rows.iter().filter_map(|row| row["id"].as_i64());
+    let (Some(low), Some(high)) = (ids.clone().min(), ids.max()) else { return Ok(HashMap::new()) };
+    let table: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let mut by_message: HashMap<i64, Vec<Value>> = HashMap::new();
+    if !table {
+        return Ok(by_message);
+    }
+    // The same rows and shape as attachments::message_attachment_rows, for every message at once.
+    let mut statement = db
+        .prepare("SELECT message_id,id,kind,name,mime,bytes,width,height FROM message_attachments WHERE session_id=?1 AND message_id BETWEEN ?2 AND ?3 ORDER BY message_id,rowid")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(rusqlite::params![session_id, low, high], |row| {
+            Ok((row.get::<_, i64>(0)?, json!({
+                "id": row.get::<_, String>(1)?, "kind": row.get::<_, String>(2)?, "name": row.get::<_, String>(3)?,
+                "mime": row.get::<_, String>(4)?, "bytes": row.get::<_, i64>(5)?,
+                "width": row.get::<_, Option<u32>>(6)?, "height": row.get::<_, Option<u32>>(7)?
+            })))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (message, attachment) = row.map_err(|e| e.to_string())?;
+        by_message.entry(message).or_default().push(attachment);
+    }
+    Ok(by_message)
+}
+
+/// Fits read rows to `budget`. Each message is cut and measured once; a packed page is packed at
+/// the socket's level and, when too big, refitted once by the ratio seen, else held to
+/// [`PAGE_BUDGET`] plain, which always fits a frame.
+pub(crate) fn fit_page(rows: PageRows, budget: usize) -> Value {
+    let messages: Vec<(Value, usize)> = rows
+        .rows
+        .iter()
+        .map(|message| {
+            let mut message = message.clone();
+            if message.to_string().len() > MAX_MESSAGE {
+                fit_message(&mut message);
+            }
+            let size = message.to_string().len();
+            (message, size)
+        })
+        .collect();
+    let page = fit_page_in(&rows, &messages, budget);
+    if budget <= PAGE_BUDGET {
+        return page;
+    }
+    let plain = page.to_string().len();
+    let packed = packed_len(&page);
+    if packed <= PAGE_BUDGET {
+        return page;
+    }
+    let scaled = (plain as u128 * PAGE_BUDGET as u128 * 9 / (10 * packed as u128)) as usize;
+    if scaled > PAGE_BUDGET {
+        let page = fit_page_in(&rows, &messages, scaled);
+        if packed_len(&page) <= PAGE_BUDGET {
+            return page;
         }
-        let size = message.to_string().len() + 1;
-        // The first message always fits: once cut it is under the budget.
-        if size > room && !kept.is_empty() {
+    }
+    fit_page_in(&rows, &messages, PAGE_BUDGET)
+}
+
+/// The packed size of `value` as the socket sends it (`crypto::pack`, level 6), without keeping
+/// the output. Fast deflate packs worse, so sizing by it left pages near 60 % of a frame.
+fn packed_len(value: &Value) -> usize {
+    use std::io::Write;
+    let mut out = flate2::write::DeflateEncoder::new(std::io::sink(), flate2::Compression::new(6));
+    let _ = serde_json::to_writer(&mut out, value);
+    let _ = out.flush();
+    out.total_out() as usize + 1
+}
+
+fn fit_page_in(rows: &PageRows, messages: &[(Value, usize)], budget: usize) -> Value {
+    let PageRows { page, title, first_id, last_id, .. } = rows;
+    let mut room = budget.saturating_sub(json!({"messages": [], "hasMore": false, "hasOlder": false, "title": title, "lastId": last_id}).to_string().len());
+    let mut kept = Vec::new();
+    for (message, size) in messages {
+        if size + 1 > room {
+            if kept.is_empty() {
+                // A small page stays small: its one message is cut to the budget and marked, and
+                // viewers fetch it whole later (afterId id-1). Full pages never get here.
+                let mut message = message.clone();
+                cut_to(&mut message, room.saturating_sub(r#","cut":true"#.len() + 1));
+                message["cut"] = json!(true);
+                kept.push(message);
+            }
             break;
         }
-        room = room.saturating_sub(size);
-        kept.push(message);
+        room -= size + 1;
+        kept.push(message.clone());
     }
-    if newest_first {
+    if matches!(page, MessagePaging::Tail { .. } | MessagePaging::Before { .. }) {
         kept.reverse();
     }
-    let first_id = kept.first().and_then(|message| message["id"].as_i64());
-    let last_page_id = kept.last().and_then(|message| message["id"].as_i64());
-    let has_older = match first_id {
-        Some(id) => message_exists(db, session_id, id, true)?,
-        None => false,
-    };
-    let has_more = match page {
-        MessagePaging::After { limit, .. } => kept.len() < fetched || fetched as i64 == limit,
+    let page_first = kept.first().and_then(|message| message["id"].as_i64());
+    let page_last = kept.last().and_then(|message| message["id"].as_i64());
+    // Ids only grow, so older (newer) rows exist exactly when the session's lowest (highest) id is past the page's.
+    let has_older = matches!((first_id, page_first), (Some(low), Some(id)) if *low < id);
+    let has_more = match *page {
+        MessagePaging::After { limit, .. } => kept.len() < rows.rows.len() || rows.rows.len() as i64 == limit,
         MessagePaging::Tail { .. } => false,
-        MessagePaging::Before { .. } => match last_page_id {
-            Some(id) => message_exists(db, session_id, id, false)?,
-            None => false,
-        },
+        MessagePaging::Before { .. } => matches!((last_id, page_last), (Some(high), Some(id)) if *high > id),
     };
-    Ok(json!({"messages": kept, "hasMore": has_more, "hasOlder": has_older, "title": title, "lastId": last_id}))
+    json!({"messages": kept, "hasMore": has_more, "hasOlder": has_older, "title": title, "lastId": last_id})
 }
 
 /// Drops the tail of a list until its JSON fits `budget`.
@@ -2772,13 +2908,20 @@ fn enqueue(inner: &mut super::Inner, session_id: &str, mut add: impl FnMut(&mut 
 }
 
 /// The first event after a quiet spell goes at once (a turn's first delta shows without
-/// waiting); events right behind it are gathered for [`FLUSH`], and once a burst has sent
-/// `frames` frames, for [`SUSTAINED`].
+/// waiting); events right behind it wait out the rest of [`FLUSH`] since `last`, and once a
+/// burst has sent `frames` frames, of [`SUSTAINED`]. `last` is when the last flush's frames
+/// are paid for ([`paid_until`]), so several viewers share the relay's frames/s.
 pub(crate) fn flush_delay(last: Option<Instant>, frames: u32, now: Instant) -> Duration {
     match last {
-        Some(at) if now.saturating_duration_since(at) < SUSTAINED => if frames < BURST_FRAMES { FLUSH } else { SUSTAINED },
+        Some(at) if now < at + SUSTAINED => (at + if frames < BURST_FRAMES { FLUSH } else { SUSTAINED }).saturating_duration_since(now),
         _ => Duration::ZERO,
     }
+}
+
+/// When a flush that sent `sent` frames at `now` is paid for: past the burst every frame
+/// after the first takes [`SUSTAINED`] of the socket's budget.
+pub(crate) fn paid_until(now: Instant, frames: u32, sent: u32) -> Instant {
+    if frames < BURST_FRAMES { now } else { now + SUSTAINED * sent.saturating_sub(1) }
 }
 
 /// Sends each subscriber one `agent.events` frame (more only past the frame budget),
@@ -2787,16 +2930,21 @@ async fn flush(app: tauri::AppHandle, delay: Duration) {
     if !delay.is_zero() {
         tokio::time::sleep(delay).await;
     }
-    let (epoch, batches): (String, Vec<SubscriberFlushBatch>) = {
+    let (epoch, batches, started, counted): (String, Vec<SubscriberFlushBatch>, Instant, u32) = {
         let state = remote(&app);
         let mut inner = state.lock();
         inner.flushing = false;
-        inner.flushed_at = Some(Instant::now());
-        inner.flush_frames = inner.flush_frames.saturating_add(1);
         let hosting = inner.settings.host_enabled;
-        let batches = inner.subscribers.iter_mut().filter(|_| hosting).map(|(id, s)| (id.clone(), std::mem::take(&mut s.events), std::mem::take(&mut s.finished))).filter(|(_, events, finished)| !events.is_empty() || !finished.is_empty()).collect();
-        (inner.journal.epoch.clone(), batches)
+        let batches: Vec<_> = inner.subscribers.iter_mut().filter(|_| hosting).map(|(id, s)| (id.clone(), std::mem::take(&mut s.events), std::mem::take(&mut s.finished))).filter(|(_, events, finished)| !events.is_empty() || !finished.is_empty()).collect();
+        // Paced by the frames this flush sends (one per viewer at least), not by flushes;
+        // a frame split for size is added once sent.
+        let counted = batches.iter().map(|(_, events, finished)| u32::from(!events.is_empty()) + finished.len() as u32).sum::<u32>().max(1);
+        let now = Instant::now();
+        inner.flush_frames = inner.flush_frames.saturating_add(counted);
+        inner.flushed_at = Some(paid_until(now, inner.flush_frames, counted));
+        (inner.journal.epoch.clone(), batches, now, counted)
     };
+    let mut sent = 0u32;
     // Read after the run end has settled its team (architect::completed follows it), so a
     // team whose workers carry on reports the run's task as still running.
     let ids: Vec<String> = batches.iter().flat_map(|(_, _, finished)| finished.iter().filter(|data| data.get("team").is_none()).filter_map(|data| data["sessionId"].as_str().map(str::to_owned))).collect::<HashSet<_>>().into_iter().collect();
@@ -2827,15 +2975,22 @@ async fn flush(app: tauri::AppHandle, delay: Duration) {
             super::diagnostics::record("subscriber.lagged", format!("{device}: over {MAX_BUFFER} buffered events"));
         }
         for frame in lagged_frames(frames(events), behind, &epoch) {
+            sent += 1;
             let _ = socket::send_to_device(&app, &device, &json!({"type": "event", "name": "agent.events", "data": frame}));
         }
         for data in finished {
+            sent += 1;
             let _ = socket::send_to_device(&app, &device, &json!({"type": "event", "name": "run.finished", "data": data}));
         }
     }
-    if !amended.is_empty() {
+    if sent > counted || !amended.is_empty() {
         let state = remote(&app);
         let mut inner = state.lock();
+        if sent > counted {
+            inner.flush_frames = inner.flush_frames.saturating_add(sent - counted);
+            let paid = paid_until(started, inner.flush_frames, sent);
+            inner.flushed_at = inner.flushed_at.max(Some(paid));
+        }
         for (seq, (id, data)) in amended {
             inner.journal.amend(&id, seq, data);
         }
@@ -2882,12 +3037,19 @@ fn shrink(value: &mut Value, max: usize) {
 
 /// Cuts one oversized message. JSON content (tool calls) is cut inside, so it still parses.
 fn cut(message: &mut Value) {
+    cut_to(message, MAX_MESSAGE);
+}
+
+fn cut_to(message: &mut Value, max: usize) {
+    if message.to_string().len() <= max {
+        return;
+    }
     let parsed = message["content"].as_str().and_then(|content| serde_json::from_str::<Value>(content).ok()).filter(Value::is_object);
     if let Some(mut content) = parsed {
-        shrink(&mut content, MAX_MESSAGE * 3 / 4);
+        shrink(&mut content, max * 3 / 4);
         message["content"] = json!(content.to_string());
     }
-    shrink(message, MAX_MESSAGE);
+    shrink(message, max);
 }
 
 #[cfg(test)]
@@ -3141,6 +3303,18 @@ mod tests {
         assert_eq!(page["messages"][0]["sessionId"], "session-w1");
         assert_eq!(page["messages"][0]["authorProvider"], "codex");
         assert!(page["messages"].as_array().unwrap().len() < 100);
+        // Linear: thousands of small messages fit at once, filling the budget closely.
+        let values = (1..=5000).map(|id| json!({"id": id, "role": "assistant", "content": "ok ".repeat(10)})).collect();
+        let started = Instant::now();
+        let page = fit_worker_message_page("Worker w1", Some(5000), values, false, false);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let size = page.to_string().len();
+        assert!(size <= PAGE_BUDGET && size > PAGE_BUDGET - 200, "{size}");
+        assert_eq!(page["hasMore"], true);
+        // One oversized message is cut to fit, never dropped.
+        let page = fit_worker_message_page("Worker w1", Some(1), vec![json!({"id": 1, "content": "x".repeat(400 * 1024)})], false, false);
+        assert_eq!(page["messages"][0]["id"], 1);
+        assert!(page.to_string().len() <= PAGE_BUDGET);
     }
 
     #[test]
@@ -3194,10 +3368,10 @@ mod tests {
 
     #[test]
     fn requests_are_validated() {
-        assert_eq!(parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"]})), Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()], after: HashMap::new(), epoch: None }));
+        assert_eq!(parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"]})), Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()], after: HashMap::new(), epoch: None, replay: REPLAY_BUDGET }));
         // Where a viewer left off: only for requested tasks, and only valid positions.
         let resume = parse(true, "subscribe", &json!({"sessionIds": ["s1", "s2"], "epoch": "e1", "afterSeq": {"s1": 7, "s2": -1, "other": 3}}));
-        assert_eq!(resume, Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()], after: HashMap::from([("s1".to_string(), 7)]), epoch: Some("e1".into()) }));
+        assert_eq!(resume, Ok(Call::Subscribe { session_ids: vec!["s1".into(), "s2".into()], after: HashMap::from([("s1".to_string(), 7)]), epoch: Some("e1".into()), replay: REPLAY_BUDGET }));
         assert_eq!(parse(true, "task.startStatus", &json!({"startId": "st1"})), Ok(Call::StartStatus { start_id: "st1".into() }));
         assert_eq!(parse(true, "task.cancelStart", &json!({"startId": "st1"})), Ok(Call::CancelStart { start_id: "st1".into() }));
         assert!(parse(true, "task.cancelStart", &json!({})).is_err());
@@ -3211,8 +3385,8 @@ mod tests {
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "hi", "imageIds": vec![image; 5]})).is_err());
         assert!(parse(true, "image.put", &json!({"uploadId": "u1", "index": 0, "size": 3, "data": "iVBO"})).is_ok());
         assert!(parse(true, "image.put", &json!({"uploadId": "u1", "index": 0, "size": 6 * 1024 * 1024, "data": "iVBO"})).is_err());
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": 7})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 7, limit: PAGE_ROWS } }));
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": -3})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 0, limit: PAGE_ROWS } }));
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": 7})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 7, limit: PAGE_ROWS }, budget: PAGE_BUDGET }));
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": -3})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 0, limit: PAGE_ROWS }, budget: PAGE_BUDGET }));
         assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "effort": null})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: Some(None), mode: None }));
         assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "mode": "ask"})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: Some("ask".into()) }));
         assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "provider": "codex", "model": "gpt"})), Ok(Call::Configure { session_id: "s1".into(), model: Some(("codex".into(), "gpt".into())), effort: None, mode: None }));
@@ -3332,13 +3506,13 @@ mod tests {
     #[test]
     fn message_paging_options_are_parsed_and_validated() {
         let tail = parse(true, "task.messages", &json!({"sessionId": "s1", "tail": true})).unwrap();
-        assert_eq!(tail, Call::Messages { session_id: "s1".into(), page: MessagePaging::Tail { limit: MESSAGE_PAGE_DEFAULT } });
+        assert_eq!(tail, Call::Messages { session_id: "s1".into(), page: MessagePaging::Tail { limit: MESSAGE_PAGE_DEFAULT }, budget: PAGE_BUDGET });
 
         let before = parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 19, "limit": 25})).unwrap();
-        assert_eq!(before, Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: 25 } });
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 19})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: MESSAGE_PAGE_DEFAULT } }));
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "tail": true, "limit": 1})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Tail { limit: 1 } }));
-        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 19, "limit": 400})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: 400 } }));
+        assert_eq!(before, Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: 25 }, budget: PAGE_BUDGET });
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 19})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: MESSAGE_PAGE_DEFAULT }, budget: PAGE_BUDGET }));
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "tail": true, "limit": 1})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Tail { limit: 1 }, budget: PAGE_BUDGET }));
+        assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 19, "limit": 400})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::Before { before_id: 19, limit: 400 }, budget: PAGE_BUDGET }));
 
         assert!(parse(true, "task.messages", &json!({"sessionId": "s1", "tail": true, "afterId": 1})).is_err());
         assert!(parse(true, "task.messages", &json!({"sessionId": "s1", "beforeId": 1, "afterId": 2})).is_err());
@@ -3444,7 +3618,7 @@ mod tests {
         assert_eq!(
             parsed,
             Call::Batch(vec![
-                Ok(Call::Messages { session_id: "s".into(), page: MessagePaging::Tail { limit: MESSAGE_PAGE_DEFAULT } }),
+                Ok(Call::Messages { session_id: "s".into(), page: MessagePaging::Tail { limit: MESSAGE_PAGE_DEFAULT }, budget: PAGE_BUDGET }),
                 Err("Missing sessionId.".into()),
             ])
         );
@@ -3733,7 +3907,7 @@ mod tests {
         let mut journal = Journal::default();
         let epoch = journal.epoch.clone();
         let mut tasks = vec![json!({"sessionId": "a"}), json!({"sessionId": "b"})];
-        journal.resume(&mut tasks, &HashMap::new(), None);
+        journal.resume(&mut tasks, &HashMap::new(), None, REPLAY_BUDGET);
         // a's missed tool output is several pages; b missed one event after it.
         let chunk = "o".repeat(20 * 1024);
         for i in 0..12 {
@@ -3745,7 +3919,7 @@ mod tests {
         loop {
             pages += 1;
             let mut tasks = vec![json!({"sessionId": "a"}), json!({"sessionId": "b"})];
-            let resumed = journal.resume(&mut tasks, &after, Some(&epoch));
+            let resumed = journal.resume(&mut tasks, &after, Some(&epoch), REPLAY_BUDGET);
             assert_eq!(resumed.gaps, 0, "nothing turns into a gap");
             assert!(json!(tasks).to_string().len() <= REPLAY_BUDGET + 512, "each page fits");
             for (task, seen) in tasks.iter().zip([&mut seen_a, &mut seen_b]) {
@@ -3785,7 +3959,7 @@ mod tests {
         // The run end is shaped with its team when sent; the replay says the same.
         inner.journal.amend("h1", 3, json!({"sessionId": "h1", "kind": "run.finished", "status": "running", "seq": 3}));
         let mut tasks = vec![json!({"sessionId": "h1"})];
-        inner.journal.resume(&mut tasks, &HashMap::from([("h1".to_string(), 0)]), Some(&epoch));
+        inner.journal.resume(&mut tasks, &HashMap::from([("h1".to_string(), 0)]), Some(&epoch), REPLAY_BUDGET);
         assert_eq!(tasks[0]["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["text", "team", "run.finished"]);
         assert_eq!(tasks[0]["events"][2]["status"], "running");
         assert_eq!(inner.journal.bytes, inner.journal.rings.values().map(|ring| ring.bytes).sum::<usize>());
@@ -3856,17 +4030,17 @@ mod tests {
         let mut journal = Journal::default();
         let epoch = journal.epoch.clone();
         let mut tasks = vec![json!({"sessionId": "a"}), json!({"sessionId": "b"})];
-        journal.resume(&mut tasks, &HashMap::new(), None);
+        journal.resume(&mut tasks, &HashMap::new(), None, REPLAY_BUDGET);
         assert_eq!((tasks[0]["seq"].as_u64(), tasks[0].get("gap")), (Some(0), None), "a new viewer gets only the position");
         journal.record("a", event("a", "tool", "ls"), false).unwrap();
         journal.record("b", event("b", "tool", "pwd"), false).unwrap();
         let mut tasks = vec![json!({"sessionId": "a"}), json!({"sessionId": "b"})];
-        journal.resume(&mut tasks, &HashMap::from([("a".to_string(), 0), ("b".to_string(), 2)]), Some(&epoch));
+        journal.resume(&mut tasks, &HashMap::from([("a".to_string(), 0), ("b".to_string(), 2)]), Some(&epoch), REPLAY_BUDGET);
         assert_eq!(tasks[0]["events"][0]["text"], "ls");
         assert_eq!((tasks[1].get("events"), tasks[1].get("gap"), tasks[1]["seq"].as_u64()), (None, None, Some(2)), "nothing missed");
         // Another epoch: this host restarted, so every position is a gap.
         let mut tasks = vec![json!({"sessionId": "a"})];
-        journal.resume(&mut tasks, &HashMap::from([("a".to_string(), 0)]), Some("old"));
+        journal.resume(&mut tasks, &HashMap::from([("a".to_string(), 0)]), Some("old"), REPLAY_BUDGET);
         assert_eq!((tasks[0]["gap"].as_bool(), tasks[0].get("events")), (Some(true), None));
     }
 
@@ -3875,8 +4049,23 @@ mod tests {
         let now = Instant::now();
         assert_eq!(flush_delay(None, 0, now), Duration::ZERO);
         assert_eq!(flush_delay(Some(now - Duration::from_secs(1)), 9, now), Duration::ZERO, "after a quiet spell");
-        assert_eq!(flush_delay(Some(now - Duration::from_millis(5)), 1, now), FLUSH, "right behind the last frame");
-        assert_eq!(flush_delay(Some(now - Duration::from_millis(60)), BURST_FRAMES, now), SUSTAINED, "a long stream");
+        assert_eq!(flush_delay(Some(now - Duration::from_millis(5)), 1, now), FLUSH - Duration::from_millis(5), "only the rest of FLUSH");
+        assert_eq!(flush_delay(Some(now - Duration::from_millis(60)), BURST_FRAMES, now), SUSTAINED - Duration::from_millis(60), "a long stream");
+        // Three viewers past the burst: one flush is three frames, paid for over 300 ms.
+        let paid = paid_until(now, BURST_FRAMES + 3, 3);
+        assert_eq!(flush_delay(Some(paid), BURST_FRAMES + 3, now), 3 * SUSTAINED);
+        assert_eq!(paid_until(now, 3, 3), now, "inside the burst");
+        // Any number of viewers in a sustained stream stays at 1000 / SUSTAINED frames/s.
+        for viewers in 1..=8u32 {
+            let (mut at, mut frames, mut sent, mut clock) = (None, 0u32, 0u32, now);
+            while clock < now + Duration::from_secs(10) {
+                clock += flush_delay(at, frames, clock).max(Duration::from_millis(1));
+                frames = frames.saturating_add(viewers);
+                at = Some(paid_until(clock, frames, viewers));
+                sent += viewers;
+            }
+            assert!(sent <= 10 * 1000 / SUSTAINED.as_millis() as u32 + BURST_FRAMES + 2 * viewers, "{viewers} viewers sent {sent} frames in 10 s");
+        }
         assert_eq!(FLUSH, Duration::from_millis(40));
         // Worst case, a burst repeated after each quiet spell, stays under the relay's 20 frames/s.
         let cycle = FLUSH * (BURST_FRAMES - 1) + SUSTAINED;
@@ -3986,6 +4175,111 @@ mod tests {
         assert_eq!(before["hasOlder"], true);
         assert_eq!(before["hasMore"], true);
         assert_eq!(before["lastId"], 5);
+    }
+
+    #[test]
+    fn a_packed_page_fills_most_of_its_frame() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, turn_duration_ms INTEGER); INSERT INTO sessions VALUES ('s','Task');").unwrap();
+        // Transcript-like text: prose and paths that pack well, ids that don't.
+        let words = ["the", "test", "passes", "src/remote/host.rs", "fn", "page", "budget", "let", "mirror", "ok", "error", "frame", "packed", "viewer", "cargo", "message", "=>", "{", "}", "Value"];
+        let mut seed = 7u64;
+        for index in 1..=400 {
+            let content: String = (0..600).map(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                if seed >> 60 == 0 { format!("{:x} ", seed) } else { format!("{} ", words[(seed >> 33) as usize % words.len()]) }
+            }).collect();
+            db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','tool',?1,?2)", rusqlite::params![content, index]).unwrap();
+        }
+        let page = messages_page_fit(&db, "s", MessagePaging::Before { before_id: 401, limit: PAGE_ROWS }, PACKED_PAGE_MAX).unwrap();
+        let packed = super::super::crypto::pack(page.to_string().as_bytes()).len();
+        assert!(page.to_string().len() > PAGE_BUDGET && packed <= PAGE_BUDGET);
+        assert!(packed > PAGE_BUDGET * 4 / 5, "a packed page of {packed} bytes ({} plain) leaves much of its frame empty", page.to_string().len());
+    }
+
+    #[test]
+    fn page_budgets_are_asked_clamped_and_held_for_plain_viewers() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, turn_duration_ms INTEGER); INSERT INTO sessions VALUES ('s','Task');").unwrap();
+        for index in 1..=40 {
+            db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','assistant',?1,?2)", rusqlite::params![format!("{index} {}", "the build passes ".repeat(500)), index]).unwrap();
+        }
+        let ids = |page: &Value| page["messages"].as_array().unwrap().iter().map(|message| message["id"].as_i64().unwrap()).collect::<Vec<_>>();
+
+        // A small tail budget keeps the newest messages that fit, oldest first.
+        let tail = messages_page_fit(&db, "s", MessagePaging::Tail { limit: 60 }, 32 * 1024).unwrap();
+        assert!(tail.to_string().len() <= 32 * 1024);
+        assert_eq!(ids(&tail).last(), Some(&40));
+        assert!(ids(&tail).len() >= 2 && ids(&tail).windows(2).all(|pair| pair[0] + 1 == pair[1]));
+        assert_eq!((tail["hasOlder"].as_bool(), tail["hasMore"].as_bool()), (Some(true), Some(false)));
+        // Below one message there is still one.
+        let one = messages_page_fit(&db, "s", MessagePaging::Tail { limit: 60 }, MIN_PAGE_BUDGET).unwrap();
+        assert_eq!((ids(&one), one["hasOlder"].as_bool()), (vec![40], Some(true)));
+        // A big budget for a packing viewer takes the whole thread in one page that packs small.
+        let all = messages_page_fit(&db, "s", MessagePaging::After { after_id: 0, limit: PAGE_ROWS }, PACKED_PAGE_MAX).unwrap();
+        assert_eq!((ids(&all).len(), all["hasMore"].as_bool(), all["hasOlder"].as_bool()), (40, Some(false), Some(false)));
+        assert!(all.to_string().len() > PAGE_BUDGET && super::super::crypto::pack(all.to_string().as_bytes()).len() <= PAGE_BUDGET);
+
+        // Text that packs poorly is cut until the packed page fits a frame.
+        for index in 41..=200 {
+            let noise: String = (0..200).map(|_| uuid::Uuid::new_v4().simple().to_string()).collect();
+            db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','tool',?1,?2)", rusqlite::params![noise, index]).unwrap();
+        }
+        let cut = messages_page_fit(&db, "s", MessagePaging::Before { before_id: 201, limit: PAGE_ROWS }, PACKED_PAGE_MAX).unwrap();
+        assert!(super::super::crypto::pack(cut.to_string().as_bytes()).len() <= PAGE_BUDGET);
+        assert_eq!((ids(&cut).last(), cut["hasOlder"].as_bool(), cut["hasMore"].as_bool()), (Some(&200), Some(true), Some(false)));
+
+        // Params: default, clamped, refused; a viewer without "z" is held to PAGE_BUDGET, in batches too.
+        let budget = |params: Value| match parse(true, "task.messages", &params) { Ok(Call::Messages { budget, .. }) => Ok(budget), Ok(_) => unreachable!(), Err(error) => Err(error) };
+        assert_eq!(budget(json!({"sessionId": "s", "tail": true})), Ok(PAGE_BUDGET));
+        assert_eq!(budget(json!({"sessionId": "s", "tail": true, "budget": 1})), Ok(MIN_PAGE_BUDGET));
+        assert_eq!(budget(json!({"sessionId": "s", "budget": u64::MAX})), Ok(PACKED_PAGE_MAX));
+        assert_eq!(budget(json!({"sessionId": "s", "budget": "big"})), Err("Invalid budget.".into()));
+        let big = || Call::Messages { session_id: "s".into(), page: MessagePaging::Tail { limit: 1 }, budget: PACKED_PAGE_MAX };
+        assert_eq!(plain_budget(big(), true), big());
+        assert!(matches!(plain_budget(big(), false), Call::Messages { budget: PAGE_BUDGET, .. }));
+        assert!(matches!(plain_budget(Call::Batch(vec![Ok(big())]), false), Call::Batch(calls) if matches!(calls[0], Ok(Call::Messages { budget: PAGE_BUDGET, .. }))));
+        // A batch reply is measured plain, so its pages stay plain-sized for packing viewers too.
+        assert!(matches!(plain_budget(Call::Batch(vec![Ok(big())]), true), Call::Batch(calls) if matches!(calls[0], Ok(Call::Messages { budget: PAGE_BUDGET, .. }))));
+        // A packing viewer gets a bigger replay, except inside a batch.
+        let subscribe = || Call::Subscribe { session_ids: vec!["s".into()], after: HashMap::new(), epoch: None, replay: REPLAY_BUDGET };
+        assert!(matches!(plain_budget(subscribe(), true), Call::Subscribe { replay: PACKED_REPLAY_BUDGET, .. }));
+        assert!(matches!(plain_budget(subscribe(), false), Call::Subscribe { replay: REPLAY_BUDGET, .. }));
+        assert!(matches!(plain_budget(Call::Batch(vec![Ok(subscribe())]), true), Call::Batch(calls) if matches!(calls[0], Ok(Call::Subscribe { replay: REPLAY_BUDGET, .. }))));
+    }
+
+    #[test]
+    fn pages_read_attachments_in_one_pass_and_fit_without_the_database() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, turn_duration_ms INTEGER);
+            CREATE TABLE message_attachments(message_id INTEGER, session_id TEXT, id TEXT, kind TEXT, name TEXT, mime TEXT, width INTEGER, height INTEGER, bytes INTEGER);
+            INSERT INTO sessions VALUES ('s','Task');").unwrap();
+        for index in 1..=6 {
+            db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','user',?1,?2)", rusqlite::params![format!("prompt {index}"), index]).unwrap();
+        }
+        for (message, id) in [(2, "a"), (2, "b"), (5, "c")] {
+            db.execute("INSERT INTO message_attachments VALUES (?1,'s',?2,'image','x.png','image/png',1,2,3)", rusqlite::params![message, id]).unwrap();
+        }
+        let rows = read_page(&db, "s", MessagePaging::Before { before_id: 6, limit: 3 }).unwrap();
+        drop(db);
+        let page = fit_page(rows, PAGE_BUDGET);
+        let messages = page["messages"].as_array().unwrap();
+        assert_eq!(messages.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), [3, 4, 5]);
+        assert_eq!(messages[2]["attachments"], json!([{"id": "c", "kind": "image", "name": "x.png", "mime": "image/png", "bytes": 3, "width": 1, "height": 2}]));
+        assert_eq!((page["hasOlder"].as_bool(), page["hasMore"].as_bool(), page["lastId"].as_i64()), (Some(true), Some(true), Some(6)));
+    }
+
+    #[test]
+    fn a_small_page_cuts_its_one_oversized_message_and_marks_it() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL); CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, turn_duration_ms INTEGER); INSERT INTO sessions VALUES ('s','Task');").unwrap();
+        db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES ('s','assistant',?1,1)", [r#"{"tool":"x"} "#.to_string() + &"y".repeat(100 * 1024)]).unwrap();
+        let small = messages_page_fit(&db, "s", MessagePaging::Tail { limit: 30 }, 32 * 1024).unwrap();
+        assert!(small.to_string().len() <= 32 * 1024);
+        assert_eq!((small["messages"][0]["id"].as_i64(), small["messages"][0]["cut"].as_bool()), (Some(1), Some(true)));
+        // A normal page keeps it whole (under the 120 KB cap) and unmarked.
+        let full = messages_page_fit(&db, "s", MessagePaging::Tail { limit: 30 }, PAGE_BUDGET).unwrap();
+        assert!(full["messages"][0].get("cut").is_none() && full["messages"][0]["content"].as_str().unwrap().len() > 100 * 1024);
     }
 
     #[test]

@@ -1,14 +1,14 @@
 /* Sentence-style tool rows: `Verb [chip] object ›`, a soft result card, raw record behind a quiet disclosure. */
-.tool-trace>summary{gap:6px;font-size:.78rem;line-height:1.5}
+.tool-trace>summary{gap:6px;font-size:var(--thread-font);line-height:1.5}
 .tool-trace>summary>.tool-trace-icon{width:12px;height:12px;flex:none}
 .tool-trace-verb{flex:none;color:var(--muted)}
-.tool-trace-chip{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:22ch;padding:0 6px;border:1px solid var(--border);border-radius:6px;background:var(--raised);color:var(--text);font-size:.74rem;line-height:1.55}
+.tool-trace-chip{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:22ch;padding:0 6px;border:1px solid var(--border);border-radius:6px;background:var(--raised);color:var(--text);font-size:var(--thread-font);line-height:1.55}
 .tool-trace-chip .icon{width:11px;height:11px;flex:none;color:var(--muted)}
 .tool-trace-chip .brand-icon{width:12px;height:12px;flex:none}
 .tool-trace-chip b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-trace-object{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-.tool-trace-object.is-mono{font-family:var(--mono);font-size:.72rem}
-.tool-trace-delta{flex:none;font-family:var(--mono);font-size:.7rem}
+.tool-trace-object.is-mono{font-family:var(--mono);font-size:var(--thread-font)}
+.tool-trace-delta{flex:none;font-family:var(--mono);font-size:var(--thread-font)}
 .tool-trace-delta ins,.tool-trace-diff ins{text-decoration:none;color:var(--success)}
 .tool-trace-delta del,.tool-trace-diff del{text-decoration:none;color:var(--danger)}
 .tool-trace>summary>.tool-trace-chevron{width:10px;height:10px;flex:none;color:var(--muted)}
@@ -26,22 +26,22 @@
 html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,transparent)}
 /* Measured: fill a step lighter than the page (243 on 236) with a 1px lighter top edge, dividers in the
  * page's own tone, near-flat shadow, radius 12, ~14px text on 20px lines, two-line rows ~58px. */
-.tool-trace-card{--trace-hair:color-mix(in srgb,var(--text) 6%,transparent);--trace-quiet:color-mix(in srgb,var(--text) 45%,var(--bg));display:grid;gap:0;max-width:528px;padding:0;overflow:hidden;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);border-radius:12px;background:var(--trace-card-fill);color:var(--text);font-size:1rem;line-height:20px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .55),0 1px 2px rgb(0 0 0 / .04)}
+.tool-trace-card{--trace-hair:color-mix(in srgb,var(--text) 6%,transparent);--trace-quiet:color-mix(in srgb,var(--text) 45%,var(--bg));display:grid;gap:0;max-width:528px;padding:0;overflow:hidden;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);border-radius:12px;background:var(--trace-card-fill);color:var(--text);font-size:var(--thread-font);line-height:20px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .55),0 1px 2px rgb(0 0 0 / .04)}
 /* Fallback bodies (no rich card) get the same section padding. */
 .tool-trace-card>:not(.tc,.trace-rows){margin:0;padding:9px 12px}
 .tool-trace-card>:not(.tc,.trace-rows)+*{border-top:1px solid var(--trace-hair)}
 .tool-trace-card-head{display:flex;align-items:center;gap:8px;min-width:0}
-.tool-trace-card-meta{margin-left:auto;flex:none;color:var(--muted);font-size:.7rem}
-.tool-trace-command{min-width:0;overflow-wrap:anywhere;font-family:var(--mono);font-size:.72rem}
-.tool-trace-badge{margin-left:auto;flex:none;padding:0 6px;border-radius:6px;background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success);font-size:.68rem;font-weight:600}
+.tool-trace-card-meta{margin-left:auto;flex:none;color:var(--muted);font-size:var(--thread-font)}
+.tool-trace-command{min-width:0;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--thread-font)}
+.tool-trace-badge{margin-left:auto;flex:none;padding:0 6px;border-radius:6px;background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success);font-size:var(--thread-font);font-weight:600}
 .tool-trace-badge.is-failed{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
-.tool-activity .tool-trace-card pre{max-height:220px;padding:8px 12px;border:0;border-radius:0;background:var(--panel);font-size:.76rem;line-height:1.55}
+.tool-activity .tool-trace-card pre{max-height:220px;padding:8px 12px;border:0;border-radius:0;background:var(--panel);font-size:var(--thread-font);line-height:1.55}
 .tool-trace-list,.tool-trace-todos{display:grid;margin:0;padding:0;list-style:none}
 .tool-trace-list li{display:flex;align-items:baseline;gap:8px;min-width:0;padding:4px 0;border-top:1px solid var(--border)}
 .tool-trace-list li:first-child{border-top:0}
 .tool-trace-item-title{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .tool-trace-item-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-.tool-trace-more{margin:0;color:var(--muted);font-size:.7rem}
+.tool-trace-more{margin:0;color:var(--muted);font-size:var(--thread-font)}
 .tool-trace-list .tool-trace-more{display:block}
 .tool-trace-todos li{display:flex;align-items:flex-start;gap:6px;padding:2px 0}
 .tool-trace-todos .icon{width:12px;height:12px;flex:none;margin-top:3px;color:var(--muted)}
@@ -51,7 +51,7 @@ html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,trans
 .tool-trace-note{color:var(--muted)}
 
 .tool-trace-raw{margin-top:2px}
-.tool-activity .tool-trace-raw>summary{min-height:22px;gap:5px;font-size:.7rem;color:var(--muted)}
+.tool-activity .tool-trace-raw>summary{min-height:22px;gap:5px;font-size:var(--thread-font);color:var(--muted)}
 .tool-activity[open] .tool-trace-raw>summary>.icon:last-child{width:9px;height:9px;transform:none}
 .tool-activity[open] .tool-trace-raw[open]>summary>.icon:last-child{transform:rotate(90deg)}
 .tool-trace-raw-body{display:grid;gap:8px;margin-top:4px}
@@ -76,7 +76,7 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre{background:var(--bg)
  * Measured tones on a #ececec page: header verb ~#898989 with a near-black object, the running row's verb
  * ~#4c4c4c with a ~#171717 object, the folded summary ~#676767. */
 .is-steps{--trace-head-verb:color-mix(in srgb,var(--text) 55%,var(--bg));--trace-live-verb:color-mix(in srgb,var(--text) 82%,var(--bg));--trace-folded:color-mix(in srgb,var(--text) 70%,var(--bg))}
-.is-steps>.turn-activity-summary{min-height:32px;gap:8px;font-size:1.143rem;line-height:20px}
+.is-steps>.turn-activity-summary{min-height:32px;gap:8px;font-size:var(--thread-font);line-height:20px}
 /* Reference chevron (0.5 s): an 11px-tall glyph with a ~1.5px stroke, i.e. the 24-unit path at 18px, stroke 2. */
 .is-steps>.turn-activity-summary>.icon{width:18px;height:18px;stroke-width:2}
 .is-steps .turn-activity-label{display:inline-flex;align-items:center;gap:19px;min-width:0;color:var(--text)}
@@ -104,18 +104,19 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre{background:var(--bg)
 .live-activity:not(:has(.tool-activity))>.turn-activity-summary>.icon{transform:none}
 .is-steps .tool-group{margin:0}
 .is-steps .tool-group>.tool-group-summary{display:none}
-.is-steps .tool-group-body{margin:0 0 0 7px;padding:0 0 4px 22px;border-left:1px solid color-mix(in srgb,var(--border) 70%,var(--muted))}
+.is-steps .tool-group[data-earlier]>.tool-group-summary{display:flex}
+.is-steps .tool-group-body{margin:0;padding:0 0 4px;border-left:0}
 .is-steps .tool-group:has(+ .tool-group)>.tool-group-body{padding-bottom:0}
 .is-steps .tool-group-body .tool-activity{margin:0}
 /* A row ends where its card ends (card inset 28px + 528px), so a long object ellipsizes inside it. */
-.is-steps .tool-trace>summary{max-width:556px;min-height:32px;gap:6px;font-size:1.143rem;line-height:20px}
+.is-steps .tool-trace>summary{max-width:556px;min-height:32px;gap:6px;font-size:var(--thread-font);line-height:20px}
 .is-steps .tool-trace>summary>.tool-trace-icon{width:14px;height:14px;margin-right:12px;color:var(--muted)}
-.is-steps .tool-trace-chip{box-sizing:border-box;height:22px;max-width:26ch;padding:0 7px;gap:5px;border-radius:8px;background:color-mix(in srgb,var(--bg) 93%,var(--text));font-size:.9em;line-height:20px}
+.is-steps .tool-trace-chip{box-sizing:border-box;height:22px;max-width:26ch;padding:0 7px;gap:5px;border-radius:8px;background:color-mix(in srgb,var(--bg) 93%,var(--text));font-size:var(--thread-font);line-height:20px}
 /* Measured stems: ~1.15px in the chip label against ~1.28px in the verb, so medium, not bold. */
 .is-steps .tool-trace-chip b{font-weight:500}
 .is-steps .tool-trace-chip:has(>svg){padding-left:5px}
 .is-steps .tool-trace-chip .icon,.is-steps .tool-trace-chip .brand-icon{width:14px;height:14px}
-.is-steps .tool-trace-object.is-mono{font-size:.86em}
+.is-steps .tool-trace-object.is-mono{font-size:var(--thread-font)}
 .is-steps .tool-trace>summary>.tool-trace-chevron{width:12px;height:12px}
 .is-steps .tool-activity-body{margin:2px 0 8px 28px}
 /* The newest live step reads dark (and shimmers, trace-motion.css) until the next one starts. */
@@ -132,14 +133,14 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre{background:var(--bg)
 /* --- Result rows (MCP records): 16px mark, bold title + muted meta, time on the right, body below ---- */
 .tool-trace-card.is-rows{display:block}
 .trace-rows{margin:0;padding:0;list-style:none}
-.trace-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:0;padding:9px 12px;border-top:1px solid var(--trace-hair);font-size:1rem;line-height:20px}
+.trace-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:0;padding:9px 12px;border-top:1px solid var(--trace-hair);font-size:var(--thread-font);line-height:20px}
 .trace-row:first-child{border-top:0}
 .trace-row-head{display:flex;align-items:baseline;gap:7px;min-width:0;white-space:nowrap}
 /* Sampled at 1.6 s of the reference: sender #000 at medium weight, channel ~#676767, body ~#343434, time and `+N more` ~#919191. */
 .trace-row-head b{overflow:hidden;text-overflow:ellipsis;font-weight:560;color:var(--text)}
 .trace-row-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;color:color-mix(in srgb,var(--text) 65%,var(--bg))}
-.trace-row-time{color:var(--trace-quiet);font-size:.96rem;font-variant-numeric:tabular-nums;white-space:nowrap}
-.trace-row-body{grid-column:2/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,var(--text) 78%,var(--bg));font-size:.98rem}
+.trace-row-time{color:var(--trace-quiet);font-size:var(--thread-font);font-variant-numeric:tabular-nums;white-space:nowrap}
+.trace-row-body{grid-column:2/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,var(--text) 78%,var(--bg));font-size:var(--thread-font)}
 .trace-mark{display:inline-grid;place-items:center;width:18px;height:18px;color:var(--muted)}
 .trace-mark .brand-icon,.trace-mark svg{width:14px;height:14px}
 .trace-mark.is-avatar{border-radius:4px;background:color-mix(in srgb,var(--text) 9%,var(--bg));color:color-mix(in srgb,var(--text) 72%,var(--bg));font-size:.7rem;font-weight:500;line-height:1}
@@ -149,7 +150,7 @@ html[data-theme="dark"] .tool-activity .tool-trace-card pre{background:var(--bg)
 .trace-mark[data-state="merged"],.trace-mark[data-state="done"]{color:var(--trace-done)}
 .trace-mark[data-state="closed"]{color:var(--danger)}
 .trace-mark[data-state="progress"]{color:var(--trace-progress)}
-.tool-trace-card.is-rows .tool-trace-more{display:block;color:var(--trace-quiet);padding:7px 12px 8px;border-top:1px solid var(--trace-hair);font-size:.86rem;line-height:18px}
+.tool-trace-card.is-rows .tool-trace-more{display:block;color:var(--trace-quiet);padding:7px 12px 8px;border-top:1px solid var(--trace-hair);font-size:var(--thread-font);line-height:18px}
 /* Status hues for records (GitHub merged, Linear in progress, unread mail), not the accent. */
 :root{--trace-done:#8250df;--trace-progress:#b7791f;--trace-unread:#2f6fdf}
 html[data-theme="dark"]{--trace-done:#b48cf2;--trace-progress:#e3b341;--trace-unread:#6ea2ff}

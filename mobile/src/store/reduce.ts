@@ -49,7 +49,10 @@ export const idleLive = (): Live => ({ status: 'idle', activity: '', items: [], 
 export function mergeMessages(existing: readonly Message[], page: readonly Message[]): Message[] {
   const last = existing.length ? existing[existing.length - 1].id : 0;
   const fresh = page.filter(m => m.id > last);
-  return fresh.length ? [...existing, ...fresh] : (existing as Message[]);
+  // A held message the host had cut is replaced by a whole copy of it.
+  const whole = new Map(page.filter(m => m.id <= last && !m.cut).map(m => [m.id, m]));
+  const base = existing.some(m => m.cut && whole.has(m.id)) ? existing.map(m => (m.cut && whole.get(m.id)) || m) : (existing as Message[]);
+  return fresh.length ? [...base, ...fresh] : base;
 }
 
 /** Puts an older page before the first stored message; skips any overlap. */

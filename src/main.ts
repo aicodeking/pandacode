@@ -1,7 +1,8 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
-import { bindThreadReordering, compareThreadOrder, threadGroupRows } from './thread-order';
-import { FOLDER_LIMIT, PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks } from './sidebar-tree';
-import { COMPLETED_OPEN_KEY, REVIEW_WINDOW, UNREVIEWED_KEY, needsReview, readOpen, sidebarSections } from './sidebar-sections';
+import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
+import { PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks } from './sidebar-tree';
+import { COMPLETED_OPEN_KEY, REVIEW_WINDOW, UNREVIEWED_KEY, needsReview, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
+import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
 import './smooth.css';
 import './wallpapers.css';
@@ -26,7 +27,7 @@ import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } fro
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
 import { mountWallpapers } from './wallpapers';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, ToolActivity, TurnChanges } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -292,12 +293,15 @@ async function toggleTeam(): Promise<void> {
   } finally { teamToggleBusy = false; }
 }
 const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
+/** Sort arrows for the sidebar's sort and view menu. */
+const SORT_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16m-3-3 3 3 3-3M17 20V4m-3 3 3-3 3 3"/></svg>';
 const $app = document.querySelector<HTMLDivElement>('#app')!;
 $app.innerHTML = `<div class="workspace">
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
     <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span></div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
-    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
+    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button><button id="sidebar-sort" class="icon-button sidebar-sort" data-action="sidebar-sort" aria-label="Sort and view" title="Sort and view" aria-haspopup="menu" aria-expanded="false">${SORT_ICON}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
+    <div class="sidebar-search">${icon('search')}<input id="sidebar-filter" type="search" aria-label="Filter tasks" placeholder="Filter tasks" autocomplete="off" spellcheck="false" maxlength="200" aria-keyshortcuts="/"><button type="button" class="sidebar-search-clear" data-action="clear-sidebar-filter" tabindex="-1" aria-label="Clear filter" title="Clear filter">${icon('close')}</button></div>
     <div id="navigation" class="navigation"></div>
     <div id="sidebar-note" class="sidebar-note" hidden></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
@@ -322,8 +326,27 @@ const projectRunner = new ProjectRunner({
   notify,
 });
 let sidebarDragging = false, orderingBusy = false;
-/** A thread opened from Needs review stays there while open, so its row does not jump from under the click. */
-let sectionHold = '', completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
+/** The open thread stays in the section it was opened from, so its row does not jump from under the click. */
+let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
+/** Completed lists its newest rows first, then pages in more on request. */
+const COMPLETED_FIRST = 10, COMPLETED_PAGE = 25;
+let completedShown = COMPLETED_FIRST;
+/** A collapsed folder opened for this launch only because its task was selected. */
+let revealedFolder = '';
+let sidebarSort: SidebarSort = readSort(localStorage);
+let projectOrder: string[] = readProjectOrder(localStorage);
+/** "3:45 PM" from "Resets 3:45 PM"; nothing when the harness did not report a reset time. */
+function limitReset(until: number | null | undefined, now: number): string {
+  return until ? resetLabel(until, now).replace(/^Resets /, '') : '';
+}
+/** A last run that ended badly: an error, or cut short by a restart. */
+const FAILED_STATUS = new Set(['error', 'interrupted']);
+/** Long branch names keep their tail ("…ant-search"), where branches usually differ. */
+function branchLabel(branch: string): string {
+  const chars = [...branch], tail = chars.length > 14 ? chars.slice(-8).join('') : '';
+  return `<span class="task-branch-name"><span class="task-branch-head">${escape(tail ? chars.slice(0, -8).join('') : branch)}</span>${tail ? `<span class="task-branch-tail">${escape(tail)}</span>` : ''}</span>`;
+}
+function cssId(value: string): string { return value.replace(/[^A-Za-z0-9_-]/g, '_'); }
 /** Threads whose turn finished while another was open (Needs review); read on first draw. */
 let unreviewed: Set<string> | undefined;
 function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
@@ -331,7 +354,9 @@ bindThreadReordering($('#navigation'), {
   busy: () => orderingBusy,
   dragging: active => { sidebarDragging = active; if (!active) renderNavigation(); },
   reorder: (ids, focus) => run(reorderThreads(ids, focus)),
-  menu: row => run(showSidebarTaskMenu(row)),
+  reorderFolders: (ids, focus) => reorderFolders(ids, focus),
+  menu: (row, point) => run(showSidebarTaskMenu(row, point)),
+  folderMenu: (heading, point) => run(showFolderMenu(heading, point)),
 });
 /* Branch and worktree control, plus optional GitHub through the user's gh CLI. */
 const github = createGithub({
@@ -802,7 +827,20 @@ function renderContextUsage(): void {
   indicator.parentElement!.classList.toggle('is-empty', !context && !s.archived);
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
-function notify(text: string): void { const toast = $('#toast'); toast.textContent = text; showToast(toast); window.setTimeout(() => { if (toast.textContent === text) void hideToast(toast); }, 4500); }
+/** The toast's Undo, while it shows; ⌘Z runs it too. */
+let toastUndo: (() => void) | undefined, toastGeneration = 0;
+function notify(text: string, undo?: () => void): void {
+  const toast = $('#toast'), generation = ++toastGeneration;
+  toast.textContent = text; toastUndo = undo;
+  if (undo) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'toast-undo'; button.textContent = 'Undo'; button.setAttribute('aria-keyshortcuts', 'Meta+Z Control+Z');
+    button.addEventListener('click', () => { if (toastUndo !== undo) return; toastUndo = undefined; void hideToast(toast); undo(); });
+    toast.append(button);
+  }
+  showToast(toast);
+  window.setTimeout(() => { if (generation !== toastGeneration) return; toastUndo = undefined; void hideToast(toast); }, undo ? 5000 : 4500);
+}
 function errorText(error: unknown): string {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
@@ -968,88 +1006,129 @@ function renderNavigation(): void {
   const filterIcon = filtered ? projectAppIcon(filtered.id, filtered.name) : '';
   const shownIcon = filterLabel.previousElementSibling;
   if ((shownIcon?.outerHTML ?? '') !== filterIcon) { shownIcon?.remove(); if (filterIcon) filterLabel.insertAdjacentHTML('beforebegin', filterIcon); }
+  const filterField = $('#sidebar-filter') as HTMLInputElement;
+  if (filterField.value !== state.query) filterField.value = state.query;
+  filterField.parentElement!.classList.toggle('has-query', Boolean(state.query));
+  const projectName = (s: Session) => state.projects.find(p => p.id === s.projectId)?.name ?? '';
   const sidebarSessions = listedSessions().filter(s => s.archived === state.archived && !botProjects.has(s.projectId));
-  const matching = sidebarSessions.filter(s => (!state.projectFilter || s.projectId === state.projectFilter) && s.title.toLowerCase().includes(state.query.toLowerCase()));
+  const inScope = sidebarSessions.filter(s => !state.projectFilter || s.projectId === state.projectFilter);
+  const matching = inScope.filter(s => matchesFilter(s, state.query, projectName(s)));
   // Opening a thread reviews it; one that no longer needs review leaves the list.
   const seen = unreviewed ?? (state.sessions.length ? unreviewed = readCollapsed(localStorage, UNREVIEWED_KEY) : new Set<string>());
   const reviewed = [...seen].filter(id => { const task = state.sessions.find(s => s.id === id); return id === state.sessionId || (task ? task.archived || taskStage(task) === 'completed' : state.sessions.length > 0); });
   if (reviewed.length) { for (const id of reviewed) seen.delete(id); saveUnreviewed(); }
+  const failed = (s: Session) => FAILED_STATUS.has(s.status);
+  // A held thread that starts running is held in Active from then on: after its run it stays there
+  // while it is open, and goes to its folder once you open another thread, never back to (say)
+  // the Completed section it was opened from.
+  if (sectionHold && sectionHold.section !== 'active' && isRunning(sectionHold.id)) sectionHold = { ...sectionHold, section: 'active' };
+  const order = taskComparator(sidebarSort.tasks), manual = sidebarSort.tasks === 'manual';
   const sections = sidebarSections({
-    tasks: [...matching].sort(compareThreadOrder), now, stage: taskStage, unseen: s => seen.has(s.id),
-    active: s => isRunning(s.id) || Boolean(s.resumeAtReset) && limitActive(s, now),
-    selectedId: state.sessionId, held: sectionHold === state.sessionId,
+    tasks: [...matching].sort(order), now, stage: taskStage, unseen: s => seen.has(s.id),
+    // Work that needs you: running or waiting, stopped by a usage limit, or failed while you were away.
+    active: s => isRunning(s.id) || limitActive(s, now) || failed(s) && seen.has(s.id),
+    selectedId: state.sessionId, hold: sectionHold?.id === state.sessionId ? sectionHold.section : undefined,
   });
   const visible = state.archived ? matching : sections.rest;
   renderBots();
   $('#archive-toggle').classList.toggle('active', state.archived);
+  $('#workspace-sidebar').classList.toggle('archive-view', state.archived);
   $('#archive-toggle').setAttribute('aria-pressed', String(state.archived));
-  const row = (s: Session, inFolder = false, inProject = false): string => {
+  /** `card`: two lines (where, then what) for Active, Needs review and Pinned; otherwise one line. */
+  const row = (s: Session, card = false, reorderable = false, showProject = false): string => {
     const p = state.projects.find(p => p.id === s.projectId);
     const activityAt = lastActivity(s);
     const live = state.streams.get(s.id);
     const startedAt = live?.startedAt ?? s.lastPromptAt;
     const elapsed = isRunning(s.id) && startedAt != null ? formatDuration(now - startedAt) : '';
     const age = elapsed || (activityAt == null ? '' : responseAge(activityAt, now));
-    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : '';
-    const statusLabel = status === 'attention' ? live?.inputs.size ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : 'Running';
-    // Three lines, like a card: where (app icon, checkout, age), what (title), and the branch,
-    // linked pull request or issue, and the agent working on it.
+    const answer = Boolean(live?.inputs.size);
+    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : failed(s) ? 'failed' : '';
+    const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
+    // States that need you say so in a word; running shows its clock, the rest their age.
+    const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
+    const unread = seen.has(s.id) && s.id !== state.sessionId;
     const checkout = s.worktreePath ? s.worktreePath.split(/[\\/]/).filter(Boolean).pop() ?? p?.name ?? 'Project' : p?.name ?? 'Project';
     const link = s.pullRequest ?? s.issue;
     const linkMark = link ? `<span class="task-link ${link.kind === 'pull' ? 'pull' : 'issue'}" title="${escape(`${link.kind === 'pull' ? 'Pull request' : 'Issue'} #${link.number}: ${link.title}`)}">#${link.number}</span>` : '';
     // Worktree tasks show their branch; the worktree mark keeps its accessible name either way.
     const worktreeMark = (s.worktreePath ? `<span class="task-worktree" role="img" aria-label="Worktree" title="${escape(s.worktreePath)}">${icon('worktree')}</span>` : '')
       + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '');
-    const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? `<span>${escape(s.worktreeBranch)}</span>` : ''}</span>` : '';
-    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : ''}${age ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}`;
+    const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
+    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : ''}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}`;
     const stage = taskStage(s), done = stage === 'completed';
-    // Completed rows keep their completion order, so they are not dragged.
-    const reorderable = state.archived || !done;
-    const button = `<button class="task-item${inFolder ? ' task-oneline' : ''} ${s.id === state.sessionId ? 'selected' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="${reorderable}" data-pinned="${Boolean(s.pinned)}" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${s.id === state.sessionId ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape(s.worktreeBranch ? `${s.title}\n${s.worktreeBranch}` : s.title)}">`;
+    const selected = s.id === state.sessionId;
+    const button = `<button class="task-item${card ? '' : ' task-oneline'}${selected ? ' selected' : ''}${unread ? ' unread' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="${reorderable}" data-pinned="${Boolean(s.pinned)}" tabindex="-1" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${selected ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape([s.title, showProject ? chatTask(s) ? 'Chat' : p?.name ?? '' : '', s.worktreeBranch ?? ''].filter(Boolean).join('\n'))}">`;
     const pin = s.pinned ? `<span class="task-pin" role="img" aria-label="Pinned">${icon('pin')}</span>` : '';
-    const projectName = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
-    // Row actions sit beside the row's button (buttons cannot nest), over its right edge.
+    const projectLabel = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
+    // Row actions sit beside the row's button (buttons cannot nest), over its right edge. They
+    // are not Tab stops: ⌘↩ completes and the menu key or ⇧F10 opens the menu.
     const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSessions.has(s.id);
-    const tick = state.archived || busy ? '' : `<button class="task-action task-check${done ? ' checked' : ''}" data-action="${done ? 'sidebar-reopen' : 'sidebar-complete'}" data-task="${id}" aria-label="${done ? 'Reopen' : 'Mark complete'}: ${title}" title="${done ? 'Reopen task' : 'Mark complete'}">${icon('check')}</button>`;
-    const archive = `<button class="task-action task-archive" data-action="sidebar-archive" data-task="${id}" aria-label="${s.archived ? 'Restore' : 'Archive'}: ${title}" title="${s.archived ? 'Restore task' : 'Archive task'}">${icon(s.archived ? 'undo' : 'archive')}</button>`;
-    // The archive view deletes directly; elsewhere Delete sits in the row's menu, one click from hover.
-    const last = state.archived
-      ? `<button class="task-action task-delete" data-action="sidebar-delete" data-task="${id}" aria-label="Delete: ${title}" title="${busy ? 'Stop the agent before deleting this task' : 'Delete task…'}" ${busy ? 'disabled' : ''}>${icon('trash')}</button>`
-      : `<button class="task-action task-more" data-action="sidebar-more" data-task="${id}" aria-haspopup="menu" aria-label="Task actions: ${title}" title="Task actions">${icon('more')}</button>`;
-    const wrap = (content: string) => `<div class="task-row${inFolder ? ' task-row-oneline' : ''}" id="task-row-${id}" data-stage="${stage}" data-actions="${[tick, archive, last].filter(Boolean).length}">${content}<span class="task-actions">${tick}${archive}${last}</span></div>`;
-    // Inside a project's folder the heading already names the project: one line with the
-    // title, then the worktree mark, linked PR or issue, status, age and harness.
-    if (inFolder) return wrap(`${button}<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${worktreeMark}${linkMark}${pin}${projectName}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`);
-    // With one project chosen the filter names it: two lines, the title and then the rest.
-    const head = inProject
-      ? `<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${signals}</span>`
-      : `<span class="task-line task-head">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-checkout">${escape(checkout)}</span>${signals}</span><span class="task-title">${escape(s.title)}</span>`;
-    return wrap(`${button}${head}`
-      + `<span class="task-line task-meta">${branch}${linkMark}${pin}${projectName}${providerLogo(s.provider, 'task-provider')}</span></button>`);
+    const tick = state.archived || busy ? '' : `<button class="task-action task-check${done ? ' checked' : ''}" data-action="${done ? 'sidebar-reopen' : 'sidebar-complete'}" data-task="${id}" tabindex="-1" aria-label="${done ? 'Reopen' : 'Mark complete'}: ${title}" title="${done ? 'Reopen task' : 'Mark complete'}">${icon('check')}</button>`;
+    // The archive view restores and deletes directly; elsewhere Archive and Delete sit in the row's menu.
+    const extra = state.archived
+      ? `<button class="task-action task-archive" data-action="sidebar-archive" data-task="${id}" tabindex="-1" aria-label="Restore: ${title}" title="Restore task">${icon('undo')}</button><button class="task-action task-delete" data-action="sidebar-delete" data-task="${id}" tabindex="-1" aria-label="Delete: ${title}" title="${busy ? 'Stop the agent before deleting this task' : 'Delete task…'}" ${busy ? 'disabled' : ''}>${icon('trash')}</button>`
+      : `<button class="task-action task-more" data-action="sidebar-more" data-task="${id}" tabindex="-1" aria-haspopup="menu" aria-label="Task actions: ${title}" title="Task actions">${icon('more')}</button>`;
+    const wrap = (content: string) => `<div class="task-row${card ? '' : ' task-row-oneline'}" id="task-row-${id}" data-stage="${stage}">${content}<span class="task-actions">${tick}${extra}</span></div>`;
+    // One line: the title, then the worktree mark, linked PR or issue, status, age and harness.
+    // A flat list names each row's project: its icon first, its name after the title.
+    if (!card && showProject) return wrap(`${button}<span class="task-line task-top">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-title">${title}</span><span class="task-project-name" aria-hidden="true">${escape(chatTask(s) ? 'Chat' : p?.name ?? 'Project')}</span>${worktreeMark}${linkMark}${pin}${projectLabel}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`);
+    if (!card) return wrap(`${button}<span class="task-line task-top"><span class="task-title">${title}</span>${worktreeMark}${linkMark}${pin}${projectLabel}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`);
+    // Two lines: where (app icon, checkout, status, age), then what (title, branch, PR, harness).
+    return wrap(`${button}<span class="task-line task-head">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-checkout">${escape(checkout)}</span>${pin}${signals}</span>`
+      + `<span class="task-line task-top"><span class="task-title">${title}</span>${branch}${linkMark}${projectLabel}${providerLogo(s.provider, 'task-provider')}</span></button>`);
   };
-  // Active and Needs review list threads that need you; Completed is closed until opened.
+  const single = Boolean(state.projectFilter);
+  const heading = (key: string, label: string, count: number, lead = '') => `<div class="group-heading section-heading">${lead}${label}<span class="section-count">${count}</span></div>`;
+  // Active and Needs review list threads that need you; their order is their own, never dragged.
   const section = (key: 'active' | 'review', label: string, name: string, tasks: Session[]) => tasks.length
-    ? `<section class="task-group sidebar-section ${key}-group" data-thread-group="${key}" aria-label="${name}"><div class="group-heading section-heading">${label}<span class="section-count">${tasks.length}</span></div><div class="task-list">${tasks.map(s => row(s, false, Boolean(state.projectFilter))).join('')}</div></section>` : '';
+    ? `<section class="task-group sidebar-section ${key}-group" data-thread-group="${key}" aria-label="${name}">${heading(key, label, tasks.length)}<div class="task-list">${tasks.map(s => row(s, !single)).join('')}</div></section>` : '';
+  // While filtering, every match shows: closed sections and folders open and limits lift, for
+  // this draw only (nothing is saved).
+  const filtering = Boolean(state.query.trim());
+  const completedVisible = completedOpen || filtering;
+  // The open (held) thread always shows, even past the first page, as in a folder.
+  const completedRows = filtering ? sections.completed : shownTasks(sections.completed, false, state.sessionId, completedShown);
+  const completedMore = sections.completed.length - completedRows.length;
   const completedSection = sections.completed.length
-    ? `<section class="task-group sidebar-section completed-group" data-thread-group="completed" aria-label="Completed tasks"><button class="group-heading section-heading section-toggle" data-action="toggle-completed" aria-expanded="${completedOpen}" aria-controls="completed-tasks">${icon('chevron')}Completed<span class="section-count">${sections.completed.length}</span></button><div id="completed-tasks" class="task-list" ${completedOpen ? '' : 'hidden'}>${completedOpen ? sections.completed.map(s => row(s, true)).join('') : ''}</div></section>` : '';
+    ? `<section class="task-group sidebar-section completed-group" data-thread-group="completed" aria-label="Completed tasks"><button class="group-heading section-heading section-toggle" data-action="toggle-completed" tabindex="-1" aria-expanded="${completedVisible}" aria-controls="completed-tasks">${icon('chevron')}Completed<span class="section-count">${sections.completed.length}</span></button><div id="completed-tasks" class="task-list" ${completedVisible ? '' : 'hidden'}>${completedVisible ? completedRows.map(s => row(s)).join('') + (completedMore ? `<button class="folder-more" data-action="completed-more" tabindex="-1">Show ${Math.min(COMPLETED_PAGE, completedMore)} more</button>` : '') : ''}</div></section>` : '';
   const sectioned = sections.active.length + sections.review.length + sections.completed.length;
-  const pinned = visible.filter(s => s.pinned).sort(compareThreadOrder);
+  // Pinned keeps the order you gave it, whatever the task sort.
+  const pinned = visible.filter(s => s.pinned).sort(compareManual);
   // Projectless chats get their own group; a chosen project filter hides them.
-  const chats = state.projectFilter ? [] : visible.filter(s => !s.pinned && chatTask(s)).sort(compareThreadOrder);
-  const chatGroup = chats.length ? `<section class="task-group chats-group" data-thread-group="chats" aria-label="Chats"><div class="group-heading">${icon('chat')}Chats</div><div class="task-list">${chats.map(s => row(s, true)).join('')}</div></section>` : '';
-  const folders = folderGroups({
+  // "Show N more" / "Show less" under a capped list; `key` is a project id or "chats".
+  const moreButton = (key: string, total: number, shown: number, expanded: boolean, limit: number) => !filtering && (total > shown || expanded && total > limit)
+    ? `<button class="folder-more" data-action="toggle-folder-more" data-project="${escape(key)}" tabindex="-1">${expanded ? 'Show less' : `Show ${total - shown} more`}</button>` : '';
+  const capped = (key: string, tasks: Session[], limit: number) => {
+    const expanded = state.expandedFolders.has(key);
+    const rows = filtering ? tasks : shownTasks(tasks, expanded, state.sessionId, limit);
+    return { rows, more: moreButton(key, tasks.length, rows.length, expanded, limit) };
+  };
+  const flat = sidebarSort.group === 'flat' && !single;
+  // Projectless chats get their own group, capped like a folder; a chosen project filter hides them.
+  const chats = state.projectFilter || flat ? [] : visible.filter(s => !s.pinned && chatTask(s));
+  const chatList = capped('chats', chats, sidebarSort.perProject);
+  const chatGroup = chats.length ? `<section class="task-group chats-group" data-thread-group="chats" aria-label="Chats">${heading('chats', 'Chats', chats.length, icon('chat'))}<div class="task-list">${chatList.rows.map(s => row(s, false, manual)).join('')}${chatList.more}</div></section>` : '';
+  // Flat list: one list of every unpinned task (chats included), each row naming its project.
+  const flatTasks = flat ? visible.filter(s => !s.pinned) : [];
+  const flatGroup = flat && flatTasks.length ? `<section class="task-group flat-group" data-thread-group="all" aria-label="Tasks">${heading('all', 'Tasks', flatTasks.length)}<div class="task-list">${flatTasks.map(s => row(s, false, manual, true)).join('')}</div></section>` : '';
+  const manualFolders = sidebarSort.projects === 'manual' && !single;
+  const folders = flat ? [] : folderGroups({
     projects: state.projectFilter ? state.projects.filter(p => p.id === state.projectFilter) : userProjects(),
-    tasks: visible.filter(s => !s.pinned).sort(compareThreadOrder), activity: lastActivity, includeEmpty: !state.query,
+    tasks: visible.filter(s => !s.pinned), all: inScope, includeEmpty: !state.query, sort: sidebarSort.projects, manual: projectOrder,
   });
-  const folder = ({ project, tasks }: (typeof folders)[number], index: number): string => {
+  const folder = ({ project, tasks }: (typeof folders)[number]): string => {
     // A selected project is already named by the filter above: list its tasks flat, with room for more.
-    const single = Boolean(state.projectFilter), limit = single ? PROJECT_LIMIT : FOLDER_LIMIT;
-    const open = single || !state.collapsedFolders.has(project.id), expanded = state.expandedFolders.has(project.id);
-    const rows = shownTasks(tasks, expanded, state.sessionId, limit);
-    const more = tasks.length > rows.length || expanded && tasks.length > limit
-      ? `<button class="folder-more" data-action="toggle-folder-more" data-project="${escape(project.id)}">${expanded ? 'Show less' : `Show ${tasks.length - rows.length} more`}</button>` : '';
-    if (single) return `<section class="task-group folder-group single-project" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="task-list">${rows.map(s => row(s, false, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
-    return `<section class="task-group folder-group" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="folder-row"><button class="folder-heading ${tasks.length ? '' : 'empty'}" data-action="toggle-folder" data-project="${escape(project.id)}" aria-expanded="${open}" aria-controls="folder-tasks-${index}" title="${escape(project.path)}">${projectAppIcon(project.id, project.name)}<span>${escape(project.name)}</span></button><button class="icon-button folder-new-task" data-action="project-task" data-id="${escape(project.id)}" aria-label="New task in ${escape(project.name)}" title="New task">${icon('plus')}</button></div><div id="folder-tasks-${index}" class="task-list folder-tasks" ${open ? '' : 'hidden'}>${rows.map(s => row(s, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
+    const limit = single ? PROJECT_LIMIT : sidebarSort.perProject;
+    const holdsSelected = tasks.some(s => s.id === state.sessionId);
+    const open = single || filtering || !state.collapsedFolders.has(project.id) || revealedFolder === project.id && holdsSelected;
+    const { rows, more } = capped(project.id, tasks, limit);
+    const list = rows.map(s => row(s, false, manual)).join('') || '<div class="no-tasks">No tasks yet</div>';
+    if (single) return `<section class="task-group folder-group single-project" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="task-list">${list}${more}</div></section>`;
+    // Stable per project, so morph() keeps an open folder when folders change places.
+    const listId = `folder-tasks-${escape(cssId(project.id))}`;
+    const name = escape(project.name);
+    return `<section class="task-group folder-group" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${name} tasks"><div class="folder-row"><button class="folder-heading ${tasks.length ? '' : 'empty'}" data-action="toggle-folder" data-project="${escape(project.id)}" tabindex="-1" draggable="${manualFolders}" ${manualFolders ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} aria-expanded="${open}" aria-controls="${listId}" title="${escape(project.path)}">${icon('chevron', 'folder-chevron')}${projectAppIcon(project.id, project.name)}<span>${name}</span>${tasks.length ? `<small class="folder-count" aria-hidden="true">${tasks.length}</small>` : ''}</button><button class="icon-button folder-new-task" data-action="project-task" data-id="${escape(project.id)}" tabindex="-1" aria-label="New task in ${name}" title="New task">${icon('plus')}</button><button class="icon-button folder-actions" data-action="folder-menu" data-project="${escape(project.id)}" tabindex="-1" aria-haspopup="menu" aria-label="Project actions: ${name}" title="Project actions">${icon('more')}</button></div><div id="${listId}" class="task-list folder-tasks" ${open ? '' : 'hidden'}>${list}${more}</div></section>`;
   };
   const nav = $('#navigation');
   nav.setAttribute('aria-busy', String(orderingBusy));
@@ -1057,17 +1136,21 @@ function renderNavigation(): void {
   const retainedRow = menuTrigger && nav.contains(menuTrigger) && menuTrigger.matches('.task-item') ? menuTrigger : null;
   const focused = nav.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
   const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}${focused.dataset.task ? `[data-task="${CSS.escape(focused.dataset.task)}"]` : ''}` : '';
-  // Opening a project narrows the sidebar to it; say so, or the other tasks look lost.
-  const hidden = state.projectFilter ? sidebarSessions.filter(s => s.projectId !== state.projectFilter && taskStage(s) !== 'completed').length : 0;
+  // Opening a project narrows the sidebar to it; say so, or the other tasks look lost. Chats are
+  // hidden by the filter but are not project tasks, so they are not counted.
+  const hidden = state.projectFilter ? sidebarSessions.filter(s => s.projectId !== state.projectFilter && !chatTask(s) && taskStage(s) !== 'completed').length : 0;
   // A one-line note pinned under the list, not a card inside it.
   const note = $('#sidebar-note');
   note.innerHTML = hidden && !state.archived ? `<button class="filter-note" data-action="show-all-projects" title="Show tasks from every project"><span>${hidden} more in other projects</span><strong>Show all</strong></button>` : '';
   note.hidden = !note.innerHTML;
+  const archivedRows = [...visible].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || order(a, b));
+  const pinnedGroup = pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks">${heading('pinned', 'Pinned', pinned.length, icon('pin'))}<div class="task-list">${pinned.map(s => row(s, !single, true)).join('')}</div></section>` : '';
+  const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
   // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
   morph(nav, !userProjects().length && !chats.length && !pinned.length && !(state.archived ? 0 : sectioned) ? '<div class="sidebar-empty">Open a project to get started.</div>' : state.archived
-    ? `<section class="task-group archived-group" data-thread-group="archived" aria-label="Archived tasks"><div class="group-heading">Archived<span>${visible.length}</span></div><div class="task-list">${[...visible].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || compareThreadOrder(a, b)).map(s => row(s)).join('') || '<div class="no-tasks">No archived tasks</div>'}</div></section>`
-    : `${section('active', 'Active', 'Active tasks', sections.active)}${section('review', 'Needs review', 'Tasks to review', sections.review)}${pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks"><div class="group-heading">${icon('pin')}Pinned</div><div class="task-list">${pinned.map(s => row(s, false, Boolean(state.projectFilter))).join('')}</div></section>` : ''}${chatGroup}${folders.map(folder).join('') || (state.query && !chats.length && !sectioned ? '<div class="no-tasks">No matching tasks</div>' : '')}${completedSection}`, 5);
+    ? `<section class="task-group archived-group" data-thread-group="archived" aria-label="Archived tasks"><div class="group-heading section-heading">Archived<span class="section-count">${visible.length}</span></div><div class="task-list">${archivedRows.map(s => row(s, false, manual)).join('') || (filtering ? empty : '<div class="no-tasks">No archived tasks</div>')}</div></section>`
+    : `${section('active', 'Active', 'Active tasks', sections.active)}${section('review', 'Needs review', 'Tasks to review', sections.review)}${pinnedGroup}${chatGroup}${flatGroup}${folders.map(folder).join('')}${filtering && !matching.length ? empty : ''}${completedSection}`, 5);
   if (retainedRow) {
     const replacement = nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(retainedRow.dataset.id!)}"]`);
     if (replacement) {
@@ -1081,6 +1164,7 @@ function renderNavigation(): void {
     } else closeChoiceMenu();
   }
   // A row action that moved its task to another section hands focus to the task's row.
+  syncRovingFocus(nav);
   if (focusSelector) (nav.querySelector<HTMLElement>(focusSelector) ?? (focused?.dataset.task ? nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(focused.dataset.task)}"]`) : null))?.focus({ preventScroll: true });
   renderBoardView();
   updateWorkTimer();
@@ -1241,7 +1325,7 @@ function savedActivityHtml(messages: Message[], expanded = activityExpanded()): 
   return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
     .map(run => run.kind === 'tools'
       ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), expanded)
-      : messageHtml(run.item)).join('');
+      : messageHtml(run.item, false, false)).join('');
 }
 /** A turn of only tool calls folds to its summary sentence and mark stack (`Ran 2 searches and read 3 sources`),
  * opening onto the step rail; turns with narration keep `Worked for …` over their groups. */
@@ -1309,7 +1393,8 @@ function restoreTurns(root: ParentNode, views: TurnView[]): void {
   });
 }
 /** `afterTrace`: an answer that follows a tool trace sits flush under it without the avatar/name row (still read out). */
-function messageHtml(m: Message, afterTrace = false): string {
+/** `actions` is false for replies between tool calls: only the turn's last reply carries copy and fork. */
+function messageHtml(m: Message, afterTrace = false, actions = true): string {
   if (m.role === 'handoff') {
     const handoff = decodeHandoff(m);
     if (!handoff) return '';
@@ -1324,7 +1409,7 @@ function messageHtml(m: Message, afterTrace = false): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0)}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
 // read-only chips under what you said; each opens its attachment (see message-attachments.ts).
@@ -1482,7 +1567,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
       if (!node) {
         node = document.createElement('article'); node.className = 'message agent-message activity-commentary-message';
         node.dataset.streamKey = key;
-        node.innerHTML = `<div class="message-content activity-commentary" data-commentary="${escape(key)}"></div>${messageActionsHtml(state.sessionId, 'commentary:' + key, false)}`;
+        node.innerHTML = `<div class="message-content activity-commentary" data-commentary="${escape(key)}"></div>`;
       }
       next.push(node); commentary.push({ node: node.querySelector<HTMLElement>('[data-commentary]')!, content: run.item.content as string });
     } else {
@@ -1516,6 +1601,14 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   if (workers?.parentElement === host && !retained.has(workers)) region.after(workers);
   for (const child of [...host.children]) if (!retained.has(child as HTMLElement)) child.remove();
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
+  // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
+  const newestGroup = next.map(node => node.classList.contains('tool-group')).lastIndexOf(true);
+  const narratedPast = next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true);
+  next.slice(0, Math.max(narratedPast, 0)).forEach(node => {
+    if (!node.classList.contains('tool-group') || node.dataset.earlier !== undefined) return;
+    node.dataset.earlier = '';
+    if (!liveTurnStaysOpen(node)) (node as HTMLDetailsElement).open = false;
+  });
   for (const entry of commentary) { bindFileLinkContext(entry.node, workspaceContext()); streamMarkdown(entry.node, entry.content, transcript); }
 }
 // Measured from the reference at 30 fps: the answer starts at 7.20 s, the open cards fold at 8.25 s
@@ -1925,7 +2018,7 @@ async function changeBoardStage(stage: 'review' | 'completed'): Promise<void> {
   const s = session(); if (s) await changeTaskStage(s, stage);
 }
 /** Complete or reopen any task. Completing a worktree task first offers to remove its clean checkout. */
-async function changeTaskStage(s: Session, stage: 'review' | 'completed'): Promise<void> {
+async function changeTaskStage(s: Session, stage: TaskStage): Promise<void> {
   if (isRunning(s.id) || configuringSessions.has(s.id)) return;
   if (stage === 'completed' && s.worktreePath) {
     const selected = s.id === state.sessionId;
@@ -2028,9 +2121,9 @@ async function latestMessagePage(sessionId: string): Promise<MessagePage> {
   return latest;
 }
 
-async function loadOlderMessages(): Promise<void> {
+async function loadOlderMessages(anywhere = false): Promise<void> {
   const transcript = $('#transcript'), sessionId = state.sessionId, generation = state.generation;
-  if (!sessionId || !state.hasOlder || state.messagesLoading || state.messagesError || !transcriptVisible() || transcript.scrollTop > 200) return;
+  if (!sessionId || !state.hasOlder || state.messagesLoading || state.messagesError || !transcriptVisible() || (!anywhere && transcript.scrollTop > 200)) return;
   if (olderMessagesRequest?.sessionId === sessionId && olderMessagesRequest.generation === generation) return;
   const beforeId = state.messages.find(message => message.id > 0)?.id;
   if (!beforeId) return;
@@ -2047,7 +2140,29 @@ async function loadOlderMessages(): Promise<void> {
     if (sessionId === state.sessionId && generation === state.generation) notify('Could not load earlier messages. Scroll up to retry.');
   } finally {
     if (olderMessagesRequest === request) { olderMessagesRequest = undefined; transcript.removeAttribute('aria-busy'); }
+    if (mirrorOlderPending === sessionId) { mirrorOlderPending = ''; void mirrorMessages({ sessionId, older: true }); }
   }
+}
+
+/* A mirror's history arrives from its host newest page first, then older pages beneath it
+ * (remote/mirror.rs sync). The open thread redraws for newer messages, and prepends older
+ * ones in place until it holds one page; scrolling up loads the rest as for any thread. */
+const MIRROR_PREPEND = 100;
+let mirrorOlderPending = '';
+async function mirrorMessages(event: { sessionId: string; older?: boolean }): Promise<void> {
+  const { sessionId } = event, generation = state.generation;
+  if (sessionId !== state.sessionId || state.streams.has(sessionId) || finishingStreams.has(sessionId)) return;
+  const saved = state.messages.filter(message => message.id > 0).length;
+  if (event.older && saved && !state.messagesLoading) {
+    state.hasOlder = true;
+    if (olderMessagesRequest?.sessionId === sessionId) { mirrorOlderPending = sessionId; return; }
+    if (saved < MIRROR_PREPEND) await loadOlderMessages(true);
+    return;
+  }
+  const page = await latestMessagePage(sessionId);
+  if (sessionId !== state.sessionId || generation !== state.generation || state.streams.has(sessionId)) return;
+  // Replacing the page here also tells an earlier load still in flight to keep it.
+  setMessagePage(page); state.messagesLoading = false; state.messagesError = ''; renderTranscript(); if (stickToBottom) stickTranscript();
 }
 
 const pendingMessageForks = new Set<string>();
@@ -2100,6 +2215,12 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
   if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); }
+  // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
+  // section its row is in while it stays open, so the row never jumps from under the pointer.
+  if (changingTask) {
+    const section = sectionOf(document.querySelector<HTMLElement>(`#navigation .task-item[data-id="${CSS.escape(id)}"]`)?.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup);
+    sectionHold = section ? { id, section } : undefined;
+  }
   if (previousTask && previousTask.id !== id) {
     if (previousTask.taskDescription) previousTask.taskDescription = [...previousTask.taskDescription].slice(0, 512).join('');
     fullTaskDescription = undefined;
@@ -2108,7 +2229,8 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (state.view !== 'conversation') { state.boardPanel = true; fileTabs.showConversation(); }
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
-  if (state.collapsedFolders.delete(s.projectId)) saveCollapsedFolders();
+  // A collapsed folder opens for the selected task without forgetting that it was collapsed.
+  revealedFolder = state.collapsedFolders.has(s.projectId) ? s.projectId : '';
   state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.archived = s.archived; state.attachments = [];
   const remembered = changingTask ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
@@ -3551,8 +3673,9 @@ async function forgetChat(projectId: string): Promise<void> {
 }
 type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'>;
 async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise<void> {
-  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
-  if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+  // A second click on the trigger closes its menu; a right-click (a point) moves it there instead.
+  if (!options.point && pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+  if (!options.point && choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
@@ -3610,7 +3733,7 @@ async function pinTask(id: string): Promise<void> {
     const saved = await call<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
     const current = state.sessions.find(item => item.id === id);
     if (current) { current.pinned = saved.pinned; current.sidebarOrder = saved.sidebarOrder; }
-    notify(saved.pinned ? 'Task pinned' : 'Task unpinned');
+    notify(saved.pinned ? 'Task pinned' : 'Task unpinned', saved.pinned ? undefined : () => run(pinTask(id)));
   } finally { orderingBusy = false; renderNavigation(); }
 }
 async function reorderThreads(ids: string[], focus: string): Promise<void> {
@@ -3633,26 +3756,68 @@ async function reorderThreads(ids: string[], focus: string): Promise<void> {
 /** Row buttons and the row menu act on any sidebar task, not only the open one. */
 function sidebarTaskAction(kind: 'complete' | 'reopen' | 'archive' | 'delete', id: string): void {
   const task = state.sessions.find(item => item.id === id); if (!task) return;
+  const current = () => state.sessions.find(item => item.id === id);
   if (kind === 'delete') showDeleteTask(task);
-  else if (kind === 'archive') run(archiveTask(task, true));
-  else run(changeTaskStage(task, kind === 'complete' ? 'completed' : 'review'));
+  else if (kind === 'archive') run(archiveTask(task, true).then(() => {
+    const saved = current();
+    if (saved && saved.archived !== task.archived) notify(saved.archived ? 'Task archived' : 'Task restored', () => { const again = current(); if (again && again.archived === saved.archived) run(archiveTask(again, false)); });
+  }));
+  else {
+    // Undo puts back exactly what completing took away: the stage and the unread mark.
+    const before = taskStage(task), unread = unreviewed?.has(id) ?? false;
+    run(changeTaskStage(task, kind === 'complete' ? 'completed' : 'review').then(() => {
+      const saved = current();
+      if (kind === 'complete' && saved && taskStage(saved) === 'completed') notify('Task completed', () => {
+        const again = current(); if (!again) return;
+        run(changeTaskStage(again, before).then(() => {
+          if (!unread || id === state.sessionId) return;
+          (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(id); saveUnreviewed(); renderNavigation();
+        }));
+      });
+    }));
+  }
 }
-async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
+async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: number }): Promise<void> {
   const id = anchor.dataset.id!, task = state.sessions.find(item => item.id === id);
   if (!task) return;
   const ids = threadGroupRows(anchor).map(row => row.dataset.id!), index = ids.indexOf(id);
+  const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
+  // Active, Needs review and Completed keep their own order: no Move up/down there.
+  const movable = !['active', 'review', 'completed'].includes(group);
   const fixed = !anchor.draggable, busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
-  await showChoices(anchor, { title: 'Task actions', actions: true, items: [
+  const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
+  const branch = task.worktreeBranch ?? '';
+  await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
     { id: 'pin', label: task.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
-    { id: 'up', label: 'Move up', icon: 'arrow', disabled: fixed || orderingBusy || index < 1 },
-    { id: 'down', label: 'Move down', icon: 'down', disabled: fixed || orderingBusy || index === ids.length - 1 },
-    ...task.archived ? [] : [{ id: 'stage', label: done ? 'Reopen' : 'Mark complete', icon: done ? 'undo' : 'check', disabled: busy }],
-    { id: 'archive', label: task.archived ? 'Restore' : 'Archive', icon: task.archived ? 'undo' : 'archive' },
+    ...movable ? [
+      { id: 'up', label: 'Move up', icon: 'arrow', disabled: fixed || orderingBusy || index < 1 },
+      { id: 'down', label: 'Move down', leading: icon('arrow', 'icon-down'), disabled: fixed || orderingBusy || index === ids.length - 1 },
+    ] : [],
+    { id: 'rename', label: 'Rename…', icon: 'edit', separator: true },
+    ...task.archived || id === state.sessionId ? [] : [{ id: 'unread', label: unread ? 'Mark as read' : 'Mark as unread', icon: 'chat' }],
+    ...branch && !task.archived && !task.remoteDevice ? [{ id: 'branch-task', label: `New task from ${branch}…`, icon: 'worktree' }] : [],
+    ...branch ? [{ id: 'copy-branch', label: 'Copy branch name', icon: 'copy', separator: true }] : [],
+    ...path ? [{ id: 'copy-path', label: task.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy', separator: !branch }] : [],
+    { id: 'copy-id', label: 'Copy task ID', icon: 'copy', separator: !branch && !path },
+    ...task.archived ? [] : [{ id: 'stage', label: done ? 'Reopen' : 'Mark complete', icon: done ? 'undo' : 'check', disabled: busy, separator: true }],
+    { id: 'archive', label: task.archived ? 'Restore' : 'Archive', icon: task.archived ? 'undo' : 'archive', separator: Boolean(task.archived) },
     { id: 'delete', label: 'Delete task…', icon: 'trash', danger: true, disabled: busy || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting this task.' : undefined },
-  ], onSelect: choice => {
+  ], onSelect: async choice => {
     closeChoiceMenu();
     if (choice === 'pin') { run(pinTask(id)); return; }
     if (choice === 'stage' || choice === 'archive' || choice === 'delete') { sidebarTaskAction(choice === 'stage' ? done ? 'reopen' : 'complete' : choice, id); return; }
+    // Renames the row's task in place; the open thread stays open.
+    if (choice === 'rename') { showRename(task); return; }
+    if (choice === 'branch-task') { await selectSession(id); worktrees.openDialog('new'); return; }
+    if (choice === 'unread') {
+      const seen = unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY);
+      if (unread) seen.delete(id); else seen.add(id);
+      saveUnreviewed(); renderNavigation(); return;
+    }
+    if (choice === 'copy-branch' || choice === 'copy-path' || choice === 'copy-id') {
+      await navigator.clipboard.writeText(choice === 'copy-branch' ? branch : choice === 'copy-path' ? path : id);
+      notify(choice === 'copy-branch' ? 'Branch name copied' : choice === 'copy-path' ? 'Path copied' : 'Task ID copied'); return;
+    }
     // Resolve the current list after an agent activity change or project filter.
     const row = $('#navigation').querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(id)}"]`);
     if (!row) return;
@@ -3664,12 +3829,108 @@ async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
     }
   } });
 }
+/** A folder's menu (… or right-click): new task, collapse the others, reveal, remove. */
+async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: number }): Promise<void> {
+  const id = heading.dataset.project!, project = state.projects.find(p => p.id === id);
+  if (!project) return;
+  const anchor = heading.parentElement?.querySelector<HTMLElement>('.folder-actions') ?? heading;
+  await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
+    { id: 'new', label: 'New task', icon: 'plus' },
+    { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
+    { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
+    { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
+  ], onSelect: async choice => {
+    closeChoiceMenu();
+    if (choice === 'new') { await createTask(id); return; }
+    if (choice === 'reveal') { await call('reveal_path', { path: project.path }); return; }
+    if (choice === 'remove') { showRemoveProject(project); return; }
+    for (const other of userProjects()) if (other.id !== id) state.collapsedFolders.add(other.id);
+    state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
+  } });
+}
+function showRemoveProject(project: Project): void {
+  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+}
+/** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
+function reorderFolders(ids: string[], focus: string): void {
+  projectOrder = [...ids, ...projectOrder.filter(id => !ids.includes(id))];
+  try { localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(projectOrder)); } catch { /* per-launch preference only */ }
+  renderNavigation();
+  $('#navigation').querySelector<HTMLElement>(`.folder-heading[data-project="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
+}
+/** Sort and view: task and folder order, tasks per folder, and folders or one flat list. Saved per window. */
+async function showSidebarSort(anchor: HTMLElement): Promise<void> {
+  const sort = sidebarSort;
+  await showChoices(anchor, { title: 'Sort and view', width: 280, items: [
+    { id: 'tasks:manual', label: 'Manual', description: 'drag to arrange', heading: 'Sort tasks', selected: sort.tasks === 'manual' },
+    { id: 'tasks:recent', label: 'Recent activity', selected: sort.tasks === 'recent' },
+    { id: 'tasks:created', label: 'Created', selected: sort.tasks === 'created' },
+    { id: 'projects:recent', label: 'Recent activity', heading: 'Sort projects', selected: sort.projects === 'recent' },
+    { id: 'projects:added', label: 'Added', selected: sort.projects === 'added' },
+    { id: 'projects:name', label: 'Name', selected: sort.projects === 'name' },
+    { id: 'projects:manual', label: 'Manual', description: 'drag folders', selected: sort.projects === 'manual' },
+    ...PER_PROJECT.map(count => ({ id: `perProject:${count}`, label: `${count} tasks`, short: String(count), segment: 'Show per project', selected: sort.perProject === count })),
+    { id: 'group:project', label: 'By project', heading: 'Group', selected: sort.group === 'project' },
+    { id: 'group:flat', label: 'Flat list', selected: sort.group === 'flat' },
+  ], onSelect: id => {
+    const [key, value] = id.split(':');
+    // Manual starts from the folders as they are now, so nothing moves until you drag.
+    // Seeded from the data, not the DOM: a flat list, one project or a filter draws only some folders.
+    if (key === 'projects' && value === 'manual' && !projectOrder.length) {
+      const all = listedSessions().filter(s => s.archived === state.archived);
+      reorderFolders(folderGroups({ projects: userProjects(), tasks: all, includeEmpty: true, sort: sort.projects }).map(group => group.project.id), '');
+    }
+    const next: SidebarSort = key === 'perProject' ? { ...sidebarSort, perProject: Number(value) } : { ...sidebarSort, [key]: value };
+    sidebarSort = readSort({ getItem: () => JSON.stringify(next) });
+    try { localStorage.setItem(SORT_KEY, JSON.stringify(sidebarSort)); } catch { /* per-launch preference only */ }
+    renderNavigation();
+  } });
+}
+/** Rows in the order they are drawn, skipping closed folders and sections. */
+function visibleSidebarRows(): HTMLElement[] {
+  return [...$('#navigation').querySelectorAll<HTMLElement>('.task-item')].filter(row => !row.closest('[hidden]'));
+}
+/** ⌘1…⌘9 open the Nth visible task, ⌘⇧[ and ⌘⇧] the previous and next, / filters, ⌘Z undoes. */
+function sidebarShortcut(event: KeyboardEvent): boolean {
+  const command = event.metaKey || event.ctrlKey, target = event.target as HTMLElement;
+  const typing = target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && target.id === 'sidebar-filter') {
+    event.preventDefault();
+    if ((target as HTMLInputElement).value) { state.query = ''; renderNavigation(); } else target.blur();
+    return true;
+  }
+  // Never take keys meant for the prompt or any other field.
+  if (typing) return false;
+  if (command && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
+    const row = visibleSidebarRows()[Number(event.key) - 1];
+    if (row) { event.preventDefault(); run(selectSession(row.dataset.id!)); }
+    return Boolean(row);
+  }
+  if (command && event.shiftKey && !event.altKey && (event.code === 'BracketLeft' || event.code === 'BracketRight')) {
+    const rows = visibleSidebarRows(), index = rows.findIndex(row => row.dataset.id === state.sessionId);
+    const next = rows[index < 0 ? 0 : index + (event.code === 'BracketLeft' ? -1 : 1)];
+    event.preventDefault();
+    if (next) run(selectSession(next.dataset.id!));
+    return true;
+  }
+  // / filters from the task list or anywhere that is not a control (the typing guard above already
+  // passed); when the field is not shown (a narrow window) the key is left alone.
+  const filter = $('#sidebar-filter');
+  const control = !$('#navigation').contains(target) && target.closest('button, a[href], [role="button"], [role="menuitem"], [role="tab"], summary');
+  if (event.key === '/' && !command && !event.altKey && !control && filter.getClientRects().length) {
+    event.preventDefault(); filter.focus(); return true;
+  }
+  if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && toastUndo) {
+    event.preventDefault(); const undo = toastUndo; toastUndo = undefined; void hideToast($('#toast')); undo(); return true;
+  }
+  return false;
+}
 /** A project's favicon or app icon; the sidebar redraws once a new one has loaded. */
 function projectAppIcon(projectId: string, name: string): string {
   return projectIconHtml(projectId, name, id => call<string | null>('project_icon', { projectId: id }), () => renderNavigation());
 }
 async function showProjectFilter(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', items: [
+  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
     { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
     ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
   ], onSelect: async id => {
@@ -3737,7 +3998,7 @@ function showDeleteTask(task = session()): void {
     })();
   });
 }
-function showRename(): void { const s = session(); if (!s) return; modal('Rename task', `<form id="rename-form"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
+function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
 let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(refreshUsage = false): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
@@ -4462,7 +4723,18 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'board-complete': await changeBoardStage('completed'); break;
     case 'board-reopen': await changeBoardStage('review'); break;
     case 'project-task': await createTask(element.dataset.id!); break;
-    case 'toggle-folder': { const id = element.dataset.project!; if (!state.collapsedFolders.delete(id)) state.collapsedFolders.add(id); saveCollapsedFolders(); renderNavigation(); break; }
+    case 'toggle-folder': {
+      // While filtering every folder shows its matches; a click must not quietly save open/closed.
+      if (state.query.trim()) break;
+      const id = element.dataset.project!;
+      if (element.getAttribute('aria-expanded') === 'true') state.collapsedFolders.add(id); else state.collapsedFolders.delete(id);
+      if (revealedFolder === id) revealedFolder = '';
+      saveCollapsedFolders(); renderNavigation(); break;
+    }
+    case 'completed-more': completedShown += COMPLETED_PAGE; renderNavigation(); break;
+    case 'sidebar-sort': await showSidebarSort(element); break;
+    case 'folder-menu': { const heading = element.parentElement?.querySelector<HTMLElement>('.folder-heading'); if (heading) await showFolderMenu(heading); break; }
+    case 'clear-sidebar-filter': state.query = ''; renderNavigation(); $('#sidebar-filter').focus(); break;
     case 'toggle-folder-more': { const id = element.dataset.project!; if (!state.expandedFolders.delete(id)) state.expandedFolders.add(id); renderNavigation(); break; }
     case 'show-all-projects': setProjectFilter(''); renderNavigation(); break;
     case 'add-project': showOpenProject(); break;
@@ -4474,17 +4746,13 @@ async function action(name: string, element: HTMLElement): Promise<void> {
       break;
     }
     case 'open-turn-diff': await showTurnDiff(element); break;
-    case 'select-task': {
-      const group = element.closest<HTMLElement>('#navigation [data-thread-group]')?.dataset.threadGroup;
-      sectionHold = group === 'review' ? element.dataset.id! : '';
-      await selectSession(element.dataset.id!); break;
-    }
+    case 'select-task': await selectSession(element.dataset.id!); break;
     case 'sidebar-complete': sidebarTaskAction('complete', element.dataset.task!); break;
     case 'sidebar-reopen': sidebarTaskAction('reopen', element.dataset.task!); break;
     case 'sidebar-archive': sidebarTaskAction('archive', element.dataset.task!); break;
     case 'sidebar-delete': sidebarTaskAction('delete', element.dataset.task!); break;
     case 'sidebar-more': { const row = element.closest('.task-row')?.querySelector<HTMLElement>('.task-item'); if (row) await showSidebarTaskMenu(row); break; }
-    case 'toggle-completed': completedOpen = !completedOpen; try { localStorage.setItem(COMPLETED_OPEN_KEY, String(completedOpen)); } catch { /* per-launch preference only */ } renderNavigation(); break;
+    case 'toggle-completed': if (state.query.trim()) break; completedOpen = !completedOpen; completedShown = COMPLETED_FIRST; try { localStorage.setItem(COMPLETED_OPEN_KEY, String(completedOpen)); } catch { /* per-launch preference only */ } renderNavigation(); break;
     case 'select-project': await selectProject(element.dataset.id!); break;
     case 'archive-view': state.archived = !state.archived; renderNavigation(); break;
     case 'toggle-theme': toggleTheme(); break;
@@ -4603,7 +4871,8 @@ document.addEventListener('submit', event => {
       if (form.id === 'board-task-form') { await saveBoardTaskForm(form, data); }
       else if (form.id === 'open-project-form') {
         const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
-      } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: state.sessionId, title }); closeModal(); await reloadSessions(); }
+      } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
+      else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
       else if (form.id.startsWith('github-')) { await github.submit(form, data); }
       else if (form.id === 'commit-form') { const message = document.querySelector<HTMLTextAreaElement>('#commit-message')!.value.trim(); if (!message) { notify('Enter a commit message.'); return; } const result = await call<string>('git_commit', { ...workspaceContext(), message }); await refreshInspector(); notify(result || 'Changes committed'); }
@@ -4618,7 +4887,7 @@ function resizePrompt(): void {
   prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? 'auto' : 'hidden';
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
-document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); });
+document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
 document.addEventListener('change', event => {
   const input = event.target as HTMLInputElement;
   if (input.id === 'daily-wallpapers') wallpapers.setEnabled(input.checked);
@@ -4655,6 +4924,7 @@ document.addEventListener('keydown', event => {
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
   if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
   if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
+  if (sidebarShortcut(event)) return;
   if (command && event.key.toLowerCase() === 'n') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
   else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
@@ -4698,6 +4968,7 @@ async function boot(): Promise<void> {
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
   await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
   await subscribe('sessions-changed', () => run(reloadSessions()));
+  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));

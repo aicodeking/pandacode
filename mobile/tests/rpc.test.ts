@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { METHODS, outdated, Pending, Replay, request } from '../src/connect/rpc.ts';
 
-test('requests carry id, ts and a fresh printable nonce', () => {
+test('requests carry id, ts, a fresh printable nonce and z (opens packed frames)', () => {
   const a = request('task.send', { sessionId: 's', text: 'hi' }, 1000);
   const b = request('task.send', { sessionId: 's', text: 'hi' }, 1000);
-  assert.deepEqual(Object.keys(a).sort(), ['id', 'method', 'nonce', 'params', 'ts', 'type']);
+  assert.deepEqual(Object.keys(a).sort(), ['id', 'method', 'nonce', 'params', 'ts', 'type', 'z']);
   assert.equal(a.type, 'req');
   assert.equal(a.ts, 1000);
   assert.match(a.nonce, /^[0-9a-f]{32}$/);

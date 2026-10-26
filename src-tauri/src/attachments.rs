@@ -472,6 +472,7 @@ pub fn chunk_reply(bytes: &[u8], mime: &str, offset: u64) -> Result<Value, Strin
 }
 
 /// Metadata rows for one Connect message, in their original attachment order.
+#[cfg(test)]
 pub fn message_attachment_rows(
     db: &rusqlite::Connection,
     session_id: &str,

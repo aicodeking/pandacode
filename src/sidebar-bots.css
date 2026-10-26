@@ -8,9 +8,16 @@
 .sidebar-bots-bar[aria-pressed="true"]>.icon:last-child{transform:rotate(90deg)}
 .sidebar-bots-bar small{margin-left:auto;color:var(--muted);font-size:.74rem;font-weight:500;font-variant-numeric:tabular-nums}
 .sidebar-bots-unread{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+/* Rail (narrow windows): the icon alone, centered; the label stays as the button's accessible name. */
+@media(max-width:650px){
+  .sidebar-bots-bar{position:relative;justify-content:center;gap:0;padding:0}
+  .sidebar-bots-bar>span:not(.sidebar-bots-unread){position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .sidebar-bots-bar>:is(small,.icon:last-child){display:none}
+  .sidebar-bots-unread{position:absolute;top:7px;right:9px}
+}
 
 /* In the Bots view the task list, its actions and filters give way to the bots. */
-.sidebar.bots-view :is(.sidebar-actions,.sidebar-projects,.navigation,.sidebar-note){display:none}
+.sidebar.bots-view :is(.sidebar-actions,.sidebar-projects,.sidebar-search,.navigation,.sidebar-note){display:none}
 .bots-panel{display:none}
 .sidebar.bots-view .bots-panel{display:flex;flex-direction:column;flex:1;min-height:0}
 .bots-panel-head{display:flex;align-items:center;gap:6px;padding:6px 10px 10px 14px}

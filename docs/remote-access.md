@@ -131,7 +131,11 @@ Relay → client:
 - `{ kind: "presence", devices: [{ id, name, platform, publicKey, host, online, lastSeen }] }`, the
   account's full device rows, sent on connect and on every join, leave or device change.
   Each presence frame makes the viewer subscribe again to the hosts it mirrors (a host that
-  restarted has forgotten its subscribers). Frames within 250 ms share one round, one round
+  restarted has forgotten its subscribers). Frames within 250 ms share one round, except the
+  socket's first presence, whose round starts at once: with it, the desktop asks the afterId
+  page of up to 3 mirrors with messages copied (running ones first) right behind `subscribe`,
+  and the phone does the same for its open threads, so a reconnect catches up in one round trip
+  after the upgrade instead of two. One round
   runs at a time (a call during it runs one more after it), every host is asked at once, and a
   round in which a host with a running mirror failed is retried after 2 s, 4 s… up to 60 s.
 - `{ kind: "undeliverable", ... }` (above)
@@ -147,7 +151,15 @@ subscription with it.
 Close codes: `4000` (replaced by a newer socket) makes the client wait at least 60 s before it
 reconnects. `4001` (device revoked) signs this computer out locally. Otherwise the client
 reconnects at once, then after 1 s, doubling to 60 s, each wait spread over 75–125 %. The
-backoff starts over only after a socket stayed up for 30 s or more, or after a wake.
+backoff starts over only after a socket stayed up for 30 s or more, or after a wake. The phone
+(`mobile/src/store/backoff.ts`) follows the same schedule.
+
+The desktop keeps one rustls client config for every connect, so a reconnect resumes the TLS
+session: no certificate chain is sent or checked again (bytes and CPU, not a round trip). TLS
+1.3 0-RTT early data is not used. The upgrade request carries the bearer token, and a replay
+of it would let anyone on the path replace the device's socket at the relay (close `4000`, which
+then waits 60 s), so a replayable upgrade is not safe; the relay would also need Cloudflare's
+0-RTT zone setting.
 
 The client pings every 25 s and treats the socket as dead when nothing arrives within 10 s of a
 ping, or when a frame can't be written within 10 s. Every 2 s it compares the wall clock with
@@ -210,6 +222,17 @@ window and seen-nonce check to responses and events and drops a stale, repeated 
 a dropped response fails its call at once with `That computer's reply was stale or repeated…`.
 A viewer therefore needs a host on a version that stamps replies.
 
+**Packed frames.** Requests from current viewers carry `z: 1`: the sender opens packed frames.
+The host remembers this per device (in memory) from each fresh request (a stale or repeated one
+changes nothing) and forgets a device that leaves presence; an older app's requests lack it and
+turn packing off again. A reply is packed by its own request's `z`, never by what the host
+remembers when it is sent. To such a peer, a reply or event whose JSON plaintext is
+over 1 KB is sealed as `"z"` + raw deflate (level 6) when that is smaller. JSON plaintexts
+start with `{`, so `open` tells the two apart. Inflated output is capped at 2 MB (the largest
+real frame, a 1 MiB messages page, is about 1.05 MB). Requests are never packed; a host drops a
+packed request. The relay and direct links carry the same sealed body. A real 178 KB
+messages page deflates to 16 % (29 KB).
+
 A host answers requests from other devices listed in its account presence only while **Allow
 remote control** is on. Otherwise it returns
 `{ ok: false, error: "Remote control is off on this computer" }`. A host still applies its own
@@ -232,7 +255,7 @@ prevents accidents; it is not a boundary against a device that can also answer a
 | `task.start` | `{ repo?: "owner/name", projectId?: string, branch?, worktree, prompt, provider, model, mode?, effort?, startId? }` (exactly one of `repo` or `projectId`) | `{ sessionId }`. A repeated `startId` from the same device runs nothing new: it waits for (or returns) the first start's result. |
 | `task.startStatus` | `{ startId }` | `{ state: "running" \| "done" \| "failed" \| "unknown", sessionId?, error? }`. Finished starts are remembered for an hour. |
 | `task.cancelStart` | `{ startId }` | `{ cancelled: true }` once a running start was told to stop (its callers get `Start cancelled.` at once, the clone's process group is killed); `{ cancelled: false, sessionId }` when it had already made its task. |
-| `task.messages` | `{ sessionId, afterId?, tail?, beforeId?, limit? }` (`limit` is 1..400; defaults to 100 for `tail`/`beforeId`, 400 for `afterId`) | `{ messages: [{ id, role, content, createdAt, turnDurationMs, attachments }], hasMore, hasOlder, title, lastId }`. `attachments` is always an array; saved images include `{ id, kind: "image", name, mime, bytes, width, height }`, while document and folder context markers carry `{ id, kind, name }`. `tail: true` returns the newest page; `beforeId` returns the page immediately before that message id. Both are oldest-first. Use only one of `afterId`, `tail: true` or `beforeId`; mixing them is refused. `hasMore` means newer rows follow this page, `hasOlder` means older rows precede its first message, and `lastId` is the newest message id (or `null` for an empty thread). |
+| `task.messages` | `{ sessionId, afterId?, tail?, beforeId?, limit?, budget? }` (`limit` is 1..400; defaults to 100 for `tail`/`beforeId`, 400 for `afterId`; `budget` is the page's JSON bytes, see [Message copies](#message-copies)) | `{ messages: [{ id, role, content, createdAt, turnDurationMs, attachments }], hasMore, hasOlder, title, lastId }`. `attachments` is always an array; saved images include `{ id, kind: "image", name, mime, bytes, width, height }`, while document and folder context markers carry `{ id, kind, name }`. `tail: true` returns the newest page; `beforeId` returns the page immediately before that message id. Both are oldest-first. Use only one of `afterId`, `tail: true` or `beforeId`; mixing them is refused. `hasMore` means newer rows follow this page, `hasOlder` means older rows precede its first message, and `lastId` is the newest message id (or `null` for an empty thread). |
 | `task.team` | `{ sessionId }` | `{ team: null \| TeamSnapshot }`. The snapshot includes `sessionId`, `status`, `round`, `revision`, `summary`, `updatedAt`, `mode: "auto" \| "classic"`, `rounds: { used, max }`, `workers`, and optional `messages` (the latest 30 coordination messages, oldest first). Each worker includes `{ id, name, provider, model, status, attempt, summary, checkpoint, files, dependsOn, startedAt, updatedAt, sessionId }` plus desktop fields `profileId`, `assignment`, `error`, `readOnly`, `abandoned`, and `createdAt`. `checkpoint` is null or `{ summary, nextSteps, blocker, updatedAt }`. Worker `waiting` is exposed as `running` to match the phone status set. Summary, assignment, error, checkpoint text and coordination messages are cut to fit; `filesTruncated` marks a trimmed file list, while team-level `truncated` and `workersTruncated` appear only if needed to stay under 180 KiB. A task with no team returns `{ team: null }`. |
 | `task.workerMessages` | `{ sessionId, workerId, afterId?, limit? }` (`afterId` defaults to 0; `limit` is 1..100 and defaults to 100) | `{ messages, hasMore, hasOlder, title, lastId }`. `sessionId` identifies the architect task; `workerId` must belong to that team's saved workers. Messages are the worker transcript page returned by the desktop worker-message API: `{ id, sessionId, role, content, createdAt, turnDurationMs, authorProvider?, turnChanges?, coordinationKind? }`, oldest first. `afterId` is an exclusive cursor; pass the last returned message id for the next page. `hasMore` reports newer rows after the page and `hasOlder` reports saved rows before it. The page fits within 180 KiB. |
 | `task.attachment` | `{ sessionId, id, variant: "thumb" | "full", offset? }` | `{ mime, total, offset, data, done }`, with `data` a base64 chunk. Image ids must be UUIDs linked to a message in that same local session. `thumb` is a JPEG with a long edge no larger than 480 px and fits one chunk. `full` returns original bytes unless the source exceeds 8 MiB, when the host makes a JPEG with a long edge no larger than 2048 px. Chunks contain at most 120 KiB of raw bytes. |
@@ -319,17 +342,19 @@ passes). With nothing cached the host decides, and it refuses a provider it does
 
 Push only; nothing polls. The host buffers the agent events of each subscriber's tasks and sends
 each subscriber an `agent.events { events: [...], epoch }` frame: the first event after a quiet
-100 ms goes at once (a turn's first delta shows without waiting), the next ones are gathered for
-40 ms, and after a burst's first 5 frames for 100 ms (more frames only when the events pass the
-180 KiB frame budget; an event over 120 KiB is cut). Consecutive text deltas of the same message
-are merged, so streaming costs about 10 frames a second per subscriber, whatever the token rate,
-under the relay's 20 frames a second.
+100 ms goes at once (a turn's first delta shows without waiting), the next ones wait out the rest
+of 40 ms since the last flush, and after a burst's first 5 frames of 100 ms per frame the last flush
+sent (more frames only when the events pass the 180 KiB frame budget; an event over 120 KiB is cut).
+Pacing counts frames, not flushes, so however many viewers subscribe, streaming costs the host's
+socket about 10 frames a second, whatever the token rate, under the relay's 20 frames a second
+(replies included). Consecutive text deltas of the same message are merged.
 
 Every agent event of a followed task carries `seq`, one counter per host launch (`epoch`, new
 at each launch). The host keeps each task's last 2000 events (at most 2 MiB per task, 32 MiB in
 all) in memory. A viewer remembers the newest `seq` per task and subscribes with `epoch` and
 `afterSeq`; the reply then holds, per task, the events after that position (`events`, in order,
-deltas merged, within a third of the reply) or `gap: true` when some are gone (dropped, too
+deltas merged, within a third of the reply; for a viewer that sent `"z": 1`, within 180 KiB of JSON
+while the packed reply fits 180 KiB) or `gap: true` when some are gone (dropped, too
 many, or another epoch), when the viewer copies the messages instead. Each task's `seq` is the
 position to use next. The viewer drops an event at or before the newest `seq` it saw, so a
 replay and live frames never show twice. Events without `seq` (older hosts) are shown as before,
@@ -437,10 +462,22 @@ that ended while this computer wasn't listening, and messages newer than `remote
 `task.messages` keeps the legacy `afterId` path for desktop mirrors: rows after the cursor, oldest
 first, at most 400 rows by default. `tail: true` starts at the newest message, and `beforeId` pages
 backward from that id; those modes default to 100 rows. Every mode is kept within 180 KiB of JSON,
-and newest-first pages keep the newest rows that fit. `hasMore` reports newer rows after the page;
+and newest-first pages keep the newest rows that fit. An optional `budget` sets the page's JSON
+bytes instead: clamped to 4 KiB..1 MiB, and to at most 180 KiB unless the request carried `"z": 1`
+(the viewer opens packed frames). A page over 180 KiB is cut until it packs (deflates) into 180 KiB,
+so its sealed frame still fits the relay's 256 KB. A page always holds at least one message. The
+desktop mirror's and phone's first tail page ask for 32 KiB (about 12 KB on the wire, one round trip
+on 3G), and the mirror's afterId and `beforeId` copies ask for 1 MiB. Hosts before `budget` ignore it. `hasMore` reports newer rows after the page;
 `hasOlder` reports older rows before its first row. `lastId` is the current newest message id, or
 `null` for an empty thread. Any message over 120 KiB is cut and ends with
 `…[cut on the host to fit a remote page]` (JSON tool content is cut inside, so it still parses).
+When a page's single message does not fit a smaller `budget`, it is cut to the budget the same way
+and marked `cut: true` (same id); viewers fetch it whole later with `afterId: id - 1` and a full
+budget and replace their copy. The desktop mirror does this at the end of each copy and marks such
+a copy in `messages.remote_cut` (schema 33, H's message id) until it is replaced, so a failed fetch
+or a restart leaves it for the next copy; older viewers ignore the flag. The desktop copies older
+pages (`beforeId`) in rounds of 8 until none are left, each page waiting (up to 10 s) while other
+calls to that host are pending.
 The desktop mirror stores an `afterId` page and advances `remote_synced_id` in one transaction,
 and skips a page that no longer starts at the stored position (a concurrent copy got there first),
 so messages are never copied twice. It follows `hasMore` for up to 50 pages per copy and also takes
@@ -512,7 +549,8 @@ call:
 }
 ```
 
-The combined results fit within the 180 KiB JSON budget. If successful results would exceed it,
+The combined results fit within the 180 KiB JSON budget, so calls inside a batch get plain-sized
+`task.messages` pages and replays even for a viewer that opens packed frames. If successful results would exceed it,
 the largest entries are returned as per-call errors asking the client to request them separately.
 
 ### Host timing and slow paths

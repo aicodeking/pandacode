@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.50"
+version = "0.3.55"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -28,6 +28,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 portable-pty = "0.9"
 ignore = "0.4.33"
 regex = "1"
+flate2 = "=1.1.10"
 libc = "0.2"
 base64 = "0.22"
 sha2 = "0.10"
@@ -40,6 +41,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }

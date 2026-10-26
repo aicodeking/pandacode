@@ -4,6 +4,8 @@
 .message>.message-actions{padding-left:31px}
 .turn-activity-body .message>.message-actions{padding-left:0}
 .activity-commentary-message{margin-bottom:10px}
+/* A reply followed by more tool calls is mid-turn: only the turn's last reply keeps copy and fork. */
+.live-tools>.live-message>.message-actions{display:none}
 .activity-commentary-message>.activity-commentary{margin-bottom:0}
 .message-actions button:hover{color:var(--text);background:color-mix(in srgb,currentColor 9%,transparent)}
 .message-actions button:active{scale:.92}
