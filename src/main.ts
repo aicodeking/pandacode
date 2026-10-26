@@ -14,6 +14,8 @@ import './message-queue.css';
 import './usage-limit.css';
 import './document-viewer.css';
 import './tool-trace.css';
+import './tool-cards.css';
+import './trace-motion.css';
 import { setDocumentView } from './document-viewer';
 import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
@@ -33,7 +35,9 @@ import { botAvatarHtml } from './bot-avatars';
 import { mountExternalLinks } from './external-links';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
-import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus } from './tool-activity';
+import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
+import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
+import { choreograph, enterHeader, enterText, foldTurn, readingTrace } from './trace-motion';
 import { groupTurns, formatDuration, turnLabel } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
@@ -1182,6 +1186,8 @@ function renderTranscript(preservePosition = false): void {
   const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
+  const liveTurn = transcript.querySelector<HTMLElement>('#stream-region .live-activity[open]:not([data-folded])');
+  const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
   const readingTool = readingTranscriptTool();
   const s = session();
   if (!s) { transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
@@ -1204,7 +1210,7 @@ function renderTranscript(preservePosition = false): void {
   const turns = groupTurns(visibleMessages());
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length ? '' : '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>'}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? activityHtml(turn.key, turnLabel(turn.durationMs, turn.estimated), savedActivityHtml(turn.activity)) : '') + turn.errors.map(messageHtml).join('') + (turn.final ? messageHtml(turn.final) : '') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  transcript.innerHTML = `${state.messages.length ? '' : '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>'}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity) : '') + turn.errors.map(message => messageHtml(message)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool')) : '') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
   const byId = new Map(state.messages.map(message => [String(message.id), message]));
   transcript.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
     const message = byId.get(el.dataset.markdown!);
@@ -1223,6 +1229,7 @@ function renderTranscript(preservePosition = false): void {
   renderStream();
   refreshTeamProgress();
   restoreTurns(transcript, turnViews);
+  if (unfolded) foldSavedTurn(transcript, unfolded);
   restoreToolGroups(transcript, groupViews);
   restoreChangeCards(transcript, changeViews);
   restoreTools(transcript, toolViews);
@@ -1230,23 +1237,37 @@ function renderTranscript(preservePosition = false): void {
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
 }
-function savedActivityHtml(messages: Message[]): string {
+function savedActivityHtml(messages: Message[], expanded = activityExpanded()): string {
   return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
     .map(run => run.kind === 'tools'
-      ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), activityExpanded())
+      ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), expanded)
       : messageHtml(run.item)).join('');
+}
+/** A turn of only tool calls folds to its summary sentence and mark stack (`Ran 2 searches and read 3 sources`),
+ * opening onto the step rail; turns with narration keep `Worked for …` over their groups. */
+function savedTurnActivity(key: string, label: string, activity: Message[]): string {
+  const tools = activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
+  if (tools.some(tool => !tool)) return activityHtml(key, escape(label), savedActivityHtml(activity));
+  return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true), { steps: true, title: label });
+}
+function foldedLabelHtml(tools: ToolActivity[]): string {
+  const [sentence, failures] = summarizeTools(tools).split(' · ');
+  return `<span class="trace-summary-text">${escape(sentence)}${failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : ''}</span>${toolStackHtml(tools)}`;
 }
 function savedToolKey(message: Message): string {
   const tool = decodeToolActivity(message.content);
   return tool ? 'tool:' + tool.id : 'message:' + message.id;
 }
 function activityExpanded(): boolean { return localStorage.getItem('pandacode.activityExpanded') === 'true'; }
-function activityHtml(key: string, label: string, body: string, live = false): string {
-  return `<details class="turn-activity${live ? ' live-activity' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"><span class="turn-activity-label">${escape(label)}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
+/** `labelHtml` is escaped by the caller. `steps` turns hang their calls straight off the rail (no group headers). */
+function activityHtml(key: string, labelHtml: string, body: string, options: { live?: boolean; steps?: boolean; title?: string } = {}): string {
+  const { live = false, steps = live, title } = options;
+  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
 }
 type ToolGroupView = { key: string; toolKeys: string[]; open: boolean; focused: boolean };
 function captureToolGroups(root: ParentNode): ToolGroupView[] {
-  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].map(group => ({
+  // Live groups always show their steps, so their open state carries over only around a tool the reader opened.
+  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].filter(group => !group.closest('.live-activity') || readingTrace(group)).map(group => ({
     key: group.dataset.toolGroupKey!, open: group.open, focused: document.activeElement === group.querySelector('.tool-group-summary'),
     toolKeys: [...group.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!),
   }));
@@ -1261,8 +1282,22 @@ function restoreToolGroups(root: ParentNode, views: ToolGroupView[]): void {
   });
 }
 type TurnView = { key: string; open: boolean; focused: boolean; toolKeys: string[] };
-function captureTurns(root: ParentNode): TurnView[] {
-  return [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity')].map(turn => ({ key: turn.dataset.turnKey!, open: turn.open, focused: document.activeElement === turn.querySelector('.turn-activity-summary'), toolKeys: [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!) }));
+/** A finished live turn folds unless the reader keeps one of its tools open, the board shows it, or Settings expands activity. */
+function liveTurnStaysOpen(turn: HTMLElement): boolean {
+  return state.view === 'board' || activityExpanded() || readingTrace(turn);
+}
+/** Live turns are left out unless asked for or being read: the saved turn starts folded (see foldSavedTurn). */
+function captureTurns(root: ParentNode, live = false): TurnView[] {
+  return [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity')].filter(turn => live || !turn.classList.contains('live-activity') || liveTurnStaysOpen(turn)).map(turn => ({ key: turn.dataset.turnKey!, open: turn.open && turn.dataset.folded === undefined, focused: document.activeElement === turn.querySelector('.turn-activity-summary'), toolKeys: [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!) }));
+}
+/** A run that ended without a finishing frame folds here, as the live header would have. */
+function foldSavedTurn(root: ParentNode, live: TurnView): void {
+  const turn = [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity)')].find(turn => turn.dataset.turnKey === live.key
+    || [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].some(tool => live.toolKeys.includes(tool.dataset.toolKey!)));
+  if (!turn || turn.open) return;
+  turn.open = true;
+  enterText(turn.querySelector('.turn-activity-label')!);
+  foldTurn(turn);
 }
 function restoreTurns(root: ParentNode, views: TurnView[]): void {
   root.querySelectorAll<HTMLDetailsElement>('.turn-activity').forEach(turn => {
@@ -1273,7 +1308,8 @@ function restoreTurns(root: ParentNode, views: TurnView[]): void {
     if (view.focused) turn.querySelector<HTMLElement>('.turn-activity-summary')?.focus({ preventScroll: true });
   });
 }
-function messageHtml(m: Message): string {
+/** `afterTrace`: an answer that follows a tool trace sits flush under it without the avatar/name row (still read out). */
+function messageHtml(m: Message, afterTrace = false): string {
   if (m.role === 'handoff') {
     const handoff = decodeHandoff(m);
     if (!handoff) return '';
@@ -1288,7 +1324,7 @@ function messageHtml(m: Message): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0)}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0)}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
 // read-only chips under what you said; each opens its attachment (see message-attachments.ts).
@@ -1381,11 +1417,14 @@ function renderStream(): void {
   const transcript = $('#transcript');
   const scrollTop = transcript.scrollTop, readingTool = readingTranscriptTool();
   if (region.dataset.sessionId !== state.sessionId || !region.querySelector('.live-text')) {
-    region.innerHTML = activityHtml(current.turnKey, workingLabel(current), '<div class="live-tools"></div><div class="live-status"></div>', true) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
+    region.innerHTML = activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true }) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
     region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
   }
-  region.querySelector<HTMLElement>('.turn-activity')!.dataset.turnKey = current.turnKey;
-  region.querySelector<HTMLElement>('.turn-activity-label')!.textContent = finishing ? `Worked for ${formatDuration(finishing.finishedAt - current.startedAt)}` : workingLabel(current);
+  const activity = region.querySelector<HTMLDetailsElement>('.turn-activity')!;
+  if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
+  const answered = answerAge(current);
+  paintLiveHeader(activity, current, finishing ? finishing.finishedAt - current.startedAt : undefined, answered);
+  scheduleAnswerFolds(answered);
   if (region.dataset.revision !== String(current.revision)) {
     paintLiveActivity(region, current, transcript);
     region.querySelector('.live-errors')!.innerHTML = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
@@ -1396,6 +1435,12 @@ function renderStream(): void {
     for (const input of current.inputs.values()) if (input.element.parentElement !== inputs) inputs.append(input.element);
     region.dataset.revision = String(current.revision);
   }
+  // Every frame, text included: the open cards fold once the answer is under way.
+  if (activity.dataset.folded === undefined) {
+    choreograph(region.querySelector<HTMLElement>('.live-tools')!, current.turnKey, { answering: answered >= CARDS_FOLD_MS, expandAll: activityExpanded() });
+  }
+  // The answer to a traced turn hangs flush under the trace, as in the reference: no avatar/name row.
+  region.querySelector<HTMLElement>('.live-message')!.classList.toggle('after-trace', liveToolRecords(current).length > 0);
   const output = region.querySelector<HTMLElement>('.live-text')!;
   bindFileLinkContext(output, workspaceContext());
   streamMarkdown(output, current.text, transcript);
@@ -1445,11 +1490,11 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
       let node = previous.get(key);
       const previousEntries = node ? liveGroupEntries.get(node) : undefined;
       if (!node) {
-        const html = renderToolGroup(run.items, activityExpanded());
+        const html = renderToolGroup(run.items, true, true);
         const template = document.createElement('template'); template.innerHTML = html;
         node = template.content.firstElementChild as HTMLElement; node.dataset.streamKey = key;
       } else if (!previousEntries || previousEntries.length !== run.items.length || run.items.some((entry, index) => entry !== previousEntries[index])) {
-        const html = renderToolGroup(run.items, activityExpanded());
+        const html = renderToolGroup(run.items, true, true);
         const views = captureTools(node);
         const template = document.createElement('template'); template.innerHTML = html;
         const fresh = template.content.firstElementChild!;
@@ -1473,20 +1518,86 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
   for (const entry of commentary) { bindFileLinkContext(entry.node, workspaceContext()); streamMarkdown(entry.node, entry.content, transcript); }
 }
-/** The turn's header says what the agent is doing right now, with the elapsed time. */
+// Measured from the reference at 30 fps: the answer starts at 7.20 s, the open cards fold at 8.25 s
+// and the turn folds to its summary at 9.6-9.8 s, mid-answer for any reply longer than the reference's.
+const CARDS_FOLD_MS = 1050;
+const TURN_FOLD_MS = 2350;
+const answerStarts = new WeakMap<Stream, { at: number; tools: number }>();
+let answerTimer = 0;
+/** Milliseconds since the answer began (text after the last tool finished), or -1 while tools still run.
+ * A tool that starts after narration resets it, so the trace unfolds again for the new steps. */
+function answerAge(current: Stream): number {
+  const tools = liveToolRecords(current);
+  if (!current.text || !tools.length || tools.some(tool => tool.status === 'running')) { answerStarts.delete(current); return -1; }
+  let mark = answerStarts.get(current);
+  if (!mark || mark.tools !== tools.length) answerStarts.set(current, mark = { at: Date.now(), tools: tools.length });
+  return Date.now() - mark.at;
+}
+/** Text frames may stop before a threshold passes; repaint once when the next one is due. */
+function scheduleAnswerFolds(age: number): void {
+  clearTimeout(answerTimer); answerTimer = 0;
+  if (age < 0 || age >= TURN_FOLD_MS) return;
+  answerTimer = window.setTimeout(() => { answerTimer = 0; renderStream(); }, (age < CARDS_FOLD_MS ? CARDS_FOLD_MS : TURN_FOLD_MS) - age + 16);
+}
+function liveToolRecords(current: Stream): ToolActivity[] {
+  return current.tools.flatMap(tool => !tool.statusOnly && !tool.commentary && typeof tool.content !== 'string' ? [tool.content] : []);
+}
+/** The header glyph, as in the reference: a dot cluster before the first step, the step's icon (a filled dot
+ * stands in for its first frames, trace-motion.css) and level bars while the answer streams after the tools. */
+function traceGlyphHtml(kind: 'dots' | 'bars' | 'step', iconName = ''): string {
+  const inner = kind === 'step' ? icon(iconName) : '<i></i>'.repeat(kind === 'dots' ? 4 : 3);
+  return `<span class="trace-glyph is-${kind}" aria-hidden="true">${inner}</span>`;
+}
+/** The live header mirrors the newest step's sentence (shimmering while the turn runs); at the end it
+ * becomes the turn's summary and the steps fold under it, as the saved turn will render. */
+function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs: number | undefined, answerMs: number): void {
+  const answered = answerMs >= TURN_FOLD_MS;
+  const label = activity.querySelector<HTMLElement>('.turn-activity-label')!;
+  const tools = liveToolRecords(current);
+  const narrated = current.tools.some(tool => tool.commentary && tool.key !== current.retainedMessageKey);
+  const last = tools[tools.length - 1];
+  const status = current.inputs.size || current.approvals.size || current.status === 'Stopping agent';
+  let mode: string, html: string, step = '';
+  if (workedMs !== undefined || (answered && !narrated)) {
+    // A tool-only turn folds to its summary mid-answer; a narrated one keeps its steps until it ends.
+    mode = 'folded';
+    html = tools.length && !narrated ? foldedLabelHtml(tools) : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+  } else if (last && !status) {
+    const trace = describeTool(last);
+    mode = 'step'; step = last.id;
+    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>`;
+  } else {
+    mode = 'status';
+    // The first word reads dark and the rest dim, like the reference's `Working on it…`.
+    const [first, rest] = workingLabel(current).split(/(?<=^\S+)(?=\s)/);
+    html = `${traceGlyphHtml('dots')}<span class="trace-sentence is-status"><span class="trace-status-lead">${escape(first)}</span>${rest ? `<span class="trace-status-rest">${escape(rest)}</span>` : ''}</span>`;
+  }
+  // New steps after an early fold (the agent went back to work) unfold the trace again.
+  if (mode !== 'folded' && activity.dataset.folded !== undefined) { delete activity.dataset.folded; activity.open = true; }
+  const summary = activity.querySelector<HTMLElement>('.turn-activity-summary')!;
+  if (workedMs === undefined) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+  const changed = label.dataset.mode !== mode || label.dataset.step !== step;
+  if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; }
+  label.dataset.mode = mode; label.dataset.step = step;
+  if (changed && mode === 'step') enterHeader(label);
+  else if (changed && mode === 'folded') enterText(label);
+  if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity)) foldTurn(activity);
+}
+/** What the agent is doing before its first step (or while it waits); the elapsed time is the header's tooltip. */
+// Startup and generic statuses read as the reference's `Working on it…` until the first step or a real wait.
+const STARTUP_STATUS = new Set(['running', 'Working…', 'Starting agent', 'Waiting for response']);
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
   if (current.status === 'Stopping agent') label = current.status;
-  if (!label || label === 'running') label = 'Working…';
-  return `${label} · ${formatDuration(Date.now() - current.startedAt)}`;
+  return !label || STARTUP_STATUS.has(label) ? 'Working on it…' : label;
 }
 function updateWorkTimer(): void {
   if (document.hidden || ((!transcriptVisible() || !state.streams.has(state.sessionId)) && !document.querySelector('.task-runtime'))) { clearTimeout(workTimer); workTimer = 0; return; }
   if (workTimer) return;
   workTimer = window.setTimeout(() => {
     workTimer = 0;
-    const current = state.streams.get(state.sessionId), label = document.querySelector<HTMLElement>('#stream-region .turn-activity-label');
-    if (current && label) label.textContent = workingLabel(current);
+    const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
+    if (current && summary) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
     const now = Date.now();
     for (const timer of document.querySelectorAll<HTMLElement>('.task-runtime')) {
       const elapsed = formatDuration(now - Number(timer.dataset.startedAt));
@@ -4516,7 +4627,7 @@ document.addEventListener('change', event => {
   if (input.id === 'compact-mode') { document.body.classList.toggle('compact', input.checked); localStorage.setItem('pandacode.compact', String(input.checked)); }
   if (input.id === 'expand-tool-activity') {
     localStorage.setItem('pandacode.activityExpanded', String(input.checked));
-    document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group').forEach(group => { group.open = input.checked; });
+    document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
   }
 });
 document.addEventListener('keydown', event => {

@@ -121,27 +121,36 @@ test.describe('streamed responses', () => {
   test('live tool activity stays open regardless of Settings and preserves manual disclosure choices during updates', async ({ page }) => {
     const id = await startTurn(page, 'conversation', false);
     const activity = page.locator('#stream-region .turn-activity');
+    const tools = activity.locator('details.tool-trace');
+    const openTools = () => tools.evaluateAll(list => list.flatMap((tool, i) => (tool as HTMLDetailsElement).open ? [i] : []));
     await expect(activity).toHaveAttribute('open', '');
     await page.evaluate(id => { const fixture = (window as any).__streamFixtures[id]; for (let i = 0; i < 6; i++) fixture.tool(); }, id);
     await expect(liveGroups(page)).toHaveCount(2);
+    // Live steps hang off the rail: every group is open, its summary hidden, and the two newest results show their cards.
+    await expect(activity.locator('.tool-group[open]')).toHaveCount(2);
+    await expect(liveGroups(page).first().locator('.tool-group-summary')).toBeHidden();
+    await expect.poll(openTools).toEqual([4, 5]);
     await page.keyboard.press('Meta+,');
     await page.getByRole('checkbox', { name: 'Expand tool activity', exact: true }).check();
     await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
     await expect(activity).toHaveAttribute('open', '');
     await expect(activity.locator('.tool-group[open]')).toHaveCount(2);
-    const first = liveGroups(page).first();
-    await first.locator('.tool-group-summary').click();
+    // A step the reader opens by hand stays open through new text and new tools.
+    await tools.first().locator(':scope > summary').click();
+    await expect(tools.first()).toHaveAttribute('open', '');
     await push(page, id, 'Another response.');
     await page.evaluate(id => (window as any).__streamFixtures[id].tool(), id);
     await expect(liveGroups(page)).toHaveCount(3);
-    await expect(first).not.toHaveAttribute('open', '');
+    await expect(tools.first()).toHaveAttribute('open', '');
     await expect(liveGroups(page).last()).toHaveAttribute('open', '');
     await page.keyboard.press('Meta+,');
     await page.getByRole('checkbox', { name: 'Expand tool activity', exact: true }).uncheck();
     await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
     await expect(activity).toHaveAttribute('open', '');
+    await expect(tools.first()).toHaveAttribute('open', '');
     await push(page, id, 'Final answer stays visible.');
     await expect(live(page)).toBeVisible();
+    await expect(tools.first()).toHaveAttribute('open', '');
     await finish(page, id);
     await expect(transcript(page).getByText('Final answer stays visible.', { exact: true })).toBeVisible();
     await startTurn(page, 'conversation', false);
@@ -169,6 +178,21 @@ test.describe('streamed responses', () => {
     await expect(transcript(page).locator('.tool-activity')).toHaveCount(35);
   });
 
+  test('open links and code spans render at once instead of waiting for their closing syntax', async ({ page }) => {
+    const id = await startTurn(page, 'conversation', false);
+    await push(page, id, 'Read [the guide');
+    await expect(live(page).locator('.md-open-link')).toHaveText('the guide');
+    await expect(live(page)).toHaveText('Read the guide');
+    await push(page, id, '](https://exa');
+    await expect(live(page)).toHaveText('Read the guide');
+    await push(page, id, 'mple.com) then run `npm te');
+    await expect(live(page).locator('a')).toHaveAttribute('href', 'https://example.com');
+    await expect(live(page).locator('code')).toHaveText('npm te');
+    await push(page, id, 'st`.\n\n```\nconst a = list[0');
+    await expect(live(page).locator('pre')).toContainText('list[0');
+    await finish(page, id);
+  });
+
   for (const view of ['conversation', 'board'] as const) {
     test(`keeps ${view} streaming narratives chronological around compact tool groups and late updates`, async ({ page }) => {
       const id = await startTurn(page, view);
@@ -183,8 +207,11 @@ test.describe('streamed responses', () => {
         return first;
       }, id);
       await expect(liveGroups(page)).toHaveCount(1);
+      // A live group with a running call reads in the present tense.
       await expect(liveGroups(page).first().locator('.tool-group-label')).toHaveText('Running 1 command and reading 1 file…');
-      await expect(liveGroups(page).first()).not.toHaveAttribute('open', '');
+      // Live groups are the open step rail; the header carries the running sentence instead of a group summary.
+      await expect(liveGroups(page).first()).toHaveAttribute('open', '');
+      await expect(liveGroups(page).first().locator('.tool-group-summary')).toBeHidden();
       await expect(live(page)).toBeVisible();
       await expect(generating).toBeHidden();
       await expect(page.locator('#stream-region .turn-activity')).toHaveAttribute('open', '');
@@ -198,14 +225,13 @@ test.describe('streamed responses', () => {
       const thirdToolId = await page.evaluate(id => (window as any).__streamFixtures[id].startTool(), id);
       await expect(liveGroups(page)).toHaveCount(2);
       await expect(liveGroups(page).last().locator('.tool-group-label')).toHaveText('Running 1 command…');
-      await expect(liveGroups(page).last()).not.toHaveAttribute('open', '');
+      await expect(liveGroups(page).last()).toHaveAttribute('open', '');
       await expect(generating).toBeHidden();
       await expect.poll(() => liveSequence(page)).toEqual(['Inspecting the project.', '2 tools', 'Found one issue.', '1 tool']);
       expect(await originalResponse!.evaluate(node => node === document.querySelector('#stream-region .live-text'))).toBe(true);
 
       const firstGroup = liveGroups(page).first();
       const firstTool = page.locator(`#stream-region .tool-activity[data-tool-key="tool:${firstToolId}"]`);
-      await firstGroup.locator(':scope > summary').click();
       await firstTool.locator(':scope > summary').click();
       await firstTool.locator('.tool-trace-raw > summary').click();
       await page.evaluate(({ id, toolId }) => (window as any).__streamFixtures[id].updateTool('running', toolId), { id, toolId: firstToolId });
@@ -228,7 +254,7 @@ test.describe('streamed responses', () => {
       await expect(firstTool).toHaveAttribute('data-tool-status', 'completed');
       await expect(firstGroup).toHaveAttribute('open', '');
       await expect(firstTool).toHaveAttribute('open', '');
-      await expect(liveGroups(page).last()).not.toHaveAttribute('open', '');
+      await expect(liveGroups(page).last()).toHaveAttribute('open', '');
       await expect.poll(() => liveSequence(page)).toEqual(['Inspecting the project.', '2 tools', 'Found one issue.', '1 tool', 'The fix is ready.']);
       await expect(page.locator('#stream-region .tool-activity')).toHaveCount(3);
 
@@ -266,11 +292,12 @@ test.describe('streamed responses', () => {
       await expect(liveGroups(page).locator('.tool-group-label')).toHaveText(['Read 5 files', 'Read 1 file', 'Read 1 file']);
       await expect.poll(() => liveSequence(page)).toEqual(['I’m checking the project files.', '5 tools', '1 tool', 'The files look good. I’m checking one last detail.', '1 tool']);
       await expect(page.locator('#stream-region .tool-activity')).toHaveCount(7);
-      for (const group of await liveGroups(page).all()) await expect(group).not.toHaveAttribute('open', '');
+      for (const group of await liveGroups(page).all()) await expect(group).toHaveAttribute('open', '');
       await expect(page.locator('#stream-region [data-commentary]')).toBeVisible();
       await expect(live(page)).toBeVisible();
       if (view === 'board') {
-        const groupLeft = (await liveGroups(page).first().locator(':scope > summary').boundingBox())!.x;
+        // Narration lines up with the turn header the step rail hangs from.
+        const groupLeft = (await page.locator('#stream-region .turn-activity-summary').boundingBox())!.x;
         for (const text of [page.locator('#stream-region [data-commentary] p').first(), live(page).locator('p').first()]) {
           expect(Math.abs((await text.boundingBox())!.x - groupLeft)).toBeLessThanOrEqual(1);
         }

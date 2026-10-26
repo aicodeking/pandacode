@@ -46,6 +46,8 @@ html .workspace:not(.side-thread) :is(.transcript,#stream-region)>:is(.turn-acti
 html .message>.message-actions{position:absolute;top:100%;left:0;margin:2px 0 0;padding:0;min-height:24px;opacity:0;z-index:2;transition:opacity 140ms ease}
 html .message>.message-actions button{width:24px;height:24px;min-height:24px;padding:4px}
 .message>.message-actions .icon{width:14px;height:14px}
+/* Under a traced answer they stay visible at rest, like the reference. */
+html .message.after-trace>.message-actions{opacity:.6}
 html .message:hover>.message-actions,html .message>.message-actions:focus-within,html .message>.message-actions:hover{opacity:1}
 @media(hover:none){html .message>.message-actions{opacity:.7}}
 @media(prefers-contrast:more){.user-message>.message-content{outline:1px solid var(--border)}}

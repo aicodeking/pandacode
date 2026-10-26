@@ -35,18 +35,22 @@ function section(kind: 'input' | 'output', content: string): string {
   return `<section class="tool-activity-section" data-tool-section="${kind}"><h4>${label}</h4><pre tabindex="0" aria-label="Tool ${kind}">${escape(bounded(content))}</pre></section>`;
 }
 
-function toolNote(tool: ToolActivity): string {
-  if (tool.output.trim()) return '';
+function toolNote(tool: ToolActivity, hasCard: boolean): string {
+  // A running card already shows its own placeholder; a second "waiting" line would only jump away.
+  if (tool.output.trim() || (hasCard && tool.status === 'running' && tool.input.trim())) return '';
   const note = tool.status === 'running'
     ? tool.input.trim() ? 'Waiting for output…' : 'Waiting for tool details…'
     : tool.status === 'completed' ? 'No output was returned.' : 'No output was recorded.';
   return `<p class="tool-activity-note">${note}</p>`;
 }
 
-/** The recorded input/output stay one quiet disclosure below the readable card. */
-function rawRecord(tool: ToolActivity): string {
+const RAW_LABEL = 'Raw input and output';
+const CODE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5M13.5 4l-3 16"/></svg>';
+
+/** The recorded input/output hide behind a quiet `</>` button in the card's corner; with no card they show open. */
+function rawRecord(tool: ToolActivity, hasCard: boolean): string {
   const sections = (tool.input.trim() ? section('input', tool.input) : '') + (tool.output.trim() ? section('output', tool.output) : '');
-  return sections ? `<details class="tool-trace-raw"><summary>${icon('chevron')}Raw input/output</summary><div class="tool-trace-raw-body">${sections}</div></details>` : '';
+  return sections ? `<details class="tool-trace-raw"${hasCard ? '' : ' open'}><summary aria-label="${RAW_LABEL}" title="${RAW_LABEL}">${CODE_ICON}</summary><div class="tool-trace-raw-body">${sections}</div></details>` : '';
 }
 
 /** Caller owns the stable key and restores native details.open when replacing activity rows. */
@@ -55,10 +59,11 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   if (!tool) return renderLegacyTool(content as string, key);
   const named = { ...tool, name: tool.name.slice(0, MAX_LABEL) };
   const trace = describeTool(named);
-  const status = tool.status === 'failed' ? '<span class="tool-activity-status">Failed</span>' : '';
-  const lead = icon(tool.status === 'failed' ? 'alert' : kindIcon(trace.kind), 'tool-trace-icon');
-  const body = toolPreview(named) + toolNote(tool) + rawRecord(tool);
-  return `<details class="tool-activity tool-trace" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}" data-tool-name="${escape(named.name)}"><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${status}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
+  const lead = icon(tool.status === 'failed' ? 'alert' : trace.icon ?? kindIcon(trace.kind), 'tool-trace-icon');
+  const preview = toolPreview(named);
+  // The card and its raw `</>` toggle share a frame so the toggle can sit in the card's corner.
+  const body = preview ? `<div class="tool-trace-frame">${preview}${rawRecord(tool, true)}</div>${toolNote(tool, true)}` : `<div class="tool-trace-frame">${toolNote(tool, false)}${rawRecord(tool, false)}</div>`;
+  return `<details class="tool-activity tool-trace" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}" data-tool-name="${escape(named.name)}"><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
 }
 
 function renderLegacyTool(content: string, key: string): string {
@@ -92,13 +97,18 @@ export function groupToolRuns<T>(entries: T[], toolKey: (entry: T) => string | u
   return runs;
 }
 
-export function renderToolGroup(entries: { key: string; content: string | ToolActivity }[], expanded = false): string {
+/** The folded header's mark stack: brand logos for MCP servers, line icons otherwise. */
+export function toolStackHtml(tools: (ToolActivity | undefined)[]): string {
+  return `<span class="tool-trace-stack" aria-hidden="true">${summaryIcons(tools).join('')}</span>`;
+}
+
+export function renderToolGroup(entries: { key: string; content: string | ToolActivity }[], expanded = false, live = false): string {
   if (!entries.length) return '';
   const tools = entries.map(entry => typeof entry.content === 'string' ? decodeToolActivity(entry.content) : entry.content);
   const failed = tools.some(tool => tool?.status === 'failed');
   const running = tools.some(tool => tool?.status === 'running');
-  const [sentence, failures] = summarizeTools(tools).split(' · ');
-  const stack = `<span class="tool-trace-stack" aria-hidden="true">${summaryIcons(tools).map(name => icon(name)).join('')}</span>`;
+  const [sentence, failures] = summarizeTools(tools, { live }).split(' · ');
+  const stack = toolStackHtml(tools);
   const status = failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : '';
   return `<details class="tool-group" data-tool-group-key="${escape('group:' + entries[0].key)}"${running ? ' data-running' : ''}${expanded ? ' open' : ''}><summary class="tool-group-summary">${failed ? icon('alert') : ''}<span class="tool-group-label">${escape(sentence)}</span>${stack}${status}${icon('chevron')}</summary><div class="tool-group-body">${entries.map(entry => renderToolActivity(entry.content, entry.key)).join('')}</div></details>`;
 }

@@ -128,6 +128,23 @@ button .icon{pointer-events:none}
 .markdown pre{background:#f6f6f4;border:1px solid #e9e9e5;border-radius:4px;padding:15px 17px;overflow:auto;margin:15px 0 18px;line-height:1.7;color:#343631;font-size:.82rem}
 .markdown code{font-family:var(--mono);font-size:.9em}
 .markdown :not(pre)>code{background:#f1f1ed;border-radius:1px;padding:2px 4px;color:#515044}
+.md-cite,.trace-brand-chip{display:inline-flex;align-items:center;gap:4px;vertical-align:baseline;padding:0 6px 0 4px;border:1px solid var(--border);border-radius:6px;background:var(--raised);color:var(--muted);font-size:.82em;line-height:1.5;text-decoration:none;white-space:nowrap}
+/* Measured at 9.0 s: ~21px tall, radius ~6, dark text. */
+.md-cite,.md-cite:hover{color:var(--text);text-decoration:none}
+/* A link whose URL is still streaming reads as a link already (streaming-markdown.ts). */
+.md-open-link{color:inherit;text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:3px}
+.md-cite .brand-icon,.trace-brand-chip .brand-icon{flex:none;width:12px;height:12px;align-self:center}
+.trace-brand-chip b{font-weight:500}
+.markdown a[href^="mailto:"]{color:var(--muted);text-decoration:underline;text-underline-offset:2px}
+/* An answer that follows a tool trace hangs flush under it (no avatar/name row; still read out), with its actions below. */
+.agent-message.after-trace>.message-meta{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.agent-message.after-trace{margin-top:4px}
+/* Measured: the reference answer is the trace's own size (~16px), its headings bold at 1em. */
+.agent-message.after-trace>.message-content{font-size:1.143rem;line-height:1.6}
+.agent-message.after-trace .markdown :is(h1,h2,h3,h4){font-size:1em;margin:16px 0 8px}
+/* Measured at 10.0 s: 36px from the folded summary's cap top to the answer's (ours was 45). */
+.turn-activity.is-steps:not([open]):has(+.after-trace){margin-bottom:7px}
+.turn-activity.is-steps:not([open])+.agent-message.after-trace .markdown>:first-child{margin-top:0}
 .markdown blockquote{border-left:2px solid var(--accent);padding-left:14px;margin-left:0;color:var(--muted)}
 .markdown table{border-collapse:collapse;width:100%;font-size:0.785714rem;margin:0 0 16px}
 .markdown td,.markdown th{border:1px solid var(--border);padding:6px 9px;text-align:left}

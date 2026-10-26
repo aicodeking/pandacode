@@ -2,6 +2,8 @@
  * for the web (vendored WebAssembly, see src/vendor/enriched-markdown), rendered to HTML
  * with the node set its web renderer supports. Math renders through KaTeX on demand. */
 
+import { brandFor } from './trace-brands';
+
 type NodeType =
   | 'Document' | 'Paragraph' | 'Text' | 'Link' | 'Heading' | 'LineBreak' | 'SoftBreak' | 'Strong' | 'Emphasis'
   | 'Strikethrough' | 'Underline' | 'Superscript' | 'Subscript' | 'Highlight' | 'Code' | 'Image' | 'Blockquote'
@@ -94,7 +96,14 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       case 'Subscript': return `<sub>${kids(node)}</sub>`;
       case 'Highlight': return `<mark>${kids(node)}</mark>`;
       case 'Code': return `<code>${escapeText(text(node))}</code>`;
-      case 'Link': return `<a href="${link(a.url ?? '')}"${a.title ? ` title="${escapeAttr(a.title)}"` : ''}>${kids(node)}</a>`;
+      case 'Link': {
+        // A citation chip only for a real web link whose text is not the URL itself; brandFor alone would chip bare words.
+        const url = a.url ?? '';
+        const label = text(node).trim();
+        const brand = /^https?:\/\/[^/\s]+\.[^/\s]+/i.test(url) && label !== url && label !== url.replace(/^https?:\/\//i, '') ? brandFor(url) : undefined;
+        if (brand) return `<a class="md-cite" href="${link(a.url ?? '')}" title="${escapeAttr(a.url ?? '')}">${brand.svg}<span>${kids(node)}</span></a>`;
+        return `<a href="${link(a.url ?? '')}"${a.title ? ` title="${escapeAttr(a.title)}"` : ''}>${kids(node)}</a>`;
+      }
       // Remote images are not loaded in the transcript; their description links to them instead.
       case 'Image': case 'Video': { const label = text(node) || a.title || (node.type === 'Video' ? 'Video' : 'Image'); return `<a class="md-media" href="${link(a.url ?? '')}">${escapeText(label)}</a>`; }
       case 'Blockquote': return `<blockquote>\n${kids(node)}</blockquote>\n`;

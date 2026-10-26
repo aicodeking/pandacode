@@ -11,6 +11,7 @@ import { createPreviewTurnChanges } from './preview-turn-changes';
 import { invokeBots } from './preview-bots';
 import { invokeRemote, previewRemoteStart } from './preview-remote';
 import { createPreviewDesign } from './preview-design';
+import { BRIEF_ID, GALLERY_ID, briefAnswer, briefMessages, briefTimings, briefTools, galleryMessages } from './preview-traces';
 import { createPreviewSkills } from './preview-skills';
 import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
@@ -30,6 +31,9 @@ let sessions: Session[] = [
   { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions,
+  { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -112,7 +116,7 @@ const traceMessages: Message[] = [
 ];
 // Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
 const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
-const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages } : {}), 'session-1': [
+const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },
@@ -472,7 +476,8 @@ function finishTiming(sessionId: string): void {
   const history = messages[sessionId] ?? [];
   const user = [...history].reverse().find(message => message.role === 'user');
   if (user && user.turnDurationMs == null) user.turnDurationMs = Math.max(0, Date.now() - user.createdAt);
-  if (!user || history.at(-1)?.role === 'changes') return;
+  // The Morning brief reproduces a reference with no file changes, so it gets no changes card.
+  if (!user || history.at(-1)?.role === 'changes' || sessionId === BRIEF_ID) return;
   const marker: Message = { id: ++id, sessionId, role: 'changes', content: '', createdAt: Date.now() };
   turnChanges.finish(marker); history.push(marker);
   agent({ sessionId, kind: 'turn_changes', text: '', data: { messageId: marker.id, turnChanges: marker.turnChanges } });
@@ -482,6 +487,30 @@ function finishTiming(sessionId: string): void {
 const mirrorSynced = new Map<string, number>();
 function syncMirror(sessionId: string): void { if (mirrorSynced.has(sessionId)) mirrorSynced.set(sessionId, id); }
 function finish(sessionId: string, content: string) { const time = Date.now(); messages[sessionId].push({ id: ++id, sessionId, role: 'assistant', content, createdAt: time }); finishTiming(sessionId); const s = session(sessionId); if (content.trim()) s.lastResponseAt = time; s.status = 'idle'; s.taskStage = 'review'; s.updatedAt = time; timers.delete(sessionId); activeTools.delete(sessionId); syncMirror(sessionId); agent({ sessionId, kind: 'done', text: '' }); }
+/** Replays the Morning brief reference: five MCP tools (running, then completed), then the answer in chunks. `?replay=N` scales the pace. */
+function replayBrief(s: Session): void {
+  const speed = Number(new URLSearchParams(location.search).get('replay')) || 1, at = (ms: number) => ms / speed;
+  const steps: [number, () => void][] = [[0, () => agent({ sessionId: s.id, kind: 'status', text: 'Working on it…' })]];
+  briefTools.forEach((spec, i) => {
+    const tool: ToolActivity = { id: `brief-tool-${crypto.randomUUID()}`, ...spec, status: 'running', output: '' };
+    const message: Message = { id: ++id, sessionId: s.id, role: 'tool', content: encodeTool(tool), createdAt: 0 };
+    const [start, end] = briefTimings.tools[i];
+    steps.push([start, () => { message.createdAt = Date.now(); messages[s.id].push(message); activeTools.set(s.id, { activity: tool, message }); agent({ sessionId: s.id, kind: 'tool', text: tool.name, tool: { ...tool } }); }]);
+    steps.push([end, () => { tool.status = 'completed'; tool.output = spec.output; message.content = encodeTool(tool); activeTools.delete(s.id); agent({ sessionId: s.id, kind: 'tool', text: `${tool.name} completed`, tool: { ...tool } }); }]);
+  });
+  for (let cursor = 0, n = 0; cursor < briefAnswer.length; cursor += briefTimings.textChunk, n++) {
+    const chunk = briefAnswer.slice(cursor, cursor + briefTimings.textChunk);
+    steps.push([briefTimings.textStart + n * briefTimings.textEvery, () => { s.lastResponseAt = Date.now(); agent({ sessionId: s.id, kind: 'text', text: chunk }); }]);
+  }
+  const last = steps[steps.length - 1][0];
+  steps.push([last + 150, () => finish(s.id, briefAnswer)]);
+  const run = (index: number) => {
+    if (index >= steps.length) return;
+    steps[index][1]();
+    if (index + 1 < steps.length) timers.set(s.id, window.setTimeout(() => run(index + 1), Math.max(0, at(steps[index + 1][0] - steps[index][0]))));
+  };
+  timers.set(s.id, window.setTimeout(() => run(0), 0));
+}
 const codexPreferences: Record<string, string | boolean> = { personality: 'none', memory: false };
 const previewImports = [{ id: 'preview-instructions', title: 'Project instructions', description: 'Sample project instructions from Claude Code.', source: 'Claude Code' }, { id: 'preview-skills', title: 'Project skills', description: 'Sample coding skills.', source: 'Kimi Code' }];
 const importedPreviewItems = new Set<string>();
@@ -1209,6 +1238,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!text) throw new Error('Write a message first.');
       if (new TextEncoder().encode(text).length > 128 * 1024) throw new Error('Message and attached context must be under 128 KiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
+      if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
       const tool: ToolActivity = { id: `preview-tool-${crypto.randomUUID()}`, name: 'Bash', status: 'running', input: 'npm test -- --runInBand', output: '' };
       const toolMessage: Message = { id: ++id, sessionId: s.id, role: 'tool', content: encodeTool(tool), createdAt: Date.now() };

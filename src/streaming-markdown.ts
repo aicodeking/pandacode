@@ -5,6 +5,23 @@ import { preserveTranscriptPosition } from './transcript-scroll';
 type Paint = { target: HTMLElement; value: string; rendered: string; pending: boolean; timer: number; lastPaint: number; formatted: boolean; context?: object; scroll?: HTMLElement };
 const paints = new WeakMap<HTMLElement, Paint>();
 const FRAME_MS = 32;
+// The open tail of a link: `[label` or `[label](url…` (an image's `![…` is held until it closes).
+const OPEN_LINK = /(!?)\[([^\][\n]*)(?:\]\([^)\s]*)?$/;
+const FENCE = /^ {0,3}(```|~~~)/gm;
+// Stands in for the URL still streaming; paint() swaps the anchor for an underlined, unclickable span.
+const OPEN_HREF = '#pandacode-open-link';
+
+/** What to show of a still-streaming value without ever holding text back: an open link shows as its
+ * (underlined) label, an open code span as code. Inside an open fence the value is already code. */
+export function settledMarkdown(value: string): string {
+  if ((value.match(FENCE)?.length ?? 0) % 2) return value;
+  const paragraph = value.slice(value.lastIndexOf('\n\n') + 1);
+  const ticks = paragraph.match(/`+/g) ?? [];
+  // ponytail: pairs backtick runs by count, not length; a ``span with ` inside`` may close a frame late.
+  if (ticks.length % 2) return value + ticks[ticks.length - 1];
+  return value.replace(OPEN_LINK, (match, image: string, label: string) =>
+    image ? '' : !match.includes('](') && /^\s*x?\s*$/i.test(label) ? match : `[${label}](${OPEN_HREF})`);
+}
 
 /** Keep finished blocks and text nodes in place as the open Markdown block grows. */
 function reconcile(parent: Node, next: Node): void {
@@ -38,10 +55,14 @@ async function paint(state: Paint): Promise<void> {
   const value = state.value;
   state.pending = true;
   try {
-    const html = await markdownHtml(value);
+    const html = await markdownHtml(settledMarkdown(value));
     if (!state.target.isConnected || state.value !== value) return;
     const fragment = document.createElement('template');
     fragment.innerHTML = html;
+    for (const open of fragment.content.querySelectorAll(`a[href="${OPEN_HREF}"]`)) {
+      const label = document.createElement('span'); label.className = 'md-open-link'; label.append(...open.childNodes);
+      open.replaceWith(label);
+    }
     decorateFileLinks(fragment.content, state.target);
     const restore = state.scroll ? preserveTranscriptPosition(state.scroll, state.target) : undefined;
     reconcile(state.target, fragment.content);
@@ -74,9 +95,10 @@ export function streamMarkdown(target: HTMLElement, value: string, scroll?: HTML
     target.replaceChildren(); target.classList.remove('markdown'); return;
   }
   if (!state.formatted) {
+    const shown = settledMarkdown(value);
     const text = target.firstChild;
-    if (text instanceof Text && value.startsWith(text.data)) text.appendData(value.slice(text.length));
-    else target.textContent = value;
+    if (text instanceof Text && shown.startsWith(text.data)) text.appendData(shown.slice(text.length));
+    else target.textContent = shown;
   }
   schedule(state);
 }

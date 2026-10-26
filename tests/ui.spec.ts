@@ -1916,7 +1916,10 @@ const turnTool = (id: string, name: string, status = 'completed') => JSON.string
 test('tool activity settings persist expanded and collapsed groups with compact spacing', async ({ page }) => {
   await showTurnFixture(page, [
     { role: 'user', content: 'Inspect these files.', at: 0 },
-    ...Array.from({ length: 12 }, (_, index) => ({ role: 'tool', content: turnTool(`compact-${index}`, 'Read'), at: (index + 1) * 1000 })),
+    // Narration keeps this a grouped turn; a tool-only turn hangs its steps off the rail instead (agent-traces.spec.ts).
+    ...Array.from({ length: 10 }, (_, index) => ({ role: 'tool', content: turnTool(`compact-${index}`, 'Read'), at: (index + 1) * 1000 })),
+    { role: 'assistant', content: 'Two files left.', at: 11500 },
+    ...Array.from({ length: 2 }, (_, index) => ({ role: 'tool', content: turnTool(`compact-${index + 10}`, 'Read'), at: (index + 12) * 1000 })),
     { role: 'assistant', content: 'Inspection complete.', at: 15000 },
   ]);
   const turn = page.locator('details.turn-activity');
@@ -1974,7 +1977,9 @@ test('times each tool turn independently using saved durations and labels older 
   ]);
   const turns = page.locator('details.turn-activity');
   await expect(turns).toHaveCount(3);
-  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Worked for about 1m 0s']);
+  // A tool-only turn reads as its summary; its time stays one hover away.
+  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Ran 1 search']);
+  await expect(turns.nth(2).locator('.turn-activity-summary')).toHaveAttribute('title', 'Worked for about 1m 0s');
   await expect(turns.nth(2).locator('details.tool-activity')).toHaveCount(1);
   const keys = await turns.evaluateAll(elements => elements.map(element => element.getAttribute('data-turn-key')));
   expect(keys.every(Boolean)).toBe(true);
@@ -1995,7 +2000,9 @@ test('times each tool turn independently using saved durations and labels older 
   await chooseProjectFilter(page, 'All projects');
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-4"]').click();
-  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Worked for about 1m 0s']);
+  // A tool-only turn reads as its summary; its time stays one hover away.
+  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Ran 1 search']);
+  await expect(turns.nth(2).locator('.turn-activity-summary')).toHaveAttribute('title', 'Worked for about 1m 0s');
 });
 
 test('keeps saved errors visible outside a collapsed tool turn', async ({ page }) => {
@@ -2222,13 +2229,20 @@ test('the turn header names what the agent is doing, with no separate status lin
   const sessionId = await startControlledStatusStream(page);
   const turn = page.locator('.live-activity');
   const label = turn.locator('.turn-activity-label');
-  await expect(label).toHaveText(/^Working… · |^Starting agent · /);
+  // Before the first step: a spark glyph and what the agent is doing, with no seconds counter in the line.
+  await expect(label).toHaveText(/^(Working on it…|Starting agent)$/);
+  await expect(label.locator('.trace-glyph')).toHaveCount(1);
   await emitStatusEvents(page, sessionId, [{ kind: 'tool', text: 'Read', tool: { id: 'header-read', name: 'Read', status: 'running', input: 'src/main.ts', output: '' } }]);
-  await expect(label).toHaveText(/^Running Read · /);
+  // The header mirrors the running step's sentence, with its glyph, in the finished form the rows use.
+  await expect(label).toHaveAttribute('data-mode', 'step');
+  await expect(label).toHaveText(/^Read\s*main\.ts$/);
+  await expect(label.locator('.trace-glyph')).toHaveCount(1);
   await emitStatusEvents(page, sessionId, [{ kind: 'tool', text: 'Read', tool: { id: 'header-read', name: 'Read', status: 'completed', input: 'src/main.ts', output: 'Source contents' } }]);
-  await expect(label).toHaveText(/^Working… · /);
+  await expect(label).toHaveText(/^Read\s*main\.ts$/);
+  // The elapsed time lives in the header's tooltip; its tick never touches the sentence.
   await page.clock.runFor(9000);
-  await expect(label).toHaveText(/^Working… · 9s$/);
+  await expect(label).toHaveText(/^Read\s*main\.ts$/);
+  await expect(turn.locator('.turn-activity-summary')).toHaveAttribute('title', /^Working for \d+s$/);
   // The status line is for screen readers; it takes no visible space.
   expect(await page.locator('.live-status').evaluate(el => el.getBoundingClientRect().height)).toBeLessThanOrEqual(1);
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
@@ -2301,26 +2315,29 @@ test('keeps approval, retry, stopping, and completed summaries clear', async ({ 
   const sessionId = await startControlledStatusStream(page);
   const label = page.locator('.live-activity .turn-activity-label');
   await emitStatusEvents(page, sessionId, [{ kind: 'status', text: 'Retrying connection…' }]);
-  await expect(label).toHaveText(/^Retrying connection… · /);
+  const summary = page.locator('.live-activity .turn-activity-summary');
+  await expect(label).toHaveText('Retrying connection…');
   await page.clock.runFor(9000);
-  await expect(label).toHaveText(/^Retrying connection… · 9s$/);
+  // The line stays the status; the elapsed time is the tooltip.
+  await expect(label).toHaveText('Retrying connection…');
+  await expect(summary).toHaveAttribute('title', 'Working for 9s');
   await emitStatusEvents(page, sessionId, [{ kind: 'text', text: 'The connection has recovered.' }]);
-  await expect(label).toHaveText(/^Generating response · /);
+  await expect(label).toHaveText('Generating response');
   await emitStatusEvents(page, sessionId, [{ kind: 'approval', requestId: 'playful-approval', text: 'Run the project check?' }]);
-  await expect(label).toHaveText(/^Waiting for approval · /);
+  await expect(label).toHaveText('Waiting for approval');
   const approval = page.locator('.approval-bar');
   await approval.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pandacodeResolveStatusApproval)).toBe('function');
   await emitStatusEvents(page, sessionId, [{ kind: 'text', text: 'The approved check is producing a response.' }]);
   await page.clock.runFor(8000);
-  await expect(label).toHaveText(/^Waiting for approval · /);
+  await expect(label).toHaveText('Waiting for approval');
   await expect(approval).toBeVisible();
   await page.evaluate(() => { (window as any).__pandacodeResolveStatusApproval(); });
   await expect(approval).toHaveCount(0);
-  await expect(label).toHaveText(/^Generating response · /);
+  await expect(label).toHaveText('Generating response');
   await emitStatusEvents(page, sessionId, [{ kind: 'status', text: 'Stopping agent' }, { kind: 'text', text: 'Buffered response text.' }]);
   await page.clock.runFor(9000);
-  await expect(label).toHaveText(/^Stopping agent · /);
+  await expect(label).toHaveText('Stopping agent');
   await page.evaluate(async sessionId => {
     const { finishStatusTestTurn } = await import((window as any).__pandacodePreviewUrl);
     finishStatusTestTurn(sessionId);

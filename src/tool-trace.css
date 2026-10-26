@@ -4,6 +4,7 @@
 .tool-trace-verb{flex:none;color:var(--muted)}
 .tool-trace-chip{display:inline-flex;align-items:center;gap:4px;flex:none;max-width:22ch;padding:0 6px;border:1px solid var(--border);border-radius:6px;background:var(--raised);color:var(--text);font-size:.74rem;line-height:1.55}
 .tool-trace-chip .icon{width:11px;height:11px;flex:none;color:var(--muted)}
+.tool-trace-chip .brand-icon{width:12px;height:12px;flex:none}
 .tool-trace-chip b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-trace-object{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
 .tool-trace-object.is-mono{font-family:var(--mono);font-size:.72rem}
@@ -13,17 +14,28 @@
 .tool-trace>summary>.tool-trace-chevron{width:10px;height:10px;flex:none;color:var(--muted)}
 .tool-trace>summary:hover .tool-trace-verb,.tool-trace>summary:hover .tool-trace-object{color:var(--text)}
 .tool-trace[data-tool-status="failed"] .tool-trace-verb{color:var(--danger)}
-/* Looping status animation: only the running verb breathes. */
-@media(prefers-reduced-motion:no-preference){.tool-trace[data-tool-status="running"] .tool-trace-verb{animation:tool-trace-pulse 1.6s ease-in-out infinite}}
+/* Outside the step rail (which shimmers instead) the running verb breathes. */
+@media(prefers-reduced-motion:no-preference){.tool-trace[data-tool-status="running"]:not(.is-steps .tool-trace) .tool-trace-verb{animation:tool-trace-pulse 1.6s ease-in-out infinite}}
 @keyframes tool-trace-pulse{50%{opacity:.45}}
 
-.tool-trace-card{display:grid;gap:6px;max-width:640px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font-size:.76rem;line-height:1.5;box-shadow:0 1px 2px rgb(0 0 0 / .04)}
+/* One card chrome for every kind (MCP rows, rich cards, fallbacks), measured from the reference:
+ * radius 10, hairline border, a step lighter than the page, soft shadow, full-bleed hairline sections. */
+/* The fill lifts whatever page is under it (plain --bg or a frosted wallpaper) by the reference's step:
+ * 243 on 236 is white at .37. */
+:root{--trace-card-fill:rgb(255 255 255 / .37)}
+html[data-theme="dark"]{--trace-card-fill:color-mix(in srgb,var(--text) 5%,transparent)}
+/* Measured: fill a step lighter than the page (243 on 236) with a 1px lighter top edge, dividers in the
+ * page's own tone, near-flat shadow, radius 12, ~14px text on 20px lines, two-line rows ~58px. */
+.tool-trace-card{--trace-hair:color-mix(in srgb,var(--text) 6%,transparent);--trace-quiet:color-mix(in srgb,var(--text) 45%,var(--bg));display:grid;gap:0;max-width:528px;padding:0;overflow:hidden;border:1px solid color-mix(in srgb,var(--text) 7%,transparent);border-radius:12px;background:var(--trace-card-fill);color:var(--text);font-size:1rem;line-height:20px;box-shadow:inset 0 1px 0 rgb(255 255 255 / .55),0 1px 2px rgb(0 0 0 / .04)}
+/* Fallback bodies (no rich card) get the same section padding. */
+.tool-trace-card>:not(.tc,.trace-rows){margin:0;padding:9px 12px}
+.tool-trace-card>:not(.tc,.trace-rows)+*{border-top:1px solid var(--trace-hair)}
 .tool-trace-card-head{display:flex;align-items:center;gap:8px;min-width:0}
 .tool-trace-card-meta{margin-left:auto;flex:none;color:var(--muted);font-size:.7rem}
 .tool-trace-command{min-width:0;overflow-wrap:anywhere;font-family:var(--mono);font-size:.72rem}
 .tool-trace-badge{margin-left:auto;flex:none;padding:0 6px;border-radius:6px;background:color-mix(in srgb,var(--success) 14%,transparent);color:var(--success);font-size:.68rem;font-weight:600}
 .tool-trace-badge.is-failed{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
-.tool-activity .tool-trace-card pre{max-height:220px;padding:6px 8px;border:0;border-radius:6px;background:var(--panel);font-size:.72rem;line-height:1.55}
+.tool-activity .tool-trace-card pre{max-height:220px;padding:8px 12px;border:0;border-radius:0;background:var(--panel);font-size:.76rem;line-height:1.55}
 .tool-trace-list,.tool-trace-todos{display:grid;margin:0;padding:0;list-style:none}
 .tool-trace-list li{display:flex;align-items:baseline;gap:8px;min-width:0;padding:4px 0;border-top:1px solid var(--border)}
 .tool-trace-list li:first-child{border-top:0}
@@ -52,9 +64,97 @@
 /* The thin rail the group's rows hang off; plain --border vanishes over dark wallpapers. */
 .tool-group-body{border-left-color:color-mix(in srgb,var(--border) 55%,var(--muted))}
 
-html[data-theme="dark"] .tool-trace-card{background:var(--panel);box-shadow:none}
 html[data-theme="dark"] .tool-activity .tool-trace-card pre{background:var(--bg)}
 @media(prefers-contrast:more){
   .tool-trace-chip,.tool-trace-card,.tool-trace-stack .icon{border-color:var(--text)}
   .tool-trace-verb,.tool-trace-object,.tool-trace-item-meta,.tool-trace-card-meta,.tool-trace-note,.tool-trace-more{color:var(--text)}
+}
+
+/* --- Step rail (live turns and tool-only saved turns), measured from the reference at 30 fps -------
+ * Header and rows are ~16px type on one 32px line. From the glyph's left edge: the rail at 7px, row
+ * icons at 30px, the verb at 62px, result cards at 58px. Finished rows: verb, object and icon muted, chips dark.
+ * Measured tones on a #ececec page: header verb ~#898989 with a near-black object, the running row's verb
+ * ~#4c4c4c with a ~#171717 object, the folded summary ~#676767. */
+.is-steps{--trace-head-verb:color-mix(in srgb,var(--text) 55%,var(--bg));--trace-live-verb:color-mix(in srgb,var(--text) 82%,var(--bg));--trace-folded:color-mix(in srgb,var(--text) 70%,var(--bg))}
+.is-steps>.turn-activity-summary{min-height:32px;gap:8px;font-size:1.143rem;line-height:20px}
+/* Reference chevron (0.5 s): an 11px-tall glyph with a ~1.5px stroke, i.e. the 24-unit path at 18px, stroke 2. */
+.is-steps>.turn-activity-summary>.icon{width:18px;height:18px;stroke-width:2}
+.is-steps .turn-activity-label{display:inline-flex;align-items:center;gap:19px;min-width:0;color:var(--text)}
+/* The folded summary reads a touch lighter than the answer under it. */
+.turn-activity-label[data-mode="folded"],.is-steps:not(.live-activity) .turn-activity-label{gap:10px;color:var(--trace-folded)}
+/* One line: a long summary ellipsizes before its marks. */
+.is-steps .trace-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trace-sentence{display:inline-flex;align-items:center;gap:6px;min-width:0}
+.turn-activity-label .trace-sentence .tool-trace-verb{color:var(--trace-head-verb)}
+.turn-activity-label .trace-sentence .tool-trace-object{color:var(--text)}
+/* `Working on it…`: `Working` dark, ` on it…` dim, one run of text (no flex gap before the ellipsis). */
+.trace-sentence.is-status{display:inline;white-space:nowrap}
+.trace-status-lead{color:var(--text)}
+.trace-status-rest{color:var(--trace-head-verb);white-space:pre}
+.trace-glyph{display:inline-grid;place-items:center;flex:none;width:16px;height:16px;color:var(--accent)}
+.trace-glyph .icon{width:14px;height:14px;stroke-width:2.2}
+/* Before the first step: a 2x2 cluster of dots; while the answer streams: three level bars (animated in trace-motion.css). */
+.trace-glyph.is-dots{grid-template-columns:repeat(2,4px);gap:3px;place-content:center}
+.trace-glyph>i{display:block;width:4px;height:4px;border-radius:50%;background:currentColor}
+.trace-glyph.is-bars{display:inline-flex;align-items:flex-end;justify-content:center;gap:2px;height:12px;margin-block:2px}
+.trace-glyph.is-bars>i{width:3px;height:100%;border-radius:1px;transform-origin:bottom}
+.trace-glyph.is-bars>i:nth-child(1){height:45%}.trace-glyph.is-bars>i:nth-child(2){height:70%}
+.trace-glyph>i:nth-child(2){--trace-delay:-.3s}.trace-glyph>i:nth-child(3){--trace-delay:-.6s}.trace-glyph>i:nth-child(4){--trace-delay:-.9s}
+/* Before the first step the header is one closed-looking line: nothing hangs below it yet. */
+.live-activity:not(:has(.tool-activity))>.turn-activity-summary>.icon{transform:none}
+.is-steps .tool-group{margin:0}
+.is-steps .tool-group>.tool-group-summary{display:none}
+.is-steps .tool-group-body{margin:0 0 0 7px;padding:0 0 4px 22px;border-left:1px solid color-mix(in srgb,var(--border) 70%,var(--muted))}
+.is-steps .tool-group:has(+ .tool-group)>.tool-group-body{padding-bottom:0}
+.is-steps .tool-group-body .tool-activity{margin:0}
+/* A row ends where its card ends (card inset 28px + 528px), so a long object ellipsizes inside it. */
+.is-steps .tool-trace>summary{max-width:556px;min-height:32px;gap:6px;font-size:1.143rem;line-height:20px}
+.is-steps .tool-trace>summary>.tool-trace-icon{width:14px;height:14px;margin-right:12px;color:var(--muted)}
+.is-steps .tool-trace-chip{box-sizing:border-box;height:22px;max-width:26ch;padding:0 7px;gap:5px;border-radius:8px;background:color-mix(in srgb,var(--bg) 93%,var(--text));font-size:.9em;line-height:20px}
+/* Measured stems: ~1.15px in the chip label against ~1.28px in the verb, so medium, not bold. */
+.is-steps .tool-trace-chip b{font-weight:500}
+.is-steps .tool-trace-chip:has(>svg){padding-left:5px}
+.is-steps .tool-trace-chip .icon,.is-steps .tool-trace-chip .brand-icon{width:14px;height:14px}
+.is-steps .tool-trace-object.is-mono{font-size:.86em}
+.is-steps .tool-trace>summary>.tool-trace-chevron{width:12px;height:12px}
+.is-steps .tool-activity-body{margin:2px 0 8px 28px}
+/* The newest live step reads dark (and shimmers, trace-motion.css) until the next one starts. */
+.live-activity:not([data-folded]) .live-tools>.tool-group:last-of-type .tool-trace:last-child>summary .tool-trace-verb{color:var(--trace-live-verb)}
+.live-activity:not([data-folded]) .live-tools>.tool-group:last-of-type .tool-trace:last-child>summary .tool-trace-object{color:var(--text)}
+/* No chevron until there is a result to open, like the reference. */
+.is-steps .tool-trace[data-tool-status="running"]:not([open])>summary>.tool-trace-chevron{visibility:hidden}
+/* Cards opened by the choreography read like the reference; a card the reader opens keeps its raw record. */
+.live-activity .tool-trace[data-auto]>.tool-activity-body:has(>:not(.tool-activity-note,.tool-trace-raw))>.tool-trace-raw{display:none}
+/* The folded summary's marks, measured at 10.0 s: bare 16px icons, 4px apart, 10px after the text. */
+.is-steps .turn-activity-label .tool-trace-stack{gap:4px;margin-left:0}
+.is-steps .turn-activity-label .tool-trace-stack :is(.icon,.brand-icon){width:16px;height:16px;padding:0;border:0;border-radius:0;background:none}
+
+/* --- Result rows (MCP records): 16px mark, bold title + muted meta, time on the right, body below ---- */
+.tool-trace-card.is-rows{display:block}
+.trace-rows{margin:0;padding:0;list-style:none}
+.trace-row{display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:0;padding:9px 12px;border-top:1px solid var(--trace-hair);font-size:1rem;line-height:20px}
+.trace-row:first-child{border-top:0}
+.trace-row-head{display:flex;align-items:baseline;gap:7px;min-width:0;white-space:nowrap}
+/* Sampled at 1.6 s of the reference: sender #000 at medium weight, channel ~#676767, body ~#343434, time and `+N more` ~#919191. */
+.trace-row-head b{overflow:hidden;text-overflow:ellipsis;font-weight:560;color:var(--text)}
+.trace-row-meta{min-width:0;overflow:hidden;text-overflow:ellipsis;color:color-mix(in srgb,var(--text) 65%,var(--bg))}
+.trace-row-time{color:var(--trace-quiet);font-size:.96rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.trace-row-body{grid-column:2/-1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:color-mix(in srgb,var(--text) 78%,var(--bg));font-size:.98rem}
+.trace-mark{display:inline-grid;place-items:center;width:18px;height:18px;color:var(--muted)}
+.trace-mark .brand-icon,.trace-mark svg{width:14px;height:14px}
+.trace-mark.is-avatar{border-radius:4px;background:color-mix(in srgb,var(--text) 9%,var(--bg));color:color-mix(in srgb,var(--text) 72%,var(--bg));font-size:.7rem;font-weight:500;line-height:1}
+.trace-mark.is-unread[data-unread]::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--trace-unread)}
+.trace-mark.is-pull .icon{width:14px;height:14px;stroke-width:2}
+.trace-mark[data-state="open"]{color:var(--success)}
+.trace-mark[data-state="merged"],.trace-mark[data-state="done"]{color:var(--trace-done)}
+.trace-mark[data-state="closed"]{color:var(--danger)}
+.trace-mark[data-state="progress"]{color:var(--trace-progress)}
+.tool-trace-card.is-rows .tool-trace-more{display:block;color:var(--trace-quiet);padding:7px 12px 8px;border-top:1px solid var(--trace-hair);font-size:.86rem;line-height:18px}
+/* Status hues for records (GitHub merged, Linear in progress, unread mail), not the accent. */
+:root{--trace-done:#8250df;--trace-progress:#b7791f;--trace-unread:#2f6fdf}
+html[data-theme="dark"]{--trace-done:#b48cf2;--trace-progress:#e3b341;--trace-unread:#6ea2ff}
+html[data-theme="dark"] .tool-trace-card{box-shadow:0 1px 2px rgb(0 0 0 / .3)}
+@media(prefers-contrast:more){
+  .trace-row,.tool-trace-card.is-rows .tool-trace-more{border-color:var(--text)}
+  .trace-row-meta,.trace-row-time,.turn-activity-label[data-mode="folded"]{color:var(--text)}
 }

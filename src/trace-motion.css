@@ -1,0 +1,29 @@
+/* Trace choreography (src/trace-motion.ts). Keyframes, not transitions: PandaCode turns every
+ * transition off, and prefers-reduced-motion turns these off with the rest (styles.css). */
+
+/* Measured shimmer: a ~110px light band crosses the header and the newest step left to right at
+ * ~260px/s, about every 2s. The mask tiles in px so the band keeps its speed on any text width.
+ * The mask lives with its animation: under reduced motion neither applies, so no band freezes. */
+@media(prefers-reduced-motion:no-preference){
+  .live-activity:not([data-folded]) .turn-activity-label[data-mode="step"] .trace-sentence,
+  .live-activity:not([data-folded]) .live-tools>.tool-group:last-of-type .tool-trace:last-child>summary{
+    -webkit-mask-image:linear-gradient(90deg,#000 0 39%,rgb(0 0 0 / .4) 50%,#000 61% 100%);mask-image:linear-gradient(90deg,#000 0 39%,rgb(0 0 0 / .4) 50%,#000 61% 100%);
+    -webkit-mask-size:520px 100%;mask-size:520px 100%;-webkit-mask-repeat:repeat-x;mask-repeat:repeat-x;
+    animation:trace-shimmer 2s linear infinite;
+  }
+  /* Header glyphs: the dot cluster twinkles, the answer's level bars bounce, and a new step's icon
+   * starts as a filled dot for about two frames once its sentence lands (header delay 130 ms). */
+  .live-activity:not([data-folded]) .trace-glyph.is-dots>i{animation:trace-dots 1.2s ease-in-out var(--trace-delay,0s) infinite}
+  .live-activity:not([data-folded]) .trace-glyph.is-bars>i{animation:trace-bars .9s ease-in-out var(--trace-delay,0s) infinite}
+  .live-activity:not([data-folded]) .trace-glyph.is-step{position:relative}
+  .live-activity:not([data-folded]) .trace-glyph.is-step>.icon{animation:trace-step-icon 200ms steps(1,end) backwards}
+  .live-activity:not([data-folded]) .trace-glyph.is-step::before{content:"";position:absolute;inset:4px;border-radius:50%;background:currentColor;opacity:0;animation:trace-step-dot 200ms steps(1,end)}
+}
+@keyframes trace-shimmer{from{-webkit-mask-position:0 0;mask-position:0 0}to{-webkit-mask-position:520px 0;mask-position:520px 0}}
+@keyframes trace-dots{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes trace-bars{0%,100%{scale:1 1}50%{scale:1 .4}}
+@keyframes trace-step-icon{from{opacity:0}}
+@keyframes trace-step-dot{from{opacity:1}}
+
+/* A folding card turns its chevron right away (the reference flips it on the first frame). */
+.tool-activity[data-closing]>summary>.icon:last-child,.turn-activity[data-closing]>.turn-activity-summary>.icon{transform:none}
