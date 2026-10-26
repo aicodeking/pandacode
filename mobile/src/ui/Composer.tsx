@@ -18,12 +18,14 @@ import { GlassIcon, interactiveGlass, nativeGlass } from './NativeGlass.tsx';
 import { HarnessLogo, harnessName } from './harness.tsx';
 import { Icon } from './Icon.tsx';
 import { Menu } from './Menu.tsx';
+import { useT } from './language.ts';
 import { useColors } from './theme.ts';
 
 export const SIZE = 36;
 
 export function Composer({ deviceId, sessionId, running, bot }: { deviceId: string; sessionId: string; running: boolean; bot?: Pick<Bot, 'id' | 'name'> }) {
   const botId = bot?.id;
+  const t = useT();
   const colors = useColors();
   // The text lives in the draft store, so generative UI can fill it (fillDraft) and it survives leaving the task.
   const key = draftKey(deviceId, sessionId);
@@ -54,15 +56,15 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
         await connect.steerTask(deviceId, sessionId, prompt);
         markSteered(prompt);
         setText('');
-        setNote('Steering…');
+        setNote(t('Steering…'));
       } else {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         const result = await sendOrQueue(deviceId, sessionId, prompt);
         setText('');
-        setNote(result.outbox ? 'Saved. Sends when the computer is back' : result.queued ? 'Queued for after this run' : '');
+        setNote(result.outbox ? t('Saved. Sends when the computer is back') : result.queued ? t('Queued for after this run') : '');
       }
     } catch (error) {
-      Alert.alert(kind === 'stop' ? 'Could not stop' : 'Could not send', (error as Error).message);
+      Alert.alert(kind === 'stop' ? t('Could not stop') : t('Could not send'), (error as Error).message);
     } finally {
       setBusy(false);
     }
@@ -78,23 +80,23 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
         ref={input}
         value={text}
         onChangeText={t => { setText(t); if (note) setNote(''); }}
-        placeholder={note || (bot ? `Message ${bot.name}…` : running && steer ? 'Steer the agent…' : 'Ask the agent…')}
+        placeholder={note || (bot ? t`Message ${bot.name}…` : running && steer ? t('Steer the agent…') : t('Ask the agent…'))}
         placeholderTextColor={colors.tertiary as string}
         multiline
         style={[styles.input, { color: colors.text }]}
-        accessibilityLabel="Message"
+        accessibilityLabel={t('Message')}
       />
       <View style={styles.row}>
-        <Menu ios="plus" android="add" color={colors.text} label="More options" modifiers={nativeGlass ? [frame({ width: SIZE, height: SIZE }), interactiveGlass('circle')] : undefined} items={[
-          ...(botId ? [] : [{ label: 'Steer instead of queue', ios: 'arrow.uturn.right', android: 'alt_route', checked: steer, onPress: () => setSteer(s => !s) } as const]),
-          { label: 'Model…', ios: 'cpu', android: 'memory', onPress: settings('model') },
-          { label: 'Permissions…', ios: 'lock.shield', android: 'shield', onPress: settings('mode') },
-          { label: 'Effort…', ios: 'gauge.with.dots.needle.67percent', android: 'speed', onPress: settings('effort') },
+        <Menu ios="plus" android="add" color={colors.text} label={t('More options')} modifiers={nativeGlass ? [frame({ width: SIZE, height: SIZE }), interactiveGlass('circle')] : undefined} items={[
+          ...(botId ? [] : [{ label: t('Steer instead of queue'), ios: 'arrow.uturn.right', android: 'alt_route', checked: steer, onPress: () => setSteer(s => !s) } as const]),
+          { label: t('Model…'), ios: 'cpu', android: 'memory', onPress: settings('model') },
+          { label: t('Permissions…'), ios: 'lock.shield', android: 'shield', onPress: settings('mode') },
+          { label: t('Effort…'), ios: 'gauge.with.dots.needle.67percent', android: 'speed', onPress: settings('effort') },
         ]}>
           {icon => (nativeGlass ? icon : <View style={[styles.round, { backgroundColor: colors.fill }]}>{icon}</View>)}
         </Menu>
         {!!branch && (
-          <Pressable onPress={() => router.push({ pathname: '/task-info', params: { device: deviceId, session: sessionId } })} accessibilityRole="button" accessibilityLabel={`Branch ${branch}`} accessibilityHint="Shows task info"
+          <Pressable onPress={() => router.push({ pathname: '/task-info', params: { device: deviceId, session: sessionId } })} accessibilityRole="button" accessibilityLabel={t`Branch ${branch}`} accessibilityHint={t('Shows task info')}
             style={({ pressed }) => [styles.chip, { backgroundColor: colors.fill, opacity: pressed ? 0.7 : 1 }]}>
             <Icon ios="arrow.triangle.branch" android="call_split" size={13} color={colors.green} />
             <Text style={[styles.chipText, { color: colors.green }]} numberOfLines={1}>{branch}</Text>
@@ -102,14 +104,14 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
         )}
         <View style={styles.spacer} />
         {!!provider && (
-          <Pressable onPress={settings('model')} accessibilityRole="button" accessibilityLabel={`${harnessName(provider)} model`} hitSlop={6} style={({ pressed }) => [styles.harness, pressed && { opacity: 0.6 }]}>
+          <Pressable onPress={settings('model')} accessibilityRole="button" accessibilityLabel={t`${harnessName(provider)} model`} hitSlop={6} style={({ pressed }) => [styles.harness, pressed && { opacity: 0.6 }]}>
             <HarnessLogo id={provider} size={18} />
             <Icon ios="chevron.down" android="expand_more" size={11} color={colors.secondary} />
           </Pressable>
         )}
         {running && !hasText
-          ? <Round label="Stop" ios="stop.fill" android="stop" onPress={() => act('stop')} disabled={busy} bg={colors.text} fg={colors.background} />
-          : <Round label={tap === 'steer' ? 'Steer' : running ? 'Queue' : 'Send'} hint={hold && (hold === 'steer' ? 'Long press to steer' : 'Long press to queue')}
+          ? <Round label={t('Stop')} ios="stop.fill" android="stop" onPress={() => act('stop')} disabled={busy} bg={colors.text} fg={colors.background} />
+          : <Round label={tap === 'steer' ? t('Steer') : running ? t('Queue') : t('Send')} hint={hold && (hold === 'steer' ? t('Long press to steer') : t('Long press to queue'))}
               ios={running ? (tap === 'steer' ? 'arrow.uturn.right' : 'list.number') : 'arrow.up'} android={running ? (tap === 'steer' ? 'alt_route' : 'format_list_numbered') : 'arrow_upward'}
               onPress={() => act(tap)} onLongPress={hold && (() => act(hold))} disabled={busy || !hasText} bg={hasText ? colors.tint : colors.fill} fg={hasText ? colors.onTint : colors.tertiary} />}
       </View>
