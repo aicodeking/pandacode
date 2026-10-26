@@ -180,15 +180,128 @@ pub(crate) async fn api(app: &tauri::AppHandle, channel_id: &str, action: &str, 
     }
 }
 
-pub(crate) fn page(channel_id: &str) -> Response {
+pub(crate) fn page(channel_id: &str, accept_language: Option<&str>) -> Response {
     if !channel_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || channel_id.len() > 64 {
         return Response::text(404, "Not found.");
     }
-    Response::html(PAGE.replace("__CHANNEL__", channel_id))
+    let lang = ui_language(accept_language);
+    let strings = serde_json::to_string(&STRINGS.iter().find(|(id, _)| *id == lang).map(|(_, table)| table).unwrap_or(&ENGLISH).iter().cloned().collect::<std::collections::HashMap<&str, &str>>()).expect("string table is valid JSON");
+    Response::html(
+        PAGE.replace("__CHANNEL__", channel_id)
+            .replace("__LANG__", lang)
+            .replace("__STRINGS__", &strings),
+    )
 }
 
+/// Same resolution rules as the frontend's resolveSystemLocale; English needs no table.
+pub(crate) fn ui_language(accept_language: Option<&str>) -> &'static str {
+    for part in accept_language.unwrap_or_default().split(',') {
+        let tag = part.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        let has = |region: &str| tag.split(|c: char| c == '-' || c == '_' || c == '.').any(|piece| piece == region);
+        if tag.starts_with("zh") {
+            if tag.contains("hant") {
+                if has("tw") { return "zh-Hant-TW"; }
+                if has("hk") || has("mo") { return "zh-Hant-HK"; }
+                return "zh-Hant-TW";
+            }
+            if has("tw") { return "zh-Hant-TW"; }
+            if has("hk") || has("mo") { return "zh-Hant-HK"; }
+            return "zh-Hans";
+        }
+        if tag.starts_with("en") {
+            if ["gb", "au", "ie", "nz", "za", "sg", "in"].iter().any(|r| has(r)) { return "en-GB"; }
+            return "en-US";
+        }
+    }
+    "en-US"
+}
+
+type Table<'a> = &'a [(&'a str, &'a str)];
+const ENGLISH: Table<'static> = &[];
+/// Web-chat page strings per locale; missing keys fall back to the source English in the page.
+const STRINGS: &[(&str, Table<'static>)] = &[
+    ("zh-Hans", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "消息"),
+        ("Send", "发送"),
+        ("Connecting…", "连接中…"),
+        ("Something went wrong.", "出错了。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打个招呼吧"),
+        ("Your always-on assistant", "你的全天候助手"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。输入 /stop 停止工作，/new 重新开始。"),
+        ("What can you do for me?", "你能为我做什么？"),
+        ("Remember that I like short answers", "记住我喜欢简短的回答"),
+        ("What are you working on?", "你在做什么？"),
+        ("Allow once", "允许一次"),
+        ("Always allow", "总是允许"),
+        ("Deny", "拒绝"),
+        ("Working on it…", "正在处理…"),
+        ("On your computer", "在你的电脑上"),
+        ("Paused", "已暂停"),
+        ("Open this page from the link in PandaCode.", "请从 PandaCode 中的链接打开此页面。"),
+        ("Too many messages. Wait a minute and try again.", "消息太多。请等一分钟再试。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此链接已失效。请从 PandaCode 复制新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已关闭其他设备使用。请在 PandaCode 中开启（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支持。"),
+        ("Not found.", "未找到。"),
+    ]),
+    ("zh-Hant-TW", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "訊息"),
+        ("Send", "傳送"),
+        ("Connecting…", "連線中…"),
+        ("Something went wrong.", "發生錯誤。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打個招呼吧"),
+        ("Your always-on assistant", "你的全天候助理"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。輸入 /stop 停止工作，/new 重新開始。"),
+        ("What can you do for me?", "你能為我做什麼？"),
+        ("Remember that I like short answers", "記得我喜歡簡短的回答"),
+        ("What are you working on?", "你在做什麼？"),
+        ("Allow once", "允許一次"),
+        ("Always allow", "一律允許"),
+        ("Deny", "拒絕"),
+        ("Working on it…", "處理中…"),
+        ("On your computer", "在你的電腦上"),
+        ("Paused", "已暫停"),
+        ("Open this page from the link in PandaCode.", "請從 PandaCode 中的連結開啟此頁面。"),
+        ("Too many messages. Wait a minute and try again.", "訊息太多。請等一分鐘再試。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此連結已失效。請從 PandaCode 複製新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已關閉其他裝置使用。請在 PandaCode 中開啟（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支援。"),
+        ("Not found.", "找不到。"),
+    ]),
+    ("zh-Hant-HK", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "訊息"),
+        ("Send", "傳送"),
+        ("Connecting…", "連線中…"),
+        ("Something went wrong.", "發生錯誤。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打個招呼吧"),
+        ("Your always-on assistant", "你的全天候助理"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。輸入 /stop 停止工作，/new 重新開始。"),
+        ("What can you do for me?", "你能為我做什麼？"),
+        ("Remember that I like short answers", "記得我喜歡簡短的回答"),
+        ("What are you working on?", "你在做什麼？"),
+        ("Allow once", "允許一次"),
+        ("Always allow", "一律允許"),
+        ("Deny", "拒絕"),
+        ("Working on it…", "處理中…"),
+        ("On your computer", "在你的電腦上"),
+        ("Paused", "已暫停"),
+        ("Open this page from the link in PandaCode.", "請從 PandaCode 中的連結開啟此頁面。"),
+        ("Too many messages. Wait a minute and try again.", "訊息太多。請等一分鐘再試。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此連結已失效。請從 PandaCode 複製新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已關閉其他裝置使用。請在 PandaCode 中開啟（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支援。"),
+        ("Not found.", "找不到。"),
+    ]),
+];
+
 const PAGE: &str = r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<html lang="__LANG__"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex"><meta name="color-scheme" content="light dark"><title>Bot chat</title>
 <style>
 :root{--bg:#f6f4ef;--panel:#fffdf8;--ink:#1d1b16;--muted:#77716a;--line:#e7e1d6;--bubble:#efebe2;--accent:#f5c842;--accent-ink:#3d3000;--ok:#2f8f5b;--danger:#b4432f}
@@ -239,11 +352,13 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
 .send:disabled{opacity:.4;cursor:default}
 @media (prefers-reduced-motion:no-preference){.msg,.actions{animation:in .24s cubic-bezier(.2,.8,.2,1)}@keyframes in{from{opacity:0;transform:translateY(6px)}}}
 @media (prefers-reduced-motion:reduce){body.busy .ring::before,.dots i{animation:none}}
-</style></head>
+</style>
+<script>const L = __STRINGS__; const t = k => L[k] || k; const tf = (k, ...v) => t(k).replace(/\{(\d+)\}/g, (_, i) => v[+i] ?? t(k));</script>
+</head>
 <body>
 <header><span class="ring"><span class="avatar" id="avatar">·</span></span><div class="who"><b id="name">Bot</b><small id="status">Connecting…</small></div></header>
 <main id="log" aria-live="polite"></main>
-<form id="form"><div class="box"><textarea id="input" rows="1" placeholder="Message" aria-label="Message" autocomplete="off"></textarea><button id="send" class="send" type="submit" aria-label="Send"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div></form>
+<form id="form"><div class="box"><textarea id="input" rows="1" autocomplete="off"></textarea><button id="send" class="send" type="submit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div></form>
 <script>
 (() => {
   const channel = "__CHANNEL__";
@@ -253,6 +368,10 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   if (location.hash) history.replaceState(null, "", location.pathname);
   const log = document.getElementById("log"), input = document.getElementById("input"), form = document.getElementById("form");
   const status = document.getElementById("status"), sendButton = document.getElementById("send");
+  document.title = t("Bot chat");
+  input.placeholder = t("Message"); input.setAttribute("aria-label", t("Message"));
+  sendButton.setAttribute("aria-label", t("Send"));
+  status.textContent = t("Connecting…");
   let cursor = 0, botName = "Bot", glyph = "·", image = "", role = "", typing = null;
   const api = (path, init = {}) => fetch("/api/chat/" + channel + "/" + path, { ...init, headers: { ...(init.headers || {}), Authorization: "Bearer " + token, "Content-Type": "application/json" } })
     .then(async r => { const body = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(body.error || "Something went wrong."), { revoked: r.status === 401 }); return body; });
@@ -331,7 +450,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     if (who === "user") body.textContent = text; else body.innerHTML = render(text);
     if (who !== "user" && text.startsWith("Approval needed:")) {
       const actions = document.createElement("div"); actions.className = "actions";
-      for (const [label, reply, cls] of [["Allow once", "yes", "yes"], ["Always allow", "always", ""], ["Deny", "no", ""]]) {
+      for (const [label, reply, cls] of [[t("Allow once"), "yes", "yes"], [t("Always allow"), "always", ""], [t("Deny"), "no", ""]]) {
         const b = document.createElement("button"); b.type = "button"; b.textContent = label; if (cls) b.className = cls;
         b.onclick = () => { actions.remove(); post(reply); };
         actions.append(b);
@@ -342,7 +461,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   }
   function setBusy(value) {
     document.body.classList.toggle("busy", Boolean(value));
-    if (value && !typing) { typing = document.createElement("div"); typing.className = "typing"; typing.setAttribute("role", "status"); typing.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'; typing.append(botName + " is working…"); log.append(typing); scroll(); }
+    if (value && !typing) { typing = document.createElement("div"); typing.className = "typing"; typing.setAttribute("role", "status"); typing.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'; typing.append(botName + " " + t("is working…")); log.append(typing); scroll(); }
     if (!value && typing) { typing.remove(); typing = null; }
   }
   // Uploaded icons are data: URLs, set through .src so they are never parsed as markup.
@@ -353,9 +472,9 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   function hello() {
     const box = document.createElement("div"); box.className = "hello";
     box.innerHTML = '<span class="avatar"></span><b></b><span></span><div class="chips"></div>';
-    showAvatar(box.querySelector(".avatar")); box.querySelector("b").textContent = "Say hi to " + botName;
-    box.querySelector("span:not(.avatar)").textContent = (role || "Your always-on assistant") + ". Type /stop to stop work, /new to start over.";
-    for (const text of ["What can you do for me?", "Remember that I like short answers", "What are you working on?"]) {
+    showAvatar(box.querySelector(".avatar")); box.querySelector("b").textContent = tf("Say hi to {0}", botName);
+    box.querySelector("span:not(.avatar)").textContent = tf("{0}. Type /stop to stop work, /new to start over.", role || t("Your always-on assistant"));
+    for (const text of [t("What can you do for me?"), t("Remember that I like short answers"), t("What are you working on?")]) {
       const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.onclick = () => post(text); box.querySelector(".chips").append(b);
     }
     log.append(box);
@@ -364,16 +483,16 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   async function post(text) {
     add("user", text); setBusy(true);
     try { const r = await api("messages", { method: "POST", body: JSON.stringify({ text }) }); setBusy(r.busy); }
-    catch (e) { setBusy(false); error(e.message); if (e.revoked) { sendButton.disabled = true; input.disabled = true; } }
+    catch (e) { setBusy(false); error(t(e.message)); if (e.revoked) { sendButton.disabled = true; input.disabled = true; } }
   }
   async function poll() {
     for (;;) {
       try {
         const r = await api("events?after=" + cursor);
         for (const event of r.events) add("assistant", event.text);
-        cursor = r.cursor; setBusy(r.busy); status.textContent = r.busy ? "Working on it…" : (role || "On your computer");
+        cursor = r.cursor; setBusy(r.busy); status.textContent = r.busy ? t("Working on it…") : (role || t("On your computer"));
       } catch (e) {
-        status.textContent = e.message;
+        status.textContent = t(e.message);
         // A revoked link stays revoked; stop polling instead of retrying forever.
         if (e.revoked) { setBusy(false); sendButton.disabled = true; input.disabled = true; return; }
         await new Promise(r => setTimeout(r, 5000));
@@ -381,7 +500,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     }
   }
   async function start() {
-    if (!token) { status.textContent = "Open this page from the link in PandaCode."; sendButton.disabled = true; return; }
+    if (!token) { status.textContent = t("Open this page from the link in PandaCode."); sendButton.disabled = true; return; }
     try {
       // Give the parser a moment so history renders with it; replies never wait on it.
       await Promise.race([engine, new Promise(resolve => setTimeout(resolve, 1500))]);
@@ -389,7 +508,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
       if (r.bot) {
         botName = r.bot.name; role = r.bot.role || ""; image = /^data:image\/(png|jpeg|webp|gif);base64,/.test(r.bot.avatar || "") ? r.bot.avatar : ""; glyph = (r.bot.avatar && !image && !r.bot.avatar.startsWith("panda:")) ? r.bot.avatar : r.bot.name.slice(0, 1).toUpperCase();
         document.getElementById("name").textContent = r.bot.name; document.title = r.bot.name; showAvatar(document.getElementById("avatar"));
-        status.textContent = r.bot.paused ? "Paused" : (role || "On your computer");
+        status.textContent = r.bot.paused ? t("Paused") : (role || t("On your computer"));
       }
       if (!r.messages.length) hello();
       for (const m of r.messages) add(m.role, m.text);

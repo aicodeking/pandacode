@@ -94,7 +94,8 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
         const name = document.createElement('strong'); name.textContent = command.name;
         title.append(name);
         if (command.argumentHint) { const hint = document.createElement('span'); hint.textContent = command.argumentHint; title.append(hint); }
-        const description = document.createElement('small'); description.textContent = command.kind === 'unsupported' ? command.reason || t('This command is not available in the app yet.') : command.description;
+        // Descriptions come from Rust (ours) or the harness (data): t() passes unknown ones through.
+        const description = document.createElement('small'); description.textContent = command.kind === 'unsupported' ? command.reason || t('This command is not available in the app yet.') : t(command.description);
         copy.append(title, description);
         const source = document.createElement('span'); source.className = 'slash-menu-source'; source.textContent = command.source; source.title = command.source;
         row.append(copy, source); row.disabled = command.kind === 'unsupported'; row.setAttribute('aria-disabled', String(row.disabled));
