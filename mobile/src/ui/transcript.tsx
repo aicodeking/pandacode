@@ -17,6 +17,7 @@ import { ImageViewerHost } from './ImageViewer.tsx';
 import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
 import { showActions } from './Menu.tsx';
+import { useT } from './language.ts';
 import { glanceOf } from '../store/inbox.ts';
 import { groupRuns, parseToolMessage } from '../store/trace.ts';
 import { PlanCard, SubagentPanel, ThinkingLine, ToolGroup } from './Trace.tsx';
@@ -35,9 +36,10 @@ function copy(text: string) {
 }
 
 function Meta({ text, at, align }: { text: string; at: number; align: 'left' | 'right' }) {
+  const t = useT();
   const colors = useColors();
   const copyButton = (
-    <Pressable onPress={() => copy(text)} hitSlop={10} accessibilityRole="button" accessibilityLabel="Copy">
+    <Pressable onPress={() => copy(text)} hitSlop={10} accessibilityRole="button" accessibilityLabel={t('Copy')}>
       <Icon ios="doc.on.doc" android="content_copy" size={13} color={colors.tertiary} />
     </Pressable>
   );
@@ -46,6 +48,7 @@ function Meta({ text, at, align }: { text: string; at: number; align: 'left' | '
 }
 
 function UserBubble({ message }: { message: Message }) {
+  const t = useT();
   const colors = useColors();
   const [showContext, setShowContext] = useState(false);
   const content = message.content;
@@ -61,14 +64,14 @@ function UserBubble({ message }: { message: Message }) {
         <Chips chips={files.chips} />
         {cut >= 0 && (
           <Pressable onPress={() => setShowContext(s => !s)} accessibilityRole="button">
-            <Text style={[styles.context, { color: colors.secondary }]}>{showContext ? content.slice(cut + 2) : 'Attached context'}</Text>
+            <Text style={[styles.context, { color: colors.secondary }]}>{showContext ? content.slice(cut + 2) : t('Attached context')}</Text>
           </Pressable>
         )}
       </View>
       {steeredAt != null && (
         <View style={[styles.meta, styles.metaRight]}>
           <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.secondary} />
-          <Text style={[styles.time, { color: colors.secondary }]}>Steer · {clock(steeredAt)}</Text>
+          <Text style={[styles.time, { color: colors.secondary }]}>{t`Steer · ${clock(steeredAt)}`}</Text>
         </View>
       )}
       <Meta text={prompt} at={message.createdAt} align="right" />
@@ -77,10 +80,11 @@ function UserBubble({ message }: { message: Message }) {
 }
 
 function WorkRow({ steps, durationMs }: { steps: Message[]; durationMs: number | null }) {
+  const t = useT();
   const colors = useColors();
   const [open, setOpen] = useState(false);
   const tools = steps.filter(s => s.role === 'tool').length;
-  const label = durationMs != null ? `Worked for ${duration(durationMs)}` : `${tools} step${tools === 1 ? '' : 's'}`;
+  const label = durationMs != null ? t`Worked for ${duration(durationMs)}` : tools === 1 ? t('1 step') : t`${tools} steps`;
   return (
     <View style={styles.work}>
       <Pressable onPress={() => setOpen(o => !o)} disabled={!steps.length} style={styles.workHead} accessibilityRole="button" accessibilityState={{ expanded: open }} hitSlop={6}>
@@ -124,6 +128,7 @@ const Row = memo(function Row({ row }: { row: TurnRow }) {
 
 /** Messages waiting in the outbox for this task. */
 function Pending({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
+  const t = useT();
   const colors = useColors();
   const outbox = useLocal(s => s.outbox);
   const entries = useMemo(() => outbox.filter(e => e.deviceId === deviceId && e.sessionId === sessionId), [outbox, deviceId, sessionId]);
@@ -131,19 +136,19 @@ function Pending({ deviceId, sessionId }: { deviceId: string; sessionId: string 
   return (
     <>
       {entries.map(entry => {
-        const menu = () => showActions(entry.error ?? 'This message sends when the computer is back.', [
-          { label: 'Send now', ios: 'arrow.up.circle', android: 'send', onPress: () => retryOutbox(entry.id) },
-          { label: 'Copy', ios: 'doc.on.doc', android: 'content_copy', onPress: () => copy(entry.text) },
-          { label: 'Delete', ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(entry.id) },
+        const menu = () => showActions(entry.error ?? t('This message sends when the computer is back.'), [
+          { label: t('Send now'), ios: 'arrow.up.circle', android: 'send', onPress: () => retryOutbox(entry.id) },
+          { label: t('Copy'), ios: 'doc.on.doc', android: 'content_copy', onPress: () => copy(entry.text) },
+          { label: t('Delete'), ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(entry.id) },
         ]);
         return (
-          <Pressable key={entry.id} onPress={menu} onLongPress={menu} style={styles.userTurn} accessibilityRole="button" accessibilityHint="Retry or delete">
+          <Pressable key={entry.id} onPress={menu} onLongPress={menu} style={styles.userTurn} accessibilityRole="button" accessibilityHint={t('Retry or delete')}>
             <View style={[styles.bubble, styles.pending, { backgroundColor: colors.bubble, borderColor: entry.error ? colors.red : colors.separator }]}>
               <Text style={[styles.userText, { color: colors.text }]}>{entry.text}</Text>
             </View>
             <View style={[styles.meta, styles.metaRight]}>
               <Icon ios={entry.error ? 'exclamationmark.circle' : 'clock.arrow.circlepath'} android={entry.error ? 'error' : 'schedule_send'} size={12} color={entry.error ? colors.red : colors.orange} />
-              <Text style={[styles.time, { color: entry.error ? colors.red : colors.orange }]} numberOfLines={1}>{entry.error ? 'Not sent · tap to retry' : 'Sends on reconnect'}</Text>
+              <Text style={[styles.time, { color: entry.error ? colors.red : colors.orange }]} numberOfLines={1}>{entry.error ? t('Not sent · tap to retry') : t('Sends on reconnect')}</Text>
             </View>
           </Pressable>
         );
@@ -152,26 +157,27 @@ function Pending({ deviceId, sessionId }: { deviceId: string; sessionId: string 
   );
 }
 
-const SENT_LABEL: Record<Sent['state'], string> = { sending: 'Sending…', steering: 'Steer · Sending…', queued: 'Queued' };
-
 /** Prompts sent from this phone, shown at once until the stored copy replaces them: the ones
  * starting a turn above the live run (`before`), steers and queued ones after it. */
 function SentBubbles({ deviceId, sessionId, before }: { deviceId: string; sessionId: string; before: boolean }) {
+  const t = useT();
   const colors = useColors();
   const sent = useSent(deviceId, sessionId);
+  // The state labels translate at the render site (a module map could not be t()-wrapped).
+  const sentLabel: Record<Sent['state'], string> = { sending: t('Sending…'), steering: t('Steer · Sending…'), queued: t('Queued') };
   const shown = sent.filter(e => (e.state === 'sending') === before);
   if (!shown.length) return null;
   return (
     <>
       {shown.map(entry => (
-        <View key={entry.id} style={styles.userTurn} accessible accessibilityLabel={`${entry.text}, ${SENT_LABEL[entry.state]}`}>
+        <View key={entry.id} style={styles.userTurn} accessible accessibilityLabel={`${entry.text}, ${sentLabel[entry.state]}`}>
           <View style={[styles.bubble, styles.sending, { backgroundColor: colors.bubble }]}>
             <Text style={[styles.userText, { color: colors.text }]}>{entry.text}</Text>
           </View>
           <View style={[styles.meta, styles.metaRight]}>
             {entry.state === 'steering' && <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.secondary} />}
             {entry.state === 'queued' && <Icon ios="clock" android="schedule" size={11} color={colors.secondary} />}
-            <Text style={[styles.time, { color: colors.secondary }]}>{SENT_LABEL[entry.state]}</Text>
+            <Text style={[styles.time, { color: colors.secondary }]}>{sentLabel[entry.state]}</Text>
           </View>
         </View>
       ))}
@@ -182,6 +188,7 @@ function SentBubbles({ deviceId, sessionId, before }: { deviceId: string; sessio
 /** The in-flight run: the plan, subagent panels, the turn's tools grouped (the newest group open),
  * streamed text, and a compact Working row. Rows are memoized, so an event re-renders only what it changed. */
 const LiveRun = memo(function LiveRun({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
+  const t = useT();
   const colors = useColors();
   const live = useLive(deviceId, sessionId);
   // A copy made mid-run can already hold the segment still streaming here; show it once.
@@ -213,7 +220,7 @@ const LiveRun = memo(function LiveRun({ deviceId, sessionId }: { deviceId: strin
       {live.status === 'running' && (
         <View style={styles.activity}>
           <ActivityIndicator size="small" style={styles.small} />
-          <Text style={[styles.workText, { color: colors.secondary }]}>Working…</Text>
+          <Text style={[styles.workText, { color: colors.secondary }]}>{t('Working…')}</Text>
           {!!current && current !== 'Working…' && <Text style={[styles.current, { color: colors.tertiary }]} numberOfLines={1}>{current}</Text>}
         </View>
       )}
@@ -228,9 +235,10 @@ const toolKey = (item: LiveItem, i: number) => (item.kind === 'tool' && item.too
 
 /** Grey bubbles in the shape of a transcript, while a thread with nothing cached loads. */
 function Skeleton() {
+  const t = useT();
   const colors = useColors();
   return (
-    <View accessible accessibilityLabel="Loading messages" style={styles.skeleton}>
+    <View accessible accessibilityLabel={t('Loading messages')} style={styles.skeleton}>
       {SKELETON.map((width, i) => <View key={i} style={[styles.bone, i % 2 ? styles.boneReply : styles.boneUser, { width, backgroundColor: colors.fill }]} />)}
     </View>
   );
@@ -240,6 +248,7 @@ const SKELETON = ['62%', '88%', '48%', '80%'] as const;
 /** The message copy: a skeleton until anything (cached or fetched) shows, then nothing while it
  * refreshes; a failure with Retry ("Couldn't refresh" over cached or older messages). */
 function History({ deviceId, sessionId, empty }: { deviceId: string; sessionId: string; empty: boolean }) {
+  const t = useT();
   const colors = useColors();
   const history = useHistory(deviceId, sessionId);
   const loaded = useLoaded(deviceId, sessionId);
@@ -247,9 +256,9 @@ function History({ deviceId, sessionId, empty }: { deviceId: string; sessionId: 
   return (
     <View style={styles.failed}>
       <Icon ios="exclamationmark.circle" android="error" size={14} color={colors.red} />
-      <Text style={[styles.failedText, { color: colors.red }]} numberOfLines={3}>{empty ? `Couldn't load this task: ${history}` : `Couldn't refresh: ${history}`}</Text>
-      <Pressable onPress={() => connect.loadMessages(deviceId, sessionId).catch(() => undefined)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry loading messages">
-        <Text style={[styles.retry, { color: colors.tint }]}>Retry</Text>
+      <Text style={[styles.failedText, { color: colors.red }]} numberOfLines={3}>{empty ? t`Couldn't load this task: ${history}` : t`Couldn't refresh: ${history}`}</Text>
+      <Pressable onPress={() => connect.loadMessages(deviceId, sessionId).catch(() => undefined)} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('Retry loading messages')}>
+        <Text style={[styles.retry, { color: colors.tint }]}>{t('Retry')}</Text>
       </Pressable>
     </View>
   );
@@ -257,12 +266,13 @@ function History({ deviceId, sessionId, empty }: { deviceId: string; sessionId: 
 
 /** Above the oldest message: a spinner while an older page loads. */
 function Older({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
+  const t = useT();
   const colors = useColors();
   if (useOlder(deviceId, sessionId) !== 'loading') return null;
   return (
-    <View style={[styles.activity, styles.older]} accessibilityLabel="Loading older messages">
+    <View style={[styles.activity, styles.older]} accessibilityLabel={t('Loading older messages')}>
       <ActivityIndicator size="small" style={styles.small} />
-      <Text style={[styles.workText, { color: colors.secondary }]}>Loading older messages…</Text>
+      <Text style={[styles.workText, { color: colors.secondary }]}>{t('Loading older messages…')}</Text>
     </View>
   );
 }

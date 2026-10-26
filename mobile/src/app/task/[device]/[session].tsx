@@ -17,6 +17,7 @@ import { Glass, hasGlass } from '../../../ui/Glass.tsx';
 import { ApprovalCard, InputCard } from '../../../ui/requests.tsx';
 import { isActive } from '../../../ui/status.tsx';
 import { Icon } from '../../../ui/Icon.tsx';
+import { useT } from '../../../ui/language.ts';
 import { HeaderBlur, TaskHeader } from '../../../ui/TaskHeader.tsx';
 import { useColors } from '../../../ui/theme.ts';
 import { useBackdrop } from '../../../ui/Backdrop.tsx';
@@ -47,17 +48,19 @@ function useKeyboardHeight(): number {
 /** "Working 42s" since the last prompt; only this text re-renders each second. */
 function Elapsed({ since }: { since: number }) {
   const colors = useColors();
+  const t = useT();
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
-  return <Text style={[styles.pillText, { color: colors.text }]}>Working {duration(Math.max(0, now - since))}</Text>;
+  return <Text style={[styles.pillText, { color: colors.text }]}>{t`Working ${duration(Math.max(0, now - since))}`}</Text>;
 }
 
 /** The floating row above the composer: the Working pill while running, and a jump to the newest message. */
 const Floaters = memo(function Floaters({ deviceId, sessionId, running, away, onLatest }: { deviceId: string; sessionId: string; running: boolean; away: boolean; onLatest: () => void }) {
   const colors = useColors();
+  const t = useT();
   // The newest prompt, stored or listed (whichever the phone has seen last), marks the run's start.
   const since = useConnect(s => Math.max(s.messages[taskKey(deviceId, sessionId)]?.findLast(m => m.role === 'user')?.createdAt ?? 0,
     s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.lastPromptAt ?? 0));
@@ -74,7 +77,7 @@ const Floaters = memo(function Floaters({ deviceId, sessionId, running, away, on
       )}
       {away && (
         <Glass style={styles.latest} interactive>
-          <Pressable onPress={onLatest} accessibilityRole="button" accessibilityLabel="Scroll to the newest message" hitSlop={6} style={styles.latestInner}>
+          <Pressable onPress={onLatest} accessibilityRole="button" accessibilityLabel={t('Scroll to the newest message')} hitSlop={6} style={styles.latestInner}>
             <Icon ios="chevron.down" android="expand_more" size={16} color={colors.text} />
           </Pressable>
         </Glass>
@@ -86,6 +89,7 @@ const Floaters = memo(function Floaters({ deviceId, sessionId, running, away, on
 export default function TaskScreen() {
   const { device = '', session = '' } = useLocalSearchParams<{ device: string; session: string }>();
   const backdrop = useBackdrop();
+  const t = useT();
   const insets = useSafeAreaInsets();
   // With Liquid Glass the header is transparent (TaskHeader): the transcript runs under it, inset
   // by its height, with HeaderBlur behind the bar.
@@ -124,7 +128,7 @@ export default function TaskScreen() {
   return (
     <WorkerNamesContext.Provider value={names}>
     <View style={[styles.screen, { backgroundColor: backdrop.background }]}>
-      <TaskHeader deviceId={device} sessionId={session} running={running} title={task?.title || 'Task'} pull={pull} agents={agents} bot={bot} />
+      <TaskHeader deviceId={device} sessionId={session} running={running} title={task?.title || t('Task')} pull={pull} agents={agents} bot={bot} />
       {/* Side insets: the iPhone Duo's rail, or a landscape notch. */}
       <View style={[styles.screen, { paddingLeft: insets.left, paddingRight: insets.right }]}>
         <Transcript deviceId={device} sessionId={session} top={(hasGlass ? header : 0) + 12} bottom={bottom + keyboard + 12} listRef={list} onAway={setAway} />
