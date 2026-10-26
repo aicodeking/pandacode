@@ -22,6 +22,7 @@ import { SearchResults, useThreadSearch } from './SearchResults.tsx';
 import { rootStack, sidebarOpen, sidebarSelection, type StackState } from './sidebar-nav.ts';
 import { sidebarWidth } from './sidebar-width.ts';
 import { useInbox } from './useInbox.ts';
+import { useT } from './language.ts';
 
 const SEARCH = 48;
 const MARGIN = geometry.screenMargin;
@@ -29,6 +30,7 @@ const MARGIN = geometry.screenMargin;
 export const useSidebarWidth = () => sidebarWidth(useWindowDimensions().width);
 
 export function Sidebar() {
+  const t = useT();
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const width = useSidebarWidth();

@@ -38,6 +38,7 @@ import { openFromSidebar } from './sidebar-open.ts';
 import { rootStack, sidebarOpen, sidebarSelection, type StackState } from './sidebar-nav.ts';
 import { toggleSidebar, useSidebar, useSplit } from './split.tsx';
 import { useColors } from './theme.ts';
+import { useT } from './language.ts';
 
 type IconName = Pick<ComponentProps<typeof Icon>, 'ios' | 'android'>;
 
@@ -204,9 +205,10 @@ function useDeployChoices(deviceId: string, shown: boolean): DeployChoice[] {
 
 /** The bot's avatar beside its name, as the header title. */
 function BotTitle({ bot }: { bot: Bot }) {
+  const t = useT();
   const colors = useColors();
   return (
-    <View style={styles.botTitle} accessible accessibilityRole="header" accessibilityLabel={`${bot.name}${bot.paused ? ', paused' : ''}`}>
+    <View style={styles.botTitle} accessible accessibilityRole="header" accessibilityLabel={bot.paused ? t`${bot.name}, paused` : bot.name}>
       <BotAvatar bot={bot} size={24} />
       <Text style={[textStyle.headline, styles.botName, { color: colors.text }]} numberOfLines={1}>{bot.name}</Text>
     </View>
@@ -382,8 +384,8 @@ export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quie
       <Stack.Screen options={options} />
       {split && (
         <Stack.Toolbar placement="left">
-          <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? 'Show sidebar' : 'Hide sidebar'} onPress={toggleSidebar} />
-          <Stack.Toolbar.Button icon="square.and.pencil" accessibilityLabel="New task" onPress={openNewThread} />
+          <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? t('Show sidebar') : t('Hide sidebar')} onPress={toggleSidebar} />
+          <Stack.Toolbar.Button icon="square.and.pencil" accessibilityLabel={t('New task')} onPress={openNewThread} />
         </Stack.Toolbar>
       )}
       <Stack.Toolbar placement="right">

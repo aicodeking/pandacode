@@ -13,6 +13,7 @@ import { useStatus } from '../store/index.ts';
 import { Banner, Button, Card, CardSection, crossFadeIn, CrossFadeText, geometry, haptic, PressScale, STAGGER_CAP, type as text, useMotion } from '../ui/ds/index.ts';
 import { Icon } from '../ui/Icon.tsx';
 import { mono, useColors } from '../ui/theme.ts';
+import { useT } from '../ui/language.ts';
 
 const icon = require('../../assets/images/icon.png');
 
@@ -26,6 +27,7 @@ const CHECK_DRAW_MS = 260;
 
 export default function SignIn() {
   const colors = useColors();
+  const t = useT();
   const status = useStatus();
   const { enter, layout } = useMotion();
   const [code, setCode] = useState<SignInCode | null>(null);
