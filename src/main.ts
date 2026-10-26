@@ -65,6 +65,7 @@ import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
+import { createChatUsage } from './chat-usage';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { projectIconHtml } from './project-icons';
@@ -343,6 +344,7 @@ const github = createGithub({
   showPull: task => openPullRequest(task.id),
 });
 /* Per-thread token saving: packs ride along with messages as folded guidance. */
+const chatUsage = createChatUsage();
 const tokenSaver = createTokenSaver({
   call, notify,
   changed: sessionId => {
@@ -612,7 +614,7 @@ window.addEventListener('pandacode-theme-change', () => palette.refresh());
 const disposeSidebarResizing = initializeSidebarResizing($('.workspace'), $('.sidebar'));
 const disposeInspectorResizing = initializeSidebarResizing($('.workspace'), $('#inspector'), true);
 const disposeUiSizing = initializeUiSizing();
-window.addEventListener('pagehide', () => { disposeSidebarResizing(); disposeInspectorResizing(); disposeUiSizing(); disposeMessageActions(); }, { once: true });
+window.addEventListener('pagehide', () => { chatUsage.dispose(); disposeSidebarResizing(); disposeInspectorResizing(); disposeUiSizing(); disposeMessageActions(); }, { once: true });
 
 function project(): Project | undefined { return state.projects.find(p => p.id === state.projectId); }
 function workspaceContext(s = session()): { projectId: string; sessionId?: string } { return { projectId: s?.projectId ?? state.projectId, ...(s ? { sessionId: s.id } : {}) }; }
@@ -1111,7 +1113,18 @@ function renderHeader(): void {
     // A menu opening from the bar keeps its anchor; replacing it mid-open would cancel the menu.
     if (bar.outerHTML !== markup && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
   }
+  syncChatUsage();
 }
+/** Account limits sit beside the checkout without replacing its menu anchors. */
+function chatUsageEligible(s: Session | undefined): boolean {
+  return Boolean(s && botProjectsKnown && !botProjects.has(s.projectId) && !chatTask(s) && !s.archived && taskStage(s) !== 'completed');
+}
+function syncChatUsage(): void {
+  const host = chatUsageEligible(session()) && transcriptVisible() ? document.querySelector<HTMLElement>('#chat-usage-host') : null;
+  if (!host) chatUsage.dismiss();
+  chatUsage.update(host, state.providers);
+}
+document.addEventListener('visibilitychange', syncChatUsage);
 /** What the empty prompt invites: a task, or a message to the bot whose thread this is. */
 function composerPlaceholder(): string { const bot = botForThread(); return bot ? `Message ${escape(bot.name)}…` : chatTask(session()) ? 'Ask anything…' : 'Describe a task…'; }
 /** A bot thread's header: who you're talking to, its state, and its settings. */
@@ -1529,9 +1542,9 @@ function renderComposer(): void {
   // Re-rendering replaces the textarea; keep typing focus and the caret, since people type while agents work.
   const typing = oldPrompt && document.activeElement === oldPrompt ? { id: oldPrompt.dataset.sessionId, start: oldPrompt.selectionStart, end: oldPrompt.selectionEnd } : null;
   const s = session();
-  if (!s) { $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
+  if (!s) { chatUsage.dismiss(); chatUsage.update(null, state.providers); $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
   syncOverlayContext({ projectId: s.projectId, provider: s.provider, model: s.model || 'default', mode: s.mode, reasoningEffort: s.reasoningEffort ?? null });
-  if (taskStage(s) === 'completed' || s.archived) { $('#composer-area').innerHTML = `<div class="board-completed-note">${s.archived ? 'This task is archived.' : 'This task is complete.'}${state.view === 'conversation' ? `<button type="button" class="secondary-button" data-action="${s.archived ? 'archive-task' : 'board-reopen'}">${s.archived ? 'Restore task' : 'Reopen task'}</button>` : s.archived ? '' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
+  if (taskStage(s) === 'completed' || s.archived) { chatUsage.dismiss(); chatUsage.update(null, state.providers); $('#composer-area').innerHTML = `<div class="board-completed-note">${s.archived ? 'This task is archived.' : 'This task is complete.'}${state.view === 'conversation' ? `<button type="button" class="secondary-button" data-action="${s.archived ? 'archive-task' : 'board-reopen'}">${s.archived ? 'Restore task' : 'Reopen task'}</button>` : s.archived ? '' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
   const team = teams.get(s.id), modelLocked = running && !team;
@@ -1542,7 +1555,9 @@ function renderComposer(): void {
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message">${icon('arrow')}</button>`;
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
-  $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
+  const contextBar = worktrees.contextBar(s, newTaskView());
+  $('#composer-area').insertAdjacentHTML('afterbegin', chatUsageEligible(s) ? `<div class="composer-context-row">${contextBar}<div id="chat-usage-host"></div></div>` : contextBar);
+  syncChatUsage();
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
   $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !s.archived && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
@@ -3624,6 +3639,7 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
     if (previous?.path === found.path && previous?.version === found.version) found.models = previous.models;
   }
   state.providers = providers;
+  syncChatUsage();
   return providers;
 }
 /** Settings is a full page over the workspace; Back or Escape returns to where you were. */
@@ -3881,17 +3897,21 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
  * conversations deliver queued messages natively, so the window never sends them twice. */
 let sidebarBots: import('./bots').Bot[] = [];
 let botProjects = new Set<string>();
+let botProjectsKnown = false;
 let botProjectsLoad: Promise<void> | undefined;
 function ensureBotProjects(): Promise<void> { return botProjectsLoad ??= reloadBotProjects(false); }
 async function reloadBotProjects(withProjects = true): Promise<void> {
   sidebarBots = await call<import('./bots').Bot[]>('bots_list').catch(() => sidebarBots);
   botProjects = new Set(sidebarBots.map(bot => bot.projectId));
+  botProjectsKnown = true;
   taskBots = new Map(Object.entries(await call<Record<string, string>>('bot_task_links').catch(() => Object.fromEntries(taskBots))));
   // An earlier build could leave the filter on a bot's workspace; send it back to All projects.
   if (botProjects.has(state.projectFilter)) setProjectFilter('');
   // A new bot brings a workspace project; a renamed bot renames it.
   if (withProjects) state.projects = await call<Project[]>('list_projects');
-  renderNavigation(); renderHeader();
+  renderNavigation();
+  if (Boolean(document.querySelector('#chat-usage-host')) !== chatUsageEligible(session())) renderComposer();
+  renderHeader();
 }
 /* A project task can start with a bot (#114): its first message carries the bot's brief and
  * skills, and it uses the bot's harness and model. The task keeps its own project and checkout. */

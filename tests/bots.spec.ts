@@ -106,6 +106,7 @@ test.describe('bots', () => {
     await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Message Scout…');
     await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
     await expect(page.locator('#composer-area .composer-context')).toBeHidden();
+    await expect(page.locator('#chat-usage-host')).toHaveCount(0);
     await expect(sidebar(page).locator('.bot-row.selected')).toContainText('Scout');
     await expect(page.locator('#navigation')).not.toContainText('Scout');
     await showTasksView(page);
