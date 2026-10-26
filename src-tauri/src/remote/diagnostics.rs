@@ -306,7 +306,7 @@ mod tests {
         assert_eq!(ok(&derive_stages(false, false, None, &[], &json!([]))), [false; 5]);
         let direct = json!([{"device": "a", "route": "direct", "state": "connected"}]);
         assert_eq!(ok(&derive_stages(true, true, None, &[me.clone(), other.clone()], &direct)), [true; 5]);
-        assert_eq!(ok(&derive_stages(true, true, None, &[me.clone()], &json!([]))), [true, true, true, false, true]);
+        assert_eq!(ok(&derive_stages(true, true, None, std::slice::from_ref(&me), &json!([]))), [true, true, true, false, true]);
         let down = derive_stages(true, false, Some("timeout"), &[me], &json!([]));
         assert_eq!(ok(&down), [true, false, true, false, false]);
         assert!(down[1]["detail"].as_str().unwrap().contains("timeout"));
