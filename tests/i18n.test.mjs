@@ -15,6 +15,25 @@ const enGb = (await import('../src/locales/en-GB.ts')).default;
 
 const signature = value => (value.match(/\{\d+\}/g) ?? []).sort().join(',');
 
+/** Recursively lists .rs files under a directory. */
+function rustFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'target') continue;
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) out.push(...rustFiles(full));
+    else if (entry.name.endsWith('.rs')) out.push(full);
+  }
+  return out;
+}
+
+const tauriSrc = fileURLToPath(new URL('../src-tauri/src', import.meta.url));
+const zhHansBackend = (await import('../src/locales/zh-Hans.ts')).backend;
+const zhHantTwBackend = (await import('../src/locales/zh-Hant-TW.ts')).backend;
+const zhHantHkBackend = (await import('../src/locales/zh-Hant-HK.ts')).backend;
+const enGbBackend = (await import('../src/locales/en-GB.ts')).backend;
+
+
 /** Extracts keys from t('…') literals and tagged t`…${…}…` templates, like the runtime does. */
 function extractKeys(text) {
   const keys = new Set();
@@ -145,4 +164,32 @@ test('dynamically translated key sets (stored stream statuses) are covered too',
     assert.ok(zhHans[key] !== undefined, `dynamic status key missing from zh-Hans: ${JSON.stringify(key)}`);
     assert.ok(zhHantTw[key] !== undefined, `dynamic status key missing from zh-Hant-TW: ${JSON.stringify(key)}`);
   }
+});
+
+test('stable Rust error strings are covered by the backend catalogs', () => {
+  const literals = new Set();
+  for (const file of rustFiles(tauriSrc)) {
+    const text = readFileSync(file, 'utf8');
+    for (const match of text.matchAll(/Err\(\s*"((?:[^"\\]|\\.)*)"/g)) literals.add(match[1]);
+  }
+  const sentenceLike = [...literals].filter(s => s.length >= 14 && s[0].isupper === undefined && s[0] === s[0].toUpperCase() && /\p{Lu}/u.test(s[0]) && s.includes(' ') && !/[{}<>/*]/.test(s));
+  assert.ok(sentenceLike.length > 500, `expected the full Rust error surface, found ${sentenceLike.length}`);
+  const missing = sentenceLike.filter(key => zhHansBackend[key] === undefined || zhHantTwBackend[key] === undefined);
+  assert.equal(missing.length, 0, `backend errors missing translations:\n${missing.slice(0, 10).join('\n')}`);
+  for (const [key, value] of Object.entries(zhHansBackend)) {
+    assert.ok(!/\{\d+\}/.test(key) && !/\{\d+\}/.test(value), 'backend strings are static, no placeholders');
+  }
+  assert.deepEqual(Object.keys(zhHantTwBackend).sort(), Object.keys(zhHansBackend).sort(), 'zh-Hant-TW backend covers the same keys');
+  assert.deepEqual(Object.keys(zhHantHkBackend).sort(), Object.keys(zhHantTwBackend).sort(), 'zh-Hant-HK backend covers the Taiwan table');
+  for (const key of Object.keys(enGbBackend)) assert.ok(zhHansBackend[key] !== undefined, 'en-GB backend keys are real error strings');
+});
+
+test('Rust-defined slash command descriptions are translated', () => {
+  const table = readFileSync(`${tauriSrc}/bots/../slash_commands.rs`, 'utf8');
+  const start = table.indexOf('const LOCAL_ACTIONS');
+  const end = table.indexOf('];', start);
+  const descriptions = [...table.slice(start, end).matchAll(/\(\s*"(\/[^"]*)",\s*\n?\s*"((?:[^"\\]|\\.)*)"/g)].map(m => m[2]);
+  assert.ok(descriptions.length >= 10, `parsed the LOCAL_ACTIONS table, found ${descriptions.length}`);
+  const missing = descriptions.filter(key => zhHans[key] === undefined || zhHantTw[key] === undefined);
+  assert.equal(missing.length, 0, `slash descriptions missing translations:\n${missing.join('\n')}`);
 });

@@ -59,6 +59,8 @@ export function resolvedLocale(pref: LanguagePref = languagePref()): Locale {
 
 let active: Locale = 'en-US';
 const catalogs = new Map<Locale, Record<string, string>>();
+/** Stable Rust error strings, translated at the toast boundary (report/notify); en-US has none. */
+const backendCatalogs = new Map<Locale, Record<string, string>>();
 
 export function currentLocale(): Locale { return active; }
 
@@ -69,6 +71,10 @@ export function setActiveLocale(locale: Locale): void {
 
 export function registerCatalog(locale: Locale, strings: Record<string, string>): void {
   catalogs.set(locale, strings);
+}
+
+export function registerBackendCatalog(locale: Locale, strings: Record<string, string>): void {
+  backendCatalogs.set(locale, strings);
 }
 
 /** BCP 47 tag for <html lang>. */
@@ -108,6 +114,11 @@ export function t(input: string | TemplateStringsArray, ...values: unknown[]): s
     return input.reduce((out, part, i) => i ? out + String(values[i - 1]) + part : part, '');
   }
   return substitute(hit, values);
+}
+
+/** Translates a backend (Rust) error string by exact match; anything else — dynamic errors, already-translated text — passes through. */
+export function tBackend(text: string): string {
+  return backendCatalogs.get(active)?.[text] ?? text;
 }
 
 /** Keeps unsent composer text alive across the language-change reload. */

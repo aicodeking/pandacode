@@ -11,6 +11,7 @@ import { useStatus } from '../store/index.ts';
 import { useOutboxFlusher } from '../store/local.ts';
 import { usePushNotifications } from '../ui/push.ts';
 import { loadAppearance } from '../ui/appearance.ts';
+import { loadLanguage, useLanguage } from '../ui/language.ts';
 import { hasGlass } from '../ui/Glass.tsx';
 import { MenuHost } from '../ui/Menu.tsx';
 import { Sidebar } from '../ui/Sidebar.tsx';
@@ -72,6 +73,8 @@ export default function RootLayout() {
   // bar and native header items into a rail on one side, which only reaches the edge when nothing
   // here pads the window.
   const collapsed = useSidebar(s => s.collapsed);
+  // The stored language lands before first paint, so no wrong-language flash.
+  const languageReady = useLanguage(s => s.hydrated);
   // iPhone Duo, open wide with the rail: the inbox is a sidebar beside the stack, which shows the
   // New thread pane, the open task or another tab (split.tsx). It stays on every route: if the
   // stack changes width in the same update as a tab switch or sheet, iOS drops the tabs from the rail.
@@ -91,6 +94,7 @@ export default function RootLayout() {
   const guardedSheet = { ...sheet, ...androidModal };
   useEffect(() => {
     void loadAppearance();
+    void loadLanguage();
     void connect.init(); // or demo mode (src/demo.ts)
   }, []);
   useOutboxFlusher();
