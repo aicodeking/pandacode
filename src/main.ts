@@ -53,7 +53,7 @@ import { choreograph, enterHeader, enterText, foldTurn, readingTrace } from './t
 import { groupTurns, formatDuration, turnLabel } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
-import { languagePref, setBeforeLanguageReload, takeComposerDrafts, COMPOSER_DRAFT_PREFIX, t } from './i18n.ts';
+import { languagePref, setBeforeLanguageReload, takeComposerDrafts, COMPOSER_DRAFT_PREFIX, t, tBackend } from './i18n.ts';
 import { palette } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
@@ -1060,7 +1060,7 @@ let toastUndo: (() => void) | undefined, toastGeneration = 0;
 function notify(text: string, undo?: (() => void) | { label: string; run: () => void }): void {
   const toast = $('#toast'), generation = ++toastGeneration;
   const action = typeof undo === 'function' ? undefined : undo;
-  toast.textContent = text; toastUndo = typeof undo === 'function' ? undo : undefined;
+  toast.textContent = tBackend(text); toastUndo = typeof undo === 'function' ? undo : undefined;
   if (typeof undo === 'function') {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'toast-undo'; button.textContent = 'Undo'; button.setAttribute('aria-keyshortcuts', 'Meta+Z Control+Z');

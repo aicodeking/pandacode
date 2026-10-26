@@ -1,4 +1,4 @@
-import { t } from './i18n.ts';
+import { t, tBackend } from './i18n.ts';
 import './overlay.css';
 import { escape, icon } from './dom';
 import { mountExternalLinks } from './external-links';
@@ -129,7 +129,7 @@ function filterDeletedTasks(value: OverlaySnapshot): void {
   value.activeCount = value.tasks.filter(task => ['running', 'waiting', 'coordinating'].includes(task.status)).length;
 }
 const label = (status: string): string => ({running:t('Working'),coordinating:t('Coordinating'),waiting:t('Needs attention'),interrupted:t('Paused'),error:t('Failed'),idle:t('Ready'),stopped:t('Stopped'),completed:t('Completed')}[status] || status);
-function showFeedback(text: string, error = false): void { feedback.hidden = !text; feedback.textContent = text; feedback.classList.toggle('is-error', error); }
+function showFeedback(text: string, error = false): void { const message = tBackend(text); feedback.hidden = !message; feedback.textContent = message; feedback.classList.toggle('is-error', error); }
 function render(): void {
   if (!snapshot) return;
   const previousProject = project.value;

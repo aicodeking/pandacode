@@ -67,9 +67,30 @@ differences.
 - "token" stays untranslated in zh (industry usage); "Task/任务" etc. follow
   the table above.
 
+## Backend strings
+
+- **Rust error strings**: the stable, sentence-like `Err("…")` literals are
+  translated through `tBackend()` at the toast boundary (`report()`/`notify()`
+  in main.ts, `showFeedback()` in the launcher) — exact-match lookup, anything
+  dynamic (`format!`-built errors), already-translated text, or unknown passes
+  through unchanged. The values that flow back to agents and comparisons stay
+  raw English; only the display copy is translated. The backend tables export
+  alongside each locale catalog (`export const backend`), and
+  `tests/i18n.test.mjs` scans `src-tauri/src` for the literal set and fails
+  until both full backend tables cover it.
+- **Slash commands**: PandaCode's own commands (the `LOCAL_ACTIONS` table in
+  `slash_commands.rs`) render their descriptions through `t()`; harness-provided
+  commands and descriptions pass through as data.
+- **Bots web chat page** (`bots/channels/web.rs`): the local server picks the
+  locale from the `Accept-Language` header with the same resolution rules and
+  injects a per-locale string table into the page; unknown keys fall back to
+  the page's source English.
+
 ## Deliberately not translated
 
 Agent-facing text (app instructions, token-saver packs, prompt templates),
-preview sample data, log/diagnostic strings, Rust error strings, slash-command
-descriptions that come from harnesses, and the bots web-chat page (served
-separately by the local server).
+preview sample data, `console`/log output, dynamic `format!`-built Rust errors
+(they embed technical detail; the stable sentence set above is what users
+see), harness-provided slash commands and descriptions, and the
+`Approval needed:` message prefix (it is bot-channel protocol, shared with
+Telegram/Slack).
