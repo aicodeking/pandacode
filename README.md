@@ -139,7 +139,7 @@ information:
 | What | Where | How often |
 | --- | --- | --- |
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org` (Cline) | About every 6 hours |
-| Plan usage checks for your signed-in agents | That agent's provider | When the composer usage strip first appears or its installed harness list changes, when you open the menu bar item or Usage dialog, and on Refresh; no background polling |
+| Plan usage checks for your signed-in agents | That agent's provider | When the composer usage strip first appears, provider settings change or its installed harness list changes, when you open the menu bar item or Usage dialog, and on Refresh; no background polling |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |

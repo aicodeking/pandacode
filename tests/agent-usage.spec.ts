@@ -17,7 +17,7 @@ const ledger = () => ({
 
 async function openApp(page: Page, hold: string[] = [], failures: string[] = [], connections: unknown = null): Promise<void> {
   // This suite isolates the on-demand panel; the composer strip has its own suite.
-  await page.route('**/src/chat-usage.ts*', route => route.fulfill({ contentType: 'application/javascript', body: 'export function createChatUsage() { return { update() {}, dismiss() {}, dispose() {} }; }' }));
+  await page.route('**/src/chat-usage.ts*', route => route.fulfill({ contentType: 'application/javascript', body: 'export function createChatUsage() { return { update() {}, invalidate() {}, dismiss() {}, dispose() {} }; }' }));
   await page.addInitScript(({ hold, failures, ledgerFixture, connections }) => {
     const result = (provider: string, status: string, message: string | null = null) => ({
       provider, status, windows: [], plan: null, message, checkedAt: Date.now(), stale: false, source: null, dashboardUrl: null,

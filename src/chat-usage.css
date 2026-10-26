@@ -3,10 +3,37 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  width: 100%;
+  margin: 0 12px;
+  padding-right: 14px;
+  background: #faf9f4;
+  border: 0;
+  border-radius: 5px 5px 0 0;
 }
-.composer-context-row > .composer-context { flex: 1 1 auto; min-width: 0; }
-#chat-usage-host { position: relative; flex: 0 0 auto; min-width: 0; min-height: 32px; margin-left: auto; margin-right: 12px; overflow: visible; }
+html[data-theme="dark"] .composer-context-row {
+  background: #24241f;
+  border: 0;
+}
+.workspace[data-wallpaper] .conversation-pane .composer-context-row {
+  background: var(--thread-surface);
+  border: 0;
+}
+.composer-context-row > .composer-context {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+}
+#chat-usage-host {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 32px;
+  margin-left: auto;
+  margin-right: 0;
+  overflow: visible;
+}
 #chat-usage-host:empty { min-height: 0; margin-right: 0; }
 .chat-usage-strip {
   position: relative;
@@ -17,8 +44,11 @@
   height: 32px;
   width: max-content;
   max-width: none;
-  padding: 2px 5px;
-  border-radius: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   color: var(--muted);
   font-size: 11px;
   white-space: nowrap;
@@ -33,11 +63,13 @@
   min-width: 0;
   width: max-content;
   overflow: visible;
-  background: linear-gradient(160deg,var(--glass-warm),var(--glass-tint) 70%);
-  border: 1px solid var(--glass-edge);
-  box-shadow: 0 0 0 1px var(--glass-ring),0 16px 44px -14px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near),inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: blur(26px) saturate(1.45);
-  -webkit-backdrop-filter: blur(26px) saturate(1.45);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .chat-usage-used { font-weight: 600; }
 .chat-usage-used, .chat-usage-refresh { flex: 0 0 auto; }
@@ -77,10 +109,10 @@
 .chat-usage-strip.is-expanded .chat-usage-scroll { flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
 .chat-usage-strip.is-expanded .chat-usage-scroll::-webkit-scrollbar { display: none; }
 .chat-usage-strip.is-expanded .chat-usage-full { display: flex; }
-.chat-usage-provider { position: relative; display: flex; align-items: center; gap: 4px; height: 25px; padding: 2px 5px; border-radius: 13px; }
+.chat-usage-provider { position: relative; display: flex; align-items: center; gap: 4px; height: 25px; padding: 2px 5px; border-radius: 4px; }
 .chat-usage-provider:hover, .chat-usage-provider:focus-visible, .chat-usage-icon:hover, .chat-usage-icon:focus-visible { outline: 1px solid var(--focus); background: var(--accent-tint); }
 .chat-usage-provider .provider-logo { width: 16px; height: 16px; object-fit: contain; }
 .chat-usage-more { margin-left: -2px; font-size: 10px; }
 .chat-usage-tip-panel { position: absolute; z-index: 15; box-sizing: border-box; width: max-content; max-width: min(320px, calc(100vw - 24px)); padding: 8px 10px; border: 1px solid var(--glass-edge); border-radius: 9px; background: linear-gradient(160deg,var(--glass-warm),var(--glass-tint) 70%); box-shadow: 0 0 0 1px var(--glass-ring),0 16px 44px -14px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near),inset 0 1px 0 var(--glass-highlight); color: var(--text); white-space: pre-line; overflow-wrap: anywhere; line-height: 1.45; pointer-events: none; }
 .chat-usage-tip-panel[hidden] { display: none; }
-@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .chat-usage-strip.is-expanded, .chat-usage-tip-panel { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--raised); border-color: var(--border); } }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) { .chat-usage-tip-panel { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--raised); border-color: var(--border); } }

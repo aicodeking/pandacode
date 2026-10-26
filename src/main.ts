@@ -3739,7 +3739,7 @@ function showDeleteTask(task = session()): void {
 }
 function showRename(): void { const s = session(); if (!s) return; modal('Rename task', `<form id="rename-form"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
 let settingsDiscoveryGeneration = 0;
-async function discoverSettingsProviders(): Promise<Provider[]> {
+async function discoverSettingsProviders(refreshUsage = false): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
   modelCatalogs.clear();
@@ -3750,6 +3750,7 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
     if (previous?.path === found.path && previous?.version === found.version) found.models = previous.models;
   }
   state.providers = providers;
+  if (refreshUsage) chatUsage.invalidate();
   syncChatUsage();
   return providers;
 }
@@ -3788,7 +3789,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
           const unsubscribe = wallpapers.subscribe(() => { const box = host.querySelector<HTMLInputElement>('#daily-wallpapers'); if (box) box.checked = wallpapers.enabled; });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
+        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(true); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
       },
       close: closeSettings,
@@ -3836,7 +3837,7 @@ async function showProviderConnections(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const { mountProviderSettings } = await import('./provider-settings');
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(true); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
   modelCatalogs.delete(id);

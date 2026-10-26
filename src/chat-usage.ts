@@ -10,16 +10,35 @@ let nextTooltipId = 0;
 
 /** Small composer view. Provider snapshots and request state belong to this instance so
  * mounting another conversation cannot dispose or overwrite its cache. */
-export function createChatUsage(): { update(host: HTMLElement | null, providers: Provider[]): void; dismiss(): void; dispose(): void } {
+export function createChatUsage(): { update(host: HTMLElement | null, providers: Provider[]): void; invalidate(): void; dismiss(): void; dispose(): void } {
   const entries = new Map<ProviderId, Entry>();
   let mounted: HTMLElement | null = null;
   let observed: HTMLElement | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let generation = 0, providerKey = '', renderKey = '';
   let expanded = false, collapsed = false, refreshing = false, disposed = false, ignoreNextFocusExpansion = false;
+  let activeRequests = 0;
+  const requestWaiters: { generation: number; resolve: (acquired: boolean) => void }[] = [];
   const tooltipId = `chat-usage-tip-${++nextTooltipId}`;
   let tooltipFor: HTMLElement | null = null;
   let tooltipProviderId: string | null = null;
+
+  function acquireRequest(mine: number): Promise<boolean> {
+    if (mine !== generation || disposed) return Promise.resolve(false);
+    if (activeRequests < 3) { activeRequests++; return Promise.resolve(true); }
+    return new Promise(resolve => requestWaiters.push({ generation: mine, resolve }));
+  }
+
+  function releaseRequest(): void {
+    activeRequests--;
+    while (requestWaiters.length) {
+      const waiter = requestWaiters.shift()!;
+      if (waiter.generation !== generation || disposed) { waiter.resolve(false); continue; }
+      activeRequests++;
+      waiter.resolve(true);
+      break;
+    }
+  }
 
   function relativeReset(value?: string | null): string {
     if (!value) return 'reset time not reported';
@@ -93,7 +112,8 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
 
   function onClick(event: MouseEvent): void {
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('.chat-usage-refresh')) { void load(true); return; }
+    const refresh = target?.closest<HTMLButtonElement>('.chat-usage-refresh');
+    if (refresh) { refresh.focus({ preventScroll: true }); void load(true); return; }
     const stackIcon = target?.closest<HTMLElement>('.chat-usage-icon');
     if (stackIcon) {
       expanded = true; syncExpanded();
@@ -225,7 +245,17 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
       ? document.activeElement.dataset.usageProvider ?? (document.activeElement.classList.contains('chat-usage-refresh') ? 'refresh' : '') : '';
     if (tooltipFor?.dataset.usageProvider) tooltipProviderId = tooltipFor.dataset.usageProvider;
     const values = [...entries.values()].filter(entry => peak(entry.value) !== null);
-    if (!values.length) { host.replaceChildren(); host.style.width = '0'; hideTip(); return; }
+    if (!values.length) {
+      host.replaceChildren(); host.style.width = '0'; hideTip();
+      if (active) {
+        const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+        const fallback = prompt && !prompt.disabled ? prompt
+          : host.parentElement?.querySelector<HTMLElement>('button:not(:disabled), a, input:not(:disabled), textarea:not(:disabled), [tabindex]:not([aria-disabled="true"])')
+          ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+        fallback?.focus({ preventScroll: true });
+      }
+      return;
+    }
     const icons = values.slice(0, 4).map((entry, index) => {
       const used = peak(entry.value);
       return `<button type="button" class="chat-usage-icon" data-usage-provider="${entry.provider.id}" data-usage-tip="${escape(details(entry))}" aria-label="${escape(entry.provider.name)} usage: ${used === null ? 'unavailable' : `${used}% used`}" aria-describedby="${tooltipId}" style="--usage-stack:${index}">${providerLogo(entry.provider.id)}</button>`;
@@ -234,9 +264,14 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
       const used = peak(entry.value);
       return `<button type="button" class="chat-usage-provider" data-usage-provider="${entry.provider.id}" data-usage-tip="${escape(details(entry))}" aria-label="${escape(entry.provider.name)} usage: ${used === null ? 'unavailable' : `${used}% used`}" aria-describedby="${tooltipId}">${providerLogo(entry.provider.id)}<span>${used === null ? '&#8212;' : `${used}%`}</span></button>`;
     }).join('');
-    host.innerHTML = `<div class="chat-usage-strip${collapsed ? ' is-collapsed' : ''}${expanded ? ' is-expanded' : ''}"><span class="chat-usage-used">Used</span><div class="chat-usage-stack">${icons}${values.length > 4 ? `<span class="chat-usage-more">+${values.length - 4}</span>` : ''}</div><div class="chat-usage-scroll"><div class="chat-usage-full">${providers}</div></div><button type="button" class="chat-usage-refresh icon-button" aria-label="Refresh account usage" title="Refresh account usage"${refreshing || values.some(entry => entry.loading) ? ' disabled' : ''}>${icon('refresh')}</button></div><span class="chat-usage-tip-panel" id="${tooltipId}" role="tooltip" hidden></span>`;
+    host.innerHTML = `<div class="chat-usage-strip${collapsed ? ' is-collapsed' : ''}${expanded ? ' is-expanded' : ''}"><span class="chat-usage-used">Used</span><div class="chat-usage-stack">${icons}${values.length > 4 ? `<span class="chat-usage-more">+${values.length - 4}</span>` : ''}</div><div class="chat-usage-scroll"><div class="chat-usage-full">${providers}</div></div><button type="button" class="chat-usage-refresh icon-button" aria-label="Refresh account usage" title="Refresh account usage"${refreshing || [...entries.values()].some(entry => entry.loading) ? ' disabled' : ''}>${icon('refresh')}</button></div><span class="chat-usage-tip-panel" id="${tooltipId}" role="tooltip" hidden></span>`;
     measure();
-    if (active === 'refresh') host.querySelector<HTMLElement>('.chat-usage-refresh')?.focus({ preventScroll: true });
+    if (active === 'refresh') {
+      const refresh = host.querySelector<HTMLButtonElement>('.chat-usage-refresh');
+      const group = collapsed && !expanded ? '.chat-usage-stack' : '.chat-usage-full';
+      if (refresh && !refresh.disabled) refresh.focus({ preventScroll: true });
+      else host.querySelector<HTMLElement>(`${group} [data-usage-provider]`)?.focus({ preventScroll: true });
+    }
     else if (active) {
       const group = collapsed && !expanded ? '.chat-usage-stack' : '.chat-usage-full';
       const replacement = host.querySelector<HTMLElement>(`${group} [data-usage-provider="${CSS.escape(active)}"]`)
@@ -265,6 +300,7 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
       while (mine === generation && !disposed) {
         const entry = work[next++];
         if (!entry) return;
+        if (!await acquireRequest(mine)) return;
         try {
           const result = await call<AgentUsage>('agent_usage', { provider: entry.provider.id, refresh });
           if (mine === generation && entries.get(entry.provider.id) === entry && result?.provider === entry.provider.id && Array.isArray(result.windows)) entry.value = result;
@@ -272,6 +308,7 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
         } catch {
           if (mine === generation && entries.get(entry.provider.id) === entry) entry.value = undefined;
         } finally {
+          releaseRequest();
           if (mine === generation && entries.get(entry.provider.id) === entry) {
             entry.loading = false;
             render();
@@ -301,6 +338,13 @@ export function createChatUsage(): { update(host: HTMLElement | null, providers:
       else unbind();
       render();
       if (host) void load(false);
+    },
+    invalidate() {
+      if (disposed) return;
+      generation++; refreshing = false; expanded = false; collapsed = false; renderKey = '';
+      hideTip();
+      for (const entry of entries.values()) { entry.value = undefined; entry.loading = false; entry.requested = false; }
+      render();
     },
     dismiss() { expanded = false; syncExpanded(); hideTip(); },
     dispose() {

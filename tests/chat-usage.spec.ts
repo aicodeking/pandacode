@@ -9,15 +9,17 @@ const providers = [
   { id: 'mimo', name: 'MiMo', installed: true },
 ].map(p => ({ ...p, path: null, version: '', models: [] }));
 
-async function fixture(page: Page, options: { providers?: typeof providers; holdAll?: boolean } = {}): Promise<void> {
-  await page.addInitScript((holdAll: boolean) => {
+async function fixture(page: Page, options: { providers?: typeof providers; holdAll?: boolean; holdProvider?: string } = {}): Promise<void> {
+  await page.addInitScript(({ holdAll, holdProvider }: { holdAll: boolean; holdProvider?: string }) => {
     const windows: Record<string, unknown[]> = {
       claude: [{ label: '5-hour window', usedPercent: 0, resetsAt: new Date(Date.now() + 90 * 60_000).toISOString() }, { label: 'Weekly window', usedPercent: 42, resetsAt: null }],
       codex: [{ label: 'Weekly window', usedPercent: 100, resetsAt: new Date(Date.now() + 2 * 86_400_000).toISOString() }],
       kimi: [{ label: 'Daily', usedPercent: 15 }], glm: [{ label: 'Daily', usedPercent: 28 }], mimo: [{ label: 'Daily', usedPercent: 63 }],
+      antigravity: [{ label: 'Daily', usedPercent: 12 }],
     };
     const f: UsageFixture = { calls: [], values: {}, holds: {} };
-    (f as any).holdProvider = null;
+    (f as any).holdAll = holdAll;
+    (f as any).holdProvider = holdProvider ?? null;
     (f as any).resolveHold = null;
     (f as any).active = 0;
     (f as any).maxActive = 0;
@@ -30,14 +32,14 @@ async function fixture(page: Page, options: { providers?: typeof providers; hold
         (f as any).active++;
         (f as any).maxActive = Math.max((f as any).maxActive, (f as any).active);
         await new Promise(resolve => setTimeout(resolve, 10));
-        if (holdAll) await new Promise<void>(resolve => { ((f as any).releases ??= []).push(resolve); });
+        if ((f as any).holdAll) await new Promise<void>(resolve => { ((f as any).releases ??= []).push(resolve); });
         if ((f as any).holdProvider === args.provider) await new Promise<void>(resolve => { (f as any).resolveHold = resolve; });
         (f as any).active--;
         return structuredClone(f.values[args.provider]);
       },
     };
-  }, options.holdAll ?? false);
-  await page.route('**/chat-usage-fixture', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/src/styles.css"><link rel="stylesheet" href="/src/motion.css"><link rel="stylesheet" href="/src/chat-usage.css"></head><body><div class="composer-context-row" style="width:500px"><div class="composer-context">Project <span>main</span></div><div id="chat-usage-host"></div></div><script type="module">import { createChatUsage } from '/src/chat-usage.ts'; import { providers } from '/src/chat-usage-fixture.js'; window.usage = createChatUsage(); window.usage.update(document.querySelector('#chat-usage-host'), providers);</script></body></html>` }));
+  }, { holdAll: options.holdAll ?? false, holdProvider: options.holdProvider });
+  await page.route('**/chat-usage-fixture', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/src/styles.css"><link rel="stylesheet" href="/src/motion.css"><link rel="stylesheet" href="/src/chat-usage.css"></head><body><div class="composer-context-row" style="width:500px"><div class="composer-context">Project <span>main</span></div><div id="chat-usage-host"></div></div><textarea id="prompt" aria-label="Prompt"></textarea><script type="module">import { createChatUsage } from '/src/chat-usage.ts'; import { providers } from '/src/chat-usage-fixture.js'; window.usage = createChatUsage(); window.usage.update(document.querySelector('#chat-usage-host'), providers);</script></body></html>` }));
   await page.route('**/chat-usage-fixture.js', route => route.fulfill({ contentType: 'application/javascript', body: `export const providers = ${JSON.stringify(options.providers ?? providers)}; window.fixtureProviders = providers;` }));
   await page.goto('/chat-usage-fixture');
   await page.waitForFunction(() => Boolean((window as any).usage));
@@ -46,7 +48,8 @@ async function fixture(page: Page, options: { providers?: typeof providers; hold
     else {
       await expect(page.locator('.chat-usage-strip')).toBeVisible();
       await expect(page.getByRole('button', { name: 'Claude usage: 42% used' })).toBeVisible();
-      await expect(page.locator('.chat-usage-refresh')).toBeEnabled();
+      if (options.holdProvider) await expect(page.locator('.chat-usage-refresh')).toBeDisabled();
+      else await expect(page.locator('.chat-usage-refresh')).toBeEnabled();
     }
   } else await expect(page.locator('.chat-usage-strip')).toHaveCount(0);
 }
@@ -138,10 +141,50 @@ test('Chat usage: no finite quota entries leave the host empty and clear its lay
     for (const id of ['claude', 'codex', 'kimi', 'glm', 'mimo']) f.values[id] = { provider: id, status: 'signedOut', windows: [], checkedAt: Date.now(), stale: false };
   });
   await page.locator('.chat-usage-strip').hover();
+  await page.locator('.chat-usage-full [data-usage-provider="claude"]').focus();
   await page.locator('.chat-usage-refresh').click();
   await expect(page.locator('.chat-usage-strip')).toHaveCount(0);
   await expect(page.locator('#chat-usage-host')).toHaveCSS('width', '0px');
   await expect(page.locator('#chat-usage-host')).toBeEmpty();
+  await expect(page.locator('#prompt')).toBeFocused();
+});
+
+test('Chat usage: invalidation recovers same-provider entries after every candidate is hidden', async ({ page }) => {
+  await fixture(page);
+  await page.evaluate(() => {
+    const f = (window as any).__usageFixture;
+    for (const id of ['claude', 'codex', 'kimi', 'glm', 'mimo']) f.values[id] = { provider: id, status: 'signedOut', windows: [], checkedAt: Date.now(), stale: false };
+  });
+  await page.locator('.chat-usage-strip').hover();
+  await page.locator('.chat-usage-refresh').click();
+  await expect(page.locator('#chat-usage-host')).toBeEmpty();
+  await page.evaluate(() => {
+    const f = (window as any).__usageFixture;
+    f.values.claude = { provider: 'claude', status: 'ready', windows: [{ label: 'Daily', usedPercent: 0 }], checkedAt: Date.now(), stale: false };
+    (window as any).usage.invalidate();
+    (window as any).usage.update(document.querySelector('#chat-usage-host'), (window as any).fixtureProviders);
+  });
+  await expect(page.getByRole('button', { name: 'Claude usage: 0% used' })).toBeVisible();
+});
+
+test('Chat usage: invalidation ignores old held responses and serializes restarted requests', async ({ page }) => {
+  await fixture(page, { holdAll: true });
+  const calls = () => page.evaluate(() => (window as any).__usageFixture.calls.length);
+  await expect.poll(calls).toBe(3);
+  await page.evaluate(() => {
+    const f = (window as any).__usageFixture;
+    f.holdAll = false;
+    f.values.claude = { provider: 'claude', status: 'ready', windows: [{ label: 'Daily', usedPercent: 0 }], checkedAt: Date.now(), stale: false };
+    (window as any).usage.invalidate();
+    (window as any).usage.update(document.querySelector('#chat-usage-host'), (window as any).fixtureProviders);
+  });
+  await page.waitForTimeout(50);
+  expect(await calls()).toBe(3);
+  expect(await page.evaluate(() => (window as any).__usageFixture.maxActive)).toBe(3);
+  await page.evaluate(() => (window as any).__usageFixture.releases.splice(0).forEach((release: () => void) => release()));
+  await expect.poll(calls).toBe(8);
+  await expect(page.getByRole('button', { name: 'Claude usage: 0% used' })).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__usageFixture.maxActive)).toBeLessThanOrEqual(3);
 });
 
 test('Chat usage: initial reads are capped, mount reuse does not reread, and only explicit refresh fetches again', async ({ page }) => {
@@ -160,6 +203,18 @@ test('Chat usage: initial reads are capped, mount reuse does not reread, and onl
   await page.getByRole('button', { name: 'Refresh account usage' }).click();
   await page.clock.runFor(100);
   await expect.poll(async () => (await calls()).filter(c => c.refresh).length).toBe(5);
+});
+
+test('Chat usage: visible refresh stays disabled while a hidden candidate read is in flight', async ({ page }) => {
+  const extendedProviders = [...providers, { id: 'antigravity', name: 'Antigravity', installed: true, path: null, version: '', models: [] }];
+  await fixture(page, { providers: extendedProviders, holdProvider: 'antigravity' });
+  await expect.poll(() => page.evaluate(() => (window as any).__usageFixture.calls.length)).toBe(6);
+  await page.locator('.chat-usage-strip').hover();
+  await expect(page.getByRole('button', { name: 'Claude usage: 42% used' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Antigravity usage: 12% used' })).toHaveCount(0);
+  await expect(page.locator('.chat-usage-refresh')).toBeDisabled();
+  await page.evaluate(() => (window as any).__usageFixture.resolveHold());
+  await expect(page.locator('.chat-usage-refresh')).toBeEnabled();
 });
 
 test('Chat usage: host replacement during a pending request renders into only the current host', async ({ page }) => {

@@ -12,7 +12,7 @@ The panel opens on **Overview**:
 
 Each agent has a tab with its limit windows, its cost for the period and a year activity calendar.
 
-The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. The compact strip checks default setups when it first appears or the installed harness list changes; the panel and menu bar item check when opened. Further checks require Refresh. Limits may include usage from the same account in other applications.
+The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. The compact strip checks default setups when it first appears, provider settings change or the installed harness list changes; the panel and menu bar item check when opened. Further checks require Refresh. Limits may include usage from the same account in other applications.
 
 ## Estimated API cost
 
@@ -61,7 +61,7 @@ OpenCode authentication content takes precedence over its saved file, and saved 
 
 ## Performance and privacy
 
-- The detailed panel and its stylesheet load only when opened. The compact composer strip reads a default-account snapshot when first mounted and when the installed harness list changes, reuses it across thread switches, and reads again on explicit Refresh. Neither surface polls on a background timer. The strip does not scan local logs or fetch cost estimates.
+- The detailed panel and its stylesheet load only when opened. The compact composer strip reads a default-account snapshot when first mounted and when provider settings or the installed harness list change, reuses it across thread switches, and reads again on explicit Refresh. Neither surface polls on a background timer. The strip does not scan local logs or fetch cost estimates.
 - Provider cards settle independently with at most three reads in flight. Closing the panel stops its queued reads and ignores late responses.
 - The native cache coalesces concurrent reads per provider, caches for 60 seconds, and limits explicit refresh to one attempt every 10 seconds. Configuration changes in PandaCode invalidate the relevant entry.
 - Only bounded local credential files and fixed HTTPS quota endpoints are used. Requests have time and response-size limits and do not follow redirects carrying credentials.
