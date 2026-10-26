@@ -80,7 +80,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
-import { languagePref, setBeforeLanguageReload, takeComposerDrafts, COMPOSER_DRAFT_PREFIX, t } from './i18n.ts';
+import { languagePref, setBeforeLanguageReload, takeComposerDrafts, COMPOSER_DRAFT_PREFIX, t, tBackend } from './i18n.ts';
 import { palette } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
@@ -1589,6 +1589,8 @@ const toastCountHtml = (count: number): string => `<span class="toast-count" ari
  * marks a notice raised by a failure. An identical notice while it shows only bumps its count, so a screen reader hears
  * "Repeated N times" rather than the whole message again. */
 function notify(text: string, undo?: (() => void) | ToastAction | readonly ToastAction[], options: ToastOptions = {}): void {
+  // Backend-originated text (tool and stream failures) translates at the toast boundary.
+  text = tBackend(text);
   const toast = $('#toast'), wasVisible = toastVisible(toast), plain = !undo && !options.settle;
   const queued = queueToast({ holding: wasVisible && Boolean(toastSettle), queue: toastQueue }, { text, tone: options.tone, important: options.important, undo, options }, Boolean(options.settle));
   toastQueue = queued.queue;

@@ -1240,3 +1240,8 @@ data was moved. No public publication or notarization was performed.
   `tsc`/39 unit tests (including desktop-mapping parity)/`expo lint`.
   Terminology and generation notes in
   [src/locales/GLOSSARY.md](../src/locales/GLOSSARY.md).
+- Follow-up: stable Rust error strings (838 sentence-like `Err` literals)
+  translate through `tBackend()` at the toast boundary; PandaCode's own slash
+  command descriptions render translated; the bots web chat page resolves its
+  locale from `Accept-Language` and ships per-locale string tables. The i18n
+  guardrail scans `src-tauri/src` for both literal sets.

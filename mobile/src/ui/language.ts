@@ -8,24 +8,27 @@ import { LOCALES, makeTranslate, resolveSystemLocale, type LanguageChoice, type 
 import { CATALOGS } from '../i18n/catalogs.ts';
 
 const KEY = 'language';
-export const useLanguage = create<{ choice: LanguageChoice }>(() => ({ choice: 'system' }));
+export const useLanguage = create<{ choice: LanguageChoice; hydrated: boolean }>(() => ({ choice: 'system', hydrated: false }));
 
 export function setLanguage(choice: LanguageChoice) {
   useLanguage.setState({ choice });
   set(KEY, choice).catch(() => undefined);
 }
 
-/** Call once at start; an unknown or missing value means System. */
+/** Call once at start; an unknown or missing value means System. RootLayout waits for this before first paint. */
 export async function loadLanguage() {
   const stored = await get(KEY);
   if (stored === 'system' || LOCALES.includes(stored as Locale)) useLanguage.setState({ choice: stored as LanguageChoice });
+  useLanguage.setState({ hydrated: true });
 }
 
+let systemTags: readonly string[] | undefined;
 export function currentLocale(): Locale {
   const choice = useLanguage.getState().choice;
   if (choice !== 'system') return choice;
-  const tags = Localization.getLocales().map(l => l.languageTag ?? l.languageCode ?? '').filter(Boolean);
-  return resolveSystemLocale(tags.length ? tags : ['en']);
+  // The phone's locales never change mid-session; read the bridge once.
+  systemTags ??= Localization.getLocales().map(l => l.languageTag ?? l.languageCode ?? '').filter(Boolean);
+  return resolveSystemLocale(systemTags.length ? systemTags : ['en']);
 }
 
 /** Reactive translator for components: `const t = useT();` Re-renders on language change. */
