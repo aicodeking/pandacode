@@ -34,3 +34,14 @@
 }
 .voice-note { color: var(--text-secondary); font-size: 12.5px; margin: 8px 0 0; }
 .voice-language { min-width: 200px; }
+
+.voice-key, .voice-base-url {
+  width: 220px;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid rgb(127 127 127 / 0.3);
+  background: transparent;
+  color: var(--text);
+}
