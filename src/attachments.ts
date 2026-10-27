@@ -1,5 +1,5 @@
 import './attachments.css';
-import { call, chooseAttachmentFolder, chooseAttachments, preview } from './bridge';
+import { call, callRaw, chooseAttachmentFolder, chooseAttachments } from './bridge';
 import { escape, icon } from './dom';
 
 /** Inputs the user adds to one message: images travel as native image blocks,
@@ -34,6 +34,9 @@ const MAX_DOCUMENTS = 5;
 const MAX_FOLDERS = 3;
 const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp)$/i;
 const MAX_INLINE_TEXT = 32768;
+/** Documents the desktop extracts with textutil or Spotlight rather than reading as text. */
+const BINARY_DOCUMENTS = /\.(doc|docx|rtf|rtfd|odt|wordml|webarchive|pdf|pages|key|numbers|ppt|pptx|xls|xlsx|epub)$/i;
+const MAX_DROP_BYTES = 64 * 1024 * 1024;
 
 function id(): string { return crypto.randomUUID(); }
 function baseName(path: string): string { return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
@@ -133,6 +136,14 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     if (!insertInstead(failed.map(item => quotePath(item.path)), 'path')) failed.forEach(item => host.report(item.error));
   }
 
+  /** Browser File objects carry no path, so binary documents go in as raw bytes and the
+   * desktop extracts them with its usual tools from a temporary copy. */
+  async function importDroppedDocument(file: File): Promise<Omit<PromptDocument, 'kind' | 'id'>> {
+    if (file.size > MAX_DROP_BYTES) throw new Error(`${file.name} is too large to attach.`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return callRaw<Omit<PromptDocument, 'kind' | 'id'>>('import_dropped_document', bytes, { 'x-pandacode-file-name': file.name });
+  }
+
   /** Browser drops and pastes deliver File objects rather than paths. */
   async function attachFiles(files: File[], origin: 'paste' | 'drop'): Promise<void> {
     const taskId = target();
@@ -143,11 +154,16 @@ export function mountPromptAttachments(host: AttachmentsHost) {
         if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.test(file.name)) {
           const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('Could not read the image.')); reader.onload = () => resolve(String(reader.result)); reader.readAsDataURL(file); });
           await addImage(taskId, { dataUrl, name: file.name || (origin === 'paste' ? 'Pasted image.png' : 'Image.png'), origin });
+        } else if (BINARY_DOCUMENTS.test(file.name) && file.size <= MAX_DROP_BYTES) {
+          add(taskId, { kind: 'document', id: id(), ...(await importDroppedDocument(file)) });
         } else {
-          // Browser File objects carry no path, so only text can be read here.
+          // Readable text attaches inline; anything else gets one native extraction attempt.
           const text = (await file.text()).slice(0, MAX_INLINE_TEXT + 1);
-          if (!text.trim() || text.includes('\0')) throw new Error(`${file.name} is not a text document. Attach it with the picker instead.`);
-          add(taskId, { kind: 'document', id: id(), path: file.name, name: file.name, size: file.size, text: text.slice(0, MAX_INLINE_TEXT), truncated: text.length > MAX_INLINE_TEXT, method: 'text' });
+          const readable = Boolean(text.trim()) && !text.includes('\0');
+          const document = readable ? null : await importDroppedDocument(file).catch(() => null);
+          if (document) add(taskId, { kind: 'document', id: id(), ...document });
+          else if (readable) add(taskId, { kind: 'document', id: id(), path: file.name, name: file.name, size: file.size, text: text.slice(0, MAX_INLINE_TEXT), truncated: text.length > MAX_INLINE_TEXT, method: 'text' });
+          else throw new Error(`${file.name} is not a text document. Attach it with the picker instead.`);
         }
         attached++;
       } catch (error) { if (origin === 'drop' && file.name && !alreadyAttached(error)) failed.push({ file, error }); else host.report(error); }
@@ -225,32 +241,28 @@ export function mountPromptAttachments(host: AttachmentsHost) {
       attachFiles(files, 'paste').catch(host.report);
       return true;
     },
-    /** Files dropped on the window attach to the current task; the composer lights up while dragging. */
+    /** Files dropped on the window attach to the current task; the composer lights up while
+     * dragging. Drops arrive as ordinary HTML5 events because the native drag-drop handler
+     * is off (`dragDropEnabled` in tauri.conf.json) — that is what lets text be dragged
+     * into the prompt, where the webview inserts it at the caret by itself. */
     installDropZone(zone: () => HTMLElement | null): void {
       // Open dialogs (moodboards, settings) own their drops.
       const accepting = () => Boolean(host.taskId()) && !document.querySelector('dialog[open]');
       const setActive = (active: boolean) => zone()?.classList.toggle('drop-active', active && accepting());
-      if (preview) {
-        let depth = 0;
-        document.addEventListener('dragenter', event => { if (event.dataTransfer?.types.includes('Files')) { depth++; setActive(true); } });
-        document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; setActive(false); } });
-        document.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files') && accepting()) event.preventDefault(); });
-        document.addEventListener('drop', event => {
-          depth = 0; setActive(false);
-          const files = [...(event.dataTransfer?.files ?? [])];
-          if (!files.length || !accepting()) return;
-          event.preventDefault();
-          attachFiles(files, 'drop').catch(host.report);
-        });
-        // Tests stand in for the native drop, which delivers paths.
-        window.addEventListener('pandacode-preview-drop', event => { if (accepting()) attachPaths((event as CustomEvent<string[]>).detail, 'unknown', true).catch(host.report); });
-        return;
-      }
-      import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent(event => {
-        if (event.payload.type === 'enter' || event.payload.type === 'over') setActive(true);
-        else if (event.payload.type === 'leave') setActive(false);
-        else if (event.payload.type === 'drop') { setActive(false); if (accepting()) attachPaths(event.payload.paths, 'unknown', true).catch(host.report); }
-      })).catch(() => { /* Drag and drop is unavailable in this webview. */ });
+      let depth = 0;
+      document.addEventListener('dragenter', event => { if (event.dataTransfer?.types.includes('Files')) { depth++; setActive(true); } });
+      document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; setActive(false); } });
+      // Cancelling dragover keeps webviews from opening the dropped file instead of dropping it.
+      document.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) event.preventDefault(); });
+      document.addEventListener('drop', event => {
+        depth = 0; setActive(false);
+        const files = [...(event.dataTransfer?.files ?? [])];
+        if (!files.length) return;
+        event.preventDefault();
+        if (accepting()) attachFiles(files, 'drop').catch(host.report);
+      });
+      // Tests stand in for the native drop, which used to deliver paths.
+      window.addEventListener('pandacode-preview-drop', event => { if (accepting()) attachPaths((event as CustomEvent<string[]>).detail, 'unknown', true).catch(host.report); });
     },
   };
 }

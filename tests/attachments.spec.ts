@@ -212,6 +212,35 @@ test('a browser drop that cannot be read inserts the file name with a note', asy
   await expect(chips(page)).toHaveCount(0);
 });
 
+test('dropping a binary document imports it through the native extractors', async ({ page }) => {
+  await probe(page);
+  await page.evaluate(() => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'Product brief.pdf', { type: 'application/pdf' }));
+    document.dispatchEvent(new DragEvent('dragenter', { dataTransfer: data, bubbles: true }));
+    document.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+  });
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first()).toContainText('Product brief.pdf');
+  await expect(chips(page).first()).toContainText('PDF · 47 KB');
+  const imported = (await calls(page, 'import_dropped_document'))[0];
+  expect(imported.args['x-pandacode-file-name']).toBe('Product brief.pdf');
+});
+
+test('selected text drags into the prompt and lands at the caret', async ({ page }) => {
+  await probe(page);
+  const message = page.locator('.user-message .message-content').first();
+  await expect(message).toContainText('Search feels a little slow');
+  await prompt(page).fill('About this: ');
+  await page.evaluate(() => {
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.selectAllChildren(document.querySelector('.user-message .message-content')!);
+  });
+  await message.dragTo(prompt(page));
+  await expect(prompt(page)).toHaveValue(/Search feels a little slow/);
+});
+
 test('a failed send restores the attachments to the composer', async ({ page }) => {
   await probe(page, `if (command === 'send_message') throw new Error('Harness is offline.');`);
   await attachButton(page).click();
