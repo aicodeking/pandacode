@@ -51,6 +51,47 @@ test('global and per-provider environment variables are added, toggled, removed,
   expect(errors).toEqual([]);
 });
 
+test('every known harness has an environment editor, generated when it has no hand-written card', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+
+  // Drift guard: every harness in the roster gets an editor and a toggle, and
+  // (except the three that launch Claude) an executable override, generated
+  // cards included — so a new harness never lands without settings.
+  await expect(page.locator('form[data-env-provider="codex"]')).toHaveCount(1);
+  const roster = await page.evaluate(() => (window as any).__previewProviders as [string, string][]);
+  expect(roster.length).toBeGreaterThan(0);
+  const ids = roster.map(([id]) => id);
+  const launchesClaude = new Set(['claude', 'glm', 'mimo']);
+  const editors = await page.evaluate(() => ({
+    env: [...document.querySelectorAll<HTMLFormElement>('form[data-env-provider]')].map(form => form.dataset.envProvider),
+    toggles: [...document.querySelectorAll<HTMLInputElement>('input[data-use-global]')].map(input => input.dataset.useGlobal),
+    executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable),
+  }));
+  expect(new Set(editors.env)).toEqual(new Set([...ids, '*']));
+  expect(editors.env).toHaveLength(ids.length + 1);
+  expect(new Set(editors.toggles)).toEqual(new Set(ids));
+  expect(new Set(editors.executables)).toEqual(new Set(ids.filter(id => !launchesClaude.has(id))));
+
+  // A generated card behaves like a hand-written one: roster name, variables
+  // (values never echoed), the global toggle, removal.
+  const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await expect(codex.locator('h3')).toContainText('Codex');
+  await codex.locator('details.connection-env > summary').click();
+  await expect(codex.getByRole('checkbox', { name: 'Use global environment variables' })).toBeChecked();
+  await codex.getByLabel('Variable name').fill('CODEX_EXTRA');
+  await codex.getByLabel('Variable value').fill('proxy-secret-value');
+  await codex.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(codex.locator('.connection-env-var code')).toHaveText('CODEX_EXTRA');
+  await expect(codex).not.toContainText('proxy-secret-value');
+  await codex.getByRole('button', { name: 'Remove CODEX_EXTRA' }).click();
+  await expect(codex.locator('.connection-env-var')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('provider connections expose Kilo models, approval modes and executable settings', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();

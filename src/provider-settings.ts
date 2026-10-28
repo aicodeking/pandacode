@@ -18,6 +18,7 @@ interface Configuration {
   globalEnvironment?: string[];
   environment?: Record<string, string[]>;
   useGlobalEnvironment?: Record<string, boolean>;
+  providers?: [string, string][];
   glmKeySaved: boolean;
   glmKeyFromEnvironment: boolean;
   deepseekKeySaved: boolean;
@@ -42,6 +43,14 @@ const keyed = {
 } as const;
 type KeyedProvider = keyof typeof keyed;
 
+/** Cards with hand-written setup copy; every other harness gets a generated one. */
+const curatedCards = new Set<string>(['claude', 'glm', 'mimo', 'opencode', 'antigravity', 'grok', 'pi', 'omp', 'deepseek', 'commandcode', 'cline', 'github-copilot', 'devin', 'kilo', 'muse', 'zcode', 'hermes']);
+
+/** A plain card for a harness without setup specifics: executable override and environment variables. */
+function generatedCard(id: string, name: string): string {
+  return `<section class="connection-card"><h3>${providerLogo(id as ProviderId)}${escape(name)}</h3>${pathForm(id, `${name} executable`, `/path/to/${id}`)}${envDetails(id)}</section>`;
+}
+
 /** The saved-variable list and add form for one provider, or `*` for the global set. */
 function envEditor(key: string): string {
   return `<div class="connection-env-list" data-env-list="${key}"></div>
@@ -65,6 +74,7 @@ function keyForm(provider: KeyedProvider, label: string): string {
 export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>, named?: { harnesses: { id: ProviderId; name: string }[]; saved: (snapshot: ConnectionSnapshot) => void }): () => void {
   let disposed = false, pending = false, unmountNamed: (() => void) | undefined;
   let configurationRevision = 0;
+  let generatedMounted = false;
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
   host.innerHTML = `<p class="dialog-description">Each sign-in, key or plan here is used only by the agent it belongs to.${infoMark(howProvidersWork, 'How providers relate to agents')}<span class="sr-only">${escape(howProvidersWork)}</span></p>${named ? '<section id="named-connections"></section>' : ''}
@@ -147,6 +157,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   function message(text: string, error = false): void { feedback.textContent = text; feedback.hidden = false; feedback.classList.toggle('error', error); }
   function keysDisabled(config: Configuration): boolean { return !config.secureStorageAvailable || preview; }
   function render(config: Configuration): void {
+    // Generated cards are built once from the provider roster; later renders
+    // only fill their environment lists and toggles.
+    if (!generatedMounted) {
+      generatedMounted = true;
+      const cards = (config.providers ?? []).filter(([id]) => !curatedCards.has(id)).map(([id, name]) => generatedCard(id, name)).join('');
+      if (cards) feedback.insertAdjacentHTML('beforebegin', cards);
+    }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
       if (!editedPaths.has(input)) input.value = config.executablePaths[input.dataset.executable!] ?? '';

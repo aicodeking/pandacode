@@ -155,7 +155,7 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("zcode", path)?;
     command.arg("app-server");
     let workspace = std::env::temp_dir();
     command
