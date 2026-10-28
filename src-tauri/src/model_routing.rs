@@ -555,7 +555,7 @@ fn background_download(rt: &'static Runtime) -> Option<tauri::async_runtime::Joi
 /// never download or load the profiler.
 fn unsupported_os() -> Option<String> {
     if !panda_router::ONNX_AVAILABLE {
-        return Some("This build of PandaCode has no ONNX profiler (Intel Mac and x86_64 Linux); routing uses the keyword heuristic.".into());
+        return Some("This build of PandaCode has no ONNX profiler (Intel Mac, x86_64 Linux and x86_64 Windows); routing uses the keyword heuristic.".into());
     }
     #[cfg(target_os = "macos")]
     {

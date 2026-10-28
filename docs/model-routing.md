@@ -138,8 +138,8 @@ content from your work. It happens only while routing is enabled and only when a
 on, or a team's first routed dispatch) or when you click **Download** or **Route** in
 Settings, never at launch. After a failed attempt it waits 10 minutes before trying again
 (**Retry** works any time). On macOS older than 13.4 it never happens: the bundled ONNX
-Runtime needs 13.4, so routing keeps the keyword heuristic there. Builds for Intel Macs
-and x86_64 Linux have no ONNX profiler at all (no compatible prebuilt ONNX Runtime;
+Runtime needs 13.4, so routing keeps the keyword heuristic there. Builds for Intel Macs,
+x86_64 Linux and x86_64 Windows have no ONNX profiler at all (no baseline-compatible prebuilt ONNX Runtime;
 `panda_onnx` in `src-tauri/build.rs`), so they also route with the heuristic and never
 download it. Routing itself makes no
 network request.
