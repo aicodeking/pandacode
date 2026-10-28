@@ -404,6 +404,9 @@ pub struct Configuration {
     environment: BTreeMap<String, Vec<String>>,
     /// Whether each provider's launches include the global environment.
     use_global_environment: BTreeMap<String, bool>,
+    /// Every known harness as (id, display name). The settings page generates
+    /// a card for each one its hand-written cards do not already cover.
+    providers: Vec<(String, String)>,
     glm_key_saved: bool,
     glm_key_from_environment: bool,
     mimo_key_saved: bool,
@@ -444,6 +447,10 @@ fn configuration() -> Result<Configuration> {
         .iter()
         .map(|(id, _)| (id.to_string(), !global_environment_disabled.iter().any(|name| name == id)))
         .collect();
+    let providers: Vec<(String, String)> = crate::providers::PROVIDERS
+        .iter()
+        .map(|(id, name)| (id.to_string(), name.to_string()))
+        .collect();
     #[cfg(target_os = "macos")]
     let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
         glm_key()?.is_some(),
@@ -466,6 +473,7 @@ fn configuration() -> Result<Configuration> {
         global_environment,
         environment,
         use_global_environment,
+        providers,
         glm_key_saved,
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
@@ -499,10 +507,9 @@ pub async fn provider_configuration() -> Result<Configuration> {
 }
 
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
-    if !matches!(
-        provider,
-        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
-    ) {
+    // Claude runs through its own connection flow and the GLM/MiMo plans run
+    // the Claude executable, so only those three refuse an override.
+    if !known_provider(provider) || matches!(provider, "claude" | "glm" | "mimo") {
         return Err("This provider does not support an executable override.".into());
     }
     if path.trim().is_empty() {
@@ -1084,6 +1091,7 @@ mod tests {
             global_environment: Vec::new(),
             environment: BTreeMap::new(),
             use_global_environment: BTreeMap::new(),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -1110,6 +1118,7 @@ mod tests {
             global_environment: vec!["HTTP_PROXY".into()],
             environment: BTreeMap::from([("glm".into(), vec!["HTTPS_PROXY".into()])]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: true,
             mimo_key_saved: true,
@@ -1422,6 +1431,7 @@ mod tests {
                 vec!["HTTPS_PROXY".into(), "NO_PROXY".into()],
             )]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -1496,12 +1506,14 @@ mod tests {
     }
     #[test]
     fn rejects_command_strings_directories_and_unknown_providers() {
-        assert!(validated_executable("codex", "").is_err());
+        assert!(validated_executable("not-a-provider", "").is_err());
+        assert!(validated_executable("claude", "").is_err());
+        assert!(validated_executable("glm", "/opt/bin/claude").is_err());
         assert!(validated_executable("opencode", "opencode --flag").is_err());
         assert!(validated_executable("opencode", "/tmp").is_err());
         assert!(validated_executable("antigravity", "/tmp/foo\nbar").is_err());
-        assert_eq!(validated_executable("glm", "").unwrap(), None);
-        assert_eq!(validated_executable("mimo", "").unwrap(), None);
+        assert_eq!(validated_executable("codex", "").unwrap(), None);
+        assert_eq!(validated_executable("kimi", "").unwrap(), None);
     }
     #[test]
     fn mimo_endpoint_survives_reload_and_unknown_clusters_are_dropped() {

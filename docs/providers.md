@@ -165,8 +165,10 @@ credentials and endpoints still win over inherited variables, and mirroring a
 task to another computer stays untouched — that computer uses its own settings.
 
 The per-provider list and the opt-out switch live on each provider's card here,
-so harnesses without a card (Codex and Kimi Code) currently take only the
-global set.
+and every harness has a card: the ones with sign-in specifics are written by
+hand, and the rest of the roster gets a generated card with an executable
+override and the same environment settings, so none of them falls back to only
+the global set.
 
 ## GitHub Copilot CLI
 
