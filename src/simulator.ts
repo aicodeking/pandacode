@@ -7,7 +7,9 @@ import { chosenFinish, modelSpec, rememberFinish } from './simulator-models';
 /* The inspector's iOS Simulator: one device shown as a 3D model with its live
  * screen. Agents reach the same device through the pandacode_simulator_* tools. */
 
-export type SimDevice = { udid: string; name: string; runtime: string; state: string; family: 'phone' | 'pad'; deviceType: string; platform?: 'ios' | 'android'; duo?: boolean };
+export type SimDevice = { udid: string; name: string; runtime: string; state: string; family: 'phone' | 'pad'; deviceType: string; platform?: 'ios' | 'android'; duo?: boolean; web?: WebModel };
+/** A web app on the mockup alone: viewport in points and the system bars around it. */
+type WebModel = { width: number; height: number; top: number; bottom: number; front: 'island' | 'notch' | 'punch' | 'pad' };
 export type SimScreen = { width: number; height: number; scale: number; homeButton: boolean; inner?: { width: number; height: number } | null };
 export type SimStatus = { available: boolean; axe: boolean; axeInstall: string; android?: boolean; duoAvailable?: boolean; pose?: DuoPose | null; devices: SimDevice[]; selected: string | null; screen: SimScreen | null; error: string | null };
 type Input =
@@ -32,6 +34,29 @@ const KEYS: Record<string, string> = { Enter: 'return', Backspace: 'backspace', 
 const TYPE_DELAY = 140, SCROLL_DELAY = 90, SETUP = 'android-setup', ADD_DUO = 'add-duo', DUO_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo';
 const POSES: { id: DuoPose; label: string; description: string }[] = [{ id: 'closed', label: 'Closed', description: 'Cover display' }, { id: 'book', label: 'Book', description: 'Inner display, half open' }, { id: 'open', label: 'Open', description: 'Inner display, flat' }];
 const poseName = (pose: DuoPose | null | undefined) => POSES.find(p => p.id === pose)?.label ?? 'Closed';
+/* Web apps run in the mockup itself, no simulator: an iframe at the device's viewport. */
+const webDevice = (id: string, name: string, deviceType: string, web: WebModel, platform: 'ios' | 'android' = 'ios', family: 'phone' | 'pad' = 'phone'): SimDevice =>
+  ({ udid: `web:${id}`, name, runtime: 'Web app', state: 'Booted', family, deviceType, platform, web });
+const WEB_DEVICES: SimDevice[] = [
+  webDevice('iphone-17-pro', 'iPhone 17 Pro', 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro', { width: 402, height: 874, top: 62, bottom: 34, front: 'island' }),
+  webDevice('iphone-air', 'iPhone Air', 'com.apple.CoreSimulator.SimDeviceType.iPhone-Air', { width: 420, height: 912, top: 62, bottom: 34, front: 'island' }),
+  webDevice('iphone-16e', 'iPhone 16e', 'com.apple.CoreSimulator.SimDeviceType.iPhone-16e', { width: 390, height: 844, top: 47, bottom: 34, front: 'notch' }),
+  webDevice('pixel-10', 'Pixel 10', 'android:pixel_10', { width: 412, height: 923, top: 40, bottom: 24, front: 'punch' }, 'android'),
+  webDevice('ipad-mini', 'iPad mini', 'com.apple.CoreSimulator.SimDeviceType.iPad-mini-A17-Pro', { width: 744, height: 1133, top: 24, bottom: 20, front: 'pad' }, 'ios', 'pad'),
+];
+const WEB_STORE = 'pandacode.simulatorWeb';
+const remembered = (): { device?: string; url?: string } => { try { return JSON.parse(localStorage.getItem(WEB_STORE) ?? '{}') ?? {}; } catch { return {}; } };
+const remember = (next: { device?: string; url?: string }) => { try { localStorage.setItem(WEB_STORE, JSON.stringify({ ...remembered(), ...next })); } catch { /* This session keeps it. */ } };
+/** `5173`, `localhost:5173` and bare hosts become full HTTP(S) addresses. */
+function webAddress(input: string): string {
+  const value = input.trim();
+  const url = new URL(/^\d{2,5}$/.test(value) ? `http://localhost:${value}` : /^[a-z][a-z\d+.-]*:\/\//i.test(value) ? value : /^(localhost|127\.|\[::1\])/i.test(value) ? `http://${value}` : `https://${value}`);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS address.');
+  return url.href;
+}
+const BARS = '<svg viewBox="0 0 18 12" aria-hidden="true"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg>'
+  + '<svg viewBox="0 0 16 12" aria-hidden="true"><path d="M8 2.3a9 9 0 0 1 6.4 2.6l1.2-1.2A10.7 10.7 0 0 0 8 .6 10.7 10.7 0 0 0 .4 3.7l1.2 1.2A9 9 0 0 1 8 2.3Zm0 3.4a5.6 5.6 0 0 1 4 1.6l1.2-1.2A7.3 7.3 0 0 0 8 4a7.3 7.3 0 0 0-5.2 2.1L4 7.3a5.6 5.6 0 0 1 4-1.6Zm0 3.4c-.6 0-1.2.3-1.6.7L8 11.4l1.6-1.6c-.4-.4-1-.7-1.6-.7Z"/></svg>'
+  + '<span class="sim-web-battery"><i></i></span>';
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 const isDark = () => document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
 
@@ -50,6 +75,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     <p class="sr-only" id="sim-hint">Drag around the device to turn it, scroll to zoom, click the screen to tap, double-click to face forward.</p>
     <p class="sim-status" role="status" hidden></p>
     <div class="sim-axe" role="note" hidden><span>Touch and typing need <strong>AXe</strong>.</span><code></code><button type="button" class="secondary-button" data-sim="copy-axe">${icon('copy')}Copy</button></div>
+    <form class="sim-web" hidden><input type="text" inputmode="url" required placeholder="localhost:5173" aria-label="Web app address" spellcheck="false" autocomplete="off"><button type="submit" class="secondary-button">Open</button></form>
     <div class="sim-dock">
       <button type="button" class="sim-device" data-sim="device" aria-haspopup="menu" aria-label="Choose simulator">${icon('phone')}<span class="sim-device-name">Simulator</span><small class="sim-device-runtime"></small>${icon('down')}</button>
       <div class="sim-actions" role="toolbar" aria-label="Simulator controls">
@@ -59,6 +85,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
         <button type="button" class="icon-button" data-sim="recents" aria-label="Recent apps" title="Recent apps" hidden>${icon('square')}</button>
         <button type="button" class="icon-button" data-sim="lock" aria-label="Lock" title="Lock">${icon('lock')}</button>
         <button type="button" class="icon-button" data-sim="pose" aria-haspopup="menu" aria-label="iPhone Duo pose: Closed" title="Closed" hidden>${icon('panel')}</button>
+        <button type="button" class="icon-button" data-sim="reload" aria-label="Reload web app" title="Reload" hidden>${icon('refresh')}</button>
         <button type="button" class="icon-button" data-sim="appearance" aria-label="Toggle dark appearance" title="Light / dark">${icon('moon')}</button>
         <button type="button" class="icon-button" data-sim="capture" aria-label="Copy screenshot" title="Copy screenshot">${icon('camera')}</button>
         <button type="button" class="icon-button sim-finish" data-sim="finish" aria-haspopup="menu" aria-label="Device finish" title="Finish"><span class="sim-finish-dot"></span></button>
@@ -70,12 +97,14 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
 
   let status: SimStatus | undefined, device: Device3D | undefined, flat: HTMLImageElement | undefined, settingUp = false;
   let visible = false, disposed = false, pumpGeneration = 0, seq = 0, busy = false, poseBusy = false, poseWanted: DuoPose | undefined, poseEpoch = 0, poll = 0, polling = false, appearance: 'light' | 'dark' = 'light', warnedAxe = false;
+  let web: SimDevice | undefined = WEB_DEVICES.find(d => d.udid === remembered().device), webView: HTMLElement | undefined, webKey = '';
   let typed = '', typeTimer = 0, scroll = { dx: 0, dy: 0, at: { x: 0, y: 0 } }, scrollTimer = 0;
 
   const call = async (command: string, args?: Record<string, unknown>) => forPlatform(await host.call<SimStatus>(command, args));
-  const current = (): SimDevice | undefined => status?.devices.find(d => d.udid === status?.selected);
+  const current = (): SimDevice | undefined => web ?? status?.devices.find(d => d.udid === status?.selected);
   const booted = () => current()?.state === 'Booted';
   const shape = (): DeviceShape => {
+    if (web?.web) return { width: web.web.width, height: web.web.height, homeButton: false, family: web.family, deviceType: web.deviceType };
     const screen = status?.screen, base = { homeButton: screen?.homeButton ?? false, family: current()?.family ?? 'phone', deviceType: current()?.deviceType ?? '' };
     if (!current()?.duo) return { width: screen?.width ?? 402, height: screen?.height ?? 874, ...base };
     const cover = { width: screen?.width ?? 466, height: screen?.height ?? 678 }, inner = screen?.inner ?? { width: 951, height: 669 };
@@ -117,7 +146,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   function render(): void {
     const chosen = current();
     root.querySelector('.sim-device-name')!.textContent = chosen?.name ?? (status?.available ? 'No simulators' : 'Simulator');
-    root.querySelector('.sim-device-runtime')!.textContent = chosen ? `${chosen.runtime} · ${chosen.state === 'Booted' ? 'Running' : chosen.state}` : '';
+    root.querySelector('.sim-device-runtime')!.textContent = chosen?.web ? `Web app · ${chosen.web.width}×${chosen.web.height}` : chosen ? `${chosen.runtime} · ${chosen.state === 'Booted' ? 'Running' : chosen.state}` : '';
     button('device').title = chosen ? `${chosen.name} · ${chosen.runtime}` : '';
     const power = button('power');
     power.innerHTML = icon(booted() ? 'stop' : 'play');
@@ -126,7 +155,11 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     for (const name of ['home', 'lock', 'appearance', 'capture', 'back', 'recents']) button(name).disabled = !booted() || busy;
     // Android navigates with Back and Recents beside Home.
     const android = chosen?.platform === 'android';
-    button('back').hidden = !android; button('recents').hidden = !android;
+    button('back').hidden = !android || Boolean(web); button('recents').hidden = !android || Boolean(web);
+    // A web app has no hardware to press: its address and reload stand in.
+    for (const name of ['power', 'home', 'lock', 'capture']) button(name).hidden = Boolean(web);
+    button('reload').hidden = !web; button('reload').disabled = false;
+    root.querySelector<HTMLElement>('.sim-web')!.hidden = !web;
     button('appearance').innerHTML = icon(appearance === 'dark' ? 'sun' : 'moon');
     const pose = button('pose'), shown = poseName(status?.pose);
     pose.hidden = !chosen?.duo; pose.setAttribute('aria-label', `iPhone Duo pose: ${shown}`); pose.title = shown; pose.disabled = !booted() || busy;
@@ -137,6 +170,8 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     const axeNote = root.querySelector<HTMLElement>('.sim-axe')!;
     axeNote.hidden = !status || !status.available || status.axe;
     axeNote.querySelector('code')!.textContent = status?.axeInstall ?? '';
+    if (web) { say(''); device?.setShape(shape()); showWeb(); return; }
+    showWeb();
     if (!status) return;
     if (!status.available) { say(isWindows ? NO_SDK : status.error ?? 'Install Xcode to use the iOS Simulator.'); message(isWindows ? 'Android SDK needed' : 'Xcode needed'); return; }
     if (!chosen) { say(isWindows ? 'No Android emulators. Add one in Android Studio → Device Manager.' : 'No iOS simulators. Add one in Xcode → Window → Devices and Simulators.'); message(''); return; }
@@ -153,21 +188,26 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       const view = ensureView();
       let next = await call('simulator_status');
       // Show something useful: the first running device, else the newest one.
-      if (!next.selected && next.devices.length) next = await call('simulator_select', { udid: (next.devices.find(d => d.state === 'Booted') ?? next.devices[0]).udid });
+      if (!web && !next.selected && next.devices.length) next = await call('simulator_select', { udid: (next.devices.find(d => d.state === 'Booted') ?? next.devices[0]).udid });
       if (disposed) return;
       const changed = next.selected !== status?.selected;
       status = next;
       if (changed) seq = 0;
+      if (!web && (!next.available || !next.devices.length)) web = WEB_DEVICES[0];
       await view;
       render();
       pump();
-    } catch (error) { say(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      // No simulator tools at all: the mockup still runs web apps.
+      if (!web) { web = WEB_DEVICES[0]; await ensureView(); render(); return; }
+      say(error instanceof Error ? error.message : String(error));
+    }
   }
 
   /* Frames: a long-poll loop while visible and running. */
   function pump(): void {
     const generation = ++pumpGeneration;
-    if (!visible || !booted() || !status?.selected) return;
+    if (!visible || web || !booted() || !status?.selected) return;
     const udid = status.selected;
     void (async () => {
       let failures = 0;
@@ -193,7 +233,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   }
 
   async function input(value: Input): Promise<void> {
-    const udid = status?.selected; if (!udid || !booted()) return;
+    const udid = status?.selected; if (web || !udid || !booted()) return;
     if (status && !status.axe && current()?.platform !== 'android') { if (!warnedAxe) { warnedAxe = true; host.notify(`Touch input needs AXe: ${status.axeInstall}`); } return; }
     try { await host.call<string>('simulator_input', { udid, input: value }); }
     catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
@@ -257,15 +297,19 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     } catch (error) { host.notify(error instanceof Error ? error.message : String(error)); }
   }
   function chooseDevice(anchor: HTMLElement): void {
-    if (!status) return;
-    const items: ChoiceItem[] = status.devices.map(d => ({ id: d.udid, label: d.name, description: `${d.duo ? 'Foldable · ' : ''}${d.runtime} · ${d.state === 'Booted' ? 'Running' : d.state}`, icon: 'phone', selected: d.udid === status?.selected }));
-    if (status.available && !isWindows && !status.devices.some(d => d.duo)) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
+    const items: ChoiceItem[] = (status?.devices ?? []).map(d => ({ id: d.udid, label: d.name, description: `${d.duo ? 'Foldable · ' : ''}${d.runtime} · ${d.state === 'Booted' ? 'Running' : d.state}`, icon: 'phone', selected: !web && d.udid === status?.selected }));
+    items.push(...WEB_DEVICES.map(d => ({ id: d.udid, label: d.name, description: `Web app · ${d.web!.width}×${d.web!.height}`, icon: 'globe', selected: d.udid === web?.udid })));
+    if (status?.available && !isWindows && !status.devices.some(d => d.duo)) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
     // One-click setup uses Homebrew, so Windows points to Android Studio instead.
-    if (!status.android && !isWindows) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
+    if (status && !status.android && !isWindows) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
     if (!items.length) return;
     host.choose(anchor, 'Devices', items, id => {
       if (id === SETUP) { void setupAndroid(); return; }
       if (id === ADD_DUO) { void addDuo(); return; }
+      const page = WEB_DEVICES.find(d => d.udid === id);
+      remember({ device: page?.udid ?? '' });
+      if (page) { web = page; pumpGeneration++; render(); return; }
+      web = undefined;
       void call('simulator_select', { udid: id }).then(next => { status = next; seq = 0; render(); pump(); }).catch(error => host.notify(String(error)));
     });
   }
@@ -335,6 +379,37 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     } finally { settingUp = false; stop?.(); }
   }
 
+  /** The web app's screen: status bar, the page at the viewport left between the system bars, home indicator. */
+  const webForm = root.querySelector<HTMLFormElement>('.sim-web')!, webInput = webForm.querySelector('input')!;
+  webInput.value = remembered().url ?? '';
+  function showWeb(): void {
+    const model = web?.web;
+    if (!model) { if (webView) { device?.setWeb(null); webView.remove(); webView = undefined; webKey = ''; if (flat) flat.hidden = false; } return; }
+    const key = web!.udid;
+    if (webKey !== key) {
+      const url = webView?.querySelector('iframe')?.src || remembered().url;
+      webView?.remove();
+      webView = document.createElement('div');
+      webView.className = 'sim-web-screen'; webView.dataset.front = model.front;
+      webView.style.setProperty('--sim-top', `${model.top}px`); webView.style.setProperty('--sim-bottom', `${model.bottom}px`);
+      webView.innerHTML = `<div class="sim-web-status"><span class="sim-web-time">9:41</span><span class="sim-web-icons">${BARS}</span></div><iframe title="Web app" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads" allow="clipboard-read; clipboard-write; geolocation; fullscreen"></iframe><p class="sim-web-empty">Type your web app's address below</p><div class="sim-web-home"></div><div class="sim-web-front"></div>`;
+      webKey = key;
+      if (url) openWeb(url, false);
+      if (device) { device.setMessage(''); device.setWeb(webView); } else if (flat) { flat.hidden = true; stage.append(webView); }
+    }
+    webView!.dataset.theme = appearance;
+    webView!.querySelector('iframe')!.style.colorScheme = appearance;
+  }
+  function openWeb(address: string, save = true): void {
+    let url: string;
+    try { url = webAddress(address); } catch (error) { host.notify(error instanceof Error ? error.message : String(error)); return; }
+    if (save) remember({ url });
+    webInput.value = url;
+    const frame = webView?.querySelector('iframe'); if (!frame) return;
+    frame.src = url; webView!.classList.add('sim-web-live');
+  }
+  webForm.addEventListener('submit', event => { event.preventDefault(); openWeb(webInput.value); });
+
   root.addEventListener('click', event => {
     const target = (event.target as Element).closest<HTMLElement>('[data-sim]'); if (!target || (target as HTMLButtonElement).disabled) return;
     switch (target.dataset.sim) {
@@ -344,7 +419,9 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
       case 'back': void press('back'); break;
       case 'recents': void press('recents'); break;
       case 'lock': void press('lock'); break;
+      case 'reload': { const frame = webView?.querySelector('iframe'); if (frame?.src) frame.src = frame.src; break; }
       case 'appearance': {
+        if (web) { appearance = appearance === 'dark' ? 'light' : 'dark'; render(); break; }
         const udid = status?.selected; if (!udid) break;
         appearance = appearance === 'dark' ? 'light' : 'dark'; render();
         void host.call('simulator_appearance', { udid, mode: appearance }).catch(error => host.notify(String(error)));

@@ -45,3 +45,34 @@ html[data-theme] .workspace[data-wallpaper]>.inspector:has(>.simulator-panel:not
   .simulator-panel,.workspace[data-wallpaper] .simulator-panel{--sim-glass:var(--panel);--sim-blur:none}
   .sim-axe,.sim-actions{outline:1px solid var(--text)}
 }
+
+/* Web apps on the mockup: the DOM layer the 3D view poses on the display. */
+.sim-css{position:absolute;inset:0;pointer-events:none}
+.sim-css[hidden]{display:none}
+.sim-web-screen{--fg:#000;--bg:#fff;position:relative;overflow:hidden;border-radius:var(--sim-corner,48px);background:var(--bg);color:var(--fg);pointer-events:auto;backface-visibility:hidden;-webkit-backface-visibility:hidden;font:600 17px/1 -apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;touch-action:auto}
+.sim-web-screen[data-theme="dark"]{--fg:#fff;--bg:#000}
+.sim-web-screen iframe{position:absolute;left:0;top:var(--sim-top);width:100%;height:calc(100% - var(--sim-top) - var(--sim-bottom));border:0;background:var(--bg);visibility:hidden}
+.sim-web-live iframe{visibility:visible}
+.sim-web-live .sim-web-empty{display:none}
+.sim-web-empty{position:absolute;inset:0;margin:0;display:grid;place-items:center;padding:0 40px;text-align:center;font-weight:500;font-size:15px;opacity:.5}
+.sim-web-status{position:absolute;inset:0 0 auto;height:var(--sim-top);display:flex;align-items:center;justify-content:space-between;padding:0 30px 0 50px;box-sizing:border-box}
+.sim-web-screen[data-front="punch"] .sim-web-status{padding:0 24px;font:500 14px/1 Roboto,'Segoe UI',sans-serif}
+.sim-web-screen[data-front="pad"] .sim-web-status{padding:0 20px;font-size:13px}
+.sim-web-icons{display:flex;align-items:center;gap:6px}
+.sim-web-icons svg{height:11px;width:auto;fill:currentColor}
+.sim-web-battery{position:relative;width:24px;height:12px;border:1px solid color-mix(in srgb,var(--fg) 40%,transparent);border-radius:4px;box-sizing:border-box;padding:1px}
+.sim-web-battery i{display:block;width:80%;height:100%;border-radius:2px;background:var(--fg)}
+.sim-web-home{position:absolute;left:50%;bottom:8px;width:134px;height:5px;margin-left:-67px;border-radius:3px;background:var(--fg)}
+.sim-web-screen[data-front="punch"] .sim-web-home{width:108px;height:4px;margin-left:-54px;opacity:.7}
+.sim-web-screen[data-front="pad"] .sim-web-home{width:200px;margin-left:-100px}
+/* The cutouts the WebGL display would draw under the page. */
+.sim-web-front{position:absolute;left:50%;pointer-events:none;background:#000}
+.sim-web-screen[data-front="island"] .sim-web-front{top:11.5px;width:125px;height:37px;margin-left:-62.5px;border-radius:18.5px}
+.sim-web-screen[data-front="notch"] .sim-web-front{top:0;width:156px;height:31px;margin-left:-78px;border-radius:0 0 20px 20px}
+.sim-web-screen[data-front="punch"] .sim-web-front{top:20.5px;width:11px;height:11px;margin-left:-5.5px;border-radius:50%}
+.sim-web-screen[data-front="pad"] .sim-web-front{display:none}
+.sim-web{display:flex;gap:6px;margin:0 12px 6px}
+.sim-web[hidden]{display:none}
+.sim-web input{flex:1;min-width:0;min-height:28px;padding:2px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text);font:inherit;font-size:var(--text-xs)}
+.sim-web .secondary-button{min-height:28px;padding:2px 10px;font-size:var(--text-xs)}
+.sim-stage-flat .sim-web-screen{flex:none;transform:scale(.6)}
