@@ -260,6 +260,13 @@ async fn unpack_punct(app: &AppHandle, target: &std::path::Path) -> Result<(), S
         &model::File { name: "", size: 0, sha256: None },
     );
     let bytes = fetch_with_cap(&archive_url, model::MAX_FILE_BYTES).await?;
+    if bytes.len() as u64 != model::EXPECTED_PUNCT_ARCHIVE_BYTES {
+        return Err(format!(
+            "Punctuation archive downloaded {} bytes, expected {}",
+            bytes.len(),
+            model::EXPECTED_PUNCT_ARCHIVE_BYTES
+        ));
+    }
     let blocking = app.to_owned();
     let target = target.to_path_buf();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
