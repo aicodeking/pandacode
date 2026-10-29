@@ -397,16 +397,24 @@ mod tests {
         assert!(friendly("kex_exchange_identification: banner line", known, &target()).starts_with("SSH: kex"));
     }
 
-    /// Issue #206: a first VPS cloud task failed twice — the multi-line private key was
-    /// rejected by the secure store's control-character check, and re-deriving the public
-    /// half with `ssh-keygen -y` failed inside the app. One test because the secure store's
-    /// dir is a process-global.
-    #[test]
-    fn vps_key_survives_the_secure_store_and_self_heals() {
-        use super::super::{secret, set_secret};
-        let dir = std::env::temp_dir().join(format!("pandacode-vps-key-{}", uuid::Uuid::new_v4()));
+    /// The secret store's dir is a process-global once-set path and the test secret map is
+    /// process-wide: the lifecycle tests serialize on one lock and share one dir.
+    static KEY_TESTS: Mutex<()> = Mutex::new(());
+
+    fn shared_store_dir() {
+        let dir = std::env::temp_dir().join("pandacode-vps-key-tests");
         std::fs::create_dir_all(&dir).unwrap();
         crate::secret_store::setup(&dir);
+    }
+
+    /// Issue #206: a first VPS cloud task failed twice — the multi-line private key was
+    /// rejected by the secure store's control-character check, and re-deriving the public
+    /// half with `ssh-keygen -y` failed inside the app.
+    #[test]
+    fn vps_key_survives_the_secure_store_and_self_heals() {
+        let _guard = KEY_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        use super::super::{secret, set_secret};
+        shared_store_dir();
         let forget = |names: &[&str]| {
             for name in names {
                 crate::secret_store::remove(super::super::SERVICE, name);
@@ -470,6 +478,63 @@ mod tests {
         assert!(pairs.iter().all(|(file, public)| file == first_file && public == first_public));
 
         forget(&["vps_key"]);
-        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn passes_store_validation(saved: &str) -> bool {
+        !saved.is_empty() && saved.len() <= 4096 && !saved.chars().any(char::is_control)
+    }
+
+    /// The public half of whatever private key sits in the file, from ssh-keygen itself.
+    fn derives_public(file: &Path, public: &str) {
+        let out = Command::new("ssh-keygen").arg("-y").arg("-f").arg(file).output().expect("ssh-keygen runs");
+        assert!(out.status.success(), "ssh-keygen -y failed on {}", file.display());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), public);
+    }
+
+    /// The whole key lifecycle shares one secret store and one store dir (both process-wide),
+    /// so it runs as one test: generate, reuse, self-heal a corrupt secret, heal the file mode.
+    #[test]
+    fn key_pair_generates_saves_and_heals_the_vps_key() {
+        let _guard = KEY_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let service = super::super::SERVICE;
+        crate::secret_store::remove(service, "vps_key");
+        shared_store_dir();
+
+        // First use: a working pair whose saved secret passes the store's own validation.
+        let (file, public) = key_pair().expect("first use makes a working pair");
+        assert!(public.starts_with("ssh-ed25519 "), "not an ed25519 public line: {public}");
+        let saved = super::super::secret("vps_key").expect("vps_key is saved");
+        assert!(passes_store_validation(&saved), "saved vps_key fails the store's validation");
+        derives_public(&file, &public);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        // A second call returns the same pair and does not regenerate.
+        let (again, same) = key_pair().expect("second call reuses the pair");
+        assert_eq!((again, same.as_str()), (file, public.as_str()));
+        assert_eq!(super::super::secret("vps_key").as_deref(), Some(saved.as_str()));
+
+        // A saved value no key parses from self-heals into a fresh working pair.
+        super::super::set_secret("vps_key", "base64:bm90LWEta2V5").unwrap();
+        let (file, public) = key_pair().expect("a corrupt vps_key heals into a new pair");
+        assert!(public.starts_with("ssh-ed25519 "), "not an ed25519 public line: {public}");
+        assert_ne!(super::super::secret("vps_key").as_deref(), Some("base64:bm90LWEta2V5"));
+        assert!(passes_store_validation(&super::super::secret("vps_key").expect("healed vps_key is saved")));
+        derives_public(&file, &public);
+
+        // A loosened file mode is restored rather than left for ssh to reject.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let (healed, _) = key_pair().expect("key_pair after a chmod");
+            assert_eq!(healed, file);
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        crate::secret_store::remove(service, "vps_key");
     }
 }
