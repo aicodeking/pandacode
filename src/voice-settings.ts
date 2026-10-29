@@ -154,17 +154,18 @@ export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost
     if (interaction?.dataset.interaction) { void save({ interaction: interaction.dataset.interaction }); return; }
     const mode = target.closest<HTMLElement>('[data-mode]');
     if (mode?.dataset.mode) { void save({ mode: mode.dataset.mode }); return; }
-    // Save key: read the password field, store it, refresh the saved state.
+    // Save key: an empty field over a saved key clears it; refresh either way.
     if (target.closest('.voice-key-save')) {
       const input = host.querySelector<HTMLInputElement>('.voice-key');
       const key = input?.value.trim() ?? '';
-      if (!key && state.keys.includes(state.settings?.onlineProvider ?? '')) { options.notify('Already saved — clear by saving an empty field.'); return; }
-      if (!key) { options.notify('Paste an API key first.'); return; }
+      const saved = state.keys.includes(state.settings?.onlineProvider ?? '');
+      if (!key && !saved) { options.notify('Paste an API key first.'); return; }
+      const clearing = !key && saved;
       void (async () => {
         try {
           await options.call('voice_set_key', { provider: state.settings!.onlineProvider, key });
           if (input) input.value = '';
-          options.notify('Key saved to the secure store.');
+          options.notify(clearing ? 'Key cleared from the secure store.' : 'Key saved to the secure store.');
         } catch (error) { options.notify(error instanceof Error ? error.message : String(error)); }
         await refresh();
       })();
