@@ -19,6 +19,8 @@ const KEY: &str = "boat_key";
 const WAIT_MAX: u64 = 600;
 /// Auto-stop boat accepts, in seconds (1 s – 30 days).
 const TTL_MAX: u64 = 2_592_000;
+/// Auto-stop a free trial accepts; ending the trial (first payment) lifts it to `TTL_MAX`.
+const TRIAL_TTL: u64 = 7_200;
 /// Idle minutes a new machine gets before boat stops it.
 const IDLE_MINUTES: u32 = 15;
 
@@ -92,9 +94,16 @@ impl Boat {
             _ => Err(format!("boat sandboxes can start, stop or be deleted, not {action}.")),
         }
     }
+    /// Free trials cap auto-stop at 2 h; when a longer TTL is refused, take the cap.
     async fn keep_alive(&self, id: &str, minutes: u32) -> Result<()> {
         let seconds = (u64::from(minutes) * 60).clamp(60, TTL_MAX);
-        self.call(reqwest::Method::PATCH, &format!("/sandboxes/{id}"), Some(json!({"ttlSeconds": seconds})), Duration::from_secs(30)).await.map(|_| ())
+        match self.patch_ttl(id, seconds).await {
+            Err(_) if seconds > TRIAL_TTL => self.patch_ttl(id, TRIAL_TTL).await,
+            result => result,
+        }
+    }
+    async fn patch_ttl(&self, id: &str, ttl: u64) -> Result<()> {
+        self.call(reqwest::Method::PATCH, &format!("/sandboxes/{id}"), Some(json!({"ttlSeconds": ttl})), Duration::from_secs(30)).await.map(|_| ())
     }
     async fn exec(&self, id: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, String)> {
         let path = format!("/sandboxes/{id}/commands");
@@ -192,6 +201,7 @@ mod tests {
             ("GET", "/v1/sandboxes?limit=200") => (200, r#"{"ok":true,"sandboxes":[{"id":"bx_1","name":"pc-a","state":"idle","vcpu":2,"memoryGB":4},{"id":"bx_2","name":"","state":"archived"}]}"#.into()),
             ("POST", "/v1/sandboxes") => (202, r#"{"ok":true,"sandbox":{"id":"bx_3","name":"Sandbox 1","state":"provisioning"}}"#.into()),
             ("PATCH", "/v1/sandboxes/bx_3") if request.body.contains("name") => (200, r#"{"ok":true,"sandbox":{"id":"bx_3","name":"pc-new","state":"provisioning"}}"#.into()),
+            ("PATCH", "/v1/sandboxes/bx_1") if request.body.contains("86400") => (403, r#"{"ok":false,"message":"Free-trial auto-stop is 2 hours maximum. Set a TTL of 2 hours or less, or end the trial (first payment) to lift it."}"#.into()),
             ("PATCH", "/v1/sandboxes/bx_1") => (200, r#"{"ok":true,"sandbox":{"id":"bx_1"}}"#.into()),
             ("POST", "/v1/sandboxes/bx_2/resume") => (202, r#"{"ok":true}"#.into()),
             ("DELETE", "/v1/sandboxes/bx_2") => (202, r#"{"ok":true}"#.into()),
@@ -223,6 +233,16 @@ mod tests {
         assert_eq!(ttl, json!({"ttlSeconds": 5400}));
         let first: Value = serde_json::from_str(&log.iter().find(|r| r.method == "POST" && r.path == "/v1/sandboxes").unwrap().body).unwrap();
         assert_eq!(first, json!({"ttlSeconds": 900}));
+    }
+
+    #[tokio::test]
+    async fn keep_alive_falls_back_to_the_free_trial_cap() {
+        let (boat, seen) = boat();
+        boat.keep_alive("bx_1", 24 * 60).await.unwrap();
+        let log = seen.lock().unwrap();
+        assert!(log.iter().any(|r| r.method == "PATCH" && r.body.contains("86400")));
+        let retry = log.iter().find(|r| r.method == "PATCH" && r.body.contains("7200")).expect("no retry at the trial cap");
+        assert_eq!(retry.path, "/v1/sandboxes/bx_1");
     }
 
     #[tokio::test]
