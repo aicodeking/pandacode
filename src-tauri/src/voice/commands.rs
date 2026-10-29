@@ -522,8 +522,8 @@ fn online_start_recording(
                 {
                     Ok(stream) => Some(stream),
                     Err(error) => {
-                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
                         clear_session(app);
+                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
                         return;
                     }
                 }
@@ -538,8 +538,8 @@ fn online_start_recording(
                 {
                     Ok(stream) => Some(stream),
                     Err(error) => {
-                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
                         clear_session(app);
+                        settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
                         return;
                     }
                 }
@@ -574,11 +574,14 @@ fn online_start_recording(
             clear_session(app);
             return;
         }
+        // Capture has stopped and cancel has been honoured: free the session
+        // slot before the slow finish awaits so the next recording can start
+        // while this take settles. Nothing below reads the session again.
+        clear_session(app);
         // A mid-stream failure settles the whole take with the offline engine
         // (or surfaces the error) instead of the streaming finish.
         if let Some(error) = stream_failed {
             settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
-            clear_session(app);
             return;
         }
         // Streaming: flush and await the provider's final transcript.
@@ -590,7 +593,6 @@ fn online_start_recording(
                         super::EVENT_RESULT,
                         serde_json::json!({ "text": text, "engine": provider.id, "fallback": false }),
                     );
-                    clear_session(app);
                     return;
                 }
                 Ok(_) => super::emit(
@@ -600,7 +602,6 @@ fn online_start_recording(
                 ),
                 Err(error) => settle_offline_or_fail(app, &dir, &settings, &buffer, error).await,
             }
-            clear_session(app);
             return;
         }
         // Multipart: one request with the whole take.
@@ -612,7 +613,6 @@ fn online_start_recording(
             ),
             Err(error) => settle_offline_or_fail(app, &dir, &settings, &buffer, error).await,
         }
-        clear_session(app);
     }))
 }
 
