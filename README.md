@@ -105,6 +105,7 @@ harnesses, and reviews what they bring back.
 
 **Your app beside the chat.** The iOS Simulator and Android emulator run in the
 inspector on a lifelike device, so you can tap through what an agent just built.
+On Windows and Linux the tab lists Android emulators only.
 
 <img src="docs/screenshots/simulator.webp" alt="The inspector showing an iPhone 17 Pro simulator next to the conversation" width="100%">
 
