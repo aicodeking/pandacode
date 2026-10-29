@@ -49,9 +49,12 @@ pub struct Model {
 }
 
 const HF: &str = "https://huggingface.co";
-/// The only non-HF source: k2-fsa's GitHub release (no per-file digest,
-/// ~30.7 MB, size-pinned at extraction).
+/// The only non-HF source: k2-fsa's GitHub release (no per-file digest; the
+/// archive's byte size is pinned below and checked at download).
 const PUNCT_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/punctuation-models/sherpa-onnx-online-punct-en-2024-08-06.tar.bz2";
+/// Exact size of the punctuation archive above; the tagged release asset is
+/// immutable, so a mismatch means the wrong or truncated file.
+pub(crate) const EXPECTED_PUNCT_ARCHIVE_BYTES: u64 = 30_667_839;
 
 pub const CATALOG: &[Model] = &[
     Model {

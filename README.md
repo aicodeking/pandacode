@@ -162,7 +162,7 @@ information:
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Remote access; nothing before |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Agents → Cloud sandboxes |
-| Voice model download (optional): the dictation model you picked, verified by size and SHA-256 | `huggingface.co`, one `github.com` release | Only when you press Download in Settings → Voice; never bundled, never automatic |
+| Voice model download (optional): the dictation model you picked, verified by pinned size and, where the source publishes one, SHA-256 | `huggingface.co`, one `github.com` release | Only when you press Download in Settings → Voice; never bundled, never automatic |
 | Mobile voice input uses the phone's own speech recognition; with On-device only off, the phone's speech service may process dictation | Your device's speech service (Apple/Google) | Only while you dictate; PandaCode's relay only ever carries the final text |
 
 ## Install
