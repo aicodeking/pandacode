@@ -79,10 +79,10 @@ export async function initSpeech(): Promise<boolean> {
         }
       });
       speech.addListener('end', () => {
-        // Android ends the session per segment; iOS ends per task. Either way
-        // the composer keeps the settled text, and the next tap starts fresh.
+        // Android ends the session per segment; iOS ends per task. The settled
+        // finals stay either way, so a result arriving after `end` still keeps
+        // the earlier segments; startDictation and the error path clear them.
         useVoice.setState({ recording: false });
-        settled = '';
       });
     }
     useVoice.setState({ supported: available });
