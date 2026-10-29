@@ -435,7 +435,7 @@ export class ArchitectView {
     this.paintAssist();
     // Auto teams have nothing to set up: the lead picks worker models.
     panel.querySelector<HTMLElement>('.architect-configure')!.hidden = Boolean(team.config.auto);
-    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = teamActive(team) ? 'Architect is working…' : statusNames[team.status];
+    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = teamActive(team) ? 'Team is working…' : statusNames[team.status];
     const count = panel.querySelector<HTMLElement>('.architect-panel-count')!;
     count.textContent = `${team.workers.length} ${team.workers.length === 1 ? 'task' : 'tasks'}`; count.title = `Round ${team.round}/${team.config.maxRounds}`;
     panel.querySelector<HTMLButtonElement>('[data-team-control=pause]')!.hidden = !teamActive(team);

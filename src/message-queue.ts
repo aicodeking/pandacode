@@ -26,6 +26,7 @@ export interface QueueView {
   hold: HoldReason | null;
   running: boolean;
   steerable: boolean;
+  team?: boolean;
   /** Send now can start a turn here (bot conversations drain natively, so they cannot). */
   sendable: boolean;
   editingId: string | null;
@@ -56,7 +57,7 @@ function row(entry: QueuedMessage, index: number, view: QueueView): string {
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span><span class="queue-status" role="status">${SPINNER}Steering…</span></li>`;
   }
   const steer = view.running && view.steerable && !view.busy && !entry.attachments.length ? `<button type="button" class="queue-now" data-action="queue-steer" title="Steer message" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
-  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
+  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${view.team ? 'Send after the current architect turn' : !view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
   const failure = view.notSteered?.get(entry.id);
   const badge = failure !== undefined ? `<span class="queue-badge warn" title="${escape(failure)}" tabindex="0">Not steered</span>` : '';
   return `<li class="queue-row" data-queue-id="${escape(entry.id)}" draggable="${view.busy ? 'false' : 'true'}" tabindex="0" aria-label="Queued message ${index + 1}: ${preview}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"><span class="queue-index" aria-hidden="true">${icon('spark')}</span>
@@ -69,9 +70,9 @@ export function queuePanel(view: QueueView): string {
   if (!view.entries.length) return '';
   const count = view.entries.length;
   // A limit is resolved from its banner (Continue now or Resume at reset), so the queue offers no Resume then.
-  const resume = view.hold === 'limited' ? '' : `<button type="button" class="queue-resume" data-action="queue-resume" ${view.busy ? 'disabled' : ''}>${view.running ? 'Resume after this run' : 'Resume'}</button>`;
+  const resume = view.hold === 'limited' ? '' : `<button type="button" class="queue-resume" data-action="queue-resume" ${view.busy ? 'disabled' : ''}>${view.running ? (view.team ? 'Resume after this turn' : 'Resume after this run') : 'Resume'}</button>`;
   const status = view.hold ? `<span class="queue-hold">${HOLD_LABEL[view.hold]}</span>${resume}`
-    : `<span class="queue-next">${view.running ? (view.agentName ? `Waiting – ${escape(view.agentName)} is working` : 'Sends when the agent finishes') : `${SPINNER}Sending next…`}</span>`;
+    : `<span class="queue-next">${view.running ? (view.team ? 'Sends after the current architect turn' : view.agentName ? `Waiting – ${escape(view.agentName)} is working` : 'Sends when the agent finishes') : `${SPINNER}Sending next…`}</span>`;
   return `<section class="queue-panel" aria-label="Queued messages"><header class="queue-heading"><strong>Queued</strong><span class="queue-count">${count}</span>${status}</header><ol class="queue-list">${view.entries.map((entry, index) => row(entry, index, view)).join('')}</ol></section>`;
 }
 

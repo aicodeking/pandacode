@@ -480,6 +480,11 @@ pub(crate) fn prompt(
     let (coordination, seen) = coordination::context(store, &team, &actor, seen, full)?;
     let head = if full { rules } else { reminder };
     let original = if full { original.to_string() } else { objective_excerpt(&team, sid, original) };
+    // A person's message that arrives while workers run (the only unkinded reserved turn then).
+    let followup = sid == team.session_id
+        && team.workers.iter().any(|w| unsettled(&w.status))
+        && team.pending_turn.as_ref().is_some_and(|p| p.reserved && p.kind.is_none());
+    let original = if followup { format!("{original}\n\n{FOLLOWUP_NOTE}") } else { original };
     let text = [head, coordination, original]
         .into_iter()
         .filter(|part| !part.is_empty())
@@ -830,7 +835,11 @@ pub(crate) async fn architect_start_in_project(
     expected_project: Option<String>,
 ) -> Result<()> {
     text_check(&text)?;
-    let (team, admission) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
+    // Checked before anything is reserved, so a bad attachment never touches a live team.
+    if image_ids.as_ref().is_some_and(|ids| ids.len() > 4) {
+        return Err("Attach up to four screenshots per message.".into());
+    }
+    let (team, admission, followup) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
     emit(&app, &team);
     if let Err(error) = crate::launch_team_task(
         app.clone(),
@@ -842,19 +851,42 @@ pub(crate) async fn architect_start_in_project(
     )
     .await
     {
-        fail_launch(&app, &admission, &session_id, &error);
+        if followup {
+            fail_followup_state(&app.state::<AppState>(), &admission, &mut |team| emit(&app, team));
+        } else {
+            fail_launch(&app, &admission, &session_id, &error);
+        }
         return Err(error);
     }
     Ok(())
 }
-/// Begin a new objective for an idle team and reserve the architect's first turn.
+pub const ARCHITECT_BUSY: &str = "The architect is still working; the message stays queued.";
+/// What the architect is told on a user turn that starts while workers still run.
+const FOLLOWUP_NOTE: &str = "Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after answering; settled work will trigger review.";
+/// A follow-up that could not start only gives its reservation back: the workers and the
+/// objective it never touched keep going.
+fn fail_followup_state(state: &AppState, admission: &Admission, notify: &mut impl FnMut(&TeamSnapshot)) {
+    let Ok(_agents) = state.agents.lock() else { return };
+    let Ok(store) = state.store.lock() else { return };
+    if let Ok(Some(mut team)) = load(&store, &admission.parent) {
+        if team.generation == admission.generation && team.pending_turn.as_ref().is_some_and(|p| p.reserved && p.kind.is_none()) {
+            team.pending_turn = None;
+            if save(&store, &mut team).is_ok() {
+                notify(&team);
+            }
+        }
+    }
+}
+/// Begin a new objective for an idle team and reserve the architect's first turn. On an active
+/// team whose architect is between turns, reserve a user turn instead and leave the team as it
+/// is; the flag is true for that follow-up.
 pub(crate) fn start_state(
     state: &AppState,
     session_id: &str,
     text: &str,
     image_ids: Option<Vec<String>>,
     expected_project: Option<&str>,
-) -> Result<(TeamSnapshot, Admission)> {
+) -> Result<(TeamSnapshot, Admission, bool)> {
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     refuse_mirror(&store, session_id)?;
@@ -864,8 +896,24 @@ pub(crate) fn start_state(
         }
     }
     let mut team = load(&store, session_id)?.ok_or("Configure a team first.")?;
-    if active(&team.status)
-        || agents.contains_key(session_id)
+    if active(&team.status) {
+        if agents.contains_key(session_id) || team.pending_turn.is_some() {
+            return Err(ARCHITECT_BUSY.into());
+        }
+        team.pending_turn = Some(PendingTurn {
+            prompt: text.to_owned(),
+            images: image_ids,
+            reserved: true,
+            kind: None,
+        });
+        save(&store, &mut team)?;
+        let admission = Admission {
+            parent: session_id.to_owned(),
+            generation: team.generation,
+        };
+        return Ok((team, admission, true));
+    }
+    if agents.contains_key(session_id)
         || team
             .workers
             .iter()
@@ -913,7 +961,7 @@ pub(crate) fn start_state(
         parent: session_id.to_owned(),
         generation: team.generation,
     };
-    Ok((team, admission))
+    Ok((team, admission, false))
 }
 fn text_check(value: &str) -> Result<()> {
     text(value, 64 * 1024, "Assignment")
