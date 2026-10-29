@@ -366,6 +366,7 @@ fn search_directories(windows: bool, env: &impl Fn(&str) -> Option<OsString>) ->
     }
     let npm = npm_global_bin(windows, env, home.as_deref(), &dirs);
     dirs.extend(npm);
+    dirs.extend(pnpm_global_dir(windows, env, home.as_deref()));
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
@@ -478,6 +479,35 @@ fn npm_global_bin(
         Some(node.parent()?.parent()?.to_path_buf())
     })?;
     Some(prefix.join("bin"))
+}
+
+/// Where `pnpm add -g` puts CLIs: `$PNPM_HOME` when `pnpm setup` configured the shell, else
+/// that command's own default. The rc file that exports PNPM_HOME never runs for an app
+/// opened from Finder or the Dock, so the default is searched too.
+fn pnpm_global_dir(
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    env("PNPM_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .or_else(|| {
+        if windows {
+            let local = env("LOCALAPPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| home.map(|home| home.join("AppData/Local")))?;
+            Some(local.join("pnpm"))
+        } else {
+            home.map(|home| if cfg!(target_os = "macos") {
+                home.join("Library/pnpm")
+            } else {
+                home.join(".local/share/pnpm")
+            })
+        }
+    })
 }
 
 /// GUI launches inherit a minimal PATH. Use the same ordered locations as CLI
@@ -629,6 +659,40 @@ mod tests {
             find_in_directories("pandacode-fixture-grok", search_directories(false, &env), false),
             Some(grok)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_global_shims_are_searched() {
+        let f = Fixture::new();
+        // The store sits where `pnpm setup` left it, reached through the default location,
+        // itself a symlink (`~/Library/pnpm` points across volumes on some machines).
+        let cli = "pandacode-fixture-pnpm-cli";
+        let pinned = executable(&f, &format!("store/pnpm/{cli}"));
+        let default = if cfg!(target_os = "macos") {
+            "home/Library/pnpm"
+        } else {
+            "home/.local/share/pnpm"
+        };
+        fs::create_dir_all(f.0.join(default).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(f.0.join("store/pnpm"), f.0.join(default)).unwrap();
+        let home = f.0.join("home").into_os_string();
+        let env = |name: &str| (name == "HOME").then(|| home.clone());
+        assert_eq!(
+            find_in_directories(cli, search_directories(false, &env), false),
+            Some(f.0.join(default).join(cli))
+        );
+        // An explicit PNPM_HOME wins over the default and can sit anywhere.
+        let pnpm = f.0.join("store/pnpm").into_os_string();
+        let env = |name: &str| match name {
+            "HOME" => Some(home.clone()),
+            "PNPM_HOME" => Some(pnpm.clone()),
+            _ => None,
+        };
+        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), Some(pinned));
+        // A relative PNPM_HOME is ignored, like npm's configured prefix.
+        let env = |name: &str| (name == "PNPM_HOME").then(|| OsString::from("store/pnpm"));
+        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), None);
     }
 
     #[test]
@@ -930,6 +994,7 @@ mod tests {
             "C:/Users/Person/.kilo/bin",
             "C:/Users/Person/.kimi-code/Scripts",
             "D:/Roaming Data/npm",
+            "D:/Local Data/pnpm",
             "D:/Local Data/Microsoft/WinGet/Links",
             "C:/Program Files/nodejs",
             "C:/Windows/System32/WindowsPowerShell/v1.0",
