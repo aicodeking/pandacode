@@ -29,13 +29,17 @@ pub(super) fn bundled() -> Option<PathBuf> {
     bundled_candidates().into_iter().find(|path| runnable(path))
 }
 
-/// An executable script on Unix; elsewhere the file itself is enough (the launch
-/// layer starts it with a runtime, never through the shell).
+/// The launch layer can run the script: it carries an exec bit (direct shebang
+/// exec) or a desktop app runtime sits beside it to launch it, so a bundled copy
+/// that lost its mode still counts when its app can run it.
 #[cfg(unix)]
 fn runnable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    path.metadata().is_ok_and(|metadata| {
+        metadata.is_file()
+            && (metadata.permissions().mode() & 0o111 != 0
+                || super::launch::electron_runtime(path).is_some())
+    })
 }
 
 #[cfg(not(unix))]
