@@ -18,6 +18,10 @@ pub struct Capture {
     /// Last callback's RMS level, as f32 bits (0..1 after [`level_of`]).
     level: Arc<AtomicU32>,
     pub sample_rate: u32,
+    /// The device's channel count, for diagnostics only: the callback already
+    /// averages to mono, so nothing reads it (a second downmix would garble
+    /// mono samples treated as interleaved frames).
+    #[allow(dead_code)]
     pub channels: u16,
     /// Callbacks whose samples were dropped because the consumer held the lock.
     /// Diagnostics only; the streaming models tolerate small gaps.
@@ -60,7 +64,9 @@ impl Capture {
             Ok(mut guard) => std::mem::take(&mut *guard),
             Err(_) => Vec::new(),
         };
-        resample_to_16k(&raw, self.sample_rate, self.channels as usize)
+        // The buffer is always mono (the callback averaged it); resample with
+        // channels 1 or mono samples get downmixed again as if interleaved.
+        resample_to_16k(&raw, self.sample_rate, 1)
     }
 
     /// Latest input level, 0..1.
@@ -134,7 +140,9 @@ pub fn level_of(samples: &[f32]) -> f32 {
 }
 
 /// Linear resample of mono audio to 16 kHz (voice models' rate). Quality is
-/// fine for ASR; the streaming models tolerate the gentle aliasing.
+/// fine for ASR; the streaming models tolerate the gentle aliasing. Callers
+/// pass `channels` 1: capture averages to mono in the callback, so the
+/// samples are never interleaved frames.
 pub fn resample_to_16k(samples: &[f32], from_rate: u32, channels: usize) -> Vec<f32> {
     let mono = if channels > 1 {
         downmix_to_mono(samples, channels)
