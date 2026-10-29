@@ -1,10 +1,11 @@
 //! Shared SSH transport for the VPS-style cloud providers (docs/cloud-agents.md): DigitalOcean,
 //! Vultr and Hetzner machines are ordinary Linux boxes, so commands and files move over the
-//! system `ssh`/`scp` with one PandaCode ed25519 keypair. The private key lives in the secure
-//! store (`vps_key`); its 0600 file copy sits beside it in the app-data dir (same protection
-//! as the secrets file) and is what `-i` uses. Host keys are trusted on first use into an
-//! app-data `ssh-known-hosts` file. Windows needs its built-in OpenSSH client (an optional
-//! feature there).
+//! system `ssh`/`scp` with one PandaCode ed25519 keypair. The keypair lives base64-encoded
+//! in the secure store (`vps_key`, private and public halves in one value; the store rejects
+//! newlines), and its 0600 file copy sits in the app-data dir (same protection as the secrets
+//! file) where `-i` finds it. Host keys are trusted on first use into an app-data
+//! `ssh-known-hosts` file. Windows needs its built-in OpenSSH client (an optional feature
+//! there).
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -13,6 +14,8 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::thread::sleep;
 use std::time::Duration;
+
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use super::shell_quote;
 use crate::workspace::{run_process, GitOutput};
@@ -42,45 +45,91 @@ impl Target {
     }
 }
 
+/// Serializes reads and generation of the key pair: two tasks preparing at once must not
+/// race the store read against the save, nor share `ssh-keygen`'s temp files.
+static KEY_LOCK: Mutex<()> = Mutex::new(());
+
 /// The materialized key file and its public key line, generating the pair on first use.
 pub fn key_pair() -> Result<(PathBuf, String)> {
+    let _guard = KEY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = store_dir()?;
     let file = dir.join("vps-key");
-    let private = match super::secret("vps_key") {
-        Some(private) => private,
-        None => generate(dir)?,
+    let pair = match super::secret("vps_key").and_then(|stored| decode_pair(&stored)) {
+        Some(pair) => pair,
+        // An undecodable value is not a usable pair, so a fresh pair is the only way forward.
+        None => generate(dir, &file)?,
     };
-    write_private(&file, private.as_bytes())?;
-    Ok((file.clone(), public_of_cached(&private, &file)?))
+    write_private(&file, pair.0.as_bytes())?;
+    Ok((file, pair.1))
 }
 
-/// One ed25519 keypair for every VPS provider, made by `ssh-keygen` and saved as a secret.
-fn generate(dir: &Path) -> Result<String> {
+/// One ed25519 keypair for every VPS provider, made by `ssh-keygen` and saved as one secret
+/// (`vps_key`), private and public halves together so they can never disagree.
+fn generate(dir: &Path, file: &Path) -> Result<(String, String)> {
     let new = dir.join("vps-key.new");
-    let public = PathBuf::from(format!("{}.pub", new.display()));
+    let public_path = PathBuf::from(format!("{}.pub", new.display()));
     let _ = std::fs::remove_file(&new);
-    let _ = std::fs::remove_file(&public);
+    let _ = std::fs::remove_file(&public_path);
     let mut command = Command::new("ssh-keygen");
     command.args(["-q", "-t", "ed25519", "-N", "", "-C", "pandacode", "-f"]).arg(&new);
-    run(command, Duration::from_secs(30))?;
-    let private = std::fs::read_to_string(&new).map_err(|_| "ssh-keygen made no key file.".to_string())?;
+    let made = run(command, Duration::from_secs(30)).map(|_| ()).and_then(|()| {
+        let private = std::fs::read_to_string(&new).map_err(|_| "ssh-keygen made no key file.".to_string())?;
+        let public = std::fs::read_to_string(&public_path).ok().map(|line| line.trim().to_string()).unwrap_or_default();
+        Ok((private, public))
+    });
     let _ = std::fs::remove_file(&new);
-    let _ = std::fs::remove_file(&public);
+    let _ = std::fs::remove_file(&public_path);
+    let (private, public) = made?;
     if private.is_empty() {
         return Err("ssh-keygen made an empty key.".into());
     }
-    super::set_secret("vps_key", &private)?;
-    Ok(private)
+    if public.is_empty() {
+        return Err("ssh-keygen made no public key.".into());
+    }
+    super::set_secret("vps_key", &encode_pair(&private, &public))?;
+    write_private(file, private.as_bytes())?;
+    Ok((private, public))
+}
+
+/// The saved form of a keypair, `base64:<private payload> <public line>`: the secure store
+/// rejects newlines, and the base64 alphabet holds no spaces, so the halves split cleanly.
+fn encode_pair(private: &str, public: &str) -> String {
+    format!("base64:{} {public}", STANDARD.encode(private.as_bytes()))
+}
+
+/// The inverse of [`encode_pair`]; `None` for anything that is not a saved keypair.
+fn decode_pair(stored: &str) -> Option<(String, String)> {
+    let rest = stored.strip_prefix("base64:")?;
+    let (private, public) = rest.split_once(' ')?;
+    let private = STANDARD.decode(private).ok().and_then(|bytes| String::from_utf8(bytes).ok())?;
+    let public = public.trim();
+    if private.is_empty() || !public.starts_with("ssh-") {
+        return None;
+    }
+    Some((private, public.to_string()))
 }
 
 fn write_private(file: &Path, bytes: &[u8]) -> Result<()> {
     if std::fs::read(file).is_ok_and(|existing| existing == bytes) {
+        // The mode applies only at create, so a looser file from an older build is tightened.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+        }
         return Ok(());
     }
     use std::io::Write;
-    // Mode set at create, so the key is never briefly world-readable.
-    let mut file = open_private(file).map_err(|_| "Could not write the SSH key file.".to_string())?;
-    file.write_all(bytes).map_err(|_| "Could not write the SSH key file.".to_string())?;
+    // Mode set at create, so the key is never briefly world-readable; the explicit tighten
+    // after the write also covers an existing file, whose mode create would leave alone.
+    let mut handle = open_private(file).map_err(|_| "Could not write the SSH key file.".to_string())?;
+    handle.write_all(bytes).map_err(|_| "Could not write the SSH key file.".to_string())?;
+    drop(handle);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -91,32 +140,6 @@ fn open_private(file: &Path) -> std::io::Result<std::fs::File> {
 #[cfg(not(unix))]
 fn open_private(file: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(file)
-}
-
-/// The public half, derived from the saved key with `ssh-keygen -y`; derived once per key,
-/// since the poll cadence of a run makes a process spawn per call wasteful.
-fn public_of_cached(private: &str, file: &Path) -> Result<String> {
-    static DERIVED: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new();
-    let memo = DERIVED.get_or_init(|| Mutex::new(None));
-    if let Some((stored, public)) = memo.lock().unwrap().as_ref() {
-        if stored == private {
-            return Ok(public.clone());
-        }
-    }
-    let public = public_of(file)?;
-    *memo.lock().unwrap() = Some((private.to_string(), public.clone()));
-    Ok(public)
-}
-
-/// The public half, from the key file.
-fn public_of(file: &Path) -> Result<String> {
-    let mut command = Command::new("ssh-keygen");
-    command.arg("-y").arg(file);
-    let out = run(command, Duration::from_secs(30))?;
-    if !out.status.success() {
-        return Err("The saved SSH key is unreadable. Disconnect and reconnect a VPS cloud provider to make a new one.".into());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout.bytes).trim().to_string())
 }
 
 fn store_dir() -> Result<&'static Path> {
@@ -372,5 +395,81 @@ mod tests {
         assert!(friendly("ssh: connect to host x port 22: Connection refused", known, &target()).contains("did not answer"));
         assert!(friendly("", known, &target()).contains("could not run"));
         assert!(friendly("kex_exchange_identification: banner line", known, &target()).starts_with("SSH: kex"));
+    }
+
+    /// Issue #206: a first VPS cloud task failed twice — the multi-line private key was
+    /// rejected by the secure store's control-character check, and re-deriving the public
+    /// half with `ssh-keygen -y` failed inside the app. One test because the secure store's
+    /// dir is a process-global.
+    #[test]
+    fn vps_key_survives_the_secure_store_and_self_heals() {
+        use super::super::{secret, set_secret};
+        let dir = std::env::temp_dir().join(format!("pandacode-vps-key-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::secret_store::setup(&dir);
+        let forget = |names: &[&str]| {
+            for name in names {
+                crate::secret_store::remove(super::super::SERVICE, name);
+            }
+        };
+        forget(&["vps_key"]);
+
+        // First use: generation succeeds, the stored pair is encoded and carries both halves,
+        // and the materialized file holds the decoded private half at 0600.
+        let (made, public) = key_pair().expect("first use generates and saves a keypair");
+        assert!(made.ends_with("vps-key"));
+        let stored = secret("vps_key").expect("the keypair is saved");
+        assert!(stored.starts_with("base64:"));
+        assert!(!stored.chars().any(char::is_control), "the stored pair must pass the secure store's checks");
+        use base64::Engine as _;
+        let (stored_private, stored_public) = stored.strip_prefix("base64:").unwrap().split_once(' ').unwrap();
+        let private = String::from_utf8(
+            base64::engine::general_purpose::STANDARD.decode(stored_private).unwrap(),
+        ).unwrap();
+        assert!(private.contains("PRIVATE KEY"));
+        assert_eq!(stored_public, public);
+        assert!(public.starts_with("ssh-ed25519 "));
+        assert_eq!(std::fs::read_to_string(&made).unwrap(), private);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&made).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        // A second call reuses the pair: nothing regenerates.
+        let (again, public_again) = key_pair().unwrap();
+        assert_eq!(again, made);
+        assert_eq!(public_again, public);
+        assert_eq!(secret("vps_key").as_deref(), Some(stored.as_str()));
+
+        // The key file's mode is tightened again even when its content already matches.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&made, std::fs::Permissions::from_mode(0o644)).unwrap();
+            key_pair().unwrap();
+            assert_eq!(std::fs::metadata(&made).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+
+        // Self-heal: an undecodable value (never a usable pair) is replaced by a fresh pair
+        // instead of blocking every task.
+        set_secret("vps_key", "base64:bm90LWEta2V5").unwrap();
+        let (healed_file, healed_public) = key_pair().expect("an undecodable key regenerates instead of failing");
+        assert_eq!(healed_file, made);
+        assert!(healed_public.starts_with("ssh-ed25519 "));
+        assert_ne!(healed_public, public);
+        assert_ne!(secret("vps_key").as_deref(), Some("base64:bm90LWEta2V5"));
+
+        // Concurrent callers share one pair: the lock keeps parallel task preparations from
+        // racing the store read against the save or each other's temp files.
+        forget(&["vps_key"]);
+        let pairs: Vec<(PathBuf, String)> = std::thread::scope(|scope| {
+            (0..4).map(|_| scope.spawn(key_pair)).map(|handle| handle.join().unwrap().expect("concurrent generation succeeds")).collect()
+        });
+        let (first_file, first_public) = &pairs[0];
+        assert!(pairs.iter().all(|(file, public)| file == first_file && public == first_public));
+
+        forget(&["vps_key"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
