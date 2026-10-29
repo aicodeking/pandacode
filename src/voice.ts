@@ -118,7 +118,16 @@ export function createVoice(host: VoiceHost) {
   function stopRecording(cancel = false): void {
     if (!recording) return;
     void host.call(cancel ? 'voice_cancel' : 'voice_stop').catch(() => { /* the backend cleans up */ });
-    if (cancel) finishLocally();
+    if (cancel) {
+      // A cancel leaves the draft as it was: undo whatever the partial streamed in.
+      const prompt = promptField();
+      if (prompt) {
+        prompt.value = `${prefix}${suffix}`;
+        prompt.dispatchEvent(new Event('input', { bubbles: true }));
+        prompt.setSelectionRange(prefix.length, prefix.length);
+      }
+      finishLocally();
+    }
   }
 
   /** Local teardown for cancels and error paths (results keep the text). */
