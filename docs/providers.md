@@ -812,7 +812,10 @@ without sending a prompt.
 
 ## ZCode
 
-ZCode (z.ai's coding CLI, installed to `~/.local/bin/zcode` by its install script)
+ZCode (z.ai's coding CLI, installed to `~/.local/bin/zcode` by its install script;
+without it on PATH, PandaCode uses the CLI bundled with the ZCode desktop app —
+`/Applications/ZCode.app` on macOS, `%LOCALAPPDATA%\Programs\ZCode` or
+`%ProgramFiles%\ZCode` on Windows, `/opt/ZCode` on Linux)
 has no ACP mode; PandaCode drives its own `zcode app-server` protocol instead —
 newline-delimited JSON on stdio with no handshake and no transport auth, so the
 process is trusted like any local CLI. Each run spawns one `zcode app-server` and
