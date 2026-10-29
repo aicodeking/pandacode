@@ -31,7 +31,7 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? t('ZCode’s build mode: it works in this project and asks you when an action needs permission.')
     : provider === 'hermes'
     ? t('Hermes works in this project. Asks you before terminal commands or dangerous actions.')
-    ? t('Use the harness’s normal rules. Ask you when approval is needed.') };
+    : t('Use the harness’s normal rules. Ask you when approval is needed.') };
   const full: ApprovalMode = { id: 'full', label: t('Full access'), icon: 'unlock', description: provider === 'antigravity'
     ? t('Automatically approve permission requests. Server restrictions still apply.')
     : provider === 'codex'
@@ -54,7 +54,7 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? t('Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.')
     : provider === 'zcode'
     ? t('Always approve: ZCode runs every tool without asking (its yolo mode).')
-    ? t('Run tools without approval prompts, including outside this project.') };
+    : t('Run tools without approval prompts, including outside this project.') };
   // Agent-reviewed approvals, as bots offer. Codex's own is its Approve for me (`auto`).
   const review: ApprovalMode[] = CLAUDE_FAMILY.includes(provider)
     ? [{ id: 'review', label: t('Approve for me'), icon: 'spark', description: t('Claude Code’s auto mode: its safety reviewer approves routine actions and blocks risky ones. Needs a recent Claude Code.') }]

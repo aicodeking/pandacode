@@ -103,7 +103,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
     return `<div class="cloud-provider" data-provider="${id}">
-      <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>${t('Set up sandboxes')}</button>` : ''}<button type="button" class="secondary-button" data-cloud="toggle">${t('Connect')}</button></div></div>
+      <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? `<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>${t('Set up sandboxes')}</button>` : ''}<button type="button" class="secondary-button" data-cloud="toggle">${t('Connect')}</button></div></div>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
       <label class="cloud-inherit" data-inherit-row hidden><input type="checkbox" data-cloud-inherit> Include provider environment variables${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</label>${id === 'instabox' ? `
       <div class="cloud-image" hidden>

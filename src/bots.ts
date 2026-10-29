@@ -310,7 +310,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       <label class="bots-field"><span>What should this bot help with?</span><textarea name="purpose" rows="3" maxlength="${PURPOSE_MAX}" placeholder="Describe its job, what to always do, and what to never do" aria-describedby="bc-count">${escape(draft.purpose)}</textarea></label>
       <span class="bc-count" id="bc-count">${draft.purpose.length} / ${PURPOSE_MAX}</span>
       <div class="bc-brain" role="group" aria-label="Harness and model">${harness}${model}<label class="bc-control"><span>Reasoning</span>${efforts}</label></div>
-      <div class="bc-actions">${bots.length && !single ? '<button type="button" class="secondary-button" data-bots-action="cancel-edit">${t('Cancel')}</button>` : ''}<button type="submit" class="primary-button bc-submit" ${creating ? 'disabled aria-busy="true"' : ''}>${creating ? `<span class="support-spinner" aria-hidden="true"></span>${t('Creating bot…')}` : t('Create bot')}</button></div>
+      <div class="bc-actions">${bots.length && !single ? `<button type="button" class="secondary-button" data-bots-action="cancel-edit">${t('Cancel')}</button>` : ''}<button type="submit" class="primary-button bc-submit" ${creating ? 'disabled aria-busy="true"' : ''}>${creating ? `<span class="support-spinner" aria-hidden="true"></span>${t('Creating bot…')}` : t('Create bot')}</button></div>
     </form>
     <section class="bc-suggestions" aria-labelledby="bc-suggestions-title"><h4 id="bc-suggestions-title">Suggestions</h4><div class="bc-rail"><ul>${cards}</ul></div></section></div>`;
   }
