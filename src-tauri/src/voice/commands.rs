@@ -507,6 +507,8 @@ fn online_start_recording(
         let app = &app;
         let mut last_level = Instant::now() - LEVEL_EVERY;
         let mut buffer: Vec<f32> = Vec::new();
+        // A feed failure after connect: remembered, settled on stop.
+        let mut stream_failed: Option<String> = None;
         // Streaming providers connect now; multipart providers connect on stop.
         let mut stream: Option<super::online::OnlineStream> = match provider.transport {
             super::providers::Transport::Multipart => None,
@@ -558,12 +560,10 @@ fn online_start_recording(
                 }
             }
             if let Some(error) = feed_error {
+                // No voice-error mid-recording: the frontend tears the bar
+                // down on it, leaving this loop running with no way to stop.
+                stream_failed = Some(error);
                 stream = None;
-                super::emit(
-                    app,
-                    super::EVENT_ERROR,
-                    serde_json::json!({ "message": online_note(&settings, &error) }),
-                );
             }
             if last_level.elapsed() >= LEVEL_EVERY {
                 super::emit(app, super::EVENT_LEVEL, capture.level());
@@ -571,6 +571,13 @@ fn online_start_recording(
             }
         }
         if cancel.load(Ordering::SeqCst) {
+            clear_session(app);
+            return;
+        }
+        // A mid-stream failure settles the whole take with the offline engine
+        // (or surfaces the error) instead of the streaming finish.
+        if let Some(error) = stream_failed {
+            settle_offline_or_fail(app, &dir, &settings, &buffer, error).await;
             clear_session(app);
             return;
         }
