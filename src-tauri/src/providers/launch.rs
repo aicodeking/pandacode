@@ -66,11 +66,24 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     let batch = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
-    if !windows || !batch {
+    // Windows cannot exec a Node script directly, and the ZCode Desktop CLI ships
+    // as one (`zcode.cjs`); start it under node like the npm shims below.
+    let node_script = windows
+        && path.extension().is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("js")
+                || extension.eq_ignore_ascii_case("mjs")
+                || extension.eq_ignore_ascii_case("cjs")
+        });
+    if !windows || (!batch && !node_script) {
         return Ok(Launch {
             program: external_path_for(path, windows),
             args: Vec::new(),
         });
+    }
+    if node_script {
+        let directory =
+            path.parent().ok_or("The Node script has no installation folder.")?;
+        return node_launch(path, directory);
     }
     // npm shims forward arguments through cmd.exe. Launch their declared bin
     // directly instead, so paths, JSON and model names never become shell syntax.
@@ -127,13 +140,18 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             args: Vec::new(),
         });
     }
+    node_launch(&script, directory)
+}
+
+/// A Node script next to its own runtime, else any node on the searched PATH.
+fn node_launch(script: &Path, directory: &Path) -> Result<Launch, String> {
     let adjacent_node = directory.join("node.exe");
     let node = adjacent_node.is_file().then_some(adjacent_node)
         .or_else(|| find_native_node(search_directories(true, &|key| std::env::var_os(key))))
-        .ok_or("Node.js is required by this npm-installed harness. Install Node.js or use the native harness installer.")?;
+        .ok_or("Node.js is required by this harness. Install Node.js or use the native harness installer.")?;
     Ok(Launch {
-        program: external_path_for(&node, windows),
-        args: vec![external_path_for(&script, windows).into_os_string()],
+        program: external_path_for(&node, true),
+        args: vec![external_path_for(script, true).into_os_string()],
     })
 }
 
@@ -647,6 +665,25 @@ mod tests {
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
         assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn windows_node_scripts_launch_under_adjacent_node() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let node = f.file("ZCode/resources/glm/node.exe", "");
+        let launch = resolve(&script, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn unix_node_scripts_launch_directly() {
+        let f = Fixture::new();
+        let script = f.file("glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&script, false));
+        assert!(launch.args.is_empty());
     }
 
     #[test]
