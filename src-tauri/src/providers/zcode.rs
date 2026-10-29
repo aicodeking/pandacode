@@ -23,10 +23,24 @@ pub(super) const SIGN_IN: &str =
     "ZCode requires sign-in. Run `zcode` in a terminal and sign in, then send again.";
 
 /// The CLI bundled with ZCode Desktop (`…/resources/glm/zcode.cjs`), for installs
-/// without `zcode` on PATH. On Unix it is an executable shebang script; on Windows
-/// the launch layer starts it under node.
+/// without `zcode` on PATH. The launch layer runs it on the app's own Electron
+/// runtime, so no system node is needed.
 pub(super) fn bundled() -> Option<PathBuf> {
-    bundled_candidates().into_iter().find(|path| path.is_file())
+    bundled_candidates().into_iter().find(|path| runnable(path))
+}
+
+/// An executable script on Unix; elsewhere the file itself is enough (the launch
+/// layer starts it with a runtime, never through the shell).
+#[cfg(unix)]
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn runnable(path: &Path) -> bool {
+    path.is_file()
 }
 
 #[cfg(target_os = "macos")]
