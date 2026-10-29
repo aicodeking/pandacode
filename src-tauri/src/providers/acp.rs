@@ -73,6 +73,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
         "hermes" => super::hermes::configure(command, config),
+        "nanobot" => super::nanobot::configure(command, config),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -208,6 +209,19 @@ impl Protocol {
                 }
                 if err_str.contains("storage_unavailable") || value["error"]["code"] == -32000 {
                     return Err("Hermes Agent is not configured with a default model. Run `hermes model` or `hermes acp --setup` in a terminal (or set model.default in ~/.hermes/config.yaml), then retry.".into());
+                }
+            }
+            if self.config.provider == "nanobot" {
+                let err_str = value["error"]["data"].as_str()
+                    .or_else(|| value["error"]["data"]["details"].as_str())
+                    .or_else(|| value["error"]["message"].as_str())
+                    .unwrap_or("");
+                let unmasked = super::nanobot::unmask_error(err_str);
+                if unmasked != err_str {
+                    return Err(unmasked);
+                }
+                if value["error"]["code"] == -32000 {
+                    return Err("Nanobot is not configured with a default model. Run `nanobot onboard` in a terminal (or set agents.defaults in ~/.nanobot/config.json), then retry.".into());
                 }
             }
             if value["error"]["code"] == -32000 {
@@ -442,7 +456,7 @@ impl Protocol {
                 }
                 return Ok(step);
             }
-            if self.config.provider == "hermes" && self.config.mode == "plan" {
+            if (self.config.provider == "hermes" || self.config.provider == "nanobot") && self.config.mode == "plan" {
                 let tool = &value["params"]["toolCall"];
                 let kind = field(tool, "kind");
                 let read_only = matches!(kind, "read" | "search" | "fetch" | "think");
@@ -598,7 +612,7 @@ impl Protocol {
             &[super::kilo::mode_id(&self.config.mode)]
         } else if self.config.provider == "devin" {
             &[super::devin::mode_id(&self.config.mode)]
-        } else if self.config.provider == "hermes" {
+        } else if self.config.provider == "hermes" || self.config.provider == "nanobot" {
             match self.config.mode.as_str() {
                 "auto" => &["accept_edits", "default"],
                 "full" => &["dont_ask", "default"],
@@ -885,7 +899,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
     if let Some(option) = options(metadata, "model") {
         for choice in choices(option) {
             let id = field(choice, "value");
-            if !valid_model_id(id) {
+            if !valid_model_id(id) || id == "default" {
                 continue;
             }
             models.push(ModelInfo {
@@ -900,7 +914,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
     } else if let Some(available) = metadata["models"]["availableModels"].as_array() {
         for entry in available.iter().take(MODEL_CATALOG_LIMIT) {
             let id = field(entry, "modelId");
-            if !valid_model_id(id) {
+            if !valid_model_id(id) || id == "default" {
                 continue;
             }
             models.push(ModelInfo {
@@ -2023,6 +2037,35 @@ mod tests {
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));
+        let mut c_nanobot = Command::new("nanobot");
+        configure(&mut c_nanobot, &config("nanobot"));
+        assert!(!c_nanobot.as_std().get_args().any(|arg| arg == "acp"));
+    }
+
+    #[test]
+    fn nanobot_full_access_selects_dont_ask_mode() {
+        let mut cfg = config("nanobot");
+        cfg.mode = "full".into();
+        let mut c = Command::new("nanobot");
+        configure(&mut c, &cfg);
+
+        let mut p = Protocol::new(cfg);
+        assert_eq!(p.initial()["method"], "initialize");
+        p.receive(capabilities()).unwrap();
+        let session = json!({
+            "sessionId": "nanobot-123",
+            "modes": {
+                "availableModes": [
+                    { "id": "default", "name": "Default" },
+                    { "id": "accept_edits", "name": "Accept Edits" },
+                    { "id": "dont_ask", "name": "Don't Ask" }
+                ],
+                "currentModeId": "default"
+            }
+        });
+        let step = p.receive(response(2, session)).unwrap();
+        assert_eq!(step.write[0]["method"], "session/set_mode");
+        assert_eq!(step.write[0]["params"]["modeId"], "dont_ask");
     }
 
     #[test]
@@ -2061,6 +2104,61 @@ mod tests {
         })).err().unwrap();
         assert!(error.contains("Hermes Agent has no inference provider configured"));
         assert!(error.contains("model.provider"));
+    }
+
+    #[test]
+    fn nanobot_storage_unavailable_reports_setup_and_model_guidance() {
+        let mut p = Protocol::new(config("nanobot"));
+        assert_eq!(p.initial()["method"], "initialize");
+        let step = p.receive(capabilities()).unwrap();
+        assert_eq!(step.write[0]["method"], "session/new");
+        let error = p.receive(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "error": {
+                "code": -32000,
+                "message": "Model not set"
+            }
+        })).err().unwrap();
+        assert!(error.contains("Nanobot is not configured with a default model"));
+        assert!(error.contains("nanobot onboard"));
+    }
+
+    #[test]
+    fn nanobot_provider_not_configured_reports_provider_guidance() {
+        let mut p = Protocol::new(config("nanobot"));
+        assert_eq!(p.initial()["method"], "initialize");
+        let step = p.receive(capabilities()).unwrap();
+        assert_eq!(step.write[0]["method"], "session/new");
+        let error = p.receive(json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "error": {
+                "code": -32603,
+                "message": "Internal error",
+                "data": { "details": "ValueError: No provider is configured for model 'anthropic/claude-opus-4-5'." }
+            }
+        })).err().unwrap();
+        assert!(error.contains("Nanobot has no inference provider configured"));
+        assert!(error.contains("nanobot onboard"));
+    }
+
+    #[test]
+    fn nanobot_unknown_error_falls_through_to_common_handler() {
+        let mut p = Protocol::new(config("nanobot"));
+        assert_eq!(p.initial()["method"], "initialize");
+        let step = p.receive(capabilities()).unwrap();
+        assert_eq!(step.write[0]["method"], "session/new");
+        let error = p.receive(json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "error": {
+                "code": -32600,
+                "message": "Invalid request"
+            }
+        })).err().unwrap();
+        assert!(error.contains("nanobot:"));
+        assert!(error.contains("Invalid request"));
     }
 
     #[test]

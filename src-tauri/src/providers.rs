@@ -40,6 +40,7 @@ mod extra_models;
 mod github_copilot;
 mod devin;
 pub(crate) mod hermes;
+pub(crate) mod nanobot;
 mod glm;
 mod mimo;
 mod muse;
@@ -74,12 +75,11 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-
 /// A frame buffer grown past 1 MiB by one large message gives the memory back once drained.
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 19] = [
+pub(crate) const PROVIDERS: [(&str, &str); 20] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -99,6 +99,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("devin", "Devin CLI"),
     ("zcode", "ZCode"),
     ("hermes", "Hermes Agent"),
+    ("nanobot", "Nanobot"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
@@ -528,7 +529,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "nanobot",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
@@ -536,7 +537,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
-        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes", Some(value)) => {
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "nanobot", Some(value)) => {
             !value.is_empty()
                 && value.len() <= 64
                 && value
@@ -586,14 +587,34 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
-        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else { None })
+        .or_else(|| {
+            if name == "hermes" {
+                launch::find("hermes-acp")
+            } else if name == "devin" {
+                devin::bundled()
+            } else if name == "nanobot" {
+                launch::find("nanobot-acp").or_else(|| {
+                    #[cfg(unix)]
+                    let fallback = std::env::var_os("HOME").map(PathBuf::from).map(|h| h.join(".nanobot/venv/bin/nanobot"));
+                    #[cfg(windows)]
+                    let fallback = std::env::var_os("USERPROFILE").map(PathBuf::from).map(|h| h.join(".nanobot\\venv\\Scripts\\nanobot.exe"));
+                    fallback.filter(|p| p.is_file())
+                })
+            } else {
+                None
+            }
+        })
 }
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
 /// Everything else a launch adds (credentials, endpoints, a named connection)
 /// is applied later and wins.
 pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, String> {
-    let mut command = command(path)?;
+    let mut command = if provider == "nanobot" {
+        nanobot::command(path)?
+    } else {
+        command(path)?
+    };
     crate::provider_settings::apply_environment(provider, &mut command);
     Ok(command)
 }
@@ -782,7 +803,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "nanobot"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -815,6 +836,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "devin" => devin::models(&path).await,
         "zcode" => zcode::models(&path).await,
         "hermes" => hermes::models(&path).await,
+        "nanobot" => nanobot::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -1366,7 +1388,7 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") && self.config.mode == "plan" && !text.trim().is_empty() {
+        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes" | "nanobot") && self.config.mode == "plan" && !text.trim().is_empty() {
             text = format!("{}\n\n{text}", acp::READ_ONLY_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
@@ -1747,7 +1769,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "nanobot" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
@@ -1788,7 +1810,7 @@ impl Protocol {
                 json!({"id":request["id"],"result":result})
             }
             "devin" => devin::decision(&request, approved),
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "nanobot" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -1816,7 +1838,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "nanobot" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1847,7 +1869,7 @@ impl Protocol {
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "zcode" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "nanobot" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -2810,7 +2832,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
         "zcode" => zcode::configure(command),
         "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
-        "github-copilot" | "devin" | "hermes" => acp::configure(command, config),
+        "github-copilot" | "devin" | "hermes" | "nanobot" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -2894,6 +2916,7 @@ async fn run_inner(
         "devin",
         "zcode",
         "hermes",
+        "nanobot",
     ]
     .contains(&config.provider.as_str())
     {
@@ -3079,7 +3102,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "nanobot",
             Some(host),
         ) => (
             None,
@@ -3376,6 +3399,15 @@ mod tests {
         assert!(validate_reasoning_effort("hermes", Some("bad\nflag")).is_err());
     }
 
+    #[test]
+    fn nanobot_is_registered_with_its_cli_and_catalog_defined_efforts() {
+        assert!(PROVIDERS.contains(&("nanobot", "Nanobot")));
+        assert_eq!(executable_name("nanobot"), "nanobot");
+        assert!(validate_reasoning_effort("nanobot", None).is_ok());
+        assert!(validate_reasoning_effort("nanobot", Some("high")).is_ok());
+        assert!(validate_reasoning_effort("nanobot", Some("bad\nflag")).is_err());
+    }
+
     pub(super) fn config(provider: &str) -> RunConfig {
         RunConfig {
             session_id: "local".into(),
@@ -3559,7 +3591,7 @@ mod tests {
         for provider in ["claude", "glm", "mimo"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes"] {
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes", "nanobot"] {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }

@@ -1,4 +1,4 @@
-export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes';
+export type ProviderId = 'claude' | 'codex' | 'kimi' | 'opencode' | 'glm' | 'antigravity' | 'grok' | 'mimo' | 'pi' | 'deepseek' | 'commandcode' | 'cline' | 'kilo' | 'omp' | 'github-copilot' | 'muse' | 'devin' | 'zcode' | 'hermes' | 'nanobot';
 export type Mode = 'ask' | 'auto' | 'review' | 'plan' | 'full';
 export type TaskStage = 'pending' | 'in_progress' | 'review' | 'completed';
 export interface Project { id: string; name: string; path: string; /** Increases with each project added (the native rowid); orders Projects: Added. */ addedOrder?: number; }

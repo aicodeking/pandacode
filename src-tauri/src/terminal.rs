@@ -297,7 +297,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes" | "nanobot") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -428,6 +428,10 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 args.push("--yolo".into());
             }
         }
+        "nanobot" => {
+            // `nanobot agent` does not accept approval flags like `--yolo` on its CLI.
+            args.insert(0, "agent".into());
+        }
         "cline" => {
             args.push("-i".into());
             if context.mode == "plan" {
@@ -450,18 +454,21 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if let Some(model) = context
-        .model
-        .filter(|model| !model.is_empty() && *model != "default")
-    {
-        if model.len() > 200 || model.chars().any(char::is_control) {
-            return Err("Invalid harness model.".into());
+    // `nanobot agent` does not accept a `--model` CLI argument; it selects models from ~/.nanobot/config.json.
+    if provider != "nanobot" {
+        if let Some(model) = context
+            .model
+            .filter(|model| !model.is_empty() && *model != "default")
+        {
+            if model.len() > 200 || model.chars().any(char::is_control) {
+                return Err("Invalid harness model.".into());
+            }
+            args.extend(["--model".into(), model.into()]);
+        } else if provider == "glm" {
+            args.extend(["--model".into(), "glm-5.3".into()]);
+        } else if provider == "mimo" {
+            args.extend(["--model".into(), "mimo-v2.6-pro".into()]);
         }
-        args.extend(["--model".into(), model.into()]);
-    } else if provider == "glm" {
-        args.extend(["--model".into(), "glm-5.3".into()]);
-    } else if provider == "mimo" {
-        args.extend(["--model".into(), "mimo-v2.6-pro".into()]);
     }
     if let Some(effort) = context.reasoning_effort {
         crate::providers::validate_reasoning_effort(provider, Some(effort))?;
@@ -1083,6 +1090,20 @@ mod tests {
         };
         let args = harness_arguments(&context).unwrap();
         assert_eq!(args, ["--resume", "session-123", "--yolo", "--model", "nous/hermes-3-llama-3.1-405b"]);
+    }
+
+    #[test]
+    fn nanobot_console_uses_agent_subcommand_and_session() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "nanobot",
+            resume_id: Some("session-456"),
+            model: Some("default"),
+            reasoning_effort: None,
+            mode: "auto",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(args, ["agent", "--session", "session-456"]);
     }
 
     #[test]

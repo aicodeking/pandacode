@@ -1,7 +1,7 @@
 # Provider integrations
 
 PandaCode launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
-Antigravity, Grok Build, Devin CLI, ZCode, and Hermes Agent own their authentication; sign in using their official
+Antigravity, Grok Build, Devin CLI, ZCode, Hermes Agent, and Nanobot own their authentication; sign in using their official
 CLI or extension.
 The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored as separate
 entries in PandaCode's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
@@ -871,6 +871,18 @@ drives it with the shared ACP adapter (`providers/hermes.rs`). Official docs: [h
 **Approvals.** Standard (`ask`) requests approval for shell commands and dangerous actions; Accept edits (`auto`) automatically allows file edits while prompting for commands; Plan mode (`plan`) enforces read-only investigation and declines state-changing actions; Full access (`full`) skips approvals (equivalent to Hermes' `--yolo` flag).
 
 **Interactive console.** Click Open terminal to start `hermes` in an interactive terminal session. PandaCode passes `--resume <session>` when continuing a task, and `--yolo` when the task is in Full access mode.
+
+## Nanobot
+
+Nanobot (`nanobot`; install with `pip install nanobot-ai` or from [HKUDS/nanobot](https://github.com/HKUDS/nanobot)) is driven by PandaCode via an embedded Python ACP bridge (`providers/nanobot.rs`), or a standalone `nanobot-acp` adapter. Official docs: [nanobot.wiki](https://nanobot.wiki) and [GitHub repository](https://github.com/HKUDS/nanobot).
+
+**Configuration and setup.** Nanobot stores its credentials and LLM provider presets in `~/.nanobot/config.json`. Configure your model provider by running `nanobot onboard` or editing `~/.nanobot/config.json`. The agent supports OpenAI, Anthropic, DeepSeek, OpenRouter, and custom OpenAI-compatible endpoints. If initialization or session creation fails because no provider is configured, PandaCode guides you to run `nanobot onboard`.
+
+**Models.** Nanobot is model-agnostic. The model picker offers **Default** (which delegates model selection to Nanobot's configured preset in `~/.nanobot/config.json`) alongside any models Nanobot advertises through ACP `configOptions`. Custom model identifiers can also be entered directly.
+
+**Approvals.** Standard (`ask`) requests approval for file edits and non-read tools; Accept edits (`auto`) automatically allows file modifications; Plan mode (`plan`) enforces read-only investigation and declines state-changing actions; Full access (`full`) skips approvals (sets `NANOBOT_YOLO_MODE=1` and selects ACP `dont_ask` mode).
+
+**Interactive console.** Click Open terminal to start `nanobot agent` in an interactive terminal session. PandaCode passes `--session <session>` when continuing a task.
 
 ## Kilo Code
 

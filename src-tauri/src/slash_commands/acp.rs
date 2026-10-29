@@ -41,6 +41,9 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         "hermes" => {
             crate::providers::hermes::configure_command(&mut command, &path);
         }
+        "nanobot" => {
+            crate::providers::nanobot::configure_command(&mut command, &path);
+        }
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -90,7 +93,7 @@ mod tests {
 
     #[test]
     fn commands_use_real_provider_names_and_advertised_hints() {
-        for provider in ["opencode", "kilo", "antigravity", "grok", "github-copilot", "hermes"] {
+        for provider in ["opencode", "kilo", "antigravity", "grok", "github-copilot", "hermes", "nanobot"] {
             let catalog = parse_runtime(provider,&json!({"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"review","description":"Review changes","input":{"hint":"[focus]"}}]}}})).unwrap();
             assert_eq!(catalog.commands[0].id, format!("{provider}:/review"));
             assert_eq!(

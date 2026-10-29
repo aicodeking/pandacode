@@ -27,6 +27,7 @@ export const HARNESSES: Record<string, Harness> = {
   omp: { name: 'Oh My Pi', logo: require('../../assets/providers/omp.svg'), black: true },
   zcode: { name: 'ZCode', logo: require('../../assets/providers/zcode.svg'), mono: true },
   hermes: { name: 'Hermes', logo: require('../../assets/providers/hermes.svg') },
+  nanobot: { name: 'Nanobot', logo: require('../../assets/providers/nanobot.svg') },
 };
 
 export const harnessName = (id: string) => HARNESSES[id]?.name ?? id;

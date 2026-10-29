@@ -204,6 +204,7 @@ const providers: Provider[] = [
   { id: 'devin', name: 'Devin CLI', installed: true, path: '/sample/bin/devin', version: 'devin 3000.11.216 (sample)', models: [] },
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
+  { id: 'nanobot', name: 'Nanobot', installed: true, path: '/sample/bin/nanobot', version: 'nanobot 0.1.4 (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -279,6 +280,10 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Sample Hermes provider model.' },
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
+  ],
+  nanobot: [
+    { id: 'default', name: 'Default model', description: 'Uses the model configured in ~/.nanobot/config.json.' },
+    { id: 'gpt-4o', name: 'GPT-4o', description: 'Sample Nanobot model.' },
   ],
   muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
   opencode: openCodePreviewModels,

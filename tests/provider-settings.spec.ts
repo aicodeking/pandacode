@@ -262,7 +262,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'nanobot']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {
@@ -524,5 +524,29 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await expect(card.getByRole('link', { name: 'GitHub repository' })).toHaveAttribute('href', 'https://github.com/NousResearch/hermes-agent');
   await card.locator('details.connection-path > summary').click();
   await expect(card.getByLabel('Hermes Agent executable', { exact: true })).toBeVisible();
+});
+
+test('Nanobot has an install card, four approval modes, and executable settings', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.defaultProvider', 'nanobot');
+    localStorage.setItem('pandacode.provider', 'nanobot');
+  });
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  await page.locator('#mode-picker-trigger').click();
+  const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
+  await expect(items).toHaveCount(4);
+  await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
+  await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Nanobot', exact: false }) });
+  await expect(card).toContainText('via ACP');
+  await expect(card.getByRole('link', { name: 'Nanobot docs' })).toHaveAttribute('href', 'https://nanobot.wiki');
+  await expect(card.getByRole('link', { name: 'GitHub repository' })).toHaveAttribute('href', 'https://github.com/HKUDS/nanobot');
+  await card.locator('details.connection-path > summary').click();
+  await expect(card.getByLabel('Nanobot executable', { exact: true })).toBeVisible();
 });
 

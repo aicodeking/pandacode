@@ -57,7 +57,7 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
             }}),
             // Cline's ACP prompt keeps only text blocks; its read_files tool opens images.
             "cline" => json!({"type":"text","text":super::cline::image_reference(path)}),
-            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" | "devin" | "hermes" => {
+            "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" | "devin" | "hermes" | "nanobot" => {
                 json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
             }
             // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.

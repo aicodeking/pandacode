@@ -2439,6 +2439,7 @@ pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo>
         providers::acp_catalog::invalidate("devin");
         providers::acp_catalog::invalidate("zcode");
         providers::acp_catalog::invalidate("hermes");
+        providers::acp_catalog::invalidate("nanobot");
     }
     tauri::async_runtime::spawn_blocking(providers::discover)
         .await

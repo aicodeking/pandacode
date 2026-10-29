@@ -23,6 +23,7 @@ const logos: Partial<Record<ProviderId, string>> = {
   muse: new URL('./assets/providers/muse.svg', import.meta.url).href,
   omp: new URL('./assets/providers/omp.svg', import.meta.url).href,
   hermes: new URL('./assets/providers/hermes.svg', import.meta.url).href,
+  nanobot: new URL('./assets/providers/nanobot.svg', import.meta.url).href,
 };
 
 /** Decorative provider mark. The surrounding control supplies its accessible name. */

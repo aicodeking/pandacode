@@ -15,8 +15,8 @@ const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
 /// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
 /// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
 const STEERING: [&str; 9] = ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode", "devin"];
-const HARNESSES: [&str; 19] = [
-    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
+const HARNESSES: [&str; 20] = [
+    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes", "nanobot",
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -391,7 +391,7 @@ mod tests {
             let reports = dry_run(&r, provider, &[]).unwrap();
             assert_eq!(reports[0].status, "supported", "{provider} takes a message mid-turn");
         }
-        for provider in ["kimi", "grok", "deepseek", "commandcode", "cline", "antigravity", "github-copilot", "hermes"] {
+        for provider in ["kimi", "grok", "deepseek", "commandcode", "cline", "antigravity", "github-copilot", "hermes", "nanobot"] {
             let reports = dry_run(&r, provider, &[]).unwrap();
             assert_eq!(reports[0].status, "fallback", "{provider} holds the message until the run ends");
         }

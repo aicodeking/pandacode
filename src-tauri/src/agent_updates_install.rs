@@ -52,6 +52,7 @@ pub(super) fn docs(provider: &str) -> Option<&'static str> {
         "antigravity" => "https://antigravity.google/docs/ide/extensions",
         "devin" => "https://docs.devin.ai/cli",
         "hermes" => "https://hermes-agent.org",
+        "nanobot" => "https://nanobot.wiki",
         _ => return None,
     })
 }
