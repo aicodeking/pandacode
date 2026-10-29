@@ -150,20 +150,8 @@ pub fn boot(name: &str) -> Result<(), String> {
         return Ok(());
     }
     let emulator = emulator_path().ok_or("Install the Android emulator to boot this device.")?;
-    // A quick-boot snapshot saved with another renderer or network setup can crash the
-    // emulator as it loads; a cold boot is the fallback.
-    if start(&emulator, name, false)? || start(&emulator, name, true)? {
-        return Ok(());
-    }
-    Err(format!("{} stopped while booting.", pretty(name)))
-}
-/// Whether the AVD booted; false when the emulator exited first.
-fn start(emulator: &Path, name: &str, cold: bool) -> Result<bool, String> {
     let mut command = Command::new(emulator);
     command.args(["-avd", name, "-no-window", "-no-audio", "-no-boot-anim", "-gpu", GPU]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    if cold {
-        command.arg("-no-snapshot-load");
-    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -173,16 +161,16 @@ fn start(emulator: &Path, name: &str, cold: bool) -> Result<bool, String> {
         .spawn()
         .map_err(|error| format!("Could not start the Android emulator: {error}"))?;
     let started = Instant::now();
-    let booted = loop {
+    let result = loop {
         if !matches!(child.try_wait(), Ok(None)) {
-            return Ok(false);
+            break Err(format!("{} stopped while booting.", pretty(name)));
         }
         if started.elapsed() >= BOOT {
-            break false;
+            break Err(format!("{} did not finish booting in time.", pretty(name)));
         }
         if let Ok(serial) = serial(name) {
             if on(&serial, &["shell", "getprop", "sys.boot_completed"], Duration::from_secs(5)).map(|out| text(&out).trim() == "1").unwrap_or(false) {
-                break true;
+                break Ok(());
             }
         }
         std::thread::sleep(Duration::from_millis(1500));
@@ -190,7 +178,7 @@ fn start(emulator: &Path, name: &str, cold: bool) -> Result<bool, String> {
     // The emulator outlives this call. Reap it when it exits: an unreaped one keeps its
     // PID, so the AVD's lock looks held and the next boot is refused.
     std::thread::spawn(move || child.wait());
-    if booted { Ok(true) } else { Err(format!("{} did not finish booting in time.", pretty(name))) }
+    result
 }
 pub fn shutdown(name: &str) -> Result<(), String> {
     match serial(name) {
