@@ -104,7 +104,7 @@ fn decode_pair(stored: &str) -> Option<(String, String)> {
     let (private, public) = rest.split_once(' ')?;
     let private = STANDARD.decode(private).ok().and_then(|bytes| String::from_utf8(bytes).ok())?;
     let public = public.trim();
-    if private.is_empty() || !public.starts_with("ssh-") {
+    if private.is_empty() || !private.contains("PRIVATE KEY") || !public.starts_with("ssh-") {
         return None;
     }
     Some((private, public.to_string()))
@@ -468,6 +468,14 @@ mod tests {
         assert!(healed_public.starts_with("ssh-ed25519 "));
         assert_ne!(healed_public, public);
         assert_ne!(secret("vps_key").as_deref(), Some("base64:bm90LWEta2V5"));
+
+        // A decodable private half that is not key material is not a usable pair either: it
+        // heals the same way instead of being written into the key file for ssh to reject.
+        let bogus = format!("base64:{} ssh-ed25519 AAAA garbage", base64::engine::general_purpose::STANDARD.encode("hello"));
+        set_secret("vps_key", &bogus).unwrap();
+        let (healed_file, _) = key_pair().expect("a bogus pair regenerates instead of failing");
+        assert_eq!(healed_file, made);
+        assert_ne!(secret("vps_key").as_deref(), Some(bogus.as_str()));
 
         // Concurrent callers share one pair: the lock keeps parallel task preparations from
         // racing the store read against the save or each other's temp files.
