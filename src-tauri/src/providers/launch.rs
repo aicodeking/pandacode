@@ -180,7 +180,7 @@ fn node_launch(script: &Path, directory: &Path) -> Result<Launch, String> {
 /// a plain node, and the bundled CLIs (ZCode) are built for exactly that runtime,
 /// which is there even where no system node is.
 #[cfg(target_os = "macos")]
-fn electron_runtime(script: &Path) -> Option<PathBuf> {
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
     // …/ZCode.app/Contents/Resources/<…>/cli.cjs runs on …/Contents/MacOS/ZCode.
     let contents = script.ancestors().nth(3)?;
     if contents.file_name()?.to_str()? != "Contents" {
@@ -193,7 +193,7 @@ fn electron_runtime(script: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn electron_runtime(script: &Path) -> Option<PathBuf> {
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
     // <root>\resources\<…>\cli.cjs runs on <root>\<name>.exe.
     let resources = script.ancestors().nth(2)?;
     if !resources.file_name()?.to_str()?.eq_ignore_ascii_case("resources") {
@@ -206,7 +206,7 @@ fn electron_runtime(script: &Path) -> Option<PathBuf> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn electron_runtime(script: &Path) -> Option<PathBuf> {
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
     // <root>/resources/<…>/cli.cjs runs on <root>/<executable name>.
     let resources = script.ancestors().nth(2)?;
     if resources.file_name()?.to_str()? != "resources" {
