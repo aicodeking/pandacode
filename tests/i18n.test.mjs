@@ -89,11 +89,14 @@ test('zh-Hant-HK is the Taiwan table plus HK vocabulary, nothing dropped', () =>
   for (const [key, value] of Object.entries(zhHantHk)) {
     assert.equal(signature(value), signature(zhHantTw[key] ?? key), `HK override changed placeholders for ${JSON.stringify(key)}`);
   }
+  for (const key of Object.keys(zhHantTw)) {
+    assert.notEqual(zhHantHk[key], undefined, `HK dropped the Taiwan key ${JSON.stringify(key)}`);
+  }
 });
 
 test('en-GB only respells known source keys, and stays partial', () => {
   for (const key of Object.keys(enGb)) {
-    assert.ok(zhHans[key] !== undefined || true, 'en-GB shares the key space with the source');
+    assert.ok(zhHans[key] !== undefined, 'en-GB shares the key space with the source');
   }
   assert.ok(enGb['Colors'] === 'Colours');
   assert.ok(Object.keys(enGb).length > 5, 'en-GB has its spelling overrides');
