@@ -164,9 +164,7 @@ it, and the harness would lose all its API traffic. The harness's own
 credentials and endpoints still win over inherited variables, and mirroring a
 task to another computer stays untouched — that computer uses its own settings.
 
-The per-provider list and the opt-out switch live on each provider's card here,
-so harnesses without a card (Codex and Kimi Code) currently take only the
-global set.
+The per-provider list and the opt-out switch live on each provider's card here.
 
 ## GitHub Copilot CLI
 

@@ -55,6 +55,8 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::privacy::telemetry_off(),
+        // So does a saved executable location change.
+        "executable": crate::providers::executable(&config.provider).map(|path| path.to_string_lossy().into_owned()),
     })
     .to_string()
 }

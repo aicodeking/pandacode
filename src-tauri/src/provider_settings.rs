@@ -499,10 +499,7 @@ pub async fn provider_configuration() -> Result<Configuration> {
 }
 
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
-    if !matches!(
-        provider,
-        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
-    ) {
+    if !known_provider(provider) {
         return Err("This provider does not support an executable override.".into());
     }
     if path.trim().is_empty() {
@@ -1496,12 +1493,14 @@ mod tests {
     }
     #[test]
     fn rejects_command_strings_directories_and_unknown_providers() {
-        assert!(validated_executable("codex", "").is_err());
+        assert!(validated_executable("not-a-provider", "").is_err());
         assert!(validated_executable("opencode", "opencode --flag").is_err());
         assert!(validated_executable("opencode", "/tmp").is_err());
         assert!(validated_executable("antigravity", "/tmp/foo\nbar").is_err());
-        assert_eq!(validated_executable("glm", "").unwrap(), None);
-        assert_eq!(validated_executable("mimo", "").unwrap(), None);
+        // Every known harness takes an override; an empty path restores discovery.
+        for provider in ["claude", "codex", "kimi", "glm", "mimo", "zcode"] {
+            assert_eq!(validated_executable(provider, "").unwrap(), None);
+        }
     }
     #[test]
     fn mimo_endpoint_survives_reload_and_unknown_clusters_are_dropped() {
