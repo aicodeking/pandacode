@@ -56,7 +56,8 @@ pub fn key_pair() -> Result<(PathBuf, String)> {
     let file = dir.join("vps-key");
     let pair = match super::secret("vps_key").and_then(|stored| decode_pair(&stored)) {
         Some(pair) => pair,
-        // An undecodable value is not a usable pair, so a fresh pair is the only way forward.
+        // An undecodable value heals into a fresh pair: the store has rejected multi-line
+        // keys since before VPS keys existed (issue #206), so no provisioned pair is lost.
         None => generate(dir, &file)?,
     };
     write_private(&file, pair.0.as_bytes())?;
@@ -516,6 +517,12 @@ mod tests {
         let (again, same) = key_pair().expect("second call reuses the pair");
         assert_eq!((again, same.as_str()), (file, public.as_str()));
         assert_eq!(super::super::secret("vps_key").as_deref(), Some(saved.as_str()));
+
+        // The raw key form can never have been saved: the store rejects control characters
+        // (issue #206), so decoding one only has to decide the heal, which regenerates.
+        let raw = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+        assert!(super::super::set_secret("vps_key", raw).is_err(), "the store still rejects a raw multi-line key");
+        assert!(super::decode_pair(raw).is_none(), "a raw key does not parse; healing regenerates");
 
         // A saved value no key parses from self-heals into a fresh working pair.
         super::super::set_secret("vps_key", "base64:bm90LWEta2V5").unwrap();
