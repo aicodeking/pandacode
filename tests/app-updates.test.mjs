@@ -49,6 +49,7 @@ test('the header prompt offers Install and restart / Later until dismissed', () 
 });
 
 test('About explains each state in one line', () => {
+  assert.equal(describeUpdate({ kind: 'off' }, 'off'), 'Updates are disabled in this build.');
   const now = Date.parse('2026-10-18T12:00:00Z');
   assert.equal(describeUpdate({ kind: 'current', checkedAt: now - 5 * 60_000 }, 'automatic', now), 'Up to date · checked 5m ago');
   assert.equal(describeUpdate({ kind: 'downloading', version: '0.3.1', percent: 42 }, 'automatic'), 'Downloading 0.3.1 · 42%');
