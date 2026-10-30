@@ -763,7 +763,7 @@ pub(crate) fn thread_session(store: &Store, bot: &Bot, channel_id: &str, externa
         store.db.execute("DELETE FROM bot_threads WHERE session_id=?1", [session]).map_err(|e| e.to_string())?;
     }
     let task = store.create_session(&bot.project_id, &bot.provider, &bot.model, &bot.mode)?;
-    store.update(&task.id, Some(clean(title, 120)), None, None, None)?;
+    store.update(&task.id, Some(clean(title, 120)), None, None, None, None)?;
     if !bot.reasoning_effort.is_empty() {
         store.db.execute("UPDATE sessions SET reasoning_effort=?2 WHERE id=?1", params![task.id, bot.reasoning_effort]).map_err(|e| e.to_string())?;
     }

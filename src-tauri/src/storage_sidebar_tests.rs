@@ -61,7 +61,7 @@ fn sidebar_preferences_persist_without_changing_activity_or_execution() {
         assert_eq!(pinned.sidebar_order, Some(0));
         // Archive/restore can retain the preference; unpin keeps its rank.
         store
-            .update(&pinned.id, None, Some(true), None, None)
+            .update(&pinned.id, None, Some(true), None, None, None)
             .unwrap();
         assert!(store.session(&pinned.id).unwrap().pinned);
         let unpinned = store.pin_session(&pinned.id, false).unwrap();
@@ -89,7 +89,7 @@ fn sidebar_filtered_reorder_preserves_hidden_slots_and_activity_fallback() {
     assert_eq!(ids(&store), expected, "manual order survives new activity");
     // An unrelated archived row still has its same place in the global order.
     store
-        .update(&tasks[2].id, None, Some(true), None, None)
+        .update(&tasks[2].id, None, Some(true), None, None, None)
         .unwrap();
     store
         .reorder_sessions(&[expected[3].clone(), expected[1].clone()])

@@ -1870,7 +1870,7 @@ fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
     if !created {
         store.configure(&id, provider, model, None)?;
         if let Some(mode) = mode {
-            store.update(&id, None, None, None, Some(mode.to_owned()))?;
+            store.update(&id, None, None, None, Some(mode.to_owned()), None)?;
         }
     }
     if effort.is_some() {

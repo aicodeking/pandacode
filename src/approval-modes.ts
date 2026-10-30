@@ -4,6 +4,13 @@ export interface ApprovalMode { id: Mode; label: string; description: string; ic
 
 const CLAUDE_FAMILY: ProviderId[] = ['claude', 'glm', 'mimo'];
 
+/** Harnesses whose write-class approvals PandaCode can answer through the per-task toggle (issue #200). */
+const AUTO_WRITE_PROVIDERS: ProviderId[] = [...CLAUDE_FAMILY, 'opencode', 'antigravity', 'grok', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'hermes', 'codex'];
+
+export function supportsAutoWrites(provider: ProviderId): boolean {
+  return AUTO_WRITE_PROVIDERS.includes(provider);
+}
+
 /** Labels describe the native policy for each harness, not a simulated approval layer. */
 export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMode[] {
   // omp is a Pi fork driven through the same bridge, so it shares Pi's policy.

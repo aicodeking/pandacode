@@ -162,7 +162,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -532,6 +532,15 @@ impl Store {
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
                   PRAGMA user_version=36;").map_err(|e| e.to_string())?;
             }
+            if version < 37 {
+                // The per-task "Auto-approve writes" toggle (issue #200). Older migration
+                // fixtures may already retain the column.
+                let has_auto_writes: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='auto_writes')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !has_auto_writes {
+                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN auto_writes INTEGER NOT NULL DEFAULT 0 CHECK(auto_writes IN (0,1));").map_err(|e| e.to_string())?;
+                }
+                migration.execute_batch("PRAGMA user_version=37;").map_err(|e| e.to_string())?;
+            }
             migration.commit().map_err(|e| e.to_string())?;
         }
         let recovery = db.transaction().map_err(|e| e.to_string())?;
@@ -747,7 +756,7 @@ impl Store {
             provider: r.get(3)?,
             model: r.get(4)?,
             mode: r.get(5)?,
-            auto_writes: false,
+            auto_writes: r.get(31)?,
             status: r.get(6)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
@@ -784,7 +793,7 @@ impl Store {
     pub fn sessions(&self) -> Result<Vec<Session>> {
         // Lists only need a card preview. Full details remain in SQLite and are
         // fetched for the selected task or directly for an agent's Start prompt.
-        let mut stmt=self.db.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
+        let mut stmt=self.db.prepare(&format!("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,auto_writes FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY {SIDEBAR_ORDER} LIMIT 500")).map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map([], Self::session_row)
             .map_err(|e| e.to_string())?;
@@ -795,7 +804,7 @@ impl Store {
         Ok(sessions)
     }
     pub fn session(&self, sid: &str) -> Result<Session> {
-        let mut session = self.db.query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
+        let mut session = self.db.query_row("SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,auto_writes FROM sessions WHERE id=?1",[sid],Self::session_row).optional().map_err(|e|e.to_string())?.ok_or_else(||String::from("Conversation not found."))?;
         self.attach_links(std::slice::from_mut(&mut session))?;
         Ok(session)
     }
@@ -1464,6 +1473,7 @@ impl Store {
         archived: Option<bool>,
         model: Option<String>,
         mode: Option<String>,
+        auto_writes: Option<bool>,
     ) -> Result<()> {
         crate::architect::check_manual(self, sid)?;
         let session = self.session(sid)?;
@@ -1479,17 +1489,18 @@ impl Store {
         if mode.as_ref().is_some_and(|s| !valid_permission_mode(s)) {
             return Err("Unknown permission mode.".into());
         }
-        if (model.is_some() || mode.is_some())
+        if (model.is_some() || mode.is_some() || auto_writes.is_some())
             && matches!(session.status.as_str(), "running" | "waiting")
         {
             return Err("Stop the agent before changing its model or approval behavior.".into());
         }
         let changed = self.db.execute("UPDATE sessions SET title=COALESCE(?2,title),title_origin=CASE WHEN ?2 IS NOT NULL THEN 'manual' ELSE title_origin END,archived=COALESCE(?3,archived),model=COALESCE(?4,model),mode=COALESCE(?5,mode),
+            auto_writes=COALESCE(?7,auto_writes),
             completed_at=CASE WHEN archived=1 AND ?3=0 AND task_stage='completed' THEN ?6 ELSE completed_at END,
             reasoning_effort=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE reasoning_effort END,
             context_used_tokens=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE context_used_tokens END,
             context_window=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE context_window END,
-            updated_at=?6 WHERE id=?1 AND ((?4 IS NULL AND ?5 IS NULL) OR status NOT IN ('running','waiting'))",params![sid,title,archived,model,mode,now()]).map_err(|e|e.to_string())?;
+            updated_at=?6 WHERE id=?1 AND ((?4 IS NULL AND ?5 IS NULL AND ?7 IS NULL) OR status NOT IN ('running','waiting'))",params![sid,title,archived,model,mode,now(),auto_writes]).map_err(|e|e.to_string())?;
         if changed == 0 {
             return Err("Stop the agent before changing its model or approval behavior.".into());
         }
@@ -1925,6 +1936,10 @@ fn handoff_from_provider(content: &str) -> Option<String> {
 mod sidebar_tests;
 
 #[cfg(test)]
+#[path = "storage_auto_writes_update_tests.rs"]
+mod auto_writes_update_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn empty_session() -> (Store, Session) {
@@ -2081,7 +2096,7 @@ mod tests {
     #[test]
     fn task_search_matches_titles_and_messages_within_the_project() {
         let (store, task) = empty_session();
-        store.update(&task.id, Some("Fix the login redirect".into()), None, None, None).unwrap();
+        store.update(&task.id, Some("Fix the login redirect".into()), None, None, None, None).unwrap();
         let other = store.create_session(&task.project_id, "codex", "gpt-5", "full").unwrap();
         store.message(&other.id, "user", "Please make the billing page load 100% faster").unwrap();
         store.message(&other.id, "assistant", "I will profile the billing page first.").unwrap();
@@ -2295,7 +2310,7 @@ mod tests {
         store.begin_task_turn(&task.id, "More feedback").unwrap();
         store.finish_task_turn(&task.id, true, false).unwrap();
         store
-            .update(&task.id, None, Some(true), None, None)
+            .update(&task.id, None, Some(true), None, None, None)
             .unwrap();
         assert!(store
             .begin_task_turn(&task.id, "Cannot run archived")
@@ -2569,6 +2584,7 @@ mod tests {
                 None,
                 Some("sonnet".into()),
                 Some("plan".into()),
+                None,
             )
             .unwrap();
         let renamed = store.session(&session.id).unwrap();
@@ -2584,7 +2600,7 @@ mod tests {
             .unwrap();
         store.record_context_usage(&session.id, &usage).unwrap();
         store
-            .update(&session.id, None, None, Some("sonnet".into()), None)
+            .update(&session.id, None, None, Some("sonnet".into()), None, None)
             .unwrap();
         let updated_model = store.session(&session.id).unwrap();
         assert!(updated_model.reasoning_effort.is_none());
@@ -2634,6 +2650,7 @@ mod tests {
                     Some("Must not rename".into()),
                     None,
                     Some("opus".into()),
+                    None,
                     None
                 )
                 .is_err());
@@ -3078,7 +3095,7 @@ mod tests {
         store.finish_task_turn(&session.id, true, false).unwrap();
         store.begin_task_turn_with_kind(&session.id, "Internal worker check", Some(crate::architect::internal_turns::CoordinationKind::WorkerUpdate)).unwrap();
         store.message(&session.id, "tool", "Tool output").unwrap();
-        store.update(&session.id, Some("Renamed".into()), None, None, None).unwrap();
+        store.update(&session.id, Some("Renamed".into()), None, None, None, None).unwrap();
         let saved = serde_json::to_value(store.sessions().unwrap().remove(0)).unwrap();
         assert_eq!(saved["lastPromptAt"], prompt_at);
     }
@@ -3137,6 +3154,7 @@ mod tests {
                 Some(true),
                 Some("opus".into()),
                 Some("ask".into()),
+                None,
             )
             .unwrap();
         store
@@ -3237,7 +3255,7 @@ mod tests {
         let (notnull, default): (i64, Option<String>) = store
             .db
             .query_row(
-                "SELECT notnull, dflt_value FROM pragma_table_info('sessions') WHERE name='auto_writes'",
+                "SELECT \"notnull\", dflt_value FROM pragma_table_info('sessions') WHERE name='auto_writes'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -3311,7 +3329,7 @@ mod tests {
         let (notnull, default): (i64, Option<String>) = reopened
             .db
             .query_row(
-                "SELECT notnull, dflt_value FROM pragma_table_info('sessions') WHERE name='auto_writes'",
+                "SELECT \"notnull\", dflt_value FROM pragma_table_info('sessions') WHERE name='auto_writes'",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -3334,12 +3352,12 @@ mod tests {
         let (store, session) = empty_session();
         store.status(&session.id, "running").unwrap();
         let refused = store
-            .update(&session.id, None, None, Some("sonnet".into()), Some("ask".into()))
+            .update(&session.id, None, None, Some("sonnet".into()), Some("ask".into()), None)
             .unwrap_err();
         assert!(refused.contains("Stop the agent"), "{refused}");
         store.status(&session.id, "idle").unwrap();
         store
-            .update(&session.id, None, None, Some("sonnet".into()), Some("ask".into()))
+            .update(&session.id, None, None, Some("sonnet".into()), Some("ask".into()), None)
             .unwrap();
     }
 
@@ -3433,6 +3451,7 @@ mod tests {
                 Some(true),
                 None,
                 None,
+                None,
             )
             .unwrap();
         store
@@ -3473,7 +3492,7 @@ mod tests {
                 .create_session(&source.id, "claude", "sonnet", "auto")
                 .unwrap();
             store
-                .update(&task.id, Some("Draft task".into()), None, None, None)
+                .update(&task.id, Some("Draft task".into()), None, None, None, None)
                 .unwrap();
             store
                 .db
@@ -3920,7 +3939,8 @@ mod tests {
                     Some("New title".into()),
                     None,
                     None,
-                    Some("full".into())
+                    Some("full".into()),
+                    None
                 )
                 .unwrap_err()
                 .contains("Stop the agent"));
@@ -3928,7 +3948,7 @@ mod tests {
             assert_eq!(unchanged.mode, "ask");
             assert_eq!(unchanged.title, "New conversation");
             store
-                .update(&session.id, Some("Renamed task".into()), None, None, None)
+                .update(&session.id, Some("Renamed task".into()), None, None, None, None)
                 .unwrap();
             store
                 .update(
@@ -3937,16 +3957,17 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .unwrap();
         }
         store.status(&session.id, "idle").unwrap();
         store
-            .update(&session.id, None, None, None, Some("plan".into()))
+            .update(&session.id, None, None, None, Some("plan".into()), None)
             .unwrap();
         assert_eq!(store.session(&session.id).unwrap().mode, "plan");
         assert!(store
-            .update(&session.id, None, None, None, Some("invalid".into()))
+            .update(&session.id, None, None, None, Some("invalid".into()), None)
             .is_err());
         assert_eq!(store.session(&session.id).unwrap().mode, "plan");
     }

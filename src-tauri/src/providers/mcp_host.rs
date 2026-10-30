@@ -649,7 +649,7 @@ mod tests {
 
         for turn_kind in ["user", "review", "retry", "manual"] {
             if turn_kind == "manual" {
-                db.update(&sid, Some("My parser investigation".into()), None, None, None).unwrap();
+                db.update(&sid, Some("My parser investigation".into()), None, None, None, None).unwrap();
             }
             let coordination = matches!(turn_kind, "review" | "retry")
                 .then_some(crate::architect::internal_turns::CoordinationKind::WorkerReview);

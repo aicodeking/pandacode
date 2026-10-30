@@ -483,7 +483,13 @@ impl Protocol {
                 || (deepseek
                     && self.tools.get(field(&value["params"]["toolCall"], "toolCallId"))
                         .is_some_and(|tool| DEEPSEEK_EDIT_TOOLS.contains(&tool.name.as_str())));
-            let auto = self.config.mode == "full" || (self.config.mode == "auto" && edit);
+            // The auto-approve-writes toggle covers every write kind, including the
+            // edits DeepSeek reports by tool name rather than kind.
+            let write_kind = edit
+                || matches!(value["params"]["toolCall"]["kind"].as_str(), Some("delete" | "execute"));
+            let auto = self.config.mode == "full"
+                || (self.config.mode == "auto" && edit)
+                || (self.config.auto_writes && matches!(self.config.mode.as_str(), "ask" | "auto") && write_kind);
             let structured_question = options.is_some_and(|options| {
                 options.iter().any(|option| {
                     field(option, "optionId")

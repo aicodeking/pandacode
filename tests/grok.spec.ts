@@ -55,7 +55,7 @@ test('Grok approval modes describe its permission modes, including read-only pla
   await newGrokTask(page);
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveText([/^Standard/, /^Accept edits/, /^Plan mode/, /^Full access/]);
+  await expect(items).toHaveText([/^Standard/, /^Accept edits/, /^Plan mode/, /^Full access/, /^Auto-approve write requests/]);
   const details = await items.evaluateAll(nodes => nodes.map(node => node.querySelector('[data-tip]')?.getAttribute('data-tip') ?? node.querySelector('.choice-menu-description')?.textContent));
   expect(details[0]).toContain('Grok asks before edits and commands');
   expect(details[2]).toContain('edits and commands are declined');

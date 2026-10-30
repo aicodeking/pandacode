@@ -65,7 +65,7 @@ test('provider connections expose Kilo models, approval modes and executable set
   await expect(trigger).toContainText('Kilo');
   await page.locator('#mode-picker-trigger').click();
   const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
-  await expect(permissions.getByRole('menuitemradio')).toHaveCount(4);
+  await expect(permissions.getByRole('menuitemradio')).toHaveCount(5);
   await permissions.getByRole('menuitemradio', { name: /Plan mode/ }).click();
   await expect(page.locator('#mode-picker-trigger')).toContainText('Plan mode');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -307,9 +307,9 @@ test('GitHub Copilot CLI has CLI sign-in guidance, a path override, Default mode
   await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="github-copilot"]')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const modes = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(modes).toHaveCount(3);
+  await expect(modes).toHaveCount(4);
   await expect(modes.filter({ hasText: 'Accept edits' })).toHaveCount(0);
-  await expect(modes.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await expect(modes.filter({ hasText: /^Plan mode/ })).toHaveCount(1);
   await page.keyboard.press('Escape');
   const model = page.getByRole('button', { name: 'Choose harness and model', exact: true });
   await model.click();
@@ -447,7 +447,7 @@ test('DeepSeek has a key card, four approval modes and effort levels', async ({ 
   await page.locator('.new-task-button').click();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  await expect(items).toHaveCount(5);
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -465,7 +465,7 @@ test('Command Code has a key card, four approval modes and its own model list', 
   await page.locator('.new-task-button').click();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  await expect(items).toHaveCount(5);
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -487,9 +487,9 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   await expect(page.locator('.new-task-welcome')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  await expect(items).toHaveCount(5);
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
-  await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await expect(items.filter({ hasText: /^Plan mode/ })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
@@ -512,9 +512,9 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await expect(page.locator('.new-task-welcome')).toBeVisible();
   await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  await expect(items).toHaveCount(5);
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
-  await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
+  await expect(items.filter({ hasText: /^Plan mode/ })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
