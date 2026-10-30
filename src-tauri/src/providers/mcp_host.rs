@@ -14,6 +14,29 @@ const BODY_LIMIT: usize = 160 * 1024;
 const RESULT_LIMIT: usize = 128 * 1024;
 const SERVER_NAME: &str = "pandacode_architect";
 
+/// The same tool validation, approval and activity path for a native API agent.
+/// No listener or external MCP client is needed.
+pub(super) struct DirectHost(Context);
+impl DirectHost {
+    pub fn new(host: ToolHost, session: String, sink: Sink, mode: &str) -> Result<Self, String> {
+        host_tools::HostTools::new(host.clone())?;
+        Ok(Self(Context::new(String::new(), String::new(), host, session, sink, mode)))
+    }
+    pub fn approve(&self, id: &str, approved: bool) {
+        if let Some(reply) = self.0.approvals.lock().ok().and_then(|mut pending| pending.remove(id)) {
+            let _ = reply.send(approved);
+        }
+    }
+    pub async fn call(&self, id: &str, name: &str, args: Value) -> Result<Value, String> {
+        let request = json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}});
+        let bytes = host_tools::bounded_json(&request, BODY_LIMIT)?.into_bytes();
+        let response = self.0.respond(bytes).await;
+        let value: Value = serde_json::from_slice(&response.body).map_err(|_| "Invalid app tool response")?;
+        if let Some(error) = value.get("error") { return Err(field(error, "message").into()); }
+        Ok(value["result"].clone())
+    }
+}
+
 pub(super) struct Server {
     authority: String,
     token: String,
@@ -437,7 +460,10 @@ impl Context {
                 };
                 let call_id = format!("mcp-host:{}", uuid::Uuid::new_v4());
                 let input = preview_json(&args, TOOL_INPUT_LIMIT);
-                self.activity(&call_id, name, "running", &input, "");
+                let write_paths = if name == "run_command" { Some(vec![]) } else if matches!(name, "write_file" | "edit_file") {
+                    args["path"].as_str().map(|path| vec![path.to_owned()])
+                } else { None };
+                self.activity(&call_id, name, "running", &input, "", write_paths.as_deref());
                 let result = tokio::select! {
                     result = async {
                         self.authorize(name, &args).await?;
@@ -477,6 +503,7 @@ impl Context {
                     if error { "failed" } else { "completed" },
                     &input,
                     &output,
+                    write_paths.as_deref(),
                 );
                 json!({"content":content,"isError":error})
             }
@@ -524,7 +551,7 @@ impl Context {
             _ => Err("App approval expired or was cancelled".into()),
         }
     }
-    fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str) {
+    fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str, write_paths: Option<&[String]>) {
         // Sidebar metadata is not part of the conversation transcript. Native
         // mirrors are already filtered by the per-run MCP tool catalog.
         if optional_metadata_tool(name) { return; }
@@ -540,7 +567,7 @@ impl Context {
                 status: status.into(),
                 input: input.into(),
                 output: limited(output, TOOL_OUTPUT_LIMIT),
-                write_paths: None,
+                write_paths: write_paths.map(<[String]>::to_vec),
             }),
         });
     }

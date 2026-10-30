@@ -26,6 +26,7 @@ impl ModelSelection {
     }
     fn validate(&self) -> Result<()> {
         if ![
+            "openai-compatible",
             "claude",
             "codex",
             "kimi",

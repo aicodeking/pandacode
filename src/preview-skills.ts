@@ -2,7 +2,7 @@
  * pretend Claude Code and Codex install, and the same refusals the native side gives. */
 import type { CatalogImport, CatalogSkill, CatalogSource, SkillActivation, SkillCatalogs, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
-const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes']);
+const PROMPT = new Set(['openai-compatible', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes']);
 const FILES = ['claude', 'codex'];
 const PROJECT_ROOT = '/Users/you/Projects/orbit';
 
@@ -200,8 +200,8 @@ export function createPreviewSkills() {
       const scopes: SkillScope[] = projectId ? ['user', 'project'] : ['user'];
       const all = [...entries.values()];
       const used = new Set(all.flatMap(e => e.item.activations.map(a => a.harness)));
-      const harnesses = [...FILES, ...[...PROMPT].filter(h => used.has(h))].map(harness => ({
-        harness, installed: FILES.includes(harness), prompt: PROMPT.has(harness),
+      const harnesses = [...FILES, ...[...PROMPT].filter(h => h === 'openai-compatible' || used.has(h))].map(harness => ({
+        harness, installed: harness === 'openai-compatible' || FILES.includes(harness), prompt: PROMPT.has(harness),
         cells: scopes.flatMap(scope => all.map(entry => cell(entry, harness, scope))),
         unmanaged: harness === 'claude' ? [{ scope: 'user' as const, kind: 'skill' as const, path: '~/.claude/skills/pdf-tools', detail: 'Not in the library.' }] : [],
       }));

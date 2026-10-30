@@ -1,4 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+
+// Keep the status/filter layout explicit; project-first navigation is covered by sidebar-projects.spec.ts.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
+});
 import { openInspectorTab } from './inspector-tab-helper';
 // The workspace view (Conversation, Board, GitHub) is picked from the sidebar's view menu.
 const showView = async (page: Page, name: string) => { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };

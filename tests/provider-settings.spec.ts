@@ -1,6 +1,60 @@
 import { pickModel, showHarness } from './model-picker-helper';
 import { expect, test, type Page } from '@playwright/test';
 
+test('ChatGPT browser sign-in shows its account, supports sign-out and cancellation', async ({ page }, testInfo) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#chatgpt-connection');
+  const login = card.getByRole('button', { name: 'Sign in with ChatGPT', exact: true });
+  await expect(card.locator('[data-chatgpt-status]')).toHaveText('Not signed in with ChatGPT');
+  await login.click();
+  await expect(card.getByRole('button', { name: 'Waiting for browser…' })).toBeDisabled();
+  await expect(card.getByRole('button', { name: 'Cancel sign-in' })).toBeVisible();
+  await expect(card.locator('[data-chatgpt-status]')).toContainText('Signed in with ChatGPT · preview@example.test · plus');
+  await expect(login).toBeHidden();
+  await card.screenshot({ path: testInfo.outputPath('chatgpt-signed-in.png') });
+  await card.getByRole('button', { name: 'Sign out', exact: true }).click();
+  await expect(card.locator('[data-chatgpt-status]')).toHaveText('Not signed in with ChatGPT');
+  await login.click();
+  await card.getByRole('button', { name: 'Cancel sign-in' }).click();
+  await expect(card.locator('[data-chatgpt-feedback]')).toContainText('cancelled');
+  await expect(login).toBeEnabled();
+  await login.click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await expect(card.locator('[data-chatgpt-status]')).toHaveText('Not signed in with ChatGPT');
+  await expect(login).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test('provider connections: ChatGPT sign-in explains a missing Codex installation and recovers after login errors', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
+      window.__chatgptTestStatus ??= {installed:false,state:'signedOut',email:null,plan:null};
+      if (command === 'provider_chatgpt_status') return window.__chatgptTestStatus;
+      if (command === 'provider_chatgpt_login') throw new Error('ChatGPT sign-in timed out. Try again.');
+      switch(command) {`) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#chatgpt-connection');
+  const login = card.getByRole('button', { name: 'Sign in with ChatGPT', exact: true });
+  await expect(card.locator('[data-chatgpt-status]')).toContainText('Codex is not installed');
+  await expect(login).toBeDisabled();
+  await page.evaluate(() => { (window as any).__chatgptTestStatus = {installed:true,state:'apiKey',email:null,plan:null}; });
+  await card.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(card.locator('[data-chatgpt-status]')).toContainText('API key with separate API billing');
+  await login.click();
+  await expect(card.locator('[data-chatgpt-feedback]')).toContainText('timed out');
+  await expect(login).toBeEnabled();
+  await expect(card.getByRole('button', { name: 'Cancel sign-in' })).toBeHidden();
+});
+
 test('global and per-provider environment variables are added, toggled, removed, and never echoed', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
@@ -205,7 +259,7 @@ test('provider connections are grouped in Providers and never accept secrets in 
   await expect(dialog.getByRole('img', { name: 'How providers relate to agents', exact: true })).toHaveAttribute('data-tip', /the global environment variables are the one thing every harness gets/);
   // OpenCode models are chosen once, in Settings → Agents.
   await expect(dialog.getByRole('button', { name: 'Choose models', exact: true })).toHaveCount(0);
-  await expect(dialog.getByText('agy', { exact: true })).toBeVisible();
+  await expect(dialog.locator('#google-connection').getByRole('heading', { name: /Google subscription/ })).toBeVisible();
   await expect(dialog.getByText('grok login', { exact: true })).toBeVisible();
   const paths = dialog.locator('details').filter({ has: page.getByLabel('Grok executable', { exact: true }) });
   await paths.last().locator('summary').click();
@@ -526,3 +580,140 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await expect(card.getByLabel('Hermes Agent executable', { exact: true })).toBeVisible();
 });
 
+
+test('OpenAI Compatible starts blank, saves without a key, and selects the local model', async ({ page }, testInfo) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  const openProviders = async () => {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  };
+  await openProviders();
+  const card = page.locator('#openai-compatible');
+  await expect(card.getByLabel('Base URL', { exact: true })).toHaveValue('');
+  await expect(card.getByLabel('API key (optional)', { exact: true })).toHaveValue('');
+  await expect(card.getByLabel('Model', { exact: true })).toBeDisabled();
+  await expect(card).toContainText('No account or coding CLI is needed.');
+  await card.getByLabel('Base URL', { exact: true }).fill('http://127.0.0.1:8080/v1');
+  await expect(card.getByLabel('Model', { exact: true })).toHaveValue('org/local-test-model');
+  await expect(card.getByLabel('Model', { exact: true }).locator('option')).toHaveCount(2);
+  await card.getByRole('button', { name: 'Save provider', exact: true }).click();
+  await expect(card.locator('.compatible-feedback')).toContainText('Provider saved');
+  await expect(card.locator('[data-key-status]')).toHaveText('No API key configured.');
+  await card.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('openai-compatible.png') });
+  await page.keyboard.press('Escape');
+  await page.locator('#model-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await picker.getByRole('tab', { name: 'OpenAI Compatible', exact: true }).click();
+  await expect(picker.getByRole('option')).toHaveCount(2);
+  await picker.getByRole('option', { name: 'OpenAI Compatible · org/local-test-model', exact: true }).click();
+  await expect(page.locator('#model-picker-trigger')).toContainText('org/local-test-model');
+  await openProviders();
+  await expect(card.getByLabel('Base URL', { exact: true })).toHaveValue('http://127.0.0.1:8080/v1');
+  await expect(card.getByLabel('Model', { exact: true })).toHaveValue('org/local-test-model');
+  await card.getByLabel('Model', { exact: true }).selectOption('another-model');
+  await card.getByRole('button', { name: 'Save provider', exact: true }).click();
+  await expect(card.locator('.compatible-feedback')).toContainText('Provider saved');
+  await page.keyboard.press('Escape');
+  await page.locator('#model-picker-trigger').click();
+  await picker.getByRole('tab', { name: 'OpenAI Compatible', exact: true }).click();
+  await picker.getByRole('option', { name: 'OpenAI Compatible · another-model', exact: true }).click();
+  await expect(page.locator('#model-picker-trigger')).toContainText('another-model');
+  await openProviders();
+  await card.getByRole('button', { name: 'Remove provider', exact: true }).click();
+  await expect(card.locator('.compatible-feedback')).toHaveText('Provider removed.');
+  await expect(card.getByLabel('Base URL', { exact: true })).toHaveValue('');
+  expect(errors).toEqual([]);
+});
+
+test('OpenAI Compatible keeps a saved key hidden and can remove it', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `${await response.text()}\npreviewConnections = { connections: [{ id: 'local-fixture', provider: 'openai-compatible', name: 'OpenAI Compatible', args: [], env: {}, secretEnv: ['PANDACODE_OPENAI_API_KEY'], revision: 1, openaiCompatible: { baseUrl: 'http://localhost:8080/v1', modelId: 'org/local-test-model', models: ['org/local-test-model', 'another-model'] } }], tasks: {} };` });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#openai-compatible');
+  await expect(card.getByLabel('API key (optional)', { exact: true })).toHaveValue('');
+  await expect(card.getByLabel('API key (optional)', { exact: true })).toHaveAttribute('placeholder', 'Saved · leave blank to keep');
+  await card.getByRole('button', { name: 'Save provider', exact: true }).click();
+  await expect(card.locator('.compatible-feedback')).toContainText('Provider saved');
+  await expect(card.locator('[data-key-status]')).toHaveText('Key saved in secure system storage.');
+  await card.getByRole('button', { name: 'Remove saved key', exact: true }).click();
+  await expect(card.locator('.compatible-feedback')).toHaveText('Saved key removed.');
+  await expect(card.getByLabel('Base URL', { exact: true })).toHaveValue('http://localhost:8080/v1');
+  await expect(card.locator('[data-key-status]')).toHaveText('No API key configured.');
+  await card.getByLabel('API key (optional)', { exact: true }).fill('fixture-never-save-in-browser');
+  await expect(card.locator('.compatible-feedback')).toContainText('API keys can only be used in the desktop app.');
+  await expect(card.getByLabel('API key (optional)', { exact: true })).toHaveValue('');
+});
+
+test('OpenAI Compatible ignores stale discovery and reports empty or unreachable servers', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = (await response.text()).replace(/case ["']provider_discover_compatible_models["']:[\s\S]*?break;/, `case 'provider_discover_compatible_models': {
+      if (args.baseUrl.includes('slow')) await new Promise(resolve => setTimeout(resolve, 1400));
+      if (args.baseUrl.includes('offline')) throw new Error('Could not reach the model server.');
+      result = args.baseUrl.includes('empty') ? [] : [{id: args.baseUrl.includes('slow') ? 'stale-model' : 'current-model', name: args.baseUrl.includes('slow') ? 'stale-model' : 'current-model', description: ''}]; break;
+    }`);
+    await route.fulfill({ response, body: source });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#openai-compatible');
+  const url = card.getByLabel('Base URL', { exact: true });
+  const model = card.getByLabel('Model', { exact: true });
+  const save = card.getByRole('button', { name: 'Save provider', exact: true });
+  await url.fill('http://slow.test:8080');
+  await expect(card.locator('.compatible-model-status')).toHaveText('Finding models…');
+  await url.fill('http://empty.test:8080');
+  await expect(card.locator('.compatible-model-status')).toContainText('The server returned no models.');
+  await expect(model).toBeDisabled(); await expect(save).toBeDisabled();
+  await url.fill('http://offline.test:8080');
+  await expect(card.locator('.compatible-model-status')).toContainText('Could not reach');
+  await expect(save).toBeDisabled();
+  await url.fill('http://ready.test:8080');
+  await expect(model).toHaveValue('current-model');
+  await expect(model.locator('option')).toHaveCount(1);
+  await expect(save).toBeEnabled();
+  await card.getByRole('button', { name: 'Refresh models', exact: true }).click();
+  await expect(model).toHaveValue('current-model');
+  await save.click();
+  await expect(url).toHaveValue('http://ready.test:8080/v1');
+  await expect(card.locator('.compatible-feedback')).toContainText('Provider saved');
+});
+
+test('provider connections: Google subscription sign-in and model usage', async ({page}, testInfo) => {
+  await page.route('**/src/preview.ts*', async route => { const response=await route.fetch(); await route.fulfill({response,body:(await response.text())+`\nproviders.find(p=>p.id==='antigravity').installed=true;`}); });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByRole('region',{name:'Settings',exact:true}).getByRole('tab',{name:'Providers',exact:true}).click();
+  const card=page.locator('#google-connection');
+  await expect(card.locator('[data-google-status]')).toContainText('Google connection ready');
+  await card.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+  await expect(card.locator('[data-google-feedback]')).toHaveText('Google sign-in completed.');
+  await card.screenshot({path:testInfo.outputPath('google-subscription.png')});
+  await card.getByRole('button',{name:'Google model usage',exact:true}).click();
+  await expect(page.getByRole('dialog')).toContainText('Antigravity');
+});
+
+test('provider connections: Google sign-in cancellation stays local to its attempt', async ({page}) => {
+  await page.route('**/src/preview.ts*',async route=>{
+    const response=await route.fetch();
+    await route.fulfill({response,body:(await response.text()).replace(/switch\s*\(command\)\s*\{/,`
+      if(command==='provider_google_login') return await new Promise((resolve,reject)=>{window.__googleCancel=()=>reject(new Error('Google sign-in cancelled.'));});
+      if(command==='provider_google_cancel') {window.__googleCancel?.();return;}
+      switch(command) {`)});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Settings',exact:true}).click();
+  await page.getByRole('region',{name:'Settings',exact:true}).getByRole('tab',{name:'Providers',exact:true}).click();
+  const card=page.locator('#google-connection');
+  await card.getByRole('button',{name:'Sign in with Google',exact:true}).click();
+  await card.getByRole('button',{name:'Cancel sign-in',exact:true}).click();
+  await expect(card.locator('[data-google-feedback]')).toContainText('cancelled');
+  await expect(card.getByRole('button',{name:'Sign in with Google',exact:true})).toBeEnabled();
+});

@@ -1,5 +1,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
+// Keep the status/filter layout explicit; project-first navigation is covered by sidebar-projects.spec.ts.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
+});
+
 /* Bots: a bot's conversations are ordinary task threads (same transcript, streaming and
  * composer, with the model picker), and its settings live in a modal. */
 const bots = (page: Page) => page.getByRole('dialog', { name: /^(Bots|New bot)$/ });

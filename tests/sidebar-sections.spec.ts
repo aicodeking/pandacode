@@ -11,6 +11,7 @@ const menu = (page: Page) => page.getByRole('dialog', { name: 'Task actions', ex
 const ids = (page: Page, name: string) => section(page, name).locator('.task-item').evaluateAll(rows => rows.map(r => (r as HTMLElement).dataset.id));
 
 async function open(page: Page): Promise<void> {
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
   await page.goto('/?sections');
   await expect(page.locator('.task-item.selected')).toHaveCount(1);
 }

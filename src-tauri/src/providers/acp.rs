@@ -287,6 +287,9 @@ impl Protocol {
                         let method = cached_auth_method(result).ok_or(GROK_SIGN_IN)?;
                         self.acp_pending_session = Some(session);
                         step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
+                    } else if let Some(method) = crate::google_auth::method(result) {
+                        self.acp_pending_session = Some(session);
+                        step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
                     } else {
                         step.write.push(session);
                     }
@@ -1009,7 +1012,7 @@ async fn inspect_state(
             } else if frame["id"] == 1 {
                 if frame["result"]["protocolVersion"] != 1 { return Err("This harness does not support ACP protocol v1.".into()); }
                 acp_ready = true;
-                match cached_auth_method(&frame["result"]).filter(|_| authenticate) {
+                match cached_auth_method(&frame["result"]).filter(|_| authenticate).or_else(|| crate::google_auth::method(&frame["result"])) {
                     Some(method) => {
                         stage = "authenticate";
                         pipe.send(&json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}})).await.map_err(|_| transport_error(&pipe, stage))?;
@@ -1064,8 +1067,8 @@ fn connection_status(result: Result<(Value, Option<Value>), DiscoveryFailure>) -
     }
 }
 
-/// Explicit Settings check. Never authenticates, sends a prompt, or accepts an
-/// agent request. The official ACP server owns its sign-in; finding its binary
+/// Explicit Settings check. Reuses personal Google authentication only after opt-in;
+/// never sends a prompt or accepts agent requests. The official server owns sign-in; finding its binary
 /// alone does not establish that its account can open a session.
 #[tauri::command]
 pub async fn provider_check_connection(provider: String) -> Result<ConnectionStatus, String> {

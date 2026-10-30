@@ -1,0 +1,12 @@
+.skill-picker-dialog{width:min(480px,calc(100vw - 32px))}
+.skill-picker{display:flex;flex-direction:column;gap:12px;min-width:0;max-height:calc(100dvh - 160px)}
+.skill-picker>.dialog-description{margin:0;font-size:var(--text-xs);color:var(--muted)}
+.skill-picker-search{flex:none;min-width:0;width:100%}
+.skill-picker-list{display:flex;flex-direction:column;gap:2px;overflow:auto;min-height:0;max-height:360px}
+.skill-picker-option{display:flex;align-items:center;gap:8px;flex:none;width:100%;min-height:32px;padding:6px 8px;border-radius:var(--radius-sm);text-align:left}
+.skill-picker-option>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm)}
+.skill-picker-option[aria-selected=true],.skill-picker-option:hover{background:var(--fill-hover)}
+.skill-picker-option:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.skill-picker-status,.skill-picker-warning,.skill-picker-error{margin:0;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
+.skill-picker-error{color:var(--danger)}
+.skill-picker .dialog-footer{margin:0;justify-content:space-between}

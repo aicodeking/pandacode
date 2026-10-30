@@ -111,6 +111,7 @@ test('setting rows on the Settings page stay one line tall with notes and live s
 });
 
 test('the project menu is flat glass with equal insets, a borderless search and a trailing check on the choice', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.sidebar.sort', JSON.stringify({ group: 'flat' })));
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.locator('#project-filter').click();

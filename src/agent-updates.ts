@@ -121,7 +121,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       button.textContent = progress ? progress.phase === 'verifying' ? 'Verifying…' : 'Updating…' : 'Update';
       const state = row.querySelector<HTMLElement>('.agent-update-state')!;
       state.hidden = Boolean(canUpdate || progress);
-      state.textContent = entry.status === 'current' ? 'Up to date' : entry.status === 'error' ? 'Unavailable' : 'Manual update';
+      state.textContent = entry.method === 'ChatGPT' ? 'Managed by ChatGPT' : entry.status === 'current' ? 'Up to date' : entry.status === 'error' ? 'Unavailable' : 'Manual update';
       const guide = row.querySelector<HTMLButtonElement>('.agent-update-guide')!;
       const docs = docsUrl(entry.docsUrl);
       guide.hidden = !docs || canUpdate || Boolean(progress); guide.dataset.url = docs || '';

@@ -3,6 +3,7 @@
 //! source, content hash and activations. Activation writes them where each harness reads them
 //! (`skills/adapter.rs`), never over a file PandaCode did not write, and reports drift.
 mod adapter;
+pub(crate) mod direct;
 mod catalog;
 mod github;
 mod safety;
@@ -401,6 +402,7 @@ impl Library {
         let activation = Activation { harness: harness.into(), scope, project: project.clone(), surface: surface.into(), sha256: meta.sha256.clone(), files: written, excluded };
         let activations = meta.activations.iter().filter(|a| !matches(a)).cloned().chain([activation]).collect();
         self.save(&Meta { acknowledged, activations, ..meta })?;
+        crate::slash_commands::invalidate_provider(harness);
         drop(_guard);
         Ok(Change { items: self.list()?, kept: Vec::new() })
     }
@@ -426,6 +428,7 @@ impl Library {
         }
         let activations = meta.activations.iter().filter(|a| !matches(a)).cloned().collect();
         self.save(&Meta { activations, ..meta })?;
+        crate::slash_commands::invalidate_provider(harness);
         drop(_guard);
         Ok(Change { items: self.list()?, kept })
     }
@@ -476,7 +479,7 @@ impl Library {
         for harness in adapter::FILE_HARNESSES.iter().chain(adapter::PROMPT_HARNESSES) {
             let prompt = !adapter::FILE_HARNESSES.contains(harness);
             let in_use = metas.iter().any(|m| m.activations.iter().any(|a| a.harness == *harness));
-            let installed = !prompt && adapter::installed(harness, &self.home);
+            let installed = *harness == "openai-compatible" || !prompt && adapter::installed(harness, &self.home);
             if !installed && !in_use {
                 continue;
             }

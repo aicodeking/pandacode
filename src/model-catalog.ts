@@ -12,10 +12,11 @@ export function fallbackModel(provider: ProviderId, id = 'default'): ProviderMod
 
 /** Harnesses that accept only the model IDs they advertise: no custom IDs. */
 export function advertisedModelsOnly(provider: ProviderId): boolean {
-  return provider === 'github-copilot' || provider === 'devin';
+  return provider === 'openai-compatible' || provider === 'github-copilot' || provider === 'devin';
 }
 
 export function modelChoices(provider: ProviderId, catalog: ProviderModel[], current = ''): ProviderModel[] {
+  if (provider === 'openai-compatible') return catalog;
   const models = new Map<string, ProviderModel>([['default', fallbackModel(provider)]]);
   for (const model of catalog) if (model.id) models.set(model.id, model);
   if (current && !models.has(current)) models.set(current, fallbackModel(provider, current));
@@ -43,4 +44,9 @@ export function parseContextUsage(value: unknown): ContextUsage | null {
   if (typeof usedTokens !== 'number' || !Number.isSafeInteger(usedTokens) || usedTokens < 0 || usedTokens > 1_000_000_000) return null;
   if (contextWindow != null && (typeof contextWindow !== 'number' || !Number.isSafeInteger(contextWindow) || contextWindow <= 0 || contextWindow > 1_000_000_000)) return null;
   return { usedTokens, contextWindow: (contextWindow as number | null) ?? null };
+}
+
+/** A configured endpoint advertises exactly the model entered in Providers. */
+export function compatibleModel(endpoint: { modelId: string }): ProviderModel {
+  return { id: endpoint.modelId, name: endpoint.modelId, description: 'From your model server', reasoningEfforts: [] };
 }

@@ -682,6 +682,13 @@ html[data-theme="dark"] .choice-menu-option[aria-checked="true"]>.icon:last-chil
 .choice-menu-option:focus-visible{outline:none;background:color-mix(in srgb,var(--text) 7%,transparent);box-shadow:inset 0 0 0 1px var(--focus)}
 html[data-theme="dark"] .choice-menu-option:focus-visible{background:color-mix(in srgb,var(--text) 9%,transparent)}
 .choice-menu-option.is-danger,.choice-menu-option.is-danger>.icon{color:var(--danger)}
+.choice-menu-row{display:flex;align-items:center;gap:2px;flex-shrink:0}
+.choice-menu-row>.choice-menu-option{flex:1;min-width:0;width:auto}
+.choice-menu-row-action{display:grid;place-items:center;flex:none;width:28px;height:28px;padding:6px;border-radius:4px;color:var(--muted)}
+.choice-menu-row-action>.icon{width:16px;height:16px}
+.choice-menu-row-action:not(:disabled):hover{background:var(--fill-hover);color:var(--text)}
+.choice-menu-row-action.is-danger:not(:disabled):hover{color:var(--danger)}
+.choice-menu-row-action:focus-visible{outline:none;background:var(--fill-hover);box-shadow:inset 0 0 0 1px var(--focus)}
 .delete-task-dialog{max-width:440px}
 .delete-task-name{font-weight:var(--weight-strong);overflow-wrap:anywhere;margin:0 0 12px}
 .delete-task-description{color:var(--muted);line-height:1.6;margin:0}
@@ -1004,3 +1011,19 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
    about 100–200 ms; springs in motion.ts carry surfaces. Reduced Motion removes CSS
    transitions and animations (the block near the top of the narrow-window rules), and
    motion.ts keeps only a short cross-fade there. */
+
+.quick-answer { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-top:16px; }
+.quick-answer fieldset { border:0; padding:0; margin:0; display:flex; gap:16px; }
+.quick-answer legend { color:var(--muted); font-size:12px; margin-bottom:8px; }
+.quick-answer label { display:flex; align-items:center; gap:8px; cursor:pointer; }
+.quick-answer input { width:16px; height:16px; flex:0 0 16px; margin:0; padding:0; appearance:auto; accent-color:var(--accent); }
+.tool-image-dialog { width:min(1000px, 92vw); }
+.tool-image-content { display:flex; justify-content:center; overflow:auto; }
+.tool-image-content img { display:block; max-width:100%; max-height:75vh; object-fit:contain; }
+.tool-image { margin:12px 0; }
+.tool-image figcaption { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; margin-bottom:8px; overflow-wrap:anywhere; }
+.tool-image-open { display:block; width:100%; padding:0; background:var(--fill-hover); border:0; border-radius:var(--radius-md); overflow:hidden; cursor:zoom-in; }
+.tool-image-open img { display:block; width:100%; max-height:480px; object-fit:contain; }
+.tool-image-open img[hidden] { display:none; }
+.tool-image-status { display:block; padding:16px; color:var(--muted); }
+.tool-image-status[hidden] { display:none; }

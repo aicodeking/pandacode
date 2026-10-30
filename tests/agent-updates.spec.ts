@@ -51,6 +51,37 @@ async function manual(page: Page): Promise<void> {
 }
 
 test.describe('Agent updates', () => {
+  test('ChatGPT-managed Codex never prompts for standalone updates, including later checks', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => {
+      const fixture = (window as any).__agentUpdates;
+      fixture.results = [{ ...fixture.results.find((entry: any) => entry.provider === 'codex'), status:'unsupported', method:'ChatGPT', canUpdate:false, latestVersion:null, message:'This Codex CLI is bundled with ChatGPT. Update ChatGPT to update this copy; no separate CLI update is needed.' }];
+    });
+    await page.clock.fastForward(9000);
+    await expect.poll(() => calls(page, 'check_agent_updates')).toHaveLength(1);
+    await expect(popup(page)).toBeHidden();
+    await page.clock.fastForward(6 * 60 * 60 * 1000);
+    await expect.poll(() => calls(page, 'check_agent_updates')).toHaveLength(2);
+    await expect(popup(page)).toBeHidden();
+    await manual(page);
+    await expect(dialog(page)).toContainText('Managed by ChatGPT');
+    await expect(dialog(page).getByRole('button', { name: 'Update Codex', exact:true })).toBeHidden();
+    await expect(dialog(page)).not.toContainText('Manual update');
+    expect(await calls(page, 'update_agent')).toEqual([]);
+  });
+
+  test('ChatGPT-managed Codex stays quiet while other installed agents still prompt', async ({ page }) => {
+    await open(page);
+    await page.evaluate(() => {
+      const entry = (window as any).__agentUpdates.results.find((entry: any) => entry.provider === 'codex');
+      Object.assign(entry, {status:'unsupported', method:'ChatGPT', canUpdate:false, latestVersion:null});
+    });
+    await automatic(page);
+    await expect(popup(page).locator('.agent-update-row')).toHaveCount(1);
+    await expect(popup(page).getByRole('button', { name:'Update Claude Code', exact:true })).toBeEnabled();
+    await expect(popup(page).locator('[data-provider="codex"]')).toHaveCount(0);
+  });
+
   test('checks after startup without stealing prompt focus and groups shared Claude installations', async ({ page }) => {
     await open(page);
     const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });

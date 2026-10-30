@@ -502,8 +502,17 @@ fn uv_owned(installation: &Installation) -> Option<Plan> {
     None
 }
 
+pub(super) const CHATGPT_MANAGED_MESSAGE: &str = "This Codex CLI is bundled with ChatGPT. Update ChatGPT to update this copy; no separate CLI update is needed.";
+
+pub(super) fn managed_by_chatgpt(installation: &Installation) -> bool {
+    family(&installation.provider) == "codex" && installation.canonical.ends_with("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex")
+}
+
 pub(super) fn detect(installation: &Installation, version: &Version) -> Result<Plan> {
     let provider = family(&installation.provider);
+    if managed_by_chatgpt(installation) {
+        return Err(CHATGPT_MANAGED_MESSAGE.into());
+    }
     if version.pre.is_some() {
         return Err("Preview versions use their own release channel. Update this installation with its official CLI or package manager.".into());
     }
@@ -894,6 +903,16 @@ mod tests {
             modified: None,
             size: 0,
             compatible: true,
+        }
+    }
+
+    #[test]
+    fn bundled_chatgpt_cli_updates_belong_to_the_chatgpt_app() {
+        let install = installation("codex", Path::new("/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"));
+        for version in ["0.165.0-alpha.1.2", "0.165.0"] {
+            let error = detect(&install, &super::super::parse_version(version).unwrap()).unwrap_err();
+            assert!(error.contains("bundled with ChatGPT"));
+            assert!(error.contains("no separate CLI update"));
         }
     }
 

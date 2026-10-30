@@ -24,8 +24,53 @@ const MAX_NAME: usize = 60;
 // on task deletion if this ever matters.
 const MAX_TASKS: usize = 5000;
 const PROVIDERS: &[&str] = &[
-    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
+    "openai-compatible", "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
 ];
+
+/// A direct local/custom chat-completions endpoint.
+/// Credentials remain in secret_env; this structure is safe to return to the UI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenaiCompatible {
+    pub base_url: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+pub const OPENAI_KEY_ENV: &str = "PANDACODE_OPENAI_API_KEY";
+
+impl OpenaiCompatible {
+    fn refresh_models(&mut self, ids: Vec<String>) -> bool {
+        if ids.is_empty() || (self.models == ids && ids.contains(&self.model_id)) { return false; }
+        if !ids.contains(&self.model_id) { self.model_id = ids[0].clone(); }
+        self.models = ids;
+        true
+    }
+
+    pub(crate) fn validated(mut self) -> Result<Self> {
+        self.base_url = self.base_url.trim().trim_end_matches('/').to_owned();
+        self.model_id = self.model_id.trim().to_owned();
+        let url = reqwest::Url::parse(&self.base_url).map_err(|_| "Enter an HTTP or HTTPS Base URL.")?;
+        if self.base_url.len() > 2048 || self.base_url.chars().any(char::is_control)
+            || !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+            || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some()
+            || self.base_url.contains('{') || self.base_url.contains('}') {
+            return Err("Use an HTTP or HTTPS Base URL without credentials, a query or a fragment.".into());
+        }
+        if url.path().is_empty() || url.path() == "/" { self.base_url.push_str("/v1"); }
+        if self.model_id.is_empty() || self.model_id.len() > 200
+            || self.model_id.chars().any(char::is_control) || self.model_id.contains('{') || self.model_id.contains('}') {
+            return Err("Enter a Model ID of up to 200 characters without control characters or braces.".into());
+        }
+        if self.models.len() > 1000 || self.models.iter().any(|id| id.is_empty() || id.len() > 200 || id.chars().any(char::is_control)) {
+            return Err("Invalid server model list.".into());
+        }
+        if !self.models.contains(&self.model_id) { self.models.push(self.model_id.clone()); }
+        Ok(self)
+    }
+
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -45,6 +90,8 @@ pub struct Connection {
     pub secret_env: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_compatible: Option<OpenaiCompatible>,
     /// Bumped on every save, so a warm agent never outlives a changed connection.
     #[serde(default)]
     pub revision: u64,
@@ -93,6 +140,25 @@ fn persist(runtime: &mut Runtime, next: Snapshot) -> Result<()> {
     }
     runtime.data = next;
     Ok(())
+}
+
+pub(crate) fn compatible_connection() -> Option<Connection> {
+    CONFIG.get()?.lock().ok()?.data.connections.iter().find(|c| c.openai_compatible.is_some()).cloned()
+}
+
+pub(crate) fn data_directory() -> Result<PathBuf> {
+    runtime()?.path.parent().map(Path::to_path_buf).ok_or_else(|| "App data folder is unavailable.".into())
+}
+
+pub(crate) fn compatible_key(id: Option<&str>, base_url: &str) -> Result<Option<String>> {
+    let Some(connection) = id.and_then(get) else { return Ok(None) };
+    // Editing the endpoint must never forward a saved key to a different server.
+    if connection.openai_compatible.as_ref().is_none_or(|endpoint| endpoint.base_url.trim_end_matches('/') != base_url.trim_end_matches('/')) {
+        return Ok(None);
+    }
+    if !connection.secret_env.iter().any(|name| name == OPENAI_KEY_ENV) { return Ok(None); }
+    crate::secret_store::get(SERVICE, &secret_account(&connection.id, OPENAI_KEY_ENV))
+        .map(Some).ok_or_else(|| "The saved API key is unavailable. Enter it again in Providers.".into())
 }
 
 /// The connection a task launches with, if it has one for this provider.
@@ -198,6 +264,8 @@ pub struct Input {
     env: Vec<EnvInput>,
     #[serde(default)]
     config_dir: Option<String>,
+    #[serde(default)]
+    openai_compatible: Option<OpenaiCompatible>,
 }
 
 fn validate_args(args: &[String]) -> Result<()> {
@@ -228,7 +296,7 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
         return Err("Choose an available harness.".into());
     }
     if let Some(existing) = existing {
-        if existing.provider != input.provider {
+        if existing.provider != input.provider && !(existing.openai_compatible.is_some() && input.provider == "openai-compatible") {
             return Err("A connection's harness cannot change. Add a new connection instead.".into());
         }
     }
@@ -270,6 +338,20 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
             env.insert(var.name, value.unwrap_or_default());
         }
     }
+    let openai_compatible = input.openai_compatible.map(OpenaiCompatible::validated).transpose()?;
+    if openai_compatible.is_some() && (input.provider != "openai-compatible" || !input.args.is_empty()
+        || executable.is_some() || config_dir.is_some() || !env.is_empty() || secret_env.iter().any(|name| name != OPENAI_KEY_ENV)) {
+        return Err("OpenAI Compatible uses a direct server connection with only its optional API key.".into());
+    }
+    if input.provider == "openai-compatible" && openai_compatible.is_none() {
+        return Err("Enter a Base URL and choose a model.".into());
+    }
+    if let (Some(previous), Some(next)) = (existing.and_then(|c| c.openai_compatible.as_ref()), openai_compatible.as_ref()) {
+        if previous.base_url != next.base_url && secret_env.iter().any(|name| name == OPENAI_KEY_ENV)
+            && !secrets.iter().any(|(name, _)| name == OPENAI_KEY_ENV) {
+            return Err("Enter the API key again for the new server, or remove the saved key.".into());
+        }
+    }
     let connection = Connection {
         id: existing.map_or_else(|| uuid::Uuid::new_v4().to_string(), |c| c.id.clone()),
         provider: input.provider,
@@ -279,6 +361,7 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
         env,
         secret_env,
         config_dir,
+        openai_compatible,
         revision: existing.map_or(1, |c| c.revision + 1),
     };
     Ok((connection, secrets))
@@ -286,6 +369,30 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
 
 #[tauri::command]
 pub async fn connections_list() -> Result<Snapshot> {
+    Ok(runtime()?.data.clone())
+}
+
+/// Refresh only saved loopback servers; never probe an arbitrary remote endpoint.
+#[tauri::command]
+pub async fn connections_refresh_local_models() -> Result<Snapshot> {
+    let connections = runtime()?.data.connections.clone();
+    for connection in connections {
+        let Some(endpoint) = connection.openai_compatible.as_ref() else { continue };
+        let Ok(url) = reqwest::Url::parse(&endpoint.base_url) else { continue };
+        if !matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")) { continue; }
+        let Ok(key) = compatible_key(Some(&connection.id), &endpoint.base_url) else { continue };
+        let Ok(models) = crate::providers::openai_compatible::discover(&endpoint.base_url, key.as_deref()).await else { continue };
+        // A model can disappear briefly while the server loads its replacement.
+        if models.is_empty() { continue; }
+        let ids: Vec<String> = models.into_iter().map(|model| model.id).collect();
+        let mut runtime = runtime()?;
+        let mut next = runtime.data.clone();
+        let Some(current) = next.connections.iter_mut().find(|c| c.id == connection.id && c.revision == connection.revision) else { continue };
+        let Some(live) = current.openai_compatible.as_mut() else { continue };
+        if !live.refresh_models(ids) { continue; }
+        current.revision += 1;
+        persist(&mut runtime, next)?;
+    }
     Ok(runtime()?.data.clone())
 }
 
@@ -407,8 +514,68 @@ fn assign(data: &mut Snapshot, session_id: String, connection_id: Option<String>
 mod tests {
     use super::*;
 
+    #[test]
+    fn live_models_follow_replacement_but_preserve_available_selection() {
+        let mut endpoint = local_endpoint();
+        assert!(endpoint.refresh_models(vec!["replacement".into()]));
+        assert_eq!(endpoint.model_id, "replacement");
+        assert!(!endpoint.refresh_models(vec![]));
+        assert_eq!(endpoint.models, vec!["replacement"]);
+        assert!(endpoint.refresh_models(vec!["other".into(), "replacement".into()]));
+        assert_eq!(endpoint.model_id, "replacement");
+        assert!(!endpoint.refresh_models(vec!["other".into(), "replacement".into()]));
+    }
+
     fn input(provider: &str) -> Input {
-        Input { id: None, provider: provider.into(), name: "Claude Work".into(), executable: None, args: vec![], env: vec![], config_dir: None }
+        Input { id: None, provider: provider.into(), name: "Claude Work".into(), executable: None, args: vec![], env: vec![], config_dir: None, openai_compatible: None }
+    }
+
+    fn local_endpoint() -> OpenaiCompatible {
+        OpenaiCompatible { base_url: " http://127.0.0.1:8080/v1/ ".into(), model_id: "org/local-model".into(), models: vec![] }
+    }
+
+    #[test]
+    fn compatible_endpoint_validates_url_model_and_harness() {
+        let endpoint = local_endpoint().validated().unwrap();
+        assert_eq!(endpoint.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(endpoint.model_id, "org/local-model");
+        for base_url in ["", "file:///tmp/model", "https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "http://localhost/v1#fragment", "http://localhost/{env:KEY}"] {
+            assert!(OpenaiCompatible { base_url: base_url.into(), ..local_endpoint() }.validated().is_err(), "{base_url}");
+        }
+        for model_id in ["", "bad\nmodel", "{file:/tmp/key}"] {
+            assert!(OpenaiCompatible { model_id: model_id.into(), ..local_endpoint() }.validated().is_err());
+        }
+        assert!(validated(Input { openai_compatible: Some(local_endpoint()), ..input("claude") }, None).is_err());
+        let env = vec![EnvInput { name: "OPENCODE_CONFIG_CONTENT".into(), value: Some("{}".into()), secret: false }];
+        assert!(validated(Input { openai_compatible: Some(local_endpoint()), env, ..input("openai-compatible") }, None).is_err());
+    }
+
+    #[test]
+    fn compatible_key_cannot_be_reused_for_a_different_server() {
+        let env = vec![EnvInput { name: OPENAI_KEY_ENV.into(), value: Some("fixture-secret".into()), secret: true }];
+        let (saved, _) = validated(Input { openai_compatible: Some(local_endpoint()), env, ..input("openai-compatible") }, None).unwrap();
+        let endpoint = OpenaiCompatible { base_url: "http://localhost:9000/v1".into(), ..local_endpoint() };
+        let env = vec![EnvInput { name: OPENAI_KEY_ENV.into(), value: None, secret: true }];
+        assert!(validated(Input { openai_compatible: Some(endpoint.clone()), env, ..input("openai-compatible") }, Some(&saved)).unwrap_err().contains("new server"));
+        let (next, _) = validated(Input { openai_compatible: Some(endpoint), ..input("openai-compatible") }, Some(&saved)).unwrap();
+        assert!(next.secret_env.is_empty());
+        assert!(validated(input("openai-compatible"), None).is_err());
+    }
+
+    #[test]
+    fn compatible_key_is_secret_preserved_on_edit_and_removable() {
+        let env = vec![EnvInput { name: OPENAI_KEY_ENV.into(), value: Some("fixture-secret".into()), secret: true }];
+        let (saved, secrets) = validated(Input { openai_compatible: Some(local_endpoint()), env, ..input("openai-compatible") }, None).unwrap();
+        assert_eq!(secrets.len(), 1);
+        assert!(!serde_json::to_string(&saved).unwrap().contains("fixture-secret"));
+        let launch = launch_with(&saved, |_| Some("fixture-secret".into())).unwrap();
+        assert_eq!(launch.redact("failed: fixture-secret"), "failed: [redacted]");
+        let env = vec![EnvInput { name: OPENAI_KEY_ENV.into(), value: None, secret: true }];
+        let (edited, secrets) = validated(Input { openai_compatible: Some(local_endpoint()), env, ..input("openai-compatible") }, Some(&saved)).unwrap();
+        assert!(secrets.is_empty());
+        assert_eq!(edited.secret_env, [OPENAI_KEY_ENV]);
+        let (removed, _) = validated(Input { openai_compatible: Some(local_endpoint()), ..input("openai-compatible") }, Some(&edited)).unwrap();
+        assert!(removed.secret_env.is_empty());
     }
 
     #[test]

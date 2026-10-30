@@ -30,7 +30,7 @@ Each activation records the harness, scope, project checkout, surface, the libra
 - A rule block is wrapped in `<!-- pandacode:rule:<id> -->` … `<!-- /pandacode:rule:<id> -->`. Text outside the block is never changed.
 - PandaCode never writes into a skill folder it did not create, never overwrites a file or block whose hash differs from what it wrote, and on deactivation leaves edited files in place (`Change.kept`).
 - In a Git checkout, project scope adds the skill folder (and a rule file, but only when PandaCode created that file) to `info/exclude`. The path comes from `git rev-parse --git-path info/exclude`, so worktrees work too. Passing `sessionId` scopes the activation to that task's worktree.
-- Harnesses marked `prompt` only record the activation. Nothing injects these items into prompts yet (see Not yet).
+- OpenAI Compatible consumes enabled user/project skills and rules directly. Skills appear in `/` and expose supporting text files through `read_skill_file`; rules enter the system instructions. Other prompt harnesses only record ordinary task activation (bot-scoped injection is separate).
 
 ## Matrix and safety
 
@@ -56,7 +56,7 @@ Each activation records the harness, scope, project checkout, surface, the libra
 
 ## Not yet
 
-Prompt injection for prompt harnesses (that belongs with the token saver's send-time block), role and task scopes beyond a session worktree, version diffs with promote/skip/pin, folding the Token saver packs into the library, GitLab (single imports and catalogs), organization discovery, conflict detection between rules.
+Prompt injection for other prompt harnesses (that belongs with the token saver's send-time block), role and task scopes beyond a session worktree, version diffs with promote/skip/pin, folding the Token saver packs into the library, GitLab (single imports and catalogs), organization discovery, conflict detection between rules.
 
 ## Wiring
 

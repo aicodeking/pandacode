@@ -1,5 +1,5 @@
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
-import { advertisedModelsOnly, fallbackModel, modelChoices, tokenCount } from './model-catalog';
+import { advertisedModelsOnly, compatibleModel, fallbackModel, modelChoices, tokenCount } from './model-catalog';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
@@ -8,7 +8,7 @@ import { trackSegment } from './motion';
 /** A named agent team from Settings, offered beside the models. `detail` is one line ("lead · N workers"); `roster` its harnesses. */
 export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
 /** A named connection from Settings: its harness's models listed again under its name. */
-export type PickerConnection = { id: string; name: string; provider: ProviderId };
+export type PickerConnection = { id: string; name: string; provider: ProviderId; openaiCompatible?: { modelId: string } | null };
 type ModelPickerOptions = {
   teams?: PickerTeam[];
   onTeamSelect?: (id: string) => Promise<void>;
@@ -150,12 +150,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
-    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({
+    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id && !c.openaiCompatible)].map(connection => ({
       key: connection ? `c:${connection.id}` : `h:${provider.id}`, provider, connection, name: connection?.name ?? provider.name,
       locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed,
     })));
   }
-  const models = (group: Group) => modelChoices(group.provider.id, group.provider.models, group.provider.id === current.provider ? current.model : '');
+  const models = (group: Group) => group.connection?.openaiCompatible ? [compatibleModel(group.connection.openaiCompatible)] : modelChoices(group.provider.id, group.provider.models, group.provider.id === current.provider ? current.model : '');
   const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default') && (row.group.connection?.id ?? null) === currentConnection;
 
   /** Default plus the most recent models, padded from the catalog, when the caller asks for a short list. */
@@ -262,7 +262,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       if (!total) markup += '<p class="model-menu-empty">No matching models.</p>';
       markup += rows.map(row => modelRow(row, true, query)).join('');
       // One custom ID row: the viewed harness, else the current one, unless the query names a harness or an existing model.
-      const takesCustom = (group?: Group): group is Group => Boolean(group) && !advertisedModelsOnly(group!.provider.id) && !group!.locked && !group!.unavailable && !models(group!).some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized));
+      const takesCustom = (group?: Group): group is Group => Boolean(group) && !group!.connection?.openaiCompatible && !advertisedModelsOnly(group!.provider.id) && !group!.locked && !group!.unavailable && !models(group!).some(model => [model.id, model.name].some(value => value.toLowerCase() === normalized));
       const viewed = all.find(group => group.key === view);
       const custom = namedHarness ? undefined : [viewed, all.find(group => group.key === `h:${current.provider}`)].find(takesCustom);
       if (custom) { total++; markup += modelRow({ group: custom, model: fallbackModel(custom.provider.id, query), custom: true }, true, query); }
@@ -275,10 +275,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     } else {
       const group = all.find(group => group.key === view);
       if (group) {
-        const visible = shortList(group.provider.id, models(group));
+        const visible = group.provider.id === 'openai-compatible' || group.connection?.openaiCompatible ? models(group) : shortList(group.provider.id, models(group));
         total = visible.length;
         const status = group.locked ? '<span>New task required</span>' : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
+        if (!visible.length && group.provider.id === 'openai-compatible') markup += '<p class="model-menu-empty">Enter your server’s Base URL in Settings → Providers to find models.</p>';
       }
     }
     if (providersStatus) markup = `<button type="button" role="option" tabindex="-1" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-name">${escape(providersStatus)}</span></button>`;
@@ -349,7 +350,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   function currentModel(): { provider?: Provider; model: ProviderModel } {
     const provider = providers.find(provider => provider.id === current.provider);
-    return { provider, model: modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model)! };
+    const endpoint = connections.find(c => c.id === currentConnection)?.openaiCompatible;
+    if (endpoint) return { provider, model: compatibleModel(endpoint) };
+    return { provider, model: modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model) ?? fallbackModel(current.provider, current.model) };
   }
 
   function renderSettings(): void {

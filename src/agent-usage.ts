@@ -56,14 +56,14 @@ function preserveFocus(container: HTMLElement, render: () => void): void {
 }
 
 /** Only mounted on demand. Each provider settles independently; native code owns caching. */
-export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () => void {
+export function mountAgentUsage(host: HTMLElement, providers: Provider[], initialProvider?: ProviderId): () => void {
   let disposed = false, pending = false;
   const installed = providers.filter(provider => provider.installed);
   const nameOf = (id: ProviderId) => providers.find(provider => provider.id === id)?.name ?? id;
   const limits = new Map<ProviderId, AgentUsage>();
   const cards = new Map<ProviderId, HTMLElement>();
   let ledger: Ledger | null = null, ledgerError: string | null = null, ledgerPending = false, prompts: PromptActivity | null = null;
-  let range: Range = 'month', breakdown: 'model' | 'day' = 'model', tab: Tab = 'overview';
+  let range: Range = 'month', breakdown: 'model' | 'day' = 'model', tab: Tab = installed.some(provider => provider.id === initialProvider) ? initialProvider! : 'overview';
   let summaryCache: { ledger: Ledger; range: Range; summary: Summary } | null = null;
 
   host.classList.add('agent-usage');
@@ -261,7 +261,8 @@ function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage): 
   body.removeAttribute('role');
   const status = result.stale ? 'Saved snapshot' : STATUS[result.status] ?? 'Unavailable';
   card.classList.toggle('usage-stale', result.stale);
-  body.innerHTML = `${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window)).join('')}</div>` : ''}
+  body.innerHTML = `${provider.id === 'codex' ? '<p class="usage-subscription-note">Your ChatGPT plan allowance for Codex, shared across apps using this account.</p>' : ''}${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window)).join('')}</div>` : ''}
+    ${provider.id === 'codex' && result.status === 'ready' && windows.length && !windows.some(window => /\bweekly\b/i.test(window.label)) ? '<p class="usage-subscription-note">This account did not report a weekly allowance.</p>' : ''}
     ${status || result.message || !windows.length ? `<div class="usage-notice">${status ? `<span class="usage-state">${escape(status)}</span>` : ''}${result.message ? `<p>${escape(result.message)}</p>` : !windows.length ? '<p>This account did not report any usage windows.</p>' : ''}</div>` : ''}
     <div class="usage-card-footer"><span>${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(new Date(result.checkedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}</span>${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}${dashboardLink(result.dashboardUrl)}</div>`;
 }
@@ -272,7 +273,7 @@ function renderWindow(provider: Provider, window: UsageWindow): string {
   const reset = window.resetsAt ? new Date(window.resetsAt) : null;
   const validReset = reset && Number.isFinite(reset.getTime()) ? reset : null;
   const detail = [window.detail, validReset ? `Resets ${validReset.toLocaleString()}` : ''].filter(Boolean).join('. ');
-  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span>${validReset ? resetLabel(validReset) : 'Reset time not reported'}</span>${detail ? infoMark(detail, `${provider.name} ${window.label} details`) : ''}</div></div>`;
+  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div>${provider.id === 'codex' ? `<div class="usage-remaining">${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(100 - value)}% remaining</div>` : ''}<div class="usage-reset"><span>${validReset ? resetLabel(validReset) : 'Reset time not reported'}</span>${detail ? infoMark(detail, `${provider.name} ${window.label} details`) : ''}</div></div>`;
 }
 
 function resetLabel(reset: Date): string {

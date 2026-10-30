@@ -37,6 +37,7 @@ const sections = [
         <ul>
           <li><strong>Without Connect, PandaCode collects nothing.</strong> Unless you sign in to PandaCode Connect, there are no accounts, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers.</li>
           <li><strong>PandaCode Connect</strong> (optional, for the mobile app and for running tasks on another computer) keeps your GitHub account id and your devices’ names and public keys. Everything you send through it is <strong>end-to-end encrypted</strong>; we can’t read it. See <a href="#connect">Connect and the mobile app</a>.</li>
+          <li>Optional Google subscription access uses the official Antigravity engine for browser OAuth, saved account authentication and model discovery. Google holds the credentials; PandaCode only records your choice to use personal Google sign-in. Quotas are requested from the standalone Google CLI when you open or refresh usage.</li>
           <li>Your projects, conversations, tasks, bots, memories and settings are stored <strong>on your device</strong>. We never receive a copy.</li>
           <li>The app talks only to the services <strong>you choose</strong>, directly from your computer, plus a few automatic requests that carry no personal data.</li>
           <li>This website is static. It sets no cookies, runs no analytics and loads nothing from other companies.</li>
@@ -51,10 +52,11 @@ const sections = [
 
       <section id="automatic" aria-labelledby="automatic-title">
         <h2 id="automatic-title">Automatic requests</h2>
+        <p>If you configure OpenAI Compatible, PandaCode requests the model list from your chosen server when you enter or refresh its URL or reopen provider settings. Tasks send prompts, attached images and relevant file/tool results directly to that server, using your optional key. Conversation history is saved locally; there is no background model polling.</p>
         <p>The app makes a few requests on its own. They carry no content from your work and no identifier for you, only what any internet request includes, such as your IP address:</p>
         <ul>
           <li><strong>Agent version checks</strong>, about every 6 hours, so PandaCode can tell you when your coding agents have updates: Homebrew (formulae.brew.sh), Anthropic (downloads.claude.ai), GitHub (api.github.com), Kimi (cdn.kimi.com) and npm (registry.npmjs.org, for Cline).</li>
-          <li><strong>PandaCode’s own updates</strong>, at launch and about every 6 hours: the latest release’s update manifest on GitHub (github.com). Updates are signed and verified before they install. Choose Automatic, Notify me or Off in Settings → About.</li>
+          <li><strong>App updates are disabled in this fork.</strong> It does not check, download or install upstream releases. Updates are made by merging upstream changes and rebuilding, preserving custom features.</li>
           <li><strong>A public model price list</strong> from GitHub (raw.githubusercontent.com), at most once a day, to estimate costs.</li>
           <li><strong>The model routing profiler</strong> (about 35 MB) from GitHub (raw.githubusercontent.com), once, verified before use. It is fetched the first time you turn on a team (with model routing on), or when you click Download or Route in Settings, never at launch. Routing then runs on your computer.</li>
         </ul>
@@ -79,6 +81,7 @@ const sections = [
 
       <section id="providers" aria-labelledby="providers-title">
         <h2 id="providers-title">Services you choose</h2>
+        <p>Saved local model servers on loopback addresses are checked for model changes every 10 seconds while PandaCode is visible and when its window regains focus. These requests go directly to your local server.</p>
         <p>PandaCode is a workspace for tools you bring. When you use one, the app sends it what the work needs, directly from your computer, under your own account with that service and its privacy policy.</p>
         <ul>
           <li><strong>Coding agents and model providers</strong>, such as Claude Code, Codex, Kimi Code, OpenCode, Antigravity, Grok, Devin, Hermes, GLM and MiMo, receive your prompts, the files and context they read, attachments and tool output.</li>

@@ -781,3 +781,13 @@ fn auto_team_default_keeps_the_new_tasks_own_model_as_lead() {
     assert!(team.config.auto);
     assert_eq!(team.config.workers, auto.config.workers);
 }
+
+#[test]
+fn direct_model_provider_can_lead_and_join_a_team() {
+    let mut setup = setup();
+    setup.architect = ModelSelection { provider: "openai-compatible".into(), model: "local-model".into(), reasoning_effort: None };
+    setup.config.workers[0].provider = "openai-compatible".into();
+    setup.config.workers[0].model = "local-model".into();
+    setup.config.workers[0].reasoning_effort = None;
+    setup.validate().unwrap();
+}

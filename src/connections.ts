@@ -5,7 +5,8 @@ import { call } from './bridge';
 import { escape } from './dom';
 import type { ProviderId } from './types';
 
-export interface Connection { id: string; provider: ProviderId; name: string; executable?: string | null; args: string[]; env: Record<string, string>; secretEnv: string[]; configDir?: string | null; revision: number; }
+export interface OpenaiCompatible { baseUrl: string; modelId: string; models?: string[]; }
+export interface Connection { openaiCompatible?: OpenaiCompatible | null; id: string; provider: ProviderId; name: string; executable?: string | null; args: string[]; env: Record<string, string>; secretEnv: string[]; configDir?: string | null; revision: number; }
 export interface ConnectionSnapshot { connections: Connection[]; tasks: Record<string, string>; }
 interface EnvRow { name: string; value: string; secret: boolean; saved: boolean; }
 
@@ -17,14 +18,14 @@ export function mountConnections(host: HTMLElement, harnesses: { id: ProviderId;
   let snapshot = emptyConnections(), editing: Connection | 'new' | null = null, disposed = false;
   const harnessName = (id: string) => harnesses.find(h => h.id === id)?.name ?? id;
   function render(): void {
-    const rows = snapshot.connections.map(c => `<li class="named-connection" data-connection="${escape(c.id)}"><span><strong>${escape(c.name)}</strong> <small>${escape(harnessName(c.provider))}</small></span><span class="connection-row-actions"><button type="button" class="secondary-button" data-edit-connection="${escape(c.id)}" aria-label="Edit ${escape(c.name)}">Edit</button><button type="button" class="secondary-button" data-delete-connection="${escape(c.id)}" aria-label="Delete ${escape(c.name)}">Delete</button></span></li>`).join('');
+    const rows = snapshot.connections.filter(c => !c.openaiCompatible).map(c => `<li class="named-connection" data-connection="${escape(c.id)}"><span><strong>${escape(c.name)}</strong> <small>${escape(harnessName(c.provider))}</small></span><span class="connection-row-actions"><button type="button" class="secondary-button" data-edit-connection="${escape(c.id)}" aria-label="Edit ${escape(c.name)}">Edit</button><button type="button" class="secondary-button" data-delete-connection="${escape(c.id)}" aria-label="Delete ${escape(c.name)}">Delete</button></span></li>`).join('');
     host.innerHTML = `<h3>Connections</h3><p>Add named setups of a harness, such as Claude Work and Claude Personal, each with its own executable, arguments, environment and config folder. Choose one in the model picker; tasks keep theirs.</p>${rows ? `<ul class="named-connections">${rows}</ul>` : ''}${editing ? form(editing === 'new' ? null : editing) : '<button type="button" class="secondary-button" data-add-connection>Add connection</button>'}<p class="named-connection-feedback" role="status" hidden></p>`;
   }
   function envRow(row: EnvRow): string {
     return `<div class="connection-input-row" data-env-row><input aria-label="Variable name" data-env-name value="${escape(row.name)}" placeholder="NAME" autocomplete="off" spellcheck="false" maxlength="128"><input aria-label="Value" data-env-value type="${row.secret ? 'password' : 'text'}" value="${escape(row.value)}" placeholder="${row.saved ? 'Saved · leave empty to keep' : 'value'}" autocomplete="off" spellcheck="false" maxlength="4096"><label class="connection-secret"><input type="checkbox" data-env-secret ${row.secret ? 'checked' : ''}${row.saved ? ' data-saved' : ''}> Secret</label><button type="button" class="secondary-button" data-remove-env aria-label="Remove variable">Remove</button></div>`;
   }
   function form(connection: Connection | null): string {
-    const options = harnesses.map(h => `<option value="${h.id}" ${connection?.provider === h.id ? 'selected' : ''}>${escape(h.name)}</option>`).join('');
+    const options = harnesses.filter(h => h.id !== 'openai-compatible').map(h => `<option value="${h.id}" ${connection?.provider === h.id ? 'selected' : ''}>${escape(h.name)}</option>`).join('');
     const env: EnvRow[] = connection ? [...Object.entries(connection.env).map(([name, value]) => ({ name, value, secret: false, saved: false })), ...connection.secretEnv.map(name => ({ name, value: '', secret: true, saved: true }))] : [];
     return `<form class="named-connection-form" aria-label="${connection ? 'Edit connection' : 'New connection'}">
       <label for="connection-provider">Harness</label><div class="connection-select"><select id="connection-provider" ${connection ? 'disabled' : ''}>${options}</select></div>

@@ -470,3 +470,26 @@ test('resource usage lives in Settings → About, not in a bottom status bar', a
   await usage.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(usage.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
 });
+
+
+test('settings organization: custom build keeps upstream updates off despite saved Automatic', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.autoUpdate', 'automatic'));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await tab(page, 'About & updates').click();
+  const mode = page.getByRole('combobox', { name: 'Update mode', exact: true });
+  await expect(mode).toHaveValue('off');
+  await expect(mode).toBeDisabled();
+  await expect(page.locator('.settings-update-status')).toContainText('disabled to preserve this custom build');
+  await expect(page.locator('.settings-update-action')).toBeHidden();
+  const state = await page.evaluate(async () => {
+    // @ts-expect-error Vite serves this module in the browser.
+    const { appUpdates } = await import('/src/app-updates.ts');
+    const updates = appUpdates()!;
+    updates.setMode('automatic');
+    await updates.check();
+    await updates.restart();
+    return { mode: updates.mode, state: updates.state.kind, supported: updates.supported, saved: localStorage.getItem('pandacode.autoUpdate') };
+  });
+  expect(state).toEqual({ mode: 'off', state: 'off', supported: false, saved: 'off' });
+});

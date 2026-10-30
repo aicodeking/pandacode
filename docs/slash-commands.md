@@ -4,6 +4,11 @@ Type `/` at the beginning of a message in either Conversation or the Board task
 panel. The menu shows names, descriptions, argument hints, and the selected
 harness's logo. Type to filter; use Up/Down to navigate and Tab or Enter to insert.
 Selection never starts a run. Add arguments and send the message separately.
+Selecting **/skills** opens a searchable picker of the current agent's enabled
+skills. Choose one to insert its command in your draft, keeping the text and
+attachments you already added, then send when ready. Sending `/skills` opens the
+same picker. **Manage skills…** opens Settings → Skills & rules if you need to
+import or enable a skill; Refresh reloads the agent's available skills.
 Escape dismisses the menu. The Refresh button explicitly reloads discovery.
 Local and cached commands appear immediately and remain selectable while the
 harness starts. A slow-start message explains the wait; a stalled request offers
@@ -20,6 +25,7 @@ Claude command into a Codex or Kimi command.
 
 | Harness | Discovery | Execution |
 | --- | --- | --- |
+| OpenAI Compatible | Enabled library skills at user/project scope, refreshed locally without a CLI | `/name` or `/skills:name` binds the selected library skill; app controls use the existing PandaCode handlers. |
 | Claude Code | Initialize response, `system/init`, and full `system/commands_changed` replacements; names, aliases, descriptions, and argument hints | Advertised headless commands use Claude's native user-message dispatcher, including skill/custom-command expansion. Local command output is displayed in the conversation. |
 | Codex | App-server `skills/list` with `forceReload`, and `skills/changed` invalidation | Skills bind the exact discovered name/path through typed `skill` input. `/compact` calls `thread/compact/start`; `/review [instructions]` calls `review/start`, reviewing uncommitted changes by default. |
 | Kimi Code | ACP initialization and session-scoped `available_commands_update` | Advertised commands use the ACP slash dispatcher in `session/prompt`, including provider-discovered skills. |

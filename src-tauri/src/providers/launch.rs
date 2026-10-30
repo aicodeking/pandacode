@@ -513,10 +513,34 @@ fn find_in_directories(name: &str, dirs: Vec<PathBuf>, windows: bool) -> Option<
 }
 
 pub(super) fn find(name: &str) -> Option<PathBuf> {
-    find_in_directories(
+    let found = find_in_directories(
         name,
         search_directories(cfg!(windows), &|key| std::env::var_os(key)),
         cfg!(windows),
+    );
+    if found.is_none() && matches!(name, "agy" | "agy_acp_server.par") {
+        if let Some(home) = home_directory(cfg!(windows), &|key| std::env::var_os(key)) {
+            let managed = home.join(".local/share/pandacode/google");
+            if let Some(path) = find_in_directories(name, vec![managed], cfg!(windows)) { return Some(path); }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    if found.is_none() && name == "codex" {
+        let mut applications = vec![PathBuf::from("/Applications")];
+        if let Some(home) = home_directory(false, &|key| std::env::var_os(key)) {
+            applications.push(home.join("Applications"));
+        }
+        return bundled_chatgpt_codex(applications);
+    }
+    found
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_chatgpt_codex(applications: Vec<PathBuf>) -> Option<PathBuf> {
+    find_in_directories(
+        "codex",
+        applications.into_iter().map(|root| root.join("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS")).collect(),
+        false,
     )
 }
 
@@ -569,6 +593,15 @@ mod tests {
         let path = f.file(name, "#!/bin/sh\n");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn chatgpt_bundled_codex_is_found_without_shell_path() {
+        let f = Fixture::new();
+        assert!(bundled_chatgpt_codex(vec![f.0.join("Applications")]).is_none());
+        let path = executable(&f, "Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        assert_eq!(bundled_chatgpt_codex(vec![f.0.join("Applications")]), Some(path));
     }
 
     #[cfg(unix)]

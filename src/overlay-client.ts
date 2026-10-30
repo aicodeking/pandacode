@@ -12,6 +12,7 @@ try { previewPreferences = JSON.parse(localStorage.getItem('pandacode.overlay-pr
 function effectiveContext(): LaunchContext { return {...previewPreferences.context,...previewPreferences.modelSelection,mode:previewPreferences.context.mode ?? 'full'}; }
 // Preview fixtures only. Native catalogs come from the installed harnesses.
 const previewCatalogs: Record<ProviderId, ProviderModel[]> = {
+  'openai-compatible': [],
   kilo:[{id:'kilo/anthropic/claude-sonnet-4.6',name:'Kilo Gateway/Anthropic: Claude Sonnet 4.6',description:'Sample Kilo model.'}],
   pi:[{id:'anthropic/claude-sonnet-4-5',name:'Claude Sonnet 4.5',description:'Sample Pi model.'}],
   codex:[{id:'gpt-6-astra',name:'GPT-6-Astra',description:'Sample Codex model metadata.'},{id:'gpt-5.6-sol',name:'GPT-5.6-Sol',description:'Sample Codex model metadata.'}],

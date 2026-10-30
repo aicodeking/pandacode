@@ -10,6 +10,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
   const standard: ApprovalMode = { id: 'ask', label: 'Standard', icon: 'check', description: provider === 'codex'
     ? 'Work in this project. Ask you when an action needs extra permission.'
+    : provider === 'openai-compatible'
+    ? 'Read project files freely. Ask you before file edits and shell commands.'
     : provider === 'github-copilot'
     ? 'Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.'
     : provider === 'grok'
@@ -71,7 +73,7 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Work freely inside the sandbox. Muse asks only to leave it.' }
     : provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
-    : ['claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
+    : ['openai-compatible', 'claude', 'glm', 'mimo', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Allow file edits automatically. Other actions may still ask you.' }
     : provider === 'kimi'
     ? { id: 'auto', label: 'Ask when needed', icon: 'spark', description: 'Allow routine tools automatically. Ask you about sensitive actions.' }
@@ -80,6 +82,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
   ...review,
   provider === 'codex'
     ? { id: 'plan', label: 'Read only', icon: 'plan', description: 'Inspect the project. Block writes and permission escalation.' }
+    : provider === 'openai-compatible'
+    ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read project files and propose changes. File edits and shell commands are blocked.' }
     : provider === 'grok'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only: Grok investigates and proposes a plan; edits and commands are declined.' }
     : pi

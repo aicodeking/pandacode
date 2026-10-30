@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+const installed = ['claude', 'codex', 'kimi', 'openai-compatible', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
 const usageButton = (page: Page) => page.getByRole('button', { name: 'Agent usage', exact: true });
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Agent usage', exact: true });
 const card = (page: Page, name: string) => dialog(page).locator('.usage-card').filter({ hasText: name });
@@ -37,6 +37,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
         },
         kimi: result('kimi', 'signedOut', 'Sign in to Kimi Code to check usage.'),
         opencode: result('opencode', 'unsupported', 'OpenCode does not expose account usage.'),
+        'openai-compatible': result('openai-compatible', 'unsupported', 'This model server does not expose account limits.'),
         glm: result('glm', 'error', 'The GLM usage service is temporarily unavailable.'),
         grok: result('grok', 'unsupported', 'Grok Build does not expose account usage.'),
         mimo: result('mimo', 'unavailable', 'Usage is not available for this MiMo account.'),
@@ -97,6 +98,44 @@ async function release(page: Page, provider?: string): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 0));
   }, provider);
 }
+
+test('Agent usage opens ChatGPT weekly limits directly from its provider card without background polling', async ({ page }, testInfo) => {
+  await page.clock.install();
+  await openApp(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  const shortcut = page.locator('#chatgpt-connection').getByRole('button', { name: 'ChatGPT usage', exact: true });
+  await expect(shortcut).toBeVisible();
+  expect(await calls(page)).toEqual([]);
+  await shortcut.click();
+  await expect(dialog(page)).toBeVisible();
+  await expect(tab(page, 'Codex')).toHaveAttribute('aria-selected', 'true');
+  const codex = card(page, 'Codex');
+  await expect(codex).toBeVisible();
+  await expect(codex).toContainText('Your ChatGPT plan allowance for Codex');
+  const weekly = codex.locator('.usage-window').filter({ has: page.getByRole('progressbar', { name: 'Codex · Weekly window', exact: true }) });
+  await expect(weekly).toContainText('68% used');
+  await expect(weekly).toContainText('32% remaining');
+  await expect(weekly).toContainText('Resets');
+  await expect(codex).not.toContainText('did not report a weekly allowance');
+  await dialog(page).screenshot({ path: testInfo.outputPath('chatgpt-weekly-usage.png'), animations: 'disabled' });
+  await page.clock.fastForward(300_000);
+  expect(await calls(page)).toHaveLength(installed.length);
+  await refresh(page).click();
+  await expect(refresh(page)).toBeEnabled();
+  expect((await calls(page)).filter(call => call.provider === 'codex').map(call => call.refresh)).toEqual([false, true]);
+});
+
+test('Agent usage does not invent a weekly allowance when ChatGPT reports only a short window', async ({ page }) => {
+  await openApp(page);
+  await page.evaluate(() => { (window as any).__usageFixture.responses.codex.windows = [(window as any).__usageFixture.responses.codex.windows[0]]; });
+  await openUsage(page);
+  await tab(page, 'Codex').click();
+  const codex = card(page, 'Codex');
+  await expect(codex).toContainText('This account did not report a weekly allowance.');
+  await expect(codex).toContainText('65% remaining');
+  await expect(codex.getByRole('progressbar')).toHaveCount(1);
+});
 
 test('Agent usage loads only on opening and reopening, with explicit used percentages and no polling', async ({ page }, testInfo) => {
   await page.clock.install();
@@ -314,6 +353,8 @@ test('Agent usage estimates API cost by range, agent, model, and day from local 
   await tab(page, 'Kimi').click();
   await expect(card(page, 'Kimi Code').getByRole('listbox', { name: 'Kimi Code daily prompts' })).toBeVisible();
   await expect(card(page, 'Kimi Code').locator('.heatmap-readout')).toContainText('4 prompts');
+  await page.keyboard.press('ArrowRight');
+  await expect(tab(page, 'OpenAI Compatible')).toBeFocused();
   await page.keyboard.press('ArrowRight');
   await expect(tab(page, 'OpenCode')).toBeFocused();
   await expect(card(page, 'OpenCode')).toContainText('No activity recorded for this agent yet.');

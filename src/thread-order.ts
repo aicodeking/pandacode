@@ -147,6 +147,10 @@ export function bindThreadReordering(nav: HTMLElement, options: {
     }
     const row = target.closest<HTMLElement>('.task-item');
     if (!row) return;
+    if (event.key === 'ArrowLeft' && !event.altKey && !event.metaKey && !event.ctrlKey) {
+      const heading = row.closest('.folder-group')?.querySelector<HTMLElement>('.folder-heading');
+      if (heading) { event.preventDefault(); row.tabIndex = -1; heading.tabIndex = 0; heading.focus(); return; }
+    }
     // ⌘/Ctrl Enter completes or reopens the row: its tick is not a Tab stop.
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       const tick = row.parentElement?.querySelector<HTMLButtonElement>('.task-check');

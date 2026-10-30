@@ -20,6 +20,8 @@ type ChoiceItem = {
   selected?: boolean;
   disabled?: boolean;
   danger?: boolean;
+  /** Separate trailing actions, never nested inside the choice button. */
+  rowActions?: { id: string; label: string; icon: string; danger?: boolean }[];
   /** Starts a named group (radio groups in a settings menu); the name is shown above it. */
   heading?: string;
   /** Draws a line above the item, starting an unnamed group. */
@@ -36,6 +38,7 @@ type ChoiceMenuOptions = {
   title: string;
   items: ChoiceItem[];
   onSelect: (id: string) => void | Promise<void>;
+  onAction?: (id: string, action: string) => void | Promise<void>;
   onClose: () => void;
   actions?: boolean;
   searchPlaceholder?: string;
@@ -157,7 +160,9 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
       const detail = item.description ? brief
         ? `<span id="${descriptionId}" class="choice-menu-description">${escape(item.description)}</span>`
         : `<span id="${descriptionId}" class="sr-only">${escape(item.description)}</span>` : '';
-      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description) : ''}${!actions && item.selected ? icon('check') : ''}</button>`;
+      const choice = `<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description) : ''}${!actions && item.selected ? icon('check') : ''}</button>`;
+      const action = options.onAction ? (item.rowActions ?? []).map(action => `<button type="button" class="choice-menu-row-action${action.danger ? ' is-danger' : ''}" role="menuitem" aria-label="${escape(action.label)}" title="${escape(action.label)}" data-choice-action="${index}" data-row-action="${escape(action.id)}" tabindex="-1">${icon(action.icon)}</button>`).join('') : '';
+      return `${heading}${separator}${action ? `<div class="choice-menu-row">${choice}${action}</div>` : choice}`;
     }).join('') + (open ? '</div>' : '');
     buttons = [...list.querySelectorAll<HTMLButtonElement>('.choice-menu-option')];
     const current = items.findIndex(item => item.selected && !item.disabled);
@@ -167,18 +172,19 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   }
   function renderPending(): void {
     buttons.forEach((button, index) => { button.disabled = pending || Boolean(items[index].disabled); });
+    for (const button of list.querySelectorAll<HTMLButtonElement>('[data-choice-action]')) button.disabled = pending || Boolean(items[Number(button.dataset.choiceAction)].disabled);
     if (search) search.disabled = pending;
     list.setAttribute('aria-busy', String(pending));
     status.textContent = pending ? 'Applying…' : !items.length ? search?.value.trim() ? 'No matching options.' : 'No options available.' : matches > items.length ? `Showing ${items.length} of ${matches} options.${search ? ' Search to narrow the list.' : ''}` : '';
     status.hidden = !status.textContent;
     position();
   }
-  async function select(index: number): Promise<void> {
+  async function select(index: number, action?: string): Promise<void> {
     if (closed || pending || !items[index] || items[index].disabled) return;
     pending = true; error.hidden = true;
     panel.focus({ preventScroll: true });
     renderPending();
-    try { await onSelect(items[index].id); close(); }
+    try { await (action ? options.onAction?.(items[index].id, action) : onSelect(items[index].id)); close(); }
     catch (reason) {
       if (closed) return;
       pending = false;
@@ -198,10 +204,14 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   }
 
   list.addEventListener('click', event => {
+    const action = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-choice-action]') : null;
+    if (action && list.contains(action)) { void select(Number(action.dataset.choiceAction), action.dataset.rowAction); return; }
     const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('.choice-menu-option') : null;
     if (button && list.contains(button)) void select(Number(button.dataset.choiceIndex));
   });
   list.addEventListener('focusin', event => {
+    const action = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-choice-action]') : null;
+    if (action) { markActive(Number(action.dataset.choiceAction)); return; }
     const index = buttons.indexOf(event.target as HTMLButtonElement);
     if (index >= 0) markActive(index);
   });
@@ -215,6 +225,18 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     // does not jump to the end of the body or trap focus in a parent dialog.
     if (event.key === 'Tab') { close(); return; }
     if (pending) return;
+    const action = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-choice-action]') : null;
+    if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && event.target !== search) {
+      const trailing = [...list.querySelectorAll<HTMLButtonElement>(`[data-choice-action="${active}"]`)];
+      const current = action ? trailing.indexOf(action as HTMLButtonElement) : -1;
+      if (action || event.key === 'ArrowRight' && trailing.length) {
+        event.preventDefault();
+        const next = current + (event.key === 'ArrowRight' ? 1 : -1);
+        if (next < 0) focusItem(active);
+        else if (trailing[next] && !trailing[next].disabled) trailing[next].focus({ preventScroll: true });
+        return;
+      }
+    }
     const enabled = buttons.flatMap((button, index) => button.disabled ? [] : [index]);
     if (!enabled.length) return;
     if (event.target === search && (event.key === 'Home' || event.key === 'End')) return;

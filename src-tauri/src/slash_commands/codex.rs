@@ -838,6 +838,10 @@ mod tests {
         ]));
         let b = parse_skills(&envelope(vec![second, first]));
         assert_eq!(a.commands.len(), 2);
+        let public = serde_json::to_value(&a.commands[0]).unwrap();
+        assert_eq!(public["skill"], true);
+        assert!(public.get("invocation").is_none());
+        assert!(!public.to_string().contains("SKILL.md"));
         assert_eq!(
             a.commands
                 .iter()

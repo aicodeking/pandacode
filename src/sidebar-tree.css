@@ -21,6 +21,9 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .sidebar-projects>.sidebar-sort{margin-left:auto;--press:1}
 .sidebar .sidebar-projects>.icon-button[aria-expanded=true]{color:var(--text);background:rgb(var(--accent-rgb) / .18)}
 .sidebar .sidebar-projects>.icon-button .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
+.sidebar-project-label{display:none;font-size:var(--text-xs);font-weight:var(--weight-medium);color:var(--muted)}
+.project-tree-sidebar .sidebar-project-label{display:block}
+.project-tree-sidebar .project-filter{display:none}
 
 .sidebar .navigation{padding:0 8px 16px}
 /* Filter: one quiet field under the scope bar; / focuses it, Esc clears it. */
@@ -79,6 +82,14 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 
 /* Tasks hang off a thin guide under their folder. */
 .sidebar .folder-tasks{margin:1px 0 4px var(--tree-indent);padding-left:6px;gap:1px}
+.folder-heading>.folder-name{flex:1;text-align:left}
+.folder-running{flex:none;display:grid;place-items:center;min-width:16px;height:16px;padding:0 4px;border-radius:var(--radius-sm);background:var(--accent-tint);color:var(--accent-ink);font-size:var(--text-2xs);font-variant-numeric:tabular-nums}
+.project-tree-group .folder-heading>.folder-count{margin-left:0}
+.project-settled{margin-top:4px}
+.project-settled-toggle{display:flex;align-items:center;gap:6px;height:24px;padding:0 8px;font-size:var(--text-xs);color:var(--muted)}
+.project-settled-toggle>.folder-count{margin-left:auto;visibility:visible}
+.project-tree-group .folder-tasks>.no-tasks{padding:5px 8px;color:var(--muted);font-size:var(--text-xs)}
+.project-tree-sidebar .recents-group{margin-top:12px}
 .sidebar .task-list{gap:1px}
 /* Two-line card: where (app icon, checkout, status, age), then what (title, branch, PR, agent).
    Quiet until hovered or selected. */

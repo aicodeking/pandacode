@@ -116,6 +116,8 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 .usage-plan{font-size:var(--text-xs);color:var(--muted);padding:2px 8px;border-radius:var(--radius-lg);background:color-mix(in srgb,var(--text) 6%,transparent);max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .usage-plan:empty{display:none}
 .usage-card-body{font-size:var(--text-sm);color:var(--muted)}
+.usage-subscription-note{margin:0 0 12px;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
+.usage-remaining{margin-top:5px;font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
 .usage-windows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 20px}
 .usage-window{min-width:0;--usage-color:var(--accent)}
 .usage-window[data-tone=exhausted]{--usage-color:var(--danger)}

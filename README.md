@@ -144,9 +144,11 @@ information:
 | What | Where | How often |
 | --- | --- | --- |
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org` (Cline) | About every 6 hours |
+| Google subscription (optional): the official Antigravity engine handles personal Google OAuth and authenticated model discovery | Google, through its installed engine | Sign-in only when requested; after enabling it, saved account authentication accompanies model discovery and tasks. Usage is checked only when opened or refreshed |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
-| PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
+| App updates | None in this fork | Disabled to preserve custom features; update by merging upstream and rebuilding |
+| Direct model server (optional) | The Base URL you enter in Providers | Model list when you enter or refresh the URL or reopen provider settings, and every 10 seconds while visible or on window focus for saved loopback servers; prompts, attached images and file/tool context only during tasks you start |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
 | Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Agents → Jev and run a decision check; sends the selected evidence with your key |
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
@@ -191,13 +193,11 @@ Release builds are not code-signed, so your OS will warn the first time:
   stays blank there, try GTK's native Wayland backend with
   `GDK_BACKEND=wayland ./PandaCode-Linux-x86_64.AppImage`.
 
-Each file has a `.sha256` checksum beside it. Once installed, PandaCode updates
-itself: it checks the latest release, downloads a newer version in the background,
-verifies its signature, and restarts to install it when no agent is working and
-you've stepped away (or when you click **Restart to update**). In Settings → About,
-**Notify me** checks but asks first (**Install and restart** / **Later**), and **Off**
-stops checking. On Linux only the AppImage updates itself; an unpacked AppImage or a
-package just reports new versions. See [platform support](docs/platform-support.md) for details.
+Each upstream release file has a `.sha256` checksum beside it. This custom fork
+keeps app updates **Off**, including for existing installations that previously
+selected Automatic. It never checks, downloads or installs upstream releases.
+Update this build by merging upstream changes and rebuilding, so the local-provider
+features are preserved.
 
 Then install Git and at least one coding CLI and sign in with its normal login.
 PandaCode does not include provider plans or usage.
@@ -281,6 +281,12 @@ on-request approvals. **Full access** enables the harness's broadest mode. See
 
 Type `/` at the start of a message for the harness's commands and skills
 ([slash commands](docs/slash-commands.md)).
+
+The sidebar lists expandable **Projects**, with each project's chats underneath.
+Running chats stay in their project and show their status; settled chats fold
+inside that project. Projectless chats appear under **Recents**. Use a project's
+**…** menu to rename or remove it, or its **+** button to start a chat there.
+**Sort and view → Group by → Status** restores the Active/Finished layout.
 
 Keyboard shortcuts: `⌘/Ctrl N` new task, `⌘/Ctrl K` command palette,
 `⌘/Ctrl J` terminal, `⌘/Ctrl B` sidebar, `⌘/Ctrl ,` settings, `⌘/Ctrl F` find

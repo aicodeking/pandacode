@@ -1,6 +1,8 @@
 mod agent_tools;
 mod agents_dock;
 mod agent_usage;
+mod chatgpt_auth;
+mod google_auth;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
@@ -550,7 +552,7 @@ fn app_instructions(chat: bool, worker: bool) -> String {
 const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and scheduled wakeups started in this turn never report back. Wait for long-running commands in the foreground (or poll them) before you reply.";
 
 /// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
-const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
+const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run. When you need the user to choose an answer, prefer request_user_input with explicit options (Yes/No for binary questions) instead of asking them to type. If that tool is unavailable, include a generative UI form with select or checkbox fields and a prompt containing their selected answers; wait for the user to submit. Never treat an unchecked or default value as an answer.";
 
 /// Replies may carry generative UI blocks that PandaCode draws in the thread.
 const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
@@ -641,6 +643,11 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
         .lock()
         .map_err(|e| e.to_string())?
         .add_project(&PathBuf::from(path))
+}
+#[tauri::command]
+async fn rename_project(window: tauri::WebviewWindow, state: State<'_, AppState>, project_id: String, name: String) -> Result<Project> {
+    if window.label() != "main" { return Err("Rename projects in the main window.".into()); }
+    state.store.lock().map_err(|e| e.to_string())?.rename_project(&project_id, &name)
 }
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
@@ -3239,6 +3246,21 @@ async fn read_document_file(
     blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
 }
 #[tauri::command]
+async fn tool_image(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, tool_id: String) -> Result<String> {
+    if window.label() != "main" { return Err("View tool images in the main window.".into()); }
+    let (path, project_id) = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        (store.tool_image_path(&session_id, &tool_id)?, store.session(&session_id)?.project_id)
+    };
+    let root = state.root(&project_id, Some(&session_id))?;
+    blocking(move || {
+        let target = std::path::PathBuf::from(path);
+        let target = if target.is_absolute() { target } else { root.join(target) };
+        workspace::recorded_image_data_url(&target)
+    }).await
+}
+
+#[tauri::command]
 async fn workspace_image(
     state: State<'_, AppState>,
     project_id: Option<String>,
@@ -3799,6 +3821,14 @@ pub fn run() {
                 cloud_agents::tasks::cloud_agent_set_claude_token,
                 remote::mirror::remote_repo_check,
                 provider_settings::provider_configuration,
+                chatgpt_auth::provider_chatgpt_status,
+                google_auth::provider_google_login,
+                google_auth::provider_google_cancel,
+                chatgpt_auth::provider_chatgpt_login,
+                chatgpt_auth::provider_chatgpt_cancel,
+                chatgpt_auth::provider_chatgpt_logout,
+                providers::openai_compatible::provider_discover_compatible_models,
+                connections::connections_refresh_local_models,
                 connections::connections_list,
                 connections::connection_save,
                 connections::connection_delete,
@@ -3906,6 +3936,7 @@ pub fn run() {
                 list_projects,
                 add_project,
                 remove_project,
+                rename_project,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
@@ -4054,6 +4085,7 @@ pub fn run() {
                 progress::progress_thumb,
                 progress::progress_clear,
                 workspace_image,
+                tool_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,

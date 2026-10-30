@@ -17,6 +17,7 @@ use tokio::{
     sync::mpsc::UnboundedReceiver,
 };
 
+pub(crate) mod openai_compatible;
 mod attachments;
 mod goals;
 mod host_inputs;
@@ -79,11 +80,12 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 19] = [
+pub(crate) const PROVIDERS: [(&str, &str); 20] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
     ("opencode", "OpenCode"),
+    ("openai-compatible", "OpenAI Compatible"),
     ("glm", "GLM Coding Plan"),
     ("antigravity", "Antigravity"),
     ("grok", "Grok Build"),
@@ -114,7 +116,7 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
-    matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp")
+    matches!(provider, "claude" | "glm" | "mimo" | "pi" | "omp" | "openai-compatible")
 }
 
 #[derive(Clone, Debug)]
@@ -527,7 +529,7 @@ pub struct ReasoningEffortInfo {
 pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result<(), String> {
     let valid = match (provider, effort) {
         (
-            "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
+            "claude" | "codex" | "kimi" | "glm" | "opencode" | "openai-compatible" | "antigravity" | "grok" | "mimo"
             | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
             None,
         ) => true,
@@ -582,6 +584,7 @@ impl ModelInfo {
 }
 
 pub(crate) fn executable(name: &str) -> Option<PathBuf> {
+    if name == openai_compatible::ID { return None; }
     if let Some(path) = crate::provider_settings::executable_override(name) {
         return Some(path);
     }
@@ -701,18 +704,20 @@ fn version(path: &Path) -> Option<String> {
 pub fn discover() -> Vec<ProviderInfo> {
     PROVIDERS.into_iter()
     .map(|(id, name)| {
-        let path = executable(id);
+        let path = if id == openai_compatible::ID { None } else { executable(id) };
         ProviderInfo {
             id: id.into(),
             name: name.into(),
-            installed: path.is_some(),
+            installed: id == openai_compatible::ID || path.is_some(),
             version: if id == "antigravity" {
                 "ACP".into()
             } else {
                 path.as_deref().and_then(version).unwrap_or_default()
             },
             path: path.map(|p| p.to_string_lossy().into_owned()),
-            models: if id == "glm" {
+            models: if id == openai_compatible::ID {
+                openai_compatible::saved_models()
+            } else if id == "glm" {
                 glm::models()
             } else if id == "mimo" {
                 mimo::models()
@@ -732,6 +737,7 @@ pub fn discover() -> Vec<ProviderInfo> {
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may
 /// create an empty session to advertise their scoped model options.
 pub async fn list_models(provider: &str) -> Result<Vec<ModelInfo>, String> {
+    if provider == openai_compatible::ID { return Ok(openai_compatible::saved_models()); }
     if provider == "opencode" {
         // A saved Settings selection narrows the picker; without one, list the
         // whole catalog like every other harness.
@@ -1530,6 +1536,11 @@ impl Protocol {
             "running"
         };
         match field(item, "type") {
+            "imageView" => {
+                let input = item["path"].as_str().filter(|path| path.len() <= 4096)
+                    .map(|path| json!({"path":path}).to_string());
+                self.tool_update(id, Some("view_image"), Some(status), input, None, step);
+            }
             "contextCompaction" => {
                 self.tool_update(
                     id,
@@ -2879,6 +2890,7 @@ async fn run_inner(
         "codex",
         "kimi",
         "opencode",
+        "openai-compatible",
         "glm",
         "antigravity",
         "grok",
@@ -2904,12 +2916,17 @@ async fn run_inner(
     }
     review_supported(&config.provider, &config.mode)?;
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
+    let saved_connection = crate::connections::for_task(&config.session_id, &config.provider);
+    if config.provider == openai_compatible::ID || saved_connection.as_ref().is_some_and(|c| c.openai_compatible.is_some()) {
+        let connection = saved_connection.or_else(crate::connections::compatible_connection).ok_or("Add your model server in Settings → Providers → OpenAI Compatible first.")?;
+        return openai_compatible::run(config, connection, sink, input, host).await;
+    }
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
     if let Some(command) = crate::cloud_agents::transport::command(&config, |command| configure_command(command, &config)).await? {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
-    let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
+    let mut connection = saved_connection
         .map(|connection| crate::connections::launch(&connection))
         .transpose()?;
     let path = connection
@@ -4293,6 +4310,17 @@ mod tests {
             p.receive(full).unwrap().events.is_empty(),
             "Replayed tool_use must not reopen a finished call"
         );
+    }
+
+    #[test]
+    fn codex_image_views_keep_the_path_without_binary_data() {
+        let mut p = Protocol::new(config("codex"));
+        let start = p.receive(json!({"method":"item/started","params":{"item":{"type":"imageView","id":"img","path":"/tmp/project/scene.png"}}})).unwrap();
+        assert_eq!(activity(&start)["name"], "view_image");
+        let done = p.receive(json!({"method":"item/completed","params":{"item":{"type":"imageView","id":"img","status":"completed"}}})).unwrap();
+        let tool = activity(&done);
+        assert!(tool["input"].as_str().unwrap().contains("scene.png"));
+        assert_eq!(tool["status"], "completed");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import type { ToolActivity } from './types';
 import { escape, icon } from './dom.ts';
 import { pandacodeTool } from './tool-trace-pandacode.ts';
-import { PARTIAL, describeTool, toolFailed, summarizeGroup, summaryIcons, toolPreview, traceIcon, traceRowHtml } from './tool-trace.ts';
+import { PARTIAL, describeTool, toolFailed, summarizeGroup, summaryIcons, toolPreview, traceIcon, traceRowHtml, parseFields, field } from './tool-trace.ts';
 
 const MAX_CONTENT = 100_000;
 const MAX_DETAIL = 20_000;
@@ -38,6 +38,7 @@ function section(kind: 'input' | 'output', content: string): string {
 
 /** The row's verb already says a call is running or done; a note appears only when nothing else would explain an empty body. */
 function toolNote(tool: ToolActivity): string {
+  if (/^(?:view_image|imageView)$/i.test(tool.name) && !field(parseFields(tool.input), 'path')) return '<p class="tool-activity-note">The image path was not recorded for this earlier tool call. Ask the agent to show the image again.</p>';
   if (tool.output.trim()) return '';
   const note = tool.status === 'running' ? tool.input.trim() ? '' : 'Waiting for tool details…'
     : tool.status === 'failed' ? 'No output was recorded.' : '';
@@ -63,6 +64,8 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   const trace = describeTool(named);
   const failed = toolFailed(named);
   const lead = icon(failed ? 'alert' : traceIcon(trace), 'tool-trace-icon');
+  const imagePath = /^(?:view_image|imageView)$/i.test(named.name) ? field(parseFields(named.input), 'path') : '';
+  if (imagePath) return `<figure class="tool-activity tool-image" data-tool-key="${escape(key)}" data-tool-name="${escape(named.name)}"><figcaption>${icon('images')} ${escape(imagePath.split(/[\\/]/).pop() ?? imagePath)}</figcaption><button type="button" class="tool-image-open" data-action="view-tool-image" data-tool-id="${escape(tool.id)}" data-path="${escape(imagePath)}" aria-label="Enlarge image ${escape(imagePath.split(/[\\/]/).pop() ?? imagePath)}"><img data-tool-image="${escape(tool.id)}" alt="${escape(imagePath.split(/[\\/]/).pop() ?? imagePath)}" hidden><span class="tool-image-status" role="status">Loading image…</span></button></figure>`;
   const preview = toolPreview(named);
   const visible = preview.replace(/<!--trace-[a-z]+-->/g, '');
   // The card and its raw `</>` toggle share a frame so the toggle can sit in the card's corner.
@@ -112,6 +115,7 @@ export function toolStackHtml(tools: (ToolActivity | undefined)[]): string {
 export function renderToolGroup(entries: { key: string; content: string | ToolActivity }[], expanded = false, live = false): string {
   if (!entries.length) return '';
   const tools = entries.map(entry => typeof entry.content === 'string' ? decodeToolActivity(entry.content) : entry.content);
+  expanded ||= tools.some(tool => tool && /^(?:view_image|imageView)$/i.test(tool.name));
   const failed = tools.some(tool => tool && toolFailed(tool));
   const running = tools.some(tool => tool?.status === 'running');
   const summary = summarizeGroup(tools, { live });

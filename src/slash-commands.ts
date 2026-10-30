@@ -4,7 +4,7 @@ import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import type { ProviderId } from './types';
 
-export interface SlashCommand { id: string; name: string; description: string; argumentHint?: string; kind: 'prompt' | 'action' | 'unsupported'; source: string; reason?: string; }
+export interface SlashCommand { id: string; name: string; description: string; argumentHint?: string; kind: 'prompt' | 'action' | 'unsupported'; source: string; reason?: string; skill?: boolean; }
 type Catalog = { commands: SlashCommand[]; warnings: string[] };
 type Options = { contextKey(): string; snapshot?(): Promise<Catalog>; load(force: boolean): Promise<Catalog>; select(command: SlashCommand): void; provider?(): ProviderId };
 type Token = { start: number; end: number; query: string };
@@ -68,6 +68,8 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   }
   function setActive(id: string, scroll = false): void {
     active = id;
+    const command = commands.find(command => command.id === id);
+    panel.querySelector<HTMLElement>('.slash-menu-footer span:last-child')!.textContent = command?.name === '/skills' && command.kind === 'action' ? 'Tab or ↵ browse skills' : 'Tab or ↵ insert';
     for (const [key, row] of rows) row.setAttribute('aria-selected', String(key === id && !row.hidden));
     const row = rows.get(id);
     if (row && !row.hidden) {
@@ -182,9 +184,10 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   function choose(command: SlashCommand): void {
     const current = token();
     if (!current || command.kind === 'unsupported' || options.contextKey() !== context) return;
-    const rest = textarea.value.slice(current.end).replace(/^\s+/, '');
+    const browsingSkills = command.name === '/skills' && command.kind === 'action';
+    const rest = browsingSkills ? textarea.value.slice(current.end) : textarea.value.slice(current.end).replace(/^\s+/, '');
     const prefix = textarea.value.slice(0, current.start) + command.name + ' ';
-    textarea.value = prefix + rest;
+    textarea.value = browsingSkills ? prefix.slice(0, -1) + (rest || ' ') : prefix + rest;
     textarea.setSelectionRange(prefix.length, prefix.length);
     close(); textarea.dispatchEvent(new Event('input', { bubbles: true }));
     options.select(command);
@@ -215,6 +218,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   function compositionStart(): void { composing = true; close(); }
   function compositionEnd(): void { composing = false; input(); }
   function refreshEvent(): void { refresh(); }
+  function skillsChanged(): void { refresh(true); }
   function click(event: MouseEvent): void {
     const target = (event.target as Element).closest<HTMLElement>('[data-command-id]');
     const command = commands.find(command => command.id === target?.dataset.commandId);
@@ -228,6 +232,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   textarea.addEventListener('compositionstart', compositionStart); textarea.addEventListener('compositionend', compositionEnd);
   document.addEventListener('selectionchange', refreshEvent); document.addEventListener('pointerdown', outside, true);
   window.addEventListener('resize', schedulePosition); window.addEventListener('scroll', schedulePosition, true);
+  window.addEventListener('pandacode:skills-changed', skillsChanged);
   window.visualViewport?.addEventListener('resize', schedulePosition); window.visualViewport?.addEventListener('scroll', schedulePosition);
   const resize = new ResizeObserver(() => schedulePosition()); resize.observe(textarea.closest('.composer') ?? textarea);
   refresh();
@@ -239,6 +244,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     textarea.removeEventListener('compositionstart', compositionStart); textarea.removeEventListener('compositionend', compositionEnd);
     document.removeEventListener('selectionchange', refreshEvent); document.removeEventListener('pointerdown', outside, true);
     window.removeEventListener('resize', schedulePosition); window.removeEventListener('scroll', schedulePosition, true);
+    window.removeEventListener('pandacode:skills-changed', skillsChanged);
     window.visualViewport?.removeEventListener('resize', schedulePosition); window.visualViewport?.removeEventListener('scroll', schedulePosition);
     rows.clear(); commands = []; warnings = [];
   } };

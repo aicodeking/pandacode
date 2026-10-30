@@ -1,6 +1,9 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { quickAnswerHtml } from './quick-answer';
+import { hydrateToolImages } from './tool-images';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
+import { projectSidebar } from './sidebar-projects';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
@@ -51,7 +54,7 @@ import { groupTurns, formatDuration, turnLabel } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette } from './palette';
-import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
+import { compatibleModel, contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { approvalMode, approvalModes } from './approval-modes';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
@@ -157,6 +160,7 @@ const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
 const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
+let skillPickerCleanup: (() => void) | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let modelPickerCleanup: (() => void) | undefined;
@@ -459,7 +463,7 @@ $app.innerHTML = `<div class="workspace">
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
     <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span>${button('view-menu', 'Workspace view: Conversation', 'thread', 'view-menu', 'id="view-menu" aria-haspopup="menu" aria-expanded="false"')}</div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
-    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button><button id="sidebar-sort" class="icon-button sidebar-sort" data-action="sidebar-sort" aria-label="Sort and view" title="Sort and view" aria-haspopup="menu" aria-expanded="false">${SORT_ICON}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
+    <div class="sidebar-projects"><span class="sidebar-project-label">Projects</span><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button><button id="sidebar-sort" class="icon-button sidebar-sort" data-action="sidebar-sort" aria-label="Sort and view" title="Sort and view" aria-haspopup="menu" aria-expanded="false">${SORT_ICON}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
     <div class="sidebar-search">${icon('search')}<input id="sidebar-filter" type="search" aria-label="Filter tasks" placeholder="Filter tasks" autocomplete="off" spellcheck="false" maxlength="200" aria-keyshortcuts="/"><button type="button" class="sidebar-search-clear" data-action="clear-sidebar-filter" tabindex="-1" aria-label="Clear filter" title="Clear filter">${icon('close')}</button></div>
     <div class="navigation-frame"><div id="navigation" class="navigation"></div></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
@@ -489,6 +493,7 @@ let sidebarDragging = false, orderingBusy = false;
 /** The open thread stays in the section it was opened from, so its row does not jump from under the click. */
 let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
 const collapsedSections = readCollapsed(localStorage, COLLAPSED_SECTIONS_KEY);
+const projectSettledOpen = readCollapsed(localStorage, 'pandacode.sidebar.projectSettledOpen');
 /** Settled lists its newest rows first, then pages in more on request. */
 const COMPLETED_FIRST = 10, COMPLETED_PAGE = 25;
 let completedShown = COMPLETED_FIRST;
@@ -953,8 +958,8 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
-function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
+ function shortProvider(id: ProviderId): string { return ({ 'openai-compatible': 'Local model', claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
+function selectedModel(s: Session): ProviderModel { const endpoint = taskConnection(s)?.openaiCompatible; if (endpoint) return compatibleModel(endpoint); return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
 function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
   const named = teams.get(s.id)?.config;
@@ -1164,6 +1169,23 @@ function taskConnection(s: Session): import('./connections').Connection | undefi
   const id = namedConnections.tasks[s.id];
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
+let refreshingLocalModels = false;
+async function refreshLocalModels(): Promise<void> {
+  if (refreshingLocalModels || document.hidden || !namedConnections.connections.some(c => c.openaiCompatible)) return;
+  refreshingLocalModels = true;
+  try {
+    const snapshot = await call<import('./connections').ConnectionSnapshot>('connections_refresh_local_models');
+    if (JSON.stringify(snapshot) === JSON.stringify(namedConnections)) return;
+    const endpoint = snapshot.connections.find(c => c.openaiCompatible)?.openaiCompatible;
+    const entry = provider('openai-compatible');
+    if (entry && endpoint) entry.models = (endpoint.models ?? [endpoint.modelId]).map(id => ({ id, name: id, description: 'From your model server' }));
+    modelCatalogs.delete('openai-compatible');
+    onNamedConnections(snapshot);
+  } catch { /* Keep the last working catalog while the local server is unavailable. */ }
+  finally { refreshingLocalModels = false; }
+}
+window.addEventListener('focus', () => void refreshLocalModels());
+setInterval(() => void refreshLocalModels(), 10_000);
 function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; refreshModelLabels(); }
 /** The computer the composer's picker lists: a mirror task's, a new task's chosen one, else undefined (local). */
 function composerDevice(): string | undefined {
@@ -1213,6 +1235,8 @@ function renderNavigation(): void {
   // Preserve the native drag source while agent updates arrive in the background.
   if (sidebarDragging) return;
   const now = Date.now();
+  const projectTree = sidebarSort.group === 'project';
+  $('#workspace-sidebar').classList.toggle('project-tree-sidebar', projectTree);
   const filterLabel = $('#project-filter').querySelector('[data-filter-label]')!;
   const filtered = state.projects.find(p => p.id === state.projectFilter);
   const filterName = filtered?.name ?? 'All projects';
@@ -1226,7 +1250,7 @@ function renderNavigation(): void {
   filterField.parentElement!.classList.toggle('has-query', Boolean(state.query));
   const projectName = (s: Session) => state.projects.find(p => p.id === s.projectId)?.name ?? '';
   const sidebarSessions = listedSessions().filter(s => !botProjects.has(s.projectId));
-  const inScope = sidebarSessions.filter(s => !state.projectFilter || s.projectId === state.projectFilter);
+  const inScope = sidebarSessions.filter(s => projectTree || !state.projectFilter || s.projectId === state.projectFilter);
   const matching = inScope.filter(s => matchesFilter(s, state.query, projectName(s)));
   // Opening a thread (in view, with the window focused) clears its unread mark; settling one does too.
   const seen = unreviewed ?? (state.sessions.length ? unreviewed = readCollapsed(localStorage, UNREVIEWED_KEY) : new Set<string>());
@@ -1343,10 +1367,20 @@ function renderNavigation(): void {
   const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}${focused.dataset.section ? `[data-section="${CSS.escape(focused.dataset.section)}"]` : ''}${focused.dataset.task ? `[data-task="${CSS.escape(focused.dataset.task)}"]` : ''}` : '';
   const pinnedGroup = pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks">${heading('pinned', 'Pinned', pinned.length)}<div class="task-list">${pinned.map(s => row(s, !single, true)).join('')}</div></section>` : '';
   const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
+  const tree = projectTree ? projectSidebar({
+    projects: userProjects(), tasks: [...matching].sort(order), all: sidebarSessions, sort: sidebarSort, projectOrder,
+    collapsed: state.collapsedFolders, expanded: state.expandedFolders, settledOpen: projectSettledOpen,
+    selectedId: state.sessionId, selectedSection: sectionHold?.id === state.sessionId ? sectionHold.section : undefined, query: state.query,
+    stage: taskStage, active: s => isRunning(s.id) || limitActive(s, now) || failed(s) && seen.has(s.id), running: s => isRunning(s.id),
+    row: s => row(s, false, manual && !isRunning(s.id) && taskStage(s) !== 'completed'),
+  }) + section('recents', 'Recents', 'Recent chats', matching.filter(chatTask).length, () => {
+    const { rows, more } = capped('recents', matching.filter(chatTask).sort(order), sidebarSort.perProject);
+    return rows.map(s => row(s, false, manual && !isRunning(s.id))).join('') + more;
+  }) : '';
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
   // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
   morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? '<div class="sidebar-empty">Open a project to get started.</div>'
-    : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 5);
+    : projectTree ? tree + (filtering && !tree ? empty : '') : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 7);
   if (retainedRow) {
     const replacement = nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(retainedRow.dataset.id!)}"]`);
     if (replacement) {
@@ -1532,6 +1566,7 @@ function renderTranscript(preservePosition = false): void {
   restoreToolGroups(transcript, groupViews);
   restoreChangeCards(transcript, changeViews);
   restoreTools(transcript, toolViews);
+  hydrateToolImages(transcript, s.id, toolId => call<string>('tool_image', { sessionId:s.id, toolId }));
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
@@ -1565,7 +1600,7 @@ function activityExpanded(): boolean { return localStorage.getItem('pandacode.ac
 /** `labelHtml` is escaped by the caller. `steps` turns hang their calls straight off the rail (no group headers). */
 function activityHtml(key: string, labelHtml: string, body: string, options: { live?: boolean; steps?: boolean; title?: string } = {}): string {
   const { live = false, steps = live, title } = options;
-  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
+  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${live || body.includes('data-tool-image=') || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
 }
 type ToolGroupView = { key: string; toolKeys: string[]; open: boolean; focused: boolean };
 function captureToolGroups(root: ParentNode): ToolGroupView[] {
@@ -1587,7 +1622,7 @@ function restoreToolGroups(root: ParentNode, views: ToolGroupView[]): void {
 type TurnView = { key: string; open: boolean; focused: boolean; toolKeys: string[] };
 /** A finished live turn folds unless the reader keeps one of its tools open, the board shows it, or Settings expands activity. */
 function liveTurnStaysOpen(turn: HTMLElement): boolean {
-  return state.view === 'board' || activityExpanded() || readingTrace(turn);
+  return state.view === 'board' || activityExpanded() || !!turn.querySelector('[data-tool-image]') || readingTrace(turn);
 }
 /** Live turns are left out unless asked for or being read: the saved turn starts folded (see foldSavedTurn). */
 function captureTurns(root: ParentNode, live = false): TurnView[] {
@@ -1628,7 +1663,8 @@ function messageHtml(m: Message, afterTrace = false, actions = true): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
+  const answer = !isUser && m.role === 'assistant' && state.messages.at(-1)?.id === m.id && !isRunning() ? quickAnswerHtml(m.content, m.id) : '';
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content, m.id) : escape(m.content)}</div>${answer}${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
 // read-only chips under what you said; each opens its attachment (see message-attachments.ts).
@@ -1837,6 +1873,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     if (!liveTurnStaysOpen(node)) (node as HTMLDetailsElement).open = false;
   });
   for (const entry of commentary) { bindFileLinkContext(entry.node, workspaceContext()); streamMarkdown(entry.node, entry.content, transcript); }
+  const sid = state.sessionId;
+  hydrateToolImages(host, sid, toolId => call<string>('tool_image', { sessionId:sid, toolId }));
 }
 /** One changed call redraws its own row; the summary redraws only when a member's name or status changed. */
 function patchToolGroup(node: HTMLElement, items: LiveTool[], before: LiveTool[]): void {
@@ -2067,7 +2105,10 @@ function renderComposer(): void {
       provider: () => session()?.provider ?? s.provider,
       snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }),
       load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }),
-      select: () => state.drafts.set(s.id, prompt.value),
+      select: command => {
+        state.drafts.set(s.id, prompt.value);
+        if (command.name === '/skills' && command.kind === 'action') run(showTaskSkills(s));
+      },
     });
     const enter = running ? `Enter to queue for when the agent finishes.${!team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
     prompt.setAttribute('aria-description', `${enter} Shift Enter for a new line. Type @ to mention a project file${github.connected(s.projectId) ? ', issue, or pull request' : ''}.`);
@@ -2309,6 +2350,11 @@ async function changeBoardStage(stage: 'review' | 'completed'): Promise<void> {
  * (unless `offer` is false: the caller already dealt with it). */
 async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Promise<void> {
   if (isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (sidebarSort.group === 'project' && s.id === state.sessionId && sectionHold?.id !== s.id) {
+    const element = $('#navigation').querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(s.id)}"]`);
+    const section = sectionOf(element?.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup);
+    if (section) sectionHold = { id: s.id, section };
+  }
   if (stage === 'completed' && offer && s.worktreePath) {
     const selected = s.id === state.sessionId;
     const decision = await worktrees.cleanupOffer(s, 'complete');
@@ -2530,6 +2576,13 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
   state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
+  if (sidebarSort.group === 'project' && !botProjects.has(s.projectId) && !chatTask(s)) {
+    if (state.collapsedFolders.delete(s.projectId)) saveCollapsedFolders();
+    if (taskStage(s) === 'completed' && (!sectionHold || sectionHold.section === 'completed')) {
+      projectSettledOpen.add(s.projectId);
+      try { localStorage.setItem('pandacode.sidebar.projectSettledOpen', JSON.stringify([...projectSettledOpen])); } catch { /* per-launch preference */ }
+    }
+  }
   const remembered = changingTask ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
@@ -2659,6 +2712,33 @@ async function addProject(path: string): Promise<void> {
   closeModal(); render(); if (generation !== state.generation) return; await refreshInspector();
   notify(`Opened ${added.name}`);
 }
+async function showTaskSkills(task: Session): Promise<void> {
+  const original = document.querySelector<HTMLTextAreaElement>('#prompt');
+  if (!original || task.id !== state.sessionId) return;
+  const draft = original.value, generation = state.generation;
+  const dialog = modal('Skills', '<div id="skill-picker-host"><p role="status">Loading available skills…</p></div>', 'skill-picker-dialog');
+  const host = dialog.querySelector<HTMLElement>('#skill-picker-host')!;
+  const { mountSkillPicker } = await import('./skill-picker');
+  if (!dialog.open || !host.isConnected) return;
+  skillPickerCleanup = mountSkillPicker(host, {
+    load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: task.id, force }),
+    select: skill => {
+      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+      if (task.id !== state.sessionId || generation !== state.generation || !prompt || prompt.value !== draft) throw new Error('The task or draft changed. Close Skills and choose again.');
+      const match = /^(\s*)\/skills(?=\s|$)/u.exec(draft);
+      const start = match ? match[1].length : 0, end = match ? match[0].length : 0;
+      const rest = draft.slice(end);
+      const suffix = rest ? /^\s/.test(rest) ? rest : ` ${rest}` : ' ';
+      prompt.value = draft.slice(0, start) + skill.name + suffix;
+      state.drafts.set(task.id, prompt.value);
+      closeModal();
+      const caret = start + skill.name.length + 1;
+      prompt.focus(); prompt.setSelectionRange(caret, caret); resizePrompt();
+      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+    manage: () => { closeModal(); run(showSettings('skills')); },
+  });
+}
 async function performSlashAction(action: string, argumentsText: string, task: Session): Promise<void> {
   if (action.startsWith('console:')) { await openHarnessConsole(task, `/${action.slice(8)}${argumentsText ? ' ' + argumentsText : ''}`); return; }
   switch (action) {
@@ -2703,7 +2783,8 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'permissions': await showMode($('#mode-picker-trigger')); break;
     case 'settings': await showSettings(); break;
     case 'theme': toggleTheme(); break;
-    case 'help': case 'skills': {
+    case 'skills': await showTaskSkills(task); break;
+    case 'help': {
       const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
       if (prompt) { prompt.value = '/'; prompt.focus(); prompt.setSelectionRange(1, 1); prompt.dispatchEvent(new Event('input', { bubbles: true })); }
       break;
@@ -3140,6 +3221,7 @@ async function send(): Promise<void> {
         if (state.sessionId !== s.id) throw new Error('Return to the task to run this command.');
         const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
         if (prompt?.value !== draft) throw new Error('Your message changed while commands were loading. Send it again.');
+        if (resolved.action === 'skills') { await showTaskSkills(s); return; }
         prompt.value = ''; state.drafts.delete(s.id); resizePrompt();
         try { await performSlashAction(resolved.action, resolved.arguments, s); }
         catch (error) {
@@ -3820,6 +3902,7 @@ function disposeSettingsViews(): void {
   wallpaperSettingsCleanup?.(); wallpaperSettingsCleanup = undefined;
 }
 function modal(title: string, body: string, cls = ''): HTMLDialogElement {
+  skillPickerCleanup?.(); skillPickerCleanup = undefined;
   disposeSettingsViews();
   closeMenus();
   openingProjectForTask = undefined;
@@ -3958,7 +4041,7 @@ async function showModel(anchor: HTMLElement): Promise<void> {
         if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
-    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
+    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selectedModel(selected).id, reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     // Connections are this computer's; a task on another computer uses that host's setup.
     connections: device ? [] : namedConnections.connections, currentConnection: device ? null : taskConnection(selected)?.id ?? null,
@@ -4255,18 +4338,24 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
     { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
+    { id: 'rename', label: 'Rename project…', icon: 'edit', separator: true },
     { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
   ], onSelect: async choice => {
     closeChoiceMenu();
     if (choice === 'new') { await createTask(id); return; }
     if (choice === 'reveal') { await call('reveal_path', { path: project.path }); return; }
     if (choice === 'remove') { showRemoveProject(project); return; }
+    if (choice === 'rename') { showRenameProject(project); return; }
     for (const other of userProjects()) if (other.id !== id) state.collapsedFolders.add(other.id);
     state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
   } });
 }
 function showRemoveProject(project: Project): void {
   modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+}
+function showRenameProject(project: Project): void {
+  const dialog = modal('Rename project', `<form id="rename-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">The folder name stays the same.</p><label class="field-label" for="project-name">Project name</label><input id="project-name" name="name" value="${escape(project.name)}" maxlength="120" required autocomplete="off"><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save name</button></div></form>`, 'compact-dialog');
+  dialog.querySelector<HTMLInputElement>('#project-name')!.select();
 }
 /** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
 function reorderFolders(ids: string[], focus: string): void {
@@ -4279,10 +4368,18 @@ function reorderFolders(ids: string[], focus: string): void {
 async function showSidebarSort(anchor: HTMLElement): Promise<void> {
   const sort = sidebarSort;
   await showChoices(anchor, { title: 'Sort and view', width: 280, items: [
+    { id: 'group:project', label: 'Projects', short: 'Projects', segment: 'Group by', selected: sort.group === 'project' },
+    { id: 'group:flat', label: 'Status', short: 'Status', segment: 'Group by', selected: sort.group === 'flat' },
     { id: 'tasks:manual', label: 'Manual', description: 'drag to arrange', heading: 'Sort tasks', selected: sort.tasks === 'manual' },
     { id: 'tasks:recent', label: 'Recent activity', selected: sort.tasks === 'recent' },
     { id: 'tasks:created', label: 'Created', selected: sort.tasks === 'created' },
     ...PER_PROJECT.map(count => ({ id: `perProject:${count}`, label: `${count} tasks`, short: String(count), segment: 'Show per section', selected: sort.perProject === count })),
+    ...(sort.group === 'project' ? [
+      { id: 'projects:recent', label: 'Recent activity', heading: 'Sort projects', selected: sort.projects === 'recent' },
+      { id: 'projects:name', label: 'Name', selected: sort.projects === 'name' },
+      { id: 'projects:added', label: 'Added', selected: sort.projects === 'added' },
+      { id: 'projects:manual', label: 'Manual', description: 'drag projects to arrange', selected: sort.projects === 'manual' },
+    ] : []),
   ], onSelect: id => {
     const [key, value] = id.split(':');
     const next: SidebarSort = key === 'perProject' ? { ...sidebarSort, perProject: Number(value) } : { ...sidebarSort, [key]: value };
@@ -4337,10 +4434,19 @@ function projectAppIcon(projectId: string, name: string): string {
 async function showProjectFilter(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
     { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
-    ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
+    ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter, rowActions: [
+      { id: 'rename', label: `Rename ${p.name}`, icon: 'edit' },
+      { id: 'remove', label: `Remove ${p.name} from PandaCode`, icon: 'trash', danger: true },
+    ] })),
   ], onSelect: async id => {
     setProjectFilter(id);
     if (id) await selectProject(id); else renderNavigation();
+  }, onAction: (id, action) => {
+    const project = userProjects().find(project => project.id === id);
+    if (!project) return;
+    closeChoiceMenu();
+    if (action === 'rename') showRenameProject(project);
+    else if (action === 'remove') showRemoveProject(project);
   } });
 }
 async function showDefaultProvider(anchor: HTMLElement): Promise<void> {
@@ -5373,7 +5479,7 @@ async function openBot(botId: string): Promise<void> {
   if (!state.sessions.some(task => task.id === id)) await reloadSessions();
   await selectSession(id, true);
 }
-async function showAgentUsage(): Promise<void> {
+async function showAgentUsage(initialProvider?: ProviderId): Promise<void> {
   const dialog = modal('Agent usage', '<div id="agent-usage-host"><p role="status">Loading usage panel…</p></div>', 'agent-usage-dialog');
   const host = dialog.querySelector<HTMLElement>('#agent-usage-host')!;
   try {
@@ -5382,7 +5488,7 @@ async function showAgentUsage(): Promise<void> {
       state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
     ]);
     if (!dialog.open || !host.isConnected) return;
-    agentUsageCleanup = mountAgentUsage(host, providers);
+    agentUsageCleanup = mountAgentUsage(host, providers, initialProvider);
   } catch {
     if (dialog.open && host.isConnected) host.innerHTML = '<p role="alert">Unable to load usage. Close this window and try again.</p>';
   }
@@ -5430,6 +5536,13 @@ async function action(name: string, element: HTMLElement): Promise<void> {
       saveCollapsedFolders(); renderNavigation(); break;
     }
     case 'completed-more': completedShown += COMPLETED_PAGE; renderNavigation(); break;
+    case 'toggle-project-settled': {
+      if (state.query.trim()) break;
+      const id = element.dataset.project!;
+      if (!projectSettledOpen.delete(id)) projectSettledOpen.add(id);
+      try { localStorage.setItem('pandacode.sidebar.projectSettledOpen', JSON.stringify([...projectSettledOpen])); } catch { /* per-launch preference */ }
+      renderNavigation(); break;
+    }
     case 'sidebar-sort': await showSidebarSort(element); break;
     case 'view-menu': await showViewMenu(element); break;
     case 'folder-menu': { const heading = element.parentElement?.querySelector<HTMLElement>('.folder-heading'); if (heading) await showFolderMenu(heading); break; }
@@ -5477,6 +5590,8 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'jev-tests': await openJevTests(); break;
     case 'jev-assist': await openJevAssist(); break;
     case 'agent-usage': await showAgentUsage(); break;
+    case 'google-usage': await showAgentUsage('antigravity'); break;
+    case 'chatgpt-usage': await showAgentUsage('codex'); break;
     case 'bots': await showBots(); break;
     case 'new-bot': hideCreateBotMenu(); await showBots({ startNew: true }); break;
     case 'new-bot-menu': await showCreateBotMenu(element); break;
@@ -5533,6 +5648,21 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
     case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
+    case 'view-tool-image': {
+      const context = workspaceContext(), generation = state.generation;
+      const dialog = modal('Image preview', '<div class="tool-image-content"><p role="status">Loading image…</p></div>', 'tool-image-dialog');
+      const host = dialog.querySelector<HTMLElement>('.tool-image-content')!;
+      try {
+        const url = await call<string>('tool_image', { sessionId:context.sessionId, toolId:element.dataset.toolId });
+        if (!dialog.open || !host.isConnected || generation !== state.generation) break;
+        const image = document.createElement('img'); image.src = url; image.alt = element.dataset.path!.split('/').pop() || 'Tool image';
+        image.onerror = () => { host.textContent = 'This image could not be displayed.'; };
+        host.replaceChildren(image);
+      } catch (error) {
+        if (dialog.open && host.isConnected) host.innerHTML = `<p role="alert">Could not load this image. ${escape(String(error))}</p>`;
+      }
+      break;
+    }
     case 'preview-file': await previewFile(element.dataset.path!); break;
     case 'preview-selected-file': await previewFile(state.selectedFile, selectedFileContext); break;
     case 'open-file': await openFile(element.dataset.path!, 'file'); break;
@@ -5613,6 +5743,17 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('submit', event => {
   const form = event.target as HTMLFormElement; event.preventDefault();
+  if (form.matches('.quick-answer')) {
+    if (isRunning() || String(state.messages.at(-1)?.id) !== form.dataset.answerMessage) return;
+    const answer = form.querySelector<HTMLInputElement>('input:checked')?.value;
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!answer || !prompt) return;
+    if (prompt.value.trim() || state.attachments.length || attachments.list(state.sessionId).length || state.browserAttachments.get(state.sessionId)?.length || state.moodboardAttachments.get(state.sessionId)?.length) { notify('Send or clear your current draft before sending this answer.'); return; }
+    prompt.value = answer; prompt.dispatchEvent(new Event('input', { bubbles: true }));
+    form.querySelector<HTMLButtonElement>('button')!.disabled = true;
+    run(send().finally(() => { if (form.isConnected) form.querySelector<HTMLButtonElement>('button')!.disabled = false; }));
+    return;
+  }
   if (form.id === 'shared-channel-composer' && state.sharedChannelId) {
     const channelId = state.sharedChannelId, text = String(new FormData(form).get('text') ?? '').trim();
     if (!text) return;
@@ -5641,6 +5782,13 @@ document.addEventListener('submit', event => {
         const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
       } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
       else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
+      else if (form.id === 'rename-project-form') {
+        const name = String(data.get('name') || '').trim();
+        if (!name) { form.querySelector<HTMLInputElement>('#project-name')?.focus(); return; }
+        const updated = await call<Project>('rename_project', { projectId: form.dataset.projectId!, name });
+        state.projects = state.projects.map(project => project.id === updated.id ? updated : project);
+        closeModal(); render();
+      }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
       else if (form.id.startsWith('github-')) { await github.submit(form, data); }
       else if (form.id === 'commit-form') { const message = document.querySelector<HTMLTextAreaElement>('#commit-message')!.value.trim(); if (!message) { notify('Enter a commit message.'); return; } const result = await call<string>('git_commit', { ...workspaceContext(), message }); await refreshInspector(); notify(result || 'Changes committed'); }
@@ -5818,7 +5966,7 @@ async function boot(): Promise<void> {
   })()));
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
-  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
+  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { onNamedConnections(snapshot); void refreshLocalModels(); }));
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);

@@ -25,8 +25,13 @@ pub struct SlashCommand {
     pub kind: String,
     pub source: String,
     pub reason: Option<String>,
-    #[serde(skip)]
+    #[serde(rename = "skill", serialize_with = "serialize_skill_flag")]
     pub invocation: Invocation,
+}
+
+// Expose a category flag, never the invocation's native path or dispatch data.
+fn serialize_skill_flag<S: serde::Serializer>(invocation: &Invocation, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    serializer.serialize_bool(matches!(invocation, Invocation::Skill { .. }))
 }
 
 #[derive(Clone, Debug)]
@@ -290,6 +295,11 @@ fn apply_terminal_names(catalog: &mut Catalog, terminal_names: &HashSet<String>)
 /// No polling or filesystem watchers: refresh only when a picker opens or the harness pushes metadata.
 pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
     validate_provider(provider)?;
+    if provider == "openai-compatible" {
+        let mut catalog = crate::skills::direct::library()?.direct_catalog(cwd)?;
+        normalize(&mut catalog, provider);
+        return Ok(catalog);
+    }
     let key = catalog_key(provider, cwd);
     let started = Instant::now();
     let discovery = {
@@ -318,6 +328,11 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
 /// harness. A stale snapshot is for completion; command dispatch still validates.
 pub fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
+    if provider == "openai-compatible" {
+        let mut catalog = crate::skills::direct::library()?.direct_catalog(cwd)?;
+        normalize(&mut catalog, provider);
+        return Ok(catalog);
+    }
     CACHE.lock()
         .map_err(|_| "Command discovery is unavailable.".into())
         .map(|mut cache| cache.snapshot(&catalog_key(provider, cwd)))
@@ -337,6 +352,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "codex"
             | "kimi"
             | "glm"
+            | "openai-compatible"
             | "opencode"
             | "antigravity"
             | "grok"
@@ -744,6 +760,7 @@ fn action_accepts_arguments(action: &str) -> bool {
         || matches!(
             action,
             "rename"
+                | "skills"
                 | "goal"
                 | "usage"
                 | "conversations"
@@ -1313,5 +1330,26 @@ mod tests {
             };
             assert!(resolve_from_catalog("codex", "/fixture extra", &value).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+    #[test]
+    fn library_skills_bind_exact_paths_and_do_not_replace_app_controls() {
+        let path = PathBuf::from("/fixture/library/model/SKILL.md");
+        let mut catalog = Catalog { commands: ["/model", "/skills:model"].into_iter().map(|name| SlashCommand {
+            id: name.into(), name: name.into(), description: "An enabled skill".into(), argument_hint: None,
+            kind: "prompt".into(), source: "Skills library".into(), reason: None,
+            invocation: Invocation::Skill { name: "model".into(), path: path.clone() },
+        }).collect(), warnings: vec![] };
+        validate_provider("openai-compatible").unwrap();
+        normalize(&mut catalog, "openai-compatible");
+        let selected = resolve_from_catalog("openai-compatible", "/skills:model inspect this", &catalog).unwrap();
+        assert_eq!(selected.skill, Some(("model".into(), path)));
+        assert_eq!(selected.prompt, "$model inspect this");
+        assert!(selected.accepts_attachments);
+        assert_eq!(resolve_from_catalog("openai-compatible", "/model", &catalog).unwrap().action.as_deref(), Some("model"));
     }
 }

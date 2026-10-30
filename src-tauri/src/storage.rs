@@ -689,6 +689,15 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Project not found.".into())
     }
+    pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Project> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+            return Err("Use a project name of 1–120 characters without control characters.".into());
+        }
+        let changed = self.db.execute("UPDATE projects SET name=?1 WHERE id=?2", params![name, project_id]).map_err(|e| e.to_string())?;
+        if changed == 0 { return Err("Project not found.".into()); }
+        self.project(project_id)
+    }
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM projects WHERE id=?1", [project_id])
@@ -1121,6 +1130,7 @@ impl Store {
             "codex",
             "kimi",
             "opencode",
+            "openai-compatible",
             "glm",
             "antigravity",
             "grok",
@@ -1307,6 +1317,7 @@ impl Store {
             "codex",
             "kimi",
             "opencode",
+            "openai-compatible",
             "glm",
             "antigravity",
             "grok",
@@ -1642,6 +1653,23 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    pub fn tool_image_path(&self, sid: &str, tool_id: &str) -> Result<String> {
+        self.session(sid)?;
+        let content: String = self.db.query_row(
+            "SELECT content FROM messages WHERE session_id=?1 AND tool_id=?2 AND role='tool'",
+            params![sid, tool_id], |row| row.get(0),
+        ).map_err(|_| "This image tool is no longer available.".to_string())?;
+        let record: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        if record["type"] != "tool_activity" || record["version"] != 1
+            || !matches!(record["name"].as_str(), Some("view_image" | "imageView")) {
+            return Err("This tool did not view an image.".into());
+        }
+        let input: serde_json::Value = serde_json::from_str(record["input"].as_str().unwrap_or(""))
+            .map_err(|_| "The image path was not recorded.".to_string())?;
+        input["path"].as_str().filter(|p| !p.is_empty() && p.len() <= 4096 && !p.chars().any(char::is_control))
+            .map(str::to_owned).ok_or_else(|| "The image path was not recorded.".into())
+    }
+
     pub fn finish_tools(&self, sid: &str) -> Result<()> {
         settle_unfinished_tools(
             &self.db,
@@ -1921,6 +1949,29 @@ mod tests {
         // Reordering two other tasks keeps it on top instead of ranking it last.
         store.reorder_sessions(&[second.id.clone(), first.id.clone()]).unwrap();
         assert_eq!(ids(&store), vec![draft.id.clone(), second.id.clone(), first.id.clone(), early.id.clone()]);
+    }
+
+    #[test]
+    fn project_rename_persists_without_changing_folder_or_tasks() {
+        let root = std::env::temp_dir().join(format!("pandacode-project-rename-{}", id()));
+        std::fs::create_dir_all(root.join("original-folder")).unwrap();
+        let database = root.join("app.sqlite");
+        let store = Store::open(&database).unwrap();
+        let original = store.add_project(&root.join("original-folder")).unwrap();
+        let task = store.create_session(&original.id, "codex", "default", "auto").unwrap();
+        let renamed = store.rename_project(&original.id, "  My project  ").unwrap();
+        assert_eq!(renamed.name, "My project");
+        assert_eq!(renamed.path, original.path);
+        assert_eq!(renamed.added_order, original.added_order);
+        for invalid in [" ", "a\nb", &"x".repeat(121)] { assert!(store.rename_project(&original.id, invalid).is_err()); }
+        assert!(store.rename_project("missing", "Name").is_err());
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(store.project(&original.id).unwrap().name, "My project");
+        assert_eq!(store.session(&task.id).unwrap().project_id, original.id);
+        assert!(root.join("original-folder").is_dir());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2879,6 +2930,18 @@ mod tests {
     }
 
     #[test]
+    fn tool_images_are_scoped_to_the_recorded_call_and_session() {
+        let (store, session) = empty_session();
+        let record = serde_json::json!({"type":"tool_activity","version":1,"name":"view_image","input":"{\"path\":\"/tmp/scene.png\"}"}).to_string();
+        store.tool_message(&session.id, "image-1", &record).unwrap();
+        assert_eq!(store.tool_image_path(&session.id, "image-1").unwrap(), "/tmp/scene.png");
+        assert!(store.tool_image_path("other-session", "image-1").is_err());
+        assert!(store.tool_image_path(&session.id, "missing").is_err());
+        store.tool_message(&session.id, "image-1", &record.replace("view_image", "Command")).unwrap();
+        assert!(store.tool_image_path(&session.id, "image-1").is_err());
+    }
+
+    #[test]
     fn tool_updates_share_one_message_and_preserve_response_activity() {
         let (store, session) = empty_session();
         let started = r#"{"type":"tool_activity","version":1,"id":"call-1","name":"Bash","status":"running","input":"pwd","output":""}"#;
@@ -3686,6 +3749,7 @@ mod tests {
                 "kimi",
                 "glm",
                 "opencode",
+            "openai-compatible",
                 "antigravity",
                 "grok",
                 "mimo",
