@@ -917,3 +917,178 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
         .unwrap()
         .is_empty());
 }
+
+fn team_lead_state(provider: &str) -> (Arc<AppState>, String) {
+    let (state, project_id) = test_state();
+    let sid = {
+        let store = state.store.lock().unwrap();
+        let task = store
+            .create_session(&project_id, provider, "default", "ask")
+            .unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE sessions SET task_stage='in_progress' WHERE id=?1",
+                [&task.id],
+            )
+            .unwrap();
+        let mut team = architect::new_team(
+            task.id.clone(),
+            architect::TeamConfig {
+                auto: false,
+                roster_only: false,
+                name: None,
+                workers: vec![architect::WorkerProfile {
+                    id: "fast".into(),
+                    name: "Fast worker".into(),
+                    provider: "codex".into(),
+                    model: "default".into(),
+                    reasoning_effort: None,
+                }],
+                catalog: Vec::new(),
+                max_parallel: 3,
+                max_rounds: 5,
+                max_assignments: 10,
+                workspace: "shared".into(),
+                summary_limit: 2000,
+                lead_guidance: None,
+            },
+        );
+        team.status = "running".into();
+        team.generation = 1;
+        team.objective = "Build it".into();
+        store
+            .db
+            .execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                rusqlite::params![task.id, serde_json::to_string(&team).unwrap()],
+            )
+            .unwrap();
+        task.id
+    };
+    (state, sid)
+}
+
+// The names slash_commands::resolve_from_catalog marks as maintenance: a lead's own
+// harness must run them bare even while its team is configured.
+#[test]
+fn team_lead_maintenance_commands_run_bare_and_stay_maintenance() {
+    for provider in ["claude", "codex"] {
+        for name in [
+            "/compact",
+            "/status",
+            "/context",
+            "/usage",
+            "/cost",
+            "/mcp",
+            "/tasks",
+            "/help",
+        ] {
+            let (state, sid) = team_lead_state(provider);
+            let cwd = {
+                let store = state.store.lock().unwrap();
+                let session = store.session(&sid).unwrap();
+                store
+                    .workspace_root(&session.project_id, Some(&sid))
+                    .unwrap()
+            };
+            let mut command = resolved_command(provider, cwd, name, name);
+            command.resolution.maintenance = true;
+            command.resolution.accepts_attachments = false;
+            let (tx, _rx) = unbounded_channel();
+            let prepared = prepare_task_run_in_project(
+                &state,
+                sid.clone(),
+                Some(name.into()),
+                vec![],
+                tx,
+                Arc::new(AtomicBool::new(false)),
+                RunAdmission {
+                    command: Some(command),
+                    team: Some(architect::Admission {
+                        parent: sid.clone(),
+                        generation: 1,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(prepared.config.prompt, name, "{provider} {name}");
+            assert_eq!(
+                prepared.restore_stage.as_deref(),
+                Some("in_progress"),
+                "{provider} {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn team_lead_texts_that_are_not_maintenance_commands_keep_the_team_briefing() {
+    for text in [
+        "/review",
+        "/unknown-command",
+        "Continue with the next step.",
+    ] {
+        let (state, sid) = team_lead_state("codex");
+        let (tx, _rx) = unbounded_channel();
+        let prepared = prepare_task_run_in_project(
+            &state,
+            sid.clone(),
+            Some(text.into()),
+            vec![],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            RunAdmission {
+                team: Some(architect::Admission {
+                    parent: sid.clone(),
+                    generation: 1,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            prepared.config.prompt.contains("PandaCode architect mode"),
+            "{text}"
+        );
+        assert!(prepared.config.prompt.contains(text), "{text}");
+        assert!(prepared.restore_stage.is_none(), "{text}");
+    }
+}
+
+#[test]
+fn maintenance_commands_without_a_team_stay_bare() {
+    let (state, project_id) = test_state();
+    let task = state
+        .store
+        .lock()
+        .unwrap()
+        .create_session(&project_id, "claude", "default", "ask")
+        .unwrap();
+    let cwd = state
+        .store
+        .lock()
+        .unwrap()
+        .workspace_root(&project_id, Some(&task.id))
+        .unwrap();
+    let mut command = resolved_command("claude", cwd, "/compact", "/compact");
+    command.resolution.maintenance = true;
+    command.resolution.accepts_attachments = false;
+    let (tx, _rx) = unbounded_channel();
+    let prepared = prepare_task_run_in_project(
+        &state,
+        task.id.clone(),
+        Some("/compact".into()),
+        vec![],
+        tx,
+        Arc::new(AtomicBool::new(false)),
+        RunAdmission {
+            command: Some(command),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(prepared.config.prompt, "/compact");
+    assert_eq!(prepared.restore_stage.as_deref(), Some("pending"));
+}
