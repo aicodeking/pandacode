@@ -3,6 +3,7 @@
 // T3CODE_POSTHOG_HOST pointed at a local sink, waits for batches, kills only the process group it
 // started, deletes the temp $HOME and writes results/t3-payload/{capture.json,summary.md}.
 // Never reads the real ~/.codex, ~/.claude.json or ~/.t3. Usage: node t3-payload.mjs [waitSeconds]
+// Linux: T3_APP=<AppImage extracted with --appimage-extract>/squashfs-root node t3-payload.mjs [waitSeconds]
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
@@ -11,11 +12,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const BUNDLE = process.env.T3_APP ?? '/Applications/T3 Code (Nightly).app';
-const ELECTRON = path.join(BUNDLE, 'Contents/MacOS', path.basename(BUNDLE, '.app'));
-const SERVER = path.join(BUNDLE, 'Contents/Resources/app.asar/apps/server/dist/bin.mjs');
+const LINUX = process.platform === 'linux';
+// On Linux the bundle is an extracted AppImage: Electron is `t3code` and the asar sits in `resources/`.
+const BUNDLE = process.env.T3_APP ?? (LINUX ? path.resolve('squashfs-root') : '/Applications/T3 Code (Nightly).app');
+const ELECTRON = LINUX ? path.join(BUNDLE, 't3code') : path.join(BUNDLE, 'Contents/MacOS', path.basename(BUNDLE, '.app'));
+const RESOURCES = LINUX ? path.join(BUNDLE, 'resources') : path.join(BUNDLE, 'Contents/Resources');
+const SERVER = path.join(RESOURCES, 'app.asar/apps/server/dist/bin.mjs');
 const WAIT_S = Number(process.argv[2] ?? 45);
-const OUT = path.join(path.dirname(new URL(import.meta.url).pathname), 'results', 't3-payload');
+const OUT = path.join(path.dirname(new URL(import.meta.url).pathname), 'results', LINUX ? 't3-payload-linux' : 't3-payload');
+// Electron as Node reads inside app.asar, so the app's own package.json gives the version on Linux.
+const appVersion = () => LINUX
+  ? execFileSync(ELECTRON, ['-p', `require(${JSON.stringify(path.join(RESOURCES, 'app.asar/package.json'))}).version`], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).toString().trim()
+  : execFileSync('defaults', ['read', path.join(BUNDLE, 'Contents/Info.plist'), 'CFBundleShortVersionString']).toString().trim();
 
 const C = {
   codexAccountId: 'canary-codex-account-1234',
@@ -114,13 +122,17 @@ async function capture() {
     await sleep(1000); // a finalizer flush may arrive after SIGTERM
     sink.close();
   }
-  const userRe = new RegExp(`\\b${os.userInfo().username}\\b`, 'g');
+  // If the user name is a whole word inside a canary (e.g. `user` on cloud VMs, in `user-canaryOpenAI5678`),
+  // redacting it would rewrite the canary and hide a leak of it, so it is left alone.
+  const user = os.userInfo().username;
+  const userRe = new RegExp(`\\b${user}\\b`, 'g');
+  const redactUser = !Object.values(C).some((v) => new RegExp(`\\b${user}\\b`).test(v));
   const realHome = fs.realpathSync(home);
   const redact = (s) => [[realHome, '$TMP_HOME'], [home, '$TMP_HOME'], [os.homedir(), '$REAL_HOME']]
-    .reduce((acc, [a, b]) => acc.split(a).join(b), s).replace(userRe, '$USER');
+    .reduce((acc, [a, b]) => acc.split(a).join(b), s).replace(redactUser ? userRe : /(?!)/g, '$USER');
   fs.rmSync(home, { recursive: true, force: true });
   return {
-    version: execFileSync('defaults', ['read', path.join(BUNDLE, 'Contents/Info.plist'), 'CFBundleShortVersionString']).toString().trim(),
+    version: appVersion(), platform: process.platform,
     waitS: WAIT_S, startedPids: started ?? [], leftoverPids: leftover ?? [], homeDeleted: !fs.existsSync(home),
     requests: requests.map((r) => ({ ...r, body: redact(r.body), headers: JSON.parse(redact(JSON.stringify(r.headers))) })),
     serverLogTail: redact(log.join('')).split('\n').slice(-40),
@@ -183,7 +195,8 @@ function summary(cap, a) {
     '## Evidence lines', '', '```json', ...cap.requests.map((r) => r.body), '```', '',
     '## Method and scope', '',
     '- Fresh empty `$HOME` in a temp dir with fake logins only: `~/.codex/auth.json` (account_id, unsigned id_token JWT carrying an email, a name and `https://api.openai.com/auth.user_id`, dummy access/refresh tokens), `~/.claude.json` (userID, oauthAccount with accountUuid, emailAddress, displayName), and T3 state `~/.t3/userdata/anonymous-id` plus a fake linked T3 Connect user id in the file secret store. The real ~/.codex, ~/.claude.json and ~/.t3 were never read.',
-    '- The user\'s own T3 Code window was running, so instead of a second GUI copy (`open -n`) the script ran the same app bundle\'s server (`app.asar/apps/server/dist/bin.mjs`) with the bundle\'s Electron binary as Node (`ELECTRON_RUN_AS_NODE=1`), `T3CODE_POSTHOG_HOST` set to a 127.0.0.1 sink, `T3CODE_NO_BROWSER=1`, and a minimal PATH so no provider CLI started. Telemetry identity, owners and `sendBatch` all live in this server process, so the payload is the same code path; the only expected difference is `clientType`/`serverMode` (`cli-web-client`/`web` instead of `desktop-app`/`desktop`).',
+    (LINUX ? '- Linux: the bundle is the extracted AppImage (`squashfs-root`); the script ran' : '- The user\'s own T3 Code window was running, so instead of a second GUI copy (`open -n`) the script ran')
+      + ' the same app bundle\'s server (`app.asar/apps/server/dist/bin.mjs`) with the bundle\'s Electron binary as Node (`ELECTRON_RUN_AS_NODE=1`), `T3CODE_POSTHOG_HOST` set to a 127.0.0.1 sink, `T3CODE_NO_BROWSER=1`, and a minimal PATH so no provider CLI started. Telemetry identity, owners and `sendBatch` all live in this server process, so the payload is the same code path; the only expected difference is `clientType`/`serverMode` (`cli-web-client`/`web` instead of `desktop-app`/`desktop`).',
     '- No client connected, so only boot-time events appear (`server.boot.heartbeat`, `install.owner_observed` observed by `server`). Client-side owners (`connect`/`device` from a connected UI) and turn/feature events were not exercised; per the bundle they carry the same hashed-owner shape.',
     '- Scope: this shows what **T3 Code\'s server sends to its own PostHog** (default `https://ingest.t3.codes`). Telemetry sent by the provider CLIs themselves (Codex, Claude Code) is separate and out of scope.',
     `- Processes: started ${cap.startedPids.length} (own process group), left after kill: ${cap.leftoverPids.length}; temp HOME deleted: ${cap.homeDeleted}. Raw bodies: capture.json (temp path and user name redacted).`];
