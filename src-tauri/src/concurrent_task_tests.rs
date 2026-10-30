@@ -1128,3 +1128,89 @@ fn team_command_gate_surfaces_guard_errors() {
         Ok(_) => panic!("guard errors must surface"),
     }
 }
+
+/// A lead team with one running worker session, for worker-admission tests.
+fn team_worker_state(provider: &str) -> (Arc<AppState>, String, String) {
+    let (state, lead) = team_lead_state(provider);
+    let worker = {
+        let store = state.store.lock().unwrap();
+        let parent = store.session(&lead).unwrap();
+        let task = store
+            .create_session(&parent.project_id, provider, "default", "ask")
+            .unwrap();
+        let mut team = architect::load(&store, &lead).unwrap().unwrap();
+        team.workers.push(architect::Worker {
+            id: "fast".into(),
+            session_id: task.id.clone(),
+            name: "Fast worker".into(),
+            profile_id: "fast".into(),
+            provider: provider.into(),
+            model: "default".into(),
+            reasoning_effort: None,
+            status: "running".into(),
+            assignment: "Compare the implementations".into(),
+            summary: String::new(),
+            error: None,
+            depends_on: Vec::new(),
+            files: Vec::new(),
+            read_only: false,
+            attempt: 1,
+            created_at: 1,
+            updated_at: 1,
+            keys: Vec::new(),
+            abandoned: false,
+            result_revision: 0,
+            checkpoint: None,
+            timed_out: false,
+            failovers: 0,
+            parent_worker: None,
+            resume_prompt: None,
+            tool_catalog_version: 0,
+        });
+        store
+            .db
+            .execute(
+                "UPDATE architect_teams SET content=?2 WHERE session_id=?1",
+                rusqlite::params![lead, serde_json::to_string(&team).unwrap()],
+            )
+            .unwrap();
+        task.id
+    };
+    (state, lead, worker)
+}
+
+// A worker's assignment is model-authored text: worker admissions never resolve
+// commands, so even a "/diff ..." or "/status ..." opener is briefed verbatim.
+#[test]
+fn worker_admissions_never_resolve_commands_and_keep_the_assignment_verbatim() {
+    for text in [
+        "/diff the two implementations before choosing one.",
+        "/status of the migration: verify each step.",
+    ] {
+        let (state, lead, worker) = team_worker_state("claude");
+        let (tx, _rx) = unbounded_channel();
+        let prepared = prepare_task_run_in_project(
+            &state,
+            worker,
+            Some(text.into()),
+            vec![],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            RunAdmission {
+                team: Some(architect::Admission {
+                    parent: lead,
+                    generation: 1,
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            prepared.config.prompt.contains("PandaCode worker named"),
+            "{text}"
+        );
+        assert!(prepared.config.prompt.contains(text), "{text}");
+        assert_ne!(prepared.config.prompt, text, "{text}");
+        assert_eq!(prepared.restore_stage, None, "{text}");
+    }
+}
