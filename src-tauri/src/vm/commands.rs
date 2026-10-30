@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tauri::{ipc::Response, AppHandle, Emitter, Manager};
 
-use super::{screen, tart, Image, VmStatus, Vms, IMAGES};
+use super::{backend, screen, Image, VmStatus, Vms};
 use crate::Result;
 
 #[derive(Serialize)]
@@ -19,9 +19,10 @@ pub struct Status {
 }
 
 pub fn status(vms: &Vms) -> Result<Status> {
-    let supported = cfg!(all(target_os = "macos", target_arch = "aarch64"));
-    let installed = supported && tart::binary().is_some();
-    Ok(Status { supported, installed, vms: if installed { vms.list()? } else { Vec::new() }, shown: vms.shown(), images: IMAGES.to_vec() })
+    let backend = backend();
+    let supported = backend.supported();
+    let installed = supported && backend.installed();
+    Ok(Status { supported, installed, vms: if installed { vms.list()? } else { Vec::new() }, shown: vms.shown(), images: backend.images().to_vec() })
 }
 fn name(value: &str) -> Result<String> {
     // Existing Tart VMs may use any name Tart accepts; reject only what could be an option.

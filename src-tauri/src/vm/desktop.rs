@@ -5,7 +5,7 @@
 use std::{thread, time::{Duration, Instant}};
 use tauri::{Emitter, Manager};
 
-use super::{tart, Vms};
+use super::{backend, Vms};
 
 pub const SCRIPT: &str = include_str!("scripts/linux-desktop.sh");
 /// PandaCode's desktop, or any display manager the user set up themselves.
@@ -23,7 +23,7 @@ pub enum State {
 pub fn has_desktop(name: &str) -> Result<bool, String> {
     let deadline = Instant::now() + AGENT_WAIT;
     loop {
-        match tart::exec(name, false, HAS_DESKTOP, Duration::from_secs(20)) {
+        match backend().exec(name, false, HAS_DESKTOP, Duration::from_secs(20)) {
             Ok(out) if out.code.is_some() => return Ok(out.code == Some(0)),
             Ok(_) | Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_secs(3)),
             Ok(_) => return Err("The VM did not answer in time.".into()),
@@ -37,7 +37,7 @@ pub fn install(vms: &Vms, name: &str) -> Result<String, String> {
         return Err("macOS VMs already have a desktop.".into());
     }
     vms.mark_used(name);
-    let out = tart::exec(name, false, SCRIPT, Duration::from_secs(30 * 60))?;
+    let out = backend().exec(name, false, SCRIPT, Duration::from_secs(30 * 60))?;
     vms.mark_used(name);
     if out.code != Some(0) {
         return Err(format!("Installing the desktop failed: {}", out.stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error")));

@@ -3,7 +3,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
 use std::{
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -12,7 +11,7 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-use super::{screen, tart, Vms};
+use super::{backend, screen, Vms};
 use crate::cloud::commands as cloud;
 use crate::agent_tools::{spec, validate_spec};
 use crate::providers::ToolHost;
@@ -34,26 +33,17 @@ pub fn catalog() -> Vec<Value> {
             "text":{"type":"string","maxLength":4000},"keys":{"type":"string","maxLength":80},
             "screenshot":{"type":"boolean"},
             "name":name}), &["action"]),
-        spec("vm_exec", "Shell command in a running machine (local VM: admin, passwordless sudo). Files are separate from this Mac. Project shared at start is read-only: Linux /mnt/shared/project after `sudo mkdir -p /mnt/shared && sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared`; macOS /Volumes/My Shared Files/project; copy to change. Returns exit code and output (256 KB cap).", json!({
+        spec("vm_exec", &format!("Shell command in a running machine {} Returns exit code and output (256 KB cap).", backend().exec_hint()), json!({
             "command":{"type":"string","maxLength":8192},
             "timeoutSeconds":{"type":"integer","description":"≤1800, default 120"},
             "name":name}), &["command"]),
         spec("vm_manage", "create (local image: first download ~5 GB Linux, ~30 GB macOS; Linux desktop installs in background, commands work now), start, stop, suspend (local macOS), delete, show in PandaCode, install_desktop (local Linux). Idle local VMs stop after 10 min. Cloud costs money: confirm with the user before create/start.", json!({
             "action":{"type":"string","enum":["create","start","stop","suspend","delete","show","install_desktop"]},
             "provider":{"type":"string","enum":["local","daytona","cloudflare","aws-linux","aws-windows","agentcore"],"description":"create; default local. cloudflare, agentcore (1 h): commands only. aws-windows takes ~10 min."},
-            "image":{"type":"string","enum":super::IMAGES.iter().map(|i| i.id).collect::<Vec<_>>()},
+            "image":{"type":"string","enum":backend().images().iter().map(|i| i.id).collect::<Vec<_>>()},
             "shareProject":{"type":"boolean","description":"start: share the checkout read-only."},
             "name":name}), &["action"]),
     ]
-}
-
-/// Whether a Tart home holds any local VM: one directory read, never a `tart` call.
-fn holds_vms(tart_home: &std::path::Path) -> bool {
-    std::fs::read_dir(tart_home.join("vms")).is_ok_and(|mut entries| entries.any(|e| e.is_ok_and(|e| e.path().is_dir())))
-}
-fn tart_has_vms() -> bool {
-    let home = std::env::var_os("TART_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".tart")));
-    home.is_some_and(|home| holds_vms(&home))
 }
 
 /// Providers whose machines the tools can create or drive.
@@ -61,7 +51,7 @@ const SANDBOX_PROVIDERS: [&str; 4] = ["daytona", "cloudflare", "aws", "agentcore
 
 /// The full set matters once the user has a machine: one shown, a local VM, or a connected sandbox provider.
 fn has_machines(local: bool, vms: &Vms) -> bool {
-    vms.shown().is_some() || (local && tart_has_vms()) || cloud::connections().iter().any(|c| c.connected && SANDBOX_PROVIDERS.contains(&c.provider))
+    vms.shown().is_some() || (local && backend().has_vms()) || cloud::connections().iter().any(|c| c.connected && SANDBOX_PROVIDERS.contains(&c.provider))
 }
 /// Without a machine, Apple silicon still gets list and manage so an agent can create the first VM.
 const FIRST_VM_TOOLS: [&str; 2] = ["pandacode_vm_list", "pandacode_vm_manage"];
@@ -111,7 +101,7 @@ fn exec(vms: &Vms, name: &str, args: &Value) -> Result<Value, String> {
     }
     let macos = vms.is_macos(name)?;
     vms.mark_used(name);
-    let out = tart::exec(name, macos, &command, Duration::from_secs(timeout))?;
+    let out = backend().exec(name, macos, &command, Duration::from_secs(timeout))?;
     vms.mark_used(name);
     Ok(json!({"exitCode": out.code, "stdout": out.stdout, "stderr": out.stderr, "truncated": out.truncated, "timedOut": out.code.is_none()}))
 }
@@ -179,7 +169,7 @@ fn list(vms: &Vms) -> Result<Value, String> {
     let status = super::commands::status(vms)?;
     let cloud = cloud::machines();
     Ok(json!({
-        "engine": if !status.supported { "Local VMs need an Apple silicon Mac" } else if status.installed { "Tart installed" } else { "Tart missing: ask the user to set up VMs in PandaCode's VM panel" },
+        "engine": backend().engine(status.installed),
         "shown": status.shown,
         "vms": status.vms,
         "cloud": cloud.machines,
@@ -215,7 +205,7 @@ async fn dispatch(app: tauri::AppHandle, session_id: String, name: String, args:
 
 /// Add the machine tools once the user has a local VM (Apple silicon) or a connected sandbox provider.
 pub fn with_vm(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
-    let local = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let local = backend().supported();
     let full = has_machines(local, &app.state::<Vms>());
     if !full && !local {
         return base;
@@ -281,18 +271,6 @@ mod tests {
         assert!(bytes <= 2900, "vm catalog is {bytes} B");
     }
     #[test]
-    fn tools_need_a_local_vm_on_disk() {
-        let home = std::env::temp_dir().join(format!("pandacode-tart-{}", uuid::Uuid::new_v4().simple()));
-        std::fs::create_dir_all(home.join("vms")).unwrap();
-        assert!(!holds_vms(&home));
-        std::fs::write(home.join("vms/stray"), "").unwrap();
-        assert!(!holds_vms(&home), "a file is not a VM");
-        std::fs::create_dir(home.join("vms/ubuntu")).unwrap();
-        assert!(holds_vms(&home));
-        assert!(!holds_vms(&home.join("missing")));
-        let _ = std::fs::remove_dir_all(&home);
-    }
-    #[test]
     fn parses_every_action_and_requires_its_fields() {
         assert!(matches!(action(&json!({"action":"double_click","x":1,"y":2})).unwrap(), screen::Action::Click { count: 2, button: 1, .. }));
         assert!(matches!(action(&json!({"action":"right_click","x":1,"y":2})).unwrap(), screen::Action::Click { button: 3, .. }));
@@ -313,10 +291,10 @@ mod tests {
     #[ignore]
     fn live_exec_runs_in_the_guest() {
         let name = std::env::var("PANDACODE_VM").expect("set PANDACODE_VM");
-        let out = tart::exec(&name, false, "echo $((6*7)) && whoami", Duration::from_secs(30)).unwrap();
+        let out = backend().exec(&name, false, "echo $((6*7)) && whoami", Duration::from_secs(30)).unwrap();
         assert_eq!(out.code, Some(0));
         assert_eq!(out.stdout, "42\nadmin\n");
-        let failed = tart::exec(&name, false, "exit 3", Duration::from_secs(30)).unwrap();
+        let failed = backend().exec(&name, false, "exit 3", Duration::from_secs(30)).unwrap();
         assert_eq!(failed.code, Some(3));
     }
 }
