@@ -668,26 +668,45 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
 }
 
 fn version(path: &Path) -> Option<String> {
+    capture(path, &["--version"], Duration::from_secs(2))
+        .map(|text| text.chars().take(150).collect())
+}
+
+/// Runs an installed provider's CLI and returns its stdout (up to 2 MiB); None when the
+/// provider is not installed or the command failed or stalled past `timeout`.
+pub(crate) fn run_provider(id: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    capture(&executable(id)?, args, timeout)
+}
+
+fn capture(path: &Path, args: &[&str], timeout: Duration) -> Option<String> {
     let mut child = launch::std_command(path)
         .ok()?
-        .arg("--version")
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     #[cfg(windows)]
     let _job = windows_job::Job::attach(child.id());
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        if child.try_wait().ok()?.is_some() {
-            let output = child.wait_with_output().ok()?;
-            return Some(
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .chars()
-                    .take(150)
-                    .collect(),
-            );
+    // Drained on its own thread: a child writing past the OS pipe buffer while we poll
+    // must not block forever on the write (read only after exit would never drain it).
+    let mut piped = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        use std::io::Read as _;
+        let _ = piped.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
@@ -695,7 +714,13 @@ fn version(path: &Path) -> Option<String> {
             return None;
         }
         std::thread::sleep(Duration::from_millis(20));
+    };
+    if !status.success() {
+        return None;
     }
+    let mut bytes = reader.join().ok()?;
+    bytes.truncate(2 * 1024 * 1024);
+    Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.

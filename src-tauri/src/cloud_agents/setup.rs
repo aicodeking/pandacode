@@ -7,11 +7,15 @@ use std::time::Duration;
 pub(crate) const HARNESSES: [&str; 5] = ["claude", "glm", "mimo", "codex", "opencode"];
 
 /// Makes sure `harness` can run on the machine; returns the absolute path of the program
-/// to execute there (for `glm`/`mimo`, Claude Code). Idempotent and quick when installed.
+/// to execute there (for `glm`/`mimo`, Claude Code). `version` is the harness's own
+/// `--version` line on this computer, when known: the machine then runs exactly that
+/// version instead of the npm latest, whose model catalog can differ (issue #206).
+/// Idempotent and quick when installed.
 pub(crate) fn ensure_runtime(
     sandbox: &dyn Sandbox,
     native: &str,
     harness: &str,
+    version: Option<&str>,
     progress: &dyn Fn(&str),
 ) -> Result<String> {
     if !HARNESSES.contains(&harness) {
@@ -34,25 +38,8 @@ pub(crate) fn ensure_runtime(
     } else {
         ""
     };
-    let cached = execute(
-        sandbox,
-        native,
-        &format!(
-            r#"set -eu
-marker="$HOME/.pandacode/runtime/{harness}"
-if [ -s "$marker" ]; then
-  program=$(sed -n '1p' "$marker")
-  if [ "${{program#/}}" != "$program" ] && [ -x "$program" ] && "$program" --version >/dev/null 2>&1; then
-{onboarding}
-    printf '%s\n' "$program"
-  fi
-fi
-"#,
-            onboarding = onboarding,
-        ),
-    )?;
-    if let Some(path) = cached.lines().last().filter(|line| line.starts_with('/')) {
-        return Ok(path.to_owned());
+    if let Some(path) = cached_program(sandbox, native, harness, version, onboarding)? {
+        return Ok(path);
     }
 
     let (arch, libc) = detect_linux(sandbox, native)?;
@@ -88,11 +75,14 @@ npm install -g --prefix "$home/.pandacode/npm" @anthropic-ai/claude-code
         "codex" | "opencode" => {
             ensure_node(sandbox, native, &arch, &libc, progress)?;
             let (label, package) = if harness == "codex" {
-                ("Installing Codex CLI…", "@openai/codex")
+                ("Installing Codex CLI…".to_owned(), "@openai/codex".to_owned())
             } else {
-                ("Installing OpenCode…", "opencode-ai")
+                match version.and_then(parse_version) {
+                    Some(pin) => (format!("Installing OpenCode {pin}…"), format!("opencode-ai@{pin}")),
+                    None => ("Installing OpenCode…".to_owned(), "opencode-ai".to_owned()),
+                }
             };
-            progress(label);
+            progress(&label);
             execute(
                 sandbox,
                 native,
@@ -103,7 +93,7 @@ export PATH="$home/.pandacode/node/bin:$home/.pandacode/npm/bin:$home/.local/bin
 mkdir -p "$home/.pandacode/npm"
 npm install -g --prefix "$home/.pandacode/npm" {}
 "#,
-                    crate::cloud::shell_quote(package)
+                    crate::cloud::shell_quote(&package)
                 ),
             )?;
         }
@@ -114,6 +104,82 @@ npm install -g --prefix "$home/.pandacode/npm" {}
         ensure_onboarding_file(sandbox, native)?;
     }
     Ok(path)
+}
+
+/// The harness installed by a previous run, when its program still runs and — for a pinned
+/// version — reports exactly that version. The comparison asks the program itself (stdout
+/// only, both sides) rather than the marker's stored line, whose capture merges stderr on
+/// the machine: an asymmetric channel would reinstall on every run (review finding).
+fn cached_program(
+    sandbox: &dyn Sandbox,
+    native: &str,
+    harness: &str,
+    version: Option<&str>,
+    onboarding: &str,
+) -> Result<Option<String>> {
+    let version_clause = match version {
+        Some(version) => format!(
+            " && [ \"$(\"$program\" --version 2>/dev/null | sed -n '1p')\" = {} ]",
+            crate::cloud::shell_quote(version)
+        ),
+        None => String::new(),
+    };
+    let cached = execute(
+        sandbox,
+        native,
+        &format!(
+            r#"set -eu
+marker="$HOME/.pandacode/runtime/{harness}"
+if [ -s "$marker" ]; then
+  program=$(sed -n '1p' "$marker")
+  if [ "${{program#/}}" != "$program" ] && [ -x "$program" ] && "$program" --version >/dev/null 2>&1{version_clause}; then
+{onboarding}
+    printf '%s\n' "$program"
+  fi
+fi
+"#,
+            onboarding = onboarding,
+            version_clause = version_clause,
+        ),
+    )?;
+    Ok(cached
+        .lines()
+        .last()
+        .filter(|line| line.starts_with('/'))
+        .map(str::to_owned))
+}
+
+/// The npm pin from a harness's `--version` output: the first `vMAJOR.MINOR.PATCH` token
+/// on any line (a pre-release or build suffix rides along). None for anything else, which
+/// installs the latest release as before.
+pub(crate) fn parse_version(raw: &str) -> Option<String> {
+    raw.lines()
+        .find_map(|line| line.split_whitespace().find(|token| is_version(token)))
+        .map(|token| token.trim_start_matches('v').to_owned())
+}
+
+fn is_version(token: &str) -> bool {
+    let core = token.trim_start_matches('v');
+    // A pre-release (-beta.3) or build (+build) suffix may hold dots, so it splits off
+    // before the numeric core is checked.
+    let (numbers, suffix) = match core.split_once(['-', '+']) {
+        Some((numbers, suffix)) => (numbers, Some(suffix)),
+        None => (core, None),
+    };
+    let mut parts = numbers.split('.');
+    let numeric = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(major), Some(minor), Some(patch), None) => {
+            let suffix_ok = suffix.is_none_or(|suffix| {
+                !suffix.is_empty()
+                    && suffix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+            });
+            numeric(major) && numeric(minor) && numeric(patch) && suffix_ok
+        }
+        _ => false,
+    }
 }
 
 fn execute(sandbox: &dyn Sandbox, native: &str, command: &str) -> Result<String> {
@@ -404,7 +470,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let progress = RefCell::new(Vec::new());
-        let path = ensure_runtime(&sandbox, "fake", "claude", &|label| {
+        let path = ensure_runtime(&sandbox, "fake", "claude", None, &|label| {
             progress.borrow_mut().push(label.to_owned())
         })
         .unwrap();
@@ -412,5 +478,57 @@ mod tests {
         assert_eq!(path, executable.to_string_lossy());
         assert_eq!(sandbox.calls.load(Ordering::Relaxed), 1);
         assert!(progress.borrow().is_empty());
+    }
+
+    /// Issue #206: the marker only satisfies a run when the machine's harness reports
+    /// exactly the version this computer runs — asked of the program itself, so a marker
+    /// without a stored version still compares — and a host upgrade reinstalls instead of
+    /// reusing a machine whose model catalog has since drifted.
+    #[test]
+    fn opencode_runtime_marker_only_matches_the_pinned_version() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.pandacode/runtime")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let executable = root.join("bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let sandbox = FakeSandbox {
+            root,
+            calls: AtomicUsize::new(0),
+        };
+        let path = executable.to_string_lossy().into_owned();
+        let cached = |version: Option<&str>, marker: &str| {
+            fs::write(
+                temp.0.join("machine/home/.pandacode/runtime/opencode"),
+                marker,
+            )
+            .unwrap();
+            cached_program(&sandbox, "fake", "opencode", version, "").unwrap()
+        };
+
+        assert_eq!(cached(Some("2.1.2"), &format!("{path}\n2.1.2\n")).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(None, &format!("{path}\n2.1.2\n")).as_deref(), Some(path.as_str()));
+        // A marker from an older build without a stored version still compares, because
+        // the running program is asked directly.
+        assert_eq!(cached(Some("2.1.2"), &path).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(None, &path).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(Some("2.2.0"), &format!("{path}\n2.1.2\n")), None);
+    }
+
+    #[test]
+    fn version_output_parses_into_an_npm_pin() {
+        assert_eq!(parse_version("2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("v2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("2.2.0-beta.3").as_deref(), Some("2.2.0-beta.3"));
+        assert_eq!(parse_version("2.1.2+build").as_deref(), Some("2.1.2+build"));
+        assert_eq!(parse_version("opencode 2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("npm warn deprecated foo\n2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("latest"), None);
+        assert_eq!(parse_version("2"), None);
+        assert_eq!(parse_version("2.x").as_deref(), None);
     }
 }

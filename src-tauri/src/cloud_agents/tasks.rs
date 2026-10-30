@@ -113,7 +113,15 @@ fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
         _ => format!("{}/pandacode/{sid}", bridge::home(&*sandbox, &native)?),
     };
     stage(app, sid, "installing", Some(&format!("Installing {}…", task.provider)));
-    let program = setup::ensure_runtime(&*sandbox, &native, &task.provider, &|detail| stage(app, sid, "installing", Some(detail)))?;
+    // OpenCode's model catalog differs between releases, so the machine runs exactly the
+    // version this computer does (issue #206); the other harnesses install their latest.
+    let version = if task.provider == "opencode" {
+        crate::providers::run_provider("opencode", &["--version"], Duration::from_secs(5))
+            .and_then(|raw| raw.lines().next().map(str::to_owned))
+    } else {
+        None
+    };
+    let program = setup::ensure_runtime(&*sandbox, &native, &task.provider, version.as_deref(), &|detail| stage(app, sid, "installing", Some(detail)))?;
     let state = with_store(app, |store| super::load(store, sid))?.unwrap_or(state);
     if fresh || state.base.is_none() || state.remote_dir.is_none() {
         stage(app, sid, "uploading", Some("Uploading the checkout…"));
@@ -148,7 +156,7 @@ pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attac
         }
         let ready = prepare_machine(app, sid)?;
         stage(app, sid, "credentials", Some("Signing in…"));
-        let env = credentials::push(&*ready.sandbox, &ready.native, harness)?;
+        let env = credentials::push(&*ready.sandbox, &ready.native, harness, &ready.program)?;
         ready.sandbox.keep_alive(&ready.native, ready.sandbox.info().max_unattended_minutes)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let turn = with_store(app, |store| {
