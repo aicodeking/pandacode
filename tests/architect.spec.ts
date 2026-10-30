@@ -73,6 +73,11 @@ async function installArchitect(page: Page, snapshots: Record<string, TeamSnapsh
       const fixture = window.__architectTest;
       fixture.calls.push({ command, args: structuredClone(args) });
       if (fixture.failures[command]) throw new Error(fixture.failures[command]);
+      if (command === 'queue_restore' && fixture.hold.restore) await new Promise(resolve => { fixture.release.restore = resolve; });
+      if (command === 'architect_start' && fixture.busy) {
+        if (fixture.busyActivity) agent({ sessionId: args.sessionId, kind: 'status', text: 'Reviewing worker progress' });
+        throw new Error('The architect is still working; the message stays queued.');
+      }
       if (command === 'get_messages' && Object.hasOwn(fixture.taskMessages, args.sessionId)) return { messages: structuredClone(fixture.taskMessages[args.sessionId]), hasOlder: false };
       if (command === 'architect_get' && Object.hasOwn(fixture.snapshots, args.sessionId)) {
         const value = structuredClone(fixture.snapshots[args.sessionId]);
@@ -315,6 +320,128 @@ test.describe('architect teams', () => {
     await expect(detail.locator('.architect-worker-meta')).toContainText('Working');
   });
 
+  test('sends an architect follow-up while workers keep running', async ({ page }) => {
+    await page.clock.install();
+    await installArchitect(page);
+    await saveDefaultTeam(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.locator('#prompt').fill('Build the sample');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => calls(page, 'architect_start')).toHaveLength(1);
+    await page.clock.runFor(250);
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-worker-row')).toHaveCount(2);
+    await panel(page).getByRole('button', { name: 'Close workers', exact: true }).click();
+    await page.locator('#prompt').fill('Also cover accessibility');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(async () => (await calls(page, 'architect_start')).map(call => call.args.text)).toEqual(['Build the sample', 'Also cover accessibility']);
+    await expect(page.locator('.queue-row')).toHaveCount(0);
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-worker-row')).toHaveCount(2);
+    await expect(panel(page).locator('.architect-worker-row')).toContainText(['Working', 'Working']);
+    expect(await calls(page, 'architect_control')).toEqual([]);
+    expect(await calls(page, 'stop_session')).toEqual([]);
+  });
+
+  test('queues during an architect turn and Send now prioritizes without stopping workers', async ({ page }) => {
+    await page.clock.install();
+    await installArchitect(page);
+    await saveDefaultTeam(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.locator('#prompt').fill('Build the sample');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => calls(page, 'architect_start')).toHaveLength(1);
+    await page.clock.runFor(250);
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'status', text: 'Reviewing progress' }));
+    for (const text of ['Later follow-up', 'Urgent follow-up']) {
+      await page.locator('#prompt').fill(text);
+      await page.locator('#prompt').press('Enter');
+    }
+    await expect(page.locator('.queue-row')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Send now: Urgent follow-up', exact: true }).click();
+    expect(await calls(page, 'architect_start')).toHaveLength(1);
+    expect(await calls(page, 'architect_control')).toEqual([]);
+    expect(await calls(page, 'stop_session')).toEqual([]);
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'done', text: '' }));
+    await expect.poll(async () => (await calls(page, 'architect_start')).map(call => call.args.text)).toEqual(['Build the sample', 'Urgent follow-up']);
+    await expect(page.locator('.queue-row .queue-text')).toHaveText(['Later follow-up']);
+    await page.clock.runFor(400);
+    await expect.poll(async () => (await calls(page, 'architect_start')).map(call => call.args.text)).toEqual(['Build the sample', 'Urgent follow-up', 'Later follow-up']);
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-worker-row')).toContainText(['Working', 'Working']);
+    expect(await calls(page, 'architect_control')).toEqual([]);
+  });
+
+  for (const busyActivity of [false, true]) test(`keeps an architect busy refusal queued silently (live activity: ${busyActivity})`, async ({ page }) => {
+    await page.clock.install();
+    await installArchitect(page);
+    await saveDefaultTeam(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.locator('#prompt').fill('Build the sample');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => calls(page, 'architect_start')).toHaveLength(1);
+    await page.clock.runFor(250);
+    await page.evaluate(busyActivity => { Object.assign((window as any).__architectTest, { busy: true, busyActivity }); }, busyActivity);
+    await page.locator('#prompt').fill('Keep this follow-up');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => calls(page, 'queue_restore')).toHaveLength(1);
+    await expect(page.locator('.queue-row .queue-text')).toHaveText(['Keep this follow-up']);
+    await expect(transcript(page).locator('.user-message').filter({ hasText: 'Keep this follow-up' })).toHaveCount(0);
+    await expect(page.locator('.queue-hold')).toHaveCount(0);
+    await expect(page.locator('#toast')).not.toContainText('The architect is still working');
+    await page.clock.runFor(100);
+    expect(await calls(page, 'architect_start')).toHaveLength(2);
+    if (busyActivity) {
+      // A stream arriving during admission must survive the busy refusal.
+      await page.getByRole('button', { name: 'Send now: Keep this follow-up', exact: true }).click();
+      expect(await calls(page, 'architect_start')).toHaveLength(2);
+    }
+    await page.evaluate(() => {
+      const fixture = (window as any).__architectTest; fixture.busy = false;
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+    });
+    await expect.poll(() => calls(page, 'architect_start')).toHaveLength(3);
+    await expect(page.locator('.queue-row')).toHaveCount(0);
+    expect(await calls(page, 'architect_control')).toEqual([]);
+  });
+
+  test('retries an architect follow-up when its turn ends during queue restore', async ({ page }) => {
+    await page.clock.install();
+    await page.route('**/src/main.ts*', async route => {
+      const response = await route.fetch(), source = await response.text();
+      const marker = '.finally(() => run(dispatchQueue(event.sessionId)))';
+      expect(source).toContain(marker);
+      await route.fulfill({ response, body: source.replace(marker, '.finally(async () => { await dispatchQueue(event.sessionId); window.__architectTest.finishedDispatch = true; })') });
+    });
+    await installArchitect(page);
+    await saveDefaultTeam(page);
+    await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+    await page.locator('#prompt').fill('Build the sample');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => calls(page, 'architect_start')).toHaveLength(1);
+    await page.clock.runFor(250);
+    await page.evaluate(() => {
+      const fixture = (window as any).__architectTest;
+      fixture.busy = true; fixture.hold.restore = true;
+    });
+    await page.locator('#prompt').fill('Follow up after this turn');
+    await page.locator('#prompt').press('Enter');
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__architectTest.release.restore)).toBe('function');
+    await page.evaluate(() => {
+      const fixture = (window as any).__architectTest;
+      fixture.busy = false; fixture.finishedDispatch = false;
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+    });
+    // Wait for the real finishResponse + dispatch attempt while restore still owns queueBusy.
+    await expect.poll(() => page.evaluate(() => (window as any).__architectTest.finishedDispatch)).toBe(true);
+    expect(await calls(page, 'architect_start')).toHaveLength(2);
+    await page.evaluate(() => (window as any).__architectTest.release.restore());
+    await expect.poll(async () => (await calls(page, 'architect_start')).map(call => call.args.text)).toEqual(['Build the sample', 'Follow up after this turn', 'Follow up after this turn']);
+    await expect(page.locator('.queue-row')).toHaveCount(0);
+    expect(await calls(page, 'architect_control')).toEqual([]);
+    expect(await calls(page, 'stop_session')).toEqual([]);
+  });
+
   test('starts a configured team once and pauses, resumes and stops its hidden workers', async ({ page }) => {
     await page.clock.install();
     await installArchitect(page);
@@ -337,7 +464,7 @@ test.describe('architect teams', () => {
     await page.clock.runFor(5000);
     await expect(panel(page).locator('.architect-panel-summary')).toContainText('Paused');
     await panel(page).getByRole('button', { name: 'Resume team', exact: true }).click();
-    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Architect is working…');
+    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Team is working…');
     await page.clock.runFor(250);
     await panel(page).getByRole('button', { name: 'Stop team', exact: true }).click();
     await expect(panel(page).getByRole('button', { name: 'Pause team', exact: true })).toBeHidden();

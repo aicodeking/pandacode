@@ -10,6 +10,42 @@ const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', '
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
 
+test('fork updates stay disabled with a saved Automatic preference and explicit requests', async ({ page }) => {
+  await page.clock.install();
+  await page.route('/', route => route.fulfill({ contentType: 'text/html', body: '<html><body></body></html>' }));
+  await page.goto('/');
+  const initial = await page.evaluate(async () => {
+    const calls: string[] = [];
+    (window as any).__updateCalls = calls;
+    (window as any).__TAURI_INTERNALS__ = { invoke: async (command: string) => {
+      calls.push(command);
+      return command === 'app_update_install_supported' ? true : '0.3.79';
+    } };
+    localStorage.setItem('pandacode.autoUpdate', 'automatic');
+    const source = '/src/app-updates.ts';
+    const { startAppUpdates } = await import(source);
+    const updates = startAppUpdates({ busy: () => false, notify: () => {} });
+    (window as any).__forkUpdates = updates;
+    return { state: updates.state, mode: updates.mode, supported: updates.supported, installable: updates.installable };
+  });
+  expect(initial).toEqual({ state: { kind: 'off' }, mode: 'off', supported: false, installable: false });
+  await page.evaluate(async () => {
+    const updates = (window as any).__forkUpdates;
+    updates.setMode('automatic');
+    await updates.check();
+    await updates.restart();
+    const source = '/src/about-settings.ts';
+    const { aboutSettingsHtml, mountAboutSettings } = await import(source);
+    document.body.innerHTML = aboutSettingsHtml();
+    mountAboutSettings(document.body);
+  });
+  await page.clock.fastForward(6 * 60 * 60 * 1000 + 30_001);
+  await expect(page.locator('.settings-update-status')).toHaveText('Updates are disabled in this build.');
+  await expect(page.getByRole('combobox', { name: 'Update mode' })).toHaveCount(0);
+  await expect(page.locator('.settings-update-action')).toBeHidden();
+  expect(await page.evaluate(() => ({ mode: (window as any).__forkUpdates.mode, calls: (window as any).__updateCalls.filter((command: string) => /app_update|plugin:updater/.test(command)) }))).toEqual({ mode: 'off', calls: [] });
+});
+
 test('settings organization keeps long default model names clear of labels', async ({ page }) => {
   await page.addInitScript(() => {
     localStorage.setItem('pandacode.defaultProvider', 'claude');

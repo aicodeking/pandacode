@@ -572,7 +572,12 @@ export function listen(name: string, callback: (event: any) => void): () => void
 export function samplePick(kind: 'files' | 'folder'): string[] {
   return kind === 'folder' ? ['/Users/you/Projects/orbit-design'] : ['/Users/you/Pictures/dashboard-mockup.png', '/Users/you/Documents/Product brief.pdf'];
 }
-function agent(event: AgentEvent) { emit('agent-event', event); }
+const architectStreams = new Set<string>();
+function agent(event: AgentEvent) {
+  if (event.kind === 'done') architectStreams.delete(event.sessionId);
+  else if (['status', 'text', 'tool', 'message_start'].includes(event.kind)) architectStreams.add(event.sessionId);
+  emit('agent-event', event);
+}
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -857,6 +862,7 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).has(
 const architect = createPreviewArchitect({
   parent: session,
   assertIdle,
+  architectLive: parentId => architectStreams.has(parentId),
   append: (sessionId, role, content) => {
     const message: Message = { id: ++id, sessionId, role, content, createdAt: Date.now() };
     (messages[sessionId] ??= []).push(message);

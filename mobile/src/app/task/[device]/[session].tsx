@@ -119,8 +119,10 @@ export default function TaskScreen() {
   }, [device, session]);
 
   const requests = approvals.length + inputs.length > 0;
-  // A team still working keeps Stop (which pauses it on the host) and queued sends.
-  const running = isActive(status) || teamBusy(rowTeam(task, team));
+  // A team still working keeps Stop (which pauses it on the host), and its sends wait only for
+  // the architect's own turn, so the composer words them as Send.
+  const teamActive = teamBusy(rowTeam(task, team));
+  const running = isActive(status) || teamActive;
   return (
     <WorkerNamesContext.Provider value={names}>
     <View style={[styles.screen, { backgroundColor: backdrop.background }]}>
@@ -137,7 +139,7 @@ export default function TaskScreen() {
               {inputs.map(r => <InputCard key={r.requestId} deviceId={device} sessionId={session} request={r} />)}
             </ScrollView>
           )}
-          <Composer deviceId={device} sessionId={session} running={running} bot={bot} />
+          <Composer deviceId={device} sessionId={session} running={running} team={teamActive} bot={bot} />
         </View>
       </View>
     </View>

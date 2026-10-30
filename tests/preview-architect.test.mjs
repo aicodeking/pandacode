@@ -6,7 +6,7 @@ import { namedTeamSetup, sameTeamSetup } from '../src/team-mode.ts';
 
 function fixture(t) {
   let time = 1_000_000, timerId = 0, messageId = 0;
-  const timers = new Map(), storage = new Map(), events = [], history = [];
+  const timers = new Map(), storage = new Map(), events = [], history = [], live = new Set();
   const previous = { window: globalThis.window, storage: globalThis.localStorage, now: Date.now };
   globalThis.window = {
     setTimeout(fn, delay) { const id = ++timerId; timers.set(id, { fn, due: time + delay }); return id; },
@@ -19,10 +19,11 @@ function fixture(t) {
   const host = {
     parent(id) { const value = parents.get(id); if (!value) throw Error('Task not found'); return value; },
     assertIdle(parent) { if (['running', 'waiting'].includes(parent.status)) throw Error('Task is running'); },
+    architectLive: id => live.has(id),
     append(sessionId, role, content) { const message = { id: ++messageId, sessionId, role, content, createdAt: time }; history.push(message); return message; },
     finishTiming() {}, finishChanges() {}, nextMessageId: () => ++messageId,
     models: () => [{ id: 'sample-model', reasoningEfforts: [{ id: 'low' }, { id: 'high' }] }],
-    emit: snapshot => events.push({ kind: 'snapshot', snapshot }), agent: event => events.push(event),
+    emit: snapshot => events.push({ kind: 'snapshot', snapshot }), agent: event => { if (event.kind === 'done') live.delete(event.sessionId); else live.add(event.sessionId); events.push(event); },
   };
   const api = createPreviewArchitect(host);
   function tick() { const [id, timer] = [...timers].sort((a, b) => a[1].due - b[1].due)[0]; timers.delete(id); time = timer.due; timer.fn(); }
@@ -180,7 +181,8 @@ test('architect preview rejects a concurrent goal and isolates returned snapshot
   assert.throws(() => api.start('parent', 'Sample'), /Reopen/);
   parent.archived = false;
   api.start('parent', 'Sample');
-  assert.throws(() => api.start('parent', 'Concurrent run'), /running/);
+  api.start('parent', 'Follow-up while workers run');
+  assert.throws(() => api.start('parent', 'Concurrent turn'), /architect is still working/);
   const worker = api.get('parent').workers[0];
   api.workerMessages('parent', worker.id).messages.length = 0;
   assert.equal(api.workerMessages('parent', worker.id).messages.length, 1);
@@ -446,4 +448,36 @@ test('named teams keep lead guidance and a separate effort per role', () => {
   assert.deepEqual(setup.config.workers.map(worker => worker.reasoningEffort), ['medium', null]);
   assert.equal(setup.config.leadGuidance, 'Lead only.');
   assert.equal('leadGuidance' in namedTeamSetup('Sol', sol, [sol]).config, false);
+});
+
+
+test('architect preview accepts follow-ups between turns without changing running workers', t => {
+  const { api, host, history, timers, tick } = fixture(t);
+  api.configure('parent', { ...config(2), maxAssignments: 2 });
+  api.start('parent', 'Build a sample');
+  const workers = api.get('parent').workers;
+  assert.equal(host.architectLive('parent'), false);
+  api.start('parent', 'Cover the edge case');
+  assert.equal(host.architectLive('parent'), true);
+  assert.deepEqual(api.get('parent').workers, workers);
+  assert.throws(() => api.start('parent', 'Wait for this turn'), { message: 'The architect is still working; the message stays queued.' });
+  assert.equal(history.filter(message => message.role === 'user').length, 2);
+  while (host.architectLive('parent')) tick();
+  assert(api.get('parent').workers.every(worker => worker.status === 'running'));
+  assert(timers.size > 0);
+  api.start('parent', 'Next architect turn');
+  assert.equal(history.filter(message => message.role === 'user').length, 3);
+  api.control('parent', 'stop');
+  assert.equal(timers.size, 0, 'stopping also cancels the follow-up turn');
+});
+
+
+test('architect preview resumes a paused review after workers have finished', t => {
+  const { api, timers, tick } = fixture(t);
+  api.configure('parent', config(1)); api.start('parent', 'Build a sample');
+  while (api.get('parent').workers.some(worker => worker.status !== 'completed')) tick();
+  api.control('parent', 'pause');
+  api.control('parent', 'resume');
+  while (timers.size) tick();
+  assert.equal(api.get('parent').status, 'completed');
 });

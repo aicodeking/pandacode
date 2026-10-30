@@ -3314,3 +3314,62 @@ fn a_fresh_architect_conversation_gets_the_whole_objective_again() {
     assert!(review.config.prompt.contains(&objective));
     assert!(!review.config.prompt.contains("objective unchanged"));
 }
+fn followup_fixture() -> (AppState, String, crate::PreparedRun) {
+    let (state, sid) = state_fixture();
+    let (worker, _actor) = running_worker(&state, &sid, "a", "src");
+    (state, sid, worker)
+}
+#[test]
+fn a_message_to_an_idle_architect_of_an_active_team_starts_a_turn_without_touching_the_team() {
+    let (state, sid, worker) = followup_fixture();
+    let before = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_eq!(before.workers[0].status, "running");
+    let (team, admission, followup) = start_state(&state, &sid, "Also add docs", None, None).unwrap();
+    assert!(followup);
+    let pending = team.pending_turn.as_ref().unwrap();
+    assert!(pending.reserved && pending.kind.is_none() && pending.prompt == "Also add docs");
+    assert_eq!(admission.generation, before.generation);
+    for (a, b) in [(team.generation, before.generation), (team.round as u64, before.round as u64), (team.reviewed_revision, before.reviewed_revision), (team.reviewed_coordination_revision, before.reviewed_coordination_revision), (team.dispatch_revision, before.dispatch_revision)] {
+        assert_eq!(a, b);
+    }
+    assert_eq!((&team.objective, &team.status, &team.workers[0].status), (&before.objective, &before.status, &"running".to_string()));
+    // The turn is admitted at the current generation, keeps the user's text and warns about the workers.
+    let sent = prompt(&state.store.lock().unwrap(), &sid, "Also add docs", Some(&admission)).unwrap();
+    assert!(sent.contains("do not edit their files"));
+    let (turn, _rx) = claim(&state, Launch { sid: sid.clone(), prompt: "Also add docs".into(), images: None, admission });
+    assert_eq!(state.store.lock().unwrap().messages(&sid, None).unwrap().last().unwrap().content, "Also add docs");
+    // When the turn ends the team stays active and the worker keeps running.
+    finish(&state, &turn, "Done", true);
+    let after = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_eq!((after.status.as_str(), after.workers[0].status.as_str(), after.generation, after.round), ("waiting", "running", before.generation, before.round));
+    assert!(after.pending_turn.is_none());
+    drop(worker);
+}
+#[test]
+fn a_message_while_the_architect_runs_or_a_turn_is_reserved_stays_queued_and_changes_nothing() {
+    let (state, sid, _worker) = followup_fixture();
+    let snapshot = |state: &AppState| serde_json::to_string(&load(&state.store.lock().unwrap(), &sid).unwrap().unwrap()).unwrap();
+    let (_, _, _) = start_state(&state, &sid, "First", None, None).unwrap();
+    let reserved = snapshot(&state);
+    assert_eq!(start_state(&state, &sid, "Second", None, None).unwrap_err(), ARCHITECT_BUSY);
+    assert_eq!(snapshot(&state), reserved);
+    let (state, sid, _worker) = followup_fixture();
+    let generation = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().generation;
+    let (_turn, _rx) = claim(&state, Launch { sid: sid.clone(), prompt: "Working".into(), images: None, admission: Admission { parent: sid.clone(), generation } });
+    let running = serde_json::to_string(&load(&state.store.lock().unwrap(), &sid).unwrap().unwrap()).unwrap();
+    assert_eq!(start_state(&state, &sid, "Second", None, None).unwrap_err(), ARCHITECT_BUSY);
+    assert_eq!(serde_json::to_string(&load(&state.store.lock().unwrap(), &sid).unwrap().unwrap()).unwrap(), running);
+}
+#[test]
+fn a_failed_followup_launch_only_clears_its_reservation() {
+    let (state, sid, _worker) = followup_fixture();
+    let before = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    let (_, admission, followup) = start_state(&state, &sid, "Also add docs", None, None).unwrap();
+    assert!(followup);
+    fail_followup_state(&state, &admission, &mut |_| {});
+    let after = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert!(after.pending_turn.is_none());
+    assert_eq!((after.status, after.generation, after.workers[0].status.clone()), (before.status, before.generation, before.workers[0].status.clone()));
+    // The next message is accepted again.
+    assert!(start_state(&state, &sid, "Retry", None, None).is_ok());
+}

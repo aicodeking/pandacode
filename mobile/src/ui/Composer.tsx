@@ -1,7 +1,8 @@
 // The task composer: a floating glass panel with the prompt over a row of a + menu, the task's
 // branch chip, the harness (opens the model picker) and a round send button. Send queues while
 // running (like the desktop's Enter) and a long press steers; "Steer instead of queue" swaps
-// them. An empty field while running shows Stop. Unreachable computers keep the message in the outbox.
+// them. A team's send (`team`) waits only for the architect's turn, so it reads Send, not Queue.
+// An empty field while running shows Stop. Unreachable computers keep the message in the outbox.
 // In a bot's conversation (`bot`) a send goes through the bot (bot.message), so its brief applies.
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
@@ -22,8 +23,10 @@ import { useColors } from './theme.ts';
 
 export const SIZE = 36;
 
-export function Composer({ deviceId, sessionId, running, bot }: { deviceId: string; sessionId: string; running: boolean; bot?: Pick<Bot, 'id' | 'name'> }) {
+export function Composer({ deviceId, sessionId, running, team, bot }: { deviceId: string; sessionId: string; running: boolean; team?: boolean; bot?: Pick<Bot, 'id' | 'name'> }) {
   const botId = bot?.id;
+  // A team's follow-up reaches the architect as soon as its own turn ends, so it never waits for the run.
+  const architect = !!team && !botId;
   const colors = useColors();
   // The text lives in the draft store, so generative UI can fill it (fillDraft) and it survives leaving the task.
   const key = draftKey(deviceId, sessionId);
@@ -59,7 +62,7 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         const result = await sendOrQueue(deviceId, sessionId, prompt);
         setText('');
-        setNote(result.outbox ? 'Saved. Sends when the computer is back' : result.queued ? 'Queued for after this run' : '');
+        setNote(result.outbox ? 'Saved. Sends when the computer is back' : result.queued ? (architect ? 'Queued for the next architect turn' : 'Queued for after this run') : '');
       }
     } catch (error) {
       Alert.alert(kind === 'stop' ? 'Could not stop' : 'Could not send', (error as Error).message);
@@ -72,13 +75,14 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
   // While running, a tap does the preferred action and a long press the other one.
   const tap = running && steer && !botId ? 'steer' : 'send';
   const hold = running && !botId ? (steer ? 'send' : 'steer') : undefined;
+  const queue = running && !architect;
   return (
     <Glass style={styles.bar}>
       <TextInput
         ref={input}
         value={text}
         onChangeText={t => { setText(t); if (note) setNote(''); }}
-        placeholder={note || (bot ? `Message ${bot.name}…` : running && steer ? 'Steer the agent…' : 'Ask the agent…')}
+        placeholder={note || (bot ? `Message ${bot.name}…` : running && steer ? 'Steer the agent…' : architect ? 'Message the architect…' : 'Ask the agent…')}
         placeholderTextColor={colors.tertiary as string}
         multiline
         style={[styles.input, { color: colors.text }]}
@@ -86,7 +90,7 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
       />
       <View style={styles.row}>
         <Menu ios="plus" android="add" color={colors.text} label="More options" modifiers={nativeGlass ? [frame({ width: SIZE, height: SIZE }), interactiveGlass('circle')] : undefined} items={[
-          ...(botId ? [] : [{ label: 'Steer instead of queue', ios: 'arrow.uturn.right', android: 'alt_route', checked: steer, onPress: () => setSteer(s => !s) } as const]),
+          ...(botId ? [] : [{ label: architect ? 'Steer instead of send' : 'Steer instead of queue', ios: 'arrow.uturn.right', android: 'alt_route', checked: steer, onPress: () => setSteer(s => !s) } as const]),
           { label: 'Model…', ios: 'cpu', android: 'memory', onPress: settings('model') },
           { label: 'Permissions…', ios: 'lock.shield', android: 'shield', onPress: settings('mode') },
           { label: 'Effort…', ios: 'gauge.with.dots.needle.67percent', android: 'speed', onPress: settings('effort') },
@@ -109,8 +113,8 @@ export function Composer({ deviceId, sessionId, running, bot }: { deviceId: stri
         )}
         {running && !hasText
           ? <Round label="Stop" ios="stop.fill" android="stop" onPress={() => act('stop')} disabled={busy} bg={colors.text} fg={colors.background} />
-          : <Round label={tap === 'steer' ? 'Steer' : running ? 'Queue' : 'Send'} hint={hold && (hold === 'steer' ? 'Long press to steer' : 'Long press to queue')}
-              ios={running ? (tap === 'steer' ? 'arrow.uturn.right' : 'list.number') : 'arrow.up'} android={running ? (tap === 'steer' ? 'alt_route' : 'format_list_numbered') : 'arrow_upward'}
+          : <Round label={tap === 'steer' ? 'Steer' : queue ? 'Queue' : 'Send'} hint={hold && (hold === 'steer' ? 'Long press to steer' : queue ? 'Long press to queue' : 'Long press to send')}
+              ios={tap === 'steer' ? 'arrow.uturn.right' : queue ? 'list.number' : 'arrow.up'} android={tap === 'steer' ? 'alt_route' : queue ? 'format_list_numbered' : 'arrow_upward'}
               onPress={() => act(tap)} onLongPress={hold && (() => act(hold))} disabled={busy || !hasText} bg={hasText ? colors.tint : colors.fill} fg={hasText ? colors.onTint : colors.tertiary} />}
       </View>
     </Glass>

@@ -30,6 +30,12 @@ always serves the newest build. There is no Windows ARM release target. The Inte
 
 ## Automatic updates
 
+This fork disables in-app updates: `plugins.updater.endpoints` is empty in
+`src-tauri/tauri.conf.json`. The updater ignores saved modes and explicit check or
+install requests, so an upstream release cannot replace the fork's changes.
+Settings shows "Updates are disabled in this build." Install new fork builds manually.
+The upstream release process below is retained for reference.
+
 Installed copies update themselves from GitHub Releases with Tauri's updater
 (`src/app-updates.ts`, `plugins.updater` in `src-tauri/tauri.conf.json`). Each release
 also carries:

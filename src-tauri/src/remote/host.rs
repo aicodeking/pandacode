@@ -1459,9 +1459,12 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             images::claim(app, from, &image_ids)?;
             // Like Enter in the composer: a running task queues the message.
             let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
-            if busy()? {
+            let queue = || {
                 let queued: Vec<Value> = image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Image", "width": 0, "height": 0, "thumbnail": "", "source": "file"})).collect();
-                let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))?;
+                message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))
+            };
+            if busy()? {
+                let entry = queue()?;
                 // If the run ended between the check and the add, nothing would deliver the
                 // entry: take it back (unless a run end already did) and send it now.
                 if busy()? || message_queue::take(&*state.store.lock().map_err(|e| e.to_string())?, &entry.id).is_err() {
@@ -1469,7 +1472,14 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                     return Ok(json!({"queued": true}));
                 }
             }
-            crate::send_message(app.clone(), state, session_id, text, Some(image_ids), None).await?;
+            if let Err(error) = crate::send_message(app.clone(), state.clone(), session_id.clone(), text.clone(), Some(image_ids.clone()), None).await {
+                if error != crate::architect::ARCHITECT_BUSY {
+                    return Err(error);
+                }
+                queue()?;
+                let _ = app.emit("queue-changed", json!({"sessionId": session_id}));
+                return Ok(json!({"queued": true}));
+            }
             let _ = app.emit("sessions-changed", ());
             Ok(json!({"queued": false}))
         }

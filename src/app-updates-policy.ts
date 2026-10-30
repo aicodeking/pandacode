@@ -60,7 +60,7 @@ export function updatePrompt(state: UpdateState, installable: boolean, dismissed
 /** One line for Settings → About. */
 export function describeUpdate(state: UpdateState, mode: UpdateMode, now = Date.now(), installable = true): string {
   switch (state.kind) {
-    case 'off': return 'Updates are installed by the desktop app.';
+    case 'off': return 'Updates are disabled in this build.';
     case 'checking': return 'Checking GitHub Releases…';
     case 'current': { const minutes = Math.round((now - state.checkedAt) / 60_000); return `Up to date · checked ${minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`}`; }
     case 'available': return installable ? `PandaCode ${state.version} is available.` : `PandaCode ${state.version} is available. Updates for this copy are installed by its package or a new AppImage.`;
