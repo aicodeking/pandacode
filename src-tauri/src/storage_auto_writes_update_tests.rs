@@ -1,14 +1,6 @@
-// TODO-IMPLEMENTER (auto-approve-writes, issue #200): this module is frozen
-// test code and is NOT wired into the build yet because it calls
-// `store.update(..., auto_writes: Option<bool>)`, which does not exist before
-// the feature lands. Wire it in next to the sidebar tests in storage.rs:
-//
-//   #[cfg(test)]
-//   #[path = "storage_auto_writes_update_tests.rs"]
-//   mod auto_writes_update_tests;
-//
-// and make it compile by giving Store::update the auto_writes parameter
-// (spec: storage.rs update(), schema 35). Do not edit the tests themselves.
+// Store::update auto-approve-writes toggle (issue #200): setting and clearing
+// the flag, and the refusal while a task is running or waiting. Wired as
+// `mod auto_writes_update_tests` next to the sidebar tests in storage.rs.
 use super::*;
 
 fn task() -> (Store, Session) {
