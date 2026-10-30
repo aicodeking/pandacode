@@ -868,6 +868,7 @@ async fn set_reasoning_effort(
         .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
