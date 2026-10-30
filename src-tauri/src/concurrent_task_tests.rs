@@ -1092,3 +1092,39 @@ fn maintenance_commands_without_a_team_stay_bare() {
     assert_eq!(prepared.config.prompt, "/compact");
     assert_eq!(prepared.restore_stage.as_deref(), Some("pending"));
 }
+
+// The team admission gate: only a maintenance command keeps its native form, an
+// unknown command stays text for the briefing, and guard errors still surface.
+#[test]
+fn team_command_gate_keeps_a_maintenance_command() {
+    let mut command = resolved_command("claude", PathBuf::from("/tmp"), "/compact", "/compact");
+    command.resolution.maintenance = true;
+    let kept = team_command_gate(Ok(Some(command))).unwrap().unwrap();
+    assert_eq!(kept.resolution.prompt, "/compact");
+    assert!(kept.resolution.maintenance);
+}
+
+#[test]
+fn team_command_gate_turns_non_maintenance_commands_into_plain_text() {
+    let command = resolved_command("codex", PathBuf::from("/tmp"), "/review", "/review");
+    assert!(team_command_gate(Ok(Some(command))).unwrap().is_none());
+    assert!(team_command_gate(Ok(None)).unwrap().is_none());
+}
+
+#[test]
+fn team_command_gate_swallows_unknown_command_errors() {
+    let kept = team_command_gate(Err(
+        "Unknown command /mystery. Type / to browse this harness’s commands, or refresh the list."
+            .into(),
+    ));
+    assert!(kept.unwrap().is_none());
+}
+
+#[test]
+fn team_command_gate_surfaces_guard_errors() {
+    let error = "Start a conversation before compacting its context.".to_string();
+    match team_command_gate(Err(error.clone())) {
+        Err(actual) => assert_eq!(actual, error),
+        Ok(_) => panic!("guard errors must surface"),
+    }
+}

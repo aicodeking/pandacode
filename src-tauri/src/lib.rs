@@ -1310,6 +1310,18 @@ async fn prepare_command(
     }))
 }
 
+/// Under a team only a maintenance command keeps its native form; an unknown command
+/// stays plain text for the architect's briefing, while guard errors still surface.
+fn team_command_gate(
+    prepared: Result<Option<PreparedCommand>>,
+) -> Result<Option<PreparedCommand>> {
+    match prepared {
+        Ok(command) => Ok(command.filter(|command| command.resolution.maintenance)),
+        Err(error) if error.starts_with("Unknown command") => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Where a prompt goes. A mirror goes to its host even when a team was saved on it (a
 /// default team applies to every new task): a team here would run in a checkout this
 /// computer does not have.
@@ -1874,12 +1886,9 @@ async fn launch_operation_admitted(
     let command = if goal.is_none() && !cloud_attach && kind.is_none() {
         if team_admission.is_some() {
             // A lead's maintenance command (/compact and friends) still runs bare on its
-            // own harness under a team; unknown or non-maintenance commands, skills, and
-            // resolution errors stay plain text for the architect's briefing.
-            match prepare_command(&state, &session_id, text.as_deref()).await {
-                Ok(prepared) if prepared.as_ref().is_some_and(|c| c.resolution.maintenance) => prepared,
-                _ => None,
-            }
+            // own harness under a team; guard errors surface, while unknown commands and
+            // non-maintenance commands stay plain text for the architect's briefing.
+            team_command_gate(prepare_command(&state, &session_id, text.as_deref()).await)?
         } else {
             prepare_command(&state, &session_id, text.as_deref()).await?
         }
