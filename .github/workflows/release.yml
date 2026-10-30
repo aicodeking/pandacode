@@ -19,12 +19,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
       - name: Read and check the version
         id: version
         run: |
@@ -45,13 +45,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
-          # Native Intel runner: build.mjs only builds on the target's own host architecture.
+          - { os: blacksmith-6vcpu-macos-15, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          # build.mjs only builds on the target's own host architecture, and Blacksmith has
+          # no Intel macOS or Windows arm64 runners, so those two stay GitHub-hosted.
           - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
-          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
+          - { os: blacksmith-8vcpu-windows-2025, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
           - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
-          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
+          - { os: blacksmith-8vcpu-ubuntu-2204, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
+          - { os: blacksmith-8vcpu-ubuntu-2404-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -66,6 +67,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           targets: ${{ matrix.triple }}
+      # Blacksmith serves actions/cache from a colocated cache; release builds come often.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target }}
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: |
@@ -111,7 +117,7 @@ jobs:
   # failures are reported in SBOM-COVERAGE.md and never block the release.
   sbom:
     needs: [prepare, build]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 30
     continue-on-error: true
     env:
@@ -121,7 +127,7 @@ jobs:
       GRYPE_VERSION: '0.121.0'
       GRYPE_SHA256: 64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
@@ -155,7 +161,7 @@ jobs:
   publish:
     needs: [prepare, build, sbom]
     if: github.ref_type == 'tag' || inputs.publish
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: write
@@ -163,7 +169,7 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
@@ -204,7 +210,7 @@ jobs:
   npm:
     needs: [prepare, publish]
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -213,7 +219,7 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22', registry-url: 'https://registry.npmjs.org' }
       - name: Publish npx pandacode
