@@ -1,6 +1,6 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
-import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
+import { PROJECT_LIMIT, readCollapsed, shownTasks, sidebarSkeletonHtml } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
@@ -119,6 +119,7 @@ const INSPECTOR_ICONS: Record<InspectorView, string> = { files: 'file', search: 
 /** Tab buttons keep the actions the old icon bar used, so every handler and shortcut still applies. */
 const INSPECTOR_ACTIONS: Record<InspectorView, string> = { files: 'tab-files', search: 'tab-search', changes: 'tab-changes', browser: 'browser', pull: 'tab-pull', simulator: 'tab-simulator', vm: 'tab-vm', design: 'tab-design' };
 const state = {
+  bootLoaded: false,
   projects: [] as Project[], sessions: [] as Session[], providers: [] as Provider[],
   projectId: '', sessionId: '', messages: [] as Message[], messagesLoading: false, messagesError: '', streams: new Map<string, Stream>(),
   view: (({ board: 'board', github: 'github' } as Record<string, 'board' | 'github'>)[localStorage.getItem('pandacode.view') ?? ''] ?? 'conversation') as WorkspaceView, boardPanel: false,
@@ -1224,6 +1225,11 @@ function renderNavigation(): void {
   const filterField = $('#sidebar-filter') as HTMLInputElement;
   if (filterField.value !== state.query) filterField.value = state.query;
   filterField.parentElement!.classList.toggle('has-query', Boolean(state.query));
+  if (!state.bootLoaded) {
+    const nav = $('#navigation');
+    morph(nav, `<div class="sidebar-skeleton" role="status" aria-label="Loading projects and tasks">${sidebarSkeletonHtml()}</div>`, 5);
+    return;
+  }
   const projectName = (s: Session) => state.projects.find(p => p.id === s.projectId)?.name ?? '';
   const sidebarSessions = listedSessions().filter(s => !botProjects.has(s.projectId));
   const inScope = sidebarSessions.filter(s => !state.projectFilter || s.projectId === state.projectFilter);
@@ -1484,6 +1490,10 @@ function renderTranscript(preservePosition = false): void {
   }
   const s = session();
   botThread.noteThread(s?.id ?? '');
+  if (!state.bootLoaded) {
+    transcript.innerHTML = `<div class="welcome welcome-loading" role="status" aria-label="Loading workspace"><span class="welcome-mark welcome-loading-mark" aria-hidden="true">${icon('bamboo')}</span><p class="welcome-loading-text">Loading workspace…</p></div>`;
+    return;
+  }
   if (!s) { transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
   if ((state.messagesLoading || state.messagesError) && !state.streams.has(s.id) && !finishingStreams.has(s.id)) { transcript.innerHTML = `<p class="history-notice" role="status">${state.messagesError ? 'Unable to load this task. Select it again to retry.' : 'Loading conversation…'}</p>`; return; }
   if (state.view === 'board' && newTaskView()) {
@@ -5736,15 +5746,46 @@ if (localStorage.getItem('pandacode.compact') === 'true') document.body.classLis
 // A full render() here would close open menus mid-click; other icon spots pick the icons up on their next render.
 function refreshFileIcons(): void { if (state.inspector && state.inspectorTab === 'files' && !state.selectedFile) renderInspector(); }
 async function boot(): Promise<void> {
-  await subscribe('agent-event', onAgent);
-  await subscribe('provider-models-changed', event => invalidateModels(event.provider));
-  await subscribe('architect-event', onArchitect);
+  const projectsPromise = call<Project[]>('list_projects');
+  const sessionsPromise = call<Session[]>('list_sessions');
+  const providersPromise = call<Provider[]>('list_providers');
+  const queuesPromise = call<QueuedMessage[]>('queue_list').catch(() => []);
+  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
+
+  const subscriptions = Promise.all([
+    subscribe('agent-event', onAgent),
+    subscribe('provider-models-changed', event => invalidateModels(event.provider)),
+    subscribe('architect-event', onArchitect),
+    subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('sessions-changed', () => run(reloadSessions())),
+    subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
+    subscribe('queue-changed', payload => run((async () => {
+      const id = payload?.sessionId; if (!id) return;
+      setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
+      if (id === state.sessionId) renderComposer();
+      await dispatchQueue(id);
+    })())),
+    subscribe('overlay-open-task', event => run((async () => {
+      const request = ++overlayOpenRequest, initialGeneration = state.generation;
+      await reloadSessions();
+      if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
+      if (state.view !== 'conversation') state.boardPanel = true;
+      await selectSession(event.sessionId, true);
+      if (request !== overlayOpenRequest || state.sessionId !== event.sessionId) return;
+      const generation = state.generation;
+      subagents.close(false); architectView?.close();
+      if (event.workerId) {
+        const view = await ensureArchitectView();
+        if (request !== overlayOpenRequest || generation !== state.generation) return;
+        await view.openWorker(event.workerId, event.subagentId);
+      } else if (event.subagentId) {
+        await subagents.showAgent(event.subagentId);
+      }
+    })())),
+    connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction),
+  ]);
+
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
-  await subscribe('sessions-changed', () => run(reloadSessions()));
-  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
-  // An agent booted or asked to show a simulator: bring the panel forward.
-  // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
   run(subscribe('agent-event', (event: AgentEvent) => {
@@ -5792,35 +5833,22 @@ async function boot(): Promise<void> {
   // Bots appear in the sidebar once loaded; startup does not wait for them.
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`); }).then(() => undefined));
-  // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
-  await subscribe('queue-changed', payload => run((async () => {
-    const id = payload?.sessionId; if (!id) return;
-    setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
-    if (id === state.sessionId) renderComposer();
-    await dispatchQueue(id);
-  })()));
-  await subscribe('overlay-open-task', event => run((async () => {
-    const request = ++overlayOpenRequest, initialGeneration = state.generation;
-    await reloadSessions();
-    if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
-    if (state.view !== 'conversation') state.boardPanel = true;
-    await selectSession(event.sessionId, true);
-    if (request !== overlayOpenRequest || state.sessionId !== event.sessionId) return;
-    const generation = state.generation;
-    subagents.close(false); architectView?.close();
-    if (event.workerId) {
-      const view = await ensureArchitectView();
-      if (request !== overlayOpenRequest || generation !== state.generation) return;
-      await view.openWorker(event.workerId, event.subagentId);
-    } else if (event.subagentId) {
-      await subagents.showAgent(event.subagentId);
-    }
-  })()));
-  await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
-  [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
-  run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
-  // Queues from an earlier launch wait for an explicit Resume.
-  for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
+
+  const [[projects, sessions]] = await Promise.all([
+    Promise.all([projectsPromise, sessionsPromise]),
+    subscriptions,
+  ]);
+  state.projects = projects;
+  state.sessions = sessions;
+  state.bootLoaded = true;
+
+  run(providersPromise.then(providers => {
+    state.providers = providers;
+    renderComposer();
+    if (!preview && !providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+  }).catch(report));
+
+  for (const entry of await queuesPromise) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
     state.queueHolds.set(entry.sessionId, 'restart');
   }
@@ -5836,7 +5864,6 @@ async function boot(): Promise<void> {
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
-  if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));

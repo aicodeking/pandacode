@@ -54,3 +54,8 @@ export function readCollapsed(storage: Pick<Storage, 'getItem'>, key: string): S
     return new Set(Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : []);
   } catch { return new Set(); }
 }
+
+/** Loading skeleton shown in navigation before projects and tasks resolve. */
+export function sidebarSkeletonHtml(count = 5): string {
+  return '<span class="sidebar-row-skeleton" aria-hidden="true"><span class="sidebar-skeleton-line"></span><span class="sidebar-skeleton-line-sub"></span></span>'.repeat(count);
+}

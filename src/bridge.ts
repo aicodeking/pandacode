@@ -1,9 +1,11 @@
 import type { AgentEvent, BrowserElement, BrowserStatus, TerminalEvent } from './types';
 
 export const preview = !('__TAURI_INTERNALS__' in window);
+const coreModule = !preview ? import('@tauri-apps/api/core') : null;
+const eventModule = !preview ? import('@tauri-apps/api/event') : null;
 export async function call<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (preview) return (await import('./preview')).invoke<T>(command, args);
-  return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
+  return (await (coreModule ?? import('@tauri-apps/api/core'))).invoke<T>(command, args);
 }
 export async function subscribe(name: 'agent-update-progress', callback: (event: import('./agent-updates').AgentUpdateProgress) => void): Promise<() => void>;
 export async function subscribe(name: 'jev-run', callback: (event: import('./jev').JevReport) => void): Promise<() => void>;
@@ -35,7 +37,7 @@ export async function subscribe(name: 'browser-state', callback: (event: Browser
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
   if (preview) return (await import('./preview')).listen(name, callback);
-  return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));
+  return (await (eventModule ?? import('@tauri-apps/api/event'))).listen(name, event => callback(event.payload));
 }
 export async function chooseFolder(title = 'Open a project in PandaCode'): Promise<string | null> {
   if (preview) return '/Users/you/Projects/new-project';

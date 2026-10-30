@@ -699,34 +699,40 @@ fn version(path: &Path) -> Option<String> {
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
-    PROVIDERS.into_iter()
-    .map(|(id, name)| {
-        let path = executable(id);
-        ProviderInfo {
-            id: id.into(),
-            name: name.into(),
-            installed: path.is_some(),
-            version: if id == "antigravity" {
-                "ACP".into()
-            } else {
-                path.as_deref().and_then(version).unwrap_or_default()
-            },
-            path: path.map(|p| p.to_string_lossy().into_owned()),
-            models: if id == "glm" {
-                glm::models()
-            } else if id == "mimo" {
-                mimo::models()
-            } else if id == "opencode" {
-                selected_opencode_models(
-                    Vec::new(),
-                    &crate::provider_settings::opencode_model_ids().unwrap_or_default(),
-                )
-            } else {
-                vec![ModelInfo::default_choice()]
-            },
-        }
+    std::thread::scope(|s| {
+        let handles: Vec<_> = PROVIDERS
+            .into_iter()
+            .map(|(id, name)| {
+                s.spawn(move || {
+                    let path = executable(id);
+                    ProviderInfo {
+                        id: id.into(),
+                        name: name.into(),
+                        installed: path.is_some(),
+                        version: if id == "antigravity" {
+                            "ACP".into()
+                        } else {
+                            path.as_deref().and_then(version).unwrap_or_default()
+                        },
+                        path: path.map(|p| p.to_string_lossy().into_owned()),
+                        models: if id == "glm" {
+                            glm::models()
+                        } else if id == "mimo" {
+                            mimo::models()
+                        } else if id == "opencode" {
+                            selected_opencode_models(
+                                Vec::new(),
+                                &crate::provider_settings::opencode_model_ids().unwrap_or_default(),
+                            )
+                        } else {
+                            vec![ModelInfo::default_choice()]
+                        },
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
     })
-    .collect()
 }
 
 /// On-demand metadata only: no user prompt or inference. ACP-only servers may

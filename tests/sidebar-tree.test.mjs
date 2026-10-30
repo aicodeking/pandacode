@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks } from '../src/sidebar-tree.ts';
+import { PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks, sidebarSkeletonHtml } from '../src/sidebar-tree.ts';
 
 const projects = [{ id: 'a', name: 'alpha', path: '/a' }, { id: 'b', name: 'beta', path: '/b' }, { id: 'c', name: 'empty', path: '/c' }];
 const task = (id, projectId, at) => ({ id, projectId, createdAt: 1, lastPromptAt: at, lastResponseAt: null });
@@ -28,4 +28,12 @@ test('collapsed folders survive bad stored values', () => {
   assert.deepEqual([...readCollapsed(store('["a",3,"b"]'), 'k')], ['a', 'b']);
   assert.equal(readCollapsed(store('{oops'), 'k').size, 0);
   assert.equal(readCollapsed(store(null), 'k').size, 0);
+});
+
+test('sidebar skeleton generates pulsing placeholder rows', () => {
+  const html = sidebarSkeletonHtml(4);
+  assert.equal(html.match(/class="sidebar-row-skeleton"/g)?.length, 4);
+  assert.ok(html.includes('class="sidebar-skeleton-line"'));
+  assert.ok(html.includes('class="sidebar-skeleton-line-sub"'));
+  assert.ok(html.includes('aria-hidden="true"'));
 });
