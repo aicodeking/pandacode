@@ -22,7 +22,7 @@ brew install aicodeking/pandacode/pandacode          # Linux x86_64 or aarch64
   (`depends_on :linux`); on macOS use the cask. AppImages may need FUSE 2 (`libfuse2`).
 
 The cask has no preflight or postflight scripts and does not remove the quarantine
-flag, so macOS shows its usual first-launch prompt for an unsigned app.
+flag; the app is signed and notarized, so macOS opens it without a warning.
 
 ## How it stays current
 

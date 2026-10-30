@@ -170,20 +170,15 @@ Download the latest build from
 | Linux arm64 | [`PandaCode-Linux-aarch64.AppImage`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage) | Ubuntu 24.04+ aarch64 or compatible, X11 or XWayland |
 
 Or from a terminal: `npx pandacode` downloads the latest build, verifies its
-signature and installs it (on macOS it is signed locally for you, so no
-Gatekeeper prompt). `npx pandacode --dry-run` only downloads and verifies.
+signature and installs it. `npx pandacode --dry-run` only downloads and verifies.
 
 With [Homebrew](https://brew.sh): `brew install --cask aicodeking/pandacode/pandacode`
 on macOS, or `brew install aicodeking/pandacode/pandacode` on Linux
 ([details](docs/homebrew.md)).
 
-Release builds are not code-signed, so your OS will warn the first time:
+macOS builds are signed with a Developer ID and notarized by Apple, so they open
+without a warning. Windows and Linux builds are not code-signed yet:
 
-- **macOS:** the build carries an ad-hoc signature and is not notarized, so macOS
-  refuses to open it, and **Open Anyway** in **System Settings → Privacy &
-  Security** does not always clear it. Run `xattr -dr com.apple.quarantine
-  /Applications/PandaCode.app` once instead; `npx pandacode` signs the app locally
-  and needs no such step.
 - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
 - **Linux:** `chmod +x PandaCode-Linux-x86_64.AppImage` (or `-aarch64`), then run it. Some
   distributions need FUSE 2 (`libfuse2`), or set `APPIMAGE_EXTRACT_AND_RUN=1`.
