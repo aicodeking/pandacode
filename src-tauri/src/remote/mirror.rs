@@ -1667,6 +1667,7 @@ pub async fn remote_start_task(
     provider: String,
     model: String,
     mode: Option<String>,
+    auto_writes: Option<bool>,
     effort: Option<String>,
     worktree: Option<bool>,
     branch: Option<String>,
@@ -1674,7 +1675,7 @@ pub async fn remote_start_task(
     start_id: Option<String>,
     image_ids: Option<Vec<String>>,
 ) -> Result<Value> {
-    let request = Launch { device: device_id, project_id, prompt, provider, model, mode, effort, worktree: worktree.unwrap_or(false), branch, draft: session_id, start_id, image_ids: image_ids.unwrap_or_default(), ..Default::default() };
+    let request = Launch { device: device_id, project_id, prompt, provider, model, mode, auto_writes, effort, worktree: worktree.unwrap_or(false), branch, draft: session_id, start_id, image_ids: image_ids.unwrap_or_default(), ..Default::default() };
     let (local, note) = commit(&app, request).await?.start.await.map_err(|e| e.to_string())??;
     let mut session = serde_json::to_value(lock(&state)?.session(&local)?).map_err(|e| e.to_string())?;
     session["sessionId"] = json!(local);
@@ -1694,6 +1695,8 @@ pub(crate) struct Launch {
     pub provider: String,
     pub model: String,
     pub mode: Option<String>,
+    /// The task's Auto-approve writes toggle, carried to the host task.
+    pub auto_writes: Option<bool>,
     pub effort: Option<String>,
     pub worktree: bool,
     pub branch: Option<String>,
@@ -1780,8 +1783,8 @@ pub(super) fn commit_row(inner: &mut super::Inner, store: &Store, request: &mut 
 
 /// The `task.start` params of a committed launch.
 pub(super) fn start_body(request: Launch, repo: &str, branch: Option<&str>, start_id: Option<&str>, image_ids: &[String]) -> Value {
-    let Launch { prompt, provider, model, mode, effort, worktree, .. } = request;
-    json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids})
+    let Launch { prompt, provider, model, mode, auto_writes, effort, worktree, .. } = request;
+    json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "autoWrites": auto_writes, "effort": effort, "startId": start_id, "imageIds": image_ids})
 }
 
 /// What a `task.start` reply means for its mirror.
@@ -1955,7 +1958,7 @@ async fn cancel_start(app: &tauri::AppHandle, state: &AppState, local: &str) -> 
 
 /// Makes (or converts an empty draft into) the local mirror row, published and running.
 fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
-    let Launch { device, project_id, provider, model, mode, effort, draft, parent, title, .. } = request;
+    let Launch { device, project_id, provider, model, mode, auto_writes, effort, draft, parent, title, .. } = request;
     // A draft with its own local worktree keeps it; the mirror gets a fresh row.
     let reuse = draft.as_deref().filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| &task.project_id == project_id && task.worktree_path.is_none()));
     // `create_user_task` commits its own transaction, so a new row is made before this one.
@@ -1972,6 +1975,9 @@ fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
     }
     if effort.is_some() {
         store.set_reasoning_effort(&id, effort.as_deref())?;
+    }
+    if auto_writes.is_some() {
+        store.update(&id, None, None, None, None, *auto_writes)?;
     }
     store.db.execute("UPDATE sessions SET remote_device=?2,remote_session=NULL,remote_synced_id=0,draft=0 WHERE id=?1", params![id, device]).map_err(|e| e.to_string())?;
     if let Some(title) = title {
@@ -2253,6 +2259,16 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
+    }
+
+    #[test]
+    fn a_mirror_row_keeps_the_auto_writes_flag() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let (on, _) = mirror_row(&store, &Launch { device: "host".into(), project_id: project.id.clone(), provider: "claude".into(), model: "sonnet".into(), auto_writes: Some(true), ..Default::default() }).unwrap();
+        assert!(store.session(&on).unwrap().auto_writes, "the local mirror row stores the toggle");
+        let (off, _) = mirror_row(&store, &Launch { device: "host".into(), project_id: project.id.clone(), provider: "claude".into(), model: "sonnet".into(), ..Default::default() }).unwrap();
+        assert!(!store.session(&off).unwrap().auto_writes);
     }
 
     #[test]
