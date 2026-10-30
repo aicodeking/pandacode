@@ -1282,6 +1282,8 @@ async fn set_reasoning_effort(
     drop(agents);
     Ok(session)
 }
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
