@@ -47,7 +47,7 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
     json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
-        "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
+        "mode": config.mode, "autoWrites": config.auto_writes, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
         // The login a process starts with (API key or subscription) is fixed at spawn.
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),

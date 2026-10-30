@@ -69,7 +69,7 @@ import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { SECTIONS } from './settings-sections';
-import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
+import { MODE_TONES, approvalMode, approvalModes, supportsAutoWrites, toned, type ApprovalMode } from './approval-modes';
 import { syncTrayState } from './tray-motion';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
@@ -5306,8 +5306,19 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
-  await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
+  const autoWritesRow = supportsAutoWrites(s.provider) ? [{ id: 'auto-writes', label: 'Auto-approve write requests', icon: 'edit', separator: true, description: 'Approve file writes and commands automatically. Reads, questions and Plan mode still ask.', selected: s.autoWrites }] : [];
+  await showChoices(anchor, { title: 'Permissions', width: 320, items: [...modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), ...autoWritesRow], onSelect: async id => {
     if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
+    if (id === 'auto-writes') {
+      configuringSessions.add(s.id);
+      try {
+        const next = !s.autoWrites;
+        await call('update_session', { sessionId: s.id, autoWrites: next });
+        s.autoWrites = next;
+        const entry = state.sessions.find(item => item.id === s.id); if (entry) entry.autoWrites = next;
+      } finally { configuringSessions.delete(s.id); }
+      return;
+    }
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
     if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
     configuringSessions.add(s.id);

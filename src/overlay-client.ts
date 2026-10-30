@@ -100,7 +100,7 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
     const boundary = history.findIndex(message => message.id === args.messageId && ['user','assistant'].includes(message.role));
     if (boundary < 0) throw new Error('Choose a saved message to fork from.');
     const id = crypto.randomUUID(), now = Date.now();
-    const fork: Session = {id,projectId:source.projectId,worktreePath:null,title:`${source.title} (fork)`,provider:source.provider as ProviderId,model:'default',mode:'ask',status:'idle',createdAt:now,updatedAt:now,lastResponseAt:null,archived:false,resumeId:null,taskStage:'in_progress',taskDescription:'',completedAt:null};
+    const fork: Session = {id,projectId:source.projectId,worktreePath:null,title:`${source.title} (fork)`,provider:source.provider as ProviderId,model:'default',mode:'ask',autoWrites:false,status:'idle',createdAt:now,updatedAt:now,lastResponseAt:null,archived:false,resumeId:null,taskStage:'in_progress',taskDescription:'',completedAt:null};
     tasks.unshift({id,sessionId:id,kind:'task',title:fork.title,projectId:fork.projectId,projectName:source.projectName,provider:fork.provider,status:fork.status,updatedAt:now});
     threads.set(`${id}:`,{messages:history.slice(0,boundary+1).filter(message => !['internal','changes'].includes(message.role)).map((message,index) => ({...message,id:index+1,sessionId:id,turnChanges:null,turnDurationMs:null})),hasOlder:false,liveText:'',status:'idle'});
     return fork as T;

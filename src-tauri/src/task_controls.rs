@@ -533,7 +533,7 @@ pub(super) async fn archive_codex_task(
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(&session_id, None, Some(true), None, None)
+        .update(&session_id, None, Some(true), None, None, None)
 }
 
 #[tauri::command]
@@ -611,7 +611,7 @@ pub(super) async fn rename_task(state: &AppState, sid: &str, title: &str) -> Res
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(sid, Some(title.into()), None, None, None)
+        .update(sid, Some(title.into()), None, None, None, None)
 }
 
 #[tauri::command]
