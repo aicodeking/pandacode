@@ -240,7 +240,7 @@ dialog.pp-lightbox::backdrop{background:color-mix(in srgb,var(--pp-dark) 42%,tra
 }
 .pp-lb-side .pp-note[hidden]{display:none}
 /* A collapsed pill in a top corner keeps the first message clear of it. */
-.conversation-pane:has(#progress-pip[data-corner^="t"]:not([hidden]) > .pp-pill:not(.is-overlay)) .transcript{padding-top:max(var(--transcript-top,28px),calc(var(--header-under,0px) + 76px))}
+.conversation-pane[data-pip-top] .transcript{padding-top:max(var(--transcript-top,28px),calc(var(--header-under,0px) + 76px))}
 /* Away in a narrow pane: nearly gone, so its text never doubles over the transcript's. */
 .progress-pip.is-away .pp-card > :not(.pp-head){animation:pp-away 300ms ease forwards}
 @keyframes pp-away{to{opacity:0;visibility:hidden}}

@@ -61,7 +61,7 @@ import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
 import { TerminalPanel } from './terminal-panel';
 import { ProjectRunner } from './run-project';
-import { captureTranscriptAnchor } from './transcript-scroll';
+import { captureTranscriptAnchor, followTranscriptBottom } from './transcript-scroll';
 import { Subagents } from './subagents';
 import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
@@ -791,6 +791,7 @@ function followTranscript(): void {
 }
 function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
 const transcriptResize = new ResizeObserver(followTranscript);
+followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTranscriptTool());
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
@@ -802,7 +803,11 @@ new MutationObserver(records => { if (records.some(record => !transcriptScroller
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
+  // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
+  if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
   if (transcriptGap() <= 2) stickToBottom = true;
+  // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
+  else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
   else if (top < lastTranscriptTop) stickToBottom = false;
   lastTranscriptTop = top;
   void loadOlderMessages();
@@ -1525,7 +1530,8 @@ function renderTranscript(preservePosition = false): void {
     } else {
       savedMarkdownSources.set(el, message.content);
       bindFileLinkContext(el, workspaceContext());
-      void markdown(el, message.content, transcript).catch(report);
+      // Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap.
+      void markdown(el, message.content, transcript).then(followTranscript, report);
     }
   });
   renderStream();
@@ -1727,26 +1733,29 @@ function renderStream(): void {
   if (!current) { updateWorkTimer(); return; }
   // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
   if (isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
-  const transcript = $('#transcript');
-  const scrollTop = transcript.scrollTop, readingTool = readingTranscriptTool();
-  if (region.dataset.sessionId !== state.sessionId || !region.querySelector('.live-text')) {
+  const transcript = transcriptScroller;
+  // The only layout read, and only while a tool is being read.
+  const readingTool = readingTranscriptTool(), scrollTop = readingTool ? transcript.scrollTop : 0;
+  let parts = streamParts.get(region);
+  if (region.dataset.sessionId !== state.sessionId || !parts || !region.contains(parts.output)) {
     region.innerHTML = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>` + activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true }) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
     region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
+    streamParts.set(region, parts = queryStreamParts(region));
   }
-  const activity = region.querySelector<HTMLDetailsElement>('.turn-activity')!;
+  const { activity, message, thinking, output, status } = parts;
   if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
   const answered = answerAge(current);
   paintLiveHeader(activity, current, finishing ? finishing.finishedAt - current.startedAt : undefined, answered);
   scheduleAnswerFolds(answered);
   if (region.dataset.revision !== String(current.revision)) {
     paintLiveActivity(region, current, transcript);
-    const errors = region.querySelector<HTMLElement>('.live-errors')!;
+    const errors = parts.errors;
     const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
     if (liveErrorHtml.get(errors) !== errorHtml) { errors.innerHTML = errorHtml; liveErrorHtml.set(errors, errorHtml); }
     // Approvals live in the bar above the prompt, not in the transcript.
-    const approvals = region.querySelector('.live-approvals')!; if (approvals.firstChild) approvals.replaceChildren();
+    if (parts.approvals.firstChild) parts.approvals.replaceChildren();
     renderApprovalBar();
-    const inputs = region.querySelector('.live-inputs')!;
+    const inputs = parts.inputs;
     for (const input of current.inputs.values()) if (input.element.parentElement !== inputs) inputs.append(input.element);
     region.dataset.revision = String(current.revision);
   }
@@ -1754,29 +1763,43 @@ function renderStream(): void {
   const answering = answered >= CARDS_FOLD_MS, expandAll = activityExpanded(), choreographed = `${current.turnKey}:${current.revision}:${answering}:${expandAll}`;
   if (activity.dataset.folded === undefined && activity.dataset.choreographed !== choreographed) {
     activity.dataset.choreographed = choreographed;
-    choreograph(region.querySelector<HTMLElement>('.live-tools')!, current.turnKey, { answering, expandAll });
+    choreograph(parts.tools, current.turnKey, { answering, expandAll });
   }
   // The answer to a traced turn hangs flush under the trace, as in the reference: no avatar/name row.
-  region.querySelector<HTMLElement>('.live-message')!.classList.toggle('after-trace', liveToolRecords(current).length > 0);
+  message.classList.toggle('after-trace', liveToolRecords(current).length > 0);
   // One closed Thinking fold per turn; it keeps the reader's open state while the text streams in.
-  const thinking = region.querySelector<HTMLDetailsElement>('.thinking-block')!, thought = current.thinking ?? '';
+  const thought = current.thinking ?? '';
   if (thinking.dataset.turnKey !== current.turnKey) { thinking.dataset.turnKey = current.turnKey; thinking.open = false; }
-  thinking.hidden = !thought;
-  if (thinking.lastElementChild!.textContent !== thought) thinking.lastElementChild!.textContent = thought;
-  const output = region.querySelector<HTMLElement>('.live-text')!;
+  setHidden(thinking, !thought);
+  if (parts.thought.textContent !== thought) parts.thought.textContent = thought;
   bindFileLinkContext(output, workspaceContext());
   streamMarkdown(output, current.text, transcript);
-  region.querySelector<HTMLElement>('.streaming-label')!.hidden = Boolean(finishing || current.retainedMessageKey);
-  region.querySelector<HTMLElement>('.live-message')!.hidden = !current.text;
-  const status = region.querySelector<HTMLElement>('.live-status')!;
+  setHidden(parts.streaming, Boolean(finishing || current.retainedMessageKey));
+  setHidden(message, !current.text);
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
-  status.hidden = Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0;
+  setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
   const bot = botForThread(), sessionId = state.sessionId;
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
+  // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
   if (readingTool) transcript.scrollTop = scrollTop;
-  else followTranscript();
 }
+type StreamParts = {
+  activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
+  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
+};
+/** renderStream's elements, kept until the region's markup is rebuilt. */
+const streamParts = new WeakMap<HTMLElement, StreamParts>();
+function queryStreamParts(region: HTMLElement): StreamParts {
+  const part = <T extends HTMLElement = HTMLElement>(selector: string): T => region.querySelector<T>(selector)!;
+  const thinking = part<HTMLDetailsElement>('.thinking-block');
+  return {
+    activity: part<HTMLDetailsElement>('.turn-activity'), thinking, thought: thinking.lastElementChild as HTMLElement,
+    tools: part('.live-tools'), status: part('.live-status'), message: part('.live-message'), streaming: part('.streaming-label'),
+    output: part('.live-text'), errors: part('.live-errors'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
+  };
+}
+const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
 const liveGroupEntries = new WeakMap<HTMLElement, LiveTool[]>();
 const liveErrorHtml = new WeakMap<Element, string>();
 /** Patch only changed groups; text frames do not recreate tool controls or open details. */
@@ -1932,10 +1955,11 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   // New steps after an early fold (the agent went back to work) unfold the trace again.
   if (mode !== 'folded' && activity.dataset.folded !== undefined) { delete activity.dataset.folded; activity.open = true; }
   const summary = activity.querySelector<HTMLElement>('.turn-activity-summary')!;
-  if (workedMs === undefined) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+  const working = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+  if (workedMs === undefined && summary.title !== working) summary.title = working;
   const changed = label.dataset.mode !== mode || label.dataset.step !== step;
   if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; }
-  label.dataset.mode = mode; label.dataset.step = step;
+  if (changed) { label.dataset.mode = mode; label.dataset.step = step; }
   if (changed && mode === 'step') enterHeader(label);
   else if (changed && mode === 'folded') enterText(label);
   if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity)) foldTurn(activity);
