@@ -742,6 +742,7 @@ mod behavior_tests {
                 codex_settings: None,
                 images: Vec::new(),
                 no_fresh_resume_fallback: false,
+                auto_writes: false,
             };
             apply_instructions(&mut config, &BTreeSet::from(["review".into()]));
             assert_eq!(config.prompt, "User text");

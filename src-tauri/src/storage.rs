@@ -73,6 +73,7 @@ pub struct Session {
     pub reasoning_effort: Option<String>,
     pub context_usage: Option<ContextUsage>,
     pub mode: String,
+    pub auto_writes: bool,
     pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -200,9 +201,8 @@ pub(crate) use schema_v38::{
     V38_BOT_INDEXES, V38_SCHEMA_INDEXES, V38_TRACKER_INDEXES, V38_TRACKER_TABLES,
     V38_TRACKER_TRIGGERS,
 };
-/// The newest `PRAGMA user_version`. Hot-query indexes and trackers are additive
-/// at version 37 so releases through v0.3.151 can still open the database.
-pub const SCHEMA_VERSION: i64 = 37;
+/// The newest `PRAGMA user_version`; version 38 adds the per-task write permission.
+pub const SCHEMA_VERSION: i64 = 38;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 /// The error every lookup of a task that has no row returns.
@@ -708,6 +708,13 @@ impl Store {
             if upgrade_started.is_some() {
                 upgrade_v38(&migration)?;
             }
+            if version < 38 {
+                let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='auto_writes')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !exists {
+                    migration.execute_batch("ALTER TABLE sessions ADD COLUMN auto_writes INTEGER NOT NULL DEFAULT 0 CHECK(auto_writes IN (0,1));").map_err(|e| e.to_string())?;
+                }
+                migration.execute_batch("PRAGMA user_version=38;").map_err(|e| e.to_string())?;
+            }
             migration.commit().map_err(|e| e.to_string())?;
             if let Some(started) = upgrade_started {
                 log_slow_upgrade(started);
@@ -759,3 +766,10 @@ mod tests_migrations;
 mod tests_sessions;
 #[cfg(test)]
 mod tests_upgrade_safety;
+
+#[cfg(test)]
+#[path = "storage/auto_writes_tests.rs"]
+mod auto_writes_tests;
+#[cfg(test)]
+#[path = "storage_auto_writes_update_tests.rs"]
+mod auto_writes_update_tests;

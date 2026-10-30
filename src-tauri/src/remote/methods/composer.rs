@@ -469,7 +469,7 @@ impl BtwAsk {
         let ask = BtwAsk { seen_id: seen_from, ..*this };
         let setup = async {
             if created {
-                crate::update_session(ctx.app.clone(), state.clone(), side.id.clone(), Some(title.clone()), None, None, None).await?;
+                crate::update_session(ctx.app.clone(), state.clone(), side.id.clone(), Some(title.clone()), None, None, None, None).await?;
             }
             let app = ctx.app.clone();
             let (prompt, seen) = crate::blocking(move || ask.prompt(&tauri::Manager::state::<AppState>(&app))).await?;

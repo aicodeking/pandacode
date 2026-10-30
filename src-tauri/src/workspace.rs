@@ -4095,6 +4095,7 @@ mod tests {
                     Some(true),
                     None,
                     None,
+                    None,
                 )
                 .unwrap();
             store

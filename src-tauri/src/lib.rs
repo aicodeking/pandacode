@@ -1452,14 +1452,18 @@ async fn update_session(
     archived: Option<bool>,
     model: Option<String>,
     mode: Option<String>,
+    auto_writes: Option<bool>,
 ) -> Result<()> {
     // A mirror's permissions are its host's; the local row follows below.
     if let Some(mode) = &mode {
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
     }
+    if let Some(auto_writes) = auto_writes {
+        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"autoWrites": auto_writes})).await?;
+    }
     if let Some(title) = title
         .as_deref()
-        .filter(|_| model.is_none() && mode.is_none() && archived.is_none())
+        .filter(|_| model.is_none() && mode.is_none() && archived.is_none() && auto_writes.is_none())
     {
         let task = state
             .store
@@ -1471,15 +1475,19 @@ async fn update_session(
         }
     }
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
+    if (model.is_some() || mode.is_some() || auto_writes.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
+    let discard_warm = model.is_some() || mode.is_some() || auto_writes.is_some();
     let restored = archived == Some(false);
     state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
+        .update(&session_id, title, archived, model, mode, auto_writes)?;
+    if discard_warm {
+        providers::discard_warm_agent(&session_id);
+    }
     drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
@@ -2294,6 +2302,7 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        auto_writes: session.auto_writes,
         no_fresh_resume_fallback: false,
     };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
@@ -2349,6 +2358,7 @@ fn prepare_cloud_attach(
         model: session.model,
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
+        auto_writes: session.auto_writes,
         cwd,
         resume_id: session.resume_id,
         prompt: String::new(),

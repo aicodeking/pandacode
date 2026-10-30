@@ -23,7 +23,7 @@ pub(super) const SIDEBAR_ORDER: &str = sidebar_order!();
 /// The sidebar listing: card previews only, built once at compile time so `sessions` can use
 /// the prepared statement cache.
 pub(super) const SESSIONS_SQL: &str = concat!(
-    "SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY ",
+    "SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,substr(task_description,1,512),completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,auto_writes FROM sessions WHERE draft=0 AND id NOT IN (SELECT session_id FROM architect_workers) ORDER BY ",
     sidebar_order!(),
     " LIMIT 500"
 );
@@ -112,4 +112,4 @@ pub(super) const INTERRUPT_TEAMS_SQL: &str =
 pub(super) const INTERRUPT_TEAMS_FALLBACK_SQL: &str = interrupt_teams!("");
 /// `Store::settle_archived`, through the `sessions_archived` partial index.
 pub(super) const SETTLE_ARCHIVED_SQL: &str = "UPDATE sessions SET archived=0,task_stage='completed',completed_at=COALESCE(completed_at,updated_at) WHERE archived=1";
-pub(super) const SESSION_SQL: &str = "SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud FROM sessions WHERE id=?1";
+pub(super) const SESSION_SQL: &str = "SELECT id,project_id,title,provider,model,mode,status,created_at,updated_at,archived,resume_id,last_response_at,worktree_path,reasoning_effort,context_used_tokens,context_window,task_stage,task_description,completed_at,goal_state,codex_settings,worktree_branch,last_prompt_at,pinned,sidebar_order,draft,limited_at,limited_until,resume_at_reset,remote_device,cloud,auto_writes FROM sessions WHERE id=?1";
