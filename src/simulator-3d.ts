@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS3DObject, CSS3DRenderer } from 'three/addons/renderers/CSS3DRenderer.js';
 import { studioEnvironment, studioFloor } from './simulator-studio';
 import { buildHardware, plate, roundedRect } from './simulator-hardware';
 import { chosenFinish, modelSpec, type Finish, type ModelSpec } from './simulator-models';
@@ -33,6 +34,8 @@ export type Device3D = {
   setPose(pose: DuoPose, animate?: boolean): void;
   getPose(): DuoPose;
   setActive(active: boolean): void;
+  /** A live page on the display: the element is laid out at the display's points and turns with the device. */
+  setWeb(view: HTMLElement | null): void;
   dispose(): void;
 };
 type Options = {
@@ -117,6 +120,16 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
   let shape: DeviceShape = { width: 402, height: 874, homeButton: false, family: 'phone', deviceType: '' };
   let finish: Finish | undefined, hardware: THREE.Material[] = [];
   let fitDistance = 20;
+  // Web apps: a DOM layer over the canvas, its element posed on the display plate.
+  let css: CSS3DRenderer | undefined, web: CSS3DObject | undefined;
+  function placeWeb(): void {
+    if (!web || !screen) return;
+    const g = geometryOf(shape), element = web.element;
+    element.style.width = `${shape.width}px`; element.style.height = `${shape.height}px`;
+    element.style.setProperty('--sim-corner', `${g.display * UNIT}px`);
+    web.scale.setScalar(1 / UNIT); web.position.set(0, 0, 0.0025);
+    screen.add(web);
+  }
 
   function clear(): void {
     device.traverse(node => { if (node instanceof THREE.Mesh) node.geometry.dispose(); });
@@ -190,6 +203,7 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
     made.buttons.forEach((name, mesh) => buttons.set(mesh, name));
     device.traverse(node => { if (node instanceof THREE.Mesh && node.material !== glare && node.material !== touchMaterial) node.castShadow = true; });
     floor.place(-Math.max(body.height, body.width) / 2, Math.max(body.height, body.width));
+    placeWeb();
     fit();
   }
 
@@ -197,7 +211,7 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
   function fit(): void {
     const { width, height } = host.getBoundingClientRect();
     if (!width || !height) return;
-    renderer.setSize(width, height, false);
+    renderer.setSize(width, height, false); css?.setSize(width, height);
     camera.aspect = width / height;
     frameCamera();
   }
@@ -238,7 +252,7 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
       moving = true;
     }
     if (touchFade && touchMaterial.opacity > 0) { touchMaterial.opacity = Math.max(0, touchMaterial.opacity - 0.06); moving = true; }
-    if (moving || dirty) { renderer.render(scene, camera); dirty = false; }
+    if (moving || dirty) { renderer.render(scene, camera); css?.render(scene, camera); dirty = false; }
     // Idle, nothing is drawn or scheduled; `wake` starts the loop again.
     if (moving || loading) frame = requestAnimationFrame(tick);
   };
@@ -299,8 +313,10 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
   }
 
   let gesture: { id: number; surface: DuoSurface; start: { x: number; y: number }; last: { x: number; y: number }; at: number } | undefined;
+  /** The web app takes its own pointer and wheel events. */
+  const onWeb = (event: Event) => Boolean(css && event.target instanceof Node && css.domElement.contains(event.target));
   const onDown = (event: PointerEvent) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || onWeb(event)) return;
     const hit = pick(event);
     if (!hit) return;
     // Handled here, before OrbitControls on the canvas sees the press.
@@ -337,13 +353,13 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
   };
   /* The wheel scrolls the app over the display and zooms elsewhere; pinch always zooms. */
   const onWheel = (event: WheelEvent) => {
-    if (event.ctrlKey) return;
+    if (event.ctrlKey || onWeb(event)) return;
     const hit = pick(event);
     if (hit?.kind !== 'screen') return;
     event.stopPropagation(); event.preventDefault();
     options.onScroll(event.deltaX, event.deltaY, hit.point);
   };
-  const onDouble = (event: MouseEvent) => { if (!pick(event)) { resetView(true); } };
+  const onDouble = (event: MouseEvent) => { if (!onWeb(event) && !pick(event)) { resetView(true); } };
   host.addEventListener('pointerdown', onDown, { capture: true });
   host.addEventListener('wheel', onWheel, { capture: true, passive: false });
   host.addEventListener('dblclick', onDouble);
@@ -434,6 +450,18 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
       folding = { from: fold, to, start: performance.now() }; wake();
     },
     getPose: () => pose,
+    setWeb(view) {
+      if (web) { web.removeFromParent(); web.element.remove(); web = undefined; }
+      if (view) {
+        if (!css) {
+          css = new CSS3DRenderer(); css.domElement.className = 'sim-css';
+          host.append(css.domElement); fit();
+        }
+        web = new CSS3DObject(view); placeWeb();
+      }
+      if (css) css.domElement.hidden = !web;
+      wake();
+    },
     setActive(next) {
       if (active === next) return;
       active = next;
@@ -442,7 +470,7 @@ export function mountDevice3D(host: HTMLElement, options: Options): Device3D {
     },
     dispose() {
       active = false; if (frame) cancelAnimationFrame(frame);
-      resize.disconnect(); controls.dispose(); clear();
+      resize.disconnect(); controls.dispose(); web?.element.remove(); css?.domElement.remove(); clear();
       host.removeEventListener('pointerdown', onDown, { capture: true });
       host.removeEventListener('wheel', onWheel, { capture: true });
       host.removeEventListener('dblclick', onDouble);
