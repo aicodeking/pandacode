@@ -1622,7 +1622,13 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    // A maintenance command reaches the harness bare even under a team: wrapping it
+    // would turn it into briefing text the harness never executes.
+    let prompt = if maintenance {
+        prompt
+    } else {
+        architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?
+    };
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1865,8 +1871,18 @@ async fn launch_operation_admitted(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
-        prepare_command(&state, &session_id, text.as_deref()).await?
+    let command = if goal.is_none() && !cloud_attach && kind.is_none() {
+        if team_admission.is_some() {
+            // A lead's maintenance command (/compact and friends) still runs bare on its
+            // own harness under a team; unknown or non-maintenance commands, skills, and
+            // resolution errors stay plain text for the architect's briefing.
+            match prepare_command(&state, &session_id, text.as_deref()).await {
+                Ok(prepared) if prepared.as_ref().is_some_and(|c| c.resolution.maintenance) => prepared,
+                _ => None,
+            }
+        } else {
+            prepare_command(&state, &session_id, text.as_deref()).await?
+        }
     } else {
         None
     };

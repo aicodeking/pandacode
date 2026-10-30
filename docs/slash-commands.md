@@ -49,6 +49,10 @@ accept inline configuration arguments.
 - Context/status commands retain the task's prior board stage after completion,
   interruption, or failure. They do not mark development work ready for review.
   A new Codex task must have a provider conversation before `/compact` can run.
+  With a team on, these maintenance commands (`/compact`, `/status`, `/context`,
+  `/usage`, `/cost`, `/mcp`, `/tasks`, `/help`) run bare on the lead's own
+  harness instead of being folded into the team briefing, and they keep the
+  task's board stage.
 - Commands that cannot consume attachments reject them before submission. The
   installed Kimi 0.26.0 ACP discards image blocks in its slash dispatcher, so
   PandaCode rejects attachments for Kimi slash commands. Normal Kimi messages
