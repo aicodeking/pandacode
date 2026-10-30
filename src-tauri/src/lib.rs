@@ -2267,7 +2267,7 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
-    let config = RunConfig { prompt, images, skill, goal: admission.goal, ..launch_config(&session, cwd) };
+    let config = RunConfig { prompt, images, skill, goal: admission.goal, auto_writes: false, ..launch_config(&session, cwd) };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
     let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
     architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
@@ -2321,6 +2321,7 @@ fn prepare_cloud_attach(
         model: session.model,
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
+        auto_writes: false,
         cwd,
         resume_id: session.resume_id,
         prompt: String::new(),
