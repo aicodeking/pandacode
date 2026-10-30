@@ -1884,11 +1884,15 @@ async fn launch_operation_admitted(
         return Err("PandaCode is shutting down.".into());
     }
     let command = if goal.is_none() && !cloud_attach && kind.is_none() {
-        if team_admission.is_some() {
+        // Only the lead session's own send resolves as a command under a team: a
+        // worker's assignment is model-authored text that is briefed verbatim.
+        if team_admission.as_ref().is_some_and(|admission| admission.parent == session_id) {
             // A lead's maintenance command (/compact and friends) still runs bare on its
-            // own harness under a team; guard errors surface, while unknown commands and
+            // own harness; guard errors surface, while unknown commands and
             // non-maintenance commands stay plain text for the architect's briefing.
             team_command_gate(prepare_command(&state, &session_id, text.as_deref()).await)?
+        } else if team_admission.is_some() {
+            None
         } else {
             prepare_command(&state, &session_id, text.as_deref()).await?
         }
