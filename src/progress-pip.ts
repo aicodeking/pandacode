@@ -83,6 +83,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
   // streamed Markdown insert in the pane restyle the whole pane. Watching only the PiP stays cheap.
   const markTop = () => pane()?.toggleAttribute('data-pip-top', !root.hidden && (root.dataset.corner ?? '').startsWith('t') && Boolean(q('.pp-pill:not(.is-overlay)')));
   new MutationObserver(markTop).observe(root, { attributes: true, attributeFilter: ['hidden', 'data-corner', 'class'], childList: true, subtree: true });
+  markTop();
 
   /* ---------- markup ---------- */
   function pillHtml(): string {
