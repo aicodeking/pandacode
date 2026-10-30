@@ -1,6 +1,6 @@
 import './simulator.css';
 import { icon } from './dom';
-import { isWindows } from './platform';
+import { androidOnly, isWindows } from './platform';
 import type { Device3D, DeviceButton, DuoPose, DeviceShape, ScreenGesture } from './simulator-3d';
 import { chosenFinish, modelSpec, rememberFinish } from './simulator-models';
 
@@ -35,11 +35,11 @@ const poseName = (pose: DuoPose | null | undefined) => POSES.find(p => p.id === 
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 const isDark = () => document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
 
-/** Matches `WINDOWS_SETUP` in android_setup.rs: Windows has no one-click setup. */
-const NO_SDK = 'Install Android Studio (or the Android command-line tools) into %LOCALAPPDATA%\\Android\\Sdk, create an emulator in Device Manager, then reopen this tab.';
-/** Windows runs Android emulators only: iOS devices, Xcode and AXe never appear there. */
+/** Windows and Linux have no one-click setup (it uses Homebrew on macOS). */
+const NO_SDK = `Install Android Studio (or the Android command-line tools) into ${isWindows ? '%LOCALAPPDATA%\\Android\\Sdk' : '~/Android/Sdk, or set ANDROID_HOME'}, create an emulator in Device Manager, then reopen this tab.`;
+/** Windows and Linux run Android emulators only: iOS devices, Xcode and AXe never appear there. */
 const forPlatform = (status: SimStatus): SimStatus => {
-  if (!isWindows) return status;
+  if (!androidOnly) return status;
   const devices = status.devices.filter(d => d.platform === 'android');
   const selected = devices.some(d => d.udid === status.selected) ? status.selected : null;
   return { ...status, available: Boolean(status.android) || devices.length > 0, axe: true, duoAvailable: false, pose: null, error: null, devices, selected, screen: selected ? status.screen : null };
@@ -138,8 +138,8 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     axeNote.hidden = !status || !status.available || status.axe;
     axeNote.querySelector('code')!.textContent = status?.axeInstall ?? '';
     if (!status) return;
-    if (!status.available) { say(isWindows ? NO_SDK : status.error ?? 'Install Xcode to use the iOS Simulator.'); message(isWindows ? 'Android SDK needed' : 'Xcode needed'); return; }
-    if (!chosen) { say(isWindows ? 'No Android emulators. Add one in Android Studio → Device Manager.' : 'No iOS simulators. Add one in Xcode → Window → Devices and Simulators.'); message(''); return; }
+    if (!status.available) { say(androidOnly ? NO_SDK : status.error ?? 'Install Xcode to use the iOS Simulator.'); message(androidOnly ? 'Android SDK needed' : 'Xcode needed'); return; }
+    if (!chosen) { say(androidOnly ? 'No Android emulators. Add one in Android Studio → Device Manager.' : 'No iOS simulators. Add one in Xcode → Window → Devices and Simulators.'); message(''); return; }
     say('');
     device?.setShape(shape());
     if (chosen.duo && status.pose && device?.getPose() !== status.pose) device?.setPose(status.pose, false);
@@ -259,9 +259,9 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   function chooseDevice(anchor: HTMLElement): void {
     if (!status) return;
     const items: ChoiceItem[] = status.devices.map(d => ({ id: d.udid, label: d.name, description: `${d.duo ? 'Foldable · ' : ''}${d.runtime} · ${d.state === 'Booted' ? 'Running' : d.state}`, icon: 'phone', selected: d.udid === status?.selected }));
-    if (status.available && !isWindows && !status.devices.some(d => d.duo)) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
+    if (status.available && !androidOnly && !status.devices.some(d => d.duo)) items.push({ id: ADD_DUO, label: 'Add iPhone Duo', description: status.duoAvailable ? 'Foldable · creates a simulator' : 'Needs Xcode 27.1 or later', icon: 'plus', disabled: !status.duoAvailable });
     // One-click setup uses Homebrew, so Windows points to Android Studio instead.
-    if (!status.android && !isWindows) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
+    if (!status.android && !androidOnly) items.push({ id: SETUP, label: settingUp ? 'Setting up Android…' : 'Set up Android emulator…', description: 'Downloads about 2 GB with Homebrew', icon: 'download', disabled: settingUp });
     if (!items.length) return;
     host.choose(anchor, 'Devices', items, id => {
       if (id === SETUP) { void setupAndroid(); return; }
