@@ -197,7 +197,7 @@ pub(crate) fn page(channel_id: &str, accept_language: Option<&str>) -> Response 
 pub(crate) fn ui_language(accept_language: Option<&str>) -> &'static str {
     for part in accept_language.unwrap_or_default().split(',') {
         let tag = part.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
-        let has = |region: &str| tag.split(|c: char| c == '-' || c == '_' || c == '.').any(|piece| piece == region);
+        let has = |region: &str| tag.split(['-', '_', '.']).any(|piece| piece == region);
         if tag.starts_with("zh") {
             if tag.contains("hant") {
                 if has("tw") { return "zh-Hant-TW"; }

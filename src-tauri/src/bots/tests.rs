@@ -845,12 +845,12 @@ fn web_chat_locale_follows_accept_language() {
 fn web_chat_page_injects_the_locale_table() {
     let id = "0123456789abcdef0123456789abcdef";
     let english = String::from_utf8_lossy(&web::page(id, Some("en-US")).body).into_owned();
-    assert!(english.contains("__STRINGS__") == false || true);
+    assert!(!english.contains("__STRINGS__") || true);
     assert!(english.contains(r#"const L = {"#) || english.contains("lang=\"en-US\""), "en page injects the locale");
     let chinese = String::from_utf8_lossy(&web::page(id, Some("zh-CN")).body).into_owned();
     assert!(chinese.contains("lang=\"zh-Hans\""), "html lang follows Accept-Language");
     assert!(chinese.contains("Bot 聊天"), "string table injected");
-    assert!(chinese.contains(r#"placeholder="Message""#) == false, "composer label now set through t()");
+    assert!(!chinese.contains(r#"placeholder="Message""#), "composer label now set through t()");
     let traditional = String::from_utf8_lossy(&web::page(id, Some("zh-TW")).body).into_owned();
     assert!(traditional.contains("lang=\"zh-Hant-TW\"") && traditional.contains("訊息"), "TW table used");
 }
