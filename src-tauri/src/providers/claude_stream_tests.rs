@@ -199,3 +199,126 @@ fn thinking_deltas_surface_as_thinking_events() {
     assert_eq!(thinking, "Check the tests.");
     assert_eq!(text(&events), "Done");
 }
+
+fn can_use(id: &str, tool: &str, input: Value) -> Value {
+    json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":tool,"input":input}})
+}
+
+fn write_tool_input(tool: &str) -> Value {
+    match tool {
+        "Write" => json!({"file_path":"src/main.rs","content":"fn main() {}"}),
+        "Edit" => json!({"file_path":"src/main.rs","old_string":"a","new_string":"b"}),
+        "MultiEdit" => json!({"file_path":"src/main.rs","edits":[]}),
+        "NotebookEdit" => json!({"notebook_path":"notes.ipynb"}),
+        "TodoWrite" => json!({"todos":[{"content":"Ship","status":"completed"}]}),
+        _ => json!({"command":"git status"}),
+    }
+}
+
+/// With the per-task "Auto-approve writes" toggle on, write-class tools are
+/// answered as allowed in Standard and Accept edits modes without asking.
+#[test]
+fn auto_writes_answers_write_tools_without_asking_in_ask_and_auto_modes() {
+    for mode in ["ask", "auto"] {
+        for tool in ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "TodoWrite"] {
+            let mut cfg = config("claude");
+            cfg.mode = mode.into();
+            cfg.auto_writes = true;
+            let mut protocol = Protocol::new(cfg);
+            let input = write_tool_input(tool);
+            let step = protocol
+                .receive(can_use("auto-write", tool, input.clone()))
+                .unwrap();
+            assert_eq!(
+                step.write,
+                vec![json!({"type":"control_response","response":{"subtype":"success","request_id":"auto-write","response":{"behavior":"allow","updatedInput":input}}})],
+                "{mode} {tool}"
+            );
+            assert!(
+                step.events.iter().all(|event| event.kind != "approval"),
+                "{mode} {tool} must not ask"
+            );
+            assert!(protocol.pending.is_empty(), "{mode} {tool}");
+        }
+    }
+}
+
+/// Reads, MCP tools and unknown tools keep asking with the toggle on: the
+/// explicit allowlist must not widen into "everything but plan reads".
+#[test]
+fn auto_writes_keeps_reads_mcp_and_unknown_tools_asking() {
+    for (tool, input) in [
+        ("Read", json!({"file_path":"/tmp/notes.txt"})),
+        ("Read", json!({"file_path":"~/.ssh/id_rsa"})),
+        ("Grep", json!({"pattern":"todo"})),
+        ("Glob", json!({"pattern":"**/*.rs"})),
+        ("LS", json!({"path":"."})),
+        ("NotebookRead", json!({"notebook_path":"notes.ipynb"})),
+        ("WebFetch", json!({"url":"https://example.com"})),
+        ("WebSearch", json!({"query":"rust sqlite"})),
+        ("mcp__someclient__tool", json!({"query":"data"})),
+        ("SlashCommand", json!({"command":"/deploy"})),
+    ] {
+        let mut cfg = config("claude");
+        cfg.mode = "ask".into();
+        cfg.auto_writes = true;
+        let mut protocol = Protocol::new(cfg);
+        let step = protocol.receive(can_use("still-asks", tool, input)).unwrap();
+        assert!(step.write.is_empty(), "{tool} must wait for the user");
+        let approval = step
+            .events
+            .iter()
+            .find(|event| event.kind == "approval")
+            .unwrap_or_else(|| panic!("{tool} reaches the user"));
+        assert!(approval.request_id.is_some(), "{tool}");
+    }
+}
+
+/// Plan, agent-reviewed and Full access modes never pick up the toggle, and
+/// without the toggle every mode keeps today's behavior.
+#[test]
+fn auto_writes_never_bypasses_plan_review_full_or_a_missing_flag() {
+    for (mode, flag) in [("plan", true), ("review", true), ("full", true), ("auto", false), ("ask", false)] {
+        let mut cfg = config("claude");
+        cfg.mode = mode.into();
+        cfg.auto_writes = flag;
+        let mut protocol = Protocol::new(cfg);
+        let step = protocol
+            .receive(can_use("gated", "Write", write_tool_input("Write")))
+            .unwrap();
+        assert!(step.write.is_empty(), "{mode} flag={flag} still asks");
+        assert!(
+            step.events.iter().any(|event| event.kind == "approval"),
+            "{mode} flag={flag} reaches the user"
+        );
+    }
+}
+
+/// The branches ahead of the write answer keep their shape: questions are
+/// denied, and Plan mode still runs its own read-only allowlist only.
+#[test]
+fn auto_writes_keeps_question_denials_and_plan_read_allows_intact() {
+    let mut cfg = config("claude");
+    cfg.auto_writes = true;
+    let mut protocol = Protocol::new(cfg);
+    let step = protocol
+        .receive(can_use("question", "AskUserQuestion", json!({"questions":[{"question":"Which?","options":[]}]})))
+        .unwrap();
+    assert_eq!(step.write[0]["response"]["response"]["behavior"], "deny");
+    assert!(step.events.iter().all(|event| event.kind != "approval"));
+
+    let mut cfg = config("claude");
+    cfg.mode = "plan".into();
+    cfg.auto_writes = true;
+    let mut protocol = Protocol::new(cfg);
+    let step = protocol
+        .receive(can_use("plan-read", "Read", json!({"file_path":"/tmp/notes.txt"})))
+        .unwrap();
+    assert_eq!(step.write[0]["response"]["response"]["behavior"], "allow");
+    // Credential reads stay behind a prompt even in plan mode.
+    let step = protocol
+        .receive(can_use("plan-key", "Read", json!({"file_path":"~/.ssh/id_rsa"})))
+        .unwrap();
+    assert!(step.write.is_empty(), "plan mode never auto-runs a key read");
+    assert!(step.events.iter().any(|event| event.kind == "approval"));
+}

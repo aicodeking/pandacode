@@ -1964,6 +1964,184 @@ mod tests {
         assert_eq!(full["agent"]["plan"]["permission"]["*"], "allow");
     }
 
+    fn write_permission(kind: &str) -> Value {
+        let mut request = permission();
+        request["params"]["toolCall"]["kind"] = json!(kind);
+        request
+    }
+
+    fn deepseek_tool(name: &str) -> Value {
+        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ds-1","update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":name,"kind":"other","status":"in_progress","rawInput":{}}}})
+    }
+
+    /// With the per-task "Auto-approve writes" toggle on, every write kind is
+    /// answered once in Standard and Accept edits modes, without asking.
+    #[test]
+    fn auto_writes_answers_write_kinds_in_ask_and_auto_modes() {
+        for mode in ["ask", "auto"] {
+            for kind in ["edit", "delete", "execute"] {
+                let mut cfg = config("opencode");
+                cfg.mode = mode.into();
+                cfg.auto_writes = true;
+                let mut p = Protocol::new(cfg);
+                p.remote_id = "remote".into();
+                let step = p.receive(write_permission(kind)).unwrap();
+                assert_eq!(
+                    step.write,
+                    vec![json!({"jsonrpc":"2.0","id":"p1","result":{"outcome":{"outcome":"selected","optionId":"yes"}}})],
+                    "{mode} {kind}"
+                );
+                assert!(
+                    step.events.iter().all(|event| event.kind != "approval"),
+                    "{mode} {kind} must not ask"
+                );
+                assert!(p.pending.is_empty(), "{mode} {kind}");
+            }
+        }
+    }
+
+    /// DeepSeek reports edits by tool name, not kind: the name fallback keeps
+    /// answering those with the toggle on.
+    #[test]
+    fn auto_writes_answers_deepseek_edit_tool_names_without_a_kind() {
+        for name in ["edit", "write", "str_replace_editor"] {
+            let mut cfg = config("deepseek");
+            cfg.mode = "ask".into();
+            cfg.auto_writes = true;
+            let mut p = Protocol::new(cfg);
+            p.remote_id = "ds-1".into();
+            p.receive(deepseek_tool(name)).unwrap();
+            let step = p
+                .receive(json!({"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"ds-1","toolCall":{"toolCallId":"c1","kind":"other"},"options":[{"optionId":"allow-once","kind":"allow_once"},{"optionId":"reject-once","kind":"reject_once"}]}}))
+                .unwrap();
+            assert_eq!(
+                step.write,
+                vec![json!({"jsonrpc":"2.0","id":9,"result":{"outcome":{"outcome":"selected","optionId":"allow-once"}}})],
+                "{name}"
+            );
+            assert!(
+                step.events.iter().all(|event| event.kind != "approval"),
+                "{name} must not ask"
+            );
+        }
+    }
+
+    /// Reads and unknown kinds keep asking with the toggle on, the one-grant
+    /// and structured-question guards stay, and Accept edits answers edits
+    /// today exactly as it did before the toggle existed.
+    #[test]
+    fn auto_writes_keeps_other_kinds_questions_and_extra_grants_asking() {
+        for (mode, flag, kind) in [
+            ("ask", true, "read"),
+            ("ask", true, "search"),
+            ("ask", true, "fetch"),
+            ("ask", true, "think"),
+            ("ask", true, "other"),
+            ("ask", false, "edit"),
+            ("ask", false, "execute"),
+            ("auto", false, "execute"),
+        ] {
+            let mut cfg = config("opencode");
+            cfg.mode = mode.into();
+            cfg.auto_writes = flag;
+            let mut p = Protocol::new(cfg);
+            p.remote_id = "remote".into();
+            let step = p.receive(write_permission(kind)).unwrap();
+            assert!(
+                step.write.is_empty(),
+                "{mode} flag={flag} kind={kind} must wait"
+            );
+            assert!(
+                step.events.iter().any(|event| event.kind == "approval"),
+                "{mode} flag={flag} kind={kind} reaches the user"
+            );
+        }
+        for options in [
+            (
+                json!([{"optionId":"q0_opt_0","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]),
+                false,
+            ),
+            (
+                json!([{"optionId":"one","kind":"allow_once"},{"optionId":"two","kind":"allow_once"}]),
+                false,
+            ),
+            (json!([{"optionId":"no","kind":"reject_once"}]), true),
+        ] {
+            let mut cfg = config("opencode");
+            cfg.mode = "ask".into();
+            cfg.auto_writes = true;
+            let mut p = Protocol::new(cfg);
+            p.remote_id = "remote".into();
+            let mut request = write_permission("execute");
+            request["params"]["options"] = options.0;
+            let step = p.receive(request).unwrap();
+            // Structured questions and ambiguous grants keep today's path:
+            // cancelled as structured input, never answered with an allow.
+            if options.1 {
+                assert!(step.write.is_empty(), "a lone reject option still asks");
+                assert!(step.events.iter().any(|event| event.kind == "approval"));
+            } else {
+                assert_eq!(
+                    step.write[0]["result"]["outcome"]["outcome"],
+                    "cancelled",
+                    "questions stay for chat"
+                );
+                assert!(step
+                    .events
+                    .iter()
+                    .any(|event| event.text.contains("structured input")));
+            }
+        }
+        // Accept edits already answered plain edits; the toggle must not narrow that.
+        let mut cfg = config("opencode");
+        cfg.mode = "auto".into();
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "remote".into();
+        let step = p.receive(write_permission("edit")).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "yes");
+    }
+
+    /// Plan mode keeps declining state changes with the toggle on: the write
+    /// answer must sit below every provider plan handler.
+    #[test]
+    fn auto_writes_leaves_plan_mode_declines_in_charge() {
+        let mut cfg = config("kilo");
+        cfg.mode = "plan".into();
+        cfg.auto_writes = true;
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "remote".into();
+        let step = p.receive(write_permission("execute")).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "no");
+        assert!(step
+            .events
+            .iter()
+            .any(|event| event.text.contains("Plan mode declined")));
+
+        let (mut p, _) = grok_ready("plan");
+        p.config.auto_writes = true;
+        let step = p.receive(grok_permission("execute", false)).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "reject-once");
+        assert!(step
+            .events
+            .iter()
+            .any(|event| event.text.contains("Plan mode declined")));
+
+        let mut cfg = config("deepseek");
+        cfg.mode = "plan".into();
+        cfg.auto_writes = true;
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "ds-1".into();
+        p.receive(deepseek_tool("write")).unwrap();
+        let step = p
+            .receive(json!({"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"ds-1","toolCall":{"toolCallId":"c1","kind":"other"},"options":[{"optionId":"allow-once","kind":"allow_once"},{"optionId":"reject-once","kind":"reject_once"}]}}))
+            .unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "reject-once");
+        assert!(step
+            .events
+            .iter()
+            .any(|event| event.text.contains("Plan mode declined")));
+    }
+
     #[test]
     fn acp_streaming_preserves_boundaries_tools_usage_and_isolation() {
         for provider in ["opencode", "antigravity"] {
