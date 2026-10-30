@@ -201,6 +201,7 @@ mod tests {
         for different in [
             changed(|c| c.model = "claude-sonnet-5-5".into()),
             changed(|c| c.mode = "full".into()),
+            changed(|c| c.auto_writes = true),
             changed(|c| c.reasoning_effort = Some("high".into())),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),

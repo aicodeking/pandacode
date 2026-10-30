@@ -1263,7 +1263,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const boundary = history.findIndex(message => message.id === args.messageId);
       if (!Number.isSafeInteger(args.messageId) || args.messageId <= 0 || boundary < 0 || !['user', 'assistant'].includes(history[boundary].role)) throw new Error('Choose a saved user message or assistant response to fork.');
       const boundaryProvider = historicalProvider(history[boundary], history, source.provider);
-      const created: Session = { ...structuredClone(source), id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: [...source.title].slice(0, 193).join('') + ' (fork)', resumeId: null, status: 'idle', archived: false, goalState: null, contextUsage: null, taskStage: 'in_progress', completedAt: null, lastResponseAt: null, lastPromptAt: null, createdAt: Date.now(), updatedAt: Date.now() };
+      const created: Session = { ...structuredClone(source), id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: [...source.title].slice(0, 193).join('') + ' (fork)', resumeId: null, autoWrites: false, status: 'idle', archived: false, goalState: null, contextUsage: null, taskStage: 'in_progress', completedAt: null, lastResponseAt: null, lastPromptAt: null, createdAt: Date.now(), updatedAt: Date.now() };
       const copied: Message[] = history.slice(0, boundary + (args.exclusive ? 0 : 1)).filter(message => !['internal', 'changes'].includes(message.role)).map(message => {
         let content = message.content;
         if (message.role === 'tool') {
@@ -1289,7 +1289,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         if (previous) { result = previous; break; }
         if (args.remoteId !== 'preview-remote-conversation') throw new Error('That conversation is not available in this project.');
       } else if (!source.resumeId) throw new Error('Start the conversation before forking it.');
-      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: args.remoteId ? 'Review project architecture' : source.title + ' (fork)', resumeId: args.remoteId ?? crypto.randomUUID(), status: 'idle', archived: false, goalState: null, taskStage: 'in_progress', createdAt: Date.now(), updatedAt: Date.now() };
+      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: args.remoteId ? 'Review project architecture' : source.title + ' (fork)', resumeId: args.remoteId ?? crypto.randomUUID(), autoWrites: false, status: 'idle', archived: false, goalState: null, taskStage: 'in_progress', createdAt: Date.now(), updatedAt: Date.now() };
       sessions.unshift(created); messages[created.id] = args.remoteId ? [{ id: ++id, sessionId: created.id, role: 'assistant', content: 'This is a sample imported conversation. No remote data was read.', createdAt: Date.now() }] : (messages[source.id] ?? []).map(message => ({ ...message, id: ++id, sessionId: created.id })); result = created; break;
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
@@ -1619,7 +1619,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_worktree': {
       const source = session(args.sessionId);
       const worktree = previewWorktree(source, args);
-      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
+      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', autoWrites: false, status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
       sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id); result = created; break;
     }
     case 'attach_worktree': {

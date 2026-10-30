@@ -484,9 +484,9 @@ impl Protocol {
                     && self.tools.get(field(&value["params"]["toolCall"], "toolCallId"))
                         .is_some_and(|tool| DEEPSEEK_EDIT_TOOLS.contains(&tool.name.as_str())));
             // The auto-approve-writes toggle covers every write kind, including the
-            // edits DeepSeek reports by tool name rather than kind.
+            // edits DeepSeek reports by tool name rather than kind and moves.
             let write_kind = edit
-                || matches!(value["params"]["toolCall"]["kind"].as_str(), Some("delete" | "execute"));
+                || matches!(value["params"]["toolCall"]["kind"].as_str(), Some("delete" | "execute" | "move"));
             let auto = self.config.mode == "full"
                 || (self.config.mode == "auto" && edit)
                 || (self.config.auto_writes && matches!(self.config.mode.as_str(), "ask" | "auto") && write_kind);
@@ -2503,5 +2503,30 @@ mod tests {
         let step = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
         assert!(!step.done);
         assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "retry me");
+    }
+
+    /// A move is a write: the toggle answers it like edit, delete and execute.
+    #[test]
+    fn auto_writes_answers_move_kind_like_other_writes() {
+        let mut cfg = config("cline");
+        cfg.mode = "ask".into();
+        cfg.auto_writes = true;
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "remote".into();
+        let step = p.receive(write_permission("move")).unwrap();
+        assert_eq!(
+            step.write,
+            vec![json!({"jsonrpc":"2.0","id":"p1","result":{"outcome":{"outcome":"selected","optionId":"yes"}}})],
+            "move is answered with the toggle on"
+        );
+        assert!(step.events.iter().all(|event| event.kind != "approval"));
+
+        let mut cfg = config("cline");
+        cfg.mode = "ask".into();
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "remote".into();
+        let step = p.receive(write_permission("move")).unwrap();
+        assert!(step.write.is_empty(), "without the toggle a move still asks");
+        assert!(step.events.iter().any(|event| event.kind == "approval"));
     }
 }
