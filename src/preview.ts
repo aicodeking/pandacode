@@ -2564,12 +2564,34 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = previewExplorer.list(args); break;
+    case 'list_files': {
+      // The ?folders sample's web repository and plain docs folder list their own trees.
+      const folderFiles = args.folder === 'orbit-web'
+        ? (String(args.path) === 'src' ? [{ name: 'app.tsx', isDir: false }, { name: 'theme.css', isDir: false }] : String(args.path) ? [] : [{ name: 'src', isDir: true }, { name: 'package.json', isDir: false }, { name: 'index.html', isDir: false }])
+        : args.folder === 'orbit-docs'
+          ? (String(args.path) ? [] : [{ name: 'setup.md', isDir: false }, { name: 'guide.md', isDir: false }])
+          : null;
+      if (folderFiles) { result = folderFiles.map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break; }
+      result = previewExplorer.list(args); break;
+    }
+    case 'list_files': {
+      // The ?folders sample's web repository and plain docs folder list their own trees.
+      const folderFiles = args.folder === 'orbit-web'
+        ? (String(args.path) === 'src' ? [{ name: 'app.tsx', isDir: false }, { name: 'theme.css', isDir: false }] : String(args.path) ? [] : [{ name: 'src', isDir: true }, { name: 'package.json', isDir: false }, { name: 'index.html', isDir: false }])
+        : args.folder === 'orbit-docs'
+          ? (String(args.path) ? [] : [{ name: 'setup.md', isDir: false }, { name: 'guide.md', isDir: false }])
+          : null;
+      if (folderFiles) { result = folderFiles.map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break; }
+    }
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
-      const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
+      // Each folder searches its own files; the primary keeps the sample checkout.
+      const pool = args.folder === 'orbit-web' ? ['src/app.tsx', 'src/theme.css', 'package.json']
+        : args.folder === 'orbit-docs' ? ['setup.md', 'guide.md']
+        : previewWorkspaceFiles;
+      const files = pool.map(path => ({ path, isDir: false }));
       // Folders join typed queries only, like the native index.
-      const folders = query ? ['src', 'src/components', 'src/lib', 'public', 'docs'].map(path => ({ path, isDir: true })) : [];
+      const folders = query && !args.folder ? ['src', 'src/components', 'src/lib', 'public', 'docs'].map(path => ({ path, isDir: true })) : [];
       result = [...files, ...folders]
         .filter(entry => entry.path.toLocaleLowerCase().includes(query))
         .map(entry => ({ name: entry.path.split('/').pop()!, ...entry }))
@@ -2585,7 +2607,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         const source = args.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.matchCase ? 'g' : 'gi');
       } catch (error) { throw new Error(`Invalid regular expression: ${(error as Error).message}`); }
-      const files = previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path)).map(path => {
+      const pool = args.folder === 'orbit-web' ? ['src/app.tsx', 'src/theme.css']
+        : args.folder === 'orbit-docs' ? ['setup.md', 'guide.md']
+        : previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path));
+      const files = pool.map(path => {
         const lines = (path.endsWith('.md') ? sampleReadme : sampleSource).split('\n');
         const matches = lines.flatMap((line, index) => {
           const text = line.trimStart(), ranges = [...text.matchAll(pattern)].filter(m => m[0]).map(m => [m.index!, m.index! + m[0].length]);
@@ -2664,7 +2689,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
-    case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
+    case 'read_file': {
+      const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`);
+      // Folder-qualified reads come from the ?folders sample's extra folders.
+      if (args.folder) { result = String(args.path).endsWith('.md') ? sampleReadme : sampleSource; break; }
+    }
       result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
     case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
     case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;

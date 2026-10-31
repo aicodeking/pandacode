@@ -923,6 +923,7 @@ async fn dispatch(
                     current.project_id,
                     Some(sid.to_owned()),
                     string(&args, "path"),
+                    None,
                 )
                 .await?;
             }
