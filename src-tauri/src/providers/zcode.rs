@@ -22,6 +22,74 @@ const FIRST_PROMPT_ID: u64 = 6;
 pub(super) const SIGN_IN: &str =
     "ZCode requires sign-in. Run `zcode` in a terminal and sign in, then send again.";
 
+/// The CLI bundled with ZCode Desktop (`…/resources/glm/zcode.cjs`), for installs
+/// without `zcode` on PATH. The launch layer runs it on the app's own Electron
+/// runtime, so no system node is needed.
+pub(super) fn bundled() -> Option<PathBuf> {
+    bundled_candidates().into_iter().find(|path| runnable(path))
+}
+
+/// The launch layer can run the script: it carries an exec bit (direct shebang
+/// exec) or a desktop app runtime sits beside it to launch it, so a bundled copy
+/// that lost its mode still counts when its app can run it.
+#[cfg(unix)]
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().is_ok_and(|metadata| {
+        metadata.is_file()
+            && (metadata.permissions().mode() & 0o111 != 0
+                || super::launch::electron_runtime(path).is_some())
+    })
+}
+
+#[cfg(not(unix))]
+fn runnable(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    let home = crate::agent_usage_providers::home();
+    [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("ZCode.app/Contents/Resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's NSIS defaults: per-user under %LOCALAPPDATA%\Programs,
+    // per-machine under %ProgramFiles%; the inner layout matches every platform.
+    let roots = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(|local| PathBuf::from(local).join("Programs"))
+        .into_iter()
+        .chain(
+            std::env::var_os("ProgramFiles")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+        );
+    roots
+        .flat_map(|root| ["ZCode", "zcode"].map(|name| root.join(name)))
+        .map(|root| root.join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's deb/rpm default installs under /opt/<product name>.
+    ["/opt/ZCode", "/opt/zcode"]
+        .iter()
+        .map(|root| PathBuf::from(root).join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn bundled_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// PandaCode mode → ZCode session mode. `auto` is Accept edits (edits run
 /// free, the rest ask); Standard (`ask`) and the reviewer mode run `build`.
 pub(super) fn mode(mode: &str) -> &'static str {
@@ -542,6 +610,19 @@ pub(super) fn permission_decision(request: &Value, approved: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn bundled_candidates_cover_the_desktop_app_bundle() {
+        let expected = if cfg!(target_os = "macos") {
+            "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"
+        } else {
+            "/opt/ZCode/resources/glm/zcode.cjs"
+        };
+        assert!(bundled_candidates()
+            .iter()
+            .any(|path| path == Path::new(expected)), "missing {expected}");
+    }
 
     /// Recorded from the CLI bundled with ZCode.app (user-agent ZCode/3.16.3);
     /// session IDs, models and paths anonymized, catalog shortened to one entry.

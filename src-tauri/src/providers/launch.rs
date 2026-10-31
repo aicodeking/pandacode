@@ -8,6 +8,9 @@ use std::{
 struct Launch {
     program: PathBuf,
     args: Vec<OsString>,
+    /// One environment override the launch choice itself implies (`ELECTRON_RUN_AS_NODE`
+    /// when a desktop app's own runtime runs its bundled CLI).
+    env: Option<(&'static str, &'static str)>,
 }
 
 /// Canonical Windows paths are useful for native file operations, but Node and
@@ -66,10 +69,39 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     let batch = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
+    let node_script = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("js")
+            || extension.eq_ignore_ascii_case("mjs")
+            || extension.eq_ignore_ascii_case("cjs")
+    });
+    if node_script {
+        // A desktop app's bundled CLI (ZCode's `zcode.cjs`) is built for the app's
+        // own Electron runtime, which exists even where no system node does.
+        if let Some(runtime) = electron_runtime(path) {
+            return Ok(Launch {
+                program: external_path_for(&runtime, windows),
+                args: vec![external_path_for(path, windows).into_os_string()],
+                env: Some(("ELECTRON_RUN_AS_NODE", "1")),
+            });
+        }
+        if !windows {
+            // Unix: an executable shebang script runs directly.
+            return Ok(Launch {
+                program: external_path_for(path, windows),
+                args: Vec::new(),
+                env: None,
+            });
+        }
+        // Windows cannot exec a Node script directly; start it under node.
+        let directory =
+            path.parent().ok_or("The Node script has no installation folder.")?;
+        return node_launch(path, directory);
+    }
     if !windows || !batch {
         return Ok(Launch {
             program: external_path_for(path, windows),
             args: Vec::new(),
+            env: None,
         });
     }
     // npm shims forward arguments through cmd.exe. Launch their declared bin
@@ -125,16 +157,65 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
         return Ok(Launch {
             program: external_path_for(&script, windows),
             args: Vec::new(),
+            env: None,
         });
     }
+    node_launch(&script, directory)
+}
+
+/// A Node script next to its own runtime, else any node on the searched PATH.
+fn node_launch(script: &Path, directory: &Path) -> Result<Launch, String> {
     let adjacent_node = directory.join("node.exe");
     let node = adjacent_node.is_file().then_some(adjacent_node)
         .or_else(|| find_native_node(search_directories(true, &|key| std::env::var_os(key))))
-        .ok_or("Node.js is required by this npm-installed harness. Install Node.js or use the native harness installer.")?;
+        .ok_or("Node.js is required by this harness. Install Node.js or use the native harness installer.")?;
     Ok(Launch {
-        program: external_path_for(&node, windows),
-        args: vec![external_path_for(&script, windows).into_os_string()],
+        program: external_path_for(&node, true),
+        args: vec![external_path_for(script, true).into_os_string()],
+        env: None,
     })
+}
+
+/// The Electron binary a desktop app bundles beside a Node script. Run-as-node is
+/// a plain node, and the bundled CLIs (ZCode) are built for exactly that runtime,
+/// which is there even where no system node is.
+#[cfg(target_os = "macos")]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // …/ZCode.app/Contents/Resources/<…>/cli.cjs runs on …/Contents/MacOS/ZCode.
+    let contents = script.ancestors().nth(3)?;
+    if contents.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let app = contents.parent()?;
+    let name = app.file_name()?.to_str()?.strip_suffix(".app")?;
+    let binary = contents.join("MacOS").join(name);
+    binary.is_file().then_some(binary)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // <root>\resources\<…>\cli.cjs runs on <root>\<name>.exe.
+    let resources = script.ancestors().nth(2)?;
+    if !resources.file_name()?.to_str()?.eq_ignore_ascii_case("resources") {
+        return None;
+    }
+    let root = resources.parent()?;
+    let name = root.file_name()?.to_str()?;
+    [name, &name.to_lowercase()].into_iter().map(|name| root.join(format!("{name}.exe")))
+        .find(|binary| binary.is_file())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // <root>/resources/<…>/cli.cjs runs on <root>/<executable name>.
+    let resources = script.ancestors().nth(2)?;
+    if resources.file_name()?.to_str()? != "resources" {
+        return None;
+    }
+    let root = resources.parent()?;
+    let name = root.file_name()?.to_str()?;
+    [name, &name.to_lowercase()].into_iter().map(|name| root.join(name))
+        .find(|binary| binary.is_file())
 }
 
 /// The executable a package declares in `package.json` `bin`, kept inside the package.
@@ -253,6 +334,9 @@ pub(crate) fn command(path: &Path) -> Result<tokio::process::Command, String> {
     let launch = resolve(path, cfg!(windows))?;
     let mut command = tokio::process::Command::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -267,6 +351,9 @@ pub(super) fn std_command(path: &Path) -> Result<std::process::Command, String> 
     let launch = resolve(path, cfg!(windows))?;
     let mut command = std::process::Command::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -284,6 +371,9 @@ pub(crate) fn pty_command(path: &Path) -> Result<portable_pty::CommandBuilder, S
     let launch = resolve(path, cfg!(windows))?;
     let mut command = portable_pty::CommandBuilder::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -647,6 +737,62 @@ mod tests {
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
         assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn windows_node_scripts_launch_under_adjacent_node() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let node = f.file("ZCode/resources/glm/node.exe", "");
+        let launch = resolve(&script, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn unix_node_scripts_launch_directly() {
+        let f = Fixture::new();
+        let script = f.file("glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&script, false));
+        assert!(launch.args.is_empty());
+        assert_eq!(launch.env, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode.app/Contents/Resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode.app/Contents/MacOS/ZCode", "");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, false));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode/zcode", "");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, false));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode/ZCode.exe", "");
+        let launch = resolve(&script, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, true));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
     }
 
     #[test]
