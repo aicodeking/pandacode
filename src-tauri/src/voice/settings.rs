@@ -155,9 +155,10 @@ mod tests {
         // Not installed: fall back to the language default that is installed.
         let settings = Settings { model: "parakeet-v3".into(), language: "zh".into(), ..Settings::default() };
         assert_eq!(settings.resolved_model(&installed), "sense-voice");
-        // An installed default still answers for other languages…
+        // …but a parakeet language defaults to parakeet-v3/whisper-small now,
+        // so an installed sense-voice no longer answers for it.
         let settings = Settings { model: "parakeet-v3".into(), language: "fr".into(), ..Settings::default() };
-        assert_eq!(settings.resolved_model(&installed), "sense-voice");
+        assert_eq!(settings.resolved_model(&installed), "");
         // …and nothing is chosen when nothing is installed.
         assert_eq!(settings.resolved_model(&|_| false), "");
     }
