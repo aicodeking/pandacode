@@ -2,15 +2,33 @@
 // Mirrors the desktop's src/i18n.ts (kept behavior-identical by mobile/tests/language.test.ts);
 // mobile keeps its own copy because Metro does not bundle files outside mobile/src.
 
-export type Locale = 'en-US' | 'en-GB' | 'zh-Hans' | 'zh-Hant-HK' | 'zh-Hant-TW';
+export type Locale =
+  | 'en-US' | 'en-GB'
+  | 'de' | 'es' | 'fr' | 'it' | 'pt-BR'
+  | 'ja' | 'ko' | 'pl' | 'ru'
+  | 'zh-Hans' | 'zh-Hant-HK' | 'zh-Hant-TW';
 export type LanguageChoice = 'system' | Locale;
 
-export const LOCALES: Locale[] = ['en-US', 'en-GB', 'zh-Hans', 'zh-Hant-HK', 'zh-Hant-TW'];
+export const LOCALES: Locale[] = [
+  'en-US', 'en-GB',
+  'de', 'es', 'fr', 'it', 'pt-BR',
+  'ja', 'ko', 'pl', 'ru',
+  'zh-Hans', 'zh-Hant-HK', 'zh-Hant-TW',
+];
 
 /** Picker entries, each named in its own language. */
 export const LANGUAGES: { id: Locale; native: string }[] = [
   { id: 'en-US', native: 'English (US)' },
   { id: 'en-GB', native: 'English (UK)' },
+  { id: 'de', native: 'Deutsch' },
+  { id: 'es', native: 'Español' },
+  { id: 'fr', native: 'Français' },
+  { id: 'it', native: 'Italiano' },
+  { id: 'ja', native: '日本語' },
+  { id: 'ko', native: '한국어' },
+  { id: 'pl', native: 'Polski' },
+  { id: 'pt-BR', native: 'Português (Brasil)' },
+  { id: 'ru', native: 'Русский' },
   { id: 'zh-Hans', native: '简体中文' },
   { id: 'zh-Hant-HK', native: '繁體中文（香港）' },
   { id: 'zh-Hant-TW', native: '繁體中文（台灣）' },
@@ -35,6 +53,15 @@ export function resolveSystemLocale(candidates: readonly string[]): Locale {
       if (['gb', 'au', 'ie', 'nz', 'za', 'sg', 'in'].some(has)) return 'en-GB';
       return 'en-US';
     }
+    if (tag.startsWith('de')) return 'de';
+    if (tag.startsWith('es')) return 'es';
+    if (tag.startsWith('fr')) return 'fr';
+    if (tag.startsWith('it')) return 'it';
+    if (tag.startsWith('ja')) return 'ja';
+    if (tag.startsWith('ko')) return 'ko';
+    if (tag.startsWith('pl')) return 'pl';
+    if (tag.startsWith('pt')) return 'pt-BR';
+    if (tag.startsWith('ru')) return 'ru';
   }
   return 'en-US';
 }

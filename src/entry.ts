@@ -3,7 +3,16 @@ import { languagePref, registerBackendCatalog, registerCatalog, resolvedLocale, 
 
 // The active catalog loads before any view module, so module-level t() calls resolve in the right language.
 const catalogs: Partial<Record<Locale, () => Promise<{ default: Record<string, string>; backend?: Record<string, string> }>>> = {
+  'de': () => import('./locales/de'),
   'en-GB': () => import('./locales/en-GB'),
+  'es': () => import('./locales/es'),
+  'fr': () => import('./locales/fr'),
+  'it': () => import('./locales/it'),
+  'ja': () => import('./locales/ja'),
+  'ko': () => import('./locales/ko'),
+  'pl': () => import('./locales/pl'),
+  'pt-BR': () => import('./locales/pt-BR'),
+  'ru': () => import('./locales/ru'),
   'zh-Hans': () => import('./locales/zh-Hans'),
   'zh-Hant-HK': () => import('./locales/zh-Hant-HK'),
   'zh-Hant-TW': () => import('./locales/zh-Hant-TW'),

@@ -2,7 +2,7 @@
 
 Settings is a full page with eight sections in the left column, opening on Recommended. A section with several pages shows them in a segmented control at the top of the content. Preferences save automatically. Every page can also be opened from the command palette: search its name, such as "providers" or "skills".
 
-**General → Language** follows the system language until you pick English (US), English (UK), 简体中文, 繁體中文（香港）or 繁體中文（台灣）; the choice applies to every PandaCode window (workspace, quick launcher and menu bar popover) after an instant reload, and unsent composer text survives it. See [src/locales/GLOSSARY.md](../src/locales/GLOSSARY.md) for how the catalogs work.
+**General → Language** follows the system language until you pick one of the supported languages (English US/UK, German, Spanish, French, Italian, Japanese, Korean, Brazilian Portuguese, Polish, Russian, Simplified Chinese, Traditional Chinese HK/TW); the choice applies to every PandaCode window (workspace, quick launcher and menu bar popover) after an instant reload, and unsent composer text survives it. See [src/locales/GLOSSARY.md](../src/locales/GLOSSARY.md) for how the catalogs work.
 
 | Section | Pages |
 | --- | --- |
