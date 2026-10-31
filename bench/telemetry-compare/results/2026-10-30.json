@@ -1,0 +1,5623 @@
+{
+  "date": "2026-10-30",
+  "config": {
+    "runs": 5,
+    "idleS": 60,
+    "steadyS": 30,
+    "probeIntervalMs": 150,
+    "nettopIntervalS": 1
+  },
+  "environment": {
+    "model": "Mac16,5",
+    "cpu": "Apple M4 Max",
+    "memGB": 48,
+    "macos": "27.0.1",
+    "pandacodeCommit": "37ef134",
+    "node": "v22.22.3"
+  },
+  "apps": {
+    "pandacode": {
+      "name": "PandaCode",
+      "bundle": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app",
+      "bundleId": "ai.pandacode.bench",
+      "version": "0.3.79",
+      "bundleMB": 48.55859375
+    },
+    "t3": {
+      "name": "T3 Code",
+      "bundle": "/Applications/T3 Code (Nightly).app",
+      "bundleId": "com.t3tools.t3code",
+      "version": "0.1.3-nightly.20261026.3717",
+      "bundleMB": 456.53515625
+    }
+  },
+  "hosts": {
+    "192.168.10.1": {
+      "rdns": [],
+      "dnsMatch": []
+    },
+    "32.196.68.31": {
+      "rdns": [],
+      "cert": {
+        "cn": "us-east-1.aws.edge.axiom.co",
+        "sans": [
+          "us-east-1.aws.edge.axiom.co",
+          "hec.us-east-1.aws.edge.axiom.co"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "us-east-1.aws.edge.axiom.co"
+      ]
+    },
+    "44.216.55.45": {
+      "rdns": [],
+      "cert": {
+        "cn": "us-east-1.aws.edge.axiom.co",
+        "sans": [
+          "us-east-1.aws.edge.axiom.co",
+          "hec.us-east-1.aws.edge.axiom.co"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "us-east-1.aws.edge.axiom.co"
+      ]
+    },
+    "185.199.110.133": {
+      "rdns": [],
+      "cert": {
+        "cn": "*.github.io",
+        "sans": [
+          "*.github.com",
+          "*.github.io",
+          "*.githubusercontent.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "raw.githubusercontent.com"
+      ]
+    },
+    "142.250.31.207": {
+      "rdns": [],
+      "cert": {
+        "cn": "invalid2.invalid",
+        "sans": [
+          "invalid2.invalid"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "storage.googleapis.com"
+      ]
+    },
+    "185.199.111.133": {
+      "rdns": [],
+      "cert": {
+        "cn": "*.github.io",
+        "sans": [
+          "*.github.com",
+          "*.github.io",
+          "*.githubusercontent.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "raw.githubusercontent.com"
+      ]
+    },
+    "104.16.3.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.16.10.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "140.82.113.6": {
+      "rdns": [],
+      "cert": {
+        "cn": "*.github.com",
+        "sans": [
+          "*.github.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "140.82.114.6": {
+      "rdns": [],
+      "cert": {
+        "cn": "*.github.com",
+        "sans": [
+          "*.github.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "140.82.114.5": {
+      "rdns": [],
+      "cert": {
+        "cn": "*.github.com",
+        "sans": [
+          "*.github.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "140.82.114.4": {
+      "rdns": [],
+      "cert": {
+        "cn": "github.com",
+        "sans": [
+          "github.com",
+          "www.github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "140.82.114.3": {
+      "rdns": [],
+      "cert": {
+        "cn": "github.com",
+        "sans": [
+          "github.com",
+          "www.github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "github.com",
+        "www.github.com"
+      ]
+    },
+    "104.16.4.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.16.8.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "160.79.104.10": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": [
+        "docs.anthropic.com",
+        "claude.ai",
+        "api.anthropic.com",
+        "platform.claude.com"
+      ]
+    },
+    "104.21.3.218": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": [
+        "relay.t3.codes",
+        "ingest.t3.codes"
+      ]
+    },
+    "172.67.153.155": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": [
+        "relay.t3.codes",
+        "ingest.t3.codes"
+      ]
+    },
+    "172.64.153.110": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": []
+    },
+    "142.251.16.207": {
+      "rdns": [
+        "bl-in-f207.1e100.net"
+      ],
+      "cert": {
+        "cn": "invalid2.invalid",
+        "sans": [
+          "invalid2.invalid"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "storage.googleapis.com"
+      ]
+    },
+    "185.199.109.133": {
+      "rdns": [
+        "cdn-185-199-109-133.github.com"
+      ],
+      "cert": {
+        "cn": "*.github.io",
+        "sans": [
+          "*.github.com",
+          "*.github.io",
+          "*.githubusercontent.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "raw.githubusercontent.com"
+      ]
+    },
+    "172.253.122.207": {
+      "rdns": [
+        "bh-in-f207.1e100.net"
+      ],
+      "cert": {
+        "cn": "invalid2.invalid",
+        "sans": [
+          "invalid2.invalid"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "storage.googleapis.com"
+      ]
+    },
+    "35.190.80.1": {
+      "rdns": [
+        "1.80.190.35.bc.googleusercontent.com"
+      ],
+      "cert": {
+        "cn": "gcp.nel.cloudflare.com",
+        "sans": [
+          "gcp.nel.cloudflare.com",
+          "a.nel.cloudflare.com",
+          "xn--668h.nel.cloudflare.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "104.16.0.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.16.6.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.16.9.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.16.2.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "35.190.46.17": {
+      "rdns": [
+        "17.46.190.35.bc.googleusercontent.com"
+      ],
+      "cert": {
+        "cn": "downloads.claude.ai",
+        "sans": [
+          "downloads.claude.ai",
+          "downloads.claude.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "downloads.claude.ai"
+      ]
+    },
+    "104.16.5.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "172.64.144.117": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": [
+        "releases.openai.com"
+      ]
+    },
+    "104.16.7.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "185.199.108.133": {
+      "rdns": [
+        "cdn-185-199-108-133.github.com"
+      ],
+      "cert": {
+        "cn": "*.github.io",
+        "sans": [
+          "*.github.com",
+          "*.github.io",
+          "*.githubusercontent.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "raw.githubusercontent.com"
+      ]
+    },
+    "140.82.113.5": {
+      "rdns": [
+        "lb-140-82-113-5-iad.github.com"
+      ],
+      "cert": {
+        "cn": "*.github.com",
+        "sans": [
+          "*.github.com",
+          "github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "api.github.com"
+      ]
+    },
+    "142.251.163.207": {
+      "rdns": [
+        "wv-in-f207.1e100.net"
+      ],
+      "cert": {
+        "cn": "invalid2.invalid",
+        "sans": [
+          "invalid2.invalid"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "storage.googleapis.com"
+      ]
+    },
+    "104.16.11.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "140.82.113.3": {
+      "rdns": [
+        "lb-140-82-113-3-iad.github.com"
+      ],
+      "cert": {
+        "cn": "github.com",
+        "sans": [
+          "github.com",
+          "www.github.com"
+        ],
+        "org": null
+      },
+      "dnsMatch": []
+    },
+    "104.16.1.34": {
+      "rdns": [],
+      "cert": {
+        "cn": "npmjs.org",
+        "sans": [
+          "npmjs.org",
+          "*.npmjs.org"
+        ],
+        "org": null
+      },
+      "dnsMatch": [
+        "registry.npmjs.org"
+      ]
+    },
+    "104.18.34.146": {
+      "rdns": [],
+      "cert": null,
+      "dnsMatch": []
+    }
+  },
+  "runs": [
+    {
+      "app": "pandacode",
+      "run": 1,
+      "startedAt": "2026-10-30T03:54:29.002Z",
+      "root": 74496,
+      "firstWindowMs": 740,
+      "resources": {
+        "rssMB": 721.890625,
+        "peakRssMB": 1032.546875,
+        "footprintMB": 412.7081832885742,
+        "cpuS": 6.543921742,
+        "cpuSteadyS": 0.067833959,
+        "processes": 7,
+        "threads": 43,
+        "processesSeen": 24,
+        "processNames": [
+          "SetStoreUpdateService",
+          "com.apple.SafariPlatformSupport.Helper",
+          "com.apple.WebKit.GPU",
+          "com.apple.WebKit.Networking",
+          "com.apple.WebKit.WebContent",
+          "com.apple.audio.SandboxHelper",
+          "pandacode"
+        ],
+        "perProcess": [
+          {
+            "pid": 74789,
+            "name": "com.apple.WebKit.WebContent",
+            "cpuS": 1.935,
+            "rssMB": 487.8,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+          },
+          {
+            "pid": 75304,
+            "name": "node",
+            "cpuS": 0.76,
+            "rssMB": 177.8,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 75281,
+            "name": "node",
+            "cpuS": 0.592,
+            "rssMB": 138.9,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 75498,
+            "name": "node",
+            "cpuS": 0.542,
+            "rssMB": 156.5,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 74496,
+            "name": "pandacode",
+            "cpuS": 0.461,
+            "rssMB": 131.5,
+            "aliveAtEnd": true,
+            "command": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app/Contents/MacOS/pandacode"
+          },
+          {
+            "pid": 75518,
+            "name": "node",
+            "cpuS": 0.419,
+            "rssMB": 124.5,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 75160,
+            "name": "kimi",
+            "cpuS": 0.348,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 75333,
+            "name": "node",
+            "cpuS": 0.288,
+            "rssMB": 89.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.local/bin/npm view command-code versions --json"
+          },
+          {
+            "pid": 75454,
+            "name": "opencode",
+            "cpuS": 0.215,
+            "rssMB": 133.8,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 74786,
+            "name": "com.apple.WebKit.GPU",
+            "cpuS": 0.191,
+            "rssMB": 34.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+          },
+          {
+            "pid": 75510,
+            "name": "node",
+            "cpuS": 0.188,
+            "rssMB": 85.4,
+            "aliveAtEnd": false,
+            "command": "npm"
+          },
+          {
+            "pid": 75266,
+            "name": "opencode",
+            "cpuS": 0.152,
+            "rssMB": 107.8,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 75534,
+            "name": "kimi",
+            "cpuS": 0.122,
+            "rssMB": 213.5,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 74980,
+            "name": "com.apple.SafariPlatformSupport.Helper",
+            "cpuS": 0.11,
+            "rssMB": 29.5,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper"
+          },
+          {
+            "pid": 74805,
+            "name": "com.apple.WebKit.Networking",
+            "cpuS": 0.055,
+            "rssMB": 16.8,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+          },
+          {
+            "pid": 75324,
+            "name": "xcodebuild",
+            "cpuS": 0.044,
+            "rssMB": 6.3,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 75350,
+            "name": "muse-bin-1.4.14-R7309.1",
+            "cpuS": 0.025,
+            "rssMB": 20.1,
+            "aliveAtEnd": false,
+            "command": "<defunct>"
+          },
+          {
+            "pid": 75297,
+            "name": "node",
+            "cpuS": 0.023,
+            "rssMB": 38.3,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/dsh --version"
+          },
+          {
+            "pid": 74750,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.021,
+            "rssMB": 10,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 74971,
+            "name": "com.apple.audio.SandboxHelper",
+            "cpuS": 0.019,
+            "rssMB": 11.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper"
+          },
+          {
+            "pid": 75453,
+            "name": "python3.11",
+            "cpuS": 0.016,
+            "rssMB": 13.3,
+            "aliveAtEnd": false,
+            "command": "~/.hermes/hermes-agent/venv/bin/python3 ~/.hermes/hermes-agent/venv/bin/hermes --version"
+          },
+          {
+            "pid": 75535,
+            "name": "node",
+            "cpuS": 0.012,
+            "rssMB": 9.7,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/kilo --version"
+          },
+          {
+            "pid": 75323,
+            "name": "git",
+            "cpuS": 0.007,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git branch --show-current"
+          },
+          {
+            "pid": 75274,
+            "name": "grok-1.0.62",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/grok --version"
+          }
+        ],
+        "appCpuS": 2.792,
+        "toolCpuS": 3.7519217420000004,
+        "appRssMB": 722,
+        "toolProcessesSeen": 17
+      },
+      "network": [
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56850",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793332476516,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 7.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56851",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793332476516,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 7.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56858",
+          "ip": "104.16.3.34",
+          "port": "443",
+          "first": 1793332476516,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 7.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56859",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793332476516,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 7.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56866",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 10.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56867",
+          "ip": "104.16.3.34",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 10.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56868",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 32134,
+          "bytesOut": 2051,
+          "firstS": 10.5
+        },
+        {
+          "pid": 75333,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56869",
+          "ip": "104.16.6.34",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 31111,
+          "bytesOut": 2089,
+          "firstS": 10.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56870",
+          "ip": "140.82.113.6",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 19281,
+          "bytesOut": 479,
+          "firstS": 10.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:56871",
+          "ip": "35.190.46.17",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 5966,
+          "bytesOut": 516,
+          "firstS": 10.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:56872",
+          "ip": "172.64.144.117",
+          "port": "443",
+          "first": 1793332479517,
+          "bytesIn": 113993,
+          "bytesOut": 510,
+          "firstS": 10.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:56874",
+          "ip": "142.251.163.207",
+          "port": "443",
+          "first": 1793332483517,
+          "bytesIn": 4146,
+          "bytesOut": 533,
+          "firstS": 14.5
+        },
+        {
+          "pid": 75510,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56875",
+          "ip": "104.16.4.34",
+          "port": "443",
+          "first": 1793332483517,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 75510,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56879",
+          "ip": "104.16.8.34",
+          "port": "443",
+          "first": 1793332483518,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 75510,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56883",
+          "ip": "104.16.10.34",
+          "port": "443",
+          "first": 1793332483518,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 75510,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56886",
+          "ip": "104.16.6.34",
+          "port": "443",
+          "first": 1793332486516,
+          "bytesIn": 1448,
+          "bytesOut": 1595,
+          "firstS": 17.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56917",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332503517,
+          "bytesIn": 14171,
+          "bytesOut": 766,
+          "firstS": 34.5
+        },
+        {
+          "pid": 74496,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56945",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332503517,
+          "bytesIn": 0,
+          "bytesOut": 278,
+          "firstS": 34.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 5043360,
+          "files": 20
+        },
+        "breakdown": {
+          ".npm/_cacache/content-v2/sha512": 2500461,
+          "Library/Caches/kimi-code/native": 2036228,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-wal": 465592,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-shm": 32768,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3": 4096,
+          ".npm/_logs": 2594,
+          ".npm/_cacache/index-v5/c4": 1404,
+          "Library/Application Support/ai.pandacode.bench/remote.json": 178,
+          ".commandcode": 37,
+          ".pi/agent": 2
+        },
+        "byDir": {
+          ".npm/_cacache/content-v2": 2500461,
+          "Library/Caches/kimi-code": 2036228,
+          "Library/Application Support/ai.pandacode.bench": 502634,
+          ".npm/_cacache/index-v5": 1404,
+          ".npm/_logs/2026-10-30T03_54_39_945Z-debug-0.log": 1381,
+          ".npm/_logs/2026-10-30T03_54_33_487Z-debug-0.log": 1213,
+          ".commandcode": 37,
+          ".pi/agent/auth.json": 2
+        },
+        "outsideHomeBytes": 675026,
+        "ownBytes": 1177660,
+        "realHomeTouched": [
+          "~/Library/Caches/ai.pandacode.bench",
+          "~/Library/WebKit/ai.pandacode.bench"
+        ]
+      }
+    },
+    {
+      "app": "t3",
+      "run": 1,
+      "startedAt": "2026-10-30T03:55:37.548Z",
+      "root": 76804,
+      "firstWindowMs": 3302,
+      "resources": {
+        "rssMB": 964.375,
+        "peakRssMB": 1108.25,
+        "footprintMB": 632.5713348388672,
+        "cpuS": 7.357747955,
+        "cpuSteadyS": 0.625923626,
+        "processes": 7,
+        "threads": 140,
+        "processesSeen": 11,
+        "processNames": [
+          "SetStoreUpdateService",
+          "T3 Code (Nightly)",
+          "T3 Code (Nightly) Helper",
+          "T3 Code (Nightly) Helper (Renderer)",
+          "t3-resource-monitor"
+        ],
+        "perProcess": [
+          {
+            "pid": 76845,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 2.255,
+            "rssMB": 104.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=gpu-process --user-data-dir=$HOME/Library/Application Support/t3code"
+          },
+          {
+            "pid": 76887,
+            "name": "T3 Code (Nightly) Helper (Renderer)",
+            "cpuS": 1.94,
+            "rssMB": 260.7,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper (Renderer).app/Contents/MacOS/T3 Code (Nightly) Helper (Renderer) --type=renderer --user-data-dir=$HOME/Library/Applica"
+          },
+          {
+            "pid": 76888,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.422,
+            "rssMB": 260.1,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly) --require /Applications/T3 Code (Nightly).app/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs /Applications"
+          },
+          {
+            "pid": 76804,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.197,
+            "rssMB": 263,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)"
+          },
+          {
+            "pid": 76963,
+            "name": "2.1.311",
+            "cpuS": 0.21,
+            "rssMB": 188.9,
+            "aliveAtEnd": false,
+            "command": "claude --output-format stream-json --verbose --input-format stream-json --setting-sources=user,project,local --strict-mcp-config --permission-mode default --no-session-persistence --settings {\"disable"
+          },
+          {
+            "pid": 76846,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.175,
+            "rssMB": 58.5,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US"
+          },
+          {
+            "pid": 76932,
+            "name": "codex",
+            "cpuS": 0.065,
+            "rssMB": 40.1,
+            "aliveAtEnd": false,
+            "command": "codex app-server"
+          },
+          {
+            "pid": 76967,
+            "name": "xcodebuild",
+            "cpuS": 0.057,
+            "rssMB": 6.8,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 76855,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.021,
+            "rssMB": 10.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 76911,
+            "name": "t3-resource-monitor",
+            "cpuS": 0.011,
+            "rssMB": 7.3,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          },
+          {
+            "pid": 76966,
+            "name": "git",
+            "cpuS": 0.005,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /private$HOME/.t3/userdata ls-files --error-unmatch -- :(icase).claude/settings.local.json"
+          }
+        ],
+        "appCpuS": 7.021,
+        "toolCpuS": 0.3367479549999999,
+        "appRssMB": 964.4,
+        "toolProcessesSeen": 4
+      },
+      "network": [
+        {
+          "pid": 76888,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:56988",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332543064,
+          "bytesIn": 9230,
+          "bytesOut": 1981,
+          "firstS": 5.5
+        },
+        {
+          "pid": 76888,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56993",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332543064,
+          "bytesIn": 5131,
+          "bytesOut": 1974,
+          "firstS": 5.5
+        },
+        {
+          "pid": 76888,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56994",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332543064,
+          "bytesIn": 5156,
+          "bytesOut": 1986,
+          "firstS": 5.5
+        },
+        {
+          "pid": 76963,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:56990",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332543064,
+          "bytesIn": 0,
+          "bytesOut": 1508,
+          "firstS": 5.5
+        },
+        {
+          "pid": 76963,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:56995",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332543064,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 5.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57003",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332546066,
+          "bytesIn": 57359,
+          "bytesOut": 2687,
+          "firstS": 8.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57004",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332546066,
+          "bytesIn": 3773,
+          "bytesOut": 1860,
+          "firstS": 8.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57006",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793332546066,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 8.5
+        },
+        {
+          "pid": 76888,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57009",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332549065,
+          "bytesIn": 4945,
+          "bytesOut": 12825,
+          "firstS": 11.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57045",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332549066,
+          "bytesIn": 228181,
+          "bytesOut": 2863,
+          "firstS": 11.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57048",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332553065,
+          "bytesIn": 3772,
+          "bytesOut": 1796,
+          "firstS": 15.5
+        },
+        {
+          "pid": 76888,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57049",
+          "ip": "104.21.3.218",
+          "port": "443",
+          "first": 1793332553066,
+          "bytesIn": 4911,
+          "bytesOut": 3333,
+          "firstS": 15.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57050",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332556065,
+          "bytesIn": 5277,
+          "bytesOut": 3774,
+          "firstS": 18.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57051",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332556065,
+          "bytesIn": 4633,
+          "bytesOut": 1905,
+          "firstS": 18.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57052",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332556066,
+          "bytesIn": 416260,
+          "bytesOut": 2352,
+          "firstS": 18.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "CloseWait",
+          "listen": false,
+          "local": "192.168.10.193:57053",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332559066,
+          "bytesIn": 3285,
+          "bytesOut": 1824,
+          "firstS": 21.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57054",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332562065,
+          "bytesIn": 7410,
+          "bytesOut": 2843,
+          "firstS": 24.5
+        },
+        {
+          "pid": 76846,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57055",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332562065,
+          "bytesIn": 5996,
+          "bytesOut": 1818,
+          "firstS": 24.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 13194104,
+          "files": 344
+        },
+        "breakdown": {
+          "Library/Application Support/t3code-v2/GraphiteDawnCache": 5870561,
+          ".codex": 2619172,
+          ".t3/userdata": 889114,
+          ".t3/userdata/logs/server.trace.ndjson": 860702,
+          "Library/Application Support/t3code-v2/DawnGraphiteCache": 557424,
+          "Library/Application Support/t3code-v2/DawnWebGPUCache": 557424,
+          "Library/Application Support/t3code-v2/GPUCache": 557424,
+          "Library/Application Support/t3code-v2/Cache": 283659,
+          ".t3/userdata/logs/desktop.trace.ndjson": 206878,
+          ".codex/skills/.system/imagegen": 126829,
+          "Library/Application Support/t3code-v2/Partitions": 115622,
+          ".codex/skills/.system/openai-docs": 92006
+        },
+        "byDir": {
+          "Library/Application Support/t3code-v2": 8269973,
+          ".codex": 2619172,
+          ".t3/userdata/logs": 1068866,
+          ".t3/userdata/statev2.sqlite": 868352,
+          ".codex/skills/.system": 307566,
+          ".t3/caches/claudeAgent.json": 31193,
+          ".t3/userdata/model-manifest.json": 12623,
+          ".t3/userdata/keybindings.json": 7967,
+          ".t3/caches/codex.json": 1915,
+          ".": 852,
+          ".t3/caches/pi.json": 845,
+          ".t3/caches/grok.json": 812,
+          ".t3/caches/opencode.json": 691,
+          ".t3/caches/antigravity.json": 668,
+          ".t3/caches/muse.json": 641,
+          ".t3/bin/t3": 637,
+          ".t3/caches/cursor.json": 596,
+          ".t3/userdata/secrets": 366,
+          ".claude/plugins/store": 92,
+          ".claude/backups/.claude.json.backup.1793332540627": 84,
+          ".t3/userdata/desktop-settings.json": 65,
+          ".t3/userdata/environment-id": 37,
+          ".t3/userdata/anonymous-id": 36,
+          ".t3/userdata/keybindings-migrations": 34,
+          ".codex/.tmp/git-67boHs": 21
+        },
+        "outsideHomeBytes": null,
+        "ownBytes": 10266317,
+        "realHomeTouched": []
+      }
+    },
+    {
+      "app": "t3",
+      "run": 2,
+      "startedAt": "2026-10-30T03:56:46.192Z",
+      "root": 78342,
+      "firstWindowMs": 1545,
+      "resources": {
+        "rssMB": 965.984375,
+        "peakRssMB": 1109.390625,
+        "footprintMB": 612.118049621582,
+        "cpuS": 7.185903328,
+        "cpuSteadyS": 0.636512334,
+        "processes": 7,
+        "threads": 138,
+        "processesSeen": 13,
+        "processNames": [
+          "SetStoreUpdateService",
+          "T3 Code (Nightly)",
+          "T3 Code (Nightly) Helper",
+          "T3 Code (Nightly) Helper (Renderer)",
+          "t3-resource-monitor"
+        ],
+        "perProcess": [
+          {
+            "pid": 78353,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 2.221,
+            "rssMB": 103,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=gpu-process --user-data-dir=$HOME/Library/Application Support/t3code"
+          },
+          {
+            "pid": 78389,
+            "name": "T3 Code (Nightly) Helper (Renderer)",
+            "cpuS": 1.906,
+            "rssMB": 262.2,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper (Renderer).app/Contents/MacOS/T3 Code (Nightly) Helper (Renderer) --type=renderer --user-data-dir=$HOME/Library/Applica"
+          },
+          {
+            "pid": 78390,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.451,
+            "rssMB": 259.6,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly) --require /Applications/T3 Code (Nightly).app/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs /Applications"
+          },
+          {
+            "pid": 78342,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.109,
+            "rssMB": 263.5,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)"
+          },
+          {
+            "pid": 78466,
+            "name": "2.1.311",
+            "cpuS": 0.206,
+            "rssMB": 189.4,
+            "aliveAtEnd": false,
+            "command": "claude --output-format stream-json --verbose --input-format stream-json --setting-sources=user,project,local --strict-mcp-config --permission-mode default --no-session-persistence --settings {\"disable"
+          },
+          {
+            "pid": 78354,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.173,
+            "rssMB": 59.9,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US"
+          },
+          {
+            "pid": 78478,
+            "name": "xcodebuild",
+            "cpuS": 0.042,
+            "rssMB": 6.6,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 78438,
+            "name": "codex",
+            "cpuS": 0.029,
+            "rssMB": 31.4,
+            "aliveAtEnd": false,
+            "command": "codex app-server"
+          },
+          {
+            "pid": 78359,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.02,
+            "rssMB": 10.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 78477,
+            "name": "git",
+            "cpuS": 0.011,
+            "rssMB": 3,
+            "aliveAtEnd": false,
+            "command": "git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /private$HOME/.t3/userdata ls-files --error-unmatch -- :(icase).claude/settings.local.json"
+          },
+          {
+            "pid": 78417,
+            "name": "t3-resource-monitor",
+            "cpuS": 0.01,
+            "rssMB": 7.3,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          },
+          {
+            "pid": 78419,
+            "name": "codex",
+            "cpuS": 0.006,
+            "rssMB": 3.3,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/codex --version"
+          },
+          {
+            "pid": 78410,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 0.002,
+            "rssMB": 2.1,
+            "aliveAtEnd": false,
+            "command": "ioreg -rd1 -n product"
+          }
+        ],
+        "appCpuS": 6.889999999999999,
+        "toolCpuS": 0.2959033280000014,
+        "appRssMB": 965.8999999999999,
+        "toolProcessesSeen": 6
+      },
+      "network": [
+        {
+          "pid": 78390,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57112",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332610710,
+          "bytesIn": 9229,
+          "bytesOut": 1981,
+          "firstS": 4.5
+        },
+        {
+          "pid": 78390,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57117",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332610710,
+          "bytesIn": 5132,
+          "bytesOut": 1974,
+          "firstS": 4.5
+        },
+        {
+          "pid": 78466,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57114",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332610710,
+          "bytesIn": 0,
+          "bytesOut": 1508,
+          "firstS": 4.5
+        },
+        {
+          "pid": 78390,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57118",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332610710,
+          "bytesIn": 5155,
+          "bytesOut": 1986,
+          "firstS": 4.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57122",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332610710,
+          "bytesIn": 57307,
+          "bytesOut": 2687,
+          "firstS": 4.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57126",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332613709,
+          "bytesIn": 3771,
+          "bytesOut": 1892,
+          "firstS": 7.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57127",
+          "ip": "35.190.80.1",
+          "port": "443",
+          "first": 1793332613709,
+          "bytesIn": 6573,
+          "bytesOut": 3348,
+          "firstS": 7.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57129",
+          "ip": "35.190.80.1",
+          "port": "443",
+          "first": 1793332613709,
+          "bytesIn": 6240,
+          "bytesOut": 1834,
+          "firstS": 7.5
+        },
+        {
+          "pid": 78390,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57128",
+          "ip": "44.216.55.45",
+          "port": "443",
+          "first": 1793332613709,
+          "bytesIn": 4945,
+          "bytesOut": 12825,
+          "firstS": 7.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:58080",
+          "ip": "35.190.80.1",
+          "port": "443",
+          "first": 1793332616709,
+          "bytesIn": 0,
+          "bytesOut": 2500,
+          "firstS": 10.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57130",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332616710,
+          "bytesIn": 228135,
+          "bytesOut": 2798,
+          "firstS": 10.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57133",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332616710,
+          "bytesIn": 3771,
+          "bytesOut": 1828,
+          "firstS": 10.5
+        },
+        {
+          "pid": 78390,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57135",
+          "ip": "172.67.153.155",
+          "port": "443",
+          "first": 1793332619710,
+          "bytesIn": 4906,
+          "bytesOut": 3333,
+          "firstS": 13.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:31658",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332622709,
+          "bytesIn": 0,
+          "bytesOut": 45,
+          "firstS": 16.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:9831",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332622709,
+          "bytesIn": 0,
+          "bytesOut": 45,
+          "firstS": 16.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57136",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332622709,
+          "bytesIn": 5277,
+          "bytesOut": 3774,
+          "firstS": 16.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57137",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332622709,
+          "bytesIn": 4633,
+          "bytesOut": 1873,
+          "firstS": 16.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57138",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332625710,
+          "bytesIn": 416299,
+          "bytesOut": 2384,
+          "firstS": 19.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "CloseWait",
+          "listen": false,
+          "local": "192.168.10.193:57139",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332625710,
+          "bytesIn": 3285,
+          "bytesOut": 1888,
+          "firstS": 19.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57140",
+          "ip": "185.199.110.133",
+          "port": "443",
+          "first": 1793332625710,
+          "bytesIn": 7410,
+          "bytesOut": 2812,
+          "firstS": 19.5
+        },
+        {
+          "pid": 78354,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57141",
+          "ip": "185.199.110.133",
+          "port": "443",
+          "first": 1793332628708,
+          "bytesIn": 5996,
+          "bytesOut": 1818,
+          "firstS": 22.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 13174909,
+          "files": 344
+        },
+        "breakdown": {
+          "Library/Application Support/t3code-v2/GraphiteDawnCache": 5870561,
+          ".codex": 2619172,
+          ".t3/userdata": 889114,
+          ".t3/userdata/logs/server.trace.ndjson": 849955,
+          "Library/Application Support/t3code-v2/DawnGraphiteCache": 557424,
+          "Library/Application Support/t3code-v2/DawnWebGPUCache": 557424,
+          "Library/Application Support/t3code-v2/GPUCache": 557424,
+          "Library/Application Support/t3code-v2/Cache": 283645,
+          ".t3/userdata/logs/desktop.trace.ndjson": 198022,
+          ".codex/skills/.system/imagegen": 126829,
+          "Library/Application Support/t3code-v2/Partitions": 115622,
+          ".codex/skills/.system/openai-docs": 92006
+        },
+        "byDir": {
+          "Library/Application Support/t3code-v2": 8270381,
+          ".codex": 2619172,
+          ".t3/userdata/logs": 1049263,
+          ".t3/userdata/statev2.sqlite": 868352,
+          ".codex/skills/.system": 307566,
+          ".t3/caches/claudeAgent.json": 31193,
+          ".t3/userdata/model-manifest.json": 12623,
+          ".t3/userdata/keybindings.json": 7967,
+          ".t3/caches/codex.json": 1915,
+          ".": 852,
+          ".t3/caches/pi.json": 845,
+          ".t3/caches/grok.json": 812,
+          ".t3/caches/opencode.json": 691,
+          ".t3/caches/antigravity.json": 668,
+          ".t3/caches/muse.json": 641,
+          ".t3/bin/t3": 637,
+          ".t3/caches/cursor.json": 596,
+          ".t3/userdata/secrets": 366,
+          ".claude/plugins/store": 92,
+          ".claude/backups/.claude.json.backup.1793332607411": 84,
+          ".t3/userdata/desktop-settings.json": 65,
+          ".t3/userdata/environment-id": 37,
+          ".t3/userdata/anonymous-id": 36,
+          ".t3/userdata/keybindings-migrations": 34,
+          ".codex/.tmp/git-ETVyIE": 21
+        },
+        "outsideHomeBytes": null,
+        "ownBytes": 10247122,
+        "realHomeTouched": []
+      }
+    },
+    {
+      "app": "pandacode",
+      "run": 2,
+      "startedAt": "2026-10-30T03:57:54.772Z",
+      "root": 79888,
+      "firstWindowMs": 744,
+      "resources": {
+        "rssMB": 709.34375,
+        "peakRssMB": 1139.3125,
+        "footprintMB": 418.1144561767578,
+        "cpuS": 6.813202786,
+        "cpuSteadyS": 0.104142917,
+        "processes": 7,
+        "threads": 42,
+        "processesSeen": 25,
+        "processNames": [
+          "SetStoreUpdateService",
+          "com.apple.SafariPlatformSupport.Helper",
+          "com.apple.WebKit.GPU",
+          "com.apple.WebKit.Networking",
+          "com.apple.WebKit.WebContent",
+          "com.apple.audio.SandboxHelper",
+          "pandacode"
+        ],
+        "perProcess": [
+          {
+            "pid": 79913,
+            "name": "com.apple.WebKit.WebContent",
+            "cpuS": 1.753,
+            "rssMB": 477.2,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+          },
+          {
+            "pid": 80032,
+            "name": "node",
+            "cpuS": 0.71,
+            "rssMB": 177,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 80010,
+            "name": "node",
+            "cpuS": 0.553,
+            "rssMB": 141.2,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 80172,
+            "name": "node",
+            "cpuS": 0.511,
+            "rssMB": 149.8,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 79888,
+            "name": "pandacode",
+            "cpuS": 0.491,
+            "rssMB": 138.7,
+            "aliveAtEnd": true,
+            "command": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app/Contents/MacOS/pandacode"
+          },
+          {
+            "pid": 80225,
+            "name": "node",
+            "cpuS": 0.487,
+            "rssMB": 141.1,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 79942,
+            "name": "kimi",
+            "cpuS": 0.402,
+            "rssMB": 318.3,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 79992,
+            "name": "opencode",
+            "cpuS": 0.377,
+            "rssMB": 175.7,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 80155,
+            "name": "kimi",
+            "cpuS": 0.346,
+            "rssMB": 335.7,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 80061,
+            "name": "node",
+            "cpuS": 0.255,
+            "rssMB": 90.3,
+            "aliveAtEnd": false,
+            "command": "npm view command-code versions"
+          },
+          {
+            "pid": 80186,
+            "name": "node",
+            "cpuS": 0.245,
+            "rssMB": 99.8,
+            "aliveAtEnd": false,
+            "command": "npm"
+          },
+          {
+            "pid": 80187,
+            "name": "opencode",
+            "cpuS": 0.211,
+            "rssMB": 135.9,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 79912,
+            "name": "com.apple.WebKit.GPU",
+            "cpuS": 0.152,
+            "rssMB": 28.8,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+          },
+          {
+            "pid": 79927,
+            "name": "com.apple.SafariPlatformSupport.Helper",
+            "cpuS": 0.113,
+            "rssMB": 29.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper"
+          },
+          {
+            "pid": 80052,
+            "name": "xcodebuild",
+            "cpuS": 0.07,
+            "rssMB": 7,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 79914,
+            "name": "com.apple.WebKit.Networking",
+            "cpuS": 0.034,
+            "rssMB": 13.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+          },
+          {
+            "pid": 80025,
+            "name": "node",
+            "cpuS": 0.034,
+            "rssMB": 48,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/dsh --version"
+          },
+          {
+            "pid": 79904,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.021,
+            "rssMB": 10,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 79926,
+            "name": "com.apple.audio.SandboxHelper",
+            "cpuS": 0.019,
+            "rssMB": 11.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper"
+          },
+          {
+            "pid": 79939,
+            "name": "codex",
+            "cpuS": 0.015,
+            "rssMB": 13.1,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/codex --version"
+          },
+          {
+            "pid": 80051,
+            "name": "git",
+            "cpuS": 0.008,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git branch --show-current"
+          },
+          {
+            "pid": 80078,
+            "name": "bash",
+            "cpuS": 0.005,
+            "rssMB": 2.5,
+            "aliveAtEnd": false,
+            "command": "bash ~/.local/bin/muse --version"
+          },
+          {
+            "pid": 80099,
+            "name": "env",
+            "cpuS": 0.001,
+            "rssMB": 1.4,
+            "aliveAtEnd": false,
+            "command": "/bin/sh ~/.hermes/hermes-agent/venv/bin/hermes --version"
+          },
+          {
+            "pid": 80257,
+            "name": ".kilo",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": null
+          },
+          {
+            "pid": 80255,
+            "name": "node",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "<defunct>"
+          }
+        ],
+        "appCpuS": 2.5829999999999997,
+        "toolCpuS": 4.2302027859999995,
+        "appRssMB": 709.4,
+        "toolProcessesSeen": 17
+      },
+      "network": [
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57200",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57201",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57208",
+          "ip": "104.16.6.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57209",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57216",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57217",
+          "ip": "104.16.6.34",
+          "port": "443",
+          "first": 1793332684289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57221",
+          "ip": "35.190.46.17",
+          "port": "443",
+          "first": 1793332688293,
+          "bytesIn": 5974,
+          "bytesOut": 516,
+          "firstS": 13.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57222",
+          "ip": "172.64.144.117",
+          "port": "443",
+          "first": 1793332688293,
+          "bytesIn": 35804,
+          "bytesOut": 486,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57218",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793332688293,
+          "bytesIn": 26367,
+          "bytesOut": 2089,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80061,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57219",
+          "ip": "104.16.1.34",
+          "port": "443",
+          "first": 1793332688293,
+          "bytesIn": 28851,
+          "bytesOut": 2051,
+          "firstS": 13.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57225",
+          "ip": "140.82.113.5",
+          "port": "443",
+          "first": 1793332688294,
+          "bytesIn": 3189,
+          "bytesOut": 479,
+          "firstS": 13.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57227",
+          "ip": "142.251.163.207",
+          "port": "443",
+          "first": 1793332688294,
+          "bytesIn": 2799,
+          "bytesOut": 509,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80186,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57226",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793332688294,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80186,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57231",
+          "ip": "104.16.3.34",
+          "port": "443",
+          "first": 1793332688294,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80186,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:57240",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793332688294,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 13.5
+        },
+        {
+          "pid": 80186,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57241",
+          "ip": "104.16.1.34",
+          "port": "443",
+          "first": 1793332690290,
+          "bytesIn": 33319,
+          "bytesOut": 2051,
+          "firstS": 15.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:57577",
+          "ip": "140.82.114.4",
+          "port": "443",
+          "first": 1793332706291,
+          "bytesIn": 14187,
+          "bytesOut": 766,
+          "firstS": 31.5
+        },
+        {
+          "pid": 79888,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:57620",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332709308,
+          "bytesIn": 10075,
+          "bytesOut": 1460,
+          "firstS": 34.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 5043355,
+          "files": 20
+        },
+        "breakdown": {
+          ".npm/_cacache/content-v2/sha512": 2500461,
+          "Library/Caches/kimi-code/native": 2036228,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-wal": 465592,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-shm": 32768,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3": 4096,
+          ".npm/_logs": 2587,
+          ".npm/_cacache/index-v5/c4": 1406,
+          "Library/Application Support/ai.pandacode.bench/remote.json": 178,
+          ".commandcode": 37,
+          ".pi/agent": 2
+        },
+        "byDir": {
+          ".npm/_cacache/content-v2": 2500461,
+          "Library/Caches/kimi-code": 2036228,
+          "Library/Application Support/ai.pandacode.bench": 502634,
+          ".npm/_cacache/index-v5": 1406,
+          ".npm/_logs/2026-10-30T03_58_04_557Z-debug-0.log": 1374,
+          ".npm/_logs/2026-10-30T03_58_00_539Z-debug-0.log": 1213,
+          ".commandcode": 37,
+          ".pi/agent/auth.json": 2
+        },
+        "outsideHomeBytes": 675026,
+        "ownBytes": 1177660,
+        "realHomeTouched": [
+          "~/Library/Caches/ai.pandacode.bench",
+          "~/Library/WebKit/ai.pandacode.bench"
+        ]
+      }
+    },
+    {
+      "app": "pandacode",
+      "run": 3,
+      "startedAt": "2026-10-30T03:59:03.363Z",
+      "root": 81588,
+      "firstWindowMs": 449,
+      "resources": {
+        "rssMB": 728.21875,
+        "peakRssMB": 1062.34375,
+        "footprintMB": 435.4269561767578,
+        "cpuS": 10.258949114,
+        "cpuSteadyS": 0.294160458,
+        "processes": 7,
+        "threads": 62,
+        "processesSeen": 26,
+        "processNames": [
+          "SetStoreUpdateService",
+          "com.apple.SafariPlatformSupport.Helper",
+          "com.apple.WebKit.GPU",
+          "com.apple.WebKit.Networking",
+          "com.apple.WebKit.WebContent",
+          "com.apple.audio.SandboxHelper",
+          "pandacode"
+        ],
+        "perProcess": [
+          {
+            "pid": 81600,
+            "name": "com.apple.WebKit.WebContent",
+            "cpuS": 2.133,
+            "rssMB": 491.2,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+          },
+          {
+            "pid": 81719,
+            "name": "node",
+            "cpuS": 1.262,
+            "rssMB": 168.8,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 81691,
+            "name": "node",
+            "cpuS": 1.082,
+            "rssMB": 156.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 81886,
+            "name": "node",
+            "cpuS": 0.906,
+            "rssMB": 164.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 81925,
+            "name": "node",
+            "cpuS": 0.843,
+            "rssMB": 167.7,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 81635,
+            "name": "kimi",
+            "cpuS": 0.6,
+            "rssMB": 321.3,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 81662,
+            "name": "opencode",
+            "cpuS": 0.58,
+            "rssMB": 172.2,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 81588,
+            "name": "pandacode",
+            "cpuS": 0.56,
+            "rssMB": 136.3,
+            "aliveAtEnd": true,
+            "command": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app/Contents/MacOS/pandacode"
+          },
+          {
+            "pid": 81767,
+            "name": "node",
+            "cpuS": 0.392,
+            "rssMB": 90,
+            "aliveAtEnd": false,
+            "command": "npm"
+          },
+          {
+            "pid": 81855,
+            "name": "kimi",
+            "cpuS": 0.389,
+            "rssMB": 278,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 81910,
+            "name": "opencode",
+            "cpuS": 0.38,
+            "rssMB": 140.7,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 81908,
+            "name": "node",
+            "cpuS": 0.351,
+            "rssMB": 89,
+            "aliveAtEnd": false,
+            "command": "npm"
+          },
+          {
+            "pid": 81599,
+            "name": "com.apple.WebKit.GPU",
+            "cpuS": 0.254,
+            "rssMB": 32.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+          },
+          {
+            "pid": 81616,
+            "name": "com.apple.SafariPlatformSupport.Helper",
+            "cpuS": 0.155,
+            "rssMB": 29.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper"
+          },
+          {
+            "pid": 81757,
+            "name": "xcodebuild",
+            "cpuS": 0.117,
+            "rssMB": 7,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 81605,
+            "name": "com.apple.WebKit.Networking",
+            "cpuS": 0.078,
+            "rssMB": 16.8,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+          },
+          {
+            "pid": 81771,
+            "name": "node",
+            "cpuS": 0.038,
+            "rssMB": 44.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/cline --version"
+          },
+          {
+            "pid": 81948,
+            "name": "node",
+            "cpuS": 0.033,
+            "rssMB": 42.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/cline --version"
+          },
+          {
+            "pid": 81598,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.025,
+            "rssMB": 10.1,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 81615,
+            "name": "com.apple.audio.SandboxHelper",
+            "cpuS": 0.022,
+            "rssMB": 11.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper"
+          },
+          {
+            "pid": 81781,
+            "name": "muse-bin-1.4.14-R7309.1",
+            "cpuS": 0.016,
+            "rssMB": 0.3,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/muse-bin-1.4.14-R7309.1 --version"
+          },
+          {
+            "pid": 81756,
+            "name": "git",
+            "cpuS": 0.013,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git branch --show-current"
+          },
+          {
+            "pid": 81874,
+            "name": "uv",
+            "cpuS": 0.013,
+            "rssMB": 14.2,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/uv tool dir"
+          },
+          {
+            "pid": 81804,
+            "name": "bash",
+            "cpuS": 0.009,
+            "rssMB": 0.2,
+            "aliveAtEnd": false,
+            "command": "~/.hermes/hermes-agent/venv/bin/python3 ~/.hermes/hermes-agent/venv/bin/hermes --version"
+          },
+          {
+            "pid": 81628,
+            "name": "codex",
+            "cpuS": 0.006,
+            "rssMB": 1.8,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/codex --version"
+          },
+          {
+            "pid": 81805,
+            "name": "dirname",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": null
+          }
+        ],
+        "appCpuS": 3.2269999999999994,
+        "toolCpuS": 7.0319491140000006,
+        "appRssMB": 728.3000000000001,
+        "toolProcessesSeen": 18
+      },
+      "network": [
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58224",
+          "ip": "104.16.1.34",
+          "port": "443",
+          "first": 1793332751884,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 8.5
+        },
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58225",
+          "ip": "104.16.10.34",
+          "port": "443",
+          "first": 1793332751884,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 8.5
+        },
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58238",
+          "ip": "104.16.8.34",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58239",
+          "ip": "104.16.8.34",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:58242",
+          "ip": "172.64.144.117",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 113969,
+          "bytesOut": 510,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:58247",
+          "ip": "35.190.46.17",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 4509,
+          "bytesOut": 492,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:58274",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 107233,
+          "bytesOut": 2089,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81767,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:58275",
+          "ip": "104.16.1.34",
+          "port": "443",
+          "first": 1793332754885,
+          "bytesIn": 113728,
+          "bytesOut": 2051,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58283",
+          "ip": "142.250.31.207",
+          "port": "443",
+          "first": 1793332754886,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:58284",
+          "ip": "140.82.114.6",
+          "port": "443",
+          "first": 1793332754886,
+          "bytesIn": 68022,
+          "bytesOut": 503,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81908,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58285",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793332754886,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 11.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:58287",
+          "ip": "142.251.16.207",
+          "port": "443",
+          "first": 1793332756889,
+          "bytesIn": 2798,
+          "bytesOut": 509,
+          "firstS": 13.5
+        },
+        {
+          "pid": 81908,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58292",
+          "ip": "104.16.10.34",
+          "port": "443",
+          "first": 1793332756889,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 13.5
+        },
+        {
+          "pid": 81908,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:58306",
+          "ip": "104.16.2.34",
+          "port": "443",
+          "first": 1793332756889,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 13.5
+        },
+        {
+          "pid": 81908,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:58322",
+          "ip": "104.16.1.34",
+          "port": "443",
+          "first": 1793332759883,
+          "bytesIn": 160641,
+          "bytesOut": 2051,
+          "firstS": 16.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:58529",
+          "ip": "140.82.114.4",
+          "port": "443",
+          "first": 1793332775885,
+          "bytesIn": 14182,
+          "bytesOut": 790,
+          "firstS": 32.5
+        },
+        {
+          "pid": 81588,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:58560",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332777882,
+          "bytesIn": 10075,
+          "bytesOut": 1460,
+          "firstS": 34.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 5043355,
+          "files": 20
+        },
+        "breakdown": {
+          ".npm/_cacache/content-v2/sha512": 2500461,
+          "Library/Caches/kimi-code/native": 2036228,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-wal": 465592,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-shm": 32768,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3": 4096,
+          ".npm/_logs": 2587,
+          ".npm/_cacache/index-v5/c4": 1406,
+          "Library/Application Support/ai.pandacode.bench/remote.json": 178,
+          ".commandcode": 37,
+          ".pi/agent": 2
+        },
+        "byDir": {
+          ".npm/_cacache/content-v2": 2500461,
+          "Library/Caches/kimi-code": 2036228,
+          "Library/Application Support/ai.pandacode.bench": 502634,
+          ".npm/_cacache/index-v5": 1406,
+          ".npm/_logs/2026-10-30T03_59_13_424Z-debug-0.log": 1374,
+          ".npm/_logs/2026-10-30T03_59_09_703Z-debug-0.log": 1213,
+          ".commandcode": 37,
+          ".pi/agent/auth.json": 2
+        },
+        "outsideHomeBytes": 683266,
+        "ownBytes": 1185900,
+        "realHomeTouched": [
+          "~/Library/Caches/ai.pandacode.bench",
+          "~/Library/WebKit/ai.pandacode.bench"
+        ]
+      }
+    },
+    {
+      "app": "t3",
+      "run": 3,
+      "startedAt": "2026-10-30T04:00:11.965Z",
+      "root": 83937,
+      "firstWindowMs": 2906,
+      "resources": {
+        "rssMB": 951.21875,
+        "peakRssMB": 1122.578125,
+        "footprintMB": 549.4775848388672,
+        "cpuS": 7.365826287,
+        "cpuSteadyS": 0.74560325,
+        "processes": 7,
+        "threads": 140,
+        "processesSeen": 13,
+        "processNames": [
+          "SetStoreUpdateService",
+          "T3 Code (Nightly)",
+          "T3 Code (Nightly) Helper",
+          "T3 Code (Nightly) Helper (Renderer)",
+          "t3-resource-monitor"
+        ],
+        "perProcess": [
+          {
+            "pid": 84002,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 2.236,
+            "rssMB": 259.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly) --require /Applications/T3 Code (Nightly).app/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs /Applications"
+          },
+          {
+            "pid": 83937,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.583,
+            "rssMB": 257.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)"
+          },
+          {
+            "pid": 84001,
+            "name": "T3 Code (Nightly) Helper (Renderer)",
+            "cpuS": 1.539,
+            "rssMB": 257.5,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper (Renderer).app/Contents/MacOS/T3 Code (Nightly) Helper (Renderer) --type=renderer --user-data-dir=$HOME/Library/Applica"
+          },
+          {
+            "pid": 83957,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.958,
+            "rssMB": 99.2,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=gpu-process --user-data-dir=$HOME/Library/Application Support/t3code"
+          },
+          {
+            "pid": 84106,
+            "name": "2.1.311",
+            "cpuS": 0.401,
+            "rssMB": 191.9,
+            "aliveAtEnd": false,
+            "command": "claude --output-format stream-json --verbose --input-format stream-json --setting-sources=user,project,local --strict-mcp-config --permission-mode default --no-session-persistence --settings {\"disable"
+          },
+          {
+            "pid": 83958,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.223,
+            "rssMB": 60,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US"
+          },
+          {
+            "pid": 84077,
+            "name": "codex",
+            "cpuS": 0.186,
+            "rssMB": 58,
+            "aliveAtEnd": false,
+            "command": "codex app-server"
+          },
+          {
+            "pid": 84118,
+            "name": "xcodebuild",
+            "cpuS": 0.162,
+            "rssMB": 7.3,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 83967,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.03,
+            "rssMB": 10.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 84039,
+            "name": "codex",
+            "cpuS": 0.021,
+            "rssMB": 15.2,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/codex --version"
+          },
+          {
+            "pid": 84037,
+            "name": "t3-resource-monitor",
+            "cpuS": 0.018,
+            "rssMB": 7.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          },
+          {
+            "pid": 84117,
+            "name": "git",
+            "cpuS": 0.006,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /private$HOME/.t3/userdata ls-files --error-unmatch -- :(icase).claude/settings.local.json"
+          },
+          {
+            "pid": 83968,
+            "name": "zsh",
+            "cpuS": 0.003,
+            "rssMB": 2.4,
+            "aliveAtEnd": false,
+            "command": "/bin/zsh -ilc printf '%s\\n' '__T3CODE_ENV_PATH_START__'; printenv PATH || true; printf '%s\\n' '__T3CODE_ENV_PATH_END__'; printf '%s\\n' '__T3CODE_ENV_DBUS_SESSION_BUS_ADDRESS_START__'; printenv DBUS_SE"
+          }
+        ],
+        "appCpuS": 6.587,
+        "toolCpuS": 0.7788262870000002,
+        "appRssMB": 951.3,
+        "toolProcessesSeen": 6
+      },
+      "network": [
+        {
+          "pid": 84002,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59007",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332815488,
+          "bytesIn": 9230,
+          "bytesOut": 1981,
+          "firstS": 3.5
+        },
+        {
+          "pid": 84002,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59023",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332817491,
+          "bytesIn": 5131,
+          "bytesOut": 1974,
+          "firstS": 5.5
+        },
+        {
+          "pid": 84002,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59033",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332817491,
+          "bytesIn": 5157,
+          "bytesOut": 1986,
+          "firstS": 5.5
+        },
+        {
+          "pid": 84106,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59016",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332817491,
+          "bytesIn": 3868,
+          "bytesOut": 1749,
+          "firstS": 5.5
+        },
+        {
+          "pid": 84106,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59034",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332817491,
+          "bytesIn": 0,
+          "bytesOut": 1482,
+          "firstS": 5.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:32366",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332820490,
+          "bytesIn": 0,
+          "bytesOut": 32,
+          "firstS": 8.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:49467",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332820490,
+          "bytesIn": 0,
+          "bytesOut": 32,
+          "firstS": 8.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59082",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332820490,
+          "bytesIn": 57368,
+          "bytesOut": 2687,
+          "firstS": 8.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59085",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332820490,
+          "bytesIn": 3772,
+          "bytesOut": 1892,
+          "firstS": 8.5
+        },
+        {
+          "pid": 84002,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59087",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332820490,
+          "bytesIn": 4945,
+          "bytesOut": 12825,
+          "firstS": 8.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59111",
+          "ip": "35.190.80.1",
+          "port": "443",
+          "first": 1793332823488,
+          "bytesIn": 6573,
+          "bytesOut": 3347,
+          "firstS": 11.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59120",
+          "ip": "35.190.80.1",
+          "port": "443",
+          "first": 1793332823488,
+          "bytesIn": 6240,
+          "bytesOut": 1834,
+          "firstS": 11.5
+        },
+        {
+          "pid": 84002,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59157",
+          "ip": "104.21.3.218",
+          "port": "443",
+          "first": 1793332825487,
+          "bytesIn": 4904,
+          "bytesOut": 3333,
+          "firstS": 13.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59208",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793332830489,
+          "bytesIn": 416279,
+          "bytesOut": 2320,
+          "firstS": 18.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "CloseWait",
+          "listen": false,
+          "local": "192.168.10.193:59209",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793332830490,
+          "bytesIn": 3284,
+          "bytesOut": 1856,
+          "firstS": 18.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59242",
+          "ip": "185.199.109.133",
+          "port": "443",
+          "first": 1793332833499,
+          "bytesIn": 7410,
+          "bytesOut": 2877,
+          "firstS": 21.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59251",
+          "ip": "185.199.109.133",
+          "port": "443",
+          "first": 1793332833500,
+          "bytesIn": 5996,
+          "bytesOut": 1914,
+          "firstS": 21.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59252",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332833500,
+          "bytesIn": 2796,
+          "bytesOut": 1828,
+          "firstS": 21.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59256",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332833500,
+          "bytesIn": 228101,
+          "bytesOut": 2897,
+          "firstS": 21.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59259",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332833500,
+          "bytesIn": 3771,
+          "bytesOut": 1828,
+          "firstS": 21.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59299",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332835489,
+          "bytesIn": 5299,
+          "bytesOut": 3838,
+          "firstS": 23.5
+        },
+        {
+          "pid": 83958,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59302",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332838487,
+          "bytesIn": 4633,
+          "bytesOut": 1809,
+          "firstS": 26.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 13203775,
+          "files": 343
+        },
+        "breakdown": {
+          "Library/Application Support/t3code-v2/GraphiteDawnCache": 5870561,
+          ".codex": 2619172,
+          ".t3/userdata": 889114,
+          ".t3/userdata/logs/server.trace.ndjson": 867085,
+          "Library/Application Support/t3code-v2/DawnGraphiteCache": 557424,
+          "Library/Application Support/t3code-v2/DawnWebGPUCache": 557424,
+          "Library/Application Support/t3code-v2/GPUCache": 557424,
+          "Library/Application Support/t3code-v2/Cache": 283642,
+          ".t3/userdata/logs/desktop.trace.ndjson": 209797,
+          ".codex/skills/.system/imagegen": 126829,
+          "Library/Application Support/t3code-v2/Partitions": 115622,
+          ".codex/skills/.system/openai-docs": 92006
+        },
+        "byDir": {
+          "Library/Application Support/t3code-v2": 8270363,
+          ".codex": 2619172,
+          ".t3/userdata/logs": 1078168,
+          ".t3/userdata/statev2.sqlite": 868352,
+          ".codex/skills/.system": 307566,
+          ".t3/caches/claudeAgent.json": 31193,
+          ".t3/userdata/model-manifest.json": 12623,
+          ".t3/userdata/keybindings.json": 7967,
+          ".t3/caches/codex.json": 1915,
+          ".": 852,
+          ".t3/caches/pi.json": 845,
+          ".t3/caches/grok.json": 812,
+          ".t3/caches/opencode.json": 691,
+          ".t3/caches/antigravity.json": 668,
+          ".t3/caches/muse.json": 641,
+          ".t3/bin/t3": 637,
+          ".t3/caches/cursor.json": 596,
+          ".t3/userdata/secrets": 366,
+          ".claude/plugins/store": 92,
+          ".claude/backups/.claude.json.backup.1793332814427": 84,
+          ".t3/userdata/desktop-settings.json": 65,
+          ".t3/userdata/environment-id": 37,
+          ".t3/userdata/anonymous-id": 36,
+          ".t3/userdata/keybindings-migrations": 34
+        },
+        "outsideHomeBytes": null,
+        "ownBytes": 10276009,
+        "realHomeTouched": []
+      }
+    },
+    {
+      "app": "t3",
+      "run": 4,
+      "startedAt": "2026-10-30T04:01:20.608Z",
+      "root": 85733,
+      "firstWindowMs": 2244,
+      "resources": {
+        "rssMB": 962.9375,
+        "peakRssMB": 1111.53125,
+        "footprintMB": 633.9619598388672,
+        "cpuS": 8.546442663,
+        "cpuSteadyS": 0.645619001,
+        "processes": 7,
+        "threads": 140,
+        "processesSeen": 14,
+        "processNames": [
+          "SetStoreUpdateService",
+          "T3 Code (Nightly)",
+          "T3 Code (Nightly) Helper",
+          "T3 Code (Nightly) Helper (Renderer)",
+          "t3-resource-monitor"
+        ],
+        "perProcess": [
+          {
+            "pid": 85744,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 2.348,
+            "rssMB": 103,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=gpu-process --user-data-dir=$HOME/Library/Application Support/t3code"
+          },
+          {
+            "pid": 85789,
+            "name": "T3 Code (Nightly) Helper (Renderer)",
+            "cpuS": 2.088,
+            "rssMB": 263.6,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper (Renderer).app/Contents/MacOS/T3 Code (Nightly) Helper (Renderer) --type=renderer --user-data-dir=$HOME/Library/Applica"
+          },
+          {
+            "pid": 85792,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.94,
+            "rssMB": 259.1,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly) --require /Applications/T3 Code (Nightly).app/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs /Applications"
+          },
+          {
+            "pid": 85733,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.428,
+            "rssMB": 261.3,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)"
+          },
+          {
+            "pid": 85866,
+            "name": "2.1.311",
+            "cpuS": 0.339,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "claude --output-format stream-json --verbose --input-format stream-json --setting-sources=user,project,local --strict-mcp-config --permission-mode default --no-session-persistence --settings {\"disable"
+          },
+          {
+            "pid": 85745,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.202,
+            "rssMB": 58.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US"
+          },
+          {
+            "pid": 85890,
+            "name": "xcodebuild",
+            "cpuS": 0.072,
+            "rssMB": 6.8,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 85838,
+            "name": "codex",
+            "cpuS": 0.05,
+            "rssMB": 35.3,
+            "aliveAtEnd": false,
+            "command": "codex app-server"
+          },
+          {
+            "pid": 85754,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.03,
+            "rssMB": 10.2,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 85821,
+            "name": "t3-resource-monitor",
+            "cpuS": 0.014,
+            "rssMB": 7.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          },
+          {
+            "pid": 85871,
+            "name": "security",
+            "cpuS": 0.011,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "(security)"
+          },
+          {
+            "pid": 85872,
+            "name": "security",
+            "cpuS": 0.01,
+            "rssMB": 5.1,
+            "aliveAtEnd": false,
+            "command": "security find-generic-password -a <user> -w -s Claude Code"
+          },
+          {
+            "pid": 85755,
+            "name": "zsh",
+            "cpuS": 0.008,
+            "rssMB": 3,
+            "aliveAtEnd": false,
+            "command": "/bin/zsh -ilc printf '%s\\n' '__T3CODE_ENV_PATH_START__'; printenv PATH || true; printf '%s\\n' '__T3CODE_ENV_PATH_END__'; printf '%s\\n' '__T3CODE_ENV_DBUS_SESSION_BUS_ADDRESS_START__'; printenv DBUS_SE"
+          },
+          {
+            "pid": 85889,
+            "name": "git",
+            "cpuS": 0.007,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /private$HOME/.t3/userdata ls-files --error-unmatch -- :(icase).claude/settings.local.json"
+          }
+        ],
+        "appCpuS": 8.049999999999999,
+        "toolCpuS": 0.4964426630000016,
+        "appRssMB": 963,
+        "toolProcessesSeen": 7
+      },
+      "network": [
+        {
+          "pid": 85792,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59886",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332884128,
+          "bytesIn": 9229,
+          "bytesOut": 1981,
+          "firstS": 3.5
+        },
+        {
+          "pid": 85792,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59889",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332884128,
+          "bytesIn": 5130,
+          "bytesOut": 1974,
+          "firstS": 3.5
+        },
+        {
+          "pid": 85866,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:59899",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793332884128,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 3.5
+        },
+        {
+          "pid": 85792,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59903",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332887129,
+          "bytesIn": 5157,
+          "bytesOut": 1986,
+          "firstS": 6.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:49324",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332887130,
+          "bytesIn": 0,
+          "bytesOut": 32,
+          "firstS": 6.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:57518",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332887130,
+          "bytesIn": 0,
+          "bytesOut": 32,
+          "firstS": 6.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59941",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332887130,
+          "bytesIn": 57421,
+          "bytesOut": 2751,
+          "firstS": 6.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:59947",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332887130,
+          "bytesIn": 3772,
+          "bytesOut": 1860,
+          "firstS": 6.5
+        },
+        {
+          "pid": 85792,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:59972",
+          "ip": "44.216.55.45",
+          "port": "443",
+          "first": 1793332889128,
+          "bytesIn": 4945,
+          "bytesOut": 12825,
+          "firstS": 8.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60002",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332892131,
+          "bytesIn": 228161,
+          "bytesOut": 2832,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60006",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332892131,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:64866",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332892131,
+          "bytesIn": 0,
+          "bytesOut": 45,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "udp4",
+          "iface": "en0",
+          "state": "",
+          "listen": false,
+          "local": "192.168.10.193:52416",
+          "ip": "192.168.10.1",
+          "port": "53",
+          "first": 1793332892131,
+          "bytesIn": 0,
+          "bytesOut": 45,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60007",
+          "ip": "104.18.34.146",
+          "port": "443",
+          "first": 1793332892131,
+          "bytesIn": 3772,
+          "bytesOut": 1860,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60011",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332892132,
+          "bytesIn": 5277,
+          "bytesOut": 3870,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60013",
+          "ip": "32.196.68.31",
+          "port": "443",
+          "first": 1793332892132,
+          "bytesIn": 4633,
+          "bytesOut": 1841,
+          "firstS": 11.5
+        },
+        {
+          "pid": 85792,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60043",
+          "ip": "104.21.3.218",
+          "port": "443",
+          "first": 1793332894129,
+          "bytesIn": 4930,
+          "bytesOut": 3333,
+          "firstS": 13.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60067",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793332901126,
+          "bytesIn": 416241,
+          "bytesOut": 2384,
+          "firstS": 20.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "CloseWait",
+          "listen": false,
+          "local": "192.168.10.193:60068",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793332901126,
+          "bytesIn": 3286,
+          "bytesOut": 1856,
+          "firstS": 20.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60069",
+          "ip": "185.199.108.133",
+          "port": "443",
+          "first": 1793332901126,
+          "bytesIn": 7432,
+          "bytesOut": 2877,
+          "firstS": 20.5
+        },
+        {
+          "pid": 85745,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60070",
+          "ip": "185.199.108.133",
+          "port": "443",
+          "first": 1793332904126,
+          "bytesIn": 5996,
+          "bytesOut": 1914,
+          "firstS": 23.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 13189248,
+          "files": 344
+        },
+        "breakdown": {
+          "Library/Application Support/t3code-v2/GraphiteDawnCache": 5870561,
+          ".codex": 2619172,
+          ".t3/userdata": 889114,
+          ".t3/userdata/logs/server.trace.ndjson": 849136,
+          "Library/Application Support/t3code-v2/DawnGraphiteCache": 557424,
+          "Library/Application Support/t3code-v2/DawnWebGPUCache": 557424,
+          "Library/Application Support/t3code-v2/GPUCache": 557424,
+          "Library/Application Support/t3code-v2/Cache": 283687,
+          ".t3/userdata/logs/desktop.trace.ndjson": 211539,
+          ".codex/skills/.system/imagegen": 126829,
+          "Library/Application Support/t3code-v2/Partitions": 115622,
+          ".codex/skills/.system/openai-docs": 92006
+        },
+        "byDir": {
+          "Library/Application Support/t3code-v2": 8272022,
+          ".codex": 2619172,
+          ".t3/userdata/logs": 1061961,
+          ".t3/userdata/statev2.sqlite": 868352,
+          ".codex/skills/.system": 307566,
+          ".t3/caches/claudeAgent.json": 31193,
+          ".t3/userdata/model-manifest.json": 12623,
+          ".t3/userdata/keybindings.json": 7967,
+          ".t3/caches/codex.json": 1915,
+          ".": 852,
+          ".t3/caches/pi.json": 845,
+          ".t3/caches/grok.json": 812,
+          ".t3/caches/opencode.json": 691,
+          ".t3/caches/antigravity.json": 668,
+          ".t3/caches/muse.json": 641,
+          ".t3/bin/t3": 637,
+          ".t3/caches/cursor.json": 596,
+          ".t3/userdata/secrets": 366,
+          ".claude/plugins/store": 92,
+          ".claude/backups/.claude.json.backup.1793332882620": 84,
+          ".t3/userdata/desktop-settings.json": 65,
+          ".t3/userdata/environment-id": 37,
+          ".t3/userdata/anonymous-id": 36,
+          ".t3/userdata/keybindings-migrations": 34,
+          ".codex/.tmp/git-1jCleV": 21
+        },
+        "outsideHomeBytes": null,
+        "ownBytes": 10261461,
+        "realHomeTouched": []
+      }
+    },
+    {
+      "app": "pandacode",
+      "run": 4,
+      "startedAt": "2026-10-30T04:02:29.273Z",
+      "root": 87456,
+      "firstWindowMs": 951,
+      "resources": {
+        "rssMB": 697.890625,
+        "peakRssMB": 1026.234375,
+        "footprintMB": 416.78619384765625,
+        "cpuS": 10.872056993,
+        "cpuSteadyS": 0.071670001,
+        "processes": 7,
+        "threads": 42,
+        "processesSeen": 25,
+        "processNames": [
+          "SetStoreUpdateService",
+          "com.apple.SafariPlatformSupport.Helper",
+          "com.apple.WebKit.GPU",
+          "com.apple.WebKit.Networking",
+          "com.apple.WebKit.WebContent",
+          "com.apple.audio.SandboxHelper",
+          "pandacode"
+        ],
+        "perProcess": [
+          {
+            "pid": 87477,
+            "name": "com.apple.WebKit.WebContent",
+            "cpuS": 2.256,
+            "rssMB": 466.9,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+          },
+          {
+            "pid": 87838,
+            "name": "node",
+            "cpuS": 1.323,
+            "rssMB": 169.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 87600,
+            "name": "node",
+            "cpuS": 1.277,
+            "rssMB": 148.8,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 87917,
+            "name": "node",
+            "cpuS": 0.961,
+            "rssMB": 170.3,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 87657,
+            "name": "node",
+            "cpuS": 0.809,
+            "rssMB": 126.8,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 87563,
+            "name": "opencode",
+            "cpuS": 0.746,
+            "rssMB": 174.9,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 87508,
+            "name": "kimi",
+            "cpuS": 0.688,
+            "rssMB": 316.9,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 87456,
+            "name": "pandacode",
+            "cpuS": 0.582,
+            "rssMB": 132.7,
+            "aliveAtEnd": true,
+            "command": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app/Contents/MacOS/pandacode"
+          },
+          {
+            "pid": 87812,
+            "name": "kimi",
+            "cpuS": 0.513,
+            "rssMB": 330.8,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 87858,
+            "name": "opencode",
+            "cpuS": 0.511,
+            "rssMB": 165.5,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 87916,
+            "name": "node",
+            "cpuS": 0.407,
+            "rssMB": 89.6,
+            "aliveAtEnd": false,
+            "command": "node ~/.local/bin/npm view command-code versions --json"
+          },
+          {
+            "pid": 87476,
+            "name": "com.apple.WebKit.GPU",
+            "cpuS": 0.209,
+            "rssMB": 30.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+          },
+          {
+            "pid": 87495,
+            "name": "com.apple.SafariPlatformSupport.Helper",
+            "cpuS": 0.157,
+            "rssMB": 29.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper"
+          },
+          {
+            "pid": 87892,
+            "name": "xcodebuild",
+            "cpuS": 0.111,
+            "rssMB": 7,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 87478,
+            "name": "com.apple.WebKit.Networking",
+            "cpuS": 0.076,
+            "rssMB": 16.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+          },
+          {
+            "pid": 87650,
+            "name": "node",
+            "cpuS": 0.057,
+            "rssMB": 48.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/dsh --version"
+          },
+          {
+            "pid": 87949,
+            "name": "node",
+            "cpuS": 0.036,
+            "rssMB": 40.1,
+            "aliveAtEnd": false,
+            "command": "<defunct>"
+          },
+          {
+            "pid": 87727,
+            "name": "node",
+            "cpuS": 0.035,
+            "rssMB": 40,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/kilo --version"
+          },
+          {
+            "pid": 87732,
+            "name": "muse-bin-1.4.14-R7309.1",
+            "cpuS": 0.034,
+            "rssMB": 16.2,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/muse-bin-1.4.14-R7309.1 --version"
+          },
+          {
+            "pid": 87475,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.028,
+            "rssMB": 10,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 87494,
+            "name": "com.apple.audio.SandboxHelper",
+            "cpuS": 0.024,
+            "rssMB": 11.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper"
+          },
+          {
+            "pid": 87479,
+            "name": "codesign",
+            "cpuS": 0.013,
+            "rssMB": 5.4,
+            "aliveAtEnd": false,
+            "command": "/usr/bin/codesign -dvv <repo>/src-tauri/target/release/bundle/macos/PandaCode.app"
+          },
+          {
+            "pid": 87891,
+            "name": "git",
+            "cpuS": 0.01,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git branch --show-current"
+          },
+          {
+            "pid": 87718,
+            "name": "env",
+            "cpuS": 0.006,
+            "rssMB": 0.5,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/cline --version"
+          },
+          {
+            "pid": 87835,
+            "name": "uv",
+            "cpuS": 0.003,
+            "rssMB": 0.2,
+            "aliveAtEnd": false,
+            "command": "/opt/homebrew/bin/uv tool dir"
+          }
+        ],
+        "appCpuS": 3.332,
+        "toolCpuS": 7.540056992999999,
+        "appRssMB": 697.9,
+        "toolProcessesSeen": 18
+      },
+      "network": [
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60832",
+          "ip": "35.190.46.17",
+          "port": "443",
+          "first": 1793332963796,
+          "bytesIn": 4509,
+          "bytesOut": 492,
+          "firstS": 14.5
+        },
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60849",
+          "ip": "172.64.144.117",
+          "port": "443",
+          "first": 1793332963796,
+          "bytesIn": 89353,
+          "bytesOut": 486,
+          "firstS": 14.5
+        },
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60854",
+          "ip": "140.82.114.6",
+          "port": "443",
+          "first": 1793332965794,
+          "bytesIn": 54162,
+          "bytesOut": 479,
+          "firstS": 16.5
+        },
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60857",
+          "ip": "142.251.16.207",
+          "port": "443",
+          "first": 1793332965794,
+          "bytesIn": 0,
+          "bytesOut": 264,
+          "firstS": 16.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60903",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793332965795,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 16.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60904",
+          "ip": "104.16.8.34",
+          "port": "443",
+          "first": 1793332965795,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 16.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60917",
+          "ip": "104.16.4.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60918",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60932",
+          "ip": "104.16.10.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:60933",
+          "ip": "104.16.10.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60934",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 46366,
+          "bytesOut": 2051,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87916,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:60935",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793332968797,
+          "bytesIn": 44157,
+          "bytesOut": 2089,
+          "firstS": 19.5
+        },
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61245",
+          "ip": "140.82.113.3",
+          "port": "443",
+          "first": 1793332981793,
+          "bytesIn": 14172,
+          "bytesOut": 766,
+          "firstS": 32.5
+        },
+        {
+          "pid": 87456,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:61255",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793332983800,
+          "bytesIn": 10075,
+          "bytesOut": 1460,
+          "firstS": 34.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 5041439,
+          "files": 19
+        },
+        "breakdown": {
+          ".npm/_cacache/content-v2/sha512": 2500461,
+          "Library/Caches/kimi-code/native": 2036228,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-wal": 465592,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-shm": 32768,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3": 4096,
+          ".npm/_logs": 1374,
+          ".npm/_cacache/index-v5/c4": 703,
+          "Library/Application Support/ai.pandacode.bench/remote.json": 178,
+          ".commandcode": 37,
+          ".pi/agent": 2
+        },
+        "byDir": {
+          ".npm/_cacache/content-v2": 2500461,
+          "Library/Caches/kimi-code": 2036228,
+          "Library/Application Support/ai.pandacode.bench": 502634,
+          ".npm/_logs/2026-10-30T04_02_43_461Z-debug-0.log": 1374,
+          ".npm/_cacache/index-v5": 703,
+          ".commandcode": 37,
+          ".pi/agent/auth.json": 2
+        },
+        "outsideHomeBytes": 675026,
+        "ownBytes": 1177660,
+        "realHomeTouched": [
+          "~/Library/Caches/ai.pandacode.bench",
+          "~/Library/WebKit/ai.pandacode.bench"
+        ]
+      }
+    },
+    {
+      "app": "pandacode",
+      "run": 5,
+      "startedAt": "2026-10-30T04:03:37.766Z",
+      "root": 89439,
+      "firstWindowMs": 544,
+      "resources": {
+        "rssMB": 691.5625,
+        "peakRssMB": 1218.734375,
+        "footprintMB": 422.61438751220703,
+        "cpuS": 10.413606449,
+        "cpuSteadyS": 0.153478416,
+        "processes": 7,
+        "threads": 50,
+        "processesSeen": 30,
+        "processNames": [
+          "SetStoreUpdateService",
+          "com.apple.SafariPlatformSupport.Helper",
+          "com.apple.WebKit.GPU",
+          "com.apple.WebKit.Networking",
+          "com.apple.WebKit.WebContent",
+          "com.apple.audio.SandboxHelper",
+          "pandacode"
+        ],
+        "perProcess": [
+          {
+            "pid": 89474,
+            "name": "com.apple.WebKit.WebContent",
+            "cpuS": 2.203,
+            "rssMB": 464,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent"
+          },
+          {
+            "pid": 89653,
+            "name": "node",
+            "cpuS": 1.23,
+            "rssMB": 168.5,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 89903,
+            "name": "node",
+            "cpuS": 0.976,
+            "rssMB": 169,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/command-code --version"
+          },
+          {
+            "pid": 89599,
+            "name": "node",
+            "cpuS": 0.951,
+            "rssMB": 144.7,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 89871,
+            "name": "node",
+            "cpuS": 0.83,
+            "rssMB": 167.4,
+            "aliveAtEnd": false,
+            "command": "node ~/.nvm/versions/node/v25.6.0/bin/pi --version"
+          },
+          {
+            "pid": 89439,
+            "name": "pandacode",
+            "cpuS": 0.755,
+            "rssMB": 132.4,
+            "aliveAtEnd": true,
+            "command": "<repo>/src-tauri/target/release/bundle/macos/PandaCode.app/Contents/MacOS/pandacode"
+          },
+          {
+            "pid": 89514,
+            "name": "kimi",
+            "cpuS": 0.692,
+            "rssMB": 330.9,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 89957,
+            "name": "opencode",
+            "cpuS": 0.515,
+            "rssMB": 174.2,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 89934,
+            "name": "kimi",
+            "cpuS": 0.433,
+            "rssMB": 281.6,
+            "aliveAtEnd": false,
+            "command": "~/.kimi-code/bin/kimi --version"
+          },
+          {
+            "pid": 89559,
+            "name": "opencode",
+            "cpuS": 0.394,
+            "rssMB": 145.5,
+            "aliveAtEnd": false,
+            "command": "~/.opencode/bin/opencode --version"
+          },
+          {
+            "pid": 89730,
+            "name": "node",
+            "cpuS": 0.368,
+            "rssMB": 91.2,
+            "aliveAtEnd": false,
+            "command": "npm view command-code versions"
+          },
+          {
+            "pid": 89955,
+            "name": "node",
+            "cpuS": 0.329,
+            "rssMB": 89.1,
+            "aliveAtEnd": false,
+            "command": "npm view command-code versions"
+          },
+          {
+            "pid": 89464,
+            "name": "com.apple.WebKit.GPU",
+            "cpuS": 0.233,
+            "rssMB": 29.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.GPU.xpc/Contents/MacOS/com.apple.WebKit.GPU"
+          },
+          {
+            "pid": 89489,
+            "name": "com.apple.SafariPlatformSupport.Helper",
+            "cpuS": 0.146,
+            "rssMB": 29.6,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/SafariPlatformSupport.framework/Versions/A/XPCServices/com.apple.SafariPlatformSupport.Helper.xpc/Contents/MacOS/com.apple.SafariPlatformSupport.Helper"
+          },
+          {
+            "pid": 89709,
+            "name": "xcodebuild",
+            "cpuS": 0.095,
+            "rssMB": 7.2,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 89475,
+            "name": "com.apple.WebKit.Networking",
+            "cpuS": 0.053,
+            "rssMB": 14.2,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking"
+          },
+          {
+            "pid": 89731,
+            "name": "node",
+            "cpuS": 0.049,
+            "rssMB": 46,
+            "aliveAtEnd": false,
+            "command": "<defunct>"
+          },
+          {
+            "pid": 89649,
+            "name": "node",
+            "cpuS": 0.038,
+            "rssMB": 41.3,
+            "aliveAtEnd": false,
+            "command": "node ~/.hermes/node/bin/dsh --version"
+          },
+          {
+            "pid": 89456,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.024,
+            "rssMB": 10,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 89486,
+            "name": "com.apple.audio.SandboxHelper",
+            "cpuS": 0.023,
+            "rssMB": 11.7,
+            "aliveAtEnd": true,
+            "command": "/System/Library/Frameworks/AudioToolbox.framework/XPCServices/com.apple.audio.SandboxHelper.xpc/Contents/MacOS/com.apple.audio.SandboxHelper"
+          },
+          {
+            "pid": 89590,
+            "name": "grok-1.0.62",
+            "cpuS": 0.017,
+            "rssMB": 15.6,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/grok --version"
+          },
+          {
+            "pid": 89511,
+            "name": "codex",
+            "cpuS": 0.014,
+            "rssMB": 12.4,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/codex --version"
+          },
+          {
+            "pid": 89702,
+            "name": "git",
+            "cpuS": 0.011,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git branch --show-current"
+          },
+          {
+            "pid": 89753,
+            "name": "muse-bin-1.4.14-R7309.1",
+            "cpuS": 0.01,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "~/.local/bin/muse-bin-1.4.14-R7309.1 --version"
+          },
+          {
+            "pid": 89912,
+            "name": "bash",
+            "cpuS": 0.009,
+            "rssMB": 2.6,
+            "aliveAtEnd": false,
+            "command": "bash ~/.local/bin/muse --version"
+          },
+          {
+            "pid": 89491,
+            "name": "rtk",
+            "cpuS": 0.006,
+            "rssMB": 5.2,
+            "aliveAtEnd": false,
+            "command": null
+          },
+          {
+            "pid": 89738,
+            "name": ".cline",
+            "cpuS": 0.005,
+            "rssMB": 2.6,
+            "aliveAtEnd": false,
+            "command": null
+          },
+          {
+            "pid": 89779,
+            "name": "bash",
+            "cpuS": 0.005,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": "/bin/sh ~/.hermes/hermes-agent/venv/bin/hermes --version"
+          },
+          {
+            "pid": 89919,
+            "name": "bash",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": null
+          },
+          {
+            "pid": 89951,
+            "name": "git",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": null
+          }
+        ],
+        "appCpuS": 3.4479999999999995,
+        "toolCpuS": 6.965606449,
+        "appRssMB": 691.6000000000001,
+        "toolProcessesSeen": 21
+      },
+      "network": [
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61792",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793333027291,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61793",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793333027291,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61824",
+          "ip": "104.16.4.34",
+          "port": "443",
+          "first": 1793333027293,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61825",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793333027293,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61848",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793333027293,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61849",
+          "ip": "104.16.9.34",
+          "port": "443",
+          "first": 1793333027293,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 9.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61852",
+          "ip": "35.190.46.17",
+          "port": "443",
+          "first": 1793333029287,
+          "bytesIn": 4509,
+          "bytesOut": 492,
+          "firstS": 11.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61857",
+          "ip": "172.253.122.207",
+          "port": "443",
+          "first": 1793333029287,
+          "bytesIn": 2798,
+          "bytesOut": 509,
+          "firstS": 11.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61864",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793333029287,
+          "bytesIn": 181065,
+          "bytesOut": 2089,
+          "firstS": 11.5
+        },
+        {
+          "pid": 89730,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61865",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793333029287,
+          "bytesIn": 115282,
+          "bytesOut": 2051,
+          "firstS": 11.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61907",
+          "ip": "172.64.144.117",
+          "port": "443",
+          "first": 1793333029288,
+          "bytesIn": 18958,
+          "bytesOut": 486,
+          "firstS": 11.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61913",
+          "ip": "140.82.114.5",
+          "port": "443",
+          "first": 1793333032289,
+          "bytesIn": 15158,
+          "bytesOut": 479,
+          "firstS": 14.5
+        },
+        {
+          "pid": 89955,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61910",
+          "ip": "104.16.7.34",
+          "port": "443",
+          "first": 1793333032289,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 89955,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61944",
+          "ip": "104.16.6.34",
+          "port": "443",
+          "first": 1793333032290,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 89955,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:61954",
+          "ip": "104.16.11.34",
+          "port": "443",
+          "first": 1793333032290,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 14.5
+        },
+        {
+          "pid": 89955,
+          "process": "node",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:61961",
+          "ip": "104.16.0.34",
+          "port": "443",
+          "first": 1793333035287,
+          "bytesIn": 51273,
+          "bytesOut": 2051,
+          "firstS": 17.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62143",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793333050293,
+          "bytesIn": 14196,
+          "bytesOut": 766,
+          "firstS": 32.5
+        },
+        {
+          "pid": 89439,
+          "process": "pandacode",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62177",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793333053297,
+          "bytesIn": 4914,
+          "bytesOut": 1438,
+          "firstS": 35.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 5043355,
+          "files": 20
+        },
+        "breakdown": {
+          ".npm/_cacache/content-v2/sha512": 2500461,
+          "Library/Caches/kimi-code/native": 2036228,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-wal": 465592,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3-shm": 32768,
+          "Library/Application Support/ai.pandacode.bench/kingcode.sqlite3": 4096,
+          ".npm/_logs": 2587,
+          ".npm/_cacache/index-v5/c4": 1406,
+          "Library/Application Support/ai.pandacode.bench/remote.json": 178,
+          ".commandcode": 37,
+          ".pi/agent": 2
+        },
+        "byDir": {
+          ".npm/_cacache/content-v2": 2500461,
+          "Library/Caches/kimi-code": 2036228,
+          "Library/Application Support/ai.pandacode.bench": 502634,
+          ".npm/_cacache/index-v5": 1406,
+          ".npm/_logs/2026-10-30T04_03_48_343Z-debug-0.log": 1374,
+          ".npm/_logs/2026-10-30T04_03_43_961Z-debug-0.log": 1213,
+          ".commandcode": 37,
+          ".pi/agent/auth.json": 2
+        },
+        "outsideHomeBytes": 683266,
+        "ownBytes": 1185900,
+        "realHomeTouched": [
+          "~/Library/Caches/ai.pandacode.bench",
+          "~/Library/WebKit/ai.pandacode.bench"
+        ]
+      }
+    },
+    {
+      "app": "t3",
+      "run": 5,
+      "startedAt": "2026-10-30T04:04:46.222Z",
+      "root": 91309,
+      "firstWindowMs": 3208,
+      "resources": {
+        "rssMB": 966.90625,
+        "peakRssMB": 1129.296875,
+        "footprintMB": 634.6650619506836,
+        "cpuS": 9.018806412,
+        "cpuSteadyS": 0.704729291,
+        "processes": 7,
+        "threads": 141,
+        "processesSeen": 14,
+        "processNames": [
+          "SetStoreUpdateService",
+          "T3 Code (Nightly)",
+          "T3 Code (Nightly) Helper",
+          "T3 Code (Nightly) Helper (Renderer)",
+          "t3-resource-monitor"
+        ],
+        "perProcess": [
+          {
+            "pid": 91341,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 2.346,
+            "rssMB": 103.9,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=gpu-process --user-data-dir=$HOME/Library/Application Support/t3code"
+          },
+          {
+            "pid": 91390,
+            "name": "T3 Code (Nightly) Helper (Renderer)",
+            "cpuS": 2.142,
+            "rssMB": 269.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper (Renderer).app/Contents/MacOS/T3 Code (Nightly) Helper (Renderer) --type=renderer --user-data-dir=$HOME/Library/Applica"
+          },
+          {
+            "pid": 91391,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 2.088,
+            "rssMB": 260,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly) --require /Applications/T3 Code (Nightly).app/Contents/Resources/app.asar/apps/desktop/dist-electron/compileCache.cjs /Applications"
+          },
+          {
+            "pid": 91309,
+            "name": "T3 Code (Nightly)",
+            "cpuS": 1.565,
+            "rssMB": 257.2,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)"
+          },
+          {
+            "pid": 91476,
+            "name": "2.1.311",
+            "cpuS": 0.357,
+            "rssMB": 191.9,
+            "aliveAtEnd": false,
+            "command": "claude --output-format stream-json --verbose --input-format stream-json --setting-sources=user,project,local --strict-mcp-config --permission-mode default --no-session-persistence --settings {\"disable"
+          },
+          {
+            "pid": 91342,
+            "name": "T3 Code (Nightly) Helper",
+            "cpuS": 0.203,
+            "rssMB": 58.6,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Frameworks/T3 Code (Nightly) Helper.app/Contents/MacOS/T3 Code (Nightly) Helper --type=utility --utility-sub-type=network.mojom.NetworkService --lang=en-US"
+          },
+          {
+            "pid": 91445,
+            "name": "codex",
+            "cpuS": 0.157,
+            "rssMB": 58,
+            "aliveAtEnd": false,
+            "command": "codex app-server"
+          },
+          {
+            "pid": 91486,
+            "name": "xcodebuild",
+            "cpuS": 0.089,
+            "rssMB": 7,
+            "aliveAtEnd": false,
+            "command": "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -license check"
+          },
+          {
+            "pid": 91351,
+            "name": "SetStoreUpdateService",
+            "cpuS": 0.024,
+            "rssMB": 10.4,
+            "aliveAtEnd": true,
+            "command": "/System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/XPCServices/SetStoreUpdateService.xpc/Contents/MacOS/SetStoreUpdateService"
+          },
+          {
+            "pid": 91353,
+            "name": "zsh",
+            "cpuS": 0.022,
+            "rssMB": 3.2,
+            "aliveAtEnd": false,
+            "command": "/bin/zsh -ilc printf '%s\\n' '__T3CODE_ENV_PATH_START__'; printenv PATH || true; printf '%s\\n' '__T3CODE_ENV_PATH_END__'; printf '%s\\n' '__T3CODE_ENV_DBUS_SESSION_BUS_ADDRESS_START__'; printenv DBUS_SE"
+          },
+          {
+            "pid": 91422,
+            "name": "t3-resource-monitor",
+            "cpuS": 0.02,
+            "rssMB": 7.4,
+            "aliveAtEnd": true,
+            "command": "/Applications/T3 Code (Nightly).app/Contents/Resources/resource-monitor/t3-resource-monitor"
+          },
+          {
+            "pid": 91485,
+            "name": "git",
+            "cpuS": 0.006,
+            "rssMB": 5,
+            "aliveAtEnd": false,
+            "command": "git -c core.hooksPath=/dev/null -c core.fsmonitor= -C /private$HOME/.t3/userdata ls-files --error-unmatch -- :(icase).claude/settings.local.json"
+          },
+          {
+            "pid": 91488,
+            "name": "git",
+            "cpuS": 0.001,
+            "rssMB": 0.2,
+            "aliveAtEnd": false,
+            "command": "/Library/Developer/CommandLineTools/usr/bin/git -c safe.bareRepository=explicit ls-remote https://github.com/openai/plugins.git HEAD"
+          },
+          {
+            "pid": 91381,
+            "name": "zsh",
+            "cpuS": 0,
+            "rssMB": 0,
+            "aliveAtEnd": false,
+            "command": null
+          }
+        ],
+        "appCpuS": 8.387999999999998,
+        "toolCpuS": 0.6308064120000019,
+        "appRssMB": 966.9,
+        "toolProcessesSeen": 7
+      },
+      "network": [
+        {
+          "pid": 91391,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62663",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793333091747,
+          "bytesIn": 9230,
+          "bytesOut": 1981,
+          "firstS": 5.5
+        },
+        {
+          "pid": 91391,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62685",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793333091747,
+          "bytesIn": 5131,
+          "bytesOut": 1974,
+          "firstS": 5.5
+        },
+        {
+          "pid": 91391,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62688",
+          "ip": "104.16.5.34",
+          "port": "443",
+          "first": 1793333091747,
+          "bytesIn": 5153,
+          "bytesOut": 1986,
+          "firstS": 5.5
+        },
+        {
+          "pid": 91476,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62666",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793333091747,
+          "bytesIn": 2796,
+          "bytesOut": 1508,
+          "firstS": 5.5
+        },
+        {
+          "pid": 91476,
+          "process": "2.1.311",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:62690",
+          "ip": "160.79.104.10",
+          "port": "443",
+          "first": 1793333091747,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 5.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62730",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793333093743,
+          "bytesIn": 57345,
+          "bytesOut": 2687,
+          "firstS": 7.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62736",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793333093743,
+          "bytesIn": 3772,
+          "bytesOut": 1860,
+          "firstS": 7.5
+        },
+        {
+          "pid": 91391,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62767",
+          "ip": "44.216.55.45",
+          "port": "443",
+          "first": 1793333095748,
+          "bytesIn": 4945,
+          "bytesOut": 12825,
+          "firstS": 9.5
+        },
+        {
+          "pid": 91391,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "Established",
+          "listen": false,
+          "local": "192.168.10.193:62835",
+          "ip": "172.67.153.155",
+          "port": "443",
+          "first": 1793333100752,
+          "bytesIn": 4938,
+          "bytesOut": 3333,
+          "firstS": 14.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62850",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793333102745,
+          "bytesIn": 228145,
+          "bytesOut": 2864,
+          "firstS": 16.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "SynSent",
+          "listen": false,
+          "local": "192.168.10.193:62853",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793333102745,
+          "bytesIn": 0,
+          "bytesOut": 0,
+          "firstS": 16.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62855",
+          "ip": "172.64.153.110",
+          "port": "443",
+          "first": 1793333102745,
+          "bytesIn": 3771,
+          "bytesOut": 1828,
+          "firstS": 16.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62871",
+          "ip": "44.216.55.45",
+          "port": "443",
+          "first": 1793333102745,
+          "bytesIn": 5277,
+          "bytesOut": 3838,
+          "firstS": 16.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62875",
+          "ip": "44.216.55.45",
+          "port": "443",
+          "first": 1793333102745,
+          "bytesIn": 4633,
+          "bytesOut": 1841,
+          "firstS": 16.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62887",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793333105749,
+          "bytesIn": 416270,
+          "bytesOut": 2320,
+          "firstS": 19.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "LastAck",
+          "listen": false,
+          "local": "192.168.10.193:62894",
+          "ip": "140.82.114.3",
+          "port": "443",
+          "first": 1793333105749,
+          "bytesIn": 3285,
+          "bytesOut": 1824,
+          "firstS": 19.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62929",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793333107748,
+          "bytesIn": 7411,
+          "bytesOut": 2811,
+          "firstS": 21.5
+        },
+        {
+          "pid": 91342,
+          "process": "T3 Code (Nightl",
+          "proto": "tcp4",
+          "iface": "en0",
+          "state": "FinWait1",
+          "listen": false,
+          "local": "192.168.10.193:62936",
+          "ip": "185.199.111.133",
+          "port": "443",
+          "first": 1793333107748,
+          "bytesIn": 5996,
+          "bytesOut": 1914,
+          "firstS": 21.5
+        }
+      ],
+      "listeners": [],
+      "disk": {
+        "home": {
+          "bytes": 13202225,
+          "files": 343
+        },
+        "breakdown": {
+          "Library/Application Support/t3code-v2/GraphiteDawnCache": 5870561,
+          ".codex": 2619172,
+          ".t3/userdata": 889114,
+          ".t3/userdata/logs/server.trace.ndjson": 861547,
+          "Library/Application Support/t3code-v2/DawnGraphiteCache": 557424,
+          "Library/Application Support/t3code-v2/DawnWebGPUCache": 557424,
+          "Library/Application Support/t3code-v2/GPUCache": 557424,
+          "Library/Application Support/t3code-v2/Cache": 283652,
+          ".t3/userdata/logs/desktop.trace.ndjson": 214192,
+          ".codex/skills/.system/imagegen": 126829,
+          "Library/Application Support/t3code-v2/Partitions": 115622,
+          ".codex/skills/.system/openai-docs": 92006
+        },
+        "byDir": {
+          "Library/Application Support/t3code-v2": 8269956,
+          ".codex": 2619172,
+          ".t3/userdata/logs": 1077025,
+          ".t3/userdata/statev2.sqlite": 868352,
+          ".codex/skills/.system": 307566,
+          ".t3/caches/claudeAgent.json": 31193,
+          ".t3/userdata/model-manifest.json": 12623,
+          ".t3/userdata/keybindings.json": 7967,
+          ".t3/caches/codex.json": 1915,
+          ".": 852,
+          ".t3/caches/pi.json": 845,
+          ".t3/caches/grok.json": 812,
+          ".t3/caches/opencode.json": 691,
+          ".t3/caches/antigravity.json": 668,
+          ".t3/caches/muse.json": 641,
+          ".t3/bin/t3": 637,
+          ".t3/caches/cursor.json": 596,
+          ".t3/userdata/secrets": 366,
+          ".claude/plugins/store": 92,
+          ".claude/backups/.claude.json.backup.1793333089132": 84,
+          ".t3/userdata/desktop-settings.json": 65,
+          ".t3/userdata/environment-id": 37,
+          ".t3/userdata/anonymous-id": 36,
+          ".t3/userdata/keybindings-migrations": 34
+        },
+        "outsideHomeBytes": null,
+        "ownBytes": 10274459,
+        "realHomeTouched": []
+      }
+    }
+  ]
+}

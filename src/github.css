@@ -1,29 +1,32 @@
 /* Import dialog: filters, then a checklist of issues that already knows what is on the board. */
 .github-import-dialog{width:min(40rem,calc(100vw - 2rem))}
 .github-filters{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:0 0 .9rem}
-.github-filters input:not([type="checkbox"]){flex:1 1 9rem;min-width:0;padding:.55rem .7rem;font-size:.84rem}
-.github-filter-toggle{display:inline-flex;align-items:center;gap:.5rem;font-size:.82rem;white-space:nowrap;padding:.3rem .2rem}
+.github-filters input:not([type="checkbox"]){flex:1 1 9rem;min-width:0;padding:.55rem .7rem;font-size:var(--text-sm)}
+.github-filter-toggle{display:inline-flex;align-items:center;gap:.5rem;font-size:var(--text-sm);white-space:nowrap;padding:.3rem .2rem}
 .github-filter-toggle input{width:15px;height:15px;accent-color:var(--accent);margin:0}
-.github-issue-list{display:flex;flex-direction:column;gap:.3rem;max-height:min(46vh,26rem);overflow:auto;padding:.2rem;border:1px solid var(--border);border-radius:.32rem;background:color-mix(in srgb,var(--panel) 72%,transparent)}
-.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:.24rem;cursor:pointer;transition:background-color 120ms}
+.github-issue-list{display:flex;flex-direction:column;gap:.3rem;max-height:min(46vh,26rem);overflow:auto;padding:.2rem;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--panel) 72%,transparent)}
+.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:var(--radius-sm);cursor:pointer;transition:background-color 120ms}
 .github-issue:hover{background:color-mix(in srgb,var(--text) 4%,transparent)}
 .github-issue input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0;margin:0}
 .github-issue-linked{color:var(--muted)}
 .github-issue-copy{display:flex;flex-direction:column;gap:.15rem;min-width:0;flex:1}
-.github-issue-copy strong{font-size:.84rem;font-weight:520;overflow-wrap:anywhere}
-.github-issue-copy small{font-size:.72rem;color:var(--muted)}
-.github-issue-badge{font-size:.68rem;font-weight:550;color:var(--accent-ink);background:var(--accent-dim);border-radius:999px;padding:.2rem .55rem;white-space:nowrap}
-.github-issue-update{font-size:.74rem;min-height:1.9rem;padding:.25rem .6rem;white-space:nowrap}
-.github-import-status{margin:1.2rem .5rem;font-size:.82rem;color:var(--muted);text-align:center}
-.github-import-count{margin-right:auto;font-size:.78rem;color:var(--muted)}
+.github-issue-copy strong{font-size:var(--text-sm);font-weight:var(--weight-medium);overflow-wrap:anywhere}
+.github-issue-copy small{font-size:var(--text-2xs);color:var(--muted)}
+.github-issue-badge{font-size:var(--text-2xs);font-weight:var(--weight-medium);color:var(--accent-ink);background:var(--accent-dim);border-radius:var(--radius-full);padding:.2rem .55rem;white-space:nowrap}
+.github-issue-update{font-size:var(--text-xs);min-height:1.9rem;padding:.25rem .6rem;white-space:nowrap}
+.github-import-status{margin:1.2rem .5rem;font-size:var(--text-sm);color:var(--muted);text-align:center}
+.github-import-count{margin-right:auto;font-size:var(--text-xs);color:var(--muted)}
 .github-pr-dialog{width:min(34rem,calc(100vw - 2rem))}
-.github-pr-dialog textarea{width:100%;padding:10px 12px;line-height:1.6;font-size:.88rem}
-.github-pr-dialog select{width:100%;padding:9px 12px;border-radius:4px;background:var(--panel);border:1px solid var(--border);font-size:.86rem}
-.github-pr-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:2px;padding:1px 4px}
+.github-pr-dialog textarea{width:100%;padding:10px 12px;line-height:1.6;font-size:var(--text-sm)}
+.github-pr-dialog select{width:100%;padding:9px 12px;border-radius:var(--radius-sm);background:var(--fill-hover);font-size:var(--text-sm)}
+.github-pr-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:var(--radius-xs);padding:1px 4px}
 .github-pr-error{color:var(--danger)}
 .github-pull-list{margin-top:.8rem;max-height:min(36vh,18rem)}
 .github-pull-pick{width:100%;text-align:left;min-height:0}
 .settings-github small{text-wrap:pretty}
 .board-heading-actions .board-import{white-space:nowrap}
 @media(max-width:600px){.github-filters input:not([type="checkbox"]){flex-basis:100%}}
-@media(prefers-contrast:more){.github-issue-list{border-color:var(--text)}.github-issue-badge{outline:1px solid var(--text)}}
+@media(prefers-contrast:more){.github-issue-list{border:1px solid var(--text)}.github-issue-badge{outline:1px solid var(--text)}}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.github-issue-badge,.github-issue-update{transition:background-color 130ms ease-out}}

@@ -1,18 +1,18 @@
 /* Queued follow-ups sit directly above the composer, in the composer's width. */
-.queue-panel{margin:0 0 8px;padding:8px 10px 6px;border-radius:6px;background:color-mix(in srgb,var(--panel) 72%,transparent);border:1px solid color-mix(in srgb,var(--border) 70%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
-.queue-heading{display:flex;align-items:center;gap:7px;padding:0 2px 4px;font-size:.76rem;color:var(--muted)}
+.queue-panel{margin:0 0 8px;padding:8px 10px 6px;border-radius:var(--radius-md);background:color-mix(in srgb,var(--panel) 72%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.queue-heading{display:flex;align-items:center;gap:7px;padding:0 2px 4px;font-size:var(--text-xs);color:var(--muted)}
 .queue-heading strong{font-weight:600;color:var(--text)}
-.queue-count{min-width:18px;height:18px;padding:0 5px;border-radius:4px;display:inline-grid;place-items:center;font-size:.7rem;font-variant-numeric:tabular-nums;background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--text)}
-.queue-next,.queue-hold{margin-left:auto;font-size:.74rem}
+.queue-count{min-width:18px;height:18px;padding:0 5px;border-radius:var(--radius-sm);display:inline-grid;place-items:center;font-size:var(--text-2xs);font-variant-numeric:tabular-nums;background:color-mix(in srgb,var(--text) 8%,transparent);color:var(--text)}
+.queue-next,.queue-hold{margin-left:auto;font-size:var(--text-xs)}
 .queue-hold{color:var(--focus)}
-.queue-resume{padding:2px 9px;border-radius:3px;font-size:.74rem;font-weight:550;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 45%,transparent);--press:1}
+.queue-resume{padding:2px 9px;border-radius:var(--radius-sm);font-size:var(--text-xs);font-weight:550;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 45%,transparent);--press:1}
 .queue-resume:hover{background:color-mix(in srgb,var(--accent) 65%,transparent)}
 .queue-list{list-style:none;margin:0;padding:0;display:grid;gap:1px;max-height:180px;overflow:auto;overscroll-behavior:contain}
-.queue-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:30px;padding:2px 2px 2px 4px;border-radius:3px;font-size:.84rem}
+.queue-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:30px;padding:2px 2px 2px 4px;border-radius:var(--radius-sm);font-size:var(--text-sm)}
 .queue-row:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
-.queue-index{flex:none;width:16px;text-align:center;font-size:.7rem;color:var(--faint);font-variant-numeric:tabular-nums}
+.queue-index{flex:none;width:16px;text-align:center;font-size:var(--text-2xs);color:var(--faint);font-variant-numeric:tabular-nums}
 .queue-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.queue-attachments{display:inline-flex;align-items:center;gap:2px;flex:none;font-size:.7rem;color:var(--muted)}
+.queue-attachments{display:inline-flex;align-items:center;gap:2px;flex:none;font-size:var(--text-2xs);color:var(--muted)}
 .queue-attachments .icon{width:12px;height:12px}
 .queue-actions{display:flex;flex:none;gap:1px;opacity:.55;transition:opacity 120ms}
 .queue-row:hover .queue-actions,.queue-row:focus-within .queue-actions{opacity:1}
@@ -20,10 +20,26 @@
 .queue-actions .icon{width:13px;height:13px}
 .queue-down .icon{transform:rotate(180deg)}
 .queue-row.editing{flex-direction:column;align-items:stretch;gap:6px;padding:4px}
-.queue-edit{width:100%;min-height:52px;resize:vertical;padding:7px 9px;border:1px solid var(--border);border-radius:4px;background:var(--panel);color:var(--text);font:inherit;font-size:.86rem}
-.queue-edit:focus-visible{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
+.queue-edit{width:100%;min-height:52px;resize:vertical;padding:7px 9px;border-radius:var(--radius-sm);background:var(--fill-hover);color:var(--text);font:inherit;font-size:var(--text-sm)}
+.queue-edit:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
 .queue-edit-actions{display:flex;justify-content:flex-end;gap:6px}
-.queue-edit-actions button{padding:4px 12px;font-size:.8rem}
+.queue-edit-actions button{padding:4px 12px;font-size:var(--text-xs)}
 @media(hover:none){.queue-actions{opacity:1}}
 @media(prefers-reduced-transparency:reduce){.queue-panel{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
 @media(prefers-contrast:more){.queue-panel{border-color:var(--border)}}
+
+.queue-row{flex-wrap:wrap}
+.queue-row[draggable=true]{cursor:grab}
+.queue-row:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--focus) 40%,transparent)}
+.queue-row.dragging{opacity:.45}
+.queue-row.drag-over{box-shadow:inset 0 2px 0 var(--accent)}
+.queue-index .icon{width:12px;height:12px}
+.queue-badge{flex:none;padding:1px 7px;border-radius:999px;font-size:.68rem;font-weight:550;color:var(--accent-ink);background:color-mix(in srgb,var(--accent) 28%,transparent)}
+.queue-badge.warn{color:var(--focus);background:color-mix(in srgb,var(--focus) 16%,transparent)}
+.queue-edit-head{display:flex;align-items:center;gap:8px;font-size:.74rem;color:var(--muted)}
+.queue-confirm{flex-basis:100%;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:4px 2px;font-size:.8rem}
+.queue-confirm strong{margin-right:auto;font-weight:600}
+.queue-confirm button{padding:3px 10px;font-size:.78rem}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.queue-row,.queue-resume{transition:background-color 140ms ease-out}.queue-row{animation:mi-fade-in 160ms ease-out}@keyframes mi-fade-in{from{opacity:0}}}

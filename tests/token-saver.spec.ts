@@ -5,15 +5,18 @@ const sent = (page: Page): Promise<string[]> => page.evaluate(() => ((window as 
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const saver = (page: Page) => page.locator('.composer-saver-button');
 
-async function open(page: Page): Promise<void> {
+async function open(page: Page, contextUsage = ''): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const source = await response.text();
-    await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+    // The preview module arrives vite-transformed: double quotes, exponential numbers.
+    let body = source.replace(/switch\s*\(command\)\s*\{/, `
       if (command === 'send_message') (window.__saverSent ??= []).push(structuredClone(args));
       if (command === 'token_saver_install') window.__saverInstalls = (window.__saverInstalls ?? 0) + 1;
       switch (command) {
-    `) });
+    `);
+    if (contextUsage) body = body.replace('resumeId: "preview-session"', `resumeId: "preview-session", contextUsage: { ${contextUsage} }`);
+    await route.fulfill({ response, body });
   });
   await page.goto('/');
   await expect(prompt(page)).toBeEnabled();
@@ -48,10 +51,10 @@ test('packs ride along once, fold in the transcript, and the switch-off is said 
   expect(first.startsWith('Fix the flaky search test\n\nResponse style (PandaCode token saver')).toBe(true);
   expect(first).toContain('Telegraphic.');
   expect(first).toContain('least code that fully solves');
-  // Folded behind the attached-context summary, not shown as what the user typed.
+  // A style note, not an attachment: it stays out of the transcript.
   const message = page.locator('.user-message').filter({ hasText: 'Fix the flaky search test' }).last();
-  await expect(message.locator('details.message-context')).toHaveCount(1);
-  await expect(message.locator('details.message-context')).not.toHaveAttribute('open', '');
+  await expect(message.locator('.message-content')).toHaveText('Fix the flaky search test');
+  await expect(message.locator('.message-attachments')).toHaveCount(0);
 
   await send(page, 'And the docs');
   expect((await sent(page)).at(-1)).toBe('And the docs');
@@ -90,4 +93,43 @@ test('turning on a missing tool installs it, and a thread can become the default
   const block = (await sent(page)).at(-1)!;
   expect(block).toContain('Prefix shell commands with rtk');
   expect(block).toContain('rg -n pattern path');
+});
+
+test('a nearly full context offers one-click tightening in the panel', async ({ page }) => {
+  // The preview thread reports a mostly full context window, like a long real thread.
+  await open(page, 'usedTokens: 820000, contextWindow: 1000000');
+  await saver(page).click();
+  const panel = page.getByRole('dialog', { name: 'Token saver' });
+  const hint = panel.locator('.saver-hint');
+  await expect(hint).toContainText('Context 82% full');
+  await hint.getByRole('button', { name: /Tighten the saver/ }).click();
+  await expect(panel.locator('.saver-hint')).toHaveCount(0);
+  await expect(panel.getByRole('switch', { name: /Caveman/ })).toHaveAttribute('aria-checked', 'true');
+  await expect(panel.getByRole('radio', { name: 'Ultra' })).toHaveAttribute('aria-checked', 'true');
+  await expect(panel.getByRole('switch', { name: /Quiet tools/ })).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await send(page, 'Run the checks');
+  const block = (await sent(page)).at(-1)!;
+  expect(block).toContain('Telegraphic.');
+  expect(block).toContain('rg -n pattern path');
+});
+
+test('the panel shows measured usage since the packs changed', async ({ page }) => {
+  await open(page);
+  await saver(page).click();
+  const panel = page.getByRole('dialog', { name: 'Token saver' });
+  await panel.getByRole('switch', { name: /Caveman/ }).click();
+  await expect(panel.locator('.saver-measured')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await send(page, 'Trim the replies');
+  await saver(page).click();
+  const measured = panel.locator('.saver-measured');
+  await expect(measured).toContainText('Since the packs changed');
+  await expect(measured).toContainText('91.2K in');
+  await expect(measured).toContainText('152.3K out');
+  await expect(measured).toContainText('cache reads');
+  // A configuration that has not gone out yet has no window to measure.
+  await panel.getByRole('switch', { name: /Quiet tools/ }).click();
+  await expect(measured).toHaveCount(0);
+  await page.keyboard.press('Escape');
 });

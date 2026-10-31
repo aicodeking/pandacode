@@ -17,6 +17,12 @@ owns it. This includes custom wrappers, executables selected directly from a
 version directory, and unrecognized package-manager installations. A network or
 version-check failure appears as **Unavailable**, rather than **Up to date**.
 
+Every agent PandaCode can start (`providers::PROVIDERS`) gets a row when it is
+installed, including Pi, Oh My Pi, DeepSeek, Command Code, Cline, Kilo Code,
+GitHub Copilot CLI and Muse Code. Agents without a supported route below show
+their installed version and **Manual update**; PandaCode does not check a release
+feed for them.
+
 Claude Code, GLM Coding Plan, and MiMo can use the same Claude installation. Update
 that installation once. A relay configured to use a separate or pinned executable
 still needs its own installation checked.

@@ -16,6 +16,9 @@ export interface TeamConfig {
   /** The agent team's name, shown in the model picker and composer. */
   name?: string;
   workers: WorkerProfile[];
+  /** Every model of every installed harness, up to 1000, round-robin across harnesses. `workers` stays the short
+   * roster shown to the lead; Panda Router picks worker models from this wider list. */
+  catalog?: WorkerProfile[];
   /** Zero means unlimited; positive values preserve a user-selected limit. */
   maxParallel: number;
   maxRounds: number;
@@ -58,7 +61,10 @@ export interface TeamMessagePage {
 export interface TeamWorker extends WorkerProfile {
   sessionId: string;
   profileId: string;
-  status: 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'stopped';
+  /** `parked`: its run ended while its sub-workers work; it resumes with their results. */
+  status: 'queued' | 'running' | 'waiting' | 'parked' | 'completed' | 'failed' | 'stopped';
+  /** The direct worker that dispatched this sub-worker. */
+  parentWorker?: string;
   assignment: string;
   summary: string;
   error?: string | null;

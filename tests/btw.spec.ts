@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openInspectorTab } from './inspector-tab-helper';
 
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
 const side = (page: Page) => page.getByRole('textbox', { name: 'Message the side thread', exact: true });
@@ -48,9 +49,14 @@ test('/btw while the main thread runs opens a side thread without queueing or st
   expect(await calls(page, 'queue_add')).toHaveLength(0);
   expect(await calls(page, 'steer_task')).toHaveLength(0);
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
-  // The context folds behind its own summary, and the sidebar keeps the BTW title.
-  await expect(log(page).locator('.btw-user details.message-context summary')).toHaveText('Main thread context');
-  await expect(page.locator(`.task-item[data-id="${sends[1].args.sessionId}"]`)).toHaveAttribute('title', 'BTW: what does the index cost?');
+  // The context shows as one chip that opens its raw text, and the sidebar keeps the BTW title.
+  const chip = log(page).locator('.btw-user .prompt-chip');
+  await expect(chip).toHaveCount(1);
+  await expect(chip.locator('.prompt-chip-name')).toHaveText('Main thread context');
+  await chip.click();
+  await expect(page.locator('#dialog .message-attachment-raw')).toContainText('Main thread context: "');
+  await page.keyboard.press('Escape');
+  await expect(page.locator(`.task-item[data-id="${sends[1].args.sessionId}"]`)).toHaveAttribute('title', /^BTW: what does the index cost\?/);
   await expect(page.locator('.btw-head small')).toHaveText('Ready · main running');
   // A bare /btw reopens the panel and focuses its composer.
   await page.getByRole('button', { name: 'Close side thread panel', exact: true }).click();
@@ -58,6 +64,12 @@ test('/btw while the main thread runs opens a side thread without queueing or st
   await prompt(page).press('Enter');
   await expect(side(page)).toBeFocused();
   expect(await calls(page, 'send_message')).toHaveLength(2);
+  // By the way is an ordinary inspector tab: selected while open, and closable.
+  const tab = page.locator('#inspector .inspector-tab[data-view="btw"]');
+  await expect(tab.locator('.inspector-tab-button')).toHaveAttribute('aria-current', 'true');
+  await tab.getByRole('button', { name: 'Close By the way', exact: true }).click();
+  await expect(tab).toBeHidden();
+  await expect(page.locator('#inspector-title')).not.toHaveText('By the way');
 });
 
 test('follow-ups reuse the side thread with only new main-thread context, and the panel comes back', async ({ page }) => {
@@ -177,6 +189,7 @@ test('a worktree task forks its side thread and hides the copied transcript', as
 
 test('tasks on another computer and prompts with attachments are refused, keeping the draft', async ({ page }) => {
   if (!await page.locator('#inspector').isVisible()) await page.locator('#inspector-toggle').click();
+  await openInspectorTab(page, 'tab-files');
   await page.locator('[data-action="tab-files"]').click();
   await page.locator('#inspector-content button[aria-label^="Attach "]').first().click();
   await prompt(page).fill('/btw with a file');

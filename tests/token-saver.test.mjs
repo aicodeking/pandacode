@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const memory = new Map();
 globalThis.localStorage = { getItem: key => memory.get(key) ?? null, setItem: (key, value) => memory.set(key, String(value)), removeItem: key => memory.delete(key) };
-const { REMIND_EVERY, contextFor, defaults, estimate, guidance, setDefaults, threadSaver, updateThread } = await import('../src/token-saver.ts');
+const { REMIND_EVERY, contextFor, defaults, estimate, guidance, setDefaults, suggestion, threadSaver, updateThread } = await import('../src/token-saver.ts');
 const noRtk = { rtk: false }, withRtk = { rtk: true };
 
 test('guidance rides along when it changes and as a periodic reminder, never every message', () => {
@@ -54,4 +54,36 @@ test('the estimate compounds, ignores unavailable tools, and stays plausible', (
   const all = estimate(['caveman', 'lean-code', 'quiet-tools', 'rtk'], 'ultra', withRtk);
   assert.ok(all > 50 && all < 75, String(all));
   assert.ok(estimate(['caveman'], 'lite', noRtk) < estimate(['caveman'], 'ultra', noRtk));
+});
+
+test('a nearly full context offers one-click tightening, only while something is left', () => {
+  const full = { usedTokens: 820000, contextWindow: 1000000 };
+  assert.equal(suggestion([], 'full', null), null, 'no reading, no hint');
+  assert.equal(suggestion([], 'full', { usedTokens: 100000, contextWindow: 1000000 }), null, 'quiet below the threshold');
+  assert.deepEqual(suggestion([], 'full', full), { addPacks: ['caveman', 'quiet-tools'], level: 'ultra' });
+  assert.deepEqual(suggestion(['caveman'], 'full', full), { addPacks: ['quiet-tools'], level: 'ultra' });
+  assert.deepEqual(suggestion(['caveman'], 'ultra', full), { addPacks: ['quiet-tools'] });
+  assert.deepEqual(suggestion(['quiet-tools'], 'full', full), { addPacks: ['caveman'], level: 'ultra' });
+  assert.equal(suggestion(['caveman', 'quiet-tools'], 'ultra', full), null, 'already tight');
+  assert.equal(suggestion([], 'full', { usedTokens: 900000, contextWindow: 0 }), null, 'unknown window stays quiet');
+  assert.deepEqual(suggestion(['rtk'], 'lite', { usedTokens: 750000, contextWindow: 1000000 }), { addPacks: ['caveman', 'quiet-tools'], level: 'ultra' }, 'exactly at the threshold counts as full');
+});
+
+test('the saver stamps when its configuration was sent, and reminders keep the stamp', () => {
+  memory.clear();
+  updateThread('t5', { packs: ['caveman'] });
+  contextFor('t5', noRtk);
+  const at = threadSaver('t5').changedAt;
+  assert.equal(typeof at, 'number');
+  for (let i = 0; i < REMIND_EVERY; i++) contextFor('t5', noRtk);
+  assert.equal(threadSaver('t5').changedAt, at, 'reminders keep the original stamp');
+  updateThread('t5', { packs: ['caveman', 'quiet-tools'] });
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 60000;
+    contextFor('t5', noRtk);
+    assert.ok(threadSaver('t5').changedAt > at, 'a new configuration stamps again');
+  } finally {
+    Date.now = realNow;
+  }
 });

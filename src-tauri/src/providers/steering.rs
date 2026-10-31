@@ -44,7 +44,7 @@ impl Protocol {
     }
 
     pub(super) fn steer(&mut self, id: String, text: String, reply: RpcReply) -> Step {
-        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot") {
+        if matches!(self.config.provider.as_str(), "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes") {
             return self.acp_steer(id, text, reply);
         }
         let mut step = Step::default();
@@ -74,6 +74,9 @@ impl Protocol {
             "codex" => self.accept(id, text, "next-turn", reply, &mut step),
             "pi" | "omp" => return self.pi_steer(id, text, reply),
             "muse" => return self.muse_steer(id, text, reply),
+            // A busy ZCode session queues a `session/send` server-side, but the
+            // queue's delivery is not observable enough to report live; hold it.
+            "zcode" => self.accept(id, text, "next-turn", reply, &mut step),
             _ => {
                 let _ = reply.send(Err("This agent cannot be steered; the message stays queued.".into()));
             }
@@ -202,6 +205,8 @@ impl Protocol {
         } else if self.config.provider == "muse" {
             self.config.prompt = text;
             self.muse_turn(step);
+        } else if self.config.provider == "zcode" {
+            self.zcode_prompt(text, step);
         } else {
             self.pi.settled = false;
             step.write.push(json!({"type":"prompt","id":"pandacode-prompt","message":text}));
@@ -404,7 +409,7 @@ mod tests {
 
     #[test]
     fn acp_harnesses_steer_and_empty_messages_are_refused() {
-        for provider in ["kimi", "opencode", "grok", "antigravity", "deepseek", "commandcode"] {
+        for provider in ["kimi", "opencode", "kilo", "grok", "antigravity", "deepseek", "commandcode", "hermes"] {
             let mut p = Protocol::new(config(provider));
             let (_, mut reply) = steer(&mut p, "hello");
             assert!(reply.try_recv().unwrap().is_ok(), "{provider} holds the steer");

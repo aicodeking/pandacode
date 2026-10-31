@@ -15,7 +15,7 @@ const history = [
 const errors = new WeakMap<Page, string[]>();
 const transcript = (page: Page) => page.getByRole('log', { name: 'Conversation', exact: true });
 const prompt = (page: Page) => page.locator('#prompt');
-const action = (page: Page, key: number | string, kind: 'copy' | 'fork', task = sessionId) => transcript(page)
+const action = (page: Page, key: number | string, kind: 'copy' | 'fork' | 'edit', task = sessionId) => transcript(page)
   .locator(`[data-message-action="${kind}"][data-message-session="${task}"][data-message-key="${key}"]`);
 
 async function install(page: Page): Promise<void> {
@@ -99,8 +99,9 @@ test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]);
 
 test('older history and forks preserve authors when the later harness switch is outside the page', async ({page}) => {
   const oldResponse = {id:202,sessionId,role:'assistant',content:'Saved Claude answer\n\n```cpp\n#include <iostream>\nint main() { std::cout << "Hello, world!"; }\n```',createdAt:200};
-  const seeded = [history[0], oldResponse,
-    ...Array.from({length:110}, (_, index) => ({id:203+index,sessionId,role:'tool',content:'Completed operation',createdAt:300+index})),
+  // The saved answer ends its turn (a later request follows), so it keeps copy and fork.
+  const seeded = [history[0], oldResponse, {id:203,sessionId,role:'user',content:'Next request',createdAt:250},
+    ...Array.from({length:110}, (_, index) => ({id:204+index,sessionId,role:'tool',content:'Completed operation',createdAt:300+index})),
     {id:400,sessionId,role:'handoff',content:JSON.stringify({fromProvider:'claude',toProvider:'codex',summary:'Saved harness switch'}),createdAt:500},
     {id:401,sessionId,role:'assistant',content:'Current Codex answer',createdAt:600}];
   await page.route('**/src/preview.ts*', async route => {
@@ -138,7 +139,9 @@ test.describe('conversation message actions', () => {
   test('copies the original user text and Markdown, including earlier activity responses, using keyboard controls', async ({ page }) => {
     await install(page); await revealHistory(page);
     await expect(action(page, 201, 'copy')).toBeVisible();
-    for (const [key, content] of [[201, request], [202, commentary], [204, answer], [206, history[5].content]] as const) {
+    // A reply between tool calls has no copy or fork; the turn's last reply does.
+    await expect(transcript(page).locator('[data-message-key="202"]')).toHaveCount(0);
+    for (const [key, content] of [[201, request], [204, answer], [206, history[5].content]] as const) {
       const copy = action(page, key, 'copy');
       await copy.focus(); await page.keyboard.press('Enter');
       await expect.poll(() => page.evaluate(() => (window as any).__clipboardWrites.at(-1))).toBe(content);
@@ -166,7 +169,27 @@ test.describe('conversation message actions', () => {
     await page.locator(`.task-item[data-id="${forkId}"]`).click();
     await expect(transcript(page)).not.toContainText('Later request');
     expect(await calls(page, 'send_message')).toEqual([]);
-    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 204 } }]);
+    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 204, exclusive: false } }]);
+  });
+
+  test('edit rewinds to before a user message, drops it from the new task and puts its text in the composer', async ({ page }) => {
+    await install(page); const original = await snapshot(page);
+    await page.evaluate(() => (window as any).__messageActionsTest.setContent(205, 'Fix the tpyo please.\n\nDocument context: notes.md\nbody'));
+    await action(page, 205, 'edit').click();
+    const forkId = await selectedFork(page), fork = await snapshot(page, forkId);
+    expect(fork.task.resumeId).toBeNull();
+    expect(fork.messages.map(message => message.content)).toEqual(history.slice(0, 4).map(message => message.content));
+    await expect(prompt(page)).toHaveValue('Fix the tpyo please.');
+    await expect(prompt(page)).toBeFocused();
+    await expect(transcript(page)).not.toContainText('tpyo');
+    expect((await snapshot(page)).messages.length).toBe(original.messages.length);
+    expect(await calls(page, 'send_message')).toEqual([]);
+    expect(await calls(page, 'fork_session_at_message')).toEqual([{ command: 'fork_session_at_message', args: { sessionId, messageId: 205, exclusive: true } }]);
+    // Assistant responses have no Edit; a running thread disables it.
+    await page.locator(`.task-item[data-id="${sessionId}"]`).click();
+    await expect(action(page, 204, 'edit')).toHaveCount(0);
+    await page.evaluate(id => (window as any).__messageActionsTest.emit({ sessionId: id, kind: 'status', text: 'Starting agent' }), sessionId);
+    await expect(transcript(page)).toHaveAttribute('data-running', '');
   });
 
   test('starts a ClipboardItem write during the click and copies full stored text after the database responds', async ({ page }) => {
@@ -224,7 +247,7 @@ test.describe('conversation message actions', () => {
 
   test('forks at the first user message inside the board without opening the general conversation view', async ({ page }) => {
     await install(page);
-    await page.getByRole('button', { name: 'Board view', exact: true }).click();
+    await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
     const board = page.getByRole('region', { name: 'Project board', exact: true });
     await board.getByRole('button', { name: 'Open task: Message action fixture', exact: true }).click();
     await expect(action(page, 201, 'fork')).toBeVisible();
@@ -263,11 +286,8 @@ test.describe('conversation message actions', () => {
     expect(await page.evaluate(() => (window as any).__liveCopyNode === document.querySelector('.live-message [data-message-action="copy"]'))).toBe(true);
     await action(page, 'live', 'copy').click();
     await expect.poll(() => page.evaluate(() => (window as any).__clipboardWrites.at(-1))).toBe('New **response** with `code`.');
-    const earlier = transcript(page).locator('[data-message-action="copy"][data-message-key^="commentary:"]');
-    await expect(earlier).toHaveCount(1);
-    await revealHistory(page);
-    await earlier.click();
-    await expect.poll(() => page.evaluate(() => (window as any).__clipboardWrites.at(-1))).toBe(initial);
+    // The earlier reply is now between tool calls: no copy or fork.
+    await expect(transcript(page).locator('[data-message-key^="commentary:"]')).toHaveCount(0);
     expect(await calls(page, 'fork_session_at_message')).toEqual([]);
   });
 

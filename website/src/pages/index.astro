@@ -10,6 +10,7 @@ import AlphaNotice from '../components/AlphaNotice.astro';
 import Comparison from '../components/Comparison.astro';
 import PrivacySection from '../components/PrivacySection.astro';
 import NewFeatures from '../components/NewFeatures.astro';
+import MobileApp from '../components/MobileApp.astro';
 import OpenSource from '../components/OpenSource.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 ---
@@ -20,7 +21,7 @@ import SiteFooter from '../components/SiteFooter.astro';
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f8f9f2">
   <title>PandaCode — A calmer place to build.</title>
-  <meta name="description" content="A free, open-source desktop workspace for your coding agents. No account, no telemetry. Bring Claude Code, Codex, Kimi Code and more together with agent teams, always-on bots, VMs and cloud sandboxes, iOS and Android simulators, one-click deploys, a task board, and a little room to breathe.">
+  <meta name="description" content="A free, open-source desktop workspace for your coding agents, with an iPhone app to follow and control them. No account, no telemetry. Bring Claude Code, Codex, Kimi Code and more together with agent teams, always-on bots, VMs and cloud sandboxes, iOS and Android simulators, one-click deploys, a task board, and a little room to breathe.">
   <meta property="og:type" content="website">
   <meta property="og:title" content="PandaCode — A calmer place to build.">
   <meta property="og:description" content="Your coding agents. One thoughtfully quiet workspace. Free and open source for macOS, Windows, and Linux.">
@@ -35,7 +36,7 @@ import SiteFooter from '../components/SiteFooter.astro';
   <header class="navigation">
     <nav class="nav-inner" aria-label="Main navigation">
       <a class="wordmark" href="#" aria-label="PandaCode home"><img src="/favicon.svg" width="30" height="30" alt="">PandaCode<PreviewTag /></a>
-      <div class="nav-links"><a href="#whats-new">What’s new</a><a href="#experience">Features</a><a href="#comparison">Compare</a><a href="#open-source">Open source</a><a href="#privacy">Privacy</a><a href={project.repo} target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></div>
+      <div class="nav-links"><a href="#whats-new">What’s new</a><a href="#experience">Features</a><a href="#mobile">iPhone</a><a href="#comparison">Compare</a><a href="#open-source">Open source</a><a href="#privacy">Privacy</a><a href="/support/">Support</a><a href={project.repo} target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a></div>
       <a class="button button-small" href="#download" aria-label="Download PandaCode">Download <span aria-hidden="true">↓</span></a>
     </nav>
     <span class="scroll-progress" aria-hidden="true"></span>
@@ -51,7 +52,7 @@ import SiteFooter from '../components/SiteFooter.astro';
         <h1 id="hero-title"><span class="rise">Great work.</span><br><span class="rise">A calmer place.</span></h1>
         <p class="hero-description">Your favorite coding agents.<br>One thoughtfully quiet workspace.</p>
         <AlphaNotice id="hero-alpha" />
-        <div class="hero-actions"><a class="button" href={project.releases} target="_blank" rel="noopener noreferrer" data-download aria-describedby={distribution.isUnsignedPreview ? 'hero-alpha hero-distribution' : 'hero-alpha'}><span data-icon="leaf" set:html={icon("leaf")}></span> Download PandaCode <span aria-hidden="true">↗</span></a><a class="text-link" href={project.repo} target="_blank" rel="noopener noreferrer" data-source>Star on GitHub <span aria-hidden="true">↗</span></a></div>
+        <div class="hero-actions"><a class="button" href={project.releases} target="_blank" rel="noopener noreferrer" data-download aria-describedby={distribution.hasNote ? 'hero-alpha hero-distribution' : 'hero-alpha'}><span data-icon="leaf" set:html={icon("leaf")}></span> Download PandaCode <span aria-hidden="true">↗</span></a><a class="text-link" href={project.repo} target="_blank" rel="noopener noreferrer" data-source>Star on GitHub <span aria-hidden="true">↗</span></a></div>
         <p class="download-caption">Free & open source under an MIT-based license. No account. No telemetry.<br>Bring your own coding agents; their subscriptions and usage are yours.</p>
         <DistributionNote id="hero-distribution" />
       </div>
@@ -113,6 +114,7 @@ import SiteFooter from '../components/SiteFooter.astro';
       <div class="light-facts"><div><span class="fact-symbol" data-icon="apple" set:html={icon("apple")}></span><strong>A native foundation.</strong><p>Built for macOS, Windows, and Linux.</p></div><div><span class="fact-symbol" data-icon="leaf" set:html={icon("leaf")}></span><strong>Quiet by design.</strong><p>No bundled Chromium. No always-on Node server.</p></div></div>
     </section>
 
+    <MobileApp />
     <OpenSource />
     <Comparison />
     <PrivacySection />
@@ -120,9 +122,9 @@ import SiteFooter from '../components/SiteFooter.astro';
     <section id="download" class="download-section" aria-labelledby="download-title">
       <div class="fireflies" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <picture aria-hidden="true"><source srcset="/assets/twilight-lake-800.webp 800w, /assets/twilight-lake-1600.webp 1600w" sizes="100vw"><img src="/assets/twilight-lake-1600.webp" width="1600" height="901" alt="" loading="lazy" decoding="async"></picture>
-      <div class="download-content reveal"><img class="app-icon" src="/favicon.svg" width="80" height="80" alt="PandaCode app icon"><p class="eyebrow">MAKE SOMETHING GOOD</p><h2 id="download-title">Your next idea<br>has a home.</h2><p>Bring your agents. We’ll make a little space.</p><AlphaNotice id="download-alpha" /><a class="button" href={project.releases} target="_blank" rel="noopener noreferrer" data-download aria-describedby={distribution.isUnsignedPreview ? 'download-alpha download-distribution' : 'download-alpha'}><span data-icon="leaf" set:html={icon("leaf")}></span> Download PandaCode <span aria-hidden="true">↗</span></a><span class="download-version">Free · Open source · GitHub Releases</span><p class="platform-downloads" aria-label="Direct downloads">{platformDownloads.map(platform => <a href={platform.href} data-platform-download>{platform.label} <small>{platform.detail}</small></a>)}</p><p class="download-provider-note">Bring your own coding provider accounts. Their fees are separate.</p><DistributionNote id="download-distribution" /><a class="source-link" href={project.repo} target="_blank" rel="noopener noreferrer" data-source>View the source on GitHub <span aria-hidden="true">↗</span></a></div>
+      <div class="download-content reveal"><img class="app-icon" src="/favicon.svg" width="80" height="80" alt="PandaCode app icon"><p class="eyebrow">MAKE SOMETHING GOOD</p><h2 id="download-title">Your next idea<br>has a home.</h2><p>Bring your agents. We’ll make a little space.</p><AlphaNotice id="download-alpha" /><a class="button" href={project.releases} target="_blank" rel="noopener noreferrer" data-download aria-describedby={distribution.hasNote ? 'download-alpha download-distribution' : 'download-alpha'}><span data-icon="leaf" set:html={icon("leaf")}></span> Download PandaCode <span aria-hidden="true">↗</span></a><span class="download-version">Free · Open source · GitHub Releases</span><p class="platform-downloads" aria-label="Direct downloads">{platformDownloads.map(platform => <a href={platform.href} data-platform-download>{platform.label} <small>{platform.detail}</small></a>)}</p><p class="download-provider-note">Bring your own coding provider accounts. Their fees are separate.</p><DistributionNote id="download-distribution" /><a class="source-link" href={project.repo} target="_blank" rel="noopener noreferrer" data-source>View the source on GitHub <span aria-hidden="true">↗</span></a></div>
     </section>
-    <section class="preview-notes section-width" id="preview-notes" aria-label="Release notes"><p><strong>Your workspace, your providers.</strong> PandaCode is free, open-source software under the <a class="inline-link" href="/license/">PandaCode License</a>, an MIT license that asks forks to credit PandaCode. Your coding provider subscriptions and model usage are separate. Builds for Apple silicon Macs, Windows x64, and Linux x64 are published on GitHub Releases, or you can build from source. Read how PandaCode handles your data in the <a class="inline-link" href="/privacy/">Privacy Policy</a>.</p><a href={project.issues} target="_blank" rel="noopener noreferrer">Report an issue or request a feature <span aria-hidden="true">↗</span></a></section>
+    <section class="preview-notes section-width" id="preview-notes" aria-label="Release notes"><p><strong>Your workspace, your providers.</strong> PandaCode is free, open-source software under the <a class="inline-link" href="/license/">PandaCode License</a>, an MIT license that asks forks to credit PandaCode. Your coding provider subscriptions and model usage are separate. Builds for Apple silicon and Intel Macs, Windows x64 and arm64, and Linux x86_64 and aarch64 are published on GitHub Releases, or you can build from source. Read how PandaCode handles your data in the <a class="inline-link" href="/privacy/">Privacy Policy</a>.</p><a href={project.issues} target="_blank" rel="noopener noreferrer">Report an issue or request a feature <span aria-hidden="true">↗</span></a></section>
   </main>
   <SiteFooter home />
   <script>import '../scripts/main.js'; import '../scripts/motion';</script>

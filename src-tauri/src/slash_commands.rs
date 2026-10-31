@@ -66,6 +66,10 @@ struct CommandCache {
 static CACHE: LazyLock<Mutex<CommandCache>> = LazyLock::new(|| Mutex::new(CommandCache::default()));
 static DISCOVERY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 const CACHE_AGE: Duration = Duration::from_secs(300);
+/// Untouched entries are dropped after this long. Longer than `CACHE_AGE` so a
+/// stale snapshot still serves completion while a refresh is pending.
+const IDLE: Duration = Duration::from_secs(30 * 60);
+const LIMIT: usize = 16;
 const REFRESH_WARNING: &str =
     "Could not refresh harness commands. Try Refresh, or start a task to sync its command list.";
 
@@ -80,13 +84,23 @@ impl CommandCache {
         self.revision
     }
 
+    /// Runs whenever the cache is touched, so an idle cache shrinks. Entries
+    /// whose discovery gate is shared stay: a request is waiting on them.
+    fn purge(&mut self, now: Instant) {
+        self.entries.retain(|_, value| {
+            Arc::strong_count(&value.discovery) > 1
+                || now.saturating_duration_since(value.touched) < IDLE
+        });
+    }
+
     fn insert(
         &mut self,
         key: Key,
         catalog: Option<Catalog>,
         terminal_names: HashSet<String>,
     ) -> u64 {
-        let capacity = if self.entries.contains_key(&key) { 16 } else { 15 };
+        self.purge(Instant::now());
+        let capacity = if self.entries.contains_key(&key) { LIMIT } else { LIMIT - 1 };
         while self.entries.len() > capacity {
             if let Some(oldest) = self
                 .entries
@@ -121,6 +135,7 @@ impl CommandCache {
     }
 
     fn cached(&mut self, key: &Key, since: Option<Instant>) -> Option<Catalog> {
+        self.purge(Instant::now());
         let entry = self.entries.get_mut(key)?;
         entry.touched = Instant::now();
         if entry.updated.elapsed() >= CACHE_AGE || since.is_some_and(|since| entry.updated < since)
@@ -131,6 +146,7 @@ impl CommandCache {
     }
 
     fn begin(&mut self, key: &Key) -> u64 {
+        self.purge(Instant::now());
         if let Some(entry) = self.entries.get_mut(key) {
             entry.touched = Instant::now();
             return entry.revision;
@@ -144,6 +160,7 @@ impl CommandCache {
     }
 
     fn snapshot(&mut self, key: &Key) -> Catalog {
+        self.purge(Instant::now());
         let mut catalog = self.entries.get_mut(key).and_then(|entry| {
             entry.touched = Instant::now();
             entry.catalog.clone()
@@ -178,7 +195,7 @@ impl CommandCache {
                 // Process output stays behind the generic message.
                 let warning = if key.0 == "kimi" && error == kimi::AUTH_REQUIRED {
                     kimi::AUTH_REQUIRED
-                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot")
+                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes")
                     && error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT)
                 {
                     crate::providers::acp::ACP_STARTUP_TIMEOUT
@@ -326,10 +343,12 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "mimo"
             | "pi"
             | "deepseek"
-            | "commandcode" | "cline"
+            | "commandcode" | "cline" | "kilo"
             | "omp"
             | "github-copilot"
             | "muse"
+            | "devin"
+            | "hermes"
     ) {
         return Err("Unknown harness.".into());
     }
@@ -352,7 +371,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
         let discovered = match provider {
             "claude" => claude::discover(cwd).await,
             "glm" | "mimo" => claude::discover_for(provider, cwd).await,
-            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot" => {
+            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
                 acp::discover(provider, cwd).await
             }
             "deepseek" => Ok(Catalog::default()),
@@ -388,7 +407,7 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     }
     let value = match provider {
         "claude" | "glm" | "mimo" => claude::parse_runtime(data),
-        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "github-copilot" => acp::parse_runtime(provider, data),
+        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
         _ => None,
     };
@@ -1018,6 +1037,32 @@ mod tests {
             cache.entries[&oldest].catalog.is_some(),
             "Refresh failures can still recover the prior catalog"
         );
+    }
+
+    #[test]
+    fn idle_entries_are_purged_unless_a_discovery_holds_their_gate() {
+        let mut cache = CommandCache::default();
+        let now = Instant::now();
+        let idle = ("kimi".into(), PathBuf::from("idle"));
+        let waiting = ("kimi".into(), PathBuf::from("waiting"));
+        let recent = ("kimi".into(), PathBuf::from("recent"));
+        for key in [&idle, &waiting, &recent] {
+            cache.insert(key.clone(), Some(native_catalog(&["/compact"])), HashSet::new());
+        }
+        let gate = cache.discovery(&waiting);
+        for key in [&idle, &waiting] {
+            cache.entries.get_mut(key).unwrap().touched = now - IDLE;
+        }
+        // Any touch purges, even a lookup of another key.
+        assert!(cache.cached(&("kimi".into(), PathBuf::from("miss")), None).is_none());
+        assert!(!cache.entries.contains_key(&idle));
+        assert!(cache.entries.contains_key(&waiting));
+        assert!(cache.cached(&recent, None).is_some());
+        drop(gate);
+        cache.entries.get_mut(&waiting).unwrap().touched = now - IDLE;
+        cache.snapshot(&recent);
+        assert!(!cache.entries.contains_key(&waiting));
+        assert_eq!(cache.entries.len(), 1);
     }
 
     #[test]

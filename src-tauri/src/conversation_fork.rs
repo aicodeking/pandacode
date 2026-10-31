@@ -9,6 +9,16 @@ use rusqlite::params;
 /// deliberately shares the checkout, as the existing whole-task fork does; it
 /// neither rewinds files nor creates another Git branch or project.
 pub(crate) fn at_message(store: &Store, source_id: &str, message_id: i64) -> Result<Session> {
+    copy(store, source_id, message_id, false)
+}
+
+/// Edit/rewind: the same fork, ending just before `message_id`, so the
+/// mistaken prompt and everything after it stay only in the source.
+pub(crate) fn before_message(store: &Store, source_id: &str, message_id: i64) -> Result<Session> {
+    copy(store, source_id, message_id, true)
+}
+
+fn copy(store: &Store, source_id: &str, message_id: i64, exclusive: bool) -> Result<Session> {
     let transaction = store
         .db
         .unchecked_transaction()
@@ -41,7 +51,7 @@ pub(crate) fn at_message(store: &Store, source_id: &str, message_id: i64) -> Res
             "SELECT id,role,content,created_at FROM messages WHERE session_id=?1 AND id<=?2 AND role NOT IN ('internal','changes') ORDER BY id",
         ).map_err(|e| e.to_string())?;
         let rows = query
-            .query_map(params![source_id, message_id], |row| {
+            .query_map(params![source_id, message_id - i64::from(exclusive)], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,

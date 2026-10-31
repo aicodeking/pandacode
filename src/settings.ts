@@ -1,6 +1,7 @@
 import './settings.css';
 import { mountProviderReadiness } from './provider-readiness';
 import { escape, icon } from './dom';
+import { infoMark } from './tooltip';
 import { providerLogo } from './provider-logos';
 import { uiSizeControls } from './ui-size';
 import type { Project, Provider, ProviderId } from './types';
@@ -9,18 +10,21 @@ import { mountSupportDetails } from './support-settings';
 import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
 import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings';
 import { colorsSummary } from './theme-settings';
+import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-import { call } from './bridge';
+import { call, subscribe } from './bridge';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountRemoteSettings } from './remote-settings';
+import { mountSchedulesSettings } from './schedules-settings';
 import type { RemoteHost } from './remote-types';
+import type { AgentsDockPreferences } from './agents-dock';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
 
-export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
+export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'schedules' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
 
 interface SettingsOptions {
   providers: Provider[];
@@ -41,13 +45,15 @@ interface SettingsOptions {
   projects?: { list(): Project[]; remove(id: string): Promise<void> };
   /** Named agent teams and the classic Team setup switch. */
   teams?: Omit<AgentTeamsOptions, 'providers'>;
+  /** Settings → Schedules: an optional editor intent, and how a row opens its thread. */
+  schedules?: { intent?: { newForSession?: string; editScheduleId?: string }; openThread(sessionId: string): void };
   /** Cloud sandbox connections (Daytona, Cloudflare, AWS). */
   cloud?: CloudSettingsHost;
   /** Skills library and rules registry. */
   skills?: SkillsLibraryHost;
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
-  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed };
+  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
   /** Leaves Settings for the workspace. */
   close(): void;
 }
@@ -57,25 +63,79 @@ export interface SettingsView { show(section: SettingsSection): void; dispose():
 export const SECTIONS: { id: SettingsSection; label: string; icon: string; description: string }[] = [
   { id: 'general', label: 'General', icon: 'settings', description: 'Text size, conversation density and the quick launcher.' },
   { id: 'appearance', label: 'Appearance', icon: 'sun', description: 'Theme, accent colors and wallpapers.' },
-  { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent, installed agents and their models.' },
-  { id: 'providers', label: 'Providers', icon: 'server', description: 'Connections for Claude Code, GitHub Copilot CLI, GLM, MiMo, OpenCode and Antigravity.' },
+  { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent and the agent harnesses installed on this computer.' },
+  { id: 'providers', label: 'Providers', icon: 'lock', description: 'Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
-  { id: 'tools', label: 'Tools & add-ons', icon: 'widget', description: 'App tools, MCP servers, skills and Jev.' },
+  { id: 'schedules', label: 'Schedules', icon: 'clock', description: 'Wake-ups and timed messages from you and your agents.' },
+  { id: 'tools', label: 'Tools & add-ons', icon: 'terminal', description: 'App tools, MCP servers, skills and Jev.' },
   { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
-  { id: 'cloud', label: 'Cloud sandboxes', icon: 'globe', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
-  { id: 'remote', label: 'Remote access', icon: 'server', description: 'Reach your other computers with PandaCode Connect, end-to-end encrypted.' },
+  { id: 'cloud', label: 'Cloud sandboxes', icon: 'server', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
+  { id: 'remote', label: 'Remote access', icon: 'globe', description: 'Reach your other computers with PandaCode Connect, end-to-end encrypted.' },
   { id: 'github', label: 'GitHub', icon: 'github', description: 'Issues, pull requests and repositories through the GitHub CLI.' },
   { id: 'about', label: 'About & updates', icon: 'info', description: 'Version, updates, resource usage, license and support.' },
 ];
 
+/** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
+const PLANS = new Set<ProviderId>(['glm', 'mimo']);
+
+const LONG_DETAIL = 80;
 const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
-  `<div class="setting-row"><div><strong>${title}</strong><small>${detail}</small></div><input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}></div>`;
+  `<div class="setting-row"><div><strong>${title}${detail.length > LONG_DETAIL ? ` ${infoMark(detail)}` : ''}</strong>${detail.length > LONG_DETAIL ? '' : `<small>${detail}</small>`}</div><input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}></div>`;
+
+function mountAgentsDockSettings(host: HTMLElement): () => void {
+  let disposed = false;
+  let preferences: AgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+  let error = '';
+  let unsubscribe: (() => void) | undefined;
+  // Disabling a focused switch while saving blurs it, so the change handler remembers it.
+  let refocus = '';
+  const draw = () => {
+    if (disposed) return;
+    const active = document.activeElement;
+    const focused = refocus || (active instanceof HTMLElement && host.contains(active) ? active.id : '');
+    refocus = '';
+    host.innerHTML = `<div class="settings-group">${switchRow('agents-dock-enabled', 'Running agents widget', 'Show the live header widget. Turning this off also closes the pinned window.', preferences.enabled)}${switchRow('agents-dock-keep-on-screen', 'Keep pinned widget on screen', 'Keep the floating widget inside the current display when it expands.', preferences.keepOnScreen)}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div>`;
+    if (focused) host.querySelector<HTMLElement>(`#${focused}`)?.focus({ preventScroll: true });
+  };
+  const change = async (event: Event) => {
+    const target = event.target instanceof HTMLInputElement ? event.target : null;
+    if (!target || !['agents-dock-enabled', 'agents-dock-keep-on-screen'].includes(target.id)) return;
+    const next = {
+      enabled: target.id === 'agents-dock-enabled' ? target.checked : preferences.enabled,
+      keepOnScreen: target.id === 'agents-dock-keep-on-screen' ? target.checked : preferences.keepOnScreen,
+    };
+    refocus = target.id;
+    host.querySelectorAll<HTMLInputElement>('.settings-switch').forEach(input => { input.disabled = true; });
+    try {
+      preferences = { ...preferences, ...await call<AgentsDockPreferences>('agents_dock_save_preferences', next) };
+      error = '';
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    }
+    draw();
+  };
+  host.addEventListener('change', change);
+  void call<AgentsDockPreferences>('agents_dock_preferences').then(value => {
+    if (!disposed) { preferences = { ...preferences, ...value }; draw(); }
+  }).catch(() => undefined);
+  const subscribeDockEvent = subscribe as unknown as <T>(name: string, callback: (event: T) => void) => Promise<() => void>;
+  void subscribeDockEvent<Partial<AgentsDockPreferences>>('agents-dock-preferences-changed', value => {
+    if (!disposed) { preferences = { ...preferences, ...value }; draw(); }
+  }).then(cleanup => { if (disposed) cleanup(); else unsubscribe = cleanup; }).catch(() => undefined);
+  draw();
+  return () => {
+    disposed = true;
+    unsubscribe?.();
+    host.removeEventListener('change', change);
+    host.replaceChildren();
+  };
+}
 
 function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', 'Less space between messages.', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', 'Show grouped activity expanded by default.', options.activityExpanded)}</div>
-      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
+      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Theme</strong><small>${options.theme === 'dark' ? 'Dark' : 'Light'}. Imported VS Code themes keep their own.</small></div><button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button></div>
         <div class="setting-row"><div><strong>Daily wallpapers</strong><small>A new scene for each part of the day.</small></div><input type="checkbox" class="settings-switch" id="daily-wallpapers" aria-label="Daily wallpapers" ${options.wallpapers ? 'checked' : ''}></div>
@@ -92,14 +152,16 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
+      <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
       <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
-    case 'teams': return '<div id="agent-teams-settings"></div>';
+    case 'teams': return '<div id="agent-teams-settings"></div><div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
       </div>
       <div id="capabilities-settings"></div>`;
+    case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
     case 'remote': return '<div id="remote-settings"></div>';
@@ -115,7 +177,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   host.innerHTML = `<nav class="settings-nav" aria-label="Settings sections">
       <div class="settings-nav-head" data-tauri-drag-region><button type="button" class="settings-back" data-settings-close aria-label="Back to the workspace" title="Back (Esc)">${icon('back')}<span>Back</span></button></div>
       <h1 class="settings-nav-title" data-tauri-drag-region>Settings</h1>
-      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
+      <div class="settings-nav-list" role="tablist" aria-orientation="vertical" aria-label="Settings">${SECTIONS.map(section => `<button type="button" role="tab" id="settings-tab-${section.id}" data-section="${section.id}" title="${section.label}" aria-controls="settings-panel-${section.id}" aria-selected="false" tabindex="-1">${icon(section.icon)}<span>${section.label}</span></button>`).join('')}</div>
     </nav>
     <div class="settings-content">${SECTIONS.map(section => `<section class="settings-panel" id="settings-panel-${section.id}" role="tabpanel" aria-labelledby="settings-tab-${section.id}" hidden><header class="settings-panel-head" data-tauri-drag-region><h2>${section.label}</h2><p>${section.description}</p></header><div class="settings-panel-body">${sectionHtml(section.id, options)}</div></section>`).join('')}</div>`;
   const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
@@ -131,7 +193,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   const readinessCleanup: (() => void)[] = [];
   const live = () => !disposed && host.isConnected && !host.hidden;
 
-  function updateProviders(providers: Provider[]): void {
+  function updateProviders(all: Provider[]): void {
+    const providers = all.filter(provider => !PLANS.has(provider.id));
     const rows = new Map(Array.from(list.querySelectorAll<HTMLDetailsElement>('details')).map(row => [row.dataset.provider!, row]));
     for (const [index, provider] of providers.entries()) {
       let row = rows.get(provider.id);
@@ -203,11 +266,16 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (mounted.has(id)) return;
     mounted.add(id);
     const panel = panels.get(id)!;
-    if (id === 'general') cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
+    if (id === 'general') {
+      cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
+      cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
+    }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
+    if (id === 'teams' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
     if (id === 'tools') cleanups.push(mountCapabilities(panel.querySelector<HTMLElement>('#capabilities-settings')!, call));
     if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));

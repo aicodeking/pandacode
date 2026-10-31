@@ -90,6 +90,13 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     })
 }
 
+/// Deletes the rows, then the app-data files of every deleted task (progress snapshots), best effort.
+fn delete_with_files(state: &AppState, sid: &str, app_data: Option<&std::path::Path>) -> Result<DeletedSessions> {
+    let deleted = delete_state(state, sid)?;
+    if let Some(dir) = app_data { crate::progress::forget(dir, &deleted.deleted_session_ids); }
+    Ok(deleted)
+}
+
 #[tauri::command]
 pub async fn delete_session(
     app: tauri::AppHandle,
@@ -103,7 +110,7 @@ pub async fn delete_session(
     crate::providers::discard_warm_agent(&session_id);
     crate::blocking(move || {
         let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| crate::cloud_agents::load(&store, &session_id).ok().flatten());
-        let deleted = delete_state(&app.state::<AppState>(), &session_id)?;
+        let deleted = delete_with_files(&app.state::<AppState>(), &session_id, app.path().app_data_dir().ok().as_deref())?;
         // Its cloud machine goes with it, best effort.
         crate::cloud_agents::tasks::forget_machine(cloud);
         let _ = app.emit(
@@ -135,6 +142,28 @@ mod tests {
         let child = task(store, project);
         store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,?2,?2)", params![parent, child]).unwrap();
         child
+    }
+
+    #[test]
+    fn deleting_a_task_removes_its_and_its_workers_progress() {
+        let (state, project) = test_state();
+        let (parent, child, other) = {
+            let store = state.store.lock().unwrap();
+            let parent = task(&store, &project);
+            let child = owned_worker(&store, &parent, &project);
+            (parent, child, task(&store, &project))
+        };
+        let app_data = std::env::temp_dir().join(format!("pandacode-delete-{}", uuid::Uuid::new_v4().simple()));
+        let progress = app_data.join(crate::progress::DIR);
+        for sid in [&parent, &child, &other] {
+            let draft = crate::progress::parse(&serde_json::json!({"title":"t","svg":"<svg/>"})).unwrap();
+            crate::progress::save(&progress, sid, draft, crate::progress::Media::Svg("<svg/>".into())).unwrap();
+        }
+        let deleted = delete_with_files(&state, &parent, Some(&app_data)).unwrap();
+        assert_eq!(deleted.deleted_session_ids, vec![parent.clone(), child.clone()]);
+        assert!(!progress.join(&parent).exists() && !progress.join(&child).exists());
+        assert_eq!(crate::progress::list(&progress, &other).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(&app_data);
     }
 
     #[test]

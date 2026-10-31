@@ -8,7 +8,7 @@ const tab = (page: Page, name: RegExp) => hub(page).getByRole('tab', { name });
 async function openHub(page: Page): Promise<void> {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
-  await page.getByRole('button', { name: 'GitHub view' }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'GitHub', exact: true }).click();
   await expect(hub(page)).toBeVisible();
 }
 

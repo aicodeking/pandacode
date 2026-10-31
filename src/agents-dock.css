@@ -1,0 +1,53 @@
+.agents-dock-host{position:relative;display:inline-flex;align-items:center;flex:none}
+.agents-dock-trigger{position:relative;--press:1}
+.agents-dock-trigger.is-working>.icon{color:var(--accent-ink)}
+.agents-dock-trigger.is-working::after{position:absolute;inset:0;border:1px solid rgb(var(--accent-rgb) / .32);border-radius:inherit;content:"";pointer-events:none}
+.agents-dock-trigger.is-working>.icon{animation:agents-dock-pulse 1.7s ease-in-out infinite}
+.agents-dock-count{position:absolute;top:-3px;right:-4px;display:grid;place-items:center;min-width:14px;height:14px;padding:0 3px;border:1.5px solid var(--panel);border-radius:999px;background:var(--accent);color:var(--on-accent);font-size:9px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.agents-dock-popover{position:absolute;z-index:95;top:calc(100% + 9px);right:-6px;display:flex;flex-direction:column;gap:9px;width:min(380px,calc(100vw - 28px));max-height:min(440px,calc(100vh - 90px));padding:12px;overflow:hidden;border:1px solid var(--glass-edge);border-radius:var(--glass-radius);background:radial-gradient(120% 70% at 8% -12%,var(--glass-glow),transparent 62%),linear-gradient(155deg,var(--glass-warm),var(--glass-tint) 72%);backdrop-filter:blur(28px) saturate(1.5);-webkit-backdrop-filter:blur(28px) saturate(1.5);box-shadow:0 0 0 .5px var(--glass-ring),0 18px 42px -14px var(--glass-shadow-deep),0 5px 14px -7px var(--glass-shadow-near),inset 0 1px 0 var(--glass-highlight);color:var(--text);font-size:.82rem;isolation:isolate}
+.agents-dock-head{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;padding:1px 1px 6px;border-bottom:1px solid var(--glass-line)}
+.agents-dock-head>div{display:flex;align-items:baseline;gap:8px;min-width:0}
+.agents-dock-head strong{font-size:.83rem;font-weight:610;white-space:nowrap}
+.agents-dock-summary{overflow:hidden;color:var(--muted);font-size:.72rem;text-overflow:ellipsis;white-space:nowrap}
+.agents-dock-pin{width:26px;height:26px;flex:none;border-radius:5px;color:var(--muted);--press:1}
+.agents-dock-pin .icon{width:14px;height:14px}
+.agents-dock-pin:hover,.agents-dock-pin.is-pinned{background:var(--glass-fill-hover);color:var(--accent-ink)}
+.agents-dock-list{display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.agents-dock-row{display:flex;align-items:flex-start;gap:10px;width:100%;min-width:0;padding:9px 8px;border-radius:6px;color:var(--text);text-align:left;--press:1}
+.agents-dock-row:hover,.agents-dock-row:focus-visible{background:var(--glass-fill-hover)}
+.agents-dock-status-dot{flex:none;width:7px;height:7px;margin-top:5px;border-radius:50%;background:var(--muted)}
+.agents-dock-status-dot.running{background:var(--accent);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .13)}
+.agents-dock-copy{display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+.agents-dock-title,.agents-dock-detail,.agents-dock-meta>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agents-dock-title{font-size:.8rem;font-weight:570;line-height:1.35}
+.agents-dock-detail{color:var(--muted);font-size:.7rem;line-height:1.35}
+.agents-dock-meta{display:flex;align-items:center;justify-content:space-between;gap:10px;min-width:0;color:var(--faint);font-size:.68rem;line-height:1.3}
+.agents-dock-elapsed{flex:none;font-variant-numeric:tabular-nums}
+.agents-dock-empty{margin:0;padding:18px 8px;text-align:center;color:var(--muted);font-size:.78rem}
+
+/* The compact native window expands on hover, click or Enter and uses the same glass and
+   rows. Its page is clear: only the orb or panel is painted over the desktop. */
+html.agents-dock-window,html.agents-dock-window>body,#agents-dock-root{width:100%;height:100%;margin:0;overflow:hidden}
+html.agents-dock-window,html.agents-dock-window>body,body.agents-dock-window{background:transparent;color:var(--text)}
+#agents-dock-root{display:flex;align-items:flex-start;justify-content:flex-end}
+.agents-dock-window-root{width:100%;height:100%;overflow:hidden}
+.agents-dock-orb{position:relative;display:grid;place-items:center;width:76px;height:76px;margin:8px;border:1px solid var(--glass-edge);border-radius:50%;background:radial-gradient(circle at 34% 25%,var(--glass-highlight),transparent 45%),linear-gradient(145deg,var(--glass-warm),var(--glass-tint));backdrop-filter:blur(24px) saturate(1.55);-webkit-backdrop-filter:blur(24px) saturate(1.55);box-shadow:0 0 0 .5px var(--glass-ring),0 12px 30px -10px var(--glass-shadow-deep),inset 0 1px 0 var(--glass-highlight);color:var(--accent-ink);--press:1}
+.agents-dock-orb .icon{width:28px;height:28px}
+.agents-dock-orb.is-working .icon{animation:agents-dock-pulse 1.7s ease-in-out infinite}
+.agents-dock-window-count{position:absolute;top:2px;right:2px;display:grid;place-items:center;min-width:18px;height:18px;padding:0 4px;border:2px solid var(--panel);border-radius:99px;background:var(--accent);color:var(--on-accent);font-size:10px;font-weight:700}
+.agents-dock-window-panel{display:flex;flex-direction:column;gap:8px;width:calc(100% - 16px);height:calc(100% - 16px);margin:8px;overflow:hidden;border:1px solid var(--glass-edge);border-radius:var(--glass-radius);background:radial-gradient(120% 70% at 8% -12%,var(--glass-glow),transparent 62%),linear-gradient(155deg,var(--glass-warm),var(--glass-tint) 72%);backdrop-filter:blur(30px) saturate(1.55);-webkit-backdrop-filter:blur(30px) saturate(1.55);box-shadow:0 0 0 .5px var(--glass-ring),0 18px 42px -14px var(--glass-shadow-deep),inset 0 1px 0 var(--glass-highlight);color:var(--text);font-size:.8rem}
+.agents-dock-window-head{display:flex;align-items:center;gap:8px;min-width:0;padding:8px 9px 7px;border-bottom:1px solid var(--glass-line);cursor:grab;user-select:none}
+.agents-dock-window-head:active{cursor:grabbing}
+.agents-dock-window-head strong{flex:1;overflow:hidden;font-size:.78rem;font-weight:610;text-overflow:ellipsis;white-space:nowrap}
+.agents-dock-window-head button{width:24px;height:24px;flex:none;border-radius:5px;color:var(--muted);--press:1}
+.agents-dock-window-head button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.agents-dock-orb:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.agents-dock-window-head button:hover{background:var(--glass-fill-hover);color:var(--text)}
+.agents-dock-window-head .icon{width:13px;height:13px}
+.agents-dock-window-list{display:flex;flex:1;flex-direction:column;gap:1px;min-height:0;padding:0 5px 6px;overflow:auto}
+.agents-dock-window-list .agents-dock-row{padding:8px 7px}
+.agents-dock-window-empty{margin:auto;padding:10px;text-align:center;color:var(--muted);font-size:.75rem}
+@keyframes agents-dock-pulse{50%{opacity:.62}}
+@media(prefers-reduced-motion:reduce){.agents-dock-trigger.is-working>.icon,.agents-dock-orb.is-working .icon{animation:none}}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(prefers-contrast:more){.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb{border-color:var(--text)}}

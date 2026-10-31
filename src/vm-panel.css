@@ -5,28 +5,28 @@
 .vm-panel[hidden],.vm-panel [hidden]{display:none!important}
 .vm-stage{position:relative;flex:1;min-height:220px;display:flex;align-items:center;justify-content:center;padding:14px;outline:none;overflow:hidden}
 .vm-stage:focus-visible{box-shadow:inset 0 0 0 2px var(--focus)}
-.vm-screen{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:4px;background:#000;box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 14%,transparent),0 14px 40px rgb(0 0 0 / .28);cursor:default;user-select:none;touch-action:none}
+.vm-screen{display:block;max-width:100%;max-height:100%;width:auto;height:auto;object-fit:contain;border-radius:var(--radius-sm);background:#000;box-shadow:0 14px 40px rgb(0 0 0 / .28);cursor:default;user-select:none;touch-action:none}
 .vm-stage.vm-live:focus .vm-screen,.vm-stage.vm-live:focus-within .vm-screen{box-shadow:0 0 0 2px var(--focus),0 14px 40px rgb(0 0 0 / .28)}
-.vm-empty{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:340px;text-align:center;font-size:.8rem;color:var(--muted)}
-.vm-empty strong{font-size:.9rem;font-weight:600;color:var(--text)}
+.vm-empty{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:340px;text-align:center;font-size:var(--text-xs);color:var(--muted)}
+.vm-empty strong{font-size:var(--text-md);font-weight:var(--weight-strong);color:var(--text)}
 .vm-empty p{margin:0;line-height:1.5}
-.vm-empty small{font-size:.7rem;line-height:1.45}
+.vm-empty small{font-size:var(--text-xs);line-height:1.45}
 .vm-empty .primary-button,.vm-empty .secondary-button{margin-top:4px}
 .vm-images{display:flex;flex-direction:column;gap:6px;width:100%;margin-top:4px}
-.vm-images .secondary-button{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;min-height:36px;font-size:.8rem}
-.vm-images small{font-size:.7rem;color:var(--muted)}
+.vm-images .secondary-button{display:flex;justify-content:space-between;align-items:center;gap:10px;width:100%;min-height:36px;font-size:var(--text-xs)}
+.vm-images small{font-size:var(--text-xs);color:var(--muted)}
 
-.vm-status{margin:0 12px 6px;font-size:.76rem;color:var(--muted);text-align:center;overflow-wrap:anywhere}
+.vm-status{margin:0 12px 6px;font-size:var(--text-xs);color:var(--muted);text-align:center;overflow-wrap:anywhere}
 .vm-dock{display:flex;flex-direction:column;align-items:center;gap:6px;padding:4px 12px 14px;min-width:0}
-.vm-select{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px;border-radius:999px;font-size:.76rem;--press:1}
+.vm-select{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px;border-radius:999px;font-size:var(--text-xs);--press:1}
 .vm-select:hover:not(:disabled){background:var(--vm-glass)}
 .vm-select>.icon{width:13px;height:13px;flex-shrink:0;color:var(--muted)}
-.vm-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.vm-detail{font-size:.7rem;color:var(--muted);white-space:nowrap}
+.vm-name{font-weight:var(--weight-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.vm-detail{font-size:var(--text-2xs);color:var(--muted);white-space:nowrap}
 .vm-detail:not(:empty)::before{content:"· "}
 @container vm (max-width:300px){.vm-detail{display:none}}
-.vm-actions{display:flex;gap:2px;padding:4px;border-radius:6px;background:var(--vm-glass);border:1px solid var(--border);box-shadow:0 6px 20px rgb(0 0 0 / .12);backdrop-filter:var(--vm-blur);-webkit-backdrop-filter:var(--vm-blur)}
-.vm-actions .icon-button{width:32px;height:30px;border-radius:4px}
+.vm-actions{display:flex;gap:2px;padding:4px;border-radius:var(--radius-md);background:var(--vm-glass);box-shadow:0 6px 20px rgb(0 0 0 / .12);backdrop-filter:var(--vm-blur);-webkit-backdrop-filter:var(--vm-blur)}
+.vm-actions .icon-button{width:32px;height:30px;border-radius:var(--radius-sm)}
 .vm-actions .icon-button:disabled{opacity:.38}
 .vm-actions [aria-pressed="true"]{color:var(--accent-ink);background:var(--accent-dim)}
 html[data-theme="dark"] .vm-actions [aria-pressed="true"]{color:var(--accent)}

@@ -313,7 +313,7 @@ pub(crate) async fn handle_inbound(app: &tauri::AppHandle, channel_id: &str, sen
     };
     match decision {
         Ok(channel) => {
-            let inbound = gateway::Inbound { bot_id: channel.bot_id, channel_id: channel_id.into(), thread: thread.into(), sender_id: sender_id.into(), sender_name: sender_name.into(), text: text.into(), trusted: false };
+            let inbound = gateway::Inbound { bot_id: channel.bot_id, channel_id: channel_id.into(), thread: thread.into(), sender_id: sender_id.into(), sender_name: sender_name.into(), text: text.into(), trusted: false, image_ids: None, moodboard_ids: None };
             if let Err(error) = gateway::deliver(app, inbound).await {
                 let _ = send(app, channel_id, thread, &format!("I couldn't start on that: {error}")).await;
             }

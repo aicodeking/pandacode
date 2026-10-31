@@ -51,6 +51,10 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "instructions": config.instructions, "tools": tools,
         // The login a process starts with (API key or subscription) is fixed at spawn.
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
+        // A saved environment variable change starts the next turn cold.
+        "environment": crate::provider_settings::environment_fingerprint(&config.provider),
+        // So do the telemetry opt-outs (`privacy.rs`).
+        "telemetryOff": super::privacy::telemetry_off(),
     })
     .to_string()
 }
@@ -124,6 +128,7 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     config.cwd = external_path(&config.cwd);
     let key = key(&config, &tools);
     let mut command = command(&path)?;
+    crate::provider_settings::apply_environment(&config.provider, &mut command);
     configure_command(&mut command, &config);
     if let Some(connection) = &connection {
         connection.apply(&mut command);
@@ -204,6 +209,10 @@ mod tests {
         ] {
             assert_ne!(different, original);
         }
+        // A spare started before the telemetry switch changed is never adopted.
+        super::super::privacy::FORCE.with(|force| force.set(Some(true)));
+        assert_ne!(key(&base, &tools), original);
+        super::super::privacy::FORCE.with(|force| force.set(None));
         // A different named connection, or a saved change to the same one, starts cold.
         for different in [key_with(&base, &tools, "personal#1"), key_with(&base, &tools, "work#2")] {
             assert_ne!(different, key_with(&base, &tools, "work#1"));

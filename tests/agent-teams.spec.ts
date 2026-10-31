@@ -19,9 +19,14 @@ async function install(page: Page): Promise<void> {
     expect(source).toMatch(marker);
     await route.fulfill({ response, body: source.replace(marker, `async function invoke(command, args) {
       (window.__agentTeams ??= { calls: [] }).calls.push({ command, args: structuredClone(args) });
+      if (command === 'list_provider_models') await window.__agentTeams.modelGate;
+      if (command === 'architect_configure') {
+        await window.__agentTeams.configureGate;
+        if (window.__agentTeams.configureError) throw new Error(window.__agentTeams.configureError);
+      }
       return invokePreview(command, args);
     }
-    async function invokePreview(command, args) {`) });
+    async function invokePreview(command, args) {`) + '\nwindow.__teamInvoke = invoke; window.__teamEmit = emit;\n' });
   });
   await page.goto('/');
   await page.locator('.task-item[data-id="session-2"]').click();
@@ -52,6 +57,154 @@ async function createTeam(page: Page, name: string): Promise<{ lead: string; oth
   return { lead, other };
 }
 
+test.describe('Agent teams', () => {
+const teamTrigger = (page: Page) => page.locator('#team-trigger');
+const teamItem = (page: Page, name: string) => page.getByRole('menuitemradio', { name, exact: true });
+/** Picks a Team menu item; the menu stays open, applying, until the save settles. */
+async function chooseTeam(page: Page, name: string): Promise<void> {
+  await teamTrigger(page).click();
+  await teamItem(page, name).click();
+}
+const gateModels = (page: Page) => page.evaluate(() => {
+  const state = (window as any).__agentTeams;
+  state.modelGate = new Promise(resolve => { state.releaseModels = resolve; });
+});
+
+test('Team gives immediate feedback while cold model discovery and saving are pending', async ({ page }) => {
+  await install(page);
+  const team = teamTrigger(page), prompt = page.locator('#prompt');
+  await prompt.fill('Review this project');
+  const idleBackground = await team.evaluate(el => getComputedStyle(el).backgroundColor);
+  await gateModels(page);
+  await page.evaluate(() => {
+    const state = (window as any).__agentTeams;
+    state.configureGate = new Promise(resolve => { state.releaseConfigure = resolve; });
+  });
+  await chooseTeam(page, 'Balanced team');
+  await expect(team).toHaveAttribute('aria-busy', 'true', { timeout: 500 });
+  await expect(team.locator('.support-spinner')).toBeVisible();
+  expect(await team.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(idleBackground);
+  await expect.poll(async () => (await calls(page, 'list_provider_models')).length).toBeGreaterThan(0);
+  expect(await calls(page, 'architect_configure')).toHaveLength(0);
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+    await page.locator('#composer').screenshot({ path: `test-results/team-toggle-pending-${theme}.png` });
+  }
+  // Sending waits for the team, even with the menu dismissed.
+  await page.keyboard.press('Escape');
+  await prompt.press('Enter');
+  await expect(prompt).toHaveValue('Review this project');
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await page.setViewportSize({ width: 600, height: 940 });
+  await expect(team.locator('.support-spinner')).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 940 });
+  await page.evaluate(() => (window as any).__agentTeams.releaseModels());
+  await expect.poll(async () => (await calls(page, 'architect_configure')).length).toBe(1);
+  await expect(team).toHaveAttribute('aria-busy', 'true');
+  await expect(team).not.toHaveAttribute('data-on');
+  await page.evaluate(() => (window as any).__agentTeams.releaseConfigure());
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+  await expect(team).toHaveAttribute('data-on', '');
+  await expect(team.locator('.support-spinner')).toHaveCount(0);
+  await expect(prompt).toHaveValue('Review this project');
+  await chooseTeam(page, 'No team');
+  await expect(team).not.toHaveAttribute('data-on');
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+});
+
+test('Team recovers from a failed save without changing its state or losing the prompt', async ({ page }) => {
+  await install(page);
+  const team = teamTrigger(page);
+  await page.locator('#prompt').fill('Keep this draft');
+  const expectOn = (on: boolean) => on ? expect(team).toHaveAttribute('data-on', '') : expect(team).not.toHaveAttribute('data-on');
+  for (const [pick, enabled] of [['Balanced team', false], ['No team', true]] as const) {
+    await page.evaluate(() => { (window as any).__agentTeams.configureError = 'Team save failed'; });
+    await chooseTeam(page, pick);
+    await expect(page.locator('.floating-menu')).toContainText('Team save failed');
+    await expect(team).toHaveAttribute('aria-busy', 'false');
+    await expectOn(enabled);
+    await page.keyboard.press('Escape');
+    await expect(modelButton(page)).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled();
+    await expect(page.locator('#prompt')).toHaveValue('Keep this draft');
+    await page.evaluate(() => { delete (window as any).__agentTeams.configureError; });
+    await chooseTeam(page, pick);
+    await expect(teamItem(page, pick)).toBeHidden();
+    await expectOn(!enabled);
+  }
+});
+
+test('Team pending feedback belongs to its task and leaving cancels unsaved setup', async ({ page }) => {
+  await install(page);
+  const team = teamTrigger(page);
+  await page.locator('#prompt').fill('Draft for the first task');
+  await gateModels(page);
+  await chooseTeam(page, 'Balanced team');
+  await expect(team).toHaveAttribute('aria-busy', 'true');
+  await expect.poll(async () => (await calls(page, 'list_provider_models')).length).toBeGreaterThan(0);
+  await page.keyboard.press('Escape');
+  await page.locator('.task-item[data-id="session-3"]').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-3');
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+  await page.locator('#prompt').fill('Draft for the other task');
+  await page.evaluate(() => (window as any).__agentTeams.releaseModels());
+  // A fresh pick uses the settled catalog; only the current task may be configured.
+  await chooseTeam(page, 'Balanced team');
+  await expect(team).toHaveAttribute('data-on', '');
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+  const configured = await calls(page, 'architect_configure');
+  expect(configured).toHaveLength(1);
+  expect(configured[0].args.sessionId).toBe('session-3');
+  await expect(page.locator('#prompt')).toHaveValue('Draft for the other task');
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect(page.locator('#prompt')).toHaveValue('Draft for the first task');
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+  await expect(team).not.toHaveAttribute('data-on');
+});
+
+test('choosing a bot cannot release the pending Team lock', async ({ page }) => {
+  await install(page);
+  await page.evaluate(() => (window as any).__teamInvoke('bot_create', { input: {
+    name: 'Test bot', role: 'Reviewer', instructions: 'Review code', provider: 'codex', model: '', mode: 'ask', heartbeatMinutes: 0,
+  } }));
+  const bot = page.getByRole('button', { name: 'Bot: No bot', exact: true });
+  await expect(bot).toBeVisible();
+  await page.locator('#prompt').fill('Do not send before Team is ready');
+  await gateModels(page);
+  const team = teamTrigger(page);
+  await chooseTeam(page, 'Balanced team');
+  await expect(team).toHaveAttribute('aria-busy', 'true');
+  await page.keyboard.press('Escape');
+  await bot.click();
+  await page.getByRole('menu', { name: 'Bot', exact: true }).getByRole('menuitemradio', { name: /Test bot/ }).click();
+  await expect(bot).toBeVisible();
+  await page.locator('#prompt').press('Enter');
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await expect(page.locator('#prompt')).toHaveValue('Do not send before Team is ready');
+  await page.evaluate(() => (window as any).__agentTeams.releaseModels());
+  await expect(team).toHaveAttribute('data-on', '');
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+});
+
+test('Team releases queued follow-ups that arrived during setup', async ({ page }) => {
+  await install(page);
+  await gateModels(page);
+  const team = teamTrigger(page);
+  await chooseTeam(page, 'Balanced team');
+  await expect(team).toHaveAttribute('aria-busy', 'true');
+  await page.keyboard.press('Escape');
+  await page.evaluate(async () => {
+    const win = window as any;
+    await win.__teamInvoke('queue_add', { sessionId: 'session-2', text: 'Follow up after setup', attachments: [] });
+    win.__teamEmit('queue-changed', { sessionId: 'session-2' });
+  });
+  await expect(page.getByRole('region', { name: 'Queued messages', exact: true })).toBeVisible();
+  expect(await calls(page, 'architect_start')).toHaveLength(0);
+  await page.evaluate(() => (window as any).__agentTeams.releaseModels());
+  await expect.poll(async () => (await calls(page, 'architect_start')).map(call => call.args.text)).toEqual(['Follow up after setup']);
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+});
+
 test('the classic team setup switch brings back Architect & workers', async ({ page }) => {
   await install(page);
   await expect(page.getByRole('button', { name: 'Team', exact: true })).toBeVisible();
@@ -81,7 +234,8 @@ test('a named agent team is a choice in the model picker and lists only its mode
   await closeSettings(page);
 
   await modelButton(page).click();
-  const team = picker(page).getByRole('button', { name: 'Agent team · Reviewers', exact: true });
+  await picker(page).getByRole('tab', { name: /^Teams/ }).click();
+  const team = picker(page).getByRole('option', { name: 'Agent team · Reviewers', exact: true });
   await expect(team).toBeVisible();
   await team.click();
   await expect(picker(page)).toBeHidden();
@@ -92,17 +246,48 @@ test('a named agent team is a choice in the model picker and lists only its mode
   expect(configured.architect).toMatchObject({ provider: leadWorker.provider, model: leadWorker.model });
   await expect(modelButton(page)).toContainText('Reviewers');
   await expect(modelButton(page)).toContainText('2 models');
-  await expect(page.getByRole('button', { name: 'Team', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // The Team button names the agent team, and its menu checks it.
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Reviewers');
+  await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
+  await page.locator('#team-trigger').click();
+  await expect(page.getByRole('menuitemradio', { checked: true })).toHaveText(/Reviewers/);
+  await expect(page.getByRole('menuitemradio', { name: 'Reviewers', exact: true })).toHaveAccessibleDescription('Agent team');
+  for (const kind of ['Cheap team', 'Balanced team', 'Best team']) await expect(page.getByRole('menuitemradio', { name: kind, exact: true })).toHaveAccessibleDescription('Replaces Reviewers');
+  await page.keyboard.press('Escape');
 
   // The picker marks the team, not the lead's plain model, as current.
   await modelButton(page).click();
-  await expect(picker(page).getByRole('button', { name: 'Agent team · Reviewers', exact: true })).toHaveAttribute('aria-current', 'true');
+  await expect(picker(page).getByRole('option', { name: 'Agent team · Reviewers', exact: true })).toHaveAttribute('aria-current', 'true');
   await expect(picker(page).locator('[aria-current="true"]')).toHaveCount(1);
   // A plain model leaves the team for a single agent.
+  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
   await picker(page).locator('.model-menu-option:not(.model-menu-team):not([disabled])').first().click();
   await expect(picker(page)).toBeHidden();
   expect((await calls(page, 'architect_configure')).at(-1).args).toMatchObject({ config: null });
-  await expect(page.getByRole('button', { name: 'Team', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Team');
+  await expect(page.locator('#team-trigger')).not.toHaveAttribute('data-on');
+  await expect(modelButton(page)).not.toContainText('Reviewers');
+  // No team in the Team menu removes an agent team too.
+  await modelButton(page).click();
+  await picker(page).getByRole('tab', { name: /^Teams/ }).click();
+  await picker(page).getByRole('option', { name: 'Agent team · Reviewers', exact: true }).click();
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Reviewers');
+  await page.locator('#team-trigger').click();
+  await page.getByRole('menuitemradio', { name: 'No team', exact: true }).click();
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Team');
+  expect((await calls(page, 'architect_configure')).at(-1).args).toMatchObject({ config: null });
+  await expect(modelButton(page)).not.toContainText('Reviewers');
+  // A team kind replaces the named team with an automatic one.
+  await modelButton(page).click();
+  await picker(page).getByRole('tab', { name: /^Teams/ }).click();
+  await picker(page).getByRole('option', { name: 'Agent team · Reviewers', exact: true }).click();
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Reviewers');
+  await page.locator('#team-trigger').click();
+  await page.getByRole('menuitemradio', { name: 'Best team', exact: true }).click();
+  await expect(page.locator('#team-trigger')).toHaveAccessibleName('Best team');
+  const replaced = (await calls(page, 'architect_configure')).at(-1).args.config;
+  expect(replaced.auto).toBe(true);
+  expect(replaced.rosterOnly).toBeFalsy();
   await expect(modelButton(page)).not.toContainText('Reviewers');
 });
 
@@ -194,4 +379,5 @@ test('the model filter is a full-height field, not a collapsed line', async ({ p
   expect(filterBox.height).toBeGreaterThanOrEqual(nameBox.height);
   expect(filterBox.paddingLeft).toBeGreaterThanOrEqual(8);
   expect(filterBox.width).toBeGreaterThan(300);
+});
 });

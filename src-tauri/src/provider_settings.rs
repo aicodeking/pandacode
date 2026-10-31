@@ -12,6 +12,19 @@ use tauri::Emitter;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Settings {
     executable_paths: BTreeMap<String, String>,
+    /// Environment variables applied to every harness, unless a provider opts
+    /// out — a proxy setup shared by all agents, for example.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    global_environment: BTreeMap<String, String>,
+    /// Extra environment variables per provider, applied to every process
+    /// PandaCode starts for that harness (runs, discovery, its console).
+    /// Plain values only: a variable that needs a secret belongs to a named
+    /// connection, whose secret values live in the secure store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    environment: BTreeMap<String, BTreeMap<String, String>>,
+    /// Providers with the global environment turned off. Absent means on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    global_environment_disabled: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     opencode_models: Vec<String>,
     /// MiMo cluster (`token-plan-cn`, `token-plan-sgp`, `token-plan-ams`) or `api`
@@ -20,6 +33,9 @@ struct Settings {
     mimo_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "crate::providers::claude_auth::Mode::is_inherit")]
     claude_connection_mode: crate::providers::claude_auth::Mode,
+    /// Settings → Agents → Turn off agent telemetry (`providers/privacy.rs`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    telemetry_off: bool,
 }
 struct Runtime {
     path: PathBuf,
@@ -27,6 +43,9 @@ struct Runtime {
 }
 static CONFIG: OnceLock<Mutex<Runtime>> = OnceLock::new();
 const SERVICE: &str = "app.pandacode.providers";
+/// The same limits the named-connection environment applies, so both editors behave alike.
+pub(crate) const MAX_ENV: usize = 64;
+pub(crate) const MAX_ENV_VALUE: usize = 4096;
 
 /// A provider API key in the platform's secure store, with the environment
 /// variable that can supply it instead. Labels appear in user-facing errors only.
@@ -70,6 +89,11 @@ pub fn setup(dir: &Path) -> Result<()> {
         settings.mimo_endpoint = settings
             .mimo_endpoint
             .filter(|id| crate::providers::mimo_endpoint_url(id).is_some());
+        settings.global_environment = valid_global_environment(settings.global_environment);
+        settings.environment = valid_environment(settings.environment);
+        settings
+            .global_environment_disabled
+            .retain(|provider| known_provider(provider));
         settings
     } else {
         Settings::default()
@@ -90,6 +114,90 @@ pub fn executable_override(provider: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A POSIX-style environment variable name, shared with the named-connection editor.
+pub(crate) fn valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+}
+
+fn known_provider(provider: &str) -> bool {
+    crate::providers::PROVIDERS.iter().any(|(id, _)| *id == provider)
+}
+
+/// Keeps only variables with valid names and values, so a hand-edited settings
+/// file cannot inject junk into a launch.
+fn valid_vars(vars: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    vars.into_iter()
+        .filter(|(name, value)| valid_env_name(name) && value.len() <= MAX_ENV_VALUE && !value.contains('\0'))
+        .collect()
+}
+
+/// The global set from a hand-edited file: junk is dropped, and an over-cap set
+/// is dropped entirely (saves can never produce one — `persist` refuses first).
+fn valid_global_environment(vars: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let vars = valid_vars(vars);
+    if vars.len() > MAX_ENV { BTreeMap::new() } else { vars }
+}
+
+/// Keeps only providers PandaCode knows and variables with valid names and
+/// values.
+fn valid_environment(
+    environment: BTreeMap<String, BTreeMap<String, String>>,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    environment
+        .into_iter()
+        .filter(|(provider, _)| known_provider(provider))
+        .filter_map(|(provider, vars)| {
+            if vars.len() > MAX_ENV {
+                return None;
+            }
+            let vars = valid_vars(vars);
+            (!vars.is_empty()).then_some((provider, vars))
+        })
+        .collect()
+}
+
+/// The provider's effective environment: the global list unless the provider
+/// opted out, with the provider's own variables overriding shared names.
+fn effective_environment(settings: &Settings, provider: &str) -> Vec<(String, String)> {
+    let mut vars = BTreeMap::new();
+    if !settings.global_environment_disabled.iter().any(|id| id == provider) {
+        vars.extend(settings.global_environment.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if let Some(own) = settings.environment.get(provider) {
+        vars.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    vars.into_iter().collect()
+}
+
+/// The provider's effective environment variables, in name order.
+pub fn environment(provider: &str) -> Vec<(String, String)> {
+    let Some(runtime) = CONFIG.get().and_then(|runtime| runtime.lock().ok()) else {
+        return Vec::new();
+    };
+    effective_environment(&runtime.settings, provider)
+}
+
+/// Applies the provider's saved environment to a command about to start its CLI.
+/// Provider sign-in and endpoint configuration is applied after this and wins.
+pub fn apply_environment(provider: &str, command: &mut impl crate::child_env::EnvTarget) {
+    apply_vars(&environment(provider), command);
+}
+
+fn apply_vars(vars: &[(String, String)], command: &mut impl crate::child_env::EnvTarget) {
+    for (name, value) in vars {
+        command.set_var(std::ffi::OsStr::new(name.as_str()), std::ffi::OsStr::new(value.as_str()));
+    }
+}
+
+/// Fingerprint of the saved variables for the warm-agent key: a changed
+/// environment never adopts a process started with the old one.
+pub(crate) fn environment_fingerprint(provider: &str) -> String {
+    serde_json::to_string(&environment(provider)).unwrap_or_default()
+}
+
 pub fn glm_key() -> Result<Option<String>> {
     stored_key(GLM_KEY)
 }
@@ -105,6 +213,10 @@ fn glm_usage_access() -> Result<std::sync::MutexGuard<'static, ()>> {
 #[cfg(target_os = "macos")]
 pub(crate) fn glm_key_for_usage() -> Result<Option<String>> {
     let _access = glm_usage_access()?;
+    if let Some(key) = crate::secret_store::peek(SERVICE, GLM_KEY.account) {
+        return Ok(Some(key));
+    }
+    // Not moved out of the Keychain yet: read it in the noninteractive child.
     crate::usage_keychain::read_glm()
         .map_err(|_| "The GLM Keychain item could not be read without interaction.".to_owned())?
         .map(|bytes| String::from_utf8(bytes).map_err(|_| invalid_key_error(GLM_KEY)))
@@ -134,23 +246,39 @@ pub fn deepseek_key() -> Result<Option<String>> {
     stored_key(DEEPSEEK_KEY)
 }
 
+/// Usage checks must never open an unlock or credential-access dialog. This
+/// provider's keys have only ever lived in the secrets file (the harness
+/// shipped after the file store), so a noninteractive peek is the whole store
+/// on macOS; keep normal agent launch/settings behavior in `deepseek_key`.
+#[cfg(target_os = "macos")]
+pub(crate) fn deepseek_key_for_usage() -> Result<Option<String>> {
+    Ok(crate::secret_store::peek(SERVICE, DEEPSEEK_KEY.account))
+}
+
+/// Credential Manager's read is noninteractive.
+#[cfg(target_os = "windows")]
+pub(crate) fn deepseek_key_for_usage() -> Result<Option<String>> {
+    deepseek_key()
+}
+
+/// keyring's Secret Service backend unconditionally unlocks matching locked
+/// items during get_password(). It has no noninteractive read option, so the
+/// background check cannot establish whether a saved key overrides env.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(crate) fn deepseek_key_for_usage() -> Result<Option<String>> {
+    Err("Noninteractive DeepSeek secure-store access is unavailable.".into())
+}
+
 pub fn commandcode_key() -> Result<Option<String>> {
     stored_key(COMMANDCODE_KEY)
 }
 
+/// macOS keeps keys in PandaCode's secrets file (`secret_store`), never prompting.
 #[cfg(target_os = "macos")]
 pub fn stored_key(credential: Credential) -> Result<Option<String>> {
-    use security_framework::passwords::{generic_password, PasswordOptions};
-    match generic_password(PasswordOptions::new_generic_password(SERVICE, credential.account)) {
-        Ok(bytes) => String::from_utf8(bytes)
-            .map(Some)
-            .map_err(|_| invalid_key_error(credential)),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(_) => Err(format!(
-            "Could not access the {} key in Keychain. Unlock your login Keychain and try again.",
-            credential.label
-        )),
-    }
+    crate::secret_store::get(SERVICE, credential.account)
+        .map(|key| validate_key(&key).map(str::to_owned).map_err(|_| invalid_key_error(credential)))
+        .transpose()
 }
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub fn stored_key(credential: Credential) -> Result<Option<String>> {
@@ -233,8 +361,8 @@ fn native_key_removal_result(credential: Credential, result: keyring::Result<()>
 fn save_key(credential: Credential, key: &str) -> Result<()> {
     let key = validate_key(key)?;
     #[cfg(target_os = "macos")]
-    return security_framework::passwords::set_generic_password(SERVICE, credential.account, key.as_bytes())
-        .map_err(|_| format!("Could not save the {} key in Keychain.", credential.label));
+    return crate::secret_store::set(SERVICE, credential.account, key)
+        .map_err(|error| format!("Could not save the {} key: {error}", credential.label));
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     return save_native_key(credential, key);
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -245,11 +373,7 @@ fn save_key(credential: Credential, key: &str) -> Result<()> {
 }
 fn remove_key(credential: Credential) -> Result<()> {
     #[cfg(target_os = "macos")]
-    if let Err(error) = security_framework::passwords::delete_generic_password(SERVICE, credential.account) {
-        if error.code() != -25300 {
-            return Err(format!("Could not remove the {} key from Keychain.", credential.label));
-        }
-    }
+    crate::secret_store::remove(SERVICE, credential.account);
     #[cfg(any(target_os = "linux", target_os = "windows"))]
     remove_native_key(credential)?;
     Ok(())
@@ -273,6 +397,13 @@ fn mimo_endpoints() -> Vec<MimoEndpoint> {
 #[serde(rename_all = "camelCase")]
 pub struct Configuration {
     executable_paths: BTreeMap<String, String>,
+    /// Names of the global environment variables applied to every harness.
+    /// Values never reach the webview, like API keys.
+    global_environment: Vec<String>,
+    /// Per provider, the names of its own saved environment variables.
+    environment: BTreeMap<String, Vec<String>>,
+    /// Whether each provider's launches include the global environment.
+    use_global_environment: BTreeMap<String, bool>,
     glm_key_saved: bool,
     glm_key_from_environment: bool,
     mimo_key_saved: bool,
@@ -290,14 +421,29 @@ pub struct Configuration {
     credential_storage_error: Option<String>,
 }
 fn configuration() -> Result<Configuration> {
-    let (paths, mimo_endpoint, claude_connection_mode) = {
+    let (paths, mimo_endpoint, claude_connection_mode, environment, global_environment, global_environment_disabled) = {
         let runtime = CONFIG
             .get()
             .ok_or("Provider settings are not initialized.")?
             .lock()
             .map_err(|e| e.to_string())?;
-        (runtime.settings.executable_paths.clone(), runtime.settings.mimo_endpoint.clone(), runtime.settings.claude_connection_mode)
+        (
+            runtime.settings.executable_paths.clone(),
+            runtime.settings.mimo_endpoint.clone(),
+            runtime.settings.claude_connection_mode,
+            runtime.settings.environment.clone(),
+            runtime.settings.global_environment.keys().cloned().collect(),
+            runtime.settings.global_environment_disabled.clone(),
+        )
     };
+    let environment: BTreeMap<String, Vec<String>> = environment
+        .into_iter()
+        .map(|(provider, vars)| (provider, vars.into_keys().collect()))
+        .collect();
+    let use_global_environment: BTreeMap<String, bool> = crate::providers::PROVIDERS
+        .iter()
+        .map(|(id, _)| (id.to_string(), !global_environment_disabled.iter().any(|name| name == id)))
+        .collect();
     #[cfg(target_os = "macos")]
     let (glm_key_saved, mimo_key_saved, deepseek_key_saved, commandcode_key_saved, credential_storage_error) = (
         glm_key()?.is_some(),
@@ -317,6 +463,9 @@ fn configuration() -> Result<Configuration> {
     let from_environment = |name: &str| std::env::var(name).is_ok_and(|key| validate_key(&key).is_ok());
     Ok(Configuration {
         executable_paths: paths,
+        global_environment,
+        environment,
+        use_global_environment,
         glm_key_saved,
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
@@ -352,7 +501,7 @@ pub async fn provider_configuration() -> Result<Configuration> {
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
     if !matches!(
         provider,
-        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse"
+        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
     ) {
         return Err("This provider does not support an executable override.".into());
     }
@@ -398,12 +547,31 @@ fn save_executable(provider: &str, path: &str) -> Result<()> {
     persist(&mut runtime, next)
 }
 fn persist(runtime: &mut Runtime, next: Settings) -> Result<()> {
+    let bytes = serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?;
+    // Every save passes through here, so this is the one guard that keeps the
+    // file under the load-time cap (64 KiB) — crossing it would refuse the
+    // file on the next launch, with no UI left to shrink it.
+    if bytes.len() > 56 * 1024 {
+        return Err("Provider settings would grow past their storage budget. Remove some environment variables and try again.".into());
+    }
+    // Environment values can embed proxy credentials, so the file gets the
+    // app's secret-file treatment: 0600 (unix), flushed, then renamed into place.
     let temp = runtime.path.with_extension("json.tmp");
-    std::fs::write(
-        &temp,
-        serde_json::to_vec_pretty(&next).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)
+            .and_then(|mut file| file.write_all(&bytes).and_then(|_| file.sync_all()))
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&temp, &bytes).map_err(|e| e.to_string())?;
     if let Err(error) = std::fs::rename(&temp, &runtime.path) {
         let _ = std::fs::remove_file(&temp);
         return Err(error.to_string());
@@ -431,6 +599,237 @@ pub async fn provider_set_executable(
         serde_json::json!({"provider":changed}),
     );
     Ok(result)
+}
+
+fn validated_env_name(name: &str) -> Result<()> {
+    if !valid_env_name(name) {
+        return Err("Environment variable names use letters, digits and underscores, and do not start with a digit.".into());
+    }
+    Ok(())
+}
+
+fn validated_environment_variable(provider: &str, name: &str, value: &str) -> Result<()> {
+    if !known_provider(provider) {
+        return Err("This provider does not support environment variables.".into());
+    }
+    validated_env_name(name)?;
+    if value.len() > MAX_ENV_VALUE || value.contains('\0') {
+        return Err(format!("The value of {name} is too long or contains NUL."));
+    }
+    Ok(())
+}
+
+fn save_global_environment_variable(name: &str, value: &str) -> Result<()> {
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let mut next = runtime.settings.clone();
+    insert_var(&mut next.global_environment, name, value)?;
+    persist(&mut runtime, next)
+}
+
+fn remove_global_environment_variable(name: &str) -> Result<bool> {
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let mut next = runtime.settings.clone();
+    let removed = drop_var(&mut next.global_environment, name);
+    if removed {
+        persist(&mut runtime, next)?;
+    }
+    Ok(removed)
+}
+
+/// Turns the global environment on or off for one provider.
+fn set_use_global_environment(provider: &str, use_global: bool) -> Result<()> {
+    if !known_provider(provider) {
+        return Err("This provider does not support environment variables.".into());
+    }
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let mut next = runtime.settings.clone();
+    next.global_environment_disabled.retain(|id| id != provider);
+    if !use_global {
+        next.global_environment_disabled.push(provider.into());
+    }
+    persist(&mut runtime, next)
+}
+
+fn insert_var(vars: &mut BTreeMap<String, String>, name: &str, value: &str) -> Result<()> {
+    validated_env_name(name)?;
+    if value.len() > MAX_ENV_VALUE || value.contains('\0') {
+        return Err(format!("The value of {name} is too long or contains NUL."));
+    }
+    if vars.len() >= MAX_ENV && !vars.contains_key(name) {
+        return Err(format!("Use up to {MAX_ENV} environment variables."));
+    }
+    vars.insert(name.into(), value.into());
+    Ok(())
+}
+
+/// Returns whether the variable existed.
+fn drop_var(vars: &mut BTreeMap<String, String>, name: &str) -> bool {
+    if !valid_env_name(name) {
+        return false;
+    }
+    vars.remove(name).is_some()
+}
+
+fn insert_env_var(
+    environment: &mut BTreeMap<String, BTreeMap<String, String>>,
+    provider: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    validated_environment_variable(provider, name, value)?;
+    let vars = environment.entry(provider.into()).or_default();
+    insert_var(vars, name, value)
+}
+
+/// Returns whether the variable existed.
+fn drop_env_var(
+    environment: &mut BTreeMap<String, BTreeMap<String, String>>,
+    provider: &str,
+    name: &str,
+) -> bool {
+    if validated_environment_variable(provider, name, "").is_err() {
+        return false;
+    }
+    let removed = environment
+        .get_mut(provider)
+        .is_some_and(|vars| drop_var(vars, name));
+    if removed {
+        environment.retain(|_, vars| !vars.is_empty());
+    }
+    removed
+}
+
+fn save_environment_variable(provider: &str, name: &str, value: &str) -> Result<()> {
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let mut next = runtime.settings.clone();
+    insert_env_var(&mut next.environment, provider, name, value)?;
+    persist(&mut runtime, next)
+}
+
+fn remove_environment_variable(provider: &str, name: &str) -> Result<bool> {
+    let mut runtime = CONFIG
+        .get()
+        .ok_or("Provider settings are not initialized.")?
+        .lock()
+        .map_err(|e| e.to_string())?;
+    let mut next = runtime.settings.clone();
+    let removed = drop_env_var(&mut next.environment, provider, name);
+    if removed {
+        persist(&mut runtime, next)?;
+    }
+    Ok(removed)
+}
+
+/// Refresh caches whose discovery spawns the harness, so a new variable (for
+/// example a proxy) reaches the next catalog, command and usage query.
+fn refresh_provider(app: &tauri::AppHandle, provider: &str, result: Configuration) -> Result<Configuration> {
+    crate::agent_usage::invalidate(provider);
+    crate::providers::acp_catalog::invalidate(provider);
+    crate::slash_commands::invalidate_provider(provider);
+    let _ = app.emit("provider-models-changed", serde_json::json!({"provider":provider}));
+    Ok(result)
+}
+
+/// A global variable affects every provider's discovery.
+fn refresh_all(app: &tauri::AppHandle, result: Configuration) -> Result<Configuration> {
+    for (provider, _) in crate::providers::PROVIDERS {
+        crate::agent_usage::invalidate(provider);
+        crate::providers::acp_catalog::invalidate(provider);
+        crate::slash_commands::invalidate_provider(provider);
+        // Listeners match literal provider ids, so each one gets its own event.
+        let _ = app.emit("provider-models-changed", serde_json::json!({"provider":provider}));
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn provider_set_environment_variable(
+    app: tauri::AppHandle,
+    provider: String,
+    name: String,
+    value: String,
+) -> Result<Configuration> {
+    let changed = provider.clone();
+    let result = crate::blocking(move || {
+        save_environment_variable(&provider, &name, &value)?;
+        configuration()
+    })
+    .await?;
+    refresh_provider(&app, &changed, result)
+}
+
+#[tauri::command]
+pub async fn provider_remove_environment_variable(
+    app: tauri::AppHandle,
+    provider: String,
+    name: String,
+) -> Result<Configuration> {
+    let changed = provider.clone();
+    let result = crate::blocking(move || {
+        remove_environment_variable(&provider, &name)?;
+        configuration()
+    })
+    .await?;
+    refresh_provider(&app, &changed, result)
+}
+
+#[tauri::command]
+pub async fn provider_set_global_environment_variable(
+    app: tauri::AppHandle,
+    name: String,
+    value: String,
+) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        save_global_environment_variable(&name, &value)?;
+        configuration()
+    })
+    .await?;
+    refresh_all(&app, result)
+}
+
+#[tauri::command]
+pub async fn provider_remove_global_environment_variable(
+    app: tauri::AppHandle,
+    name: String,
+) -> Result<Configuration> {
+    let result = crate::blocking(move || {
+        remove_global_environment_variable(&name)?;
+        configuration()
+    })
+    .await?;
+    refresh_all(&app, result)
+}
+
+/// Turns the global environment on or off for one provider (default on).
+#[tauri::command]
+pub async fn provider_set_use_global_environment(
+    app: tauri::AppHandle,
+    provider: String,
+    use_global: bool,
+) -> Result<Configuration> {
+    let changed = provider.clone();
+    let result = crate::blocking(move || {
+        set_use_global_environment(&provider, use_global)?;
+        configuration()
+    })
+    .await?;
+    refresh_provider(&app, &changed, result)
 }
 
 pub(crate) fn opencode_model_ids() -> Result<Vec<String>> {
@@ -563,6 +962,7 @@ pub async fn provider_remove_mimo_key() -> Result<Configuration> {
 pub async fn provider_save_deepseek_key(key: String) -> Result<Configuration> {
     crate::blocking(move || {
         save_key(DEEPSEEK_KEY, &key)?;
+        crate::agent_usage::invalidate("deepseek");
         crate::providers::acp_catalog::invalidate("deepseek");
         configuration()
     })
@@ -572,6 +972,7 @@ pub async fn provider_save_deepseek_key(key: String) -> Result<Configuration> {
 pub async fn provider_remove_deepseek_key() -> Result<Configuration> {
     crate::blocking(|| {
         remove_key(DEEPSEEK_KEY)?;
+        crate::agent_usage::invalidate("deepseek");
         crate::providers::acp_catalog::invalidate("deepseek");
         configuration()
     })
@@ -602,6 +1003,17 @@ pub(crate) fn mimo_endpoint() -> Option<String> {
 
 pub(crate) fn claude_connection_mode() -> crate::providers::claude_auth::Mode {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.claude_connection_mode)).unwrap_or_default()
+}
+
+pub(crate) fn telemetry_off() -> bool {
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
+}
+
+pub(crate) fn set_telemetry_off(off: bool) -> Result<()> {
+    let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+        .lock().map_err(|e| e.to_string())?;
+    let next = Settings { telemetry_off: off, ..runtime.settings.clone() };
+    persist(&mut runtime, next)
 }
 
 #[tauri::command]
@@ -669,6 +1081,9 @@ mod tests {
             credential_status(Ok(Some("fixture-private-key".into())));
         let configuration = Configuration {
             executable_paths: BTreeMap::new(),
+            global_environment: Vec::new(),
+            environment: BTreeMap::new(),
+            use_global_environment: BTreeMap::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -692,6 +1107,9 @@ mod tests {
         let (glm_key_saved, credential_storage_error) = credential_status(Err(warning.into()));
         let configuration = Configuration {
             executable_paths: BTreeMap::from([("glm".into(), "installed-executable".into())]),
+            global_environment: vec!["HTTP_PROXY".into()],
+            environment: BTreeMap::from([("glm".into(), vec!["HTTPS_PROXY".into()])]),
+            use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
             glm_key_saved,
             glm_key_from_environment: true,
             mimo_key_saved: true,
@@ -793,6 +1211,26 @@ mod tests {
         .is_err());
     }
     #[test]
+    fn telemetry_switch_survives_reload_and_keeps_other_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-telemetry-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() };
+        runtime.settings.executable_paths.insert("codex".into(), "/opt/bin/codex-nightly".into());
+        let next = Settings { telemetry_off: true, ..runtime.settings.clone() };
+        persist(&mut runtime, next).unwrap();
+        let saved = std::fs::read(&runtime.path).unwrap();
+        let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
+        assert!(reloaded.telemetry_off);
+        assert_eq!(reloaded.executable_paths["codex"], "/opt/bin/codex-nightly");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&saved).unwrap()["telemetryOff"], true);
+        // Off is the default and is not written, so files from earlier versions load unchanged.
+        persist(&mut runtime, Settings { telemetry_off: false, ..reloaded }).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(saved.get("telemetryOff").is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn saves_selected_models_across_reload_without_losing_connections() {
         let directory =
             std::env::temp_dir().join(format!("pandacode-model-settings-{}", uuid::Uuid::new_v4()));
@@ -862,6 +1300,199 @@ mod tests {
                 .collect()
         )
         .is_err());
+    }
+
+    #[test]
+    fn environment_variables_are_validated_before_they_are_saved() {
+        assert!(validated_environment_variable("claude", "HTTPS_PROXY", "http://127.0.0.1:7890").is_ok());
+        assert!(validated_environment_variable("claude", "EMPTY_ALLOWED", "").is_ok());
+        for provider in ["nope", ""] {
+            assert!(validated_environment_variable(provider, "A", "1").is_err(), "{provider}");
+        }
+        for name in ["", "1ABC", "A-B", "A B", "A=B", &"x".repeat(129)] {
+            assert!(validated_environment_variable("claude", name, "1").is_err(), "{name}");
+        }
+        for value in [&"x".repeat(MAX_ENV_VALUE + 1), "a\0b"] {
+            assert!(validated_environment_variable("claude", "A", value).is_err());
+        }
+        assert!(valid_env_name(&"x".repeat(128)));
+    }
+
+    #[test]
+    fn saved_environment_survives_a_reload_and_junk_entries_are_dropped() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "executablePaths": {},
+            "environment": {"claude": {"HTTPS_PROXY": "http://127.0.0.1:7890", "NO_PROXY": "localhost"}, "nope": {"A": "1"}}
+        }))
+        .unwrap();
+        assert_eq!(
+            valid_environment(settings.environment)["claude"],
+            BTreeMap::from([("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()), ("NO_PROXY".into(), "localhost".into())])
+        );
+        let mut junk: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::from([
+            ("claude".into(), BTreeMap::from([("BAD-NAME".into(), "1".into()), ("OK".into(), "2".into())])),
+            ("codex".into(), (0..MAX_ENV + 1).map(|index| (format!("V{index}"), "1".into())).collect()),
+        ]);
+        junk.insert("kimi".into(), BTreeMap::new());
+        let kept = valid_environment(junk);
+        assert_eq!(kept["claude"], BTreeMap::from([("OK".into(), "2".into())]));
+        assert!(!kept.contains_key("codex"), "an over-cap provider is dropped entirely");
+        assert!(!kept.contains_key("kimi"), "an empty provider is dropped");
+    }
+
+    #[test]
+    fn saved_global_environment_survives_a_reload_and_junk_entries_are_dropped() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "executablePaths": {},
+            "globalEnvironment": {"HTTPS_PROXY": "http://127.0.0.1:7890", "BAD-NAME": "1", "A\0B": "1"},
+            "globalEnvironmentDisabled": ["claude", "nope"]
+        }))
+        .unwrap();
+        assert_eq!(
+            valid_vars(settings.global_environment),
+            BTreeMap::from([("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into())])
+        );
+        // The opt-out list keeps only providers PandaCode knows (in setup()).
+        assert_eq!(settings.global_environment_disabled, ["claude", "nope"]);
+        // Default is on: an absent list means every provider uses the global set.
+        let legacy: Settings = serde_json::from_value(serde_json::json!({"executablePaths": {}})).unwrap();
+        assert!(legacy.global_environment_disabled.is_empty());
+        assert!(legacy.global_environment.is_empty());
+    }
+
+    #[test]
+    fn a_save_that_would_cross_the_load_cap_is_refused_and_keeps_the_previous_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-env-budget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime {
+            path: directory.join("provider-settings.json"),
+            settings: Settings::default(),
+        };
+        let mut next = runtime.settings.clone();
+        next.environment.insert(
+            "claude".into(),
+            (0..MAX_ENV).map(|index| (format!("VAR_{index}"), "x".repeat(900))).collect(),
+        );
+        let refused = persist(&mut runtime, next.clone());
+        assert!(refused.is_err(), "64 × 900-byte values cross the 56 KiB save budget");
+        assert!(refused.unwrap_err().contains("storage budget"));
+        assert!(runtime.settings.environment.is_empty(), "the in-memory settings keep the previous state");
+        // A modest set still saves, and the global cap drops an over-cap hand-edited set.
+        next.environment.insert("claude".into(), BTreeMap::from([("A".into(), "1".into())]));
+        persist(&mut runtime, next).unwrap();
+        let over_cap: BTreeMap<String, String> =
+            (0..MAX_ENV + 1).map(|index| (format!("V{index}"), "1".into())).collect();
+        assert!(valid_global_environment(over_cap).is_empty());
+        let under_cap = valid_global_environment(BTreeMap::from([("A".into(), "1".into())]));
+        assert_eq!(under_cap.len(), 1);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn apply_environment_sets_saved_variables_on_a_command() {
+        let vars = vec![
+            ("HTTPS_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+            ("NO_PROXY".to_string(), "localhost,127.0.0.1".to_string()),
+        ];
+        let mut command = tokio::process::Command::new("claude");
+        apply_vars(&vars, &mut command);
+        let env: std::collections::HashMap<_, _> = command.as_std().get_envs().collect();
+        assert_eq!(
+            env[std::ffi::OsStr::new("HTTPS_PROXY")],
+            Some(std::ffi::OsStr::new("http://127.0.0.1:7890"))
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("NO_PROXY")],
+            Some(std::ffi::OsStr::new("localhost,127.0.0.1"))
+        );
+        let fingerprint = serde_json::to_string(&vars).unwrap();
+        assert!(fingerprint.contains("HTTPS_PROXY"));
+        assert_ne!(fingerprint, serde_json::to_string(&Vec::<(String, String)>::new()).unwrap());
+    }
+
+    #[test]
+    fn configuration_lists_environment_names_but_never_values() {
+        let (glm_key_saved, _) = credential_status(Ok(None));
+        let configuration = Configuration {
+            executable_paths: BTreeMap::new(),
+            global_environment: vec!["HTTP_PROXY".into()],
+            environment: BTreeMap::from([(
+                "claude".into(),
+                vec!["HTTPS_PROXY".into(), "NO_PROXY".into()],
+            )]),
+            use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
+            glm_key_saved,
+            glm_key_from_environment: false,
+            mimo_key_saved: false,
+            mimo_key_from_environment: false,
+            deepseek_key_saved: false,
+            deepseek_key_from_environment: false,
+            commandcode_key_saved: false,
+            commandcode_key_from_environment: false,
+            mimo_endpoint: None,
+            mimo_endpoints: mimo_endpoints(),
+            claude_connection_mode: Default::default(),
+            secure_storage_available: true,
+            credential_storage_error: None,
+        };
+        let encoded = serde_json::to_value(&configuration).unwrap();
+        assert_eq!(encoded["environment"]["claude"], serde_json::json!(["HTTPS_PROXY", "NO_PROXY"]));
+        assert_eq!(encoded["globalEnvironment"], serde_json::json!(["HTTP_PROXY"]));
+        assert_eq!(encoded["useGlobalEnvironment"]["glm"], false);
+        assert_eq!(encoded["useGlobalEnvironment"]["claude"], true);
+    }
+
+    #[test]
+    fn the_effective_environment_merges_global_and_provider_variables() {
+        let settings = Settings {
+            global_environment: BTreeMap::from([
+                ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
+                ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
+            ]),
+            environment: BTreeMap::from([(
+                "claude".into(),
+                BTreeMap::from([("HTTPS_PROXY".into(), "http://127.0.0.1:1080".into())]),
+            )]),
+            global_environment_disabled: vec!["codex".into()],
+            ..Settings::default()
+        };
+        // Global on for claude; the provider's own value overrides the shared name.
+        assert_eq!(
+            effective_environment(&settings, "claude"),
+            [
+                ("HTTPS_PROXY".to_string(), "http://127.0.0.1:1080".to_string()),
+                ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+            ]
+        );
+        // The opt-out leaves codex with nothing of its own.
+        assert_eq!(effective_environment(&settings, "codex"), Vec::new());
+        // Different effective environments produce different warm-key fingerprints.
+        assert_ne!(
+            serde_json::to_string(&effective_environment(&settings, "claude")).unwrap(),
+            serde_json::to_string(&effective_environment(&settings, "codex")).unwrap()
+        );
+    }
+
+    #[test]
+    fn saving_and_removing_environment_variables_updates_the_map_and_prunes_empty_providers() {
+        let mut environment = BTreeMap::new();
+        insert_env_var(&mut environment, "claude", "HTTPS_PROXY", "http://127.0.0.1:7890").unwrap();
+        assert_eq!(environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:7890");
+        // Saving again replaces the value instead of duplicating the name.
+        insert_env_var(&mut environment, "claude", "HTTPS_PROXY", "http://127.0.0.1:1080").unwrap();
+        assert_eq!(environment["claude"]["HTTPS_PROXY"], "http://127.0.0.1:1080");
+        assert!(drop_env_var(&mut environment, "claude", "HTTPS_PROXY"));
+        assert!(!environment.contains_key("claude"), "the last variable prunes the provider");
+        assert!(!drop_env_var(&mut environment, "claude", "HTTPS_PROXY"), "removing is idempotent");
+        insert_env_var(&mut environment, "claude", "A", "1").unwrap();
+        for index in 1..MAX_ENV {
+            insert_env_var(&mut environment, "claude", &format!("V{index}"), "1").unwrap();
+        }
+        assert!(insert_env_var(&mut environment, "claude", "ONE_MORE", "1").is_err());
+        // A saved name can always be replaced, even at the cap.
+        insert_env_var(&mut environment, "claude", "A", "2").unwrap();
+        assert_eq!(environment["claude"]["A"], "2");
     }
     #[test]
     fn rejects_command_strings_directories_and_unknown_providers() {

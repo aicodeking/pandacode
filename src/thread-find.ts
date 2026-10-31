@@ -81,6 +81,13 @@ export function createThreadFind(host: Host) {
     bar?.querySelectorAll<HTMLButtonElement>('[data-find-step]').forEach(button => { button.disabled = ranges.length < 2; });
   }
 
+  /** The top of the transcript's clear area: below its scroll padding (the header it scrolls under,
+   *  that header's fade and the floating team bars) and below this find bar. */
+  function clearTop(transcript: HTMLElement): number {
+    const padded = transcript.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcript).scrollPaddingTop) || 0);
+    return bar && !bar.hidden ? Math.max(padded, bar.getBoundingClientRect().bottom + 8) : padded;
+  }
+
   /** Bring the current match into view, opening any folded turn that hides it. */
   function reveal(): void {
     const range = ranges[current], transcript = host.transcript();
@@ -88,8 +95,9 @@ export function createThreadFind(host: Host) {
     for (let node = range.startContainer.parentElement; node && node !== transcript; node = node.parentElement) {
       if (node instanceof HTMLDetailsElement && !node.open) node.open = true;
     }
-    const rect = range.getBoundingClientRect(), box = transcript.getBoundingClientRect();
-    if (rect.top < box.top + 48 || rect.bottom > box.bottom - 24) transcript.scrollTop += rect.top - box.top - box.height / 3;
+    const rect = range.getBoundingClientRect(), bottom = transcript.getBoundingClientRect().bottom, top = clearTop(transcript);
+    // A third of the way down the clear area, never under anything floating over the transcript.
+    if (rect.top < top || rect.bottom > bottom - 24) transcript.scrollTop += rect.top - top - (bottom - top) / 3;
   }
 
   /** Re-run the query. A fresh query starts at the match nearest the reader; a refresh after
@@ -101,7 +109,7 @@ export function createThreadFind(host: Host) {
     ranges = findRanges(transcript, input.value);
     if (!ranges.length) current = -1;
     else if (fresh || !previous) {
-      const top = transcript.getBoundingClientRect().top;
+      const top = clearTop(transcript);
       const visible = ranges.findIndex(range => range.getBoundingClientRect().bottom >= top);
       current = visible === -1 ? ranges.length - 1 : visible;
     } else current = Math.min(Math.max(ranges.findIndex(range => range.compareBoundaryPoints(Range.START_TO_START, previous) >= 0), 0), ranges.length - 1);

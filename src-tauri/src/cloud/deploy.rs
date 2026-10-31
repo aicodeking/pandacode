@@ -1,5 +1,5 @@
 //! Deploys by agents: one approval-gated tool runs the Vercel, Wrangler (Cloudflare),
-//! Railway, AWS or Google Cloud CLI in the task's checkout, signed in with the connected account. Credentials go
+//! Railway, Netlify, AWS or Google Cloud CLI in the task's checkout, signed in with the connected account. Credentials go
 //! only into that process's environment and are scrubbed from its output, so they never
 //! reach the agent.
 use serde_json::{json, Value};
@@ -20,10 +20,12 @@ use crate::workspace::run_process;
 const VERCEL: &str = "vercel@64.3.1";
 const WRANGLER: &str = "wrangler@4.151.0";
 const RAILWAY: &str = "@railway/cli@5.71.0";
+const NETLIFY: &str = "netlify-cli@27.14.2";
 const OUTPUT: usize = 128 * 1024;
 
-/// Approval tools that ask on every call, even in full-access mode.
-pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli"];
+/// Approval tools that ask on every call, even in full-access mode. Scheduled messages to
+/// other tasks are approval tools only while Settings asks first (`schedules::tools`).
+pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message"];
 
 /// AWS global options that take a value, so the value is not mistaken for the service.
 const AWS_VALUE_FLAGS: &[&str] = &["--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"];
@@ -31,6 +33,8 @@ const AWS_VALUE_FLAGS: &[&str] = &["--region", "--profile", "--output", "--endpo
 /// local runs and shells with the token in their environment (`run`/`local`, `dev`,
 /// `shell`, `ssh`, `connect`), the raw API, local agents and installers, self-updates.
 const RAILWAY_ALLOWED: &[&str] = &["init", "new", "link", "unlink", "up", "deploy", "deployment", "deployments", "redeploy", "restart", "down", "domain", "add", "service", "environment", "env", "variable", "variables", "vars", "var", "logs", "status", "list", "project", "projects", "whoami", "volume", "volumes", "scale", "templates", "template", "metrics"];
+/// Only deployment commands; no raw API, login, local execution or hosted agent runs.
+const NETLIFY_ALLOWED: &[&str] = &["deploy", "status", "sites:list", "sites:create", "link", "env:set", "env:import", "env:unset", "help", "--help", "--version"];
 /// gcloud global options that take a value, so the value is not mistaken for a command.
 const GCLOUD_VALUE_FLAGS: &[&str] = &["--project", "--account", "--configuration", "--format", "--verbosity", "--billing-project", "--impersonate-service-account", "--access-token-file", "--trace-token", "--flatten", "--region", "--zone"];
 /// gcloud commands that print, create or replace credentials, or change the login or config.
@@ -45,8 +49,8 @@ const STS_CREDENTIALS: &[&str] = &["get-session-token", "get-federation-token", 
 const AWS_SECRET_KEYS: &[&str] = &["aws_secret_access_key", "aws_session_token", "aws_security_token", "secretaccesskey", "sessiontoken"];
 
 pub fn catalog() -> Vec<Value> {
-    vec![spec("cloud_cli", "Run the Vercel CLI (tool vercel), Cloudflare's Wrangler (tool wrangler), the Railway CLI (tool railway), the AWS CLI (tool aws) or the Google Cloud CLI (tool gcloud) in this task's checkout, already signed in to the user's connected account: never ask for or print tokens. Use it to deploy end to end, e.g. vercel `deploy --yes` then `deploy --prod --yes`; wrangler `deploy` or `pages deploy dist --project-name app`; railway `init --name app` then `up --ci`; aws `s3 sync ./dist s3://bucket`; gcloud `run deploy app --source .`. args is the argument list as you would type it after the tool name (quotes allowed, no pipes or redirects). directory is relative to the checkout. Returns the exit code and output. Creating paid cloud resources costs the user money: confirm first.", json!({
-        "tool":{"type":"string","enum":["vercel","wrangler","railway","aws","gcloud"]},
+    vec![spec("cloud_cli", "Run the Vercel CLI (tool vercel), Cloudflare's Wrangler (tool wrangler), the Railway CLI (tool railway), the Netlify CLI (tool netlify), the AWS CLI (tool aws) or the Google Cloud CLI (tool gcloud) in this task's checkout, already signed in to the user's connected account: never ask for or print tokens. Use it to deploy end to end, e.g. vercel `deploy --yes` then `deploy --prod --yes`; wrangler `deploy` or `pages deploy dist --project-name app`; railway `init --name app` then `up --ci`; netlify `deploy` then `deploy --prod`; aws `s3 sync ./dist s3://bucket`; gcloud `run deploy app --source .`. args is the argument list as you would type it after the tool name (quotes allowed, no pipes or redirects). directory is relative to the checkout. Returns the exit code and output. Creating paid cloud resources costs the user money: confirm first.", json!({
+        "tool":{"type":"string","enum":["vercel","wrangler","railway","netlify","aws","gcloud"]},
         "args":{"type":"string","maxLength":4000},
         "directory":{"type":"string","maxLength":1024,"description":"Relative to the checkout (default .)."},
         "timeoutSeconds":{"type":"integer","description":"1–1800, default 600."},
@@ -112,6 +116,27 @@ fn railway_refusal(words: &[String]) -> Result<(), String> {
         Some(command) if !RAILWAY_ALLOWED.contains(&command.as_str()) => Err(format!("railway {command} is not available here: PandaCode manages the Railway login, and this tool runs deploy commands (init, link, up, domain, variable, logs, status…).")),
         _ => Ok(()),
     }
+}
+
+fn netlify_refusal(words: &[String]) -> Result<(), String> {
+    if words.iter().any(|word| word == "--auth" || word.starts_with("--auth=") || word == "--debug" || word.starts_with("--debug=") || word.starts_with("--telemetry-enable")) {
+        return Err("PandaCode manages Netlify credentials and telemetry; authentication overrides, debug logging and telemetry enabling are not available.".into());
+    }
+    if words.iter().any(|word| word == "--build" || word.starts_with("--build=") || word.starts_with("--no-build=")) {
+        return Err("Netlify builds are not available with the connected token. Build locally first; PandaCode deploys with --no-build.".into());
+    }
+    if words.first().is_none_or(|command| !NETLIFY_ALLOWED.contains(&command.as_str())) {
+        return Err("That Netlify command is not available here. Use deploy, status, sites:list, sites:create, link or environment writes.".into());
+    }
+    Ok(())
+}
+
+fn netlify_args(args: &[String]) -> Vec<String> {
+    let mut args = args.to_vec();
+    if args.first().is_some_and(|command| command == "deploy") {
+        args.insert(1, "--no-build".into());
+    }
+    args
 }
 
 /// New Railway projects go to the connected workspace unless the agent names one.
@@ -266,6 +291,24 @@ pub fn prepare(tool: &str, args: &[String]) -> Result<(Command, Vec<String>), St
                 .env("RAILWAY_NO_TELEMETRY", "1").env("DO_NOT_TRACK", "1").env("RAILWAY_NO_AUTO_UPDATE", "1");
             (command, vec![token])
         }
+        "netlify" => {
+            let token = super::secret("netlify_token").ok_or("Connect Netlify in Settings / Agents / Cloud sandboxes first.")?;
+            let mut command = match crate::providers::tool_path("netlify") {
+                Some(path) => crate::providers::command(&path)?.into_std(),
+                None => {
+                    let path = crate::providers::tool_path("npx").ok_or("Node.js (npx) is needed to run Netlify. Install Node.js and try again.")?;
+                    let mut command = crate::providers::command(&path)?.into_std();
+                    command.args(["--yes", NETLIFY]);
+                    command
+                }
+            };
+            command.args(netlify_args(args)).env("NETLIFY_AUTH_TOKEN", &token).env_remove("NETLIFY_SITE_ID")
+                .env("NETLIFY_TELEMETRY_DISABLED", "1").env("DO_NOT_TRACK", "1").env_remove("DEBUG");
+            if let Some(site) = settings.providers.get("netlify").and_then(|options| options.get("siteId")) {
+                command.env("NETLIFY_SITE_ID", site);
+            }
+            (command, vec![token])
+        }
         "aws" => {
             let aws = super::aws::Aws::connected().map_err(|_| "Connect AWS in Settings → Agents → Cloud first.".to_string())?;
             let mut command = Command::new(crate::token_saver::find_tool("aws").ok_or("The AWS CLI is not installed.")?);
@@ -281,7 +324,7 @@ pub fn prepare(tool: &str, args: &[String]) -> Result<(Command, Vec<String>), St
             command.args(args);
             (command, Vec::new())
         }
-        _ => return Err("tool is vercel, wrangler, railway, aws or gcloud.".into()),
+        _ => return Err("tool is vercel, wrangler, railway, netlify, aws or gcloud.".into()),
     };
     command.env("CI", "1").env("NO_COLOR", "1").env("FORCE_COLOR", "0");
     Ok((command, secrets))
@@ -299,6 +342,7 @@ fn run(checkout: &Path, args: &Value) -> Result<Value, String> {
     match tool {
         "aws" => aws_refusal(&words)?,
         "railway" => railway_refusal(&words)?,
+        "netlify" => netlify_refusal(&words)?,
         "gcloud" => gcloud_refusal(&words)?,
         _ => {}
     }
@@ -327,7 +371,7 @@ fn checkout(app: &tauri::AppHandle, session_id: &str) -> Option<PathBuf> {
 /// Offer the tool only when at least one deploy account is connected; every call asks.
 pub fn with_deploy(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
     let settings = super::settings();
-    let any = super::secret("vercel_token").is_some() || super::secret("cloudflare_token").is_some() || super::secret("railway_token").is_some() || settings.aws_region.is_some() || settings.gcloud_project.is_some();
+    let any = super::secret("vercel_token").is_some() || super::secret("cloudflare_token").is_some() || super::secret("railway_token").is_some() || super::secret("netlify_token").is_some() || settings.aws_region.is_some() || settings.gcloud_project.is_some();
     if !any {
         return base;
     }
@@ -434,6 +478,61 @@ mod tests {
         assert_eq!(railway_args(&words("init -w other"), Some("ws-1")), words("init -w other"));
         assert_eq!(railway_args(&words("up --ci"), Some("ws-1")), words("up --ci"));
         assert_eq!(railway_args(&words("init"), None), words("init"));
+    }
+
+    #[test]
+    fn netlify_refuses_non_deploy_commands_and_credential_overrides() {
+        for args in ["login", "logout", "api getCurrentUser", "dev", "exec printenv", "create app", "agents:create --prompt work", "sites:delete project", "--filter deploy api getCurrentUser", "deploy --auth=override", "deploy --auth override", "deploy --debug", "deploy --debug=true", "status --telemetry-enable=true", "deploy --build", "deploy --build=true", "deploy --no-build=false"] {
+            let error = run(&std::env::temp_dir(), &json!({"tool":"netlify","args":args})).unwrap_err();
+            assert!(error.contains("not available"), "{args}: {error}");
+        }
+        for args in ["deploy --prod --site demo --dir dist --no-build", "deploy --alias preview", "deploy --alias=preview", "deploy --site-name app --team example", "sites:list --json", "link --id project", "env:set API_URL https://example.test", "help deploy", "--help"] {
+            assert!(netlify_refusal(&shell_words::split(args).unwrap()).is_ok(), "{args}");
+        }
+    }
+
+    #[test]
+    fn netlify_deploys_always_skip_local_builds_even_before_an_option_terminator() {
+        let words = |args: &str| shell_words::split(args).unwrap();
+        assert_eq!(netlify_args(&words("deploy --prod --dir dist")), words("deploy --no-build --prod --dir dist"));
+        assert_eq!(netlify_args(&words("deploy -- --literal")), words("deploy --no-build -- --literal"));
+        assert_eq!(netlify_args(&words("status")), words("status"));
+    }
+
+    #[test]
+    fn netlify_credentials_stay_in_the_environment_with_telemetry_disabled() {
+        let token = "netlify-test-token";
+        let site = "12345678-1234-4234-8234-123456789abc";
+        super::super::set_secret("netlify_token", token).unwrap();
+        let mut settings = super::super::settings();
+        settings.providers.entry("netlify".into()).or_default().insert("siteId".into(), site.into());
+        super::super::save_settings(&settings).unwrap();
+        let (command, secrets) = prepare("netlify", &["deploy".into()]).unwrap();
+        assert!(!command.get_args().any(|arg| arg.to_string_lossy().contains(token)));
+        let env = |key: &str| command.get_envs().find(|(k, _)| *k == key).map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+        assert_eq!(env("NETLIFY_AUTH_TOKEN"), Some(Some(token.into())));
+        assert_eq!(env("NETLIFY_SITE_ID"), Some(Some(site.into())));
+        assert_eq!(env("NETLIFY_TELEMETRY_DISABLED"), Some(Some("1".into())));
+        assert_eq!(env("DO_NOT_TRACK"), Some(Some("1".into())));
+        assert_eq!(env("DEBUG"), Some(None));
+        assert_eq!(scrub(token, &secrets), "[redacted]");
+        settings.providers.remove("netlify");
+        super::super::save_settings(&settings).unwrap();
+        let (command, _) = prepare("netlify", &["deploy".into()]).unwrap();
+        assert!(command.get_envs().any(|(key, value)| key == "NETLIFY_SITE_ID" && value.is_none()));
+    }
+
+    #[test]
+    #[ignore]
+    fn installed_netlify_cli_reports_version_without_deploying() {
+        super::super::set_secret("netlify_token", "netlify-metadata-test").unwrap();
+        let (mut command, _) = prepare("netlify", &["--version".into()]).unwrap();
+        command.current_dir(std::env::temp_dir());
+        let output = run_process(command, "Netlify version", 16 * 1024, Duration::from_secs(90)).unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr.bytes));
+        let version = String::from_utf8_lossy(&output.stdout.bytes);
+        assert!(version.contains("netlify-cli/"), "{version}");
+        println!("{version}");
     }
 
     #[test]

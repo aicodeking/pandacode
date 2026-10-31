@@ -103,7 +103,13 @@ impl Server {
                         let context = current(&context);
                         clients.spawn(async move {
                             let response = match tokio::time::timeout(Duration::from_secs(5), read_request(&mut stream, &context)).await {
-                                Ok(Ok(body)) => context.respond(body).await,
+                                // A client that gives up on a call (its own timeout) closes the
+                                // connection: the call ends here too, so its pending approval
+                                // expires and a late Approve runs nothing.
+                                Ok(Ok(body)) => tokio::select! {
+                                    response = context.respond(body) => response,
+                                    () = closed(&mut stream) => return,
+                                },
                                 Ok(Err(status)) => HttpResponse::empty(status),
                                 Err(_) => HttpResponse::empty(408),
                             };
@@ -261,6 +267,12 @@ impl HttpResponse {
         stream.write_all(&self.body).await?;
         stream.shutdown().await
     }
+}
+
+/// Returns once the client closes the connection (or it fails).
+async fn closed(stream: &mut TcpStream) {
+    let mut byte = [0; 1];
+    while matches!(stream.read(&mut byte).await, Ok(1..)) {}
 }
 
 async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u8>, u16> {
@@ -518,7 +530,8 @@ impl Context {
             data: None,
             tool: None,
         });
-        match tokio::time::timeout(Duration::from_secs(300), receive).await {
+        let wait = crate::remote::orchestrate::approval_wait(name).unwrap_or(Duration::from_secs(300));
+        match tokio::time::timeout(wait, receive).await {
             Ok(Ok(true)) => Ok(()),
             Ok(Ok(false)) => Err("Declined by the user".into()),
             _ => Err("App approval expired or was cancelled".into()),
@@ -806,6 +819,36 @@ mod tests {
             assert_eq!(result["result"]["isError"], mode == "plan");
             assert_eq!(count.load(Ordering::SeqCst), usize::from(mode == "full"));
         }
+    }
+    #[tokio::test]
+    async fn a_call_the_client_gave_up_on_expires_its_approval() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let called = count.clone();
+        let mut protected = host();
+        protected.approval_tools.insert("pandacode_delegate".into());
+        protected.handler = Arc::new(move |_, _| {
+            called.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(json!({})) })
+        });
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "ask").await.unwrap();
+        let body = serde_json::to_vec(&call(json!(1), json!({}))).unwrap();
+        let mut stream = TcpStream::connect(&server.authority).await.unwrap();
+        stream.write_all(format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", server.authority, server.token, body.len()).as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        async fn next(events: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>, kind: &str) -> String {
+            loop {
+                let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
+                if event.kind == kind { break event.request_id.unwrap(); }
+            }
+        }
+        let pending = next(&mut events, "approval").await;
+        // The harness timed out the call and closed its connection.
+        drop(stream);
+        assert_eq!(next(&mut events, "approval_cancelled").await, pending);
+        assert!(!server.approve(&pending, true), "a late Approve finds nothing");
+        tokio::task::yield_now().await;
+        assert_eq!(count.load(Ordering::SeqCst), 0);
     }
     #[tokio::test]
     async fn cloud_cli_asks_even_in_full_mode() {

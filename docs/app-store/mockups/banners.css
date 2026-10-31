@@ -1,0 +1,189 @@
+* { margin: 0; box-sizing: border-box; }
+
+html, body { overflow: hidden; }
+
+body {
+  font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+  color: #1d1b17;
+  /* Same warm panda paper into misty bamboo green as the App Store shots. */
+  background:
+    radial-gradient(ellipse 70% 90% at 15% 0%, #fff4d6 0%, transparent 100%),
+    linear-gradient(160deg, #fbf6ea 0%, #f3eedd 50%, #e3e9d3 100%);
+  background-repeat: no-repeat;
+  position: relative;
+  height: 100%;
+}
+
+/* The desktop's Monday-morning bamboo scene, faint behind the phones. */
+body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: url("../../../public/wallpapers/mon-morning.webp") center / cover;
+  opacity: .24;
+  filter: blur(4px) saturate(.9);
+  mask-image: linear-gradient(90deg, transparent 25%, #000 75%);
+}
+body.square::before { mask-image: linear-gradient(transparent 30%, #000 80%); }
+
+.stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Copy */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(60 52 30 / .12), 0 6px 14px -6px rgb(60 52 30 / .35);
+}
+h1 {
+  font-size: 66px;
+  line-height: 1.04;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  margin-top: 30px;
+}
+h1 span { display: block; white-space: nowrap; }
+h1 span:first-child { color: #9a958a; }
+h1 em {
+  font-style: normal;
+  /* The site's highlighter yellow under the key word. */
+  background: linear-gradient(transparent 62%, #ffdf54 62%, #ffdf54 92%, transparent 92%);
+}
+.line {
+  margin-top: 22px;
+  font-size: 23px;
+  line-height: 1.35;
+  color: #4a4740;
+  max-width: 470px;
+  text-wrap: balance;
+}
+.store {
+  display: inline-block;
+  margin-top: 30px;
+  padding: 12px 24px;
+  border-radius: 999px;
+  background: #1d1b17;
+  color: #fbf6ea;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Phones: the same drawn iPhone as mockup.css, sized by --w (screen width). */
+.phones { position: relative; flex: none; }
+.phone {
+  --bezel: calc(var(--w) * .0204);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--w) + 2 * var(--bezel));
+  padding: var(--bezel);
+  border-radius: calc(var(--w) * .153);
+  background: #121212;
+  box-shadow:
+    inset 0 0 0 1.5px #3b3a38,
+    0 0 0 2.5px #c9c4b8,
+    0 0 0 3px #a9a397,
+    0 40px 70px -20px rgb(60 52 30 / .45),
+    0 14px 28px -10px rgb(60 52 30 / .25);
+}
+.screen {
+  display: block;
+  width: var(--w);
+  aspect-ratio: 1320 / 2868;
+  border-radius: calc(var(--w) * .133);
+}
+.island {
+  position: absolute;
+  top: calc(var(--bezel) + var(--w) * .031);
+  left: 50%;
+  translate: -50% 0;
+  width: calc(var(--w) * .278);
+  height: calc(var(--w) * .082);
+  border-radius: 999px;
+  background: #000;
+}
+.front { --w: 228px; translate: -50% -50%; z-index: 2; }
+.left, .right { --w: 196px; }
+.left { translate: calc(-50% - 168px) calc(-50% + 22px); rotate: -8deg; }
+.right { translate: calc(-50% + 168px) calc(-50% + 22px); rotate: 8deg; }
+
+/* Wide: drawn at 1280 units across, copy left, phones right. */
+.wide .stage { gap: 40px; padding: 0 40px; }
+.wide .copy { width: 520px; }
+.wide .phones { width: 600px; height: 540px; }
+
+/* Square: copy on top, centered; phones below. */
+.square .stage { flex-direction: column; justify-content: flex-start; padding-top: 56px; }
+.square .copy { text-align: center; }
+.square .brand { justify-content: center; }
+.square h1 { font-size: 76px; margin-top: 26px; }
+.square .line { max-width: 640px; margin-inline: auto; }
+.square .store { display: none; }
+.square .phones { width: 1080px; flex: 1; margin-top: 10px; }
+.square .front { --w: 268px; }
+.square .left, .square .right { --w: 232px; }
+.square .left { translate: calc(-50% - 228px) calc(-50% + 26px); }
+.square .right { translate: calc(-50% + 228px) calc(-50% + 26px); }
+
+/* App Store header and search results art: full-bleed backdrop, copy and phones inside the
+   template's art safe area (sized with container units so one layout fits every safe box). */
+.safe { display: contents; }
+.appstore .stage { display: block; }
+.appstore::before {
+  opacity: .55;
+  filter: saturate(.9);
+  mask-image: none;
+}
+/* Cream wash so the copy stays legible over the wallpaper. */
+.appstore .safe::before {
+  content: "";
+  position: absolute;
+  inset: -45% -35%;
+  background: radial-gradient(closest-side, rgb(251 246 234 / .93) 55%, rgb(251 246 234 / 0) 100%);
+}
+.appstore .safe {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4cqh;
+  container-type: size;
+}
+.appstore .copy, .appstore .phones { position: relative; }
+.guides .safe { outline: 6px dashed #e33; }
+.appstore .copy { flex: none; }
+.appstore .brand { font-size: 9cqh; gap: 3cqh; }
+.appstore .mark { width: 16cqh; height: 16cqh; border-radius: 3.6cqh; }
+.appstore h1 { font-size: var(--h1); margin-top: 6cqh; letter-spacing: -0.045em; }
+.appstore .line, .appstore .store { display: none; }
+.appstore .phones { width: var(--cluster); height: 100cqh; }
+.appstore .front { --w: var(--pw); }
+.appstore .left, .appstore .right { --w: calc(var(--pw) * .86); }
+.appstore .left { translate: calc(-50% - var(--pw) * .72) calc(-50% + 3cqh); }
+.appstore .right { translate: calc(-50% + var(--pw) * .72) calc(-50% + 3cqh); }
+.appstore .phone { box-shadow:
+    inset 0 0 0 .4cqh #3b3a38, 0 0 0 .6cqh #c9c4b8, 0 0 0 .75cqh #a9a397,
+    0 6cqh 10cqh -3cqh rgb(60 52 30 / .45), 0 2cqh 4cqh -1.5cqh rgb(60 52 30 / .25); }
+/* Phones take the safe height: outer phone height is about 2.21x its screen width. */
+.header .safe { --pw: 40cqh; --cluster: 96cqh; --h1: 19cqh; }
+.search .safe { --pw: 37cqh; --cluster: 90cqh; --h1: 16.5cqh; }
+.universal .safe { --pw: 34cqh; --cluster: 62cqh; --h1: 11.5cqh; }
+/* The universal safe area is nearly 3:2, so it keeps two phones: inbox in front, approval behind. */
+.universal .left { display: none; }
+.universal .front { translate: calc(-50% - var(--pw) * .35) -50%; }
+.universal .right { translate: calc(-50% + var(--pw) * .42) calc(-50% + 3cqh); }

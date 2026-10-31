@@ -109,6 +109,30 @@ test('Jev settings persist opt-in and never return saved keys to inputs', async 
   await page.screenshot({ path: '/private/tmp/pandacode-jev-settings.png' });
 });
 
+test('OpenRouter decisions list models only when the menu opens and send the key once', async ({ page }) => {
+  await installProbe(page, true);
+  await settings(page);
+  const models = async (provider: string) => (await calls(page, 'jev_decision_models')).filter(entry => entry.args.provider === provider).length;
+  await expect(page.locator('#jev-decision-provider')).toHaveValue('typesafe');
+  await expect(page.locator('#jev-decision-model')).toHaveValue('jev-1.13.0');
+  await expect(page.locator('#jev-openrouter-key')).toBeHidden();
+  await page.locator('#jev-decision-provider').selectOption('openrouter');
+  await expect(page.locator('#jev-openrouter-key')).toBeVisible();
+  expect(await models('openrouter')).toBe(0);
+  await page.locator('#jev-decision-model').focus();
+  await expect.poll(() => models('openrouter')).toBe(1);
+  await expect(page.locator('#jev-decision-model option[value="openai/gpt-4o-mini"]')).toHaveCount(1);
+  await page.locator('#jev-decision-model').selectOption('openai/gpt-4o-mini');
+  await page.locator('[data-jev-models-refresh]').click();
+  await expect.poll(() => models('openrouter')).toBe(2);
+  await page.locator('#jev-openrouter-key').fill('fake-openrouter-test-key');
+  await page.locator('[data-jev-save]').click();
+  await expect.poll(async () => (await calls(page, 'jev_save_configuration')).length).toBe(1);
+  const saved = (await calls(page, 'jev_save_configuration'))[0].args;
+  expect(saved.settings.decisionProvider).toBe('openrouter'); expect(saved.settings.decisionModel).toBe('openai/gpt-4o-mini');
+  expect(saved.openrouterKey).toBe('fake-openrouter-test-key');
+  await expect(page.locator('#jev-openrouter-key')).toHaveValue('');
+});
 test('Jev setup remains editable after errors and shows installation progress', async ({ page }) => {
   await installProbe(page, true); await settings(page);
   await page.evaluate(() => { (window as any).__jevFailSave = true; });
@@ -376,6 +400,8 @@ test('Jev popover uses translucent blur and respects reduced transparency prefer
     return { alpha: context.getImageData(0, 0, 1, 1).data[3] / 255, filter: style.backdropFilter || style.getPropertyValue('-webkit-backdrop-filter') };
   });
   await expect(popover).toHaveAttribute('data-popover-state', 'open');
+  // The glass condenses as the popover arrives; read its material once it has settled.
+  await expect.poll(() => popover.evaluate(element => element.getAnimations().length)).toBe(0);
   const glass = await material();
   expect(glass.alpha).toBeGreaterThan(0); expect(glass.alpha).toBeLessThan(1);
   expect(glass.filter).toContain('blur(');
@@ -454,7 +480,7 @@ test('runs are cancellable and live activity follows conversation and board deta
   await expect(chip).toContainText('Test stopped');
   await emit(page, { id: 'run-2', status: 'running', createdAt: Date.now() + 2000 });
   await expect(chip).toContainText('Testing app');
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();
   await expect(chip).toBeVisible();
   await chip.click();

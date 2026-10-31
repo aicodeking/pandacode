@@ -1,0 +1,13 @@
+// The site at https://pandacode.bambooed.ai: a separate Worker from `pandacode-site`
+// (wrangler.jsonc) with the same static assets, so deploying one never touches the other.
+// Build first, then `npx wrangler deploy -c wrangler.bambooed.jsonc`.
+{
+  "name": "pandacode-site-bambooed",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [{ "pattern": "pandacode.bambooed.ai", "custom_domain": true }]
+}

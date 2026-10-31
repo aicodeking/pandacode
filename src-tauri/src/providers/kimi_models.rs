@@ -27,6 +27,8 @@ struct ConfiguredModel {
     capabilities: Option<Vec<String>>,
     #[serde(default, rename = "defaultEffort", alias = "default_effort")]
     default_effort: Option<String>,
+    #[serde(default, rename = "supportEfforts", alias = "support_efforts")]
+    support_efforts: Option<Vec<String>>,
     #[serde(default)]
     overrides: Option<ModelOverrides>,
 }
@@ -41,6 +43,8 @@ struct ModelOverrides {
     capabilities: Option<Vec<String>>,
     #[serde(default, rename = "defaultEffort", alias = "default_effort")]
     default_effort: Option<String>,
+    #[serde(default, rename = "supportEfforts", alias = "support_efforts")]
+    support_efforts: Option<Vec<String>>,
 }
 
 fn valid(value: &str) -> bool {
@@ -70,23 +74,40 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             capabilities.is_some_and(|values| values.iter().any(|capability| capability == name))
         };
         let always_thinking = has_capability("always_thinking");
+        // Kimi's ACP `thinking` option offers the model's `supportEfforts`
+        // (low/high/max) when it has them, else on; plus off unless thinking is always on.
+        let levels: Vec<&str> = overrides
+            .as_ref()
+            .and_then(|settings| settings.support_efforts.as_ref())
+            .or(model.support_efforts.as_ref())
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .filter(|id| super::validate_reasoning_effort("kimi", Some(id)).is_ok())
+            .take(8)
+            .collect();
+        let default = overrides
+            .as_ref()
+            .and_then(|settings| settings.default_effort.as_deref())
+            .or(model.default_effort.as_deref())
+            .filter(|id| valid(id));
         let mut efforts = Vec::new();
-        if has_capability("thinking") || always_thinking {
-            // The installed ACP adapter only exposes on/off. Advertising the
-            // catalog's low/high/max would imply controls ACP cannot apply.
-            let default = overrides
-                .as_ref()
-                .and_then(|settings| settings.default_effort.as_deref())
-                .or(model.default_effort.as_deref())
-                .filter(|id| valid(id));
+        let mut default_reasoning_effort = None;
+        let off = || effort_info("off", Some("Disable thinking"));
+        if !levels.is_empty() && (has_capability("thinking") || always_thinking) {
+            if !always_thinking {
+                efforts.push(off());
+            }
+            efforts.extend(levels.iter().map(|id| effort_info(id, None)));
+            default_reasoning_effort = default.filter(|id| levels.contains(id)).map(str::to_owned);
+        } else if has_capability("thinking") && !always_thinking {
             let description = default
                 .map(|id| format!("Use the model’s configured {id} effort"))
                 .unwrap_or_else(|| "Use the model’s configured thinking effort".into());
             efforts.push(effort_info("on", Some(&description)));
-            if !always_thinking {
-                efforts.push(effort_info("off", Some("Disable thinking")));
-            }
+            efforts.push(off());
         }
+        // An always-thinking model without levels has nothing to choose.
         let context_window = overrides
             .as_ref()
             .and_then(|settings| settings.max_context_size)
@@ -103,11 +124,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             name,
             description: model.model,
             reasoning_efforts: efforts,
-            default_reasoning_effort: if always_thinking {
-                Some("on".into())
-            } else {
-                None
-            },
+            default_reasoning_effort,
             context_window,
         });
     }
@@ -115,7 +132,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
 }
 
 pub(super) async fn list(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("kimi", path)?;
     command
         .args(["provider", "list", "--json"])
         .current_dir(std::env::temp_dir())
@@ -194,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn context_and_thinking_use_declared_metadata_without_exposing_uncontrollable_efforts() {
+    fn context_and_thinking_use_declared_metadata_and_support_efforts() {
         let models = parse(br#"{"models":{
             "a":{"model":"model-a","maxContextSize":1048576,"capabilities":["thinking","always_thinking"],"supportEfforts":["low","high","max"],"defaultEffort":"high"},
             "b":{"model":"model-b","max_context_size":262144,"capabilities":["thinking"],"overrides":{"max_context_size":200000}},
@@ -207,10 +224,9 @@ mod tests {
                 .iter()
                 .map(|effort| effort.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["on"]
+            vec!["low", "high", "max"]
         );
-        assert!(models[1].reasoning_efforts[0].description.contains("high"));
-        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("on"));
+        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(models[2].context_window, Some(200000));
         assert_eq!(
             models[2]
@@ -222,6 +238,23 @@ mod tests {
         );
         assert!(models[3].reasoning_efforts.is_empty());
         assert_eq!(models[3].context_window, None);
+    }
+
+    /// Recorded from `kimi provider list --json` (Kimi Code 2.3.1); its ACP `thinking`
+    /// option offers low/high/max for K3.1 Pro and nothing selectable for highspeed.
+    #[test]
+    fn recorded_k3_catalog_offers_its_thinking_levels() {
+        let models = parse(br#"{"models":{
+            "kimi-code/k3.1-pro":{"model":"k3.1-pro","capabilities":["thinking","always_thinking","image_in","video_in","tool_use","dynamically_loaded_tools"],"supportEfforts":["low","high","max"],"defaultEffort":"high","overrides":null},
+            "kimi-code/kimi-for-coding-highspeed":{"model":"kimi-for-coding-highspeed","capabilities":["thinking","always_thinking","image_in","video_in","tool_use"],"supportEfforts":null,"defaultEffort":null,"overrides":null},
+            "moonshot-ai/kimi-k2.6":{"model":"kimi-k2.6","capabilities":["thinking","image_in","video_in","tool_use"],"supportEfforts":null,"defaultEffort":null,"overrides":null}
+        }}"#).unwrap();
+        let ids = |index: usize| models[index].reasoning_efforts.iter().map(|effort| effort.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(models[1].id, "kimi-code/k3.1-pro");
+        assert_eq!(ids(1), ["low", "high", "max"]);
+        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("high"));
+        assert!(ids(2).is_empty(), "an always-on model has no Default/On toggle");
+        assert_eq!(ids(3), ["on", "off"]);
     }
 
     #[test]

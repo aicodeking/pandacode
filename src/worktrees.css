@@ -5,54 +5,57 @@
 .composer-context .composer-project>span{min-width:3ch}
 .composer-area{container:composer/inline-size}
 @container composer (max-width:560px){.composer-context .composer-local{display:none}.composer-context.composer-context-compact{gap:10px}.composer-context .branch-chip{max-width:none}}
-.composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:.78rem;background:transparent;border-color:transparent}
-.composer-project-fixed{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:40%;color:var(--text);font-weight:500;cursor:default}
+.composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:var(--text-xs);background:transparent;border-color:transparent}
+.composer-project-fixed{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:40%;color:var(--text);font-weight:var(--weight-medium);cursor:default}
 .composer-project-fixed>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.branch-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:min(46%,320px);padding:5px 8px;border-radius:3px;color:var(--text);font-weight:500;font-size:inherit;text-align:left}
-.branch-chip>.icon:first-child{width:14px;height:14px;color:var(--muted);flex-shrink:0}
-.branch-chip>.icon:last-child{width:11px;height:11px;color:var(--muted);flex-shrink:0}
-.branch-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:.94em;font-weight:500}
+.branch-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:min(46%,320px);padding:5px 8px;border-radius:var(--radius-sm);color:var(--text);font-weight:var(--weight-medium);font-size:inherit;text-align:left}
+.branch-chip>.icon:first-child{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted);flex-shrink:0}
+.branch-chip>.icon:last-child{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);flex-shrink:0}
+.branch-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:inherit;font-weight:var(--weight-medium)}
 .branch-chip:not(:disabled):hover{background:var(--raised)}
-.branch-chip[aria-expanded="true"]{background:#fff1b9;box-shadow:inset 0 0 0 1px rgb(177 132 16 / .13)}
+/* Open like the other pickers (styles.css). */
+.branch-chip[aria-expanded="true"]{background:var(--accent-tint);box-shadow:none}
 .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 52%,var(--bg))}
 .branch-chip-missing{color:var(--danger)}
 .branch-chip-fixed{cursor:default}
 /* The computer a task runs on (PandaCode Connect); fixed once the task has started. */
-.composer-computer{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:30%;padding:5px 8px;border-radius:3px;color:var(--text);font-weight:500;font-size:inherit}
+.composer-computer{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:30%;padding:5px 8px;border-radius:var(--radius-sm);color:var(--text);font-weight:var(--weight-medium);font-size:inherit}
 .composer-computer>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.composer-computer>.icon{width:14px;height:14px;color:var(--muted);flex-shrink:0}
+.composer-computer>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted);flex-shrink:0}
 .composer-computer:not(.composer-computer-fixed):hover{background:var(--raised)}
 .composer-computer-fixed{cursor:default}
 .branch-chip-missing>.icon:first-child{color:var(--danger)}
-html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .14)}
-html[data-theme="dark"] .branch-chip:not(:disabled):active{background:#5b4b20}
+html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:none}
+html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 35%,var(--bg))}
 .workspace[data-wallpaper] .conversation-pane .branch-chip:is(:active,[aria-expanded="true"]){background:var(--thread-accent)}
 .workspace[data-wallpaper] .conversation-pane .branch-chip:hover{background:var(--thread-hover)}
 
 /* Linked GitHub work reads as a small tag; its state is named, never only colored. */
-.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:999px;font-size:.72rem;font-weight:550;color:var(--accent-ink);background:var(--accent-dim);border:1px solid rgb(var(--accent-deep-rgb) / .12);white-space:nowrap;--press:.96}
-.link-chip>.icon{width:12px;height:12px}
-.link-chip-state{font-weight:400;color:var(--muted);text-transform:capitalize}
+.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:var(--radius-full);font-size:var(--text-2xs);font-weight:var(--weight-medium);color:var(--accent-ink);background:var(--accent-dim);white-space:nowrap;--press:.96}
+.link-chip>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+.link-chip-state{font-weight:var(--weight-regular);color:var(--muted);text-transform:capitalize}
 .link-chip:not(:disabled):hover{background:color-mix(in srgb,var(--accent) 28%,var(--accent-dim));color:var(--text)}
 .link-chip-merged,.link-chip-closed{color:var(--muted);background:var(--raised);border-color:transparent}
 .link-chip-merged .link-chip-state{color:var(--success)}
 .link-chip-closed .link-chip-state{color:var(--danger)}
 .link-chip-draft .link-chip-state{color:var(--muted)}
-.board-card .link-chip,.task-detail-project .link-chip{font-size:.66rem;padding:2px 7px 2px 5px}
+.board-card .link-chip,.task-detail-project .link-chip{font-size:var(--text-2xs);padding:2px 7px 2px 5px}
 .board-card-meta .link-chip{margin-left:auto}
 .board-card-meta .link-chip+.link-chip,.board-card-meta .link-chip+.board-running{margin-left:0}
-html[data-theme="dark"] .link-chip{border-color:rgb(var(--accent-rgb) / .16)}
 
 /* Worktree dialogs. */
 .worktree-dialog{width:min(430px,calc(100vw - 32px))}
-.worktree-dialog select{padding:9px 12px;border-radius:4px;background:var(--panel);border:1px solid var(--border);font-size:.86rem}
-.worktree-preview{font-family:var(--mono);font-size:.72rem;overflow-wrap:anywhere}
-.worktree-preview code,.worktree-cleanup-option code,.worktree-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:2px;padding:1px 4px}
+.worktree-dialog select{padding:9px 12px;border-radius:var(--radius-sm);background:var(--fill-hover);font-size:var(--text-sm)}
+.worktree-preview{font-family:var(--mono);font-size:var(--text-2xs);overflow-wrap:anywhere}
+.worktree-preview code,.worktree-cleanup-option code,.worktree-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:var(--radius-xs);padding:1px 4px}
 .worktree-preview-invalid{color:var(--danger)}
-.worktree-existing{display:flex;align-items:center;gap:9px;margin:12px 0 0;font-size:.82rem;color:var(--text)}
+.worktree-existing{display:flex;align-items:center;gap:9px;margin:12px 0 0;font-size:var(--text-sm);color:var(--text)}
 .worktree-existing input,.worktree-cleanup-option input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0;margin:0}
 .worktree-error{color:var(--danger)}
-.worktree-cleanup-option{display:flex;align-items:flex-start;gap:10px;margin:6px 0 0;padding:11px 12px;border:1px solid var(--border);border-radius:4px;background:var(--panel);font-size:.84rem;line-height:1.5}
+.worktree-cleanup-option{display:flex;align-items:flex-start;gap:10px;margin:6px 0 0;padding:11px 12px;border-radius:var(--radius-sm);background:var(--panel);font-size:var(--text-sm);line-height:1.5}
 .worktree-cleanup-option input{margin-top:2px}
 dialog .worktree-cleanup-option{background:color-mix(in srgb,var(--panel) 72%,transparent)}
-@media(prefers-contrast:more){.link-chip{border-color:var(--text)}.branch-chip[aria-expanded="true"]{outline:1px solid var(--focus);outline-offset:-1px}}
+@media(prefers-contrast:more){.link-chip{border:1px solid var(--text)}.branch-chip[aria-expanded="true"]{outline:1px solid var(--focus);outline-offset:-1px}}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer{transition:background-color 140ms ease-out,color 140ms ease-out}}

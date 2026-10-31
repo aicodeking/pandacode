@@ -57,7 +57,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = acp_catalog::refresh_lock("commandcode", path).await;
     if let Some(models) = acp_catalog::get("commandcode", path) { return Ok(models); }
     let discovery = acp_catalog::begin("commandcode", path);
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("commandcode", path)?;
     command.args(ACP_ARGS);
     let key = key_environment(&mut command);
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false)

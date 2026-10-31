@@ -170,7 +170,7 @@ pub(crate) async fn api(app: &tauri::AppHandle, channel_id: &str, action: &str, 
             }
             let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
             let text = body["text"].as_str().unwrap_or_default().to_owned();
-            let inbound = gateway::Inbound { bot_id: channel.bot_id.clone(), channel_id: channel.id.clone(), thread: THREAD.into(), sender_id: "web".into(), sender_name: "You (web)".into(), text, trusted: true };
+            let inbound = gateway::Inbound { bot_id: channel.bot_id.clone(), channel_id: channel.id.clone(), thread: THREAD.into(), sender_id: "web".into(), sender_name: "You (web)".into(), text, trusted: true, image_ids: None, moodboard_ids: None };
             match gateway::deliver(app, inbound).await {
                 Ok(_) => Response::json(200, &json!({"ok": true, "busy": busy(app, &channel)})),
                 Err(error) => Response::json(400, &json!({"error": error})),

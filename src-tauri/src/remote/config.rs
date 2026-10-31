@@ -52,26 +52,88 @@ pub(crate) struct Settings {
     pub device_id: String,
     #[serde(default)]
     pub host_enabled: bool,
+    /// Sends a generic push when a hosted task needs attention or finishes; the relay's bridge
+    /// delivers it to the account's phones. Payloads carry counts, never task content.
+    #[serde(default)]
+    pub notify_enabled: bool,
+    /// Lets remote devices pick Full access (no approvals). Off: they get approving modes only.
+    #[serde(default)]
+    pub remote_full_access: bool,
     #[serde(default)]
     pub account: Option<Account>,
-    /// Devices allowed to drive this one: device id → the public key pinned when trusted.
+    /// Set once scoped pairing (`grants.rs`) has been set up for this install.
     #[serde(default)]
-    pub trusted: std::collections::BTreeMap<String, String>,
+    pub grants_scoped: bool,
+    /// Agents here may use linked computers (docs/machine-orchestration.md).
+    #[serde(default)]
+    pub orchestration: bool,
+    /// Device id → what agents here may do there. Counts only while the device is a target
+    /// with the key it was linked under.
+    #[serde(default)]
+    pub links: std::collections::BTreeMap<String, Link>,
 }
 
-impl Settings {
-    /// Trusted only while the pinned key is still the device's current key.
-    pub(crate) fn is_trusted(&self, device_id: &str, current_key: &str) -> bool {
-        self.trusted.get(device_id).is_some_and(|pinned| !pinned.is_empty() && pinned == current_key)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Access {
+    Read,
+    Ask,
+    Full,
+}
+
+impl Access {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "read" => Some(Self::Read),
+            "ask" => Some(Self::Ask),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
     }
 }
 
-/// Reads the settings, creating the device id once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Link {
+    pub access: Access,
+    /// When the user linked it, in milliseconds.
+    #[serde(default)]
+    pub at: i64,
+    /// The device's public key when it was linked: a link belongs to the computer behind that
+    /// key, so a changed (or missing) key makes it count for nothing.
+    #[serde(default)]
+    pub key: String,
+}
+
+impl Link {
+    pub(crate) fn counts_for(&self, current_key: &str) -> bool {
+        !self.key.is_empty() && self.key == current_key
+    }
+}
+
+/// Reads the settings, creating the device id once. The first load after scoped pairing
+/// shipped keeps the devices of a computer that already allowed remote control at full
+/// access (`grants::seed_adopt`; only those in the first presence frame after it), so an
+/// upgrade locks nobody out; anything newer waits for approval.
 pub(crate) fn load(dir: &Path) -> Settings {
     let path = dir.join(FILE);
-    let mut settings: Settings = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+    let text = std::fs::read_to_string(&path).ok();
+    let mut settings: Settings = text.as_deref().and_then(|text| serde_json::from_str(text).ok()).unwrap_or_default();
+    let mut changed = false;
     if uuid::Uuid::parse_str(&settings.device_id).is_err() {
         settings.device_id = uuid::Uuid::new_v4().to_string();
+        changed = true;
+    }
+    if !settings.grants_scoped {
+        let upgraded = text.is_some() && settings.account.is_some() && settings.host_enabled;
+        let seeded = if upgraded { super::grants::seed_adopt(dir) } else { Ok(()) };
+        changed |= seeded.is_ok();
+        settings.grants_scoped = seeded.is_ok();
+        if let Err(error) = seeded {
+            eprintln!("{error}");
+        }
+    }
+    if changed {
         if let Err(error) = save(dir, &settings) {
             eprintln!("Could not save the remote access device id: {error}");
         }
@@ -81,8 +143,29 @@ pub(crate) fn load(dir: &Path) -> Settings {
 
 pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| format!("Could not save remote access settings: {e}"))
+    write_atomic(dir, text.as_bytes()).map_err(|e| format!("Could not save remote access settings: {e}"))
+}
+
+/// A unique 0600 temp file beside `remote.json`, fsynced, then renamed over it.
+// ponytail: same steps as secret_store's private write_atomic; share it if that one is made pub(crate).
+fn write_atomic(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let temp = dir.join(format!("{FILE}.{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let renamed = options
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|_| std::fs::rename(&temp, dir.join(FILE)));
+    if renamed.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    renamed
 }
 
 /// The stored key, or a new one written once when none (or an unreadable value) is stored.
@@ -196,13 +279,54 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pandacode-remote-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = load(&dir);
-        assert!(!first.host_enabled);
+        assert!(!first.host_enabled && !first.remote_full_access);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(dir.join(FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        save(&dir, &Settings { remote_full_access: true, ..first.clone() }).unwrap();
+        assert!(load(&dir).remote_full_access);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp files left behind");
         assert!(first.account.is_none());
         assert_eq!(load(&dir).device_id, first.device_id);
-        let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"}}"#).unwrap();
+        let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"},"trusted":{"old-device":"old-key"}}"#).unwrap();
         assert!(parsed.host_enabled);
-        assert_eq!(parsed.account.unwrap().avatar_url, "u");
-        assert!(parsed.trusted.is_empty());
+        assert_eq!(parsed.account.as_ref().unwrap().avatar_url, "u");
+        assert!(serde_json::to_value(&parsed).unwrap().get("trusted").is_none());
+        assert!(!parsed.orchestration && parsed.links.is_empty(), "orchestration is off by default");
+        let linked: Settings = serde_json::from_str(r#"{"orchestration":true,"links":{"d1":{"access":"full","at":5,"key":"k1"}}}"#).unwrap();
+        assert_eq!(linked.links["d1"], Link { access: Access::Full, at: 5, key: "k1".into() });
+        assert!(serde_json::to_string(&linked).unwrap().contains(r#""links":{"d1":{"access":"full","at":5,"key":"k1"}}"#));
+        assert!(serde_json::from_str::<Settings>(r#"{"links":{"d1":{"access":"root"}}}"#).is_err());
+        assert_eq!((Access::parse("ask"), Access::parse("admin")), (Some(Access::Ask), None));
+        assert!(linked.links["d1"].counts_for("k1") && !linked.links["d1"].counts_for("k2"), "a changed key drops the link");
+        let keyless: Settings = serde_json::from_str(r#"{"links":{"d1":{"access":"ask"}}}"#).unwrap();
+        assert!(!keyless.links["d1"].counts_for(""), "a link saved without a key counts for nothing");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_an_upgraded_host_adopts_its_devices() {
+        let dir = |text: Option<&str>| {
+            let dir = std::env::temp_dir().join(format!("pandacode-remote-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(text) = text {
+                std::fs::write(dir.join(FILE), text).unwrap();
+            }
+            dir
+        };
+        let grants = |dir: &Path| dir.join("connect-grants.json").exists();
+        let fresh = dir(None);
+        assert!(load(&fresh).grants_scoped && !grants(&fresh));
+        let signed_in_off = dir(Some(r#"{"deviceId":"9b4f6f0e-6a53-4a38-9d6a-2f5a6b1b6a10","account":{"id":"gh:1","login":"a"}}"#));
+        assert!(load(&signed_in_off).grants_scoped && !grants(&signed_in_off));
+        let upgraded = dir(Some(r#"{"deviceId":"9b4f6f0e-6a53-4a38-9d6a-2f5a6b1b6a10","hostEnabled":true,"account":{"id":"gh:1","login":"a"}}"#));
+        assert!(load(&upgraded).grants_scoped && grants(&upgraded));
+        let later = dir(Some(r#"{"deviceId":"9b4f6f0e-6a53-4a38-9d6a-2f5a6b1b6a10","hostEnabled":true,"grantsScoped":true,"account":{"id":"gh:1","login":"a"}}"#));
+        assert!(load(&later).grants_scoped && !grants(&later));
+        for dir in [fresh, signed_in_off, upgraded, later] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 }

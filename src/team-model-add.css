@@ -1,0 +1,18 @@
+/* Add model… for teams (src/team-model-add.ts): search over one harness's models, flat rows. */
+.team-model-dialog{width:min(32rem,calc(100vw - 2rem))}
+.team-model-dialog>.dialog-description{margin:0 0 .75rem;color:var(--muted);font-size:var(--text-sm)}
+.team-model-search{display:flex;align-items:center;gap:.5rem;padding:0 .75rem;border-radius:var(--radius-md);background:var(--fill-hover)}
+.team-model-search:focus-within{box-shadow:0 0 0 2px var(--focus)}
+.team-model-search>.icon{flex:none;width:1rem;height:1rem;color:var(--muted)}
+.team-model-dialog .team-model-search input{flex:1;width:auto;min-width:0;height:auto;padding:.6rem 0;border:0;background:transparent;box-shadow:none;outline:none;font-size:var(--text-sm)}
+.team-model-list{display:flex;flex-direction:column;gap:2px;max-height:min(50vh,24rem);margin-top:.5rem;overflow:auto;overscroll-behavior:contain}
+.team-model-row{display:flex;align-items:center;gap:.6rem;min-height:32px;padding:.3rem .6rem;border-radius:var(--radius-md);font-size:var(--text-sm);cursor:pointer;transition:background-color .13s}
+.team-model-row:hover{background:var(--fill-hover)}
+.team-model-row:focus-within{outline:2px solid var(--focus);outline-offset:-2px}
+.team-model-dialog .team-model-row input{flex:none;width:16px;height:16px;padding:0;margin:0;border:0;accent-color:var(--accent)}
+.team-model-row>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-model-row>small{flex:none;color:var(--muted);font-size:var(--text-xs)}
+.team-model-row:has(input:disabled){cursor:default}
+.team-model-empty{margin:0;padding:1rem .6rem;color:var(--muted);font-size:var(--text-sm)}
+.team-model-dialog .dialog-footer{align-items:center;justify-content:space-between}
+.team-model-count{color:var(--muted);font-size:var(--text-xs)}

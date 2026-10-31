@@ -1,0 +1,13 @@
+/* PandaCode Connect: the prompt for a device asking for access (src/remote-pairing-prompt.ts). */
+.pairing-prompts{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;width:min(440px,calc(100vw - 32px));z-index:60;pointer-events:none}
+.pairing-prompt{pointer-events:auto;display:flex;flex-direction:column;gap:10px;padding:12px 14px;border-radius:var(--radius-md);color:var(--text);font-size:var(--text-sm);background:var(--glass-tint);box-shadow:0 16px 44px -14px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);backdrop-filter:blur(24px) saturate(1.5);-webkit-backdrop-filter:blur(24px) saturate(1.5)}
+.pairing-prompt-text{display:flex;flex-direction:column;gap:3px;min-width:0}
+.pairing-prompt-text strong{font-weight:var(--weight-medium);overflow-wrap:anywhere}
+.pairing-prompt-text small{color:var(--muted);font-size:var(--text-xs);line-height:1.4}
+.pairing-prompt code{font:var(--text-xs) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+.pairing-prompt-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.pairing-prompt-actions select{width:auto;flex:1 1 120px;min-width:0;padding:7px 10px;font-size:var(--text-sm)}
+.pairing-prompt-actions .primary-button,.pairing-prompt-actions .secondary-button{padding:6px 12px;min-height:32px}
+.pairing-prompt-actions button:focus-visible,.pairing-prompt-actions select:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+@media (prefers-reduced-transparency:reduce){.pairing-prompt{background:var(--raised);backdrop-filter:none;-webkit-backdrop-filter:none}}
+html[data-theme="dark"] .pairing-prompt{background:#272724;backdrop-filter:none;-webkit-backdrop-filter:none;}

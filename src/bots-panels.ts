@@ -2,9 +2,8 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { Activity, BotDetail, Channel, Schedule } from './bots';
 import { channelGuide, connectChange, connectClick, connectSection, connectSubmit, kindLabel } from './bots-connect';
-import { age } from './bots';
 
-export type Tab = 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
+export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
 export interface PanelContext {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
@@ -18,6 +17,17 @@ export interface PanelContext {
 }
 
 const ACTIVITY_ICONS: Record<string, string> = { inbound: 'chat', reply: 'arrow', notify: 'spark', scheduled: 'refresh', approval: 'unlock', memory: 'leaf', schedule: 'refresh', channel: 'globe', pairing: 'check', rule: 'select', error: 'alert', stopped: 'stop', created: 'plus', updated: 'edit', reset: 'reset' };
+
+/** "5 min. ago", "in 2 hr.": short relative times for lists. */
+export function age(at: number | null, now = Date.now()): string {
+  if (!at) return '';
+  const minutes = Math.round((at - now) / 60000);
+  const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' });
+  if (Math.abs(minutes) < 1) return at > now ? 'in a moment' : 'just now';
+  if (Math.abs(minutes) < 60) return format.format(minutes, 'minute');
+  if (Math.abs(minutes) < 1440) return format.format(Math.round(minutes / 60), 'hour');
+  return format.format(Math.round(minutes / 1440), 'day');
+}
 
 let scheduleKind: Schedule['kind'] = 'daily';
 
@@ -125,8 +135,56 @@ async function loadActivity(context: PanelContext, older: boolean): Promise<void
   context.rerender();
 }
 
+/** Library skills and configured MCP servers, read once per settings visit. Names only, never definitions. */
+let capabilities: { skills: { id: string; name: string; description: string }[]; mcp: { harness: string; name: string; source: string }[] } | null = null;
+let capabilitiesLoad: Promise<void> | null = null;
+/** Harnesses that read skill folders; the rest get skills in the bot's brief. */
+const SKILL_FOLDERS = ['claude', 'codex'];
+
+function loadCapabilities(context: PanelContext): void {
+  capabilitiesLoad ??= (async () => {
+    const [items, inventory] = await Promise.all([
+      context.call<{ id: string; name: string; kind: string; description: string }[]>('skills_list').catch(() => []),
+      context.call<{ entries: { harness: string; kind: string; name: string; source: string }[] }>('capabilities_inventory', { taskId: null }).catch(() => ({ entries: [] })),
+    ]);
+    capabilities = { skills: items.filter(item => item.kind === 'skill'), mcp: inventory.entries.filter(entry => entry.kind === 'mcp server') };
+    context.rerender();
+  })();
+}
+
+function skillsPanel(detail: BotDetail, context: PanelContext): string {
+  if (!capabilities) { loadCapabilities(context); return '<p class="dialog-loading" role="status">Loading skills…</p>'; }
+  const bot = detail.bot;
+  const delivery = SKILL_FOLDERS.includes(bot.provider) ? 'Files in the bot\'s workspace' : 'In the bot\'s brief';
+  const known = new Set(capabilities.skills.map(skill => skill.id));
+  const skills = [...capabilities.skills, ...bot.skills.filter(id => !known.has(id)).map(id => ({ id, name: id, description: '' }))];
+  const skillRow = (skill: { id: string; name: string; description: string }) => {
+    const on = bot.skills.includes(skill.id), missing = !known.has(skill.id);
+    return `<li><span class="bots-item-main"><b>${escape(skill.name)}</b><small>${missing ? 'Not in the library' : on ? escape(delivery) : escape(skill.description)}</small></span><input type="checkbox" class="bots-switch" data-bot-skill="${escape(skill.id)}" ${on ? 'checked' : ''} aria-label="Use ${escape(skill.name)}"></li>`;
+  };
+  const names = [...new Set([...capabilities.mcp.map(entry => entry.name), ...bot.mcp])];
+  const mcpRow = (name: string) => {
+    const own = capabilities!.mcp.find(entry => entry.name === name && entry.harness === bot.provider);
+    const status = own ? `From ${own.source}` : `Unsupported for this bot's harness`;
+    return `<li class="${own ? '' : 'off'}"><span class="bots-item-main"><b>${escape(name)}</b><small data-mcp-status>${escape(status)}</small></span><input type="checkbox" class="bots-switch" data-bot-mcp="${escape(name)}" ${bot.mcp.includes(name) ? 'checked' : ''} aria-label="Use MCP server ${escape(name)}"></li>`;
+  };
+  return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Harness-wide and project settings in Skills & rules are unchanged.', 'About bot skills')}</h4>
+    ${skills.length ? `<ul class="bots-items bots-skills">${skills.map(skillRow).join('')}</ul>` : '<p class="bots-empty-note">The skills library is empty. Import skills in Settings → Skills & rules.</p>'}
+    <h4>MCP servers ${infoMark('Servers come from each harness\'s own configuration and keep their credentials there. PandaCode passes no server definitions per run, so a server is usable only when the bot\'s harness already has it; others show as unsupported.', 'About MCP servers')}</h4>
+    ${names.length ? `<ul class="bots-items bots-mcp">${names.map(mcpRow).join('')}</ul>` : '<p class="bots-empty-note">No MCP servers are configured in your harnesses.</p>'}`;
+}
+
+/** Saves the checked skills and MCP servers. */
+function saveCapabilities(target: HTMLElement, context: PanelContext): void {
+  const detail = context.detail(); if (!detail) return;
+  const panel = target.closest('.bots-panel')!;
+  const checked = (key: string) => [...panel.querySelectorAll<HTMLInputElement>(`input[data-${key}]`)].filter(input => input.checked).map(input => input.getAttribute(`data-${key}`)!);
+  void context.work(async () => { await context.call('bot_set_capabilities', { botId: detail.bot.id, skills: checked('bot-skill'), mcp: checked('bot-mcp') }); invalidateActivity(); context.notify('Saved'); await context.reload(); });
+}
+
 export function renderPanel(tab: Tab, detail: BotDetail, context: PanelContext): string {
   switch (tab) {
+    case 'skills': return skillsPanel(detail, context);
     case 'conversations': return conversationsPanel(detail, context);
     case 'memory': return memoryPanel(detail);
     case 'schedules': return schedulesPanel(detail);
@@ -138,6 +196,8 @@ export function renderPanel(tab: Tab, detail: BotDetail, context: PanelContext):
 
 /** Fresh activity after any change, so the Activity tab never shows a stale page. */
 export function invalidateActivity(): void { activity = { botId: '', items: [], done: false, loading: false }; }
+/** Re-read the skills library and MCP inventory next time the Skills section opens. */
+export function invalidateCapabilities(): void { capabilities = null; capabilitiesLoad = null; }
 
 export function panelClick(target: HTMLElement, _tab: Tab, context: PanelContext): void {
   const detail = context.detail(); if (!detail) return;
@@ -162,7 +222,8 @@ export function panelChange(target: HTMLElement, _tab: Tab, context: PanelContex
   const detail = context.detail(); if (!detail) return;
   const input = target as HTMLInputElement;
   if (connectChange(target, context)) return;
-  if (target.matches('.bots-schedule select[name=kind]')) {
+  if (input.dataset.botSkill !== undefined || input.dataset.botMcp !== undefined) saveCapabilities(target, context);
+  else if (target.matches('.bots-schedule select[name=kind]')) {
     scheduleKind = (target as HTMLSelectElement).value as Schedule['kind'];
     target.closest('form')?.querySelectorAll<HTMLElement>('.bots-when').forEach(element => { element.hidden = !element.dataset.kinds!.split(' ').includes(scheduleKind); });
   } else if (input.dataset.scheduleToggle) void context.work(async () => { await context.call('bot_schedule_set_enabled', { scheduleId: input.dataset.scheduleToggle, enabled: input.checked }); invalidateActivity(); await context.reload(); });

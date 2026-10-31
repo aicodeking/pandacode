@@ -1,6 +1,6 @@
 # Approval behaviours
 
-The composer permission selector has four choices per harness. Its selected label
+The composer permission selector has four or five choices per harness. Its selected label
 remains visible, and each menu row describes what the harness is allowed to do.
 The selected mode is saved with the task. New user tasks, including board tasks,
 worktrees, and the quick launcher, start in **Full access** unless a mode is
@@ -17,6 +17,7 @@ uses the new, reduced mode.
 | --- | --- | --- | --- |
 | `ask` | Standard: normal approval rules | Standard: workspace sandbox, user reviews escalation requests | Standard: manual approval mode |
 | `auto` | Accept edits: automatically allow file edits | Approve for me: Codex reviews approval requests inside the workspace sandbox | Ask when needed: routine operations proceed; sensitive actions still ask |
+| `review` | Approve for me: `--permission-mode auto`, Claude Code's safety reviewer approves routine actions | Not offered (`auto` is already agent-reviewed) | Unavailable |
 | `plan` | Plan mode: explore and prepare an implementation plan | Read only: read-only sandbox, no permission escalation | Plan mode: planning workflow with manual approvals |
 | `full` | Full access: bypass tool approval prompts | Full access: no sandbox and no approval prompts | Full access: unattended tool approval |
 
@@ -32,6 +33,8 @@ Full access maps to the following supported native mechanisms:
 | Kimi Code | Its advertised ACP `auto` mode (unattended execution); PandaCode waits for mode acknowledgement |
 | OpenCode | Process-local `permission: { "*": "allow" }` for the selected built-in agent and matching ACP approvals |
 | Antigravity | Accepts the offered ACP one-time tool permission; the server's own policy remains authoritative |
+| Devin CLI | Its ACP `bypass` session mode; a request that still arrives (organization policy) is answered `allow_once`, never a standing grant. Implementing a plan always asks |
+| ZCode | Its `yolo` session mode, set per run; a permission request that still arrives is answered with the offered `allow` response, never a standing grant |
 
 Antigravity has no universal ACP setting that can disable server-side sandboxing
 or managed restrictions. PandaCode does not invent one. Structured questions still
@@ -85,6 +88,15 @@ mode: reads and searches are allowed, edits, deletes and moves are declined, and
 tools (commands, fetches) ask you. Full access is `act` with `--auto-approve true`, so
 Cline runs every tool without asking. A missing mode fails the turn.
 
+Kilo Code uses its `code` agent, or `plan` in Plan mode. Its process-local global
+and code/plan wildcard permission policies, including legacy `mode` settings,
+are set to `ask` (or `allow` for Full access), and inherited `KILO_PERMISSION` is removed. Standard allows read-only
+tool requests and asks before edits, commands and other tools. Accept edits also
+approves file edits. Plan allows read/search/fetch/think and declines all other
+requests, including commands and edits to planning files; a missing rejection
+option cancels the request. Full access runs tools without approval prompts.
+This is an ACP tool policy, not a filesystem or network sandbox.
+
 Muse Code selects its approval mode on the wire and its sandbox with process flags:
 Standard is `promptUnmatched`, Accept edits `onRequest`, Plan `denyUnmatched` with
 `--disable-write --disable-shell` (read-only, plus a plan instruction in the prompt),
@@ -105,3 +117,31 @@ ACP: [tool permissions](https://agentclientprotocol.com/protocol/v1/tool-calls).
 Codex mappings were checked against its installed app-server schema for
 `ThreadStartParams`, `ThreadResumeParams`, and `TurnStartParams`, including the
 `approvalsReviewer` enum and explicit turn sandbox policies.
+
+## Approve for me (agent-reviewed approvals)
+
+`review` is the agent-reviewed policy, the same option bots offer under Permissions.
+Claude Code, GLM and MiMo launch with `--permission-mode auto`, which needs a Claude
+Code release with auto mode; an older CLI rejects the flag and the turn fails rather
+than running under another policy. Codex's own agent review is its `auto` choice.
+No other harness can represent it: the menu does not offer it, a task that
+still holds it after a harness switch shows it disabled with the reason, and
+`review_supported` in `providers.rs` refuses to start the run.
+
+## Plan mode investigation
+
+Plan mode blocks implementation, not research. Per harness:
+
+| Harness | Reads and web lookups in Plan mode |
+| --- | --- |
+| Claude Code, GLM, MiMo | `Read`, `Grep`, `Glob`, `LS`, `NotebookRead`, `WebFetch` and `WebSearch` run without asking, also outside the project. Paths that look like credentials (`.ssh`, `.aws`, `.env`, keys, PandaCode's app data, …) still ask; Claude's own deny rules apply first. Edits stay blocked by Claude's plan mode, and commands ask. |
+| Codex | Its `read-only` sandbox already reads anywhere; shell network stays off. Codex's own web search is unchanged. |
+| OpenCode | Plan permission adds `webfetch`, `websearch` and `list`; `external_directory` asks; everything else is denied. |
+| Cline | Plan mode also allows `fetch` requests; edits, deletes and moves are declined, commands ask. |
+| GitHub Copilot | `fetch` joins read and search on the ordinary approval path; other requests are declined. |
+| Grok | Read, search, fetch and think requests were already allowed. |
+| Pi / omp | `read`, `grep`, `find`, `ls` run anywhere; Pi has no web tools. |
+| DeepSeek, Muse, Command Code, Kimi | Unchanged: their native read-only/plan modes decide. |
+
+Nothing here grants shell or general network access, and writes, deletes,
+repository changes and other state-changing tools stay blocked or ask.

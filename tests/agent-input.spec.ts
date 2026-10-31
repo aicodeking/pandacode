@@ -126,7 +126,7 @@ test('agent input opens URL requests only on an explicit click and requires sepa
 test('agent input remains available in the board panel and disappears when work stops', async ({ page }) => {
   await emit(page, 'input_request', question);
   await form(page).getByRole('textbox', { name: 'Theme', exact: true }).fill('Keep this board answer');
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();
   await expect(form(page)).toBeVisible();
   await expect(form(page).getByRole('textbox', { name: 'Theme', exact: true })).toHaveValue('Keep this board answer');

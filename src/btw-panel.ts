@@ -10,7 +10,7 @@ export interface BtwPanelHost {
   side(): { session: Session; hiddenThrough: number } | undefined;
   live(sideId: string): BtwLive;
   mainRunning(): boolean;
-  userHtml(content: string): string;
+  userHtml(content: string, messageId: number): string;
   send(text: string): Promise<void>;
   openFull(sideId: string): void;
   newThread(): void;
@@ -44,6 +44,8 @@ export class BtwPanel {
     if (kind === 'done') { this.ending = this.liveText; void this.reload(); return; }
     if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.update(); });
   }
+  /** A shown side-thread message, for its attachment chips. */
+  message(id: number): Message | undefined { return this.messages.find(m => m.id === id); }
   async reload(): Promise<void> {
     const sideId = this.loadedFor;
     if (!sideId) return;
@@ -152,7 +154,7 @@ export class BtwPanel {
       let row = log.querySelector<HTMLElement>(`:scope > [data-key="${key}"]`);
       if (!row) {
         row = document.createElement('article'); row.dataset.key = key;
-        if (message.role === 'user') { row.className = 'btw-message btw-user'; row.innerHTML = `<div class="message-content">${this.host.userHtml(message.content)}</div>`; }
+        if (message.role === 'user') { row.className = 'btw-message btw-user'; row.innerHTML = `<div class="message-content">${this.host.userHtml(message.content, message.id)}</div>`; }
         else {
           row.className = 'btw-message btw-agent';
           row.innerHTML = `<div class="markdown"></div><button class="btw-insert" data-btw-insert="${escape(key)}" aria-label="Insert this answer into the main prompt" title="Insert into main prompt">${icon('copy')}Insert into main</button>`;

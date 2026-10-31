@@ -2,9 +2,9 @@ import { escape, icon } from './dom';
 import './message-actions.css';
 
 /** Keys identify saved messages or a live text buffer; never embed message text. */
-export function messageActionsHtml(sessionId: string, key: string | number, canFork = true): string {
+export function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false): string {
   const data = `data-message-session="${escape(sessionId)}" data-message-key="${escape(key)}"`;
-  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message" title="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" title="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
+  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message" title="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" title="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" title="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
 }
 
 /** Clipboard APIs can be unavailable in older desktop webviews. */
@@ -49,6 +49,7 @@ async function copyText(value: string | undefined | Promise<string | undefined>)
 export function bindMessageActions(root: HTMLElement, options: {
   content: (sessionId: string, key: string) => string | undefined | Promise<string | undefined>;
   onFork?: (sessionId: string, messageId: number) => Promise<void>;
+  onEdit?: (sessionId: string, messageId: number) => Promise<void>;
   report: (error: unknown) => void;
 }): () => void {
   const pending = new Set<string>();
@@ -62,12 +63,13 @@ export function bindMessageActions(root: HTMLElement, options: {
     const action = button.dataset.messageAction;
     const token = JSON.stringify([sessionId, key, action]);
     if (pending.has(token)) return;
-    if (action === 'fork' && (!options.onFork || !Number.isSafeInteger(Number(key)) || Number(key) <= 0)) return;
+    const handler = action === 'fork' ? options.onFork : action === 'edit' ? options.onEdit : undefined;
+    if (action !== 'copy' && (!handler || !Number.isSafeInteger(Number(key)) || Number(key) <= 0)) return;
     const hadFocus = document.activeElement === button;
     pending.add(token);
     // Keep Copy focused while text is fetched; disabling it blurs keyboard focus.
-    button.disabled = action === 'fork'; button.setAttribute('aria-busy', 'true'); button.setAttribute('aria-disabled', 'true');
-    const work = (async () => action === 'fork' ? options.onFork!(sessionId, Number(key)) : copyText(options.content(sessionId, key)))();
+    button.disabled = action !== 'copy'; button.setAttribute('aria-busy', 'true'); button.setAttribute('aria-disabled', 'true');
+    const work = (async () => handler ? handler(sessionId, Number(key)) : copyText(options.content(sessionId, key)))();
     void work.then(() => {
       if (action !== 'copy' || !button.isConnected) return;
       clearTimeout(feedback.get(button));

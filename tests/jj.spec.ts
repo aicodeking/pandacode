@@ -4,6 +4,9 @@ import { expect, test, type Page } from '@playwright/test';
 // its own so it runs whether or not the Changes tab wiring is in place.
 async function mount(page: Page): Promise<void> {
   await page.goto('/');
+  // The inspector opens on Changes; let its first load finish before the mock turns
+  // the preview project into a jj repo, so the app's own panel doesn't share the log cache.
+  await expect(page.locator('#inspector-content .changes-view')).toBeVisible();
   await page.evaluate(async () => {
     const jj = await import('/src/jj.ts' as string);
     const mock = await import('/src/preview-jj.ts' as string);

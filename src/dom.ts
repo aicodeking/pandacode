@@ -43,6 +43,7 @@ const paths: Record<string, string> = {
   leaf: '<path d="M19 3C5 3 2 9 5 15s14 4 14-12ZM5 20l9-11"/>',
   bamboo: '<path d="M9 3v18m-2-6h4M7 8h4m5 5v8m-2-4h4"/><path d="M10 9c1-4 4-6 9-6-1 4-4 6-9 6ZM8 15c-4 0-6-2-6-6 4 0 6 2 6 6Z" fill="currentColor" stroke="none"/>',
   moon: '<path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   alert: '<path d="m12 3 10 18H2Zm0 6v5m0 3v1"/>',
@@ -75,6 +76,8 @@ const paths: Record<string, string> = {
   trash: '<path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13"/>',
   move: '<path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4m10-8 4 4-4 4"/>',
   grid: '<path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+  kanban: '<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="9.5" y="4" width="5" height="10" rx="1.5"/><rect x="16" y="4" width="5" height="13" rx="1.5"/>',
+  thread: '<path d="M14 9a2 2 0 0 1-2 2H6l-3 3V4a1 1 0 0 1 1-1h8a2 2 0 0 1 2 2Z"/><path d="M18 9h2a1 1 0 0 1 1 1v11l-3-3h-6a2 2 0 0 1-2-2v-1"/>',
   widget: '<rect x="3" y="5" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="10" height="5" rx="1.5"/><path d="M16 16.5h5"/>',
 };
 export function icon(name: string, cls = ''): string { return `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] ?? paths.file}</svg>`; }
@@ -106,36 +109,92 @@ function workspaceHref(href: string): string {
 // rather than as raw text that reflows. A microtask, not a timer, so nothing delays it.
 void Promise.resolve().then(() => import('./enriched-markdown')).then(engine => engine.parseMarkdown('')).catch(() => { /* markdownHtml falls back when it is needed. */ });
 /* Formatted Markdown by source text. Reopening a thread draws its final layout in one
- * frame instead of raw text that reflows once the parser answers. */
-const RENDERED_LIMIT = 800;
+ * frame instead of raw text that reflows once the parser answers. An LRU bounded by size:
+ * source plus HTML, in UTF-16 code units (about 4 M characters, 8 MB). */
+const RENDERED_LIMIT = 4 * 1024 * 1024;
 const rendered = new Map<string, string>();
-function remember(value: string, html: string): void {
-  rendered.delete(value); rendered.set(value, html);
-  if (rendered.size > RENDERED_LIMIT) rendered.delete(rendered.keys().next().value as string);
+let renderedSize = 0;
+function forget(value: string): void {
+  const html = rendered.get(value);
+  if (html === undefined) return;
+  rendered.delete(value); renderedSize -= value.length + html.length;
 }
-let sanitizer: Promise<(html: string) => string> | undefined;
+function remember(value: string, html: string): void {
+  forget(value);
+  const size = value.length + html.length;
+  if (size > RENDERED_LIMIT) return;
+  rendered.set(value, html); renderedSize += size;
+  for (const oldest of rendered.keys()) { if (renderedSize <= RENDERED_LIMIT) break; forget(oldest); }
+}
+// A stream registers its latest value here instead: the HTML (what the stream already settled plus
+// one render of the rest) is built only when the finished reply is drawn again, never per frame.
+const DEFERRED_LIMIT = 16;
+const deferred = new Map<string, () => Promise<string>>();
+function defer(value: string, build: () => Promise<string>): void {
+  deferred.delete(value); deferred.set(value, build);
+  for (const oldest of deferred.keys()) { if (deferred.size <= DEFERRED_LIMIT) break; deferred.delete(oldest); }
+}
+/** Builds and remembers `value`'s deferred entry; undefined when there is none or it fails. */
+function settle(value: string): Promise<string | undefined> | undefined {
+  const build = deferred.get(value);
+  if (!build) return undefined;
+  deferred.delete(value);
+  return build().then(html => { remember(value, html); return html; }, () => undefined);
+}
+/** The formatted-Markdown cache, for the streaming painter (which registers its stream's latest
+ * value, so a finished reply draws without parsing it whole) and tests. */
+export const markdownCache = {
+  get: (value: string) => rendered.get(value), set: remember, defer, settle, forgo: (value: string) => deferred.delete(value), size: () => renderedSize, limit: RENDERED_LIMIT,
+  delete: (value: string) => { deferred.delete(value); forget(value); },
+};
+const PURIFY = { ADD_TAGS: ['pandacode-ui', 'pandacode-code'], ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] };
+type Modules = { purify: typeof import('dompurify').default; enriched: typeof import('./enriched-markdown') };
+// Resolved once: after that a render awaits only the parser's own (already settled) promise, so a
+// paint started in an animation frame lands in that frame, not in a later task.
+let modules: Modules | undefined;
+let loading: Promise<Modules> | undefined;
+function loadModules(): Promise<Modules> {
+  // generative-ui defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
+  loading ??= Promise.all([import('dompurify'), import('./enriched-markdown'), import('./generative-ui')])
+    .then(([purify, enriched]) => (modules = { purify: purify.default, enriched }), error => { loading = undefined; throw error; });
+  return loading;
+}
 let fallback: Promise<(value: string) => string | Promise<string>> | undefined;
-/** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a
- * fallback if its WebAssembly cannot start. Math is typeset after sanitizing, from KaTeX. */
-export async function markdownHtml(value: string): Promise<string> {
-  sanitizer ??= import('dompurify').then(d => (html: string) => d.default.sanitize(html, { ADD_TAGS: ['pandacode-ui', 'pandacode-code'], ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] }));
-  const engine = import('./enriched-markdown');
-  // Defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
-  const [sanitize, enriched] = await Promise.all([sanitizer, engine, import('./generative-ui')]);
-  let html: string;
+async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise<string> {
   try {
-    html = enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
+    return enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
   } catch {
     fallback ??= import('marked').then(m => {
       const links = new m.Renderer(); const renderLink = links.link;
       links.link = function (token) { return renderLink.call(this, { ...token, href: workspaceHref(token.href) }); };
       return (text: string) => m.marked.parse(text, { renderer: links });
     });
-    html = await (await fallback)(value);
+    return (await fallback)(value);
   }
-  const result = pendingView(value, await enriched.typesetMath(sanitize(html)));
-  remember(value, result);
+}
+/** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a
+ * fallback if its WebAssembly cannot start. Math is typeset after sanitizing, from KaTeX.
+ * Pass `cache = false` for text that is still changing, so passing prefixes never fill the cache. */
+export async function markdownHtml(value: string, cache = true): Promise<string> {
+  const { purify, enriched } = modules ?? await loadModules();
+  const result = pendingView(value, await enriched.typesetMath(purify.sanitize(await unsafeHtml(enriched, value), PURIFY)));
+  if (cache) remember(value, result);
   return result;
+}
+/** markdownHtml's output as a template's inert content; its `innerHTML` is the HTML, serialized
+ * only if read. Without math or an open view, the sanitizer's own nodes are kept instead of
+ * serializing and parsing them again. */
+export async function markdownNodes(value: string): Promise<HTMLTemplateElement> {
+  const { purify, enriched } = modules ?? await loadModules();
+  const unsafe = await unsafeHtml(enriched, value), template = document.createElement('template');
+  if (unsafe.includes('md-math') || openViewFence(value)) {
+    template.innerHTML = pendingView(value, await enriched.typesetMath(purify.sanitize(unsafe, PURIFY)));
+    return template;
+  }
+  template.content.append(purify.sanitize(unsafe, { ...PURIFY, RETURN_DOM_FRAGMENT: true }));
+  // Removed tags leave their text beside its neighbours; parsing the HTML would have joined them.
+  template.content.normalize();
+  return template;
 }
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`]*)/;
 /** Whether the text ends inside an open generative-UI fence (a reply still streaming). */
@@ -158,9 +217,11 @@ function pendingView(value: string, html: string): string {
 export async function markdown(target: HTMLElement, value: string, scroll?: HTMLElement): Promise<void> {
   captureFileLinkContext(target);
   const known = rendered.get(value);
-  if (known !== undefined) { target.innerHTML = known; decorateFileLinks(target, target); return; }
+  if (known !== undefined) { remember(value, known); target.innerHTML = known; decorateFileLinks(target, target); return; }
+  // A reply that just streamed is built from its stream's settled HTML, not parsed whole again.
+  const settling = settle(value);
   target.textContent = value;
-  const html = await markdownHtml(value);
+  const html = (settling && await settling) ?? await markdownHtml(value);
   if (target.isConnected && target.textContent === value) {
     const restore = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
     target.innerHTML = html;

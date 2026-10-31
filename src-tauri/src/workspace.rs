@@ -8,12 +8,12 @@ pub(crate) fn excluded_entry(name: &str, directory: bool) -> bool {
     file_search::excluded(std::ffi::OsStr::new(name), directory)
 }
 use std::{
-    collections::BinaryHeap,
+    collections::{BinaryHeap, HashMap},
     fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
-    sync::mpsc,
+    sync::{mpsc, Mutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -151,7 +151,7 @@ fn run_git(root: &Path, args: &[&str], limit: usize, commit: bool) -> Result<Git
         Duration::from_secs(if commit { 120 } else { 30 }),
     )
 }
-fn run_git_bounded(
+pub(crate) fn run_git_bounded(
     root: &Path,
     args: &[&str],
     limit: usize,
@@ -255,10 +255,15 @@ fn run_bounded(
         stderr_limit,
     );
     let deadline = Instant::now() + timeout;
+    // Most git calls finish in a few ms; back off from 1 ms so they aren't rounded up to 10.
+    let mut pause = Duration::from_millis(1);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(pause);
+                pause = (pause * 2).min(Duration::from_millis(10));
+            }
             Ok(None) => {
                 stop_process_group(process_id);
                 let _ = child.kill();
@@ -423,22 +428,67 @@ fn repository_root(root: &Path) -> Result<bool, String> {
     Ok(fs::canonicalize(path).map_err(|e| e.to_string())? == root)
 }
 
+const REPOSITORY_TTL: Duration = Duration::from_secs(30);
+
+/// Roots that `rev-parse` recently confirmed, so repeated diffs skip a process.
+fn verified_repositories() -> &'static Mutex<HashMap<PathBuf, Instant>> {
+    static VERIFIED: OnceLock<Mutex<HashMap<PathBuf, Instant>>> = OnceLock::new();
+    VERIFIED.get_or_init(Default::default)
+}
+
+fn forget_repository(root: &Path) {
+    if let Ok(mut verified) = verified_repositories().lock() {
+        verified.remove(root);
+    }
+}
+
 fn require_repository(root: &Path) -> Result<(), String> {
-    if repository_root(root)? {
+    if is_repository(root)? {
         Ok(())
     } else {
         Err("Open the Git repository's root folder to use Git actions".into())
     }
 }
 
+/// `repository_root`, remembered for `REPOSITORY_TTL` while `.git` still looks intact.
+fn is_repository(root: &Path) -> Result<bool, String> {
+    let fresh = verified_repositories()
+        .lock()
+        .is_ok_and(|verified| verified.get(root).is_some_and(|at| at.elapsed() < REPOSITORY_TTL));
+    // The `.git` check catches a repository removed or moved since it was verified, which
+    // would otherwise let Git fall back to an enclosing repository.
+    let git = root.join(".git");
+    if fresh && (git.is_file() || git.join("HEAD").is_file()) {
+        return Ok(true);
+    }
+    forget_repository(root);
+    let repository = repository_root(root)?;
+    if repository {
+        if let Ok(mut verified) = verified_repositories().lock() {
+            verified.insert(root.to_path_buf(), Instant::now());
+        }
+    }
+    Ok(repository)
+}
+
 pub fn git_status(root: &Path) -> Result<GitStatus, String> {
-    if !repository_root(root)? {
+    if !is_repository(root)? {
         return Ok(GitStatus {
             branch: String::new(),
             files: vec![],
             is_repo: false,
         });
     }
+    let status = read_status(root);
+    if status.is_err() {
+        // As in `git_diff`: a failure may mean the repository is gone.
+        forget_repository(root);
+    }
+    status
+}
+
+/// `git status` for a root already known to be the repository root.
+fn read_status(root: &Path) -> Result<GitStatus, String> {
     let output = checked(run_git(
         root,
         &[
@@ -512,11 +562,30 @@ fn diff_text(bytes: &[u8], truncated: bool) -> String {
     text
 }
 
+/// The path itself when Git reports it untracked (exact match, as in `git status`).
+fn untracked_path(root: &Path, path: &str) -> Result<Vec<String>, String> {
+    let output = checked(run_git(
+        root,
+        &["ls-files", "--others", "--exclude-standard", "-z", "--", path],
+        STATUS_LIMIT,
+        false,
+    )?)?;
+    let untracked = output.bytes.split(|byte| *byte == 0).any(|entry| entry == path.as_bytes());
+    Ok(if untracked { vec![path.to_string()] } else { Vec::new() })
+}
+
 pub fn git_diff(root: &Path, path: Option<String>, staged: bool) -> Result<String, String> {
-    require_repository(root)?;
-    if let Some(path) = &path {
-        scoped_path(root, path)?;
+    let diff = diff_repository(root, path, staged);
+    if diff.is_err() {
+        // A failure may mean the repository is gone; verify it again next time.
+        forget_repository(root);
     }
+    diff
+}
+
+fn diff_repository(root: &Path, path: Option<String>, staged: bool) -> Result<String, String> {
+    require_repository(root)?;
+    let target = path.as_deref().map(|path| scoped_path(root, path)).transpose()?;
     let mut args = vec![
         "diff",
         "--no-ext-diff",
@@ -535,13 +604,21 @@ pub fn git_diff(root: &Path, path: Option<String>, staged: bool) -> Result<Strin
     let mut output = checked(run_git(root, &args, DIFF_LIMIT, false)?)?;
     if !staged && !output.truncated {
         // `git diff` omits untracked files. Preview them without altering the index.
-        let status = git_status(root)?;
-        for file in status
-            .files
-            .into_iter()
-            .filter(|file| file.index == "?" && path.as_ref().is_none_or(|p| p == &file.path))
-        {
-            let target = scoped_path(root, &file.path)?;
+        let untracked = match &path {
+            // A path with tracked changes can't be untracked; otherwise ask about it alone.
+            Some(path) if output.bytes.is_empty() && target.as_ref().is_some_and(|t| t.is_file()) => {
+                untracked_path(root, path)?
+            }
+            Some(_) => vec![],
+            None => read_status(root)?
+                .files
+                .into_iter()
+                .filter(|file| file.index == "?")
+                .map(|file| file.path)
+                .collect(),
+        };
+        for file in untracked {
+            let target = scoped_path(root, &file)?;
             if !target.is_file() {
                 continue;
             }
@@ -560,7 +637,7 @@ pub fn git_diff(root: &Path, path: Option<String>, staged: bool) -> Result<Strin
                     "--no-color",
                     "--",
                     "/dev/null",
-                    &file.path,
+                    &file,
                 ],
                 remaining,
                 false,
@@ -1323,6 +1400,37 @@ pub fn read_file(root: &Path, path: String) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "File is not UTF-8 text".into())
 }
 
+/// Largest PDF, Word, spreadsheet or image file the viewer will open.
+const DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// The bytes of a PDF, Word, spreadsheet or image file for the viewer, which renders it in the window.
+/// Only those types, only inside the project, and bounded in size.
+pub fn read_document_bytes(root: &Path, path: &str) -> Result<Vec<u8>, String> {
+    let target = scoped_path(root, path)?;
+    // A link named report.pdf must not reach another kind of file, such as .git/config.
+    let resolved = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    let document = |file: &Path| {
+        let extension = file.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+        matches!(extension.as_deref(), Some("pdf" | "docx" | "xlsx" | "xlsm" | "xls" | "ods" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "bmp" | "ico" | "svg"))
+    };
+    let inside = fs::canonicalize(root).ok().and_then(|base| resolved.strip_prefix(base).ok().map(Path::to_path_buf));
+    let in_git = inside.is_none_or(|relative| relative.components().any(|part| part.as_os_str() == ".git"));
+    if !document(&target) || !document(&resolved) || in_git {
+        return Err("Only PDF, Word (.docx), spreadsheet and image files can be shown".into());
+    }
+    let file = File::open(&resolved).map_err(|e| e.to_string())?;
+    let metadata = file.metadata().map_err(|e| e.to_string())?;
+    if !metadata.is_file() || metadata.len() > DOCUMENT_LIMIT {
+        return Err("The file is missing or larger than 64 MB".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(DOCUMENT_LIMIT + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > DOCUMENT_LIMIT {
+        return Err("The file is missing or larger than 64 MB".into());
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1406,6 +1514,28 @@ mod tests {
         assert!(image_data_url(&f.root, "notes.txt").is_err(), "not an image");
         assert!(image_data_url(&f.root, "../outside.png").is_err(), "outside the project");
         assert!(image_data_url(&f.root, "missing.png").is_err());
+    }
+
+    #[test]
+    fn document_bytes_are_scoped_typed_and_larger_than_text_previews() {
+        let f = Fixture::new(false);
+        let large = vec![7u8; FILE_LIMIT * 4];
+        fs::write(f.root.join("Report.PDF"), &large).unwrap();
+        fs::write(f.root.join("notes.txt"), "hello").unwrap();
+        fs::write(f.base.join("outside.docx"), b"PK").unwrap();
+        assert_eq!(read_document_bytes(&f.root, "Report.PDF").unwrap(), large, "beyond the 128 KiB text limit");
+        assert!(read_document_bytes(&f.root, "notes.txt").is_err(), "not a document");
+        assert!(read_document_bytes(&f.root, "../outside.docx").is_err(), "outside the project");
+        assert!(read_document_bytes(&f.root, "missing.xlsx").is_err());
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(f.root.join(".git")).unwrap();
+            fs::write(f.root.join(".git/config"), "[core]").unwrap();
+            std::os::unix::fs::symlink(f.root.join(".git/config"), f.root.join("disguised.pdf")).unwrap();
+            std::os::unix::fs::symlink(f.root.join("notes.txt"), f.root.join("notes.pdf")).unwrap();
+            assert!(read_document_bytes(&f.root, "disguised.pdf").is_err(), "a link into .git");
+            assert!(read_document_bytes(&f.root, "notes.pdf").is_err(), "a link to a non-document");
+        }
     }
 
     #[test]
@@ -1587,6 +1717,64 @@ mod tests {
             .iter()
             .any(|v| v.path == "new name.txt" && v.index == "R"));
         assert!(files.iter().any(|v| v.path == "tail.txt" && v.index == "?"));
+    }
+
+    #[test]
+    fn path_diffs_cover_tracked_untracked_staged_and_clean_files() {
+        let f = Fixture::new(true);
+        fs::create_dir(f.root.join("dir")).unwrap();
+        fs::write(f.root.join("tracked.txt"), "old\n").unwrap();
+        fs::write(f.root.join("clean.txt"), "same\n").unwrap();
+        fs::write(f.root.join(".gitignore"), "ignored.txt\n").unwrap();
+        f.git(&["add", "."]);
+        f.git(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"]);
+        fs::write(f.root.join("tracked.txt"), "new\n").unwrap();
+        fs::write(f.root.join("dir/fresh.txt"), "fresh\n").unwrap();
+        fs::write(f.root.join("ignored.txt"), "hidden\n").unwrap();
+        fs::write(f.root.join("staged.txt"), "staged\n").unwrap();
+        f.git(&["add", "staged.txt"]);
+        let diff = |path: &str, staged| git_diff(&f.root, Some(path.into()), staged).unwrap();
+
+        let tracked = diff("tracked.txt", false);
+        assert!(tracked.contains("-old") && tracked.contains("+new") && !tracked.contains("fresh"));
+        let untracked = diff("dir/fresh.txt", false);
+        assert!(untracked.contains("new file mode") && untracked.contains("+fresh"));
+        assert!(diff("staged.txt", true).contains("+staged"));
+        assert!(diff("staged.txt", false).is_empty(), "staged-only file has no worktree diff");
+        assert!(diff("dir/fresh.txt", true).is_empty(), "untracked files are never staged");
+        assert!(diff("clean.txt", false).is_empty());
+        assert!(diff("ignored.txt", false).is_empty());
+        assert!(diff("missing.txt", false).is_empty());
+        assert!(diff("dir", false).is_empty(), "untracked previews match exact paths only");
+
+        let all = git_diff(&f.root, None, false).unwrap();
+        assert!(all.contains("+new") && all.contains("+fresh"));
+        assert!(!all.contains("+staged") && !all.contains("hidden"));
+    }
+
+    #[test]
+    fn repository_cache_is_dropped_when_the_repository_goes_away() {
+        let f = Fixture::new(true);
+        fs::write(f.root.join("a.txt"), "a\n").unwrap();
+        let cached = || verified_repositories().lock().unwrap().contains_key(&f.root);
+        assert!(!cached());
+        assert!(git_status(&f.root).unwrap().is_repo);
+        assert!(cached(), "a status refresh seeds the check git_diff reuses");
+        assert!(git_diff(&f.root, Some("a.txt".into()), false).unwrap().contains("+a"));
+        assert!(cached());
+        // A corrupt HEAD passes the cheap check, so the failing diff itself must evict.
+        fs::write(f.root.join(".git/HEAD"), "garbage\n").unwrap();
+        assert!(git_diff(&f.root, Some("a.txt".into()), false).is_err());
+        assert!(!cached());
+        fs::write(f.root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(git_diff(&f.root, None, false).unwrap().contains("+a"));
+        assert!(cached());
+        // A removed repository fails the cheap check and is verified again.
+        fs::remove_dir_all(f.root.join(".git")).unwrap();
+        assert!(git_diff(&f.root, Some("a.txt".into()), false).is_err());
+        assert!(!cached());
+        assert!(!git_status(&f.root).unwrap().is_repo);
+        assert!(!cached());
     }
 
     #[test]
@@ -2046,7 +2234,9 @@ mod tests {
             assert_eq!(migrated.project_id, main.id);
             assert_eq!(migrated.worktree_path.as_deref(), first_path.to_str());
             assert_eq!(migrated.title, "Keep this title");
-            assert!(migrated.archived);
+            // There is no archive: an archived task is settled when the store opens.
+            assert!(!migrated.archived);
+            assert_eq!(migrated.task_stage, "completed");
             assert_eq!(migrated.mode, "plan");
             assert_eq!(migrated.resume_id.as_deref(), Some("keep-provider-resume"));
             assert_eq!(

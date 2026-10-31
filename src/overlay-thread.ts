@@ -239,8 +239,10 @@ export class OverlayThreadView {
         const tool = decodeToolActivity(message.content);
         return tool ? `tool:${tool.id}` : `message:${message.id}`;
       };
-      activity.innerHTML = groupToolRuns(turn.activity,toolKey).map(run => {
-        if (run.kind === 'tools') return renderToolGroup(run.items.map(message => ({key:toolKey(message)!,content:message.content})));
+      const running = last && ['running','waiting','coordinating'].includes(this.latest?.subagent?.status || this.latest?.status || this.task!.status);
+      const runs = groupToolRuns(turn.activity,toolKey);
+      activity.innerHTML = runs.map((run,index) => {
+        if (run.kind === 'tools') return renderToolGroup(run.items.map(message => ({key:toolKey(message)!,content:message.content})), false, running && index === runs.length - 1);
         const message = run.item;
         if (message.role === 'tool') return renderToolStatus(message.content);
         return `<article class="launcher-thread-message"${message.role === 'assistant' ? ` data-commentary="${message.id}" data-message-id="${message.id}"` : ''}><div></div>${message.role === 'assistant' || message.role === 'user' ? messageActionsHtml(message.sessionId, message.id, this.canFork(message)) : ''}</article>`;
@@ -252,7 +254,7 @@ export class OverlayThreadView {
     }
     const response = node.querySelector<HTMLElement>('.launcher-thread-response')!; response.hidden = !turn.final;
     response.classList.toggle('launcher-thread-live', last);
-    const names: Record<string,string> = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'};
+    const names: Record<string,string> = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code',devin:'Devin CLI',zcode:'ZCode',hermes:'Hermes Agent'};
     const heading = response.querySelector('header')!;
     const author = turn.final ? historicalProvider(turn.final, messages, this.task!.provider as ProviderId) : this.task!.provider;
     if (heading.dataset.provider !== author) {

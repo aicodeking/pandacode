@@ -214,6 +214,14 @@ pub fn parse_screen(profile: &serde_json::Value) -> Option<Screen> {
     })
 }
 
+/// A screen measured from a PNG's header (pixels) at the given scale.
+pub fn screen_from_png(png: &[u8], scale: f64, home_button: bool) -> Option<Screen> {
+    if png.len() < 24 || &png[1..4] != b"PNG" || scale <= 0.0 { return None; }
+    let side = |at: usize| f64::from(u32::from_be_bytes([png[at], png[at + 1], png[at + 2], png[at + 3]]));
+    let (width, height) = ((side(16) / scale).round(), (side(20) / scale).round());
+    (width > 0.0 && height > 0.0).then_some(Screen { width, height, scale, home_button, inner: None })
+}
+
 impl Simulators {
     pub fn selected(&self) -> Option<String> {
         self.selected.lock().ok().and_then(|s| s.clone())
@@ -268,7 +276,7 @@ impl Simulators {
             json(&checked(run_process(command, "plutil", OUTPUT_LIMIT, QUICK)?)?)
         };
         let profile = plist("profile.plist")?;
-        let caps = if device.duo { plist("capabilities.plist").ok() } else { None };
+        let caps = plist("capabilities.plist").ok();
         let cover = caps.as_ref().and_then(|caps| duo::parse_display(caps, duo::COVER)).map(|(size, scale)| Screen {
             width: size.width,
             height: size.height,
@@ -277,7 +285,13 @@ impl Simulators {
             home_button: false,
             inner: None,
         });
-        let mut screen = parse_screen(&profile).or(cover).ok_or("The device profile has no screen size.")?;
+        // Newer device types may omit the main screen size; their capabilities or a captured frame still know it.
+        let from_frame = || {
+            let png = screenshot(&device.udid, None, None).ok()?;
+            let scale = profile["mainScreenScale"].as_f64().or_else(|| caps.as_ref().and_then(|c| duo::parse_display(c, duo::COVER)).map(|(_, s)| s));
+            screen_from_png(&png, scale.unwrap_or(3.0), profile["supportedFeatures"]["com.apple.pearl-id"].as_bool() != Some(true))
+        };
+        let mut screen = parse_screen(&profile).or(cover).or_else(from_frame).ok_or("The device profile has no screen size, and no frame could be read to measure it. Boot the simulator and try again.")?;
         screen.inner = caps.and_then(|caps| duo::parse_inner(&caps));
         self.screens.lock().map_err(|e| e.to_string())?.insert(device.device_type.clone(), screen);
         Ok(screen)
@@ -644,6 +658,16 @@ mod tests {
             "com.apple.CoreSimulator.SimRuntime.watchOS-26-0":[{"udid":"AAAAAAAA-B8C5-4DAC-9425-6A4685BC533E","name":"Watch","state":"Booted","isAvailable":true,"deviceTypeIdentifier":"w"}]}});
         let list = parse_devices(&value);
         assert_eq!(list.iter().map(|d| (d.name.as_str(), d.family.as_str(), d.runtime.as_str())).collect::<Vec<_>>(), vec![("iPad Air", "pad", "iOS 26.2"), ("iPhone 17 Pro", "phone", "iOS 26.2")]);
+    }
+
+    #[test]
+    fn screen_falls_back_to_the_frame_size() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend([0, 0, 4, 198, 0, 0, 9, 0x90]); // 1222 x 2448 px
+        let screen = screen_from_png(&png, 3.0, false).unwrap();
+        assert_eq!((screen.width, screen.height, screen.scale), (407.0, 816.0, 3.0));
+        assert!(screen_from_png(b"nope", 3.0, false).is_none());
+        assert!(parse_screen(&serde_json::json!({"mainScreenScale": 3.0})).is_none());
     }
 
     #[test]

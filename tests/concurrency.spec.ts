@@ -109,7 +109,7 @@ test.describe('concurrency', () => {
     test(`bounds background tool/status work with 500 tasks in ${view}`, async ({ page }, testInfo) => {
       test.setTimeout(60_000);
       await installConcurrency(page, 500);
-      if (view === 'board') await page.getByRole('button', { name: 'Board view', exact: true }).click();
+      if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); }
       for (let index = 1; index <= 4; index++) await startTask(page, index, view);
       await page.evaluate(() => {
         for (const task of Object.values((window as any).__concurrent.tasks) as any[]) { task.tool(); task.push('Initial response. '); }
@@ -170,7 +170,7 @@ test.describe('concurrency isolation', () => {
   for (const view of ['conversation', 'board'] as const) {
     test(`keeps four interleaved responses isolated across ${view} navigation and background completion`, async ({ page }) => {
       await installConcurrency(page);
-      if (view === 'board') await page.getByRole('button', { name: 'Board view', exact: true }).click();
+      if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); }
       for (let index = 1; index <= 4; index++) await startTask(page, index, view);
       await page.evaluate(() => {
         for (let index = 1; index <= 4; index++) (window as any).__concurrent.tasks['session-' + index].push(`**Task ${index}** first segment. `);
@@ -185,7 +185,7 @@ test.describe('concurrency isolation', () => {
       await prompt(page).fill('An unrelated task draft survives four completions.');
       await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
       const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-      await menu.getByRole('searchbox').fill('sol');
+      await menu.getByRole('combobox').fill('sol');
       await page.evaluate(() => {
         (window as any).__reloadCountBeforeDone = (window as any).__concurrent.calls.filter((call: any) => call.command === 'list_sessions').length;
         (window as any).__preservedComposer = document.querySelector('#composer');
@@ -194,7 +194,7 @@ test.describe('concurrency isolation', () => {
         for (const index of [4, 1, 3, 2]) { fixture.tasks['session-' + index].push(`Final ${index}.`); fixture.tasks['session-' + index].done(); }
       });
       await expect(menu).toHaveAttribute('data-popover-state', 'open');
-      await expect(menu.getByRole('searchbox')).toHaveValue('sol');
+      await expect(menu.getByRole('combobox')).toHaveValue('sol');
       await expect.poll(() => page.evaluate(() => (window as any).__concurrent.calls.filter((call: any) => call.command === 'list_sessions').length)).toBeGreaterThan(1);
       await settlePaint(page);
       console.log('CONCURRENT_COMPLETION_RELOADS', view, await page.evaluate(() => (window as any).__concurrent.calls.filter((call: any) => call.command === 'list_sessions').length - (window as any).__reloadCountBeforeDone));
@@ -202,7 +202,7 @@ test.describe('concurrency isolation', () => {
       await page.keyboard.press('Escape');
       await expect(prompt(page)).toHaveValue('An unrelated task draft survives four completions.');
       const otherView: View = view === 'board' ? 'conversation' : 'board';
-      await page.getByRole('button', { name: otherView === 'board' ? 'Board view' : 'Conversation view', exact: true }).click();
+      await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: otherView === 'board' ? 'Board' : 'Conversation', exact: true }).click();
       for (let index = 1; index <= 4; index++) {
         await selectTask(page, index, otherView);
         await expect(transcript(page).locator('.agent-message')).toHaveCount(1);
@@ -215,7 +215,7 @@ test.describe('concurrency isolation', () => {
 
     test(`isolates approvals, cancellation and a held completion among four ${view} tasks`, async ({ page }) => {
       await installConcurrency(page);
-      if (view === 'board') await page.getByRole('button', { name: 'Board view', exact: true }).click();
+      if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); }
       for (let index = 1; index <= 4; index++) await startTask(page, index, view);
       await page.evaluate(() => {
         const fixture = (window as any).__concurrent;
@@ -266,7 +266,7 @@ test.describe('concurrency isolation', () => {
 
     test(`accepts another ${view} submission while one is pending and restores a rejected background draft`, async ({ page }) => {
       await installConcurrency(page);
-      if (view === 'board') { await page.getByRole('button', { name: 'Board view', exact: true }).click(); await selectTask(page, 1, view); }
+      if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); await selectTask(page, 1, view); }
       await page.evaluate(() => { (window as any).__concurrent.holdSends['session-1'] = true; });
       await prompt(page).fill('Restore this task one draft if submission fails.');
       await prompt(page).press('Enter');
@@ -394,7 +394,7 @@ test('concurrency restores a failed submission after returning to its task befor
 
 test('concurrency rejects a duplicate composer send while Board Start is waiting for workspace preparation', async ({ page }) => {
   await installConcurrency(page);
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.evaluate(() => { (window as any).__concurrent.holdInspector['session-2'] = true; });
   await page.locator('[data-action="board-start"][data-id="session-2"]').click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__concurrent.releaseInspector['session-2'])).toBe('function');
@@ -494,6 +494,9 @@ test('concurrency sidebar timers update for background and pinned tasks and rese
   await page.keyboard.press('Escape');
   await page.evaluate(() => { const task = (window as any).__concurrent.tasks['session-1']; task.push('Finished.'); task.done(); });
   await expect(timer(1)).toHaveCount(0);
+  // While the row is hovered or focused its actions cover the age slot (Escape returned focus to the row).
+  await page.mouse.move(700, 500);
+  await prompt(page).focus();
   await expect(row(1).locator('.task-age')).toBeVisible();
   await startTask(page, 1, 'conversation');
   await expect(timer(1)).toHaveText(/^\d+s$/);

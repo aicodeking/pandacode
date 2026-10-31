@@ -1,7 +1,7 @@
 /* A VS Code theme supplies surfaces that PandaCode otherwise tints by hand. */
-html[data-vsix] .inspector-tabs,html[data-vsix] .view-switch{background:color-mix(in srgb,var(--text) 7%,var(--panel))}
+html[data-vsix] .inspector-tabs{background:color-mix(in srgb,var(--text) 7%,var(--panel))}
 html[data-vsix] :is(.inspector-tabs,.settings-tabs)>.segment-thumb,html[data-vsix] .inspector-tabs button.selected{background:var(--bg)}
-html[data-vsix] .view-switch>.segment-thumb{background:var(--raised)}
 html[data-vsix] .brand-name{color:var(--muted)}
 html[data-vsix] .sidebar{background:var(--sidebar)}
 html[data-vsix] .workspace[data-wallpaper]{--workspace-frost-surface:color-mix(in srgb,var(--panel) 74%,transparent)}
+html[data-vsix] .workspace[data-wallpaper]>.main-pane{--header-glass:color-mix(in srgb,var(--panel) 84%,transparent)}

@@ -944,7 +944,10 @@ pub(crate) fn cleanup_cache(cache: &Path) {
 
 #[cfg(test)]
 fn scan(root: &Path, cache: &Path, known: Option<&BTreeSet<String>>) -> Snapshot {
-    let deadline = Instant::now() + SCAN_TIME;
+    // The production budget is 500 ms, on purpose: the baseline must never hold
+    // the agent's start. A loaded machine can miss it, and a partial
+    // inventory omits files the tests then count exactly, so the tests wait.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let (paths, excluded, complete, error) = inventory(root, deadline);
     let mut paths: BTreeSet<_> = paths.into_iter().collect();
     if let Some(known) = known {
