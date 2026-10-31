@@ -405,6 +405,21 @@ pub(crate) fn progress(app: &tauri::AppHandle, from: &str, data: &Value) {
     }
 }
 
+/// A remote task runs in one clone of one repository; a multi-folder project stays local
+/// until mirror tasks learn to sync several repositories (docs/remote-access.md).
+fn refuse_multi_folder(state: &AppState, project: &Project) -> Result<()> {
+    let multi = state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .project_folders(&project.id)
+        .map(|folders| folders.len() > 1)?;
+    if multi {
+        return Err("Multi-repository projects cannot run on another computer yet.".into());
+    }
+    Ok(())
+}
+
 /// The project checking out `repo`, cloned into `~/PandaCode` when there is none (with an
 /// empty working tree when `lazy`), and whether it was cloned just now.
 fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: bool, cancel: &Cancel) -> Result<(Project, bool)> {
@@ -417,10 +432,13 @@ fn project_for(state: &AppState, target: &Target, progress: &Progress, lazy: boo
             if bot_projects.iter().any(|bot_project| bot_project == id) {
                 return Err("Bot workspaces cannot be used for remote tasks.".into());
             }
-            find_project_id(projects, id).map(|project| (project, false)).ok_or_else(|| "Project not found.".into())
+            let project = find_project_id(projects, id).ok_or_else(|| "Project not found.".to_string())?;
+            refuse_multi_folder(state, &project)?;
+            Ok((project, false))
         }
         Target::Repo(repo) => {
             if let Some(project) = find_project(origins(projects), repo) {
+                refuse_multi_folder(state, &project)?;
                 return Ok((project, false));
             }
             let home = crate::agent_usage_providers::home().ok_or("This computer has no home folder to clone into.")?;
