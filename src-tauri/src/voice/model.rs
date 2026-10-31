@@ -177,23 +177,36 @@ pub fn total_size(model: &Model) -> u64 {
     model.files.iter().map(|file| file.size).sum()
 }
 
+/// The languages Parakeet TDT v3 covers (25 European ones, auto-detected —
+/// the model needs no language hint).
+const PARAKEET_LANGUAGES: &[&str] = &[
+    "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu",
+    "it", "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv",
+    "uk",
+];
+
 /// Offline models worth defaulting to, best-first per language.
 pub fn defaults_for_language(language: &str) -> &'static [&'static str] {
     let code = language.split(['-', '_']).next().unwrap_or("auto");
     match code {
         "zh" | "ja" | "ko" | "yue" => &["sense-voice", "whisper-small"],
         "en" => &["moonshine-base", "sense-voice", "moonshine-tiny"],
+        _ if PARAKEET_LANGUAGES.contains(&code) => &["parakeet-v3", "whisper-small"],
         _ => &["sense-voice", "whisper-small", "moonshine-base"],
     }
 }
 
-/// The live (streaming) model matching a language hint.
+/// The live (streaming) model matching a language hint, or "" when the
+/// streaming catalog has none for it: those languages record final-only
+/// (capture runs, the offline model transcribes on stop) instead of streaming
+/// the English model over foreign speech. `auto` keeps the English streamer,
+/// the default it has always been.
 pub fn live_for_language(language: &str) -> &'static str {
     let code = language.split(['-', '_']).next().unwrap_or("auto");
-    if code == "zh" {
-        "live-zh-en"
-    } else {
-        LIVE_DEFAULT
+    match code {
+        "zh" => "live-zh-en",
+        "en" | "auto" => LIVE_DEFAULT,
+        _ => "",
     }
 }
 
@@ -255,14 +268,23 @@ pub fn file_url(model: &Model, file: &File) -> String {
 }
 
 /// Files a working local setup needs, given language and fast-mode preferences:
-/// the live streamer, the final model (unless fast mode skips it) and, for
-/// English, the punctuation restorer.
+/// the live streamer when the language has one, the final model (unless fast
+/// mode skips it, or there is no streamer and the final pass is the only
+/// decoder) and, for English, the punctuation restorer.
 pub fn required_models(language: &str, fast_mode: bool, final_id: &str) -> Vec<&'static str> {
-    let mut needed = vec![live_for_language(language)];
-    if !fast_mode {
-        if let Some(entry) = find(final_id) {
-            needed.push(entry.id);
+    let live = live_for_language(language);
+    let mut needed: Vec<&'static str> = Vec::new();
+    if !live.is_empty() {
+        needed.push(live);
+        if !fast_mode {
+            if let Some(entry) = find(final_id) {
+                needed.push(entry.id);
+            }
         }
+    } else if let Some(entry) = find(final_id) {
+        // No streaming model for this language: the offline pass is the only
+        // decoder, so it is required even in fast mode.
+        needed.push(entry.id);
     }
     let code = language.split(['-', '_']).next().unwrap_or("auto");
     if code == "en" || code == "auto" {
@@ -364,6 +386,57 @@ mod tests {
         assert_eq!(live_for_language("zh"), "live-zh-en");
         assert_eq!(live_for_language("en"), "live-en");
         assert_eq!(live_for_language("auto"), "live-en");
+    }
+
+    #[test]
+    fn parakeet_languages_route_to_parakeet_and_whisper() {
+        assert_eq!(PARAKEET_LANGUAGES.len(), 25);
+        for code in PARAKEET_LANGUAGES {
+            // en keeps its own branch (moonshine first); the rest route here.
+            if *code == "en" {
+                continue;
+            }
+            let defaults = defaults_for_language(code);
+            assert_eq!(
+                defaults,
+                &["parakeet-v3", "whisper-small"],
+                "{code} routes wrong"
+            );
+            // Region-suffixed settings fall to the bare code.
+            assert_eq!(defaults_for_language(&format!("{code}-CY"))[0], "parakeet-v3");
+        }
+        // zh/ja/ko/en keep their own routing.
+        assert_eq!(defaults_for_language("zh")[0], "sense-voice");
+        assert_eq!(defaults_for_language("ja")[0], "sense-voice");
+        assert_eq!(defaults_for_language("ko")[0], "sense-voice");
+        assert_eq!(defaults_for_language("en")[0], "moonshine-base");
+    }
+
+    #[test]
+    fn live_models_only_cover_their_languages() {
+        assert_eq!(live_for_language("zh"), "live-zh-en");
+        assert_eq!(live_for_language("zh_CN"), "live-zh-en");
+        assert_eq!(live_for_language("en"), "live-en");
+        assert_eq!(live_for_language("en-US"), "live-en");
+        assert_eq!(live_for_language("auto"), "live-en");
+        for code in PARAKEET_LANGUAGES {
+            if *code == "en" {
+                continue;
+            }
+            assert_eq!(live_for_language(code), "", "{code} has no streaming model");
+        }
+        assert_eq!(live_for_language("ja"), "");
+        assert_eq!(live_for_language("ko"), "");
+    }
+
+    #[test]
+    fn final_only_languages_need_the_final_model_even_in_fast_mode() {
+        let normal = required_models("pl", false, "parakeet-v3");
+        assert_eq!(normal, vec!["parakeet-v3"]);
+        let fast = required_models("pl", true, "parakeet-v3");
+        assert_eq!(fast, vec!["parakeet-v3"]);
+        let de = required_models("de", false, "whisper-small");
+        assert_eq!(de, vec!["whisper-small"]);
     }
 
     #[test]

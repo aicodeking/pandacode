@@ -3,6 +3,8 @@
 //! small online model); when recording stops, the chosen offline model
 //! re-decodes the full buffer for the final transcript — sherpa-onnx's own
 //! documented two-pass pattern. Fast mode keeps the streaming text instead.
+//! Languages with no streaming model (see `model::live_for_language`) run
+//! final-only: capture accumulates and the offline model does all the work.
 
 use std::path::Path;
 
@@ -18,9 +20,11 @@ use super::settings::Settings;
 const SAMPLE_RATE: i32 = 16_000;
 
 /// The live stage plus, when installed and not fast mode, the offline stage.
+/// Both live fields are `None` for languages without a streaming model:
+/// recording runs final-only.
 pub struct SherpaRecorder {
-    recognizer: OnlineRecognizer,
-    stream: sherpa_onnx::OnlineStream,
+    recognizer: Option<OnlineRecognizer>,
+    stream: Option<sherpa_onnx::OnlineStream>,
     punct: Option<OnlinePunctuation>,
     offline: Option<OfflineRecognizer>,
     fast_mode: bool,
@@ -49,54 +53,60 @@ pub fn load(dir: &Path, settings: &Settings) -> Result<SherpaRecorder, String> {
         ));
     }
 
-    let live = model::find(live_id).expect("live model exists in catalog");
-    let mut config = OnlineRecognizerConfig::default();
-    let file = |name: &str| -> String {
-        model::file_path(
-            &models,
-            live,
-            live.files
-                .iter()
-                .find(|f| f.name == name)
-                .expect("catalog file name"),
-        )
-        .to_string_lossy()
-        .into_owned()
+    let (recognizer, stream) = if live_id.is_empty() {
+        // No streaming model for this language: final-only recording.
+        (None, None)
+    } else {
+        let live = model::find(live_id).expect("live model exists in catalog");
+        let mut config = OnlineRecognizerConfig::default();
+        let file = |name: &str| -> String {
+            model::file_path(
+                &models,
+                live,
+                live.files
+                    .iter()
+                    .find(|f| f.name == name)
+                    .expect("catalog file name"),
+            )
+            .to_string_lossy()
+            .into_owned()
+        };
+        let encoder = live
+            .files
+            .iter()
+            .find(|f| f.name.starts_with("encoder"))
+            .map(|f| f.name)
+            .expect("zipformer encoder");
+        let decoder = live
+            .files
+            .iter()
+            .find(|f| f.name.starts_with("decoder"))
+            .map(|f| f.name)
+            .expect("zipformer decoder");
+        let joiner = live
+            .files
+            .iter()
+            .find(|f| f.name.starts_with("joiner"))
+            .map(|f| f.name)
+            .expect("zipformer joiner");
+        config.model_config.transducer = OnlineTransducerModelConfig {
+            encoder: Some(file(encoder)),
+            decoder: Some(file(decoder)),
+            joiner: Some(file(joiner)),
+        };
+        config.model_config.tokens = Some(file("tokens.txt"));
+        config.enable_endpoint = true;
+        config.rule1_min_trailing_silence = 1.2;
+        config.rule2_min_trailing_silence = 0.6;
+        config.decoding_method = Some("greedy_search".into());
+        let recognizer = OnlineRecognizer::create(&config)
+            .ok_or("The live voice model failed to load.")?;
+        let stream = recognizer.create_stream();
+        (Some(recognizer), Some(stream))
     };
-    let encoder = live
-        .files
-        .iter()
-        .find(|f| f.name.starts_with("encoder"))
-        .map(|f| f.name)
-        .expect("zipformer encoder");
-    let decoder = live
-        .files
-        .iter()
-        .find(|f| f.name.starts_with("decoder"))
-        .map(|f| f.name)
-        .expect("zipformer decoder");
-    let joiner = live
-        .files
-        .iter()
-        .find(|f| f.name.starts_with("joiner"))
-        .map(|f| f.name)
-        .expect("zipformer joiner");
-    config.model_config.transducer = OnlineTransducerModelConfig {
-        encoder: Some(file(encoder)),
-        decoder: Some(file(decoder)),
-        joiner: Some(file(joiner)),
-    };
-    config.model_config.tokens = Some(file("tokens.txt"));
-    config.enable_endpoint = true;
-    config.rule1_min_trailing_silence = 1.2;
-    config.rule2_min_trailing_silence = 0.6;
-    config.decoding_method = Some("greedy_search".into());
-    let recognizer = OnlineRecognizer::create(&config)
-        .ok_or("The live voice model failed to load.")?;
-    let stream = recognizer.create_stream();
 
     let punct = load_punct(&models);
-    let offline = if settings.fast_mode {
+    let offline = if settings.fast_mode && !live_id.is_empty() {
         None
     } else {
         load_offline(&models, settings)
@@ -200,38 +210,47 @@ fn load_offline(models: &Path, settings: &Settings) -> Option<OfflineRecognizer>
 
 impl SherpaRecorder {
     /// Feeds 16 kHz mono samples; returns the new live text when it changed.
-    /// The text is punctuated when the punctuation model is installed.
+    /// The text is punctuated when the punctuation model is installed. Without
+    /// a streaming model the samples only accumulate for the final decode.
     pub fn feed(&mut self, chunk: &[f32]) -> Option<String> {
         if chunk.is_empty() {
             return None;
         }
         self.all.extend_from_slice(chunk);
-        self.stream.accept_waveform(SAMPLE_RATE, chunk);
+        let (Some(recognizer), Some(stream)) = (&mut self.recognizer, &mut self.stream) else {
+            return None;
+        };
+        stream.accept_waveform(SAMPLE_RATE, chunk);
         let mut changed = false;
-        while self.recognizer.is_ready(&self.stream) {
-            self.recognizer.decode(&self.stream);
+        while recognizer.is_ready(stream) {
+            recognizer.decode(stream);
             changed = true;
         }
-        if self.recognizer.is_endpoint(&self.stream) {
-            if let Some(result) = self.recognizer.get_result(&self.stream) {
-                if !result.text.trim().is_empty() {
-                    self.append_segment(&result.text);
-                    changed = true;
-                }
+        if recognizer.is_endpoint(stream) {
+            // Owned copy first: the segment outlives the recognizer borrow.
+            let segment = recognizer
+                .get_result(stream)
+                .map(|result| result.text.trim().to_string())
+                .filter(|text| !text.is_empty());
+            recognizer.reset(stream);
+            if let Some(segment) = segment {
+                self.append_segment(&segment);
+                changed = true;
             }
-            self.recognizer.reset(&self.stream);
         }
         if !changed {
             return None;
         }
         let mut live = self.text.clone();
-        if let Some(result) = self.recognizer.get_result(&self.stream) {
-            if !result.text.trim().is_empty() {
-                let tail = self.punctuate(&result.text);
-                if !live.is_empty() && !live.ends_with(' ') && !tail.starts_with(' ') {
-                    live.push(' ');
+        if let (Some(recognizer), Some(stream)) = (&self.recognizer, &self.stream) {
+            if let Some(result) = recognizer.get_result(stream) {
+                if !result.text.trim().is_empty() {
+                    let tail = self.punctuate(&result.text);
+                    if !live.is_empty() && !live.ends_with(' ') && !tail.starts_with(' ') {
+                        live.push(' ');
+                    }
+                    live.push_str(&tail);
                 }
-                live.push_str(&tail);
             }
         }
         if live == self.last_partial {
@@ -243,18 +262,21 @@ impl SherpaRecorder {
 
     /// Finalizes: flushes the streaming tail, then re-decodes everything with
     /// the offline model when one is loaded (two-pass); fast mode punctuates
-    /// the streaming text instead.
+    /// the streaming text instead. Without a streaming model (and in fast mode
+    /// with none) the offline decode is the only text source.
     pub fn finish(mut self) -> String {
-        self.stream.input_finished();
-        while self.recognizer.is_ready(&self.stream) {
-            self.recognizer.decode(&self.stream);
-        }
-        if let Some(result) = self.recognizer.get_result(&self.stream) {
-            if !result.text.trim().is_empty() {
-                self.append_segment(&result.text);
+        if let (Some(recognizer), Some(stream)) = (&mut self.recognizer, &mut self.stream) {
+            stream.input_finished();
+            while recognizer.is_ready(stream) {
+                recognizer.decode(stream);
+            }
+            if let Some(result) = recognizer.get_result(stream) {
+                if !result.text.trim().is_empty() {
+                    self.append_segment(&result.text);
+                }
             }
         }
-        if !self.fast_mode {
+        if !self.fast_mode || self.recognizer.is_none() {
             if let Some(offline) = &self.offline {
                 if !self.all.is_empty() {
                     let stream = offline.create_stream();
