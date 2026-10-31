@@ -149,6 +149,13 @@ mod tests {
     }
 
     #[test]
+    fn normalization_keeps_whisper_turbo() {
+        // The opt-in quality model is a catalog entry, so it validates.
+        let settings = Settings { model: "whisper-turbo".into(), ..Settings::default() }.normalized();
+        assert_eq!(settings.model, "whisper-turbo");
+    }
+
+    #[test]
     fn resolved_model_keeps_pick_and_falls_back_by_language() {
         let settings = Settings { model: "sense-voice".into(), ..Settings::default() };
         assert_eq!(settings.resolved_model(&installed), "sense-voice");

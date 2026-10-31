@@ -7,7 +7,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Hard ceiling per download, well above the largest catalog file.
+/// Hard ceiling per download, above the largest catalog file (whisper-turbo's
+/// 674 MB encoder — an explicit opt-in download, never a default).
 pub(crate) const MAX_FILE_BYTES: u64 = 800_000_000;
 
 pub const FINAL_DEFAULT: &str = "moonshine-base";
@@ -164,6 +165,21 @@ pub const CATALOG: &[Model] = &[
             File { name: "small-encoder.int8.onnx", size: 112_442_483, sha256: Some("4cbe7b22fa9026b843b60a68640c747de05bafb1a11b57edc0e66c232d9f33a9") },
             File { name: "small-decoder.int8.onnx", size: 262_226_114, sha256: Some("acad50b5c782696e91b55914cc5ab4f756f1532f76e22aa6fc615f39fb69a8ee") },
             File { name: "small-tokens.txt", size: 816_730, sha256: None },
+        ],
+    },
+    // The largest catalog entry (~1.04 GB) and never a routing default: a
+    // user who wants the extra quality picks it explicitly in Settings.
+    Model {
+        id: "whisper-turbo",
+        label: "Whisper Turbo",
+        kind: Kind::Final,
+        languages: "99",
+        license: "MIT",
+        repo: "csukuangfj/sherpa-onnx-whisper-turbo",
+        files: &[
+            File { name: "turbo-encoder.int8.onnx", size: 674_716_297, sha256: Some("b02dcdf54f348741e93fe732b67d933c8dcb6735655f710640143081db38878b") },
+            File { name: "turbo-decoder.int8.onnx", size: 361_080_764, sha256: Some("20accd02388482eb3a46bd615631adfdc85e1eb2c7db9ea3f02a40ffe6b81547") },
+            File { name: "turbo-tokens.txt", size: 816_730, sha256: None },
         ],
     },
 ];
@@ -457,5 +473,31 @@ mod tests {
         assert!(url.ends_with("/resolve/main/model.int8.onnx"));
         let punct = find("punct-en").unwrap();
         assert!(file_url(punct, &punct.files[0]).starts_with("https://github.com/k2-fsa/"));
+    }
+
+    #[test]
+    fn whisper_turbo_matches_the_pinned_source_files() {
+        let turbo = find("whisper-turbo").expect("turbo in catalog");
+        assert_eq!(turbo.label, "Whisper Turbo");
+        assert_eq!(turbo.license, "MIT");
+        assert_eq!(turbo.repo, "csukuangfj/sherpa-onnx-whisper-turbo");
+        let expected: [(&str, u64, Option<&str>); 3] = [
+            ("turbo-encoder.int8.onnx", 674_716_297, Some("b02dcdf54f348741e93fe732b67d933c8dcb6735655f710640143081db38878b")),
+            ("turbo-decoder.int8.onnx", 361_080_764, Some("20accd02388482eb3a46bd615631adfdc85e1eb2c7db9ea3f02a40ffe6b81547")),
+            ("turbo-tokens.txt", 816_730, None),
+        ];
+        assert_eq!(turbo.files.len(), expected.len());
+        for (file, (name, size, sha)) in turbo.files.iter().zip(expected) {
+            assert_eq!(file.name, name, "{} pinned wrong", turbo.id);
+            assert_eq!(file.size, size, "{}:{} pinned wrong", turbo.id, name);
+            assert_eq!(file.sha256, sha, "{}:{} pinned wrong", turbo.id, name);
+        }
+        // Opt-in only: no language routes to it by default.
+        for language in ["auto", "en", "zh", "ja", "de", "pl"] {
+            assert!(
+                !defaults_for_language(language).contains(&"whisper-turbo"),
+                "{language} must not default to whisper-turbo"
+            );
+        }
     }
 }

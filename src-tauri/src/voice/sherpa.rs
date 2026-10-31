@@ -195,9 +195,10 @@ fn load_offline(models: &Path, settings: &Settings) -> Option<OfflineRecognizer>
             config.model_config.transducer.decoder = Some(path_of("decoder.int8.onnx"));
             config.model_config.transducer.joiner = Some(path_of("joiner.int8.onnx"));
         }
-        "whisper-small" => {
-            config.model_config.whisper.encoder = Some(path_of("small-encoder.int8.onnx"));
-            config.model_config.whisper.decoder = Some(path_of("small-decoder.int8.onnx"));
+        "whisper-small" | "whisper-turbo" => {
+            let prefix = if entry.id == "whisper-small" { "small" } else { "turbo" };
+            config.model_config.whisper.encoder = Some(path_of(&format!("{prefix}-encoder.int8.onnx")));
+            config.model_config.whisper.decoder = Some(path_of(&format!("{prefix}-decoder.int8.onnx")));
             let code = settings.language.split(['-', '_']).next().unwrap_or("auto");
             config.model_config.whisper.language =
                 if code == "auto" { None } else { Some(code.into()) };
