@@ -10,10 +10,21 @@ use serde::{Deserialize, Serialize};
 pub enum Transport {
     /// OpenAI-compatible `POST …/v1/audio/transcriptions`, final text only.
     Multipart,
+    /// MiniMax `POST …/v1/speech_to_text`: OpenAI-style multipart with its own
+    /// path and a lowercase `language` header.
+    MinimaxMultipart,
+    /// Alibaba Qwen's OpenAI-compatible `chat/completions`: the audio rides as
+    /// a base64 `input_audio` content part.
+    QwenChat,
     /// Deepgram's streaming WebSocket: live interim results.
     DeepgramWs,
     /// OpenAI Realtime transcription WebSocket (Together-compatible URL).
     RealtimeWs,
+}
+
+/// True when the provider transcribes live while the user speaks.
+pub fn is_streaming(transport: Transport) -> bool {
+    matches!(transport, Transport::DeepgramWs | Transport::RealtimeWs)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,7 +47,7 @@ pub const PROVIDERS: &[Provider] = &[
         label: "OpenAI",
         base_url: "https://api.openai.com",
         default_model: "gpt-4o-mini-transcribe",
-        models: &["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"],
+        models: &["gpt-4o-mini-transcribe", "gpt-transcribe", "gpt-4o-transcribe", "whisper-1"],
         transport: Transport::Multipart,
         token_scheme: "Bearer",
     },
@@ -73,6 +84,33 @@ pub const PROVIDERS: &[Provider] = &[
         token_scheme: "Bearer",
     },
     Provider {
+        id: "mistral",
+        label: "Mistral",
+        base_url: "https://api.mistral.ai",
+        default_model: "voxtral-mini-transcribe-3",
+        models: &["voxtral-mini-transcribe-3", "voxtral-small-transcribe-3"],
+        transport: Transport::Multipart,
+        token_scheme: "Bearer",
+    },
+    Provider {
+        id: "alibaba",
+        label: "Alibaba Qwen",
+        base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        default_model: "qwen3-asr-flash",
+        models: &["qwen3-asr-flash"],
+        transport: Transport::QwenChat,
+        token_scheme: "Bearer",
+    },
+    Provider {
+        id: "minimax",
+        label: "MiniMax",
+        base_url: "https://api.minimax.io",
+        default_model: "asr-1.0",
+        models: &["asr-1.0"],
+        transport: Transport::MinimaxMultipart,
+        token_scheme: "Bearer",
+    },
+    Provider {
         id: "deepgram",
         label: "Deepgram (live)",
         base_url: "wss://api.deepgram.com",
@@ -105,11 +143,16 @@ pub fn find(id: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|provider| provider.id == id)
 }
 
-/// The multipart transcription URL for a provider (base override honored).
+/// The transcription request URL for a provider (base override honored).
 pub fn transcription_url(provider: &Provider, base_override: &str) -> String {
     let base = if base_override.is_empty() { provider.base_url } else { base_override };
     let base = base.trim_end_matches('/');
-    if base.ends_with("/v1") {
+    if provider.id == "alibaba" {
+        // The OpenAI-compatible base already carries /compatible-mode/v1.
+        format!("{base}/chat/completions")
+    } else if provider.id == "minimax" {
+        format!("{base}/v1/speech_to_text")
+    } else if base.ends_with("/v1") {
         format!("{base}/audio/transcriptions")
     } else if provider.id == "openrouter" {
         format!("{base}/api/v1/audio/transcriptions")
@@ -165,14 +208,23 @@ mod tests {
 
     #[test]
     fn registry_covers_the_presets() {
-        assert_eq!(PROVIDERS.len(), 7);
+        assert_eq!(PROVIDERS.len(), 10);
         for provider in PROVIDERS {
             assert!(!provider.id.is_empty() && !provider.label.is_empty());
         }
         assert!(find("deepgram").unwrap().transport == Transport::DeepgramWs);
         assert!(find("openai-realtime").unwrap().transport == Transport::RealtimeWs);
         assert!(find("groq").unwrap().transport == Transport::Multipart);
+        assert!(find("mistral").unwrap().transport == Transport::Multipart);
+        assert!(find("alibaba").unwrap().transport == Transport::QwenChat);
+        assert!(find("minimax").unwrap().transport == Transport::MinimaxMultipart);
         assert!(find("nope").is_none());
+        // Only the WebSocket transports transcribe live.
+        assert!(!is_streaming(Transport::Multipart));
+        assert!(!is_streaming(Transport::MinimaxMultipart));
+        assert!(!is_streaming(Transport::QwenChat));
+        assert!(is_streaming(Transport::DeepgramWs));
+        assert!(is_streaming(Transport::RealtimeWs));
     }
 
     #[test]
@@ -201,6 +253,21 @@ mod tests {
         assert_eq!(
             transcription_url(find("custom").unwrap(), "http://127.0.0.1:8080"),
             "http://127.0.0.1:8080/v1/audio/transcriptions"
+        );
+        // Own-path providers: MiniMax's speech_to_text and Qwen's
+        // compatible-mode chat/completions.
+        assert_eq!(
+            transcription_url(find("minimax").unwrap(), ""),
+            "https://api.minimax.io/v1/speech_to_text"
+        );
+        assert_eq!(
+            transcription_url(find("alibaba").unwrap(), ""),
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
+        // A China-region account overrides the base, the path stays.
+        assert_eq!(
+            transcription_url(find("minimax").unwrap(), "https://api.minimax.cn"),
+            "https://api.minimax.cn/v1/speech_to_text"
         );
     }
 

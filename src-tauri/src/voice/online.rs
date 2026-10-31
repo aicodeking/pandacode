@@ -1,12 +1,21 @@
-//! Online transcription. Three transports behind one small surface:
+//! Online transcription. Five transports behind one small surface:
 //!
 //! - [`transcribe_multipart`]: OpenAI-compatible `POST /v1/audio/transcriptions`
-//!   (OpenAI, Groq, OpenRouter, Together, and any custom endpoint); the whole
-//!   recording goes up as one WAV when the user stops — final text only.
+//!   (OpenAI, Groq, OpenRouter, Together, Mistral, and any custom endpoint);
+//!   the whole recording goes up as one WAV when the user stops — final text
+//!   only.
+//! - [`transcribe_minimax`]: MiniMax's `POST /v1/speech_to_text`, same
+//!   multipart shape with its own path and a `language` header.
+//! - [`transcribe_qwen_chat`]: Alibaba Qwen's OpenAI-compatible
+//!   `chat/completions` with the audio as a base64 `input_audio` part.
 //! - [`DeepgramStream`]: Deepgram's WebSocket, live interim results while
 //!   speaking (binary PCM16 frames out, JSON `Results` in).
 //! - [`RealtimeStream`]: OpenAI Realtime transcription (Together-compatible):
 //!   base64 PCM16 at 24 kHz, deltas for live partials.
+//!
+//! The dictation language (`auto` sends nothing) rides every transport: a
+//! form field for the multipart endpoints, a header for MiniMax, `asr_options`
+//! for Qwen, a query param for Deepgram, and the realtime session config.
 //!
 //! Keys are never logged and never reach the webview; audio only ever goes to
 //! the provider the user configured. docs/voice.md documents the privacy story.
@@ -73,6 +82,133 @@ pub async fn transcribe_multipart(
         .send()
         .await
         .map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "{} returned {}: {}",
+            provider.label,
+            status.as_u16(),
+            truncate(&body, 200)
+        ));
+    }
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| format!("{} returned an unreadable response.", provider.label))?;
+    json["text"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{} returned no transcript.", provider.label))
+}
+
+/// MiniMax's `POST /v1/speech_to_text`: the multipart shape of the
+/// OpenAI-compatible endpoints, but the language hint rides a lowercase
+/// header instead of a form field and the path is its own.
+pub async fn transcribe_minimax(
+    provider: &Provider,
+    base_override: &str,
+    model: &str,
+    key: &str,
+    samples: &[f32],
+    language: Option<&str>,
+) -> Result<String, String> {
+    let wav = encode_wav(samples, SAMPLE_RATE)?;
+    let part = reqwest::multipart::Part::bytes(wav)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("model", model.to_string())
+        .text("response_format", "json");
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut request = client
+        .post(providers::transcription_url(provider, base_override))
+        .header("Authorization", format!("{} {key}", provider.token_scheme));
+    if let Some(code) = language {
+        request = request.header("language", code);
+    }
+    let response = request
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the MiniMax endpoint: {e}"))?;
+    read_text_answer(provider, response).await
+}
+
+/// Alibaba Qwen's OpenAI-compatible transcription: a `chat/completions` call
+/// whose user message carries the audio as a base64 `input_audio` part; the
+/// transcript comes back in `choices[0].message.content` and the language
+/// hint goes into the non-standard `asr_options` object.
+pub async fn transcribe_qwen_chat(
+    provider: &Provider,
+    base_override: &str,
+    model: &str,
+    key: &str,
+    samples: &[f32],
+    language: Option<&str>,
+) -> Result<String, String> {
+    let wav = encode_wav(samples, SAMPLE_RATE)?;
+    let mut body = json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [{
+                "type": "input_audio",
+                "input_audio": {
+                    "data": format!(
+                        "data:audio/wav;base64,{}",
+                        base64::engine::general_purpose::STANDARD.encode(wav)
+                    ),
+                },
+            }],
+        }],
+    });
+    if let Some(code) = language {
+        body["asr_options"] = json!({ "language": code });
+    }
+    let url = providers::transcription_url(provider, base_override);
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .post(&url)
+        .header("Authorization", format!("{} {key}", provider.token_scheme))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach {url}: {e}"))?;
+    let status = response.status();
+    let answer = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "{} returned {}: {}",
+            provider.label,
+            status.as_u16(),
+            truncate(&answer, 200)
+        ));
+    }
+    let json: serde_json::Value = serde_json::from_str(&answer)
+        .map_err(|_| format!("{} returned an unreadable response.", provider.label))?;
+    json["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("{} returned no transcript.", provider.label))
+}
+
+/// Turns a transcription HTTP answer into the transcript, or a provider error
+/// (the OpenAI-style `text` field MiniMax's envelope also carries).
+async fn read_text_answer(
+    provider: &Provider,
+    response: reqwest::Response,
+) -> Result<String, String> {
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -526,5 +662,141 @@ mod tests {
     fn long_errors_are_truncated() {
         let text = "x".repeat(500);
         assert_eq!(truncate(&text, 200).len(), 200);
+    }
+
+    /// A loopback HTTP server: replies with `response` and hands the raw
+    /// request (head + body) to `inspect`.
+    fn http_server(response: String, inspect: std::sync::mpsc::Sender<String>) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                std::io::Read::read(&mut socket, &mut byte).unwrap();
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let length: usize = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().ok())?
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; length];
+            std::io::Read::read_exact(&mut socket, &mut body).unwrap();
+            let _ = inspect.send(format!("{head}{}", String::from_utf8_lossy(&body)));
+            std::io::Write::write_all(&mut socket, response.as_bytes()).unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn json_ok(body: &str) -> String {
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{body}")
+    }
+
+    #[tokio::test]
+    async fn multipart_request_carries_the_language_hint_when_pinned() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        for (language, expect_field) in [(Some("en"), true), (None, false)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let url = http_server(json_ok("{\"text\":\"hi there\"}"), tx);
+            let text = transcribe_multipart(
+                providers::find("openai").unwrap(),
+                &url,
+                "gpt-4o-mini-transcribe",
+                "test-key",
+                &[0.25f32, -0.25],
+                language,
+            )
+            .await
+            .unwrap();
+            assert_eq!(text, "hi there");
+            let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+            assert!(head.contains("authorization: Bearer test-key"), "{head}");
+            assert!(body.contains("name=\"model\""), "{body}");
+            assert_eq!(body.contains("name=\"language\""), expect_field, "{body}");
+            if expect_field {
+                assert!(body.contains("name=\"language\"\r\n\r\nen"), "{body}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn minimax_sends_the_language_header_and_reads_text() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        for (language, expect_header) in [(Some("en"), true), (None, false)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let url = http_server(json_ok("{\"text\":\"hi there\",\"duration\":0.5}"), tx);
+            let text = transcribe_minimax(
+                providers::find("minimax").unwrap(),
+                &url,
+                "asr-1.0",
+                "test-key",
+                &[0.25f32, -0.25],
+                language,
+            )
+            .await
+            .unwrap();
+            assert_eq!(text, "hi there");
+            let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+            assert!(head.contains("POST /v1/speech_to_text"), "{head}");
+            assert!(head.contains("authorization: Bearer test-key"), "{head}");
+            assert_eq!(head.contains("language: en"), expect_header, "{head}");
+            // MiniMax pins the language by header, never a form field.
+            assert!(!body.contains("name=\"language\""), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn qwen_chat_sends_base64_audio_and_reads_the_message_content() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        for (language, expect_options) in [(Some("zh"), true), (None, false)] {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let url = http_server(
+                json_ok(
+                    "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"welcome home\"}}]}",
+                ),
+                tx,
+            );
+            let text = transcribe_qwen_chat(
+                providers::find("alibaba").unwrap(),
+                &url,
+                "qwen3-asr-flash",
+                "test-key",
+                &[0.25f32, -0.25],
+                language,
+            )
+            .await
+            .unwrap();
+            assert_eq!(text, "welcome home");
+            let raw = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+            assert!(head.contains("POST /chat/completions"), "{head}");
+            assert!(head.contains("content-type: application/json"), "{head}");
+            assert!(head.contains("authorization: Bearer test-key"), "{head}");
+            let value: serde_json::Value = serde_json::from_str(body).unwrap();
+            assert_eq!(value["model"], "qwen3-asr-flash");
+            let audio = &value["messages"][0]["content"][0];
+            assert_eq!(audio["type"], "input_audio");
+            assert!(
+                audio["input_audio"]["data"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("data:audio/wav;base64,"),
+                "{audio}"
+            );
+            assert_eq!(value["asr_options"].is_object(), expect_options, "{body}");
+            if expect_options {
+                assert_eq!(value["asr_options"]["language"], "zh");
+            }
+        }
     }
 }
