@@ -6,7 +6,10 @@ use std::path::Path;
 use std::sync::RwLock;
 use tauri::Manager;
 
-const LOCALES: &[&str] = &["en-US", "en-GB", "zh-Hans", "zh-Hant-HK", "zh-Hant-TW"];
+const LOCALES: &[&str] = &[
+    "en-US", "en-GB", "de", "es", "fr", "it", "pt-BR", "ja", "ko", "pl", "ru",
+    "zh-Hans", "zh-Hant-HK", "zh-Hant-TW",
+];
 
 /// Empty means English (the source language); only values the frontend sends land here.
 static LANGUAGE: RwLock<String> = RwLock::new(String::new());
@@ -73,6 +76,15 @@ pub(crate) fn tray_labels() -> (&'static str, &'static str) {
         "zh-Hans" => ("打开 PandaCode", "退出 PandaCode"),
         "zh-Hant-HK" => ("開啟 PandaCode", "結束 PandaCode"),
         "zh-Hant-TW" => ("開啟 PandaCode", "結束 PandaCode"),
+        "de" => ("PandaCode öffnen", "PandaCode beenden"),
+        "es" => ("Abrir PandaCode", "Salir de PandaCode"),
+        "fr" => ("Ouvrir PandaCode", "Quitter PandaCode"),
+        "it" => ("Apri PandaCode", "Esci da PandaCode"),
+        "pt-BR" => ("Abrir o PandaCode", "Sair do PandaCode"),
+        "ja" => ("PandaCode を開く", "PandaCode を終了"),
+        "ko" => ("PandaCode 열기", "PandaCode 종료"),
+        "pl" => ("Otwórz PandaCode", "Zakończ PandaCode"),
+        "ru" => ("Открыть PandaCode", "Выйти из PandaCode"),
         _ => ("Open PandaCode", "Quit PandaCode"),
     }
 }
@@ -81,6 +93,15 @@ pub(crate) fn launcher_title() -> &'static str {
     match current().as_str() {
         "zh-Hans" => "PandaCode 启动器",
         "zh-Hant-HK" | "zh-Hant-TW" => "PandaCode 啟動器",
+        "de" => "PandaCode Starter",
+        "es" => "Lanzador de PandaCode",
+        "fr" => "Lanceur PandaCode",
+        "it" => "Launcher di PandaCode",
+        "pt-BR" => "Iniciador do PandaCode",
+        "ja" => "PandaCode ランチャー",
+        "ko" => "PandaCode 런처",
+        "pl" => "Launcher PandaCode",
+        "ru" => "Лаунчер PandaCode",
         _ => "PandaCode launcher",
     }
 }

@@ -67,3 +67,24 @@ test('an explicit en-GB override works from any system locale', async ({ page })
   await page.getByRole('tab', { name: 'Appearance' }).click();
   await expect(page.getByRole('heading', { name: /Colours/ })).toBeVisible();
 });
+
+test('switching to Deutsch reloads the workspace into German and keeps the choice', async ({ page }) => {
+  await page.goto('/');
+  await openGeneralSettings(page);
+  await page.getByRole('combobox', { name: 'Language' }).selectOption('de');
+  await page.waitForLoadState('load');
+  await expect(page.locator('html')).toHaveAttribute('lang', 'de');
+  await expect(page.getByRole('button', { name: 'Einstellungen', exact: true })).toBeVisible();
+  await openGeneralSettings(page, 'Einstellungen', 'Allgemein');
+  await expect(page.getByRole('combobox', { name: 'Sprache' })).toHaveValue('de');
+  await expect(page.getByRole('combobox', { name: 'Sprache' })).toContainText('Systemstandard');
+});
+
+test.describe('auto mode follows the browser locale', () => {
+  test.use({ locale: 'pt-BR' });
+  test('pt-BR browser auto-detects Brazilian Portuguese', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('html')).toHaveAttribute('lang', 'pt-BR');
+    await expect(page.getByRole('button', { name: 'Configurações', exact: true })).toBeVisible();
+  });
+});
