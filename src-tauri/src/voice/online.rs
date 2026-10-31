@@ -483,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_provider_error_without_a_transcript_fails_the_stream() {
-        use futures_util::{SinkExt, StreamExt};
+        use futures_util::StreamExt;
         let url = ws_server(move |stream| Box::pin(async move {
             let (sink, mut reader) = stream.split();
             let _ = sink;
