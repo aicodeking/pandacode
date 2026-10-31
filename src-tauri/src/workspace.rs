@@ -29,7 +29,7 @@ const STATUS_LIMIT: usize = 1024 * 1024;
 const FILE_COUNT_LIMIT: usize = 5000;
 const TRUNCATED: &str = "\n\n[Preview truncated at 256 KiB]\n";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitFile {
     pub path: String,
@@ -521,7 +521,7 @@ fn require_repository(root: &Path) -> Result<(), String> {
 }
 
 /// `repository_root`, remembered for `REPOSITORY_TTL` while `.git` still looks intact.
-fn is_repository(root: &Path) -> Result<bool, String> {
+pub(crate) fn is_repository(root: &Path) -> Result<bool, String> {
     let fresh = verified_repositories()
         .lock()
         .is_ok_and(|verified| verified.get(root).is_some_and(|at| at.elapsed() < REPOSITORY_TTL));
@@ -555,6 +555,87 @@ pub fn git_status(root: &Path) -> Result<GitStatus, String> {
         forget_repository(root);
     }
     status
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoStatus {
+    pub label: String,
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub files: Vec<GitFile>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusAll {
+    pub branch: String,
+    pub files: Vec<GitFile>,
+    pub is_repo: bool,
+    pub repos: Vec<RepoStatus>,
+}
+
+/// Ahead/behind against the upstream; a checkout without one reports 0/0.
+fn ahead_behind(root: &Path) -> (u32, u32) {
+    let Ok(output) = run_git(
+        root,
+        &["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        8192,
+        false,
+    ) else {
+        return (0, 0);
+    };
+    if !output.status.success() {
+        return (0, 0);
+    }
+    let counts = String::from_utf8_lossy(&output.stdout.bytes);
+    let mut parts = counts.split_whitespace();
+    let ahead = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    let behind = parts.next().and_then(|value| value.parse().ok()).unwrap_or(0);
+    (ahead, behind)
+}
+
+/// One status entry per folder of a task, in folder order, each read from its
+/// effective checkout; plain folders report nothing. The top level keeps
+/// mirroring the primary repository exactly as the single-repo payload.
+pub fn git_status_all(folders: &[crate::storage::RepoFolder]) -> GitStatusAll {
+    let mut entries: Vec<(bool, RepoStatus)> = Vec::with_capacity(folders.len());
+    for folder in folders {
+        let label = folder.label.clone();
+        let entry = match git_status(&folder.path) {
+            Ok(status) if status.is_repo => {
+                let (ahead, behind) = ahead_behind(&folder.path);
+                (
+                    true,
+                    RepoStatus {
+                        label,
+                        branch: status.branch,
+                        ahead,
+                        behind,
+                        files: status.files,
+                    },
+                )
+            }
+            _ => (
+                false,
+                RepoStatus {
+                    label,
+                    branch: String::new(),
+                    ahead: 0,
+                    behind: 0,
+                    files: Vec::new(),
+                },
+            ),
+        };
+        entries.push(entry);
+    }
+    let primary = entries.first();
+    GitStatusAll {
+        branch: primary.map_or_else(String::new, |(_, repo)| repo.branch.clone()),
+        files: primary.map_or_else(Vec::new, |(_, repo)| repo.files.clone()),
+        is_repo: primary.is_some_and(|(is_repo, _)| *is_repo),
+        repos: entries.into_iter().map(|(_, repo)| repo).collect(),
+    }
 }
 
 /// `git status` for a root already known to be the repository root.
@@ -2702,5 +2783,741 @@ mod tests {
             resolve_in_folders(&folders, checkout.join("guide.md").to_str().unwrap()).unwrap(),
             (1, checkout.join("guide.md"))
         );
+    }
+
+    // Multi-repo worktree tasks: git at an arbitrary folder (Fixture covers only
+    // its own root) and a project whose primary is the fixture's repository plus
+    // one folder per extra name (`repo` extras become single-commit repositories,
+    // plain extras stay ordinary folders).
+    fn git_at(dir: &Path, args: &[&str]) {
+        let result = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "git {:?} in {}: {}",
+            args,
+            dir.display(),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    fn init_repo_at(path: &Path, file: &str) {
+        fs::create_dir_all(path).unwrap();
+        git_at(path, &["init", "-b", "main"]);
+        git_at(path, &["config", "user.name", "Workspace Tests"]);
+        git_at(path, &["config", "user.email", "workspace@example.invalid"]);
+        git_at(path, &["config", "commit.gpgSign", "false"]);
+        fs::write(path.join(file), "initial\n").unwrap();
+        git_at(path, &["add", file]);
+        git_at(path, &["-c", "core.hooksPath=/dev/null", "commit", "-m", "Initial"]);
+    }
+
+    fn folder_project(
+        f: &Fixture,
+        extras: &[(&str, bool)],
+    ) -> (
+        std::sync::Arc<std::sync::Mutex<crate::storage::Store>>,
+        crate::storage::Project,
+        crate::storage::Session,
+    ) {
+        let store = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::storage::Store::open(Path::new(":memory:")).unwrap(),
+        ));
+        let guard = store.lock().unwrap();
+        let project = guard.add_project(&f.root).unwrap();
+        for (name, repo) in extras {
+            let path = f.base.join(name);
+            if *repo {
+                init_repo_at(&path, &format!("{name}.txt"));
+            } else {
+                fs::create_dir_all(&path).unwrap();
+            }
+            guard.add_project_folder(&project.id, &path).unwrap();
+        }
+        let session = guard
+            .create_session(&project.id, "claude", "sonnet", "full")
+            .unwrap();
+        drop(guard);
+        (store, project, session)
+    }
+
+    /// REGRESSION PIN (passes before the multi-repo worktree change): a
+    /// single-folder project's worktree task records exactly today's state, one
+    /// checkout in sessions.worktree_path and no per-repo rows at all.
+    #[test]
+    fn single_folder_worktree_creation_records_only_the_primary() {
+        use crate::storage::Store;
+        use std::sync::{Arc, Mutex};
+        let f = Fixture::new(true);
+        let store = Arc::new(Mutex::new(Store::open(Path::new(":memory:")).unwrap()));
+        let project = store.lock().unwrap().add_project(&f.root).unwrap();
+        let source = store
+            .lock()
+            .unwrap()
+            .create_session(&project.id, "claude", "sonnet", "full")
+            .unwrap();
+        let task = crate::create_worktree_task(&store, &source.id, "solo".into()).unwrap();
+        assert_eq!(
+            PathBuf::from(task.worktree_path.clone().unwrap()),
+            fs::canonicalize(f.base.join("project-worktrees/pandacode-solo")).unwrap()
+        );
+        {
+            let store = store.lock().unwrap();
+            let repos: i64 = store
+                .db
+                .query_row("SELECT COUNT(*) FROM session_repos", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(repos, 0, "a single-folder task records no per-repo rows");
+            assert_eq!(store.workspace_folders(&project.id, &task.id).unwrap().len(), 1);
+        }
+    }
+
+    /// REGRESSION PIN (passes before the multi-repo worktree change):
+    /// workspace_root keeps meaning the primary repository's checkout even in a
+    /// multi-folder project; additional folders never move it.
+    #[test]
+    fn workspace_root_stays_the_primary_checkout_in_multi_folder_projects() {
+        use std::sync::{Arc, Mutex};
+        let f = Fixture::new(true);
+        let store = Arc::new(Mutex::new(crate::storage::Store::open(Path::new(":memory:")).unwrap()));
+        let project = store.lock().unwrap().add_project(&f.root).unwrap();
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        store.lock().unwrap().add_project_folder(&project.id, &docs).unwrap();
+        let source = store
+            .lock()
+            .unwrap()
+            .create_session(&project.id, "claude", "sonnet", "full")
+            .unwrap();
+        let task = crate::create_worktree_task(&store, &source.id, "primary-only".into()).unwrap();
+        let worktree =
+            fs::canonicalize(f.base.join("project-worktrees/pandacode-primary-only")).unwrap();
+        let store = store.lock().unwrap();
+        assert_eq!(store.workspace_root(&project.id, Some(&task.id)).unwrap(), worktree);
+        assert_eq!(store.workspace_root(&project.id, Some(&source.id)).unwrap(), f.root);
+        assert_eq!(store.workspace_root(&project.id, None).unwrap(), f.root);
+    }
+
+    /// The existing worktree entry points gain the per-repo loop without changing
+    /// shape: the return stays a plain Session (the type annotation is the
+    /// signature pin) and the additional repository gets its checkout in the store.
+    #[test]
+    fn the_existing_worktree_entry_point_creates_per_repo_worktrees_unchanged() {
+        let f = Fixture::new(true);
+        let (store, project, source) = folder_project(&f, &[("lib", true)]);
+        let task: crate::storage::Session = crate::create_worktree_task_with_defaults(
+            &store,
+            &source.id,
+            "entry".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(task.worktree_path.is_some());
+        let lib_entry = store
+            .lock()
+            .unwrap()
+            .workspace_folders(&project.id, &task.id)
+            .unwrap()[1]
+            .clone();
+        assert!(
+            lib_entry
+                .worktree
+                .as_ref()
+                .is_some_and(|wt| wt.ends_with("lib-worktrees/pandacode-entry")),
+            "every entry point creates the per-repo checkouts, not just the new one: {lib_entry:?}"
+        );
+    }
+
+    /// A worktree task in a multi-folder project carries one checkout per
+    /// repository folder: the same branch name in each, each beside its own
+    /// folder, the primary in sessions.worktree_path and the others per session
+    /// repo. Plain folders are skipped: no checkout, no row, no outcome.
+    #[test]
+    fn multi_repo_worktree_tasks_create_one_worktree_per_repo_folder() {
+        let f = Fixture::new(true);
+        let (store, project, source) = folder_project(&f, &[("lib", true), ("docs", false)]);
+        let (task, outcomes): (
+            crate::storage::Session,
+            Vec<crate::RepoWorktreeOutcome>,
+        ) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let primary_worktree =
+            fs::canonicalize(f.base.join("project-worktrees/pandacode-multi")).unwrap();
+        let lib_worktree =
+            fs::canonicalize(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+        let docs = fs::canonicalize(f.base.join("docs")).unwrap();
+
+        assert_eq!(
+            PathBuf::from(task.worktree_path.clone().unwrap()),
+            primary_worktree,
+            "the primary worktree stays in sessions.worktree_path"
+        );
+        assert_eq!(task.worktree_branch.as_deref(), Some("pandacode/multi"));
+        assert_eq!(outcomes.len(), 1, "only additional git repositories report outcomes");
+        assert_eq!(outcomes[0].label, "lib");
+        let created = outcomes[0].result.as_ref().expect("the lib checkout succeeds");
+        assert_eq!(
+            (created.path.as_path(), created.branch.as_str()),
+            (lib_worktree.as_path(), "pandacode/multi"),
+            "the same branch name in every repository"
+        );
+
+        assert_eq!(git_status(&primary_worktree).unwrap().branch, "pandacode/multi");
+        assert_eq!(git_status(&lib_worktree).unwrap().branch, "pandacode/multi");
+        assert_eq!(
+            fs::read_to_string(lib_worktree.join("lib.txt")).unwrap(),
+            "initial\n",
+            "the checkout carries the repository's committed files"
+        );
+        assert!(!f.base.join("docs-worktrees").exists(), "plain folders get no worktree");
+
+        {
+            let store = store.lock().unwrap();
+            assert_eq!(
+                store.workspace_folders(&project.id, &task.id).unwrap(),
+                vec![
+                    RepoFolder {
+                        path: primary_worktree.clone(),
+                        label: "project".into(),
+                        is_primary: true,
+                        worktree: Some(primary_worktree.clone()),
+                        branch: Some("pandacode/multi".into()),
+                    },
+                    RepoFolder {
+                        path: lib_worktree.clone(),
+                        label: "lib".into(),
+                        is_primary: false,
+                        worktree: Some(lib_worktree.clone()),
+                        branch: Some("pandacode/multi".into()),
+                    },
+                    RepoFolder {
+                        path: docs.clone(),
+                        label: "docs".into(),
+                        is_primary: false,
+                        worktree: None,
+                        branch: None,
+                    },
+                ]
+            );
+            let repos: i64 = store
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM session_repos WHERE session_id=?1",
+                    [&task.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(repos, 1, "exactly the additional repository is recorded");
+        }
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .session(&source.id)
+                .unwrap()
+                .worktree_path
+                .is_none(),
+            "the source task itself is untouched, exactly as today"
+        );
+    }
+
+    /// A repository whose checkout fails never aborts the task: the task exists
+    /// with the primary and the repositories that succeeded, the failure rides
+    /// the per-repo outcomes, and the failed repository records nothing.
+    #[test]
+    fn a_failing_repo_worktree_never_aborts_the_task_and_is_reported_per_repo() {
+        let f = Fixture::new(true);
+        let (store, project, source) =
+            folder_project(&f, &[("lib", true), ("util", true), ("docs", false)]);
+        // The lib worktree destination is already taken, so its checkout fails.
+        fs::create_dir_all(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let (task, outcomes): (
+            crate::storage::Session,
+            Vec<crate::RepoWorktreeOutcome>,
+        ) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let util_worktree =
+            fs::canonicalize(f.base.join("util-worktrees/pandacode-multi")).unwrap();
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+
+        assert!(
+            task.worktree_path.is_some(),
+            "the task is created with the primary worktree"
+        );
+        assert_eq!(
+            outcomes.len(),
+            2,
+            "one outcome per additional git repository, in folder order"
+        );
+        assert_eq!(outcomes[0].label, "lib");
+        let error = outcomes[0].result.as_ref().unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(outcomes[1].label, "util");
+        assert_eq!(outcomes[1].result.as_ref().unwrap().path, util_worktree);
+
+        let folders = store
+            .lock()
+            .unwrap()
+            .workspace_folders(&project.id, &task.id)
+            .unwrap();
+        assert_eq!(
+            folders[1],
+            RepoFolder {
+                path: lib,
+                label: "lib".into(),
+                is_primary: false,
+                worktree: None,
+                branch: None,
+            },
+            "the failed repository keeps its main checkout and records nothing"
+        );
+        assert_eq!(folders[2].worktree.as_deref(), Some(util_worktree.as_path()));
+    }
+
+    /// The multi paths query lists every repository with its main checkout and
+    /// this task's checkout; plain folders never appear; the primary is first.
+    #[test]
+    fn worktree_paths_all_lists_each_repository_with_its_main_and_worktree() {
+        let f = Fixture::new(true);
+        let (store, _project, source) = folder_project(&f, &[("lib", true), ("docs", false)]);
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::worktree_paths_all(&store, &task.id).unwrap(),
+            vec![
+                crate::RepoWorktreePaths {
+                    label: "project".into(),
+                    main: f.root.clone(),
+                    worktree: Some(
+                        fs::canonicalize(f.base.join("project-worktrees/pandacode-multi"))
+                            .unwrap()
+                    ),
+                    branch: Some("pandacode/multi".into()),
+                },
+                crate::RepoWorktreePaths {
+                    label: "lib".into(),
+                    main: fs::canonicalize(f.base.join("lib")).unwrap(),
+                    worktree: Some(
+                        fs::canonicalize(f.base.join("lib-worktrees/pandacode-multi")).unwrap()
+                    ),
+                    branch: Some("pandacode/multi".into()),
+                },
+            ],
+            "one entry per repository; plain folders are never listed"
+        );
+    }
+
+    /// A repository whose checkout failed still lists, with no worktree, and the
+    /// multi query keeps today's refusal for tasks without a worktree.
+    #[test]
+    fn worktree_paths_all_lists_repos_without_a_worktree_and_keeps_today_refusals() {
+        let f = Fixture::new(true);
+        let (store, _project, source) =
+            folder_project(&f, &[("lib", true), ("util", true), ("docs", false)]);
+        fs::create_dir_all(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let paths = crate::worktree_paths_all(&store, &task.id).unwrap();
+        assert_eq!(paths.len(), 3, "the primary, the failed lib and util");
+        assert_eq!(
+            paths[1],
+            crate::RepoWorktreePaths {
+                label: "lib".into(),
+                main: fs::canonicalize(f.base.join("lib")).unwrap(),
+                worktree: None,
+                branch: None,
+            }
+        );
+        let error = crate::worktree_paths_all(&store, &source.id).unwrap_err();
+        assert!(
+            error.contains("main checkout"),
+            "a task without a worktree keeps today's refusal: {error}"
+        );
+    }
+
+    /// A single-folder task keeps exactly today's values in the multi query.
+    #[test]
+    fn worktree_paths_all_keeps_today_single_folder_values() {
+        use crate::storage::Store;
+        use std::sync::{Arc, Mutex};
+        let f = Fixture::new(true);
+        let store = Arc::new(Mutex::new(Store::open(Path::new(":memory:")).unwrap()));
+        let project = store.lock().unwrap().add_project(&f.root).unwrap();
+        let source = store
+            .lock()
+            .unwrap()
+            .create_session(&project.id, "claude", "sonnet", "full")
+            .unwrap();
+        let task = crate::create_worktree_task(&store, &source.id, "solo".into()).unwrap();
+        assert_eq!(
+            crate::worktree_paths_all(&store, &task.id).unwrap(),
+            vec![crate::RepoWorktreePaths {
+                label: "project".into(),
+                main: f.root.clone(),
+                worktree: Some(PathBuf::from(task.worktree_path.clone().unwrap())),
+                branch: task.worktree_branch.clone(),
+            }],
+            "single-folder tasks return exactly one entry with today's values"
+        );
+    }
+
+    /// The folder qualifier resolves by label or effective path and defaults to
+    /// the primary repository, whose effective path is the task's own checkout.
+    #[test]
+    fn git_repo_folder_qualifies_labels_and_paths_and_defaults_to_the_primary() {
+        let f = Fixture::new(true);
+        let (store, project, source) = folder_project(&f, &[("lib", true), ("docs", false)]);
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let primary_worktree =
+            fs::canonicalize(f.base.join("project-worktrees/pandacode-multi")).unwrap();
+        let lib_worktree =
+            fs::canonicalize(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+        let docs = fs::canonicalize(f.base.join("docs")).unwrap();
+        let resolve = |session: Option<&str>, qualifier: Option<&str>| {
+            let store = store.lock().unwrap();
+            crate::git_repo_folder(&store, &project.id, session, qualifier).unwrap()
+        };
+
+        let primary = resolve(Some(&task.id), None);
+        assert!(primary.is_primary && primary.worktree.is_some());
+        assert_eq!(
+            primary.path, primary_worktree,
+            "no qualifier keeps meaning the primary, worktree included"
+        );
+        assert_eq!(
+            resolve(Some(&task.id), Some("project")).path,
+            primary_worktree,
+            "the primary answers to its label too"
+        );
+        assert_eq!(resolve(Some(&task.id), Some("lib")).path, lib_worktree);
+        assert_eq!(
+            resolve(Some(&task.id), Some(lib_worktree.to_str().unwrap())).path,
+            lib_worktree,
+            "the effective path qualifies"
+        );
+        assert_eq!(resolve(Some(&task.id), Some("docs")).path, docs);
+        assert_eq!(resolve(Some(&task.id), Some(docs.to_str().unwrap())).path, docs);
+
+        // A task without worktrees, and no session at all, resolve the plain folders.
+        assert_eq!(resolve(Some(&source.id), None).path, f.root);
+        assert_eq!(resolve(Some(&source.id), Some("lib")).path, lib);
+        assert_eq!(resolve(None, None).path, f.root);
+        assert_eq!(resolve(None, Some("lib")).path, lib);
+
+        let error = {
+            let store = store.lock().unwrap();
+            crate::git_repo_folder(&store, &project.id, Some(&task.id), Some("nope"))
+                .unwrap_err()
+        };
+        assert!(
+            error.to_lowercase().contains("repositor") && error.contains("nope"),
+            "an unknown qualifier names both the miss and the repositories: {error}"
+        );
+        let elsewhere = f.base.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let other = store.lock().unwrap().add_project(&elsewhere).unwrap();
+        let error = {
+            let store = store.lock().unwrap();
+            crate::git_repo_folder(&store, &other.id, Some(&task.id), None).unwrap_err()
+        };
+        assert!(
+            error.contains("does not belong"),
+            "a foreign session keeps today's guard: {error}"
+        );
+    }
+
+    /// Qualified Git operations run against the qualified repository's effective
+    /// checkout: diff, stage, commit and push land in that repository's task
+    /// branch, and no other checkout moves.
+    #[test]
+    fn qualified_git_operations_run_in_the_qualified_repositorys_checkout() {
+        let f = Fixture::new(true);
+        let (store, project, source) = folder_project(&f, &[("lib", true)]);
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+        let lib_worktree =
+            fs::canonicalize(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let bare = f.base.join("lib-origin.git");
+        git_at(&f.base, &["init", "--bare", "-b", "main", "lib-origin.git"]);
+        git_at(&lib, &["remote", "add", "origin", bare.to_str().unwrap()]);
+
+        let folder = {
+            let store = store.lock().unwrap();
+            crate::git_repo_folder(&store, &project.id, Some(&task.id), Some("lib")).unwrap()
+        };
+        assert_eq!(folder.path, lib_worktree);
+        fs::write(folder.path.join("note.txt"), "qualified\n").unwrap();
+        assert!(
+            git_diff(&folder.path, Some("note.txt".into()), false)
+                .unwrap()
+                .contains("+qualified")
+        );
+        assert!(
+            git_diff(&lib, Some("note.txt".into()), false)
+                .unwrap()
+                .is_empty(),
+            "the repository's main checkout has no such change"
+        );
+        git_stage(&folder.path, vec!["note.txt".into()], true).unwrap();
+        git_commit(&folder.path, "Qualified commit".into()).unwrap();
+        assert!(git_status(&folder.path).unwrap().files.is_empty());
+        assert!(
+            git_status(&lib).unwrap().files.is_empty(),
+            "the main checkout stays clean"
+        );
+        assert_eq!(
+            git_status(&lib).unwrap().branch,
+            "main",
+            "the repository's own branch never moved"
+        );
+        git_push(&folder.path).unwrap();
+        let shown = Command::new("git")
+            .arg("-C")
+            .arg(&lib)
+            .args(["show", "pandacode/multi:note.txt"])
+            .output()
+            .unwrap();
+        assert!(
+            shown.status.success()
+                && String::from_utf8_lossy(&shown.stdout) == "qualified\n",
+            "the qualified commit lives on the repository's task branch"
+        );
+        let primary_worktree =
+            fs::canonicalize(f.base.join("project-worktrees/pandacode-multi")).unwrap();
+        assert_eq!(git_status(&primary_worktree).unwrap().branch, "pandacode/multi");
+        assert!(
+            git_status(&primary_worktree).unwrap().files.is_empty(),
+            "the primary checkout is untouched"
+        );
+    }
+
+    /// The branch-switch refusal follows the qualified repository: repositories
+    /// with their own task checkout keep their branch, others still switch.
+    #[test]
+    fn branch_switch_refusal_follows_the_qualified_repository() {
+        let f = Fixture::new(true);
+        let (store, project, source) = folder_project(&f, &[("lib", true), ("util", true)]);
+        fs::create_dir_all(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+        for qualifier in [None, Some("util")] {
+            let error = {
+                let store = store.lock().unwrap();
+                crate::switch_branch_root(&store, &project.id, Some(&task.id), qualifier)
+                    .unwrap_err()
+            };
+            assert!(
+                error.contains("own worktree"),
+                "today's refusal, per repository now: {error} for {qualifier:?}"
+            );
+        }
+        assert_eq!(
+            {
+                let store = store.lock().unwrap();
+                crate::switch_branch_root(&store, &project.id, Some(&task.id), Some("lib"))
+                    .unwrap()
+            },
+            lib,
+            "a repository without its own task checkout still switches"
+        );
+        assert_eq!(
+            {
+                let store = store.lock().unwrap();
+                crate::switch_branch_root(&store, &project.id, Some(&source.id), None).unwrap()
+            },
+            f.root,
+            "a task without any worktree switches its primary, exactly as today"
+        );
+    }
+
+    /// The multi-repo status payload: one entry per folder in folder order, each
+    /// read from its effective checkout (worktree included), ahead/behind its
+    /// upstream when one exists, while the top level keeps carrying the primary
+    /// repository exactly as today's single-repo payload.
+    #[test]
+    fn git_status_all_reports_one_entry_per_folder_with_the_primary_at_the_top_level() {
+        let f = Fixture::new(true);
+        // The primary tracks a remote: one local commit ahead, one remote commit behind.
+        let origin = f.base.join("origin.git");
+        git_at(&f.base, &["init", "--bare", "-b", "main", "origin.git"]);
+        git_at(&f.root, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git_at(&f.root, &["push", "-u", "origin", "main"]);
+        fs::write(f.root.join("ahead.txt"), "local\n").unwrap();
+        git_at(&f.root, &["add", "ahead.txt"]);
+        git_at(
+            &f.root,
+            &["-c", "core.hooksPath=/dev/null", "commit", "-m", "Ahead"],
+        );
+        let other = f.base.join("other");
+        git_at(&f.base, &["clone", origin.to_str().unwrap(), "other"]);
+        git_at(&other, &["config", "user.name", "Workspace Tests"]);
+        git_at(&other, &["config", "user.email", "workspace@example.invalid"]);
+        fs::write(other.join("behind.txt"), "remote\n").unwrap();
+        git_at(&other, &["add", "behind.txt"]);
+        git_at(
+            &other,
+            &["-c", "core.hooksPath=/dev/null", "commit", "-m", "Behind"],
+        );
+        git_at(&other, &["push", "origin", "main"]);
+        git_at(&f.root, &["fetch", "origin"]);
+        fs::write(f.root.join("dirty-a.txt"), "dirty\n").unwrap();
+
+        // The lib repository reports through its task checkout, not its main one.
+        let lib = f.base.join("lib");
+        init_repo_at(&lib, "lib.txt");
+        let lib_worktree = create_worktree_with(&lib, "docs-task", None, false)
+            .unwrap()
+            .path;
+        fs::write(lib.join("main-note.txt"), "main side\n").unwrap();
+        fs::write(lib_worktree.join("wt-note.txt"), "worktree side\n").unwrap();
+
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(docs.join("guide.md"), "plain\n").unwrap();
+
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            RepoFolder {
+                path: lib_worktree.clone(),
+                label: "lib".into(),
+                is_primary: false,
+                worktree: Some(lib_worktree.clone()),
+                branch: Some("pandacode/docs-task".into()),
+            },
+            repo_folder(&docs, "docs", false),
+        ];
+        let status: super::GitStatusAll = git_status_all(&folders);
+        let paths_of: fn(&super::RepoStatus) -> Vec<&str> = |repo: &super::RepoStatus| {
+            repo.files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(status.repos.len(), 3, "one entry per folder, in order");
+        assert_eq!(
+            (status.branch.as_str(), status.is_repo),
+            ("main", true),
+            "the top level keeps the primary's numbers"
+        );
+        assert_eq!(
+            (
+                status.repos[0].label.as_str(),
+                status.repos[0].branch.as_str(),
+                status.repos[0].ahead,
+                status.repos[0].behind
+            ),
+            ("app", "main", 1, 1)
+        );
+        assert_eq!(paths_of(&status.repos[0]), vec!["dirty-a.txt"]);
+        assert_eq!(
+            (
+                status.repos[1].label.as_str(),
+                status.repos[1].branch.as_str(),
+                status.repos[1].ahead,
+                status.repos[1].behind
+            ),
+            ("lib", "pandacode/docs-task", 0, 0)
+        );
+        assert_eq!(
+            paths_of(&status.repos[1]),
+            vec!["wt-note.txt"],
+            "status reads the effective checkout, never the main one"
+        );
+        assert_eq!(
+            (status.repos[2].label.as_str(), status.repos[2].branch.as_str()),
+            ("docs", "")
+        );
+        assert!(status.repos[2].files.is_empty(), "plain folders report nothing");
+        assert_eq!(
+            status
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dirty-a.txt"],
+            "the top-level files mirror the primary entry"
+        );
+    }
+
+    /// Single-folder tasks report exactly one repo entry that mirrors the
+    /// top-level payload, repo or not.
+    #[test]
+    fn git_status_all_keeps_single_folder_tasks_at_exactly_one_entry() {
+        let f = Fixture::new(true);
+        fs::write(f.root.join("note.txt"), "note\n").unwrap();
+        let status = git_status_all(&[repo_folder(&f.root, "app", true)]);
+        assert_eq!(status.repos.len(), 1);
+        assert_eq!(status.repos[0].label, "app");
+        assert_eq!(status.repos[0].branch, status.branch);
+        assert_eq!(status.repos[0].files.len(), status.files.len());
+        assert!(status.is_repo);
+
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        let plain = git_status_all(&[repo_folder(&docs, "docs", true)]);
+        assert!(!plain.is_repo, "a plain folder reports not-a-repo as today");
+        assert_eq!(plain.repos.len(), 1);
+        assert_eq!(plain.repos[0].branch, "");
+        assert!(plain.repos[0].files.is_empty());
     }
 }
