@@ -10,7 +10,9 @@ How PandaCode's UI localization works, and the term choices the catalogs share.
   untouched — call sites keep their own `escape()` calls.
 - `en-US` needs no catalog (source spelling). `en-GB` is a partial spelling
   override. `zh-Hant-HK` is the Taiwan table plus a small regional-vocabulary
-  override. `zh-Hans` and `zh-Hant-TW` are full catalogs.
+  override. The full catalogs — `zh-Hans`, `zh-Hant-TW`, `de`, `es`, `fr`,
+  `it`, `ja`, `ko`, `pl`, `pt-BR`, `ru` — translate every key; any missing
+  key falls back to English at runtime.
 - The language preference lives in `localStorage` (`pandacode.language`,
   `'auto'` or a locale). `auto` follows the system language; the tray menu and
   launcher title read the persisted copy (`ui-language.json`, set through the
@@ -54,6 +56,41 @@ table at the top of `zh-Hant-HK.ts`. When you add a term that differs across
 regions, translate it in `zh-Hans.ts` and, if OpenCC's Taiwan output needs a
 correction, patch it there — the HK override only lists genuine vocabulary
 differences.
+
+## The nine machine-translated languages (de, es, fr, it, ja, ko, pl, pt-BR, ru)
+
+These catalogs ship as machine-translated first passes over the full key set;
+native review is explicitly welcome (the guardrail test keeps them complete
+and placeholder-faithful, and missing keys fall back to English at runtime).
+Register choices, so fixes stay consistent:
+
+| Language | Register | Notes |
+| --- | --- | --- |
+| Deutsch | formal Sie | Branch/Commit/Workspace kept (dev-German usage) |
+| Español | usted, buttons as infinitives | branch=rama |
+| Français | vous | commit kept |
+| Italiano | informal tu (product-UI convention) | branch=branch, commit=commit |
+| 日本語 | です/ます polite | keep katakana for loanwords (タスク, セッション) |
+| 한국어 | 합니다체 polite | |
+| Polski | neutral (no gendered Pan/Pani forms) | |
+| Português (Brasil) | você | |
+| Русский | formal вы | |
+
+Product nouns from the table above stay untranslated in all nine; ASCII
+punctuation everywhere except the CJK locales (Japanese may use 、。！？).
+
+## Multi-language notes
+
+- All non-English catalogs keep `{n}` placeholders verbatim, ellipses `…`,
+  middle dots `·`, keyboard glyphs, URLs, paths and CLI flags as-is; values
+  keep the key's leading/trailing spaces so sentence-fragment keys still glue.
+- Adding an eleventh+ language: create `src/locales/<id>.ts` (UI + `backend`
+  tables, zh-Hans key order), register it in `src/i18n.ts` (`Locale`,
+  `LOCALES`, `LANGUAGES`), `src/entry.ts`, `ui_language.rs` (`LOCALES` + tray
+  labels + launcher title), `web.rs` (`ui_language` + the `STRINGS` table),
+  the mobile `core.ts`/`catalogs.ts`, and the guardrail test's
+  `FULL_CATALOGS`/`FULL_BACKENDS` lists. `tests/i18n.test.mjs` fails until
+  every surface is complete.
 
 ## Style rules
 

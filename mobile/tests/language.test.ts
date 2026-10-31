@@ -10,7 +10,10 @@ import { CATALOGS } from '../src/i18n/catalogs.ts';
 const CASES = [
   [], ['en-US'], ['en'], ['en-GB'], ['en-AU'], ['en-NZ'], ['en-IE'], ['en-ZA'], ['en-SG'], ['en-IN'],
   ['zh'], ['zh-CN'], ['zh-SG'], ['zh-Hans-CN'], ['zh-TW'], ['zh-Hant-TW'], ['zh-HK'], ['zh-MO'],
-  ['zh-Hant-HK'], ['zh-Hant'], ['fr'], ['de-DE'], ['ja-JP', 'zh-HK'], ['pt-BR', 'en'],
+  ['zh-Hant-HK'], ['zh-Hant'],
+  ['de'], ['de-AT'], ['es'], ['es-419'], ['fr'], ['fr-CA'], ['it'], ['ja'], ['ja-JP'],
+  ['ko'], ['pl'], ['pt'], ['pt-PT'], ['pt-BR'], ['ru'],
+  ['nl-NL', 'zh-HK'],
 ];
 
 test('system locale mapping is identical to the desktop', () => {
@@ -39,5 +42,9 @@ test('catalogs keep placeholder signatures and the full tables agree', () => {
   assert.deepEqual(Object.keys(CATALOGS['zh-Hant-HK']!).sort(), Object.keys(tw).sort(), 'zh-Hant-HK covers the Taiwan table');
   for (const [key, value] of Object.entries(CATALOGS['zh-Hant-HK'] ?? {})) {
     assert.equal(signature(value!), signature(tw[key]!), `HK override changed placeholders for ${key}`);
+  }
+  // Every full locale ships the complete key set; missing keys silently serve English otherwise.
+  for (const locale of ['de', 'es', 'fr', 'it', 'ja', 'ko', 'pl', 'pt-BR', 'ru'] as const) {
+    assert.deepEqual(Object.keys(CATALOGS[locale] ?? {}).sort(), Object.keys(hans).sort(), `${locale} covers the zh-Hans key set`);
   }
 });
