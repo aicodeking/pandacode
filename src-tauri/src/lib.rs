@@ -3309,7 +3309,7 @@ async fn set_task_link(
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .set_task_link(&session_id, &kind, link.as_ref())
+        .set_task_link(&session_id, &kind, "", link.as_ref())
 }
 
 /// Push the task's branch and open a pull request for it, linking the result.
@@ -3341,7 +3341,7 @@ async fn github_create_pull_request(
         workspace::git_push(&root)?;
         let pull = github::create_pull_request(&root, &title, &body, &base, &status.branch)?;
         let link = storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 };
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
     })
     .await
 }
@@ -3373,7 +3373,7 @@ async fn github_merge_pull_request(state: State<'_, AppState>, session_id: Strin
     let store = state.store.clone();
     blocking(move || {
         let link = github_pull::merge(&root, number, &method)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
     })
     .await
 }
@@ -3415,7 +3415,7 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
         if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
             return Ok(None);
         }
-        store.set_task_link(&session_id, "pull", Some(&link)).map(Some)
+        store.set_task_link(&session_id, "pull", "", Some(&link)).map(Some)
     })
     .await
 }
@@ -3435,7 +3435,7 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     blocking(move || {
         let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
         let link = github_pull::lookup(&root, github_pull::parse_reference(&reference, &repo.name_with_owner)?)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
     })
     .await
 }
