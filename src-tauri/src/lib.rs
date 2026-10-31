@@ -28,6 +28,7 @@ mod github_hub;
 mod project_icon;
 mod simulator;
 mod vm;
+mod voice;
 mod secret_store;
 mod cloud;
 mod cloud_agents;
@@ -3775,6 +3776,9 @@ pub fn run() {
             let dir = setup_common(app)?;
             agents_dock::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
+            if let Err(error) = voice::setup(app.handle(), &dir) {
+                eprintln!("Voice dictation is unavailable: {error}");
+            }
             vm::watch_idle(app.handle().clone());
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("Menu bar item is unavailable: {error}");
@@ -4137,6 +4141,17 @@ pub fn run() {
                 cloud::commands::cloud_power,
                 cloud::commands::cloud_frame,
                 cloud::commands::cloud_input,
+                voice::commands::voice_state,
+                voice::commands::voice_save_settings,
+                voice::commands::voice_models,
+                voice::commands::voice_download_model,
+                voice::commands::voice_start,
+                voice::commands::voice_stop,
+                voice::commands::voice_cancel,
+                voice::commands::voice_set_key,
+                voice::commands::voice_keys,
+                voice::commands::voice_test_provider,
+                voice::commands::voice_providers,
                 vsix_themes::themes_list,
                 vsix_themes::theme_import,
                 vsix_themes::theme_install,

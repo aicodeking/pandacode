@@ -364,3 +364,20 @@ notice. Worker snapshots use the worker's session ID. See
 Task-scoped Run Script discovery, execution, and preview readiness commands are
 documented in [Run and preview](run-project.md). Execution uses the existing
 managed terminal event/lifecycle contract; it never interpolates shell commands.
+
+## Voice dictation
+
+`voice_state()` returns `{settings, models, recording, appleAvailable,
+microphoneAvailable}`; `voice_save_settings(settings)` normalizes and saves
+`voice.json`, returning the normalized settings. `voice_models()` lists the
+catalog with install state; `voice_download_model({id})` streams one model in
+the background, emitting `voice-download {id, status, progress, error?}`.
+`voice_start()` refuses when voice is off, a recording is already running or
+the required models are missing; `voice_stop()` finalizes and
+`voice_cancel()` discards. Online modes add `voice_providers()` (the preset
+registry), `voice_set_key({provider, key})` (secure store; empty key forgets),
+`voice_keys()` (provider ids with saved keys) and
+`voice_test_provider({provider})` (a silence probe through the real
+endpoint). Events: `voice-partial {text}` replaces the live
+text, `voice-result {text, engine, fallback}` settles the transcript,
+`voice-error {message}`, `voice-level f32`. See [voice](voice.md).
