@@ -74,7 +74,7 @@ fn channel_kind(store: &Store, channel_id: &str) -> String {
 fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
     let (skills, skipped) = workspace_skills(app, store, bot, session_id);
     let seen = super::brief_version_of(store, session_id)?;
-    if seen == bot.memory_version {
+    if seen == bot.memory_version && !handoff_pending(store, session_id)? {
         return Ok(text.to_owned());
     }
     for error in &skipped {
@@ -83,6 +83,13 @@ fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, k
     let memories = super::memories(store, &bot.id)?;
     super::mark_briefed(store, session_id, bot.memory_version)?;
     Ok(format!("{text}{}{skills}", brief::compose(bot, &memories, kind, sender)))
+}
+
+/// A harness switch starts a fresh native session fed by a 64 KiB history replay
+/// (`context_recovery`). The brief sits at the end of an old user message, the first text that
+/// replay drops or shortens, so a pending replay counts as a thread that needs the brief again.
+fn handoff_pending(store: &Store, session_id: &str) -> Result<bool> {
+    store.db.query_row("SELECT EXISTS(SELECT 1 FROM context_recovery WHERE session_id=?1)", [session_id], |row| row.get(0)).map_err(|e| e.to_string())
 }
 
 /// Puts the bot's skills in its own workspace for this conversation's harness (project scope,
@@ -147,6 +154,14 @@ async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, tex
     launched
 }
 
+/// `compose` marks the brief seen before the turn starts. When the turn never starts (a refused
+/// launch or a full image limit) the brief was not delivered, so the next message carries it.
+fn unbrief(app: &tauri::AppHandle, session_id: &str, version: i64) {
+    if let Ok(store) = app.state::<AppState>().store.lock() {
+        let _ = super::mark_briefed(&store, session_id, version);
+    }
+}
+
 pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<String> {
     deliver_with_queue(app, inbound, false).await
 }
@@ -197,7 +212,7 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
         reply(app, &bot, &inbound.channel_id, &inbound.thread, &format!("{} is paused. Resume it in PandaCode to continue.", bot.name)).await;
         return Err("This bot is paused.".into());
     }
-    let turn = {
+    let (turn, briefed) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         // Proactive messages go to the thread the user last wrote from.
         if inbound.channel_id != super::DESKTOP {
@@ -207,9 +222,13 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
         let moodboard = inbound.moodboard_ids.as_deref().filter(|ids| !ids.is_empty())
             .map(|ids| crate::moodboards::resolve_refs(&store, &bot.project_id, ids))
             .transpose()?.unwrap_or_default();
-        compose(app, &store, &bot, &session_id, &kind, &inbound.sender_name, &format!("{text}{moodboard}"))?
+        let briefed = super::brief_version_of(&store, &session_id)?;
+        (compose(app, &store, &bot, &session_id, &kind, &inbound.sender_name, &format!("{text}{moodboard}"))?, briefed)
     };
-    start_or_queue(app, &bot, &session_id, turn, inbound.image_ids, &inbound.sender_id, force_queue).await?;
+    if let Err(error) = start_or_queue(app, &bot, &session_id, turn, inbound.image_ids, &inbound.sender_id, force_queue).await {
+        unbrief(app, &session_id, briefed);
+        return Err(error);
+    }
     let _ = app.emit("bots-changed", ());
     let _ = app.emit("sessions-changed", ());
     Ok(session_id)
@@ -218,7 +237,7 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
 /// A schedule or check-in: one ongoing scheduled conversation per bot.
 pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &str, prompt: &str) -> Result<()> {
     let state = app.state::<AppState>();
-    let (bot, session_id, turn) = {
+    let (bot, session_id, turn, briefed) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let bot = super::get(&store, bot_id)?;
         if bot.paused {
@@ -226,10 +245,14 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
         }
         let (session, _) = super::thread_session(&store, &bot, "schedule", "schedule", &format!("{} · Scheduled work", bot.name))?;
         super::log(&store, &bot.id, "scheduled", label, json!({"sessionId": session}))?;
+        let briefed = super::brief_version_of(&store, &session)?;
         let turn = compose(app, &store, &bot, &session, "schedule", "", &format!("{label}\n\n{prompt}"))?;
-        (bot, session, turn)
+        (bot, session, turn, briefed)
     };
-    start_or_queue(app, &bot, &session_id, turn, None, "schedule", false).await?;
+    if let Err(error) = start_or_queue(app, &bot, &session_id, turn, None, "schedule", false).await {
+        unbrief(app, &session_id, briefed);
+        return Err(error);
+    }
     let _ = app.emit("bots-changed", ());
     Ok(())
 }
