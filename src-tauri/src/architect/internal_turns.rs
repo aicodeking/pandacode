@@ -10,6 +10,10 @@ pub enum CoordinationKind {
     Continue,
     /// A worker failed while others still run; the architect handles it right away.
     WorkerFailed,
+    /// Threads this task launched on other computers settled (docs/machine-orchestration.md).
+    MachineThreads,
+    /// The user answered a machine link request no tool call was waiting for.
+    MachineLink,
 }
 impl CoordinationKind {
     pub fn label(self) -> &'static str {
@@ -18,6 +22,8 @@ impl CoordinationKind {
             Self::WorkerReview => "Reviewing worker results",
             Self::Continue => "Continuing the plan",
             Self::WorkerFailed => "Handling a failed worker",
+            Self::MachineThreads => "Machine threads finished",
+            Self::MachineLink => "Machine link answered",
         }
     }
 }

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-pub(crate) const METHODS: [&str; 11] = ["subscribe", "providers.list", "providers.models", "task.start", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
+pub(crate) const METHODS: [&str; 12] = ["subscribe", "providers.list", "providers.models", "task.start", "task.find", "task.messages", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond"];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
 pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
@@ -87,6 +87,7 @@ pub(crate) enum Call {
     Providers { force: bool },
     Models { provider: String, force: bool },
     Start(start::Start),
+    Find { start_id: String },
     Messages { session_id: String, after_id: i64 },
     Send { session_id: String, text: String },
     Stop { session_id: String },
@@ -161,6 +162,7 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
             Call::Models { provider, force: force_param(params)? }
         }
         "task.start" => Call::Start(start::parse(params)?),
+        "task.find" => Call::Find { start_id: id_param(params, "startId")? },
         "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, after_id: params["afterId"].as_i64().unwrap_or(0).max(0) },
         "task.send" => Call::Send { session_id: id_param(params, "sessionId")?, text: text_param(params, "text")? },
         "task.stop" => Call::Stop { session_id: id_param(params, "sessionId")? },
@@ -234,6 +236,7 @@ async fn run(app: &tauri::AppHandle, from: &str, call: Call) -> Result<Value> {
             Ok(models)
         }
         Call::Start(request) => start::run(app, from, request).await,
+        Call::Find { start_id } => start::find(app, from, &start_id),
         Call::Messages { session_id, after_id } => {
             local_task(&state, &session_id)?;
             let store = state.store.lock().map_err(|e| e.to_string())?;

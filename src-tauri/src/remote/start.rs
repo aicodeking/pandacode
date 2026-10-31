@@ -27,6 +27,8 @@ pub(crate) struct Start {
     pub model: String,
     pub mode: Option<String>,
     pub effort: Option<String>,
+    /// The viewer's local mirror id: a repeated start with it returns the same task.
+    pub start_id: Option<String>,
 }
 
 pub(crate) fn parse(params: &Value) -> Result<Start> {
@@ -43,6 +45,7 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         model: name_param(params, "model")?.ok_or("Missing model.")?,
         mode: name_param(params, "mode")?,
         effort: name_param(params, "effort")?,
+        start_id: params.get("startId").filter(|v| !v.is_null()).map(|_| super::host::id_param(params, "startId")).transpose()?,
     })
 }
 
@@ -161,7 +164,129 @@ pub(crate) async fn require_installed(provider: &str) -> Result<()> {
     Ok(())
 }
 
+/// Starts in progress here, by (caller, start id).
+fn in_flight() -> std::sync::MutexGuard<'static, std::collections::HashSet<(String, String)>> {
+    static STARTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> = std::sync::OnceLock::new();
+    STARTS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What this host knows of a start id. Read under the store lock with `in_flight` held, and
+/// a start leaves `in_flight` only after its row is settled, so a lookup always sees one of
+/// the two: never neither.
+#[derive(Debug, PartialEq)]
+enum Lookup {
+    /// The prompt was accepted: the task is ready.
+    Started(String),
+    /// A start with this id is running here now.
+    Starting,
+    /// A start that never finished (this computer quit during it), now detached from the id.
+    Stale(String),
+    None,
+}
+
+fn lookup(db: &rusqlite::Connection, starts: &std::collections::HashSet<(String, String)>, from: &str, start_id: &str) -> Result<Lookup> {
+    use rusqlite::OptionalExtension;
+    if starts.contains(&(from.to_owned(), start_id.to_owned())) {
+        return Ok(Lookup::Starting);
+    }
+    // A start cut off after its prompt was saved (a crash before `started` was written)
+    // had begun its run: it counts as started, never discarded.
+    let row: Option<(String, Option<String>, bool)> = db.query_row("SELECT id,remote_start_state,EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND role='user') FROM sessions WHERE remote_caller=?1 AND remote_start_id=?2", [from, start_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional().map_err(|e| e.to_string())?;
+    Ok(match row {
+        Some((id, Some(state), _)) if state == "started" => Lookup::Started(id),
+        Some((id, _, true)) => {
+            db.execute("UPDATE sessions SET remote_start_state='started' WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+            Lookup::Started(id)
+        }
+        Some((id, _, false)) => {
+            detach(db, &id)?;
+            Lookup::Stale(id)
+        }
+        None => Lookup::None,
+    })
+}
+
+/// Forgets a start id on its task, so nothing finds the task by it again.
+fn detach(db: &rusqlite::Connection, id: &str) -> Result<()> {
+    db.execute("UPDATE sessions SET remote_caller=NULL,remote_start_id=NULL,remote_start_state=NULL WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Deletes the task of a start that never finished.
+fn discard(app: &tauri::AppHandle, id: &str) {
+    if let Err(error) = crate::task_deletion::delete_state(&app.state::<AppState>(), id) {
+        eprintln!("PandaCode Connect: could not remove a task that never started: {error}");
+    }
+}
+
+/// `task.find`: the task `from` started with `start_id` (scoped to the caller) once its
+/// prompt was accepted, or whether that start still runs here. A start cut off by a quit
+/// here is removed and reads as missing, so the viewer fails it instead of adopting it.
+pub(crate) fn find(app: &tauri::AppHandle, from: &str, start_id: &str) -> Result<Value> {
+    let found = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        lookup(&store.db, &in_flight(), from, start_id)?
+    };
+    Ok(match found {
+        Lookup::Started(id) => json!({"sessionId": id, "starting": false}),
+        Lookup::Starting => json!({"sessionId": null, "starting": true}),
+        Lookup::Stale(id) => {
+            discard(app, &id);
+            json!({"sessionId": null, "starting": false})
+        }
+        Lookup::None => json!({"sessionId": null, "starting": false}),
+    })
+}
+
+/// Takes a start id for the length of one start, unless a start with it already finished
+/// or still runs; a stale one is detached and started again.
+fn claim_start(db: &rusqlite::Connection, from: &str, start_id: &str) -> Result<Lookup> {
+    let mut starts = in_flight();
+    let found = lookup(db, &starts, from, start_id)?;
+    if matches!(found, Lookup::None | Lookup::Stale(_)) {
+        starts.insert((from.to_owned(), start_id.to_owned()));
+    }
+    Ok(found)
+}
+
+/// Starts the task once per start id: a repeated `task.start` returns the task the first
+/// one made once its prompt was accepted, `starting` while it runs, and starts nothing new.
 pub(crate) async fn run(app: &tauri::AppHandle, from: &str, start: Start) -> Result<Value> {
+    let Some(start_id) = start.start_id.clone() else { return run_once(app, from, start).await };
+    let claimed = claim_start(&app.state::<AppState>().store.lock().map_err(|e| e.to_string())?.db, from, &start_id)?;
+    match claimed {
+        Lookup::Started(id) => return Ok(json!({"sessionId": id})),
+        Lookup::Starting => return Ok(json!({"sessionId": null, "starting": true})),
+        Lookup::Stale(id) => discard(app, &id),
+        Lookup::None => {}
+    }
+    let result = run_once(app, from, start).await;
+    if result.is_err() {
+        // A row this start made but could not finish goes before the start leaves `in_flight`.
+        let left = {
+            let state = app.state::<AppState>();
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let left = started_row(&store.db, from, &start_id)?;
+            if let Some(id) = &left {
+                detach(&store.db, id)?;
+            }
+            left
+        };
+        if let Some(id) = left {
+            discard(app, &id);
+        }
+    }
+    in_flight().remove(&(from.to_owned(), start_id));
+    result
+}
+
+fn started_row(db: &rusqlite::Connection, from: &str, start_id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    db.query_row("SELECT id FROM sessions WHERE remote_caller=?1 AND remote_start_id=?2", [from, start_id], |r| r.get(0)).optional().map_err(|e| e.to_string())
+}
+
+async fn run_once(app: &tauri::AppHandle, from: &str, start: Start) -> Result<Value> {
     require_installed(&start.provider).await?;
     let handle = app.clone();
     let (repo, wanted, worktree) = (start.repo.clone(), start.branch.clone(), start.worktree);
@@ -188,6 +313,9 @@ pub(crate) async fn run(app: &tauri::AppHandle, from: &str, start: Start) -> Res
         if start.effort.is_some() {
             store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
         }
+        if let Some(start_id) = &start.start_id {
+            store.db.execute("UPDATE sessions SET remote_caller=?2,remote_start_id=?3,remote_start_state='starting' WHERE id=?1", rusqlite::params![task.id, from, start_id]).map_err(|e| e.to_string())?;
+        }
         task
     };
     if worktree {
@@ -207,7 +335,11 @@ pub(crate) async fn run(app: &tauri::AppHandle, from: &str, start: Start) -> Res
     }
     // The caller mirrors the task from its first event.
     super::host::follow(app, from, &task.id);
-    crate::send_message(app.clone(), state, task.id.clone(), start.prompt, None, None).await?;
+    crate::send_message(app.clone(), state.clone(), task.id.clone(), start.prompt, None, None).await?;
+    // Ready: only now does `task.find` (or a repeated start) name the task.
+    if start.start_id.is_some() {
+        state.store.lock().map_err(|e| e.to_string())?.db.execute("UPDATE sessions SET remote_start_state='started' WHERE id=?1", [&task.id]).map_err(|e| e.to_string())?;
+    }
     use tauri::Emitter;
     let _ = app.emit("sessions-changed", ());
     Ok(json!({"sessionId": task.id}))
@@ -244,6 +376,42 @@ mod tests {
         assert_eq!(in_place_refusal("Studio", "orbit", "", "main", false, false).unwrap(), "Studio has orbit on a detached HEAD, not main. Start it in a Worktree instead.");
         assert_eq!(in_place_refusal("Studio", "orbit", "main", "main", true, true).unwrap(), "Studio has an agent working in orbit. Start it in a Worktree instead.");
         assert!(WORST_CASE <= Duration::from_secs(10 * 60));
+    }
+
+    #[test]
+    fn a_start_id_names_its_task_only_once_the_prompt_was_accepted() {
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let start_id = uuid::Uuid::new_v4().to_string();
+        let key = ("viewer".to_owned(), start_id.clone());
+        assert_eq!(claim_start(&store.db, "viewer", &start_id), Ok(Lookup::None));
+        assert_eq!(claim_start(&store.db, "viewer", &start_id), Ok(Lookup::Starting), "a second start waits for the first");
+        // The row exists before the worktree and the prompt: still starting, not ready.
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        store.db.execute("UPDATE sessions SET remote_caller='viewer',remote_start_id=?2,remote_start_state='starting' WHERE id=?1", [&task.id, &start_id]).unwrap();
+        assert_eq!(lookup(&store.db, &in_flight(), "viewer", &start_id), Ok(Lookup::Starting));
+        store.db.execute("UPDATE sessions SET remote_start_state='started' WHERE id=?1", [&task.id]).unwrap();
+        in_flight().remove(&key);
+        assert_eq!(claim_start(&store.db, "viewer", &start_id), Ok(Lookup::Started(task.id.clone())), "a repeated start returns the task");
+        assert_eq!(lookup(&store.db, &in_flight(), "other", &start_id), Ok(Lookup::None), "scoped to the caller");
+        let copy = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        assert!(store.db.execute("UPDATE sessions SET remote_caller='viewer',remote_start_id=?2 WHERE id=?1", [&copy.id, &start_id]).is_err(), "unique per caller");
+        // A start cut off by a quit here (still starting, nothing in flight) is detached once
+        // and then missing, so the viewer fails it rather than adopting a half-made task.
+        store.db.execute("UPDATE sessions SET remote_start_state='starting' WHERE id=?1", [&task.id]).unwrap();
+        assert_eq!(lookup(&store.db, &in_flight(), "viewer", &start_id), Ok(Lookup::Stale(task.id.clone())));
+        assert_eq!(lookup(&store.db, &in_flight(), "viewer", &start_id), Ok(Lookup::None));
+        // The host crashed after the prompt was saved but before `started`: its run began,
+        // so the start is the task, not a stale one to discard.
+        let saved = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        store.db.execute("UPDATE sessions SET remote_caller='viewer',remote_start_id='crashed',remote_start_state='starting' WHERE id=?1", [&saved.id]).unwrap();
+        store.begin_task_turn(&saved.id, "go").unwrap();
+        assert_eq!(lookup(&store.db, &in_flight(), "viewer", "crashed"), Ok(Lookup::Started(saved.id.clone())));
+        assert_eq!(lookup(&store.db, &in_flight(), "viewer", "crashed"), Ok(Lookup::Started(saved.id.clone())));
+        let mut params = json!({"repo": "orbit-labs/orbit", "prompt": "go", "provider": "claude", "model": "sonnet", "startId": start_id});
+        assert_eq!(parse(&params).unwrap().start_id, Some(start_id));
+        params["startId"] = json!("a b");
+        assert!(parse(&params).is_err());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 import type { ToolActivity } from './types';
 import { escape, icon } from './dom.ts';
-import { describeTool, kindIcon, summarizeTools, summaryIcons, toolPreview, traceRowHtml } from './tool-trace.ts';
+import { describeTool, kindIcon, machineResult, summarizeTools, summaryIcons, toolPreview, traceRowHtml } from './tool-trace.ts';
 
 const MAX_CONTENT = 100_000;
 const MAX_DETAIL = 20_000;
@@ -58,7 +58,9 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   const status = tool.status === 'failed' ? '<span class="tool-activity-status">Failed</span>' : '';
   const lead = icon(tool.status === 'failed' ? 'alert' : kindIcon(trace.kind), 'tool-trace-icon');
   const body = toolPreview(named) + toolNote(tool) + rawRecord(tool);
-  return `<details class="tool-activity tool-trace" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}" data-tool-name="${escape(named.name)}"><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${status}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
+  // A launched machine thread is named on the row, so the transcript can group launches into one card.
+  const thread = tool.status === 'completed' && tool.name.endsWith('machine_launch') ? machineResult(tool.output).thread : undefined;
+  return `<details class="tool-activity tool-trace" data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}" data-tool-name="${escape(named.name)}"${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${status}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${body}</div></details>`;
 }
 
 function renderLegacyTool(content: string, key: string): string {

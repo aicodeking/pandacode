@@ -103,20 +103,63 @@ function fileChip(path: string): TraceChip | undefined {
 
 function mcpParts(name: string): { server: string; tool: string } {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  // PandaCode's own MCP server (`mcp__pandacode_architect__pandacode_title`) reads like the bare tool.
+  if (mcp && /^pandacode/.test(mcp[1]) && mcp[2].startsWith('pandacode_')) return { server: 'PandaCode', tool: mcp[2].replace(/^pandacode_/, '') };
   if (mcp) return { server: mcp[1], tool: mcp[2] };
   const local = name.replace(/^pandacode_architect_/, '').replace(/^pandacode_/, '');
   return { server: 'PandaCode', tool: local };
 }
 
 /** `Dispatched 2 workers`-style verbs for PandaCode's own tools; undefined keeps the generic `Used [server] tool`. */
-function pandacodeTrace(tool: string, fields: Fields, running: boolean): Partial<Trace> | undefined {
+function pandacodeTrace(tool: string, fields: Fields, running: boolean, output: string): Partial<Trace> | undefined {
   const workers = Array.isArray(fields.workers) ? fields.workers.length : Array.isArray(fields.tasks) ? fields.tasks.length : 0;
   if (tool === 'dispatch_workers') return { verb: running ? 'Dispatching' : 'Dispatched', object: workers ? `${workers} ${workers === 1 ? 'worker' : 'workers'}` : 'workers' };
+  if (tool.startsWith('machine_')) return machineTrace(tool.slice(8), fields, running, output);
   if (tool === 'title') return { verb: running ? 'Naming' : 'Named', object: field(fields, 'title') ? `the task “${clip(field(fields, 'title'), 60)}”` : 'the task' };
   return;
 }
 
-function describeFields(kind: TraceKind, name: string, input: string, fields: Fields, running: boolean): Omit<Trace, 'kind' | 'verb'> & { verb?: string } {
+/** Multi-machine orchestration (docs/machine-orchestration.md): `Starting a thread on ProMini`. */
+export type MachineResult = { thread?: string; machine?: string; status?: string; linked?: boolean; pending?: boolean };
+/** What a PandaCode machine tool returned (`{ thread, machine: { name }, status }`, or `{ linked, pending }` for a link). */
+export function machineResult(output: string): MachineResult {
+  const start = output.indexOf('{'), end = output.lastIndexOf('}');
+  if (start < 0 || end <= start) return {};
+  try {
+    const value: unknown = JSON.parse(output.slice(start, end + 1));
+    if (!value || typeof value !== 'object') return {};
+    const { thread, machine, status, linked, pending } = value as Record<string, unknown>;
+    const name = typeof machine === 'string' ? machine : machine && typeof (machine as { name?: unknown }).name === 'string' ? (machine as { name: string }).name : undefined;
+    const text = (item: unknown) => typeof item === 'string' ? item : undefined;
+    return { thread: text(thread), machine: name, status: text(status), linked: linked === true, pending: pending === true };
+  } catch { return {}; }
+}
+
+function machineTrace(tool: string, fields: Fields, running: boolean, output: string): Partial<Trace> | undefined {
+  const tense = (now: string, done: string) => running ? now : done;
+  const result = machineResult(output), machine = result.machine ?? field(fields, 'machine'), threads = Array.isArray(fields.threads) ? fields.threads.length : 0;
+  switch (tool) {
+    case 'list': return { verb: tense('Listing', 'Listed'), object: 'machines' };
+    case 'link':
+      // The tool returns after ~40 s with `pending` while the card still waits for the user.
+      if (!running && result.pending) return { verb: 'Waiting for you', object: 'to link a machine' };
+      if (!running && result.linked) return { verb: 'Linked', object: machine ? clip(machine, 40) : 'a machine' };
+      return { verb: tense('Asking', 'Asked'), object: `to link ${machine ? clip(machine, 40) : 'a machine'}` };
+    case 'capabilities': return { verb: tense('Checking', 'Checked'), object: `orchestration capabilities${machine ? ` on ${clip(machine, 40)}` : ''}` };
+    case 'launch': return { verb: running ? 'Launching' : result.status === 'starting' ? 'Starting' : 'Launched', object: `a thread on ${machine ? clip(machine, 40) : 'another machine'}${field(fields, 'title') ? ` · ${clip(field(fields, 'title'), 60)}` : ''}` };
+    case 'wait': return { verb: tense('Waiting on', 'Waited on'), object: threads ? `${threads} ${threads === 1 ? 'thread' : 'threads'}` : 'threads' };
+    case 'read': return { verb: tense('Reading', 'Read'), object: 'a thread' };
+    case 'stop': return { verb: tense('Stopping', 'Stopped'), object: `a thread${machine ? ` on ${clip(machine, 40)}` : ''}` };
+    case 'message': {
+      const action = field(fields, 'action');
+      if (action === 'steer') return { verb: tense('Steering', 'Steered'), object: 'a thread' };
+      return { verb: tense('Messaging', 'Messaged'), object: 'a thread' };
+    }
+    default: return;
+  }
+}
+
+function describeFields(kind: TraceKind, name: string, input: string, fields: Fields, running: boolean, output = ''): Omit<Trace, 'kind' | 'verb'> & { verb?: string } {
   switch (kind) {
     case 'shell': {
       const command = shellCommand(input, fields);
@@ -157,7 +200,7 @@ function describeFields(kind: TraceKind, name: string, input: string, fields: Fi
     }
     case 'mcp': {
       const { server, tool } = mcpParts(name);
-      const own = server === 'PandaCode' ? pandacodeTrace(tool, fields, running) : undefined;
+      const own = server === 'PandaCode' ? pandacodeTrace(tool, fields, running, output) : undefined;
       if (own) return { chip: { icon: 'server', label: 'PandaCode', title: name }, object: '', ...own };
       return { chip: { icon: 'server', label: server, title: name }, object: tool.replace(/_/g, ' ') };
     }
@@ -177,7 +220,7 @@ export function describeTool(tool: Tool): Trace {
   const kind = toolKind(tool.name);
   const running = tool.status === 'running';
   const fields = parseFields(tool.input);
-  const described = describeFields(kind, tool.name, tool.input, fields, running);
+  const described = describeFields(kind, tool.name, tool.input, fields, running, cleanOutput(tool.output));
   return { ...described, kind, verb: described.verb ?? KINDS[kind][running ? 0 : 1] };
 }
 

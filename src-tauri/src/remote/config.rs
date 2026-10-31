@@ -57,12 +57,55 @@ pub(crate) struct Settings {
     /// Devices allowed to drive this one: device id → the public key pinned when trusted.
     #[serde(default)]
     pub trusted: std::collections::BTreeMap<String, String>,
+    /// Agents here may use linked computers (docs/machine-orchestration.md).
+    #[serde(default)]
+    pub orchestration: bool,
+    /// Device id → what agents here may do there. Counts only while the device is a target.
+    #[serde(default)]
+    pub links: std::collections::BTreeMap<String, Link>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Access {
+    Read,
+    Ask,
+    Full,
+}
+
+impl Access {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "read" => Some(Self::Read),
+            "ask" => Some(Self::Ask),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Link {
+    pub access: Access,
+    /// When the user linked it, in milliseconds.
+    #[serde(default)]
+    pub at: i64,
 }
 
 impl Settings {
     /// Trusted only while the pinned key is still the device's current key.
     pub(crate) fn is_trusted(&self, device_id: &str, current_key: &str) -> bool {
         self.trusted.get(device_id).is_some_and(|pinned| !pinned.is_empty() && pinned == current_key)
+    }
+
+    /// Trusts `key` for a device. A newly trusted or changed key drops the device's link:
+    /// a link was given to the computer behind the old key.
+    pub(crate) fn pin(&mut self, device_id: &str, key: String) {
+        if self.trusted.get(device_id) != Some(&key) {
+            self.links.remove(device_id);
+        }
+        self.trusted.insert(device_id.to_owned(), key);
     }
 }
 
@@ -81,8 +124,12 @@ pub(crate) fn load(dir: &Path) -> Settings {
 
 pub(crate) fn save(dir: &Path, settings: &Settings) -> crate::Result<()> {
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!("{FILE}.tmp"));
-    std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| format!("Could not save remote access settings: {e}"))
+    // A temp file of its own, so two writers never interleave in one file.
+    let temp = dir.join(format!("{FILE}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    std::fs::write(&temp, text).and_then(|_| std::fs::rename(&temp, dir.join(FILE))).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Could not save remote access settings: {e}")
+    })
 }
 
 /// The stored key, or a new one written once when none (or an unreadable value) is stored.
@@ -203,6 +250,21 @@ mod tests {
         assert!(parsed.host_enabled);
         assert_eq!(parsed.account.unwrap().avatar_url, "u");
         assert!(parsed.trusted.is_empty());
+        assert!(!parsed.orchestration && parsed.links.is_empty(), "orchestration is off by default");
+        let linked: Settings = serde_json::from_str(r#"{"orchestration":true,"links":{"d1":{"access":"full","at":5}}}"#).unwrap();
+        assert_eq!(linked.links["d1"], Link { access: Access::Full, at: 5 });
+        assert!(serde_json::to_string(&linked).unwrap().contains(r#""links":{"d1":{"access":"full","at":5}}"#));
+        assert!(serde_json::from_str::<Settings>(r#"{"links":{"d1":{"access":"root"}}}"#).is_err());
+        assert_eq!((Access::parse("ask"), Access::parse("admin")), (Some(Access::Ask), None));
+        let mut rotated = linked.clone();
+        rotated.trusted.insert("d1".into(), "old".into());
+        rotated.pin("d1", "old".into());
+        assert!(rotated.links.contains_key("d1"), "trusting the same key again keeps the link");
+        rotated.pin("d1", "new".into());
+        assert!(rotated.links.is_empty() && rotated.trusted["d1"] == "new", "a changed key drops the link");
+        let mut fresh = linked.clone();
+        fresh.pin("d1", "first".into());
+        assert!(fresh.links.is_empty(), "a newly trusted key starts unlinked");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

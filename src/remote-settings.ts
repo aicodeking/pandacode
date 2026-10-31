@@ -3,6 +3,7 @@
 import './remote-settings.css';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
+import { mountOrchestrationSettings } from './machine-orchestration';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';
 
 const TRUST_TIP = 'Both computers must trust each other before one can drive the other. Compare the fingerprint shown on the other computer with the one here before trusting it. If its key changes, you need to trust it again.';
@@ -11,6 +12,10 @@ const ALLOW_TIP = 'Remote prompts follow this computer’s approval settings; th
 export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => void {
   let status: RemoteStatus | undefined, devices: RemoteDevice[] = [], error = '', code: RemoteSignIn | undefined, expires = 0, signingIn = false, disposed = false, attempt = 0;
   const fail = (e: unknown) => { error = e instanceof Error ? e.message : String(e); render(); };
+  // The orchestration section keeps its own state, so it lives beside the redrawn body.
+  root.innerHTML = '<div class="remote-body"></div><div class="remote-orchestration"></div>';
+  const main = root.querySelector<HTMLElement>('.remote-body')!, orchestration = root.querySelector<HTMLElement>('.remote-orchestration')!;
+  let unmountOrchestration: (() => void) | undefined;
 
   function deviceRow(device: RemoteDevice): string {
     return `<div class="setting-row remote-device" data-device="${escape(device.id)}"><div><strong><span class="remote-dot" data-online="${device.online}" role="img" aria-label="${device.online ? 'Online' : 'Offline'}"></span>${escape(device.name)}${device.current ? ' <span class="remote-badge">This computer</span>' : ''}</strong><small>${escape(device.platform)} · ${device.host ? 'remote control on' : 'remote control off'} · key <code>${escape(device.fingerprint)}</code></small></div>${device.current ? '' : `<label class="remote-trust"><span>Trusted ${infoMark(TRUST_TIP, 'About trusting a computer')}</span><input type="checkbox" class="settings-switch" data-trust="${escape(device.id)}" aria-label="Trusted: ${escape(device.name)}" ${device.trusted ? 'checked' : ''}></label>`}${device.current ? '' : `<button type="button" class="secondary-button" data-revoke="${escape(device.id)}" aria-label="Revoke ${escape(device.name)}">Revoke</button>`}</div>`;
@@ -28,7 +33,9 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   }
   function render(): void {
     if (disposed) return;
-    root.innerHTML = `<div class="settings-group remote-settings">${body()}</div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
+    main.innerHTML = `<div class="settings-group remote-settings">${body()}</div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
+    if (status?.signedIn && !unmountOrchestration) unmountOrchestration = mountOrchestrationSettings(orchestration, host);
+    else if (!status?.signedIn && unmountOrchestration) { unmountOrchestration(); unmountOrchestration = undefined; orchestration.innerHTML = ''; }
   }
   const apply = (next: RemoteStatus) => { status = next; if (next.signedIn) { code = undefined; signingIn = false; } };
   async function load(): Promise<void> {
@@ -76,5 +83,5 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     host.listen('remote://presence', next => { if (Array.isArray(next)) { devices = next; render(); } }),
   ];
   void load();
-  return () => { disposed = true; for (const u of unlisten) void u.then(fn => fn(), () => undefined); };
+  return () => { disposed = true; unmountOrchestration?.(); for (const u of unlisten) void u.then(fn => fn(), () => undefined); };
 }

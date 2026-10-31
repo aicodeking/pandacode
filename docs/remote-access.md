@@ -197,7 +197,8 @@ more power than local ones.
 | `subscribe` | `{ sessionIds: [...] }` (≤ 500) | `{ tasks: [{ sessionId, status, lastId, title }] }` for those that exist. Adds the ids to this device's subscription for 10 minutes; the viewer renews every 9 minutes and on every presence frame. An expired subscription starts over. |
 | `providers.list` | `{ force?: boolean }` | the host's `list_providers` result: `[{ id, name, installed, path, version, models }]`. `force` drops the same ACP catalog caches. If it would not fit one reply, the longest `models` lists are halved until it does. |
 | `providers.models` | `{ provider, force?: boolean }` | the host's `list_provider_models` result: `[{ id, name, description, reasoningEfforts, defaultReasoningEffort, contextWindow }]`, its tail dropped to fit one reply. `provider` must be a known harness id (`Unknown provider.`). |
-| `task.start` | `{ repo: "owner/name", branch?, worktree, prompt, provider, model, mode?, effort? }` | `{ sessionId }` |
+| `task.start` | `{ repo: "owner/name", branch?, worktree, prompt, provider, model, mode?, effort?, startId? }` | `{ sessionId }`, or `{ sessionId: null, starting: true }` for a repeated start. `startId` is the viewer's local mirror id; the host keeps it on its task (`sessions.remote_caller` + `remote_start_id`, unique per caller) with a start state (`remote_start_state`: `starting`, then `started` once the prompt was accepted). A repeated start with it returns the same `sessionId` once started and `starting` while the first still runs, and starts nothing new. A failed start removes the task it made before it is reported. |
+| `task.find` | `{ startId }` | `{ sessionId: string \| null, starting: boolean }`: the task this caller started with `startId` (only the caller's own) once its prompt was accepted; `starting` while that start runs there (its worktree and prompt included). A start left `starting` with nothing running it (the host quit during it) whose prompt was already saved had begun its run, so it reads as started (and is marked so); one without its prompt is removed and reads as missing, so the viewer fails it instead of adopting a half-made task. The host reads the in-flight set and the row under one lock, and a start leaves the set only after its row is settled, so a lookup never sees neither. |
 | `task.messages` | `{ sessionId, afterId }` | `{ messages: [{ id, role, content, createdAt, turnDurationMs }], hasMore, title }` |
 | `task.send` | `{ sessionId, text }` | `{ queued: boolean }`. Queued if the task is running, like Enter. If the run ended between the check and the queue add, the host takes the entry back and sends it. |
 | `task.stop` | `{ sessionId }` | `{}` |
@@ -228,7 +229,23 @@ A host refuses a session id that is itself a mirror, so tasks never hop twice.
    subscription, and sends the prompt.
 
 The host's worst case is about 9.5 minutes (clone, fetch and local git steps, each capped); the
-viewer waits 3 minutes longer. A `task.start` runs beside the peer's ordered request queue (at
+viewer waits 3 minutes longer.
+
+The viewer makes the mirror row and spawns its start in one step (no await between them), so a
+caller that gives up (a tool deadline) never leaves a row nothing starts. When the reply is lost
+(a timeout, a dropped connection), the viewer asks `task.find`: a task is adopted, a start still
+running there or a host out of reach leaves the mirror *pending*, and a start the host never got
+fails. Pending mirrors (`remote_device` set, `remote_session` null, status not `error`, `remote_start_state` null, a quit
+included; the host keeps mirrors `running` across a restart here, as their host runs them) are
+retried after each subscription pass (every presence change and every 9 minutes; one recovery
+at a time, one more queued, at most 4 `task.find`s at once):
+found → adopted (saved and subscribed), not found → kept as an error whose reply is “PandaCode
+quit while this thread was starting.” Stopping a pending mirror ends its local turn at once
+(`interrupted`, kept in the row); whoever adopts its host task then sends `task.stop`. If that
+start then fails or is not found, the mirror stays stopped: never an error, deleted or reset to
+a draft, and `remote_start_state='ended'` takes it out of the pending set. A plain
+`remote_start_task` whose start is still pending returns the mirror (running) instead of an
+error. A `task.start` runs beside the peer's ordered request queue (at
 most 4 at once, then it queues), so a slow clone never delays that peer's other requests, which
 stay in order.
 

@@ -7,3 +7,4 @@
 .remote-code{padding:.7rem 1rem;border-top:1px solid var(--border)}
 .remote-code-row{display:flex;align-items:center;gap:12px;margin:.5rem 0}
 .remote-user-code{font:600 1.5rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em}
+.settings-page-root .remote-device:has([data-revoke]){grid-template-columns:minmax(0,1fr) auto auto}

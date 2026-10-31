@@ -3028,6 +3028,10 @@ async fn run_process_with_tools(
                 _=tokio::time::sleep_until(deadline),if stopped || protocol.phase==0=>{
                     if stopped{break Ok(());}break Err("Agent initialization timed out. Check the CLI's login and configuration in a terminal.".into());
                 },
+                _=tokio::time::sleep_until(protocol.approval_deadline().unwrap_or_else(||tokio::time::Instant::now()+Duration::from_secs(86400))),if !stopped && protocol.approval_deadline().is_some()=>{
+                    let step=protocol.expire_approvals(tokio::time::Instant::now());
+                    apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;
+                },
                 _=tokio::time::sleep_until(protocol.goals.deadline().unwrap_or_else(||tokio::time::Instant::now()+Duration::from_secs(86400))),if protocol.goals.deadline().is_some()=>{
                     let step=protocol.goal_tick();
                     if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}

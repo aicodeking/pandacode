@@ -634,6 +634,44 @@ const architect = createPreviewArchitect({
   agent,
 });
 
+/* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
+ * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+/** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
+const SETTLED_SHOWN = 24;
+function machineRows(parentId: string) {
+  return [...machineParents].filter(([, parent]) => parent === parentId).map(([id]) => session(id)).map(child => ({
+    sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
+    status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
+    machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+  }));
+}
+function machineChildren(parentId: string) {
+  const all = machineRows(parentId);
+  const live = (status: string) => status === 'running' || status === 'waiting';
+  const settled = all.filter(child => !live(child.status)).sort((a, b) => b.createdAt - a.createdAt).slice(0, SETTLED_SHOWN);
+  return [...all.filter(child => live(child.status)), ...settled].sort((a, b) => a.createdAt - b.createdAt);
+}
+function installMachineChildren(): void {
+  const w = window as any;
+  // `launch` also records the parent's pandacode_machine_launch call, as the native tool does.
+  w.__machineChild ??= (parentId: string, child: { title: string; provider?: ProviderId; status?: string; machine?: { id: string; name: string }; launch?: boolean }) => {
+    const parent = session(parentId), at = Date.now() + machineParents.size;
+    const created = { ...parent, id: crypto.randomUUID(), title: child.title, provider: child.provider ?? 'claude', model: '', status: child.status ?? 'running', remoteDevice: child.machine ?? { id: 'dev-studio', name: 'Studio iMac' }, pinned: false, sidebarOrder: null, resumeId: null, createdAt: at, updatedAt: at, lastResponseAt: null } as Session;
+    sessions.unshift(created); messages[created.id] = []; machineParents.set(created.id, parentId);
+    if (child.launch) (messages[parentId] ??= []).push({ id: ++id, sessionId: parentId, role: 'tool', createdAt: at, content: encodeTool({ id: `launch-${created.id}`, name: 'pandacode_machine_launch', status: 'completed', input: JSON.stringify({ machine: created.remoteDevice!.name, prompt: child.title, provider: created.provider, model: 'default', title: child.title }), output: JSON.stringify({ thread: created.id, machine: created.remoteDevice, mode: 'ask', status: 'starting' }) }) });
+    emit('sessions-changed', {});
+    return created.id;
+  };
+  // A saved tool call or app-origin turn on a task, for transcript labels.
+  w.__machineToolMessage ??= (sessionId: string, name: string, input: unknown, output: unknown) => { (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'tool', createdAt: Date.now(), content: encodeTool({ id: `tool-${id}`, name, status: 'completed', input: JSON.stringify(input), output: JSON.stringify(output) }) }); };
+  w.__machineWake ??= (sessionId: string) => {
+    const at = Date.now();
+    (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
+  };
+  w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
+}
+
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
@@ -659,6 +697,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return { sessionId: s.id } as T;
   }
   if (command.startsWith('remote_')) return invokeRemote<T>(command, args, emit);
+  if (command.startsWith('orchestration_')) installMachineChildren();
+  if (command === 'orchestration_threads') {
+    // The named threads of this task only, whatever their age (at most 64 per call).
+    const ids: unknown = args.ids;
+    if (!Array.isArray(ids) || ids.length > 64 || ids.some(item => typeof item !== 'string')) throw new Error('Pass at most 64 thread ids.');
+    ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
+    return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
+  }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
+  if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
   if (command === 'cloud_agent_set_claude_token') { if (!String(args.token ?? '').trim()) throw new Error('Paste the token from claude setup-token.'); return null as T; }
   if (command === 'cloud_agent_start') {

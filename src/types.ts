@@ -17,7 +17,7 @@ export interface GithubReference { kind: 'issue' | 'pull'; number: number; title
 export interface TurnChangeFile { path: string; oldPath?: string | null; status: 'added' | 'modified' | 'deleted' | 'renamed'; additions: number | null; deletions: number | null; binary?: boolean; truncated?: boolean; }
 export interface TurnChanges { attributed?: boolean; id: string; files: TurnChangeFile[]; additions: number; deletions: number; truncated: boolean; concurrent: boolean; error?: string | null; }
 export interface TurnChangeDiff { path: string; oldPath?: string | null; patch: string; binary: boolean; truncated: boolean; error?: string | null; }
-export interface Message { coordinationKind?: 'worker_update' | 'worker_review' | 'continue' | 'worker_failed'; id: number; sessionId: string; role: string; content: string; createdAt: number; turnDurationMs?: number | null; authorProvider?: ProviderId; turnChanges?: TurnChanges | null; }
+export interface Message { coordinationKind?: 'worker_update' | 'worker_review' | 'continue' | 'worker_failed' | 'machine_threads' | (string & {}); id: number; sessionId: string; role: string; content: string; createdAt: number; turnDurationMs?: number | null; authorProvider?: ProviderId; turnChanges?: TurnChanges | null; }
 export interface MessagePage { messages: Message[]; hasOlder: boolean; }
 export interface ReasoningEffort { id: string; name: string; description: string; }
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; }
