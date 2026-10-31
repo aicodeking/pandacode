@@ -314,7 +314,7 @@ pub fn voice_download_model(app: AppHandle, voice: State<'_, Voice>, id: String)
             state.downloads.lock().expect("downloads lock").remove(&id);
         }
     });
-    let _ = handle;
+    drop(handle);
     Ok(())
 }
 

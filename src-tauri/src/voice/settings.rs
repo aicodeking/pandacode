@@ -188,15 +188,13 @@ mod tests {
 
     #[test]
     fn resolved_model_keeps_pick_and_falls_back_by_language() {
-        let mut settings = Settings::default();
-        settings.model = "sense-voice".into();
+        let settings = Settings { model: "sense-voice".into(), ..Settings::default() };
         assert_eq!(settings.resolved_model(&installed), "sense-voice");
-        settings.model = "parakeet-v3".into();
         // Not installed: fall back to the language default that is installed.
-        settings.language = "zh".into();
+        let settings = Settings { model: "parakeet-v3".into(), language: "zh".into(), ..Settings::default() };
         assert_eq!(settings.resolved_model(&installed), "sense-voice");
         // An installed default still answers for other languages…
-        settings.language = "fr".into();
+        let settings = Settings { model: "parakeet-v3".into(), language: "fr".into(), ..Settings::default() };
         assert_eq!(settings.resolved_model(&installed), "sense-voice");
         // …and nothing is chosen when nothing is installed.
         assert_eq!(settings.resolved_model(&|_| false), "");
@@ -232,10 +230,7 @@ mod tests {
     fn round_trips_through_disk() {
         let dir = std::env::temp_dir().join(format!("pandacode-voice-settings-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut settings = Settings::default();
-        settings.enabled = true;
-        settings.fast_mode = true;
-        settings.language = "en".into();
+        let settings = Settings { enabled: true, fast_mode: true, language: "en".into(), ..Settings::default() };
         save(&dir, &settings).unwrap();
         let loaded = load(&dir);
         assert_eq!(loaded, settings);
