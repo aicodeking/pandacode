@@ -589,10 +589,13 @@ function agent(event: AgentEvent) { emit('agent-event', event); }
 type PreviewVoiceSettings = { enabled: boolean; engine: string; model: string; language: string; interaction: string; fastMode: boolean; mode: string; onlineProvider: string; onlineModel: string; onlineBaseUrl: string };
 let previewVoiceSettings: PreviewVoiceSettings = { enabled: false, engine: '', model: '', language: 'auto', interaction: 'toggle', fastMode: false, mode: 'offline', onlineProvider: '', onlineModel: '', onlineBaseUrl: '' };
 const previewVoiceProviders = [
-  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com', defaultModel: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe', 'gpt-4o-transcribe', 'whisper-1'], streaming: false },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com', defaultModel: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe', 'gpt-transcribe', 'gpt-4o-transcribe', 'whisper-1'], streaming: false },
   { id: 'groq', label: 'Groq', baseUrl: 'https://api.groq.com', defaultModel: 'whisper-large-v3-turbo', models: ['whisper-large-v3-turbo', 'whisper-large-v3'], streaming: false },
-  { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai', defaultModel: 'openai/gpt-4o-mini-transcribe', models: ['openai/gpt-4o-mini-transcribe', 'openai/whisper-large-v3-turbo', 'deepgram/nova-3'], streaming: false },
+  { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai', defaultModel: 'openai/gpt-4o-mini-transcribe', models: ['openai/gpt-4o-mini-transcribe', 'openai/whisper-large-v3-turbo', 'deepgram/nova-3', 'elevenlabs/scribe-v2'], streaming: false },
   { id: 'together', label: 'Together', baseUrl: 'https://api.together.ai', defaultModel: 'openai/whisper-large-v3', models: ['openai/whisper-large-v3'], streaming: false },
+  { id: 'mistral', label: 'Mistral', baseUrl: 'https://api.mistral.ai', defaultModel: 'voxtral-mini-transcribe-3', models: ['voxtral-mini-transcribe-3', 'voxtral-small-transcribe-3'], streaming: false },
+  { id: 'alibaba', label: 'Alibaba Qwen', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', defaultModel: 'qwen3-asr-flash', models: ['qwen3-asr-flash'], streaming: false },
+  { id: 'minimax', label: 'MiniMax', baseUrl: 'https://api.minimax.io', defaultModel: 'asr-1.0', models: ['asr-1.0'], streaming: false },
   { id: 'deepgram', label: 'Deepgram (live)', baseUrl: 'wss://api.deepgram.com', defaultModel: 'nova-3', models: ['nova-3', 'nova-2'], streaming: true },
   { id: 'openai-realtime', label: 'OpenAI Realtime (live)', baseUrl: 'wss://api.openai.com', defaultModel: 'gpt-4o-mini-transcribe', models: ['gpt-4o-mini-transcribe'], streaming: true },
   { id: 'custom', label: 'Custom (OpenAI-compatible)', baseUrl: '', defaultModel: '', models: [], streaming: false },

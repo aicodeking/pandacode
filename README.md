@@ -164,7 +164,7 @@ information:
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Agents → Cloud sandboxes |
 | Voice model download (optional): the dictation model you picked, verified by size and SHA-256 | `huggingface.co`, one `github.com` release | Only when you press Download in Settings → Voice; never bundled, never automatic |
 | Mobile voice input uses the phone's own speech recognition; with On-device only off, the phone's speech service may process dictation | Your device's speech service (Apple/Google) | Only while you dictate; PandaCode's relay only ever carries the final text |
-| Online dictation (optional): your recording goes to the provider you configured | That provider's API (OpenAI, Groq, OpenRouter, Together, Deepgram, or your own endpoint) | Only when you pick Online mode, save a key and dictate; never configured by default |
+| Online dictation (optional): your recording goes to the provider you configured | That provider's API (OpenAI, Groq, OpenRouter, Together, Mistral, Alibaba Qwen, MiniMax, Deepgram, or your own endpoint) | Only when you pick Online mode, save a key and dictate; never configured by default |
 
 ## Install
 

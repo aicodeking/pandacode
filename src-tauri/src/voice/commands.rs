@@ -114,7 +114,6 @@ pub struct ProviderInfo {
 
 #[tauri::command]
 pub fn voice_providers() -> Vec<ProviderInfo> {
-    use super::providers::Transport;
     super::providers::PROVIDERS
         .iter()
         .map(|provider| ProviderInfo {
@@ -123,7 +122,7 @@ pub fn voice_providers() -> Vec<ProviderInfo> {
             base_url: provider.base_url.into(),
             default_model: provider.default_model.into(),
             models: provider.models.iter().map(|model| model.to_string()).collect(),
-            streaming: provider.transport != Transport::Multipart,
+            streaming: super::providers::is_streaming(provider.transport),
         })
         .collect()
 }
@@ -165,7 +164,9 @@ pub async fn voice_test_provider(
     let samples = vec![0.0f32; super::online::SAMPLE_RATE as usize / 2];
     let language = super::providers::language_hint(&settings.language);
     match entry.transport {
-        super::providers::Transport::Multipart => {
+        super::providers::Transport::Multipart
+        | super::providers::Transport::MinimaxMultipart
+        | super::providers::Transport::QwenChat => {
             transcribe_or_probe(entry, &settings.online_base_url, model, &key, &samples, true, language.as_deref()).await
         }
         super::providers::Transport::DeepgramWs => {
@@ -183,7 +184,7 @@ pub async fn voice_test_provider(
     }
 }
 
-/// Multipart call; `probe` treats a well-formed (even empty) answer as success
+/// Batch call; `probe` treats a well-formed (even empty) answer as success
 /// so a connectivity test with silence does not read as a failure.
 async fn transcribe_or_probe(
     entry: &'static super::providers::Provider,
@@ -194,7 +195,15 @@ async fn transcribe_or_probe(
     probe: bool,
     language: Option<&str>,
 ) -> Result<String, String> {
-    let result = super::online::transcribe_multipart(entry, base_override, model, key, samples, language).await;
+    let result = match entry.transport {
+        super::providers::Transport::MinimaxMultipart => {
+            super::online::transcribe_minimax(entry, base_override, model, key, samples, language).await
+        }
+        super::providers::Transport::QwenChat => {
+            super::online::transcribe_qwen_chat(entry, base_override, model, key, samples, language).await
+        }
+        _ => super::online::transcribe_multipart(entry, base_override, model, key, samples, language).await,
+    };
     match result {
         Ok(text) => Ok(if probe && text.is_empty() { format!("{} is connected.", entry.label) } else { text }),
         Err(error) => {
@@ -512,9 +521,11 @@ fn online_start_recording(
         let mut buffer: Vec<f32> = Vec::new();
         // A feed failure after connect: remembered, settled on stop.
         let mut stream_failed: Option<String> = None;
-        // Streaming providers connect now; multipart providers connect on stop.
+        // Streaming providers connect now; batch providers connect on stop.
         let mut stream: Option<super::online::OnlineStream> = match provider.transport {
-            super::providers::Transport::Multipart => None,
+            super::providers::Transport::Multipart
+            | super::providers::Transport::MinimaxMultipart
+            | super::providers::Transport::QwenChat => None,
             super::providers::Transport::DeepgramWs => {
                 let url = super::providers::deepgram_url(provider, &settings.online_base_url, &model, language.as_deref());
                 match super::online::connect_deepgram(&url, &key, {
@@ -608,7 +619,7 @@ fn online_start_recording(
             return;
         }
         // Multipart: one request with the whole take.
-        match super::online::transcribe_multipart(provider, &settings.online_base_url, &model, &key, &buffer, language.as_deref()).await {
+        match transcribe_or_probe(provider, &settings.online_base_url, &model, &key, &buffer, false, language.as_deref()).await {
             Ok(text) => super::emit(
                 app,
                 super::EVENT_RESULT,

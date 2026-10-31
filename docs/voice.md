@@ -99,6 +99,9 @@ nowhere else.
 | Groq | OpenAI-compatible multipart | no | `whisper-large-v3-turbo` |
 | OpenRouter | OpenAI-compatible multipart | no | `openai/gpt-4o-mini-transcribe` (25+ models) |
 | Together | OpenAI-compatible multipart | no | `openai/whisper-large-v3` |
+| Mistral | OpenAI-compatible multipart | no | `voxtral-mini-transcribe-3` |
+| Alibaba Qwen | OpenAI-compatible `chat/completions` (base64 audio part) | no | `qwen3-asr-flash` |
+| MiniMax | `POST /v1/speech_to_text` (OpenAI-style multipart, `language` header) | no | `asr-1.0` |
 | Deepgram | streaming WebSocket | yes | `nova-3` |
 | OpenAI Realtime | streaming WebSocket (Together-compatible) | yes | `gpt-4o-mini-transcribe` |
 | Custom | any OpenAI-compatible endpoint (self-hosted incl. localhost) | no | yours |
@@ -106,11 +109,21 @@ nowhere else.
 With fallback on, a failed online attempt (connection error, timeout, mid-stream
 error) keeps the recording and settles it with the local quality model — the
 result is marked as a fallback and a toast says so. Streaming providers send
-16 kHz PCM (Deepgram) or 24 kHz PCM16 (OpenAI Realtime); multipart sends one
-16 kHz WAV when you stop. Every transport carries the dictation language as an
-ISO-639-1 hint when one is picked (the multipart `language` field, Deepgram's
+16 kHz PCM (Deepgram) or 24 kHz PCM16 (OpenAI Realtime); batch providers send
+one request when you stop — a 16 kHz WAV for the multipart ones, base64 WAV in
+a JSON `input_audio` part for Qwen. Every transport carries the dictation
+language as an ISO-639-1 hint when one is picked (the multipart `language`
+field, MiniMax's `language` header, Qwen's `asr_options.language`, Deepgram's
 `language` query parameter, the realtime session's transcription language);
-**Detect automatically** sends nothing and lets the provider detect. Keys:
+**Detect automatically** sends nothing and lets the provider detect.
+
+Two region notes: MiniMax documents both `api.minimax.io` and `api.minimax.cn`
+and which one works depends on where your account was created — set the
+endpoint override to the other host if a request is refused; its
+speech-to-text requires a paid account. Alibaba Qwen defaults to the
+international Singapore compatible-mode host; a China account overrides the
+endpoint to `https://dashscope.aliyuncs.com/compatible-mode/v1` (or its
+workspace host), and clips are capped at 5 minutes. Keys:
 `voice_set_key`/`voice_keys`/`voice_test_provider`
 (the test sends half a second of silence through the real endpoint).
 
