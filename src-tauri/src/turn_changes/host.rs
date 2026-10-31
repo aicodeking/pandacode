@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 pub(crate) const TOOL: &str = "pandacode_track_files";
 
 pub(crate) fn instruction() -> &'static str {
-    "\n\nFile change tracking: when pandacode_track_files is available, before any file-edit batch (native editing tools, shell commands, or scripts), call pandacode_track_files with action begin and the exact project-relative paths you intend to modify (include both paths for a rename). After that batch finishes, call action complete with the returned captureId and only the paths you actually changed. Do not report files changed by other tasks or the user, and do not use Git status as ownership evidence. Always begin the capture before editing and await its result; provider notifications alone may arrive after a fast write."
+    "\n\nFile change tracking: when pandacode_track_files is available, before any file-edit batch (native editing tools, shell commands, or scripts), call pandacode_track_files with action begin and the exact paths you intend to modify: project-relative for the primary folder, label/relative for another of this task's folders, or absolute inside any folder (include both paths for a rename). After that batch finishes, call action complete with the returned captureId and only the paths you actually changed. Do not report files changed by other tasks or the user, and do not use Git status as ownership evidence. Always begin the capture before editing and await its result; provider notifications alone may arrive after a fast write."
 }
 
 /// Keep the catalog stable across resumed turns; control-only turns have no tracker.

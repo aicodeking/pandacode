@@ -48,6 +48,8 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
+        // A folder added to or removed from the project changes the command line.
+        "extraDirs": config.extra_dirs,
         "instructions": config.instructions, "tools": tools,
         // The login a process starts with (API key or subscription) is fixed at spawn.
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
@@ -128,6 +130,7 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         .or_else(|| executable(&config.provider))
         .ok_or("Claude Code is not installed")?;
     config.cwd = external_path(&config.cwd);
+    config.extra_dirs = config.extra_dirs.iter().map(|dir| external_path(dir)).collect();
     let key = key(&config, &tools);
     let mut command = command(&path)?;
     crate::provider_settings::apply_environment(&config.provider, &mut command);
@@ -206,6 +209,7 @@ mod tests {
             changed(|c| c.reasoning_effort = Some("high".into())),
             changed(|c| c.resume_id = Some("another".into())),
             changed(|c| c.instructions = "new".into()),
+            changed(|c| c.extra_dirs = vec![PathBuf::from("/other/repo")]),
             key(&base, &[]),
             key_with(&base, &tools, "work#1"),
         ] {

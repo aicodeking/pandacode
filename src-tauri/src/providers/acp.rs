@@ -313,6 +313,14 @@ impl Protocol {
                         self.mcp_tool_names.clear();
                     }
                     let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
+                    // Only servers that advertise the capability take extra
+                    // directories, and only on the session/new that opens a session.
+                    if self.remote_id.is_empty()
+                        && !self.config.extra_dirs.is_empty()
+                        && capabilities["sessionCapabilities"].get("additionalDirectories").is_some()
+                    {
+                        params["additionalDirectories"] = json!(self.config.extra_dirs.iter().map(|dir| launch::external_path(dir)).collect::<Vec<_>>());
+                    }
                     let method = if self.remote_id.is_empty() {
                         "session/new"
                     } else {
@@ -1457,6 +1465,26 @@ mod tests {
     }
     fn capabilities() -> Value {
         json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true},"mcpCapabilities":{"http":true}}}})
+    }
+
+    #[test]
+    fn extra_folders_ride_session_new_only_when_the_server_advertises_them() {
+        let new_session = |advertised: bool| {
+            let mut cfg = config("kilo");
+            cfg.extra_dirs = vec![PathBuf::from("/repo/backend"), PathBuf::from("/repo/web")];
+            let mut p = Protocol::new(cfg);
+            let mut caps = capabilities();
+            if advertised {
+                caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume":{},"additionalDirectories":{}});
+            }
+            let step = p.receive(caps).unwrap();
+            assert_eq!(step.write[0]["method"], "session/new");
+            step.write[0]["params"]["additionalDirectories"].clone()
+        };
+        // Devin-shaped initialize: the field rides the session it opens.
+        assert_eq!(new_session(true), json!(["/repo/backend", "/repo/web"]));
+        // A server that never advertised it must never see the field.
+        assert!(new_session(false).is_null());
     }
     fn metadata() -> Value {
         json!({"sessionId":"remote","configOptions":[

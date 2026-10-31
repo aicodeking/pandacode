@@ -583,6 +583,23 @@ fn reminder_turn(turns: i64) -> bool {
     turns > 0 && turns % INSTRUCTION_REMINDER_EVERY == 1
 }
 
+/// The per-message note naming a multi-folder task's other checkouts with absolute
+/// paths. Empty for single-folder tasks, so their prompts stay byte-identical.
+fn folders_note(folders: &[storage::RepoFolder]) -> String {
+    let extra: Vec<String> = folders
+        .iter()
+        .filter(|folder| !folder.is_primary)
+        .map(|folder| format!("{}={}", folder.label, folder.path.display()))
+        .collect();
+    if extra.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n<PandaCode task metadata>\nAdditional repositories (absolute paths): {}.\n</PandaCode task metadata>",
+        extra.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod instruction_tests {
     use super::*;
@@ -612,6 +629,27 @@ mod instruction_tests {
             assert!(!worker.contains(gone), "{gone}");
         }
         eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
+    }
+
+    #[test]
+    fn the_folder_note_lists_other_checkouts_and_single_folder_tasks_get_nothing() {
+        let folder = |path: &str, label: &str, primary: bool| storage::RepoFolder {
+            path: PathBuf::from(path),
+            label: label.into(),
+            is_primary: primary,
+            worktree: None,
+            branch: None,
+        };
+        assert_eq!(folders_note(&[]), "");
+        assert_eq!(folders_note(&[folder("/repo/main", "main", true)]), "");
+        assert_eq!(
+            folders_note(&[
+                folder("/repo/main", "main", true),
+                folder("/repo/backend", "backend", false),
+                folder("/repo/web", "web", false),
+            ]),
+            "\n\n<PandaCode task metadata>\nAdditional repositories (absolute paths): backend=/repo/backend, web=/repo/web.\n</PandaCode task metadata>"
+        );
     }
 }
 
@@ -1632,6 +1670,8 @@ fn prepare_task_run_in_project(
         return Err("Message and attached context must be under 16 MiB.".into());
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    let folders = store.workspace_folders(&session.project_id, &session_id)?;
+    let extra_dirs: Vec<PathBuf> = folders.iter().filter(|folder| !folder.is_primary).map(|folder| folder.path.clone()).collect();
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
     let (prompt, skill, maintenance) = match admission.command {
@@ -1728,7 +1768,13 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    let mut prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    // A multi-folder task's harness learns the other checkouts through the run
+    // config (its own mechanism) and this note; empty for single-folder tasks.
+    // Maintenance turns keep the prompt bare, like the title note and instructions.
+    if !maintenance {
+        prompt.push_str(&folders_note(&folders));
+    }
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1736,6 +1782,7 @@ fn prepare_task_run_in_project(
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
         cwd,
+        extra_dirs,
         resume_id: session.resume_id,
         prompt,
         instructions: String::new(),
@@ -1784,6 +1831,12 @@ fn prepare_cloud_attach(
         .filter(|cloud| cloud.active())
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    // Cloud tasks run one checkout today; the folders still feed the run config.
+    let extra_dirs: Vec<PathBuf> = store.workspace_folders(&session.project_id, &session_id)?
+        .into_iter()
+        .filter(|folder| !folder.is_primary)
+        .map(|folder| folder.path)
+        .collect();
     store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
     store.reattach_turn(&session_id)?;
     let config = RunConfig {
@@ -1793,6 +1846,7 @@ fn prepare_cloud_attach(
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
         cwd,
+        extra_dirs,
         resume_id: session.resume_id,
         prompt: String::new(),
         instructions: String::new(),
