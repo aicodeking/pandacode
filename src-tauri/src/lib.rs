@@ -4087,14 +4087,29 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     })
     .await
 }
+/// The checkout a file command reads: without a qualifier the task's primary
+/// exactly as before, with one the folder its label or effective path names.
+fn file_root(
+    state: &State<'_, AppState>,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<PathBuf> {
+    match qualifier {
+        None => state.root(project_id, session_id),
+        Some(qualifier) => qualified_root(state, project_id, session_id, Some(qualifier)),
+    }
+}
+
 #[tauri::command]
 async fn list_files(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     path: Option<String>,
+    folder: Option<String>,
 ) -> Result<Vec<workspace::FileEntry>> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::list_files(&root, path)).await
 }
 #[tauri::command]
@@ -4104,12 +4119,19 @@ async fn search_files(
     session_id: Option<String>,
     query: String,
     limit: Option<usize>,
+    folder: Option<String>,
 ) -> Result<Vec<workspace::FileEntry>> {
-    let mirror = match session_id.as_deref() {
-        Some(id) => state.store.lock().map_err(|e| e.to_string())?.session(id)?.remote_device.is_some(),
-        None => false,
+    let root = match folder.as_deref() {
+        // A qualified search names a folder of this task, mirrors included.
+        Some(qualifier) => qualified_root(&state, &project_id, session_id.as_deref(), Some(qualifier))?,
+        None => {
+            let mirror = match session_id.as_deref() {
+                Some(id) => state.store.lock().map_err(|e| e.to_string())?.session(id)?.remote_device.is_some(),
+                None => false,
+            };
+            state.root(&project_id, if mirror { None } else { session_id.as_deref() })?
+        }
     };
-    let root = state.root(&project_id, if mirror { None } else { session_id.as_deref() })?;
     blocking(move || workspace::search_files(&root, query, limit)).await
 }
 #[tauri::command]
@@ -4121,8 +4143,9 @@ async fn search_text(
     match_case: bool,
     whole_word: bool,
     regex: bool,
+    folder: Option<String>,
 ) -> Result<workspace::TextSearchResult> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::search_text(&root, &query, match_case, whole_word, regex)).await
 }
 #[tauri::command]
@@ -4131,8 +4154,9 @@ async fn read_file(
     project_id: String,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<String> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::read_file(&root, path)).await
 }
 /// A PDF, Word, spreadsheet or image file for the file viewer, sent as raw bytes rather than JSON.
@@ -4142,8 +4166,9 @@ async fn read_document_file(
     project_id: String,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<tauri::ipc::Response> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
 }
 #[tauri::command]
@@ -4152,6 +4177,7 @@ async fn workspace_image(
     project_id: Option<String>,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<String> {
     // A question belongs to one task: its images come from that task's checkout only.
     // The file viewer passes the same project and task it read the document with.
@@ -4162,7 +4188,7 @@ async fn workspace_image(
             state.store.lock().map_err(|e| e.to_string())?.session(session_id)?.project_id
         }
     };
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::image_data_url(&root, &path)).await
 }
 
