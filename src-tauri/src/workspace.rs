@@ -3270,6 +3270,73 @@ mod tests {
         );
     }
 
+    /// The task_links key of a qualified repository: the primary keeps the legacy
+    /// '' key whatever its own remote, an additional repository keys by its
+    /// origin's `owner/name` read at its effective checkout (a task worktree
+    /// included), and a folder without a GitHub identity has none. Unknown
+    /// qualifiers keep git_repo_folder's refusal.
+    #[test]
+    fn task_link_repo_keys_each_qualified_repository_by_its_origin() {
+        let f = Fixture::new(true);
+        f.git(&["remote", "add", "origin", "https://github.com/o/primary.git"]);
+        let (store, project, source) =
+            folder_project(&f, &[("lib", true), ("web", true), ("plain", false)]);
+        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
+        git_at(&lib, &["remote", "add", "origin", "https://github.com/o/lib.git"]);
+        let web = fs::canonicalize(f.base.join("web")).unwrap();
+        git_at(&web, &["remote", "add", "origin", "git@github.com:octo/web.git"]);
+        let (task, _) = crate::create_worktree_task_with_repos(
+            &store,
+            &source.id,
+            "multi".into(),
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        let key = |session: Option<&str>, qualifier: Option<&str>| {
+            let store = store.lock().unwrap();
+            crate::task_link_repo(&store, &project.id, session, qualifier).unwrap()
+        };
+
+        assert_eq!(
+            key(Some(&source.id), None).as_deref(),
+            Some(""),
+            "the primary keys as the primary even with its own remote"
+        );
+        assert_eq!(
+            key(Some(&task.id), None).as_deref(),
+            Some(""),
+            "the primary worktree keys as the primary"
+        );
+        assert_eq!(key(Some(&source.id), Some("lib")).as_deref(), Some("o/lib"));
+        assert_eq!(
+            key(Some(&task.id), Some("lib")).as_deref(),
+            Some("o/lib"),
+            "a task worktree of the lib repository shares its origin"
+        );
+        assert_eq!(key(Some(&source.id), Some("web")).as_deref(), Some("octo/web"));
+        assert_eq!(
+            key(Some(&source.id), Some("plain")),
+            None,
+            "a folder without a GitHub identity has no key"
+        );
+        assert_eq!(
+            key(None, None).as_deref(),
+            Some(""),
+            "project-level reads default to the primary"
+        );
+        assert_eq!(
+            key(None, Some("web")).as_deref(),
+            Some("octo/web"),
+            "project-level reads qualify the same way"
+        );
+        assert!(
+            crate::task_link_repo(&store.lock().unwrap(), &project.id, Some(&source.id), Some("nope")).is_err(),
+            "an unknown qualifier keeps git_repo_folder's refusal"
+        );
+    }
+
     /// Qualified Git operations run against the qualified repository's effective
     /// checkout: diff, stage, commit and push land in that repository's task
     /// branch, and no other checkout moves.

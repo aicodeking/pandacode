@@ -3328,6 +3328,39 @@ fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
     }
 }
 
+/// Every repository folder of a project outside a task: the primary's checkout,
+/// then each project folder, labelled exactly as task qualification labels them.
+fn project_git_folders(store: &storage::Store, project_id: &str) -> Result<Vec<storage::RepoFolder>> {
+    let primary = store.workspace_root(project_id, None)?;
+    let project_folders = store.project_folders(project_id)?;
+    let mut label_paths = vec![primary.clone()];
+    for folder in project_folders.iter().filter(|folder| !folder.is_primary) {
+        label_paths.push(PathBuf::from(&folder.path));
+    }
+    let labels = storage::folder_labels(&label_paths);
+    let extras: Vec<&storage::Folder> = project_folders
+        .iter()
+        .filter(|folder| !folder.is_primary)
+        .collect();
+    let mut entries = vec![storage::RepoFolder {
+        path: primary,
+        label: labels[0].clone(),
+        is_primary: true,
+        worktree: None,
+        branch: None,
+    }];
+    for (index, folder) in extras.iter().enumerate() {
+        entries.push(storage::RepoFolder {
+            path: PathBuf::from(&folder.path),
+            label: labels[index + 1].clone(),
+            is_primary: false,
+            worktree: None,
+            branch: None,
+        });
+    }
+    Ok(entries)
+}
+
 /// The repository a qualified Git operation runs against: without a qualifier
 /// the primary's effective checkout, with one the folder whose label or
 /// canonical effective path matches exactly.
@@ -3343,36 +3376,7 @@ pub fn git_repo_folder(
             store.workspace_root(project_id, Some(session_id))?;
             store.workspace_folders(project_id, session_id)?
         }
-        None => {
-            let primary = store.workspace_root(project_id, None)?;
-            let project_folders = store.project_folders(project_id)?;
-            let mut label_paths = vec![primary.clone()];
-            for folder in project_folders.iter().filter(|folder| !folder.is_primary) {
-                label_paths.push(PathBuf::from(&folder.path));
-            }
-            let labels = storage::folder_labels(&label_paths);
-            let extras: Vec<&storage::Folder> = project_folders
-                .iter()
-                .filter(|folder| !folder.is_primary)
-                .collect();
-            let mut entries = vec![storage::RepoFolder {
-                path: primary,
-                label: labels[0].clone(),
-                is_primary: true,
-                worktree: None,
-                branch: None,
-            }];
-            for (index, folder) in extras.iter().enumerate() {
-                entries.push(storage::RepoFolder {
-                    path: PathBuf::from(&folder.path),
-                    label: labels[index + 1].clone(),
-                    is_primary: false,
-                    worktree: None,
-                    branch: None,
-                });
-            }
-            entries
-        }
+        None => project_git_folders(store, project_id)?,
     };
     let folder = match qualifier {
         None => folders.first(),
@@ -3390,6 +3394,20 @@ pub fn git_repo_folder(
             ))
         }
     }
+}
+
+/// The task_links repo key a qualified GitHub link belongs under: the primary
+/// keeps the legacy '' key, an additional repository keys by its origin's
+/// `owner/name`. `None` for a repository without a GitHub identity; unknown
+/// qualifiers keep git_repo_folder's refusal.
+pub fn task_link_repo(
+    store: &storage::Store,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<Option<String>> {
+    let folder = git_repo_folder(store, project_id, session_id, qualifier)?;
+    Ok(github::folder_link_key(&folder))
 }
 
 /// The checkout branch switching runs in. A repository with its own task
@@ -3772,32 +3790,48 @@ struct LinkedTask {
     link: storage::TaskLink,
 }
 
-/// Refresh every linked issue and pull request of a project in one batch.
+/// Refresh every linked issue and pull request of a project in one batch, each
+/// repository queried from its own folder.
 #[tauri::command]
-async fn github_refresh_links(
-    state: State<'_, AppState>,
-    project_id: String,
-    folder: Option<String>,
-) -> Result<Vec<LinkedTask>> {
-    let root = qualified_root(&state, &project_id, None, folder.as_deref())?;
+async fn github_refresh_links(state: State<'_, AppState>, project_id: String) -> Result<Vec<LinkedTask>> {
     let store = state.store.clone();
+    let folders = {
+        let locked = store.lock().map_err(|e| e.to_string())?;
+        project_git_folders(&locked, &project_id)?
+    };
     blocking(move || {
         let links = store.lock().map_err(|e| e.to_string())?.project_links(&project_id)?;
         if !links.is_empty() {
-            let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
-            let wanted: Vec<(String, i64)> = links.iter().map(|(_, link)| (link.kind.clone(), link.number)).collect();
-            let states: Vec<(String, i64, String, String)> = github::link_states(&root, &repo, &wanted)?
-                .into_iter()
-                .map(|state| (state.kind, state.number, state.state, state.title))
-                .collect();
-            store.lock().map_err(|e| e.to_string())?.update_link_states(&project_id, &states)?;
+            let mut states: Vec<(String, i64, String, String)> = Vec::new();
+            for (index, folder) in folders.iter().enumerate() {
+                let Some(key) = github::folder_link_key(folder) else { continue };
+                // One refresh per identity: the first folder holding the key queries it.
+                if github::folder_link_keys(&folders[..index]).contains(&key) {
+                    continue;
+                }
+                let wanted: Vec<(String, i64)> = links
+                    .iter()
+                    .filter(|(_, repo, _)| *repo == key)
+                    .map(|(_, _, link)| (link.kind.clone(), link.number))
+                    .collect();
+                if wanted.is_empty() {
+                    continue;
+                }
+                let repo = github::repository(&folder.path).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
+                for state in github::link_states(&folder.path, &repo, &wanted)? {
+                    states.push((state.kind, state.number, state.state, state.title));
+                }
+            }
+            if !states.is_empty() {
+                store.lock().map_err(|e| e.to_string())?.update_link_states(&project_id, &states)?;
+            }
         }
         Ok(store
             .lock()
             .map_err(|e| e.to_string())?
             .project_links(&project_id)?
             .into_iter()
-            .map(|(session_id, link)| LinkedTask { session_id, link })
+            .map(|(session_id, _repo, link)| LinkedTask { session_id, link })
             .collect())
     })
     .await
@@ -3808,13 +3842,14 @@ async fn set_task_link(
     state: State<'_, AppState>,
     session_id: String,
     kind: String,
+    folder: Option<String>,
     link: Option<storage::TaskLink>,
 ) -> Result<Session> {
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_task_link(&session_id, &kind, "", link.as_ref())
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let task = store.session(&session_id)?;
+    let repo = task_link_repo(&store, &task.project_id, Some(&session_id), folder.as_deref())?
+        .ok_or("This repository has no GitHub remote.")?;
+    store.set_task_link(&session_id, &kind, &repo, link.as_ref())
 }
 
 /// Push the task's branch and open a pull request for it, linking the result.
@@ -3827,10 +3862,12 @@ async fn github_create_pull_request(
     base: String,
     folder: Option<String>,
 ) -> Result<Session> {
-    let root = {
+    let (root, repo_key) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        git_repo_folder(&store, &task.project_id, Some(&session_id), folder.as_deref())?.path
+        let folder = git_repo_folder(&store, &task.project_id, Some(&session_id), folder.as_deref())?;
+        let key = github::folder_link_key(&folder).ok_or("This repository has no GitHub remote.")?;
+        (folder.path, key)
     };
     let store = state.store.clone();
     blocking(move || {
@@ -3847,7 +3884,7 @@ async fn github_create_pull_request(
         workspace::git_push(&root)?;
         let pull = github::create_pull_request(&root, &title, &body, &base, &status.branch)?;
         let link = storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 };
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", &repo_key, Some(&link))
     })
     .await
 }
@@ -3884,16 +3921,13 @@ async fn github_merge_pull_request(state: State<'_, AppState>, session_id: Strin
     .await
 }
 
-/// After a turn, link the pull request the agent opened, if any. Returns the task only when it changed.
+/// After a turn, link the pull request the agent opened in each repository, if
+/// any. Returns the task only when a link changed.
 #[tauri::command]
 async fn github_detect_pull_request(state: State<'_, AppState>, session_id: String) -> Result<Option<Session>> {
-    let (root, turn, started) = {
+    let (folders, turn, started, open_keys) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        // An open link stays: the user or an earlier turn chose it.
-        if task.pull_request.as_ref().is_some_and(|link| ["open", "draft"].contains(&link.state.as_str())) {
-            return Ok(None);
-        }
         let mut turn = Vec::new();
         let mut started = 0;
         for message in store.messages(&session_id, None)? {
@@ -3906,24 +3940,64 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
         if !turn.iter().any(|text| text.contains("/pull/")) {
             return Ok(None);
         }
-        (store.workspace_root(&task.project_id, Some(&session_id))?, turn, started)
+        // An open link stays: the user or an earlier turn chose it; it shields
+        // only its own repository.
+        let open_keys: Vec<String> = store
+            .session_pull_links(&session_id)?
+            .into_iter()
+            .filter(|(_, link)| ["open", "draft"].contains(&link.state.as_str()))
+            .map(|(repo, _)| repo)
+            .collect();
+        (store.workspace_folders(&task.project_id, &session_id)?, turn, started, open_keys)
     };
     let store = state.store.clone();
     blocking(move || {
-        let repo = match github::repository(&root) {
-            Ok(repo) => repo,
-            Err(error) if error.is_empty() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let branch = workspace::git_status(&root).map(|status| status.branch).unwrap_or_default();
-        let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
-        let store = store.lock().map_err(|e| e.to_string())?;
-        if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
+        let mut repos: Vec<github_pull::DetectRepo> = Vec::new();
+        for folder in &folders {
+            let Some(key) = github::folder_link_key(folder) else { continue };
+            if open_keys.contains(&key) || repos.iter().any(|entry| entry.repo == key) {
+                continue;
+            }
+            let identity = if folder.is_primary {
+                match github::repository(&folder.path) {
+                    Ok(repo) => repo.name_with_owner,
+                    Err(error) if error.is_empty() => continue,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                match github_hub::project_repo(&folder.path) {
+                    Some(name_with_owner) => name_with_owner,
+                    None => continue,
+                }
+            };
+            let branch = workspace::git_status(&folder.path).map(|status| status.branch).unwrap_or_default();
+            let pulls = github_pull::turn_candidates(&folder.path, &identity, &turn);
+            repos.push(github_pull::DetectRepo { repo: key, branch, pulls });
+        }
+        let open: Vec<&str> = open_keys.iter().map(String::as_str).collect();
+        let links = github_pull::detect_links(&repos, started, &open);
+        if links.is_empty() {
             return Ok(None);
         }
-        store.set_task_link(&session_id, "pull", "", Some(&link)).map(Some)
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let mut task = None;
+        for (repo, link) in links {
+            task = Some(store.set_task_link(&session_id, "pull", &repo, Some(&link))?);
+        }
+        Ok(task)
     })
     .await
+}
+
+/// Every repository's linked pull request for one task, the primary first, for
+/// the inspector's PR tab.
+#[tauri::command]
+async fn linked_pulls(state: State<'_, AppState>, session_id: String) -> Result<Vec<(String, storage::TaskLink)>> {
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .session_pull_links(&session_id)
 }
 
 /// Link an existing pull request, given as a number or URL, to the task.
@@ -4846,6 +4920,7 @@ pub fn run() {
                 github_merge_pull_request,
                 github_detect_pull_request,
                 github_link_pull_request,
+                linked_pulls,
                 simulator::commands::simulator_status,
                 simulator::commands::simulator_select,
                 simulator::commands::simulator_create_duo,

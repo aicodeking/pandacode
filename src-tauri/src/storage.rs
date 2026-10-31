@@ -1325,20 +1325,47 @@ impl Store {
         }
         self.session(sid)
     }
-    /// Linked numbers for one project, so states can be refreshed in one batch.
-    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, TaskLink)>> {
-        let mut stmt = self.db.prepare("SELECT l.session_id,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
+    /// Every repository's pull link for one task: the primary's '' first, then
+    /// the repositories by key; issue links never appear.
+    pub fn session_pull_links(&self, sid: &str) -> Result<Vec<(String, TaskLink)>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT repo,number,url,title,state,checked_at FROM task_links WHERE session_id=?1 AND kind='pull' ORDER BY repo")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    TaskLink {
+                        kind: "pull".to_string(),
+                        number: r.get(1)?,
+                        url: r.get(2)?,
+                        title: r.get(3)?,
+                        state: r.get(4)?,
+                        checked_at: r.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+    /// Linked numbers for one project with each link's repo key, so states can
+    /// be refreshed per repository in one batch.
+    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, String, TaskLink)>> {
+        let mut stmt = self.db.prepare("SELECT l.session_id,l.repo,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([project_id], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
                     TaskLink {
-                        kind: r.get(1)?,
-                        number: r.get(2)?,
-                        url: r.get(3)?,
-                        title: r.get(4)?,
-                        state: r.get(5)?,
-                        checked_at: r.get(6)?,
+                        kind: r.get(2)?,
+                        number: r.get(3)?,
+                        url: r.get(4)?,
+                        title: r.get(5)?,
+                        state: r.get(6)?,
+                        checked_at: r.get(7)?,
                     },
                 ))
             })
