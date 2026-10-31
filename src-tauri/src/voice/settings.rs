@@ -112,7 +112,7 @@ impl Settings {
         if self.mode != MODE_ONLINE && self.mode != MODE_ONLINE_FALLBACK {
             self.mode = MODE_OFFLINE.into();
         }
-        if !super::providers::find(&self.online_provider).is_some() {
+        if super::providers::find(&self.online_provider).is_none() {
             self.online_provider.clear();
             self.online_model.clear();
             self.online_base_url.clear();
