@@ -107,7 +107,11 @@ With fallback on, a failed online attempt (connection error, timeout, mid-stream
 error) keeps the recording and settles it with the local quality model — the
 result is marked as a fallback and a toast says so. Streaming providers send
 16 kHz PCM (Deepgram) or 24 kHz PCM16 (OpenAI Realtime); multipart sends one
-16 kHz WAV when you stop. Keys: `voice_set_key`/`voice_keys`/`voice_test_provider`
+16 kHz WAV when you stop. Every transport carries the dictation language as an
+ISO-639-1 hint when one is picked (the multipart `language` field, Deepgram's
+`language` query parameter, the realtime session's transcription language);
+**Detect automatically** sends nothing and lets the provider detect. Keys:
+`voice_set_key`/`voice_keys`/`voice_test_provider`
 (the test sends half a second of silence through the real endpoint).
 
 ## Mobile

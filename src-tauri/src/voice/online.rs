@@ -38,13 +38,16 @@ pub struct OnlineStream {
     realtime: bool,
 }
 
-/// A finished-but-not-yet-final multipart recording: call on stop.
+/// A finished-but-not-yet-final multipart recording: call on stop. `language`
+/// is the optional ISO-639-1 hint from the dictation setting; every
+/// OpenAI-compatible transcription endpoint accepts the field.
 pub async fn transcribe_multipart(
     provider: &Provider,
     base_override: &str,
     model: &str,
     key: &str,
     samples: &[f32],
+    language: Option<&str>,
 ) -> Result<String, String> {
     let wav = encode_wav(samples, SAMPLE_RATE)?;
     let url = providers::transcription_url(provider, base_override);
@@ -56,10 +59,13 @@ pub async fn transcribe_multipart(
         .file_name("audio.wav")
         .mime_str("audio/wav")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("model", model.to_string())
         .text("response_format", "json");
+    if let Some(code) = language {
+        form = form.text("language", code.to_string());
+    }
     let response = client
         .post(&url)
         .header("Authorization", format!("{} {key}", provider.token_scheme))
@@ -216,10 +222,12 @@ impl OnlineStream {
 }
 
 /// Opens an OpenAI Realtime transcription session (Together-compatible bases).
+/// `language` is the optional ISO-639-1 hint from the dictation setting.
 pub async fn connect_realtime(
     url: &str,
     key: &str,
     model: &str,
+    language: Option<&str>,
     on_partial: impl Fn(String) + Send + 'static,
 ) -> Result<OnlineStream, String> {
     let mut request = url
@@ -237,13 +245,17 @@ pub async fn connect_realtime(
     .map_err(|_| "The realtime service did not answer in time.".to_string())?
     .map_err(|e| format!("Could not connect to the realtime service: {e}"))?;
     let (mut sender, mut reader) = stream.split();
+    let transcription = match language {
+        Some(code) => json!({ "model": model, "language": code }),
+        None => json!({ "model": model }),
+    };
     sender
         .send(Message::Text(
             json!({
                 "type": "session.update",
                 "session": {
                     "input_audio_format": "pcm16",
-                    "input_audio_transcription": { "model": model },
+                    "input_audio_transcription": transcription,
                     "turn_detection": { "type": "server_vad" }
                 }
             })
@@ -467,7 +479,7 @@ mod tests {
         }));
         let partials = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let seen = partials.clone();
-        let mut stream = connect_realtime(&url, "test-key", "gpt-4o-mini-transcribe", move |text| {
+        let mut stream = connect_realtime(&url, "test-key", "gpt-4o-mini-transcribe", None, move |text| {
             seen.lock().unwrap().push(text);
         })
         .await
@@ -490,7 +502,7 @@ mod tests {
             let _ = tokio::time::timeout(Duration::from_secs(5), reader.next()).await;
             let _ = tokio::time::timeout(Duration::from_secs(5), reader.next()).await;
         }));
-        let stream = connect_realtime(&url, "test-key", "gpt-4o-mini-transcribe", |_| {}).await.unwrap();
+        let stream = connect_realtime(&url, "test-key", "gpt-4o-mini-transcribe", None, |_| {}).await.unwrap();
         // The server drops without sending a transcript: whatever the exact
         // wording, finish() must fail rather than return empty success.
         let error = stream.finish().await.unwrap_err();
