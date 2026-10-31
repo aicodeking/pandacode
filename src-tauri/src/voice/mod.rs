@@ -72,7 +72,7 @@ pub fn setup(app: &AppHandle, dir: &Path) -> Result<(), std::io::Error> {
     std::fs::create_dir_all(&models)?;
     let settings = settings::load(dir);
     app.manage(Voice {
-        dir: dir.clone(),
+        dir: dir.to_path_buf(),
         settings: Mutex::new(settings),
         session: Mutex::new(None),
         downloads: Mutex::new(Downloads::new()),
