@@ -375,6 +375,8 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 args.push("--disable-approval".into());
             }
             args.extend(crate::providers::muse_sandbox_args(context.mode).iter().map(|arg| (*arg).into()));
+            // After `resume <id>` too: Muse takes options only after its subcommand.
+            args.extend(crate::providers::privacy::muse_arguments().iter().map(|arg| (*arg).into()));
         }
         "opencode" => {
             args.extend([
@@ -973,6 +975,14 @@ mod tests {
             assert!(args.windows(2).any(|args| args == pair), "{args:?}");
         }
         assert!(args.contains(&"--disable-write".to_owned()) && args.contains(&"--disable-shell".to_owned()));
+        // The telemetry opt-out follows `resume <id>`: Muse takes options only after it.
+        crate::providers::privacy::FORCE.with(|force| force.set(Some(true)));
+        let private = harness_arguments(&context).unwrap();
+        crate::providers::privacy::FORCE.with(|force| force.set(None));
+        assert_eq!(&private[..2], &["resume", "01a16681-4036-7383-ab96-9dd8865524d8"]);
+        let at = private.windows(2).position(|pair| pair == ["-c", "telemetry.enabled=false"]).expect("opt-out");
+        assert!(at >= 2);
+        assert_eq!([&private[..at], &private[at + 2..]].concat(), args);
         let full = harness_arguments(&HarnessContext { mode: "full", resume_id: None, ..context }).unwrap();
         assert!(full.contains(&"--disable-approval".to_owned()) && full.contains(&"--disable-sandbox".to_owned()));
     }

@@ -232,11 +232,24 @@ fn find_native_node(directories: Vec<PathBuf>) -> Option<PathBuf> {
         .map(|dir| dir.join("node.exe"))
         .find(|path| path.is_file())
 }
+/// Which harness `path` starts, for per-harness switches: `codex` for `codex.cmd`, or for any
+/// path chosen as Codex's executable in Settings.
+fn harness_name(path: &Path) -> String {
+    if crate::provider_settings::executable_override("codex").is_some_and(|codex| codex == path) {
+        return "codex".into();
+    }
+    path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 pub(crate) fn command(path: &Path) -> Result<tokio::process::Command, String> {
     let launch = resolve(path, cfg!(windows))?;
     let mut command = tokio::process::Command::new(launch.program);
     command.args(launch.args);
     crate::child_env::sanitize(&mut command);
+    command.args(super::privacy::arguments(&harness_name(path)));
+    for (name, value) in super::privacy::environment() {
+        command.env(name, value);
+    }
     #[cfg(windows)]
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW: stdio adapters have no console UI.
     Ok(command)
@@ -247,6 +260,10 @@ pub(super) fn std_command(path: &Path) -> Result<std::process::Command, String> 
     let mut command = std::process::Command::new(launch.program);
     command.args(launch.args);
     crate::child_env::sanitize(&mut command);
+    command.args(super::privacy::arguments(&harness_name(path)));
+    for (name, value) in super::privacy::environment() {
+        command.env(name, value);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -260,6 +277,10 @@ pub(crate) fn pty_command(path: &Path) -> Result<portable_pty::CommandBuilder, S
     let mut command = portable_pty::CommandBuilder::new(launch.program);
     command.args(launch.args);
     crate::child_env::sanitize(&mut command);
+    command.args(super::privacy::arguments(&harness_name(path)));
+    for (name, value) in super::privacy::environment() {
+        command.env(name, value);
+    }
     Ok(command)
 }
 
@@ -780,6 +801,37 @@ mod tests {
             assert_eq!(launch.program, Path::new(path));
             assert!(launch.args.is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn telemetry_opt_outs_reach_every_launch_kind_only_while_on() {
+        let f = Fixture::new();
+        let codex = executable(&f, "codex");
+        let claude = executable(&f, "claude");
+        let flags = |command: &std::process::Command| -> Vec<String> {
+            command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+        };
+        let tracked = |command: &std::process::Command| {
+            command.get_envs().any(|(name, value)| name == "DO_NOT_TRACK" && value == Some("1".as_ref()))
+        };
+        for on in [false, true] {
+            super::super::privacy::FORCE.with(|force| force.set(Some(on)));
+            let codex_args = if on { vec!["-c", "analytics.enabled=false", "-c", "feedback.enabled=false"] } else { vec![] };
+            for command in [command(&codex).unwrap().as_std(), &std_command(&codex).unwrap()] {
+                assert_eq!(flags(command), codex_args);
+                assert_eq!(tracked(command), on);
+            }
+            let claude_command = std_command(&claude).unwrap();
+            assert!(flags(&claude_command).is_empty(), "only Codex and Muse take -c");
+            assert_eq!(tracked(&claude_command), on);
+            let pty = pty_command(&codex).unwrap();
+            assert_eq!(pty.get_argv().len(), 1 + codex_args.len());
+            assert_eq!(pty.get_env("DO_NOT_TRACK").is_some(), on);
+        }
+        super::super::privacy::FORCE.with(|force| force.set(None));
+        assert_eq!(harness_name(Path::new("C:/tools/codex.cmd")), "codex");
+        assert_eq!(harness_name(Path::new("/opt/bin/codex-nightly")), "codex-nightly");
     }
 
     #[test]

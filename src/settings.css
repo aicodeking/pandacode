@@ -106,3 +106,16 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-page-root .vsix-choice{flex:1;justify-content:flex-start;text-align:left}
 .settings-page-root .project-path{overflow-wrap:anywhere}
 .settings-page-root .project-row-actions{display:flex;gap:.5rem}
+/* Settings → Agents → Privacy: one row per harness with what the telemetry switch does there. */
+.harness-privacy-list{list-style:none;margin:8px 0 0;padding:0}
+.harness-privacy-list .setting-row>div{display:flex;align-items:center;gap:.7rem}
+.harness-privacy-list .setting-row>div>span{display:flex;flex-direction:column;min-width:0}
+.harness-privacy-list .setting-row svg,.harness-privacy-list .setting-row img{flex:none;width:18px;height:18px}
+.harness-privacy-list em{font-style:normal;font-size:.8rem;color:var(--muted);white-space:nowrap}
+.harness-privacy-list [data-active=true] em{color:var(--text);font-weight:520}
+.harness-privacy-list small{white-space:normal}
+/* The live region stays rendered (empty = no height) so screen readers announce new text. */
+.harness-privacy-feedback{display:flex;align-items:center;gap:.6rem;padding:0 1rem}
+.harness-privacy-status{margin:8px 0 0;font-size:.82rem;color:var(--muted)}
+.harness-privacy-status:empty{margin:0}
+.harness-privacy-feedback button{margin-top:8px}

@@ -3299,6 +3299,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
         },
         providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
+        harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
       close: closeSettings,
     });

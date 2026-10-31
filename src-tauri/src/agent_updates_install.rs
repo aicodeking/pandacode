@@ -56,6 +56,13 @@ fn command(path: &Path) -> Result<Command> {
     let prepared = crate::providers::command(path)?;
     let mut command = Command::new(prepared.as_std().get_program());
     command.args(prepared.as_std().get_args());
+    // Keep the launch environment too: AppImage cleanup and the telemetry opt-outs.
+    for (name, value) in prepared.as_std().get_envs() {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
     if let Some(home) = crate::agent_usage_providers::home() {
         command.current_dir(home);
     }

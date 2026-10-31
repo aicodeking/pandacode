@@ -72,6 +72,14 @@ loadThreadOrder();
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 let id = 10;
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewTelemetryOff = false;
+/** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
+const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
+  { provider: 'claude', name: 'Claude Code', status: 'off', detail: 'Usage telemetry, error reports and surveys. Remote feature flags and remotely started sessions stop.' },
+  { provider: 'codex', name: 'Codex', status: 'off', detail: 'Analytics and feedback uploads.' },
+  { provider: 'cline', name: 'Cline', status: 'manual', detail: 'No per-launch switch. Opt out in Cline’s settings.' },
+  { provider: 'antigravity', name: 'Antigravity', status: 'unknown', detail: 'No verified switch.' },
+] });
 const traceRoot = '/Users/you/Projects/orbit';
 const traceIndex = `${traceRoot}/src/lib/search-index.ts`;
 const traceJson = (value: unknown) => JSON.stringify(value, null, 2);
@@ -710,6 +718,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'jev_assist_run': case 'jev_assist_save_rules': throw new Error('Jev assistance is an optional desktop add-on. This preview does not call model APIs.');
     case 'jev_save_configuration': case 'jev_install_runtime': case 'jev_start': case 'jev_cancel': case 'jev_read_run': throw new Error('Jev browser testing is available in the desktop app.');
+    case 'harness_privacy': result = previewPrivacy(); break;
+    case 'harness_privacy_set': {
+      if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
+      previewTelemetryOff = args.off; result = previewPrivacy(); break;
+    }
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});

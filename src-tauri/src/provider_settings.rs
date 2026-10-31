@@ -20,6 +20,9 @@ struct Settings {
     mimo_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "crate::providers::claude_auth::Mode::is_inherit")]
     claude_connection_mode: crate::providers::claude_auth::Mode,
+    /// Settings → Agents → Turn off agent telemetry (`providers/privacy.rs`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    telemetry_off: bool,
 }
 struct Runtime {
     path: PathBuf,
@@ -604,6 +607,17 @@ pub(crate) fn claude_connection_mode() -> crate::providers::claude_auth::Mode {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.claude_connection_mode)).unwrap_or_default()
 }
 
+pub(crate) fn telemetry_off() -> bool {
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
+}
+
+pub(crate) fn set_telemetry_off(off: bool) -> Result<()> {
+    let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+        .lock().map_err(|e| e.to_string())?;
+    let next = Settings { telemetry_off: off, ..runtime.settings.clone() };
+    persist(&mut runtime, next)
+}
+
 #[tauri::command]
 pub async fn provider_set_claude_connection_mode(
     app: tauri::AppHandle,
@@ -791,6 +805,26 @@ mod tests {
             serde_json::json!({"executablePaths":{},"apiKey":"secret"})
         )
         .is_err());
+    }
+    #[test]
+    fn telemetry_switch_survives_reload_and_keeps_other_settings() {
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-telemetry-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut runtime = Runtime { path: directory.join("provider-settings.json"), settings: Settings::default() };
+        runtime.settings.executable_paths.insert("codex".into(), "/opt/bin/codex-nightly".into());
+        let next = Settings { telemetry_off: true, ..runtime.settings.clone() };
+        persist(&mut runtime, next).unwrap();
+        let saved = std::fs::read(&runtime.path).unwrap();
+        let reloaded: Settings = serde_json::from_slice(&saved).unwrap();
+        assert!(reloaded.telemetry_off);
+        assert_eq!(reloaded.executable_paths["codex"], "/opt/bin/codex-nightly");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&saved).unwrap()["telemetryOff"], true);
+        // Off is the default and is not written, so files from earlier versions load unchanged.
+        persist(&mut runtime, Settings { telemetry_off: false, ..reloaded }).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&runtime.path).unwrap()).unwrap();
+        assert!(saved.get("telemetryOff").is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn saves_selected_models_across_reload_without_losing_connections() {

@@ -14,7 +14,7 @@ const DISCOVERY_FAILED: &str =
 pub async fn discover(cwd: &Path) -> Result<Catalog, String> {
     let path = crate::providers::executable("muse").ok_or("Install the harness to discover its commands.")?;
     let mut command = crate::providers::command(&path)?;
-    command.args(["serve", "--no-session-log"]).env("MUSE_LOGIN", "0");
+    command.args(["serve", "--no-session-log"]).args(crate::providers::privacy::muse_arguments()).env("MUSE_LOGIN", "0");
     let mut pipe = Pipe::spawn(command, cwd, Duration::from_secs(20)).map_err(|_| DISCOVERY_FAILED.to_owned())?;
     let result = async {
         pipe.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","version":env!("CARGO_PKG_VERSION")}}})).await?;

@@ -3314,6 +3314,8 @@ pub fn run() {
                 conversation_import::list_importable_conversations,
                 conversation_import::import_conversations,
                 provider_settings::provider_set_claude_connection_mode,
+                providers::privacy::harness_privacy,
+                providers::privacy::harness_privacy_set,
                 providers::claude_auth::provider_claude_status,
                 provider_settings::list_opencode_models,
                 provider_settings::save_opencode_models,

@@ -48,6 +48,15 @@ fn argv(configure: impl FnOnce(&mut Command)) -> (Vec<String>, Vec<(String, Stri
     (args, env)
 }
 
+/// `argv` with the same telemetry opt-outs a local launch gets (`providers/privacy.rs`).
+fn harness_argv(provider: &str, configure: impl FnOnce(&mut Command)) -> (Vec<String>, Vec<(String, String)>) {
+    argv(|command| {
+        command.args(crate::providers::privacy::arguments(provider));
+        command.envs(crate::providers::privacy::environment().iter().copied());
+        configure(command);
+    })
+}
+
 /// None for an ordinary task. For a cloud task: prepares the machine (blocking work off the
 /// runtime) and returns the bridge command. `configure` adds the harness's arguments.
 pub(crate) async fn command(config: &RunConfig, configure: impl FnOnce(&mut Command)) -> crate::Result<Option<Command>> {
@@ -62,7 +71,7 @@ pub(crate) async fn command(config: &RunConfig, configure: impl FnOnce(&mut Comm
     if !config.images.is_empty() {
         return Err("Images can't be sent to a cloud machine yet.".into());
     }
-    let (args, env) = argv(configure);
+    let (args, env) = harness_argv(&config.provider, configure);
     let (session_id, provider) = (config.session_id.clone(), config.provider.clone());
     let worker = app.clone();
     let prepared = crate::blocking(move || super::tasks::before_run(&worker, &session_id, &provider, attach)).await?;
@@ -138,5 +147,21 @@ mod tests {
         });
         assert_eq!(args, ["-p", "--model", "x"]);
         assert_eq!(env, [("A".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn a_cloud_harness_gets_the_telemetry_opt_outs_only_while_on() {
+        let configure = |command: &mut tokio::process::Command| { command.arg("app-server"); };
+        for on in [false, true] {
+            crate::providers::privacy::FORCE.with(|force| force.set(Some(on)));
+            let (args, env) = super::harness_argv("codex", configure);
+            let expected: &[&str] = if on { &["-c", "analytics.enabled=false", "-c", "feedback.enabled=false", "app-server"] } else { &["app-server"] };
+            assert_eq!(args, expected);
+            assert_eq!(env.iter().any(|(name, value)| name == "DO_NOT_TRACK" && value == "1"), on);
+            let (args, env) = super::harness_argv("claude", |command| { command.arg("-p"); });
+            assert_eq!(args, ["-p"]);
+            assert_eq!(env.iter().any(|(name, _)| name == "DISABLE_TELEMETRY"), on);
+        }
+        crate::providers::privacy::FORCE.with(|force| force.set(None));
     }
 }

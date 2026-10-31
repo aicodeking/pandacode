@@ -28,7 +28,7 @@ pub(super) fn valid_effort(effort: &str) -> bool {
 }
 
 pub(super) fn configure(command: &mut Command, config: &RunConfig) {
-    command.arg("serve");
+    command.arg("serve").args(super::privacy::muse_arguments());
     // The launcher may start a device login when its update check is denied;
     // it must never wait for one on PandaCode's pipes.
     command.env("MUSE_LOGIN", "0");
@@ -121,7 +121,7 @@ fn initialize() -> Value {
 /// Reads the model catalog from a memory-only host. No session and no prompt.
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut command = super::command(path)?;
-    command.args(["serve", "--no-session-log"]).env("MUSE_LOGIN", "0");
+    command.args(["serve", "--no-session-log"]).args(super::privacy::muse_arguments()).env("MUSE_LOGIN", "0");
     command
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::piped())
@@ -809,6 +809,13 @@ mod tests {
         configure(&mut command, &cfg);
         let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args, ["serve", "--disable-sandbox"]);
+        // With telemetry off, the opt-out follows `serve`: Muse refuses root options before it.
+        super::super::privacy::FORCE.with(|force| force.set(Some(true)));
+        let mut command = Command::new("muse");
+        configure(&mut command, &cfg);
+        super::super::privacy::FORCE.with(|force| force.set(None));
+        let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["serve", "-c", "telemetry.enabled=false", "--disable-sandbox"]);
     }
 
     #[test]

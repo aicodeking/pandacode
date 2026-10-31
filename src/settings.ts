@@ -47,7 +47,7 @@ interface SettingsOptions {
   skills?: SkillsLibraryHost;
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
-  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed };
+  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
   /** Leaves Settings for the workspace. */
   close(): void;
 }
@@ -92,6 +92,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
+      <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
       <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
