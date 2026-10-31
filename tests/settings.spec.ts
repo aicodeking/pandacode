@@ -65,7 +65,7 @@ test('settings organization selects the default provider and model without chang
   await expect(model).not.toContainText('Opus');
 });
 
-test('settings organization recovers a failed default model catalog and permits a custom model', async ({ page }) => {
+test('settings organization disables a harness whose default model catalog failed and recovers', async ({ page }) => {
   await open(page);
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -82,15 +82,13 @@ test('settings organization recovers a failed default model catalog and permits 
   const model = page.getByRole('button', { name: 'Default model for new tasks', exact: true });
   await model.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await expect(picker.getByRole('status').filter({ hasText: 'Could not load models for Claude Code' })).toBeVisible();
-  await expect(picker.locator('.model-menu-catalog-error')).toContainText('Catalog unavailable');
-  await picker.getByRole('combobox').fill('custom-default-model');
-  await picker.getByRole('option', { name: 'Use "custom-default-model" with Claude Code', exact: true }).click();
-  await expect(model).toHaveText('custom-default-model');
+  await expect(picker.locator('[data-tip="Catalog unavailable"]').first()).toBeAttached();
+  await expect(picker.locator('.model-menu-option[data-provider="claude"]').first()).toBeDisabled();
+  await page.keyboard.press('Escape');
   await page.evaluate(() => { (window as any).__allowDefaultModels = true; });
   await model.click();
-  await expect(picker.locator('.model-menu-option[data-provider="claude"][data-model="opus"]')).toBeVisible();
-  await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
+  await expect(picker.locator('.model-menu-option[data-provider="claude"][data-model="opus"]')).toBeEnabled();
+  await expect(picker.locator('[data-tip]')).toHaveCount(0);
 });
 
 async function open(page: Page): Promise<void> {

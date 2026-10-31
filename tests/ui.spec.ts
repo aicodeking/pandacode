@@ -800,7 +800,7 @@ test('hides unsupported reasoning and context metadata without inventing values'
   await page.evaluate(() => (window as any).__closeUnsupportedEffortPicker());
 });
 
-test('retries unavailable model metadata and keeps custom model IDs usable', async ({ page }) => {
+test('disables a harness whose model catalog failed and explains why on hover', async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const source = await response.text();
@@ -812,17 +812,16 @@ test('retries unavailable model metadata and keeps custom model IDs usable', asy
   const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await expect(picker.locator('.model-menu-catalog-error')).toBeVisible();
-  await expect(picker.locator('.model-menu-catalog-error')).toContainText('Model service unavailable');
-  await expect(picker.getByRole('option', { name: 'Claude Code · Claude Sonnet', exact: true })).toBeVisible();
-  await picker.getByRole('combobox').fill('my-proxy/model_42');
-  await picker.getByRole('option', { name: 'Use "my-proxy/model_42" with Claude Code', exact: true }).click();
-  await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'my-proxy/model_42' });
+  const sonnet = picker.getByRole('option', { name: 'Claude Code · Claude Sonnet', exact: true });
+  await expect(sonnet).toBeDisabled();
+  await expect(sonnet).toHaveAttribute('title', 'Model service unavailable');
+  await picker.getByRole('tab', { name: 'Claude Code', exact: true }).hover();
+  await expect(page.getByRole('tooltip')).toHaveText('Model service unavailable');
+  await page.keyboard.press('Escape');
   await page.evaluate(() => { (window as any).__catalogAvailable = true; });
   await trigger.click();
-  await expect(picker.getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toBeVisible();
-  await expect(picker.getByRole('option', { name: 'Claude Code · my-proxy/model_42', exact: true })).toHaveAttribute('aria-current', 'true');
-  await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
+  await expect(picker.getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toBeEnabled();
+  await expect(picker.locator('[data-tip]')).toHaveCount(0);
 });
 
 test('keeps the active option and search focus when refreshed metadata removes the active model', async ({ page }) => {
@@ -916,7 +915,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
     await expect(trigger).toHaveText('Current harness model');
     await expect(picker.getByRole('option', { name: 'Claude Code · Current harness model', exact: true })).toBeVisible();
     await expect(picker.getByRole('option', { name: 'Claude Code · Stale harness model', exact: true })).toHaveCount(0);
-    await expect(picker.locator('.model-menu-catalog-error')).toBeHidden();
+    await expect(picker.locator('[data-tip]')).toHaveCount(0);
     expect(await requestCount()).toBe(2);
   });
 }

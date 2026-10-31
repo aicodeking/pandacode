@@ -50,7 +50,7 @@ const includes = (values: string[], query: string) => values.some(value => value
 let pickerCount = 0;
 
 /** A rail entry: Recent, Teams, or one harness (or named connection of a harness). */
-type Group = { key: string; provider: Provider; connection: PickerConnection | null; name: string; locked: boolean; unavailable: boolean };
+type Group = { key: string; provider: Provider; connection: PickerConnection | null; name: string; locked: boolean; unavailable: boolean; failure: string };
 type Row = { group: Group; model: ProviderModel; custom?: boolean };
 
 /** A transient picker with local state and listeners released on dismissal. */
@@ -68,13 +68,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   panel.className = 'model-menu floating-menu';
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Harness and model');
-  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-catalog-error" role="status" hidden></p><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
+  panel.innerHTML = `<div class="model-menu-search">${icon('search')}<input type="search" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="${uid}-list" aria-label="Search harnesses and models" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="model-menu-body"><div class="model-menu-rail" role="tablist" aria-orientation="vertical" aria-label="Harnesses"></div><div class="model-menu-list" id="${uid}-list" role="listbox" aria-label="Models"></div></div><p class="model-menu-error" role="alert" hidden></p><div class="model-menu-settings" hidden></div><p class="model-menu-pending" role="status" hidden>Applying…</p>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const rail = panel.querySelector<HTMLElement>('.model-menu-rail')!;
   const list = panel.querySelector<HTMLElement>('.model-menu-list')!;
   const settings = panel.querySelector<HTMLElement>('.model-menu-settings')!;
   const error = panel.querySelector<HTMLElement>('.model-menu-error')!;
-  const catalogError = panel.querySelector<HTMLElement>('.model-menu-catalog-error')!;
   const pendingStatus = panel.querySelector<HTMLElement>('.model-menu-pending')!;
   const anchorId = anchor.id;
   const anchorAction = anchor.dataset.action;
@@ -150,10 +149,14 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
-    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({
-      key: connection ? `c:${connection.id}` : `h:${provider.id}`, provider, connection, name: connection?.name ?? provider.name,
-      locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed,
-    })));
+    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => {
+      // A harness whose catalog failed is disabled; hovering it shows why.
+      const failure = catalogErrors.has(provider.id) ? catalogErrors.get(provider.id) || 'Could not load models.' : '';
+      return [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({
+        key: connection ? `c:${connection.id}` : `h:${provider.id}`, provider, connection, name: connection?.name ?? provider.name,
+        locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed || Boolean(failure), failure,
+      }));
+    });
   }
   const models = (group: Group) => modelChoices(group.provider.id, group.provider.models, group.provider.id === current.provider ? current.model : '');
   const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default') && (row.group.connection?.id ?? null) === currentConnection;
@@ -206,15 +209,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const title = [model.contextWindow ? `${context} context` : '', model.description || (model.name !== model.id && model.id !== 'default' ? model.id : '')].filter(Boolean).join(' · ');
     const meta = mixed ? group.name : context;
     const name = custom ? `Use “${escape(query)}”` : escape(model.name);
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}"${group.connection ? ` data-connection="${escape(group.connection.id)}"` : ''} data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}"${group.connection ? ` data-connection="${escape(group.connection.id)}"` : ''} data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : group.failure || title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
   }
 
   function heading(logo: string, name: string, status = ''): string {
     return `<div class="model-menu-group-heading">${logo}<h3>${escape(name)}</h3>${status}</div>`;
   }
 
-  function railItem(key: string, logo: string, name: string, count: string, classes: string, selected: boolean, label = name): string {
-    return `<button type="button" role="tab" class="model-menu-tab${classes}" data-view="${escape(key)}" aria-selected="${selected}" aria-controls="${uid}-list" aria-label="${escape(label)}" title="${escape(name)}" tabindex="${key === view ? 0 : -1}">${logo}<span class="model-menu-tab-label">${escape(name)}</span><span class="model-menu-count">${escape(count)}</span></button>`;
+  function railItem(key: string, logo: string, name: string, count: string, classes: string, selected: boolean, label = name, tip = ''): string {
+    return `<button type="button" role="tab" class="model-menu-tab${classes}" data-view="${escape(key)}" aria-selected="${selected}" aria-controls="${uid}-list" aria-label="${escape(label)}" ${tip ? `data-tip="${escape(tip)}"` : `title="${escape(name)}"`} tabindex="${key === view ? 0 : -1}">${logo}<span class="model-menu-tab-label">${escape(name)}</span><span class="model-menu-count">${escape(count)}</span></button>`;
   }
 
   function renderChoices(): void {
@@ -243,7 +246,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     railHtml += all.map(group => {
       const count = query ? hits.get(group.key)!.length : 0;
       const classes = `${group.connection ? ' is-connection' : ''}${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
-      return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key);
+      return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
     }).join('');
     if (railHtml !== railMarkup) {
       rail.innerHTML = railHtml;
@@ -277,7 +280,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
@@ -293,8 +296,6 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       setActive(next);
     }
     list.querySelectorAll<HTMLElement>('[data-catalog-loading]').forEach(status => { status.hidden = !catalogLoading.has(status.dataset.catalogLoading as ProviderId); });
-    catalogError.hidden = catalogErrors.size === 0;
-    catalogError.textContent = catalogErrors.size ? `Could not load models for ${providers.filter(provider => catalogErrors.has(provider.id)).map(provider => { const reason = catalogErrors.get(provider.id)?.replace(/\.$/, ''); return reason ? `${provider.name} (${reason})` : provider.name; }).join(', ')}. You can enter model IDs for agents that support custom models.` : '';
     updateControls();
     position();
   }
