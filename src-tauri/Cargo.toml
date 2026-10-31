@@ -44,6 +44,7 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "mul
 # resolves `app_data_dir` with (its PathResolver needs an app, which the guard never has).
 dirs = "7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono-tz = "0.10"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
