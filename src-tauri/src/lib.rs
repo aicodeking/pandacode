@@ -1310,6 +1310,18 @@ async fn prepare_command(
     }))
 }
 
+/// Under a team only a maintenance command keeps its native form; an unknown command
+/// stays plain text for the architect's briefing, while guard errors still surface.
+fn team_command_gate(
+    prepared: Result<Option<PreparedCommand>>,
+) -> Result<Option<PreparedCommand>> {
+    match prepared {
+        Ok(command) => Ok(command.filter(|command| command.resolution.maintenance)),
+        Err(error) if error.starts_with("Unknown command") => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Where a prompt goes. A mirror goes to its host even when a team was saved on it (a
 /// default team applies to every new task): a team here would run in a checkout this
 /// computer does not have.
@@ -1622,7 +1634,13 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    // A maintenance command reaches the harness bare even under a team: wrapping it
+    // would turn it into briefing text the harness never executes.
+    let prompt = if maintenance {
+        prompt
+    } else {
+        architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?
+    };
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1865,8 +1883,19 @@ async fn launch_operation_admitted(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
-        prepare_command(&state, &session_id, text.as_deref()).await?
+    let command = if goal.is_none() && !cloud_attach && kind.is_none() {
+        // Only the lead session's own send resolves as a command under a team: a
+        // worker's assignment is model-authored text that is briefed verbatim.
+        if team_admission.as_ref().is_some_and(|admission| admission.parent == session_id) {
+            // A lead's maintenance command (/compact and friends) still runs bare on its
+            // own harness; guard errors surface, while unknown commands and
+            // non-maintenance commands stay plain text for the architect's briefing.
+            team_command_gate(prepare_command(&state, &session_id, text.as_deref()).await)?
+        } else if team_admission.is_some() {
+            None
+        } else {
+            prepare_command(&state, &session_id, text.as_deref()).await?
+        }
     } else {
         None
     };
