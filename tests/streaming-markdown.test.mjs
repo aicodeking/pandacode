@@ -71,6 +71,24 @@ test('rendering settled blocks apart equals rendering the whole, at every stream
   }
 });
 
+test('an open fence renders line by line: each chunk of lines under the opener joins to the whole code', async () => {
+  const code = async value => (await render(value)).match(/<code[^>]*>([\s\S]*)<\/code>/)?.[1];
+  const bodies = ['const a = 1;\n\n\n  indented\n\tconst b = `x`;\n``\n``` not a closer\n~~~\n<b>&amp;</b>\nlast', '\n\nx\n  \ny'];
+  for (const opener of ['```ts\n', '````md\n', '~~~\n', '  ```\n']) {
+    for (const body of bodies) {
+      const value = opener + body, lines = body.split(/(?<=\n)/);
+      const at = scanBlocks('a\n\n' + value);
+      assert.equal(at.fenceAt, 3, 'the scan knows where the open fence started');
+      for (let cut = 0; cut <= lines.length; cut++) {
+        // The painter keeps the code of the complete lines and renders only the lines added after them.
+        const head = lines.slice(0, cut).join(''), rest = lines.slice(cut).join('');
+        if (!scanBlocks(opener + head).fence) break; // a closed fence is painted whole
+        assert.equal((await code(opener + head)) + (await code(opener + rest)), await code(value), JSON.stringify([head, rest]));
+      }
+    }
+  }
+});
+
 test('a deferred cache entry is built only when read, once', async () => {
   let built = 0;
   markdownCache.defer('streamed', async () => { built++; return '<p>streamed</p>'; });
