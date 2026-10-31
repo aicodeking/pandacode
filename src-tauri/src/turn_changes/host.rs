@@ -19,7 +19,7 @@ pub(crate) fn with_host(
         .as_ref()
         .map_or_else(Vec::new, |host| host.tools.clone());
     tools.push(json!({"type":"function","name":TOOL,
-        "description":"Track this task's file edits, including native tools, shell commands and scripts. Before writing, begin a capture of exact project-relative paths. After writing, complete that capture with only paths actually changed. Does not edit files or authorize writes. Include source and destination of a rename. Do not report other tasks' or user edits.",
+        "description":"Track this task's file edits, including native tools, shell commands and scripts. Before writing, begin a capture of exact paths: project-relative for the primary folder, label/relative for another of this task's folders, or absolute inside any folder. After writing, complete that capture with only paths actually changed. Does not edit files or authorize writes. Include source and destination of a rename. Do not report other tasks' or user edits.",
         "inputSchema":{"type":"object","properties":{
             "action":{"type":"string","enum":["begin","complete"]},
             "paths":{"type":"array","items":{"type":"string","minLength":1,"maxLength":4096},"maxItems":200},
@@ -69,9 +69,14 @@ impl Tracker {
         if paths.len() > CHANGE_FILES {
             return Err("Report at most 200 paths per batch.".into());
         }
+        // Keys keep begin/complete bookkeeping; the reported event carries the
+        // resolved absolute paths so observe resolves them to the same folders.
+        let mut resolved = Vec::new();
         let paths: Vec<String> = paths.iter().map(|path| {
-            let path = path.as_str().filter(|p| safe_relative(p)).ok_or("Every path must be relative to this task's folder, without parent traversal or .git.")?;
-            self.relative_path(path).ok_or_else(|| "Every path must be relative to this task's folder, without parent traversal or .git.".to_string())
+            let path = path.as_str().ok_or("Every path must be inside one of this task's folders, without parent traversal or .git.")?;
+            let (key, absolute) = self.resolve_reported(path).ok_or_else(|| "Every path must be inside one of this task's folders, without parent traversal or .git.".to_string())?;
+            resolved.push(absolute.to_string_lossy().into_owned());
+            Ok(key)
         }).collect::<Result<_>>()?;
         let action = args["action"].as_str().ok_or("Choose begin or complete.")?;
         let id = match action {
@@ -105,7 +110,7 @@ impl Tracker {
                 .into(),
                 input: String::new(),
                 output: String::new(),
-                write_paths: Some(paths.clone()),
+                write_paths: Some(resolved.clone()),
             },
         );
         if action == "begin"
