@@ -1,15 +1,15 @@
 # Task schedules
 
-Agents and the user can schedule wake-ups and timed messages for any task (thread): "check the deploy in 20 minutes", "poll CI every hour", "every weekday at 09:00", or "when task B finishes, continue here". A schedule sends an ordinary message to its task when it fires, so it works with every harness.
+Agents and the user can schedule wake-ups and timed messages for any task (thread): "check the deploy in 20 minutes", "poll CI every hour", "every weekday at 09:00", "on a cron", or "when task B finishes, continue here". A schedule sends an ordinary message to its task when it fires, so it works with every harness.
 
 ## Module map
 
-- Native: `src-tauri/src/schedules.rs` (types, validation, IPC commands), `src-tauri/src/schedules/firing.rs` (the clock loop, delivery, `run_finished`), `src-tauri/src/schedules/tools.rs` (agent tools), `src-tauri/src/schedules/tests.rs`. Clock arithmetic is shared with bots: `next_run_on`/`next_run_zoned` in `src-tauri/src/bots/schedule.rs`.
+- Native: `src-tauri/src/schedules.rs` (types, validation, IPC commands), `src-tauri/src/schedules/firing.rs` (the clock loop, delivery, `run_finished`), `src-tauri/src/schedules/cron.rs` (the cron parser and next-fire scan), `src-tauri/src/schedules/tools.rs` (agent tools), `src-tauri/src/schedules/tests.rs`. Clock arithmetic is shared with bots: `next_run_on`/`next_run_zoned` in `src-tauri/src/bots/schedule.rs`.
 - Window: the IPC contract is `src/schedules-api.ts` (keep it in step with `schedules.rs`); the thread panel is `src/schedules-thread.ts`, Settings → Schedules is `src/schedules-settings.ts`, and preview mocks are in `src/preview-schedules.ts`.
 
-## Tables (schema 35)
+## Tables (schema 37)
 
-- `task_schedules`: one row per schedule. `session_id` is the receiving task and `watch_session_id` the watched task for `after`; both cascade on task deletion. `created_by` is `user` or `agent`, and `created_by_session` (set to null when that task is deleted) is the agent's thread. Also `kind`, `interval_minutes`, `time_of_day` (HH:MM local), `days` (JSON, 0 = Sunday), `only_on_success`, `next_run_at`, `last_run_at`, `enabled`, `run_count`, `max_runs`, `consecutive_failures`, `trigger_ok` (the pending `after` trigger's result), `workflow_id` (indexed; groups a workflow's steps) and `chain_from_id` (a workflow step's predecessor).
+- `task_schedules`: one row per schedule. `session_id` is the receiving task and `watch_session_id` the watched task for `after`; both cascade on task deletion. `created_by` is `user` or `agent`, and `created_by_session` (set to null when that task is deleted) is the agent's thread. Also `kind`, `interval_minutes`, `time_of_day` (HH:MM), `days` (JSON, 0 = Sunday), `cron` (the five-field expression, for the `cron` kind), `timezone` (an IANA name; null = this computer's zone), `only_on_success`, `next_run_at`, `last_run_at`, `enabled`, `run_count`, `max_runs`, `consecutive_failures`, `trigger_ok` (the pending `after` trigger's result), `workflow_id` (indexed; groups a workflow's steps) and `chain_from_id` (a workflow step's predecessor).
 - `task_schedule_runs`: the run history. `schedule_id` has no foreign key, so history outlives a deleted schedule. Each run records an outcome (`started`, `queued`, `skipped` or `failed`), a detail, its sequence number and whether it was `manual` (Run now). Only the newest 200 runs per task are kept.
 - `scheduler_settings`: one JSON row (`SchedulerSettings`).
 
@@ -23,11 +23,19 @@ Validation rules:
 - Interval: 5 to 10080 minutes.
 - Times: HH:MM.
 - Weekly days: a non-empty set from 0 to 6.
+- Cron: a parseable five-field expression that fires within 5 years.
+- Timezone: an IANA name ("Unknown timezone: X"); empty or unset = this computer's zone.
 - Once: within 366 days and not more than 1 minute in the past.
 - Max runs: 1 to 1000, or none. An edit cannot set Max runs at or below the runs already made.
 - The target task must exist and must not be a draft.
 - The watched task must be in the same project and must not be the target.
 - An `after` schedule is refused, with "This would loop: …", when enabled `after` schedules lead from its target back to its watched task. The check runs on create, update and re-enable.
+
+## Cron
+
+The `cron` kind takes a five-field expression: minute (0-59), hour (0-23), day-of-month (1-31), month (1-12), day-of-week (0-6, where 7 is also accepted and normalized to Sunday). Fields support `*` (any), `,` (lists), `-` (ranges) and `/` (steps); names (`MON`) and macros (`@hourly`) are out of scope. When both day-of-month and day-of-week are restricted (neither is `*`), a day matching either one fires (Vixie's rule); when either is `*`, both must match. A day like February 30th that never comes is refused at save time with "does not fire within 5 years".
+
+Clock kinds (`daily`, `weekdays`, `weekly`, `cron`) accept a `timezone`: an IANA name; empty or unset keeps today's behaviour, this computer's zone. Wall-clock times are computed in the schedule's zone and converted back to epoch time, so 09:00 stays 09:00 across daylight-saving changes: a spring-forward gap fires at the next existing minute (02:30 becomes 03:00 that day) and a fall-back's ambiguous hour takes the earlier offset and fires once. Bots' schedules keep their own local-zone arithmetic.
 
 ## Firing
 
@@ -61,7 +69,7 @@ You set this earlier in this thread. Pick up where you left off; cancel it with 
 
 - The `From:` line appears only when an agent in another thread created the schedule.
 - The last line appears only for an agent's self wake-up.
-- The cadence wording is lower case: `every 30 min`, `weekdays at 09:00`, `Mon, Fri at 18:30`, `once`, `after “X” finishes`.
+- The cadence wording is lower case: `every 30 min`, `weekdays at 09:00`, `Mon, Fri at 18:30`, the cron expression, `once`, `after “X” finishes`. A schedule with a timezone appends ` · Asia/Tokyo` to its cadence, whatever the kind.
 - A Run now always reports `Run now` as its trigger.
 - `TRACE_HEADER` is exported from both `schedules.rs` and `schedules-api.ts`.
 
@@ -69,8 +77,8 @@ You set this earlier in this thread. Pick up where you left off; cancel it with 
 
 `with_schedules` in `schedules/tools.rs` joins the host chain in `lib.rs` beside `bots::tools::with_bot`. It is added only while `agentsMaySchedule` is on, and never in bot conversations, which use `bot_schedule`.
 
-- `pandacode_schedule_wakeup {note, title?, kind?, inMinutes | at, intervalMinutes, timeOfDay, days, afterTaskId, onlyOnSuccess, maxRuns}`: wakes this thread later.
-  - When `kind` is left out it is inferred: `afterTaskId` → `after`, `days` → `weekly`, `intervalMinutes` → `interval`, `timeOfDay` → `daily`, else `once`. Missing fields are named in the error ("kind interval needs intervalMinutes (5 to 10080).").
+- `pandacode_schedule_wakeup {note, title?, kind?, inMinutes | at, intervalMinutes, timeOfDay, cron, timezone, days, afterTaskId, onlyOnSuccess, maxRuns}`: wakes this thread later.
+  - When `kind` is left out it is inferred: `afterTaskId` → `after`, `days` → `weekly`, `intervalMinutes` → `interval`, `timeOfDay` → `daily`, `cron` → `cron`, else `once`. Missing fields are named in the error ("kind interval needs intervalMinutes (5 to 10080).").
   - `afterTaskId` fires when that thread's run ends; a run in progress counts. A wake-up cannot watch its own thread ("…would wake on its own turn end").
   - `at` takes RFC 3339, a local `YYYY-MM-DDTHH:MM`, or a local `HH:MM` (its next occurrence).
 - `pandacode_schedule_message {taskId, text, …timing}`: messages another task in the same project.

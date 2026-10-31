@@ -20,11 +20,13 @@ const MESSAGE: &str = "pandacode_schedule_message";
 fn with_timing(extra: Value) -> Value {
     let mut properties = json!({
         "title": {"type":"string","maxLength":120,"description":"Short label shown in the schedule list."},
-        "kind": {"type":"string","enum":["once","interval","daily","weekdays","weekly","after"],"description":"Inferred when omitted: afterTaskId → after, days → weekly, intervalMinutes → interval, timeOfDay → daily, else once."},
+        "kind": {"type":"string","enum":["once","interval","daily","weekdays","weekly","after","cron"],"description":"Inferred when omitted: afterTaskId → after, days → weekly, intervalMinutes → interval, timeOfDay → daily, cron → cron, else once."},
         "inMinutes": {"type":"integer","description":"once: minutes from now."},
         "at": {"type":"string","maxLength":40,"description":"once: RFC 3339, local YYYY-MM-DDTHH:MM, or local HH:MM (next occurrence)."},
         "intervalMinutes": {"type":"integer","description":"interval: 5 to 10080."},
         "timeOfDay": {"type":"string","maxLength":5,"description":"daily/weekdays/weekly: local HH:MM. Alone it means daily; use kind weekdays for Mon–Fri."},
+        "cron": {"type":"string","maxLength":64,"description":"cron: five fields minute hour day-of-month month day-of-week (* , - / only; 7 = Sunday)."},
+        "timezone": {"type":"string","maxLength":64,"description":"daily/weekdays/weekly/cron: IANA name like Asia/Tokyo; empty = this computer's zone."},
         "days": {"type":"array","items":{"type":"integer","minimum":0,"maximum":6},"description":"weekly: days, 0 = Sunday."},
         "afterTaskId": {"type":"string","maxLength":64,"description":"after: fires when that thread's run ends (the current run counts if it is running); set maxRuns for repeats. IDs from pandacode_list_schedules."},
         "onlyOnSuccess": {"type":"boolean","description":"after: only when that run succeeded."},
@@ -123,6 +125,7 @@ pub(crate) fn timing_input(args: &Value, now: i64) -> Result<ScheduleInput> {
     match kind.as_str() {
         "interval" if args["intervalMinutes"].as_i64().is_none() => return needs("intervalMinutes", "5 to 10080"),
         "daily" | "weekdays" | "weekly" if string("timeOfDay").is_none() => return needs("timeOfDay", "local HH:MM"),
+        "cron" if string("cron").is_none() => return needs("cron", "five fields: minute hour day-of-month month day-of-week"),
         "weekly" if days.is_empty() => return needs("days", "0 = Sunday to 6 = Saturday"),
         "after" if watch.is_none() => return needs("afterTaskId", "the thread whose run end fires it"),
         _ => {}
@@ -141,6 +144,8 @@ pub(crate) fn timing_input(args: &Value, now: i64) -> Result<ScheduleInput> {
         kind,
         interval_minutes: args["intervalMinutes"].as_i64(),
         time_of_day: string("timeOfDay"),
+        cron: string("cron"),
+        timezone: string("timezone"),
         days,
         run_at,
         watch_session_id: watch,
@@ -160,6 +165,8 @@ fn infer_kind(args: &Value, after: bool, days: bool) -> &'static str {
         "interval"
     } else if args["timeOfDay"].as_str().is_some_and(|time| !time.trim().is_empty()) {
         "daily"
+    } else if args["cron"].as_str().is_some_and(|expr| !expr.trim().is_empty()) {
+        "cron"
     } else {
         "once"
     }

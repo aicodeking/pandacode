@@ -161,7 +161,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -511,7 +511,7 @@ impl Store {
             }
             if version < 35 {
                 // Task schedules: wake-ups and timed messages for any thread (docs/schedules.md).
-                migration.execute_batch(crate::schedules::SCHEMA).map_err(|e| e.to_string())?;
+                migration.execute_batch(&crate::schedules::schema()).map_err(|e| e.to_string())?;
                 migration.execute_batch("PRAGMA user_version=35;").map_err(|e| e.to_string())?;
             }
             if version < 36 {
@@ -530,6 +530,34 @@ impl Store {
                 }
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
                   PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+            }
+            if version < 37 {
+                // Cron schedules and per-schedule timezones (issue #247): the five-field
+                // expression and the IANA zone name, both nullable — syntax is validated
+                // in Rust, like prompts — plus a `cron` schedule kind.
+                for (name, definition) in [("cron", "TEXT"), ("timezone", "TEXT")] {
+                    let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE task_schedules ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                // The kind CHECK bakes its values into the table, so databases from before
+                // the feature rebuild the long way once to let `cron` in.
+                let sql: String = migration.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='task_schedules'", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                if !sql.contains("'cron'") {
+                    let table = crate::schedules::TABLE.replacen("task_schedules(", "task_schedules_new(", 1);
+                    migration
+                        .execute_batch(&format!(
+                            "{table}
+                        INSERT INTO task_schedules_new(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,last_run_at,enabled,created_by,created_by_session,run_count,max_runs,consecutive_failures,trigger_ok,workflow_id,chain_from_id,created_at,updated_at,cron,timezone)
+                        SELECT id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,last_run_at,enabled,created_by,created_by_session,run_count,max_runs,consecutive_failures,trigger_ok,workflow_id,chain_from_id,created_at,updated_at,cron,timezone FROM task_schedules;
+                        DROP TABLE task_schedules;
+                        ALTER TABLE task_schedules_new RENAME TO task_schedules;"
+                        ))
+                        .map_err(|e| e.to_string())?;
+                    migration.execute_batch(crate::schedules::INDEXES).map_err(|e| e.to_string())?;
+                }
+                migration.execute_batch("PRAGMA user_version=37;").map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -3845,7 +3873,7 @@ mod tests {
             assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
             let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone')", [], |r| r.get(0)).unwrap();
             assert_eq!(columns, 2, "cron and timezone columns");
-            let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND notnull<>0", [], |r| r.get(0)).unwrap();
+            let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND \"notnull\"<>0", [], |r| r.get(0)).unwrap();
             assert_eq!(notnull, 0, "both nullable: syntax is validated in Rust, like prompts");
             // A database from before the feature (the previous schema, 36): drop the
             // columns and reopen; the guarded migration restores them.

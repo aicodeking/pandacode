@@ -29,11 +29,11 @@ const FAILURE_LIMIT: i64 = 3;
 const TICK_SECONDS: u64 = 15;
 const KINDS: &str = "Choose once, interval, daily, weekdays, weekly or after.";
 
-pub(crate) const SCHEMA: &str = "
+pub(crate) const TABLE: &str = "
 CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   title TEXT NOT NULL, prompt TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('once','interval','daily','weekdays','weekly','after')),
+  kind TEXT NOT NULL CHECK(kind IN ('once','interval','daily','weekdays','weekly','after','cron')),
   interval_minutes INTEGER, time_of_day TEXT, days TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(days)),
   watch_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
   only_on_success INTEGER NOT NULL DEFAULT 0, next_run_at INTEGER, last_run_at INTEGER,
@@ -41,11 +41,13 @@ CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
   created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
   trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, cron TEXT, timezone TEXT);";
+pub(crate) const INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS task_schedules_due ON task_schedules(enabled,next_run_at);
 CREATE INDEX IF NOT EXISTS task_schedules_session ON task_schedules(session_id);
 CREATE INDEX IF NOT EXISTS task_schedules_watch ON task_schedules(watch_session_id);
-CREATE INDEX IF NOT EXISTS task_schedules_workflow ON task_schedules(workflow_id);
+CREATE INDEX IF NOT EXISTS task_schedules_workflow ON task_schedules(workflow_id);";
+const RUNS: &str = "
 CREATE TABLE IF NOT EXISTS task_schedule_runs(id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, title TEXT NOT NULL, at INTEGER NOT NULL,
   outcome TEXT NOT NULL CHECK(outcome IN ('started','queued','skipped','failed')), detail TEXT NOT NULL DEFAULT '',
@@ -53,6 +55,11 @@ CREATE TABLE IF NOT EXISTS task_schedule_runs(id TEXT PRIMARY KEY, schedule_id T
 CREATE INDEX IF NOT EXISTS task_schedule_runs_session ON task_schedule_runs(session_id,at DESC);
 CREATE INDEX IF NOT EXISTS task_schedule_runs_schedule ON task_schedule_runs(schedule_id,at DESC);
 CREATE TABLE IF NOT EXISTS scheduler_settings(id INTEGER PRIMARY KEY CHECK(id=1), content TEXT NOT NULL CHECK(json_valid(content)));";
+/// The table and its indexes, for a fresh database (the 37 migration adds the
+/// `cron` and `timezone` columns to older ones and rebuilds the kind CHECK).
+pub(crate) fn schema() -> String {
+    format!("{TABLE}{INDEXES}{RUNS}")
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -161,7 +168,7 @@ pub(crate) fn set_settings(store: &Store, settings: &SchedulerSettings) -> Resul
     self::settings(store)
 }
 
-const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id";
+const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id,t.cron,t.timezone";
 const FROM: &str = "FROM task_schedules t JOIN sessions s ON s.id=t.session_id JOIN projects p ON p.id=s.project_id LEFT JOIN sessions w ON w.id=t.watch_session_id LEFT JOIN sessions c ON c.id=t.created_by_session";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
@@ -177,8 +184,6 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
         interval_minutes: r.get(8)?,
         time_of_day: r.get(9)?,
         days: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
-        cron: None,
-        timezone: None,
         watch_session_id: r.get(11)?,
         watch_session_title: r.get(12)?,
         only_on_success: r.get(13)?,
@@ -195,6 +200,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
         trigger_ok: r.get(24)?,
         workflow_id: r.get(25)?,
         chain_from_id: r.get(26)?,
+        cron: r.get(27)?,
+        timezone: r.get(28)?,
     })
 }
 
@@ -214,9 +221,29 @@ pub(crate) fn get(store: &Store, id: &str) -> Result<TaskSchedule> {
     select(store, "t.id=?1", [id])?.pop().ok_or_else(|| "This schedule no longer exists.".into())
 }
 
-/// The next clock slot after `after` in local time, rechecking the offset at the slot.
-fn next_slot(kind: &str, interval_minutes: Option<i64>, time_of_day: Option<&str>, days: &[i64], after: i64) -> Option<i64> {
-    next_run_zoned(kind, interval_minutes, time_of_day, days, after, local_offset_ms)
+/// The next clock slot after `after`: interval and daily/weekly arithmetic recheck the
+/// offset at the slot in the schedule's timezone (local when unset); cron scans the
+/// expression in it.
+fn next_slot(kind: &str, interval_minutes: Option<i64>, time_of_day: Option<&str>, days: &[i64], cron: Option<&str>, timezone: Option<&str>, after: i64) -> Option<i64> {
+    if kind == "cron" {
+        let expr = cron::parse(cron?);
+        return expr.and_then(|expr| cron::cron_next_fire(&expr, timezone.unwrap_or_default(), after));
+    }
+    next_run_zoned(kind, interval_minutes, time_of_day, days, after, |at| zone_offset(timezone, at))
+}
+
+/// The UTC offset in ms at `at` in `timezone` (an IANA name); unset falls back to the
+/// computer's zone.
+fn zone_offset(timezone: Option<&str>, at: i64) -> i64 {
+    match timezone.and_then(|name| name.parse::<chrono_tz::Tz>().ok()) {
+        Some(tz) => offset_ms(tz, at),
+        None => local_offset_ms(at),
+    }
+}
+
+fn offset_ms<T: chrono::TimeZone>(tz: T, at: i64) -> i64 {
+    use chrono::Offset;
+    tz.timestamp_millis_opt(at).single().map_or(0, |time| i64::from(time.offset().fix().local_minus_utc()) * 1000)
 }
 
 /// Whether an `after` schedule waking `target` when `watch` ends would come back round to
@@ -252,6 +279,17 @@ fn time_of_day(text: Option<&str>) -> Result<String> {
         .filter(|(hours, minutes)| *hours < 24 && *minutes < 60)
         .map(|(hours, minutes)| format!("{hours:02}:{minutes:02}"))
         .ok_or_else(|| "Use a 24-hour local time like 09:30.".into())
+}
+
+/// The schedule's IANA timezone for the clock kinds: empty means this computer's zone
+/// (today's behaviour). The canonical name is stored, so the UI round-trips it.
+fn timezone(text: Option<&str>) -> Result<Option<String>> {
+    let text = text.map(str::trim).unwrap_or_default();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    let zone: chrono_tz::Tz = text.parse().map_err(|_| format!("Unknown timezone: {text}."))?;
+    Ok(Some(zone.name().to_owned()))
 }
 
 fn validate(store: &Store, input: &ScheduleInput, existing: Option<&str>, now: i64) -> Result<Plan> {
@@ -305,9 +343,23 @@ fn validate(store: &Store, input: &ScheduleInput, existing: Option<&str>, now: i
                 days.dedup();
                 plan.days = days;
             }
-            let next = next_slot(kind, None, Some(&time), &plan.days, now);
+            plan.timezone = timezone(input.timezone.as_deref())?;
+            let next = next_slot(kind, None, Some(&time), &plan.days, None, plan.timezone.as_deref(), now);
             plan.time_of_day = Some(time);
             Some(next.ok_or("Could not find the next run for that time.")?)
+        }
+        "cron" => {
+            let expr = input
+                .cron
+                .as_deref()
+                .map(str::trim)
+                .filter(|expr| !expr.is_empty())
+                .ok_or("Write a cron expression: five fields (minute hour day-of-month month day-of-week).")?;
+            let parsed = cron::parse_cron(expr)?;
+            plan.timezone = timezone(input.timezone.as_deref())?;
+            plan.cron = Some(expr.to_owned());
+            let next = cron::cron_next_fire(&parsed, plan.timezone.as_deref().unwrap_or_default(), now);
+            Some(next.ok_or("Could not find the next run for that cron expression.")?)
         }
         "after" => {
             let watch_id = input.watch_session_id.as_deref().filter(|id| !id.is_empty()).ok_or("Pick the thread whose run should trigger this one.")?;
@@ -366,9 +418,9 @@ pub(crate) fn create(store: &Store, input: &ScheduleInput, created_by: &str, cre
     store
         .db
         .execute(
-            "INSERT INTO task_schedules(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,enabled,created_by,created_by_session,max_runs,created_at,updated_at,workflow_id,chain_from_id)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?14,?15,?15,?16,?17)",
-            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, created_by, created_by_session, input.max_runs, now, input.workflow_id, input.chain_from_id],
+            "INSERT INTO task_schedules(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,enabled,created_by,created_by_session,max_runs,created_at,updated_at,workflow_id,chain_from_id,cron,timezone)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?14,?15,?15,?16,?17,?18,?19)",
+            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, created_by, created_by_session, input.max_runs, now, input.workflow_id, input.chain_from_id, input.cron, input.timezone],
         )
         .map_err(|e| e.to_string())?;
     get(store, &id)
@@ -383,8 +435,8 @@ pub(crate) fn update(store: &Store, id: &str, input: &ScheduleInput, now: i64) -
     store
         .db
         .execute(
-            "UPDATE task_schedules SET session_id=?2,title=?3,prompt=?4,kind=?5,interval_minutes=?6,time_of_day=?7,days=?8,watch_session_id=?9,only_on_success=?10,next_run_at=?11,max_runs=?12,updated_at=?13,workflow_id=?14,chain_from_id=?15 WHERE id=?1",
-            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, input.max_runs, now, input.workflow_id, input.chain_from_id],
+            "UPDATE task_schedules SET session_id=?2,title=?3,prompt=?4,kind=?5,interval_minutes=?6,time_of_day=?7,days=?8,watch_session_id=?9,only_on_success=?10,next_run_at=?11,max_runs=?12,updated_at=?13,workflow_id=?14,chain_from_id=?15,cron=?16,timezone=?17 WHERE id=?1",
+            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, input.max_runs, now, input.workflow_id, input.chain_from_id, input.cron, input.timezone],
         )
         .map_err(|e| e.to_string())?;
     get(store, id)
@@ -410,7 +462,7 @@ pub(crate) fn set_enabled(store: &Store, id: &str, enabled: bool, now: i64) -> R
                 }
                 None
             }
-            kind => next_slot(kind, schedule.interval_minutes, schedule.time_of_day.as_deref(), &schedule.days, now),
+            kind => next_slot(kind, schedule.interval_minutes, schedule.time_of_day.as_deref(), &schedule.days, schedule.cron.as_deref(), schedule.timezone.as_deref(), now),
         }
     };
     store
@@ -475,7 +527,7 @@ pub(crate) fn advance(store: &Store, schedule: &TaskSchedule, now: i64, manual: 
         // Run now leaves a pending trigger (or the next clock slot) in place.
         _ if manual => schedule.next_run_at,
         "after" => None,
-        kind => next_slot(kind, schedule.interval_minutes, schedule.time_of_day.as_deref(), &schedule.days, now),
+        kind => next_slot(kind, schedule.interval_minutes, schedule.time_of_day.as_deref(), &schedule.days, schedule.cron.as_deref(), schedule.timezone.as_deref(), now),
     };
     store
         .db
@@ -494,6 +546,12 @@ const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 /// Matches `cadence()` in `src/schedules-api.ts`.
 pub(crate) fn cadence(schedule: &TaskSchedule) -> String {
     let time = schedule.time_of_day.as_deref().unwrap_or_default();
+    let zone = schedule
+        .timezone
+        .as_deref()
+        .filter(|zone| !zone.is_empty())
+        .map(|zone| format!(" · {zone}"))
+        .unwrap_or_default();
     match schedule.kind.as_str() {
         "once" => "Once".into(),
         "interval" => {
@@ -507,11 +565,15 @@ pub(crate) fn cadence(schedule: &TaskSchedule) -> String {
                 format!("Every {minutes} min")
             }
         }
-        "daily" => format!("Daily at {time}"),
-        "weekdays" => format!("Weekdays at {time}"),
+        "daily" => format!("Daily at {time}{zone}"),
+        "weekdays" => format!("Weekdays at {time}{zone}"),
         "weekly" => {
             let days = schedule.days.iter().filter_map(|day| DAY_NAMES.get(*day as usize).copied()).collect::<Vec<_>>().join(", ");
-            format!("{days} at {time}")
+            format!("{days} at {time}{zone}")
+        }
+        "cron" => {
+            let expr = schedule.cron.as_deref().unwrap_or_default();
+            format!("{expr}{zone}")
         }
         _ => format!("After “{}” {}", schedule.watch_session_title.as_deref().unwrap_or("a task"), if schedule.only_on_success { "succeeds" } else { "finishes" }),
     }

@@ -19,7 +19,7 @@ type Filter = 'all' | 'agent' | 'user' | 'paused';
 type Start = 'now' | 'once' | 'daily' | 'weekdays' | 'after';
 interface Step { sessionId: string; prompt: string }
 const FILTERS: [Filter, string][] = [['all', 'All'], ['agent', 'Agents'], ['user', 'Yours'], ['paused', 'Paused']];
-const KINDS: [ScheduleKind, string][] = [['once', 'Once'], ['interval', 'Repeat every'], ['daily', 'Daily'], ['weekdays', 'Weekdays'], ['weekly', 'Weekly'], ['after', 'After a thread finishes']];
+const KINDS: [ScheduleKind, string][] = [['once', 'Once'], ['interval', 'Repeat every'], ['daily', 'Daily'], ['weekdays', 'Weekdays'], ['weekly', 'Weekly'], ['cron', 'Cron'], ['after', 'After a thread finishes']];
 const STARTS: [Start, string][] = [['now', 'Now'], ['once', 'At a time'], ['daily', 'Daily'], ['weekdays', 'Weekdays'], ['after', 'After a thread finishes']];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const REFRESH_MS = 30_000;
@@ -38,8 +38,9 @@ const message = (cause: unknown) => cause instanceof Error ? cause.message : Str
 const pad = (value: number) => String(value).padStart(2, '0');
 const localInput = (at: number) => { const d = new Date(at); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const quote = (text: string) => `“${text}”`;
-const brief = (input: Partial<ScheduleInput>) => cadence({ kind: input.kind ?? 'once', intervalMinutes: input.intervalMinutes ?? null, timeOfDay: input.timeOfDay ?? null, days: input.days ?? [], watchSessionTitle: null, onlyOnSuccess: false });
+const brief = (input: Partial<ScheduleInput>) => cadence({ kind: input.kind ?? 'once', intervalMinutes: input.intervalMinutes ?? null, timeOfDay: input.timeOfDay ?? null, days: input.days ?? [], cron: input.cron ?? null, timezone: input.timezone ?? null, watchSessionTitle: null, onlyOnSuccess: false });
 const CLOCK_KINDS: ScheduleKind[] = ['daily', 'weekdays', 'weekly'];
+const ZONE_KINDS: ScheduleKind[] = ['daily', 'weekdays', 'weekly', 'cron'];
 /** "tomorrow" for "tomorrow 9:00 AM", when the row's cadence already says the time. */
 const dayOnly = (at: number) => when(at).replace(clockAt(at), '').trim() || when(at);
 const workflowName = (schedule: TaskSchedule) => schedule.title.split(' · ')[0] || 'Workflow';
@@ -49,7 +50,7 @@ const absolute = (at: number) => `${new Date(at).toLocaleDateString([], { weekda
 function nextRun(input: ScheduleInput, now = Date.now()): number | null {
   if (input.kind === 'once') return input.runAt ?? null;
   if (input.kind === 'interval') return input.intervalMinutes ? now + input.intervalMinutes * 60_000 : null;
-  if (input.kind === 'after' || !/^\d\d:\d\d$/.test(input.timeOfDay ?? '')) return null;
+  if (input.kind === 'cron' || input.kind === 'after' || !/^\d\d:\d\d$/.test(input.timeOfDay ?? '')) return null;
   const [h, m] = input.timeOfDay!.split(':').map(Number);
   const ok = (day: number) => input.kind === 'daily' || (input.kind === 'weekdays' ? day > 0 && day < 6 : (input.days ?? []).includes(day));
   for (let i = 0; i < 8; i++) {
@@ -67,8 +68,9 @@ function phrase(input: ScheduleInput, watchTitle: string | null): string {
     case 'daily': return `every day at ${at}`;
     case 'weekdays': return `every weekday at ${at}`;
     case 'weekly': return input.days?.length ? `every ${[...input.days].sort().map(day => DAYS[day]).join(', ')} at ${at}` : 'weekly (pick days)';
+    case 'cron': return input.cron ? `on the cron ${input.cron}${input.timezone ? ` · ${input.timezone}` : ''}` : '· write a cron expression';
     case 'after': return watchTitle ? `${input.maxRuns === 1 ? 'the next time' : 'every time'} ${quote(watchTitle)} ${input.onlyOnSuccess ? 'succeeds' : 'finishes'}` : '· pick a thread to follow';
-    default: return cadence({ kind: input.kind, intervalMinutes: input.intervalMinutes ?? null, timeOfDay: null, days: [], watchSessionTitle: null, onlyOnSuccess: false }).replace(/^\w/, c => c.toLowerCase());
+    default: return cadence({ kind: input.kind, intervalMinutes: input.intervalMinutes ?? null, timeOfDay: null, days: [], cron: input.cron ?? null, timezone: input.timezone ?? null, watchSessionTitle: null, onlyOnSuccess: false }).replace(/^\w/, c => c.toLowerCase());
   }
 }
 
@@ -106,6 +108,8 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
       <div class="schedules-when" data-for="once">${field('At', '<input type="datetime-local" class="schedules-run-at" aria-label="Run at">')}</div>
       <div class="schedules-when" data-for="interval">${field('Every', `<span class="schedules-inline"><input type="number" class="schedules-every" min="${INTERVAL_MIN}" step="1" aria-label="Repeat every"><select class="schedules-unit" aria-label="Unit"><option value="1">minutes</option><option value="60">hours</option></select><small class="schedules-hint">5 minutes to 7 days</small></span>`)}</div>
       <div class="schedules-when" data-for="daily weekdays weekly">${field('Time', '<input type="time" class="schedules-time" aria-label="Time of day">')}</div>
+      <div class="schedules-when" data-for="cron">${field('Expression', '<input type="text" class="schedules-cron" maxlength="64" autocomplete="off" aria-label="Cron expression" placeholder="*/15 9-17 * * 1-5">')}</div>
+      <div class="schedules-when" data-for="daily weekdays weekly cron">${field('Time zone', '<input type="text" class="schedules-timezone" maxlength="64" autocomplete="off" aria-label="Time zone" placeholder="Local; or an IANA name like Asia/Tokyo">')}</div>
       <div class="schedules-when" data-for="weekly"><div class="schedules-field"><span>Days</span><div class="schedules-days" role="group" aria-label="Days">${DAYS.map((day, index) => `<button type="button" data-day="${index}" aria-pressed="false">${day}</button>`).join('')}</div></div></div>
       <div class="schedules-when" data-for="after">${field('Thread to follow', '<select class="schedules-watch" aria-label="Thread to follow"></select>')}<div class="schedules-field"><span>Only on success</span><input type="checkbox" class="settings-switch schedules-success" aria-label="Only on success"></div><div class="schedules-field"><span>Repeat</span>${segmented('schedules-repeat', 'Repeat', [['next', 'Only the next time'], ['every', 'Every time it finishes']], 'repeat')}</div></div>
       ${field('Stop after', '<span class="schedules-inline"><input type="number" class="schedules-max" min="1" step="1" aria-label="Stop after runs" placeholder="No limit"><span class="schedules-unit-label">runs</span></span>', 'schedules-stop')}
@@ -140,6 +144,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const thread = $<HTMLSelectElement>('.schedules-thread'), title = $<HTMLInputElement>('.schedules-title'), prompt = $<HTMLTextAreaElement>('.schedules-message');
   const kinds = $<HTMLElement>('.schedules-kinds'), runAt = $<HTMLInputElement>('.schedules-run-at'), every = $<HTMLInputElement>('.schedules-every'), unit = $<HTMLSelectElement>('.schedules-unit');
   const time = $<HTMLInputElement>('.schedules-time'), days = $<HTMLElement>('.schedules-days'), watch = $<HTMLSelectElement>('.schedules-watch');
+  const cronInput = $<HTMLInputElement>('.schedules-cron'), timezoneInput = $<HTMLInputElement>('.schedules-timezone');
   const success = $<HTMLInputElement>('.schedules-success'), maxRuns = $<HTMLInputElement>('.schedules-max');
   const repeatGroup = $<HTMLElement>('.schedules-repeat'), stopField = $<HTMLElement>('.schedules-stop');
   const flow = $<HTMLFormElement>('.schedules-workflow'), flowError = flow.querySelector<HTMLElement>('.schedules-form-error')!, flowPreview = $<HTMLElement>('.workflow-preview');
@@ -285,6 +290,8 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
       sessionId: thread.value, title: title.value.trim(), prompt: prompt.value, kind,
       intervalMinutes: kind === 'interval' ? (Number.isFinite(minutes) ? Math.round(minutes) : null) : null,
       timeOfDay: ['daily', 'weekdays', 'weekly'].includes(kind) ? time.value || null : null,
+      cron: kind === 'cron' ? cronInput.value.trim() || null : null,
+      timezone: ZONE_KINDS.includes(kind) ? timezoneInput.value.trim() || null : null,
       days: kind === 'weekly' ? [...days.querySelectorAll<HTMLElement>('[aria-pressed="true"]')].map(day => Number(day.dataset.day)) : [],
       runAt: kind === 'once' && Number.isFinite(at) ? at : null,
       watchSessionId: kind === 'after' ? watch.value || null : null,
@@ -298,6 +305,9 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     if (!input.sessionId) return { text: 'Pick a thread to send to.', field: thread };
     if (kind === 'interval' && !(minutes >= INTERVAL_MIN && minutes <= INTERVAL_MAX)) return { text: 'Intervals are 5 minutes to 7 days.', field: every };
     if (CLOCK_KINDS.includes(kind) && !input.timeOfDay) return { text: 'Pick a time of day.', field: time };
+    if (kind === 'cron' && !input.cron) return { text: 'Write a cron expression.', field: cronInput };
+    if (kind === 'cron' && (input.cron ?? '').trim().split(/\s+/).length !== 5) return { text: 'A cron expression is five fields (minute hour day-of-month month day-of-week).', field: cronInput };
+    if (input.timezone && !/^[A-Za-z0-9_+\-]+(\/[A-Za-z0-9_+\-]+)+$/.test(input.timezone.trim()) && !/^(UTC|GMT)$/.test(input.timezone.trim())) return { text: 'Use an IANA time zone name like Asia/Tokyo, or leave it empty for this computer\'s zone.', field: timezoneInput };
     if (kind === 'weekly' && !input.days?.length) return { text: 'Pick at least one day.', field: days.querySelector('button')! };
     if (kind === 'once' && !(input.runAt && input.runAt > Date.now() - 60_000)) return { text: 'Pick a time in the future.', field: runAt };
     if (kind === 'after' && !input.watchSessionId) return { text: 'Pick a thread to follow.', field: watch };
@@ -323,6 +333,8 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     const minutes = source.intervalMinutes ?? 30, hours = minutes % 60 === 0;
     every.value = String(hours ? minutes / 60 : minutes); unit.value = hours ? '60' : '1';
     time.value = source.timeOfDay ?? '09:00';
+    cronInput.value = source.cron ?? '';
+    timezoneInput.value = source.timezone ?? '';
     runAt.value = localInput(source.runAt ?? Date.now() + 60 * 60_000);
     days.querySelectorAll<HTMLElement>('[data-day]').forEach(day => day.setAttribute('aria-pressed', String((source.days ?? [new Date().getDay()]).includes(Number(day.dataset.day)))));
     success.checked = source.onlyOnSuccess ?? true;
@@ -342,6 +354,8 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   function fieldFor(text: string): HTMLElement {
     const t = text.toLowerCase();
     if (/interval/.test(t)) return every;
+    if (/time zone|timezone/.test(t)) return timezoneInput;
+    if (/cron/.test(t) && kind === 'cron') return cronInput;
     if (/day/.test(t) && kind === 'weekly') return days.querySelector('button')!;
     if (/time|passed|one-off|year/.test(t)) return kind === 'once' ? runAt : time;
     if (/watch|follow|wake itself|same project|loop|chain/.test(t)) return kind === 'after' ? watch : thread;
