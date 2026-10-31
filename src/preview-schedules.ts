@@ -66,8 +66,10 @@ function validate(input: ScheduleInput, now: number): void {
   if (input.kind === 'interval' && !((input.intervalMinutes ?? 0) >= 5 && (input.intervalMinutes ?? 0) <= 10080)) throw new Error('Intervals are 5 minutes to a week.');
   if (['daily', 'weekdays', 'weekly'].includes(input.kind) && !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.timeOfDay ?? '')) throw new Error('Times are HH:MM, 24-hour.');
   if (input.kind === 'cron' && (input.cron ?? '').trim().split(/\s+/).length !== 5) throw new Error('Write a cron expression: five fields (minute hour day-of-month month day-of-week).');
-  const zones = (Intl as { supportedValuesOf?: (key: 'timeZone') => string[] }).supportedValuesOf?.('timeZone');
-  if (input.timezone?.trim() && zones && !zones.includes(input.timezone.trim())) throw new Error(`Unknown timezone: ${input.timezone.trim()}.`);
+  const zone = input.timezone?.trim();
+  // Aliases the browser's IANA list leaves out; anything else must be on the list,
+  // which refuses invented names ("Mars/Olympus") like the native side does.
+  if (zone && zone !== 'UTC' && zone !== 'GMT' && !(Intl as { supportedValuesOf?: (key: 'timeZone') => string[] }).supportedValuesOf?.('timeZone')?.includes(zone)) throw new Error(`Unknown timezone: ${zone}.`);
   if (input.kind === 'weekly' && !input.days?.length) throw new Error('Pick at least one day.');
   if (input.kind === 'once' && !(input.runAt && input.runAt > now - MINUTE)) throw new Error('Pick a time in the future.');
   if (input.kind === 'after' && (!input.watchSessionId || input.watchSessionId === input.sessionId)) throw new Error('Pick another task to follow.');

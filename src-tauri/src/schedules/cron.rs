@@ -64,15 +64,15 @@ fn field_values(name: &str, min: u32, max: u32, text: &str) -> Result<Vec<u32>, 
     }
     let mut values = Vec::new();
     for item in text.split(',') {
-        let (range, step) = match item.split_once('/') {
+        let (range, step, stepped) = match item.split_once('/') {
             Some((range, step)) => {
                 let step: u32 = step.parse().map_err(|_| format!("cron {name} field: {step} is not a number"))?;
                 if step == 0 {
                     return Err(format!("cron {name} field: step must be 1 or more"));
                 }
-                (range, step)
+                (range, step, true)
             }
-            None => (item, 1),
+            None => (item, 1, false),
         };
         let (start, end) = if range == "*" {
             (min, max)
@@ -85,7 +85,7 @@ fn field_values(name: &str, min: u32, max: u32, text: &str) -> Result<Vec<u32>, 
         } else {
             let at = value(name, min, max, range)?;
             // "N/step" runs from N to the field's top, like Vixie cron.
-            (at, if step > 1 { max } else { at })
+            (at, if stepped { max } else { at })
         };
         let mut at = start;
         while at <= end {
@@ -131,7 +131,14 @@ pub(crate) fn cron_next_fire(expr: &CronExpr, timezone: &str, after: i64) -> Opt
     let mut minute = zone.wall(after)?.checked_add_signed(Duration::minutes(1))?;
     for _ in 0..SCAN_MINUTES {
         if matches(expr, minute) {
-            return zone.fire(minute);
+            // At fall-back the earlier-offset rule can resolve a matching minute to an
+            // instant at or before `after`; keep scanning. A gap still fires at the
+            // next existing minute.
+            if let Some(at) = zone.fire(minute) {
+                if at > after {
+                    return Some(at);
+                }
+            }
         }
         minute += Duration::minutes(1);
     }
@@ -358,5 +365,32 @@ mod tests {
         // expression is built directly because parse_cron refuses it outright.
         let february = CronExpr { minutes: vec![5], hours: vec![0], days_of_month: vec![30], months: vec![2], ..Default::default() };
         assert_eq!(cron_next_fire(&february, "UTC", utc(2026, 1, 1, 0, 0)), None);
+    }
+
+    #[test]
+    fn next_fire_skips_an_ambiguous_slot_that_resolves_before_after() {
+        let expr = parse_cron("30 1 * * *").unwrap();
+        // Created during the second pass of 01:05 (EST, 06:05 UTC): the same day's
+        // ambiguous 01:30 resolves to its earlier offset, 05:30 UTC, which is already
+        // past, so the run is the next day's 01:30 EST.
+        let after = zone(-5, 2026, 11, 1, 1, 5);
+        assert_eq!(cron_next_fire(&expr, "America/New_York", after), Some(zone(-5, 2026, 11, 2, 1, 30)));
+    }
+
+    #[test]
+    fn next_fire_spans_the_leap_day_gap() {
+        let leap = parse_cron("0 0 29 2 *").unwrap();
+        // From 2026 the next February 29th is in 2028, well inside the five-year scan.
+        assert_eq!(cron_next_fire(&leap, "UTC", utc(2026, 1, 1, 0, 0)), Some(utc(2028, 2, 29, 0, 0)));
+    }
+
+    #[test]
+    fn a_step_of_one_covers_the_rest_of_the_field() {
+        let every = parse_cron("0/1 * * * *").unwrap();
+        assert_eq!(every.minutes, (0..=59u32).collect::<Vec<_>>());
+        // From any minute the next fire is the next minute.
+        assert_eq!(cron_next_fire(&every, "UTC", utc(2026, 5, 4, 10, 31)), Some(utc(2026, 5, 4, 10, 32)));
+        let hours = parse_cron("0 5/1 * * *").unwrap();
+        assert_eq!(hours.hours, (5..=23u32).collect::<Vec<_>>());
     }
 }
