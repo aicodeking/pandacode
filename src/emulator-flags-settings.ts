@@ -11,7 +11,7 @@ type SimDevice = { udid: string; name: string; platform?: string };
 
 const HELP = 'Appended after PandaCode’s own flags when an Android emulator boots. Space separated; quotes keep a group together. A device’s own flags replace the default.';
 
-export function mountEmulatorFlags(host: HTMLElement, notify: (text: string) => void): () => void {
+export function mountEmulatorFlags(host: HTMLElement, notify: (text: string) => void): void {
   let flags: EmulatorFlags = { default: '', devices: {} };
   let avds: SimDevice[] = [];
   let error = '';
@@ -39,10 +39,13 @@ export function mountEmulatorFlags(host: HTMLElement, notify: (text: string) => 
     saving = true;
     const button = form.querySelector<HTMLButtonElement>('[data-emulator-flags-save]')!;
     button.disabled = true;
+    const devices: Record<string, string> = {};
+    for (const input of [...form.querySelectorAll<HTMLInputElement>('[data-emulator-flags-device]')]) devices[input.dataset.emulatorFlagsDevice!] = input.value;
+    const defaultText = form.querySelector<HTMLInputElement>('#emulator-flags-default')!.value;
+    // The draft becomes the drawn state, so a refused save keeps what was typed.
+    flags = { default: defaultText, devices };
     try {
-      const devices: Record<string, string> = {};
-      for (const input of [...form.querySelectorAll<HTMLInputElement>('[data-emulator-flags-device]')]) devices[input.dataset.emulatorFlagsDevice!] = input.value;
-      await call('simulator_set_emulator_flags', { default: form.querySelector<HTMLInputElement>('#emulator-flags-default')!.value, devices });
+      await call('simulator_set_emulator_flags', { default: defaultText, devices });
       notify('Emulator flags saved');
       host.closest('dialog')?.close();
     } catch (cause) {
@@ -65,6 +68,4 @@ export function mountEmulatorFlags(host: HTMLElement, notify: (text: string) => 
       host.innerHTML = `<p class="field-help" role="alert">${escape(cause instanceof Error ? cause.message : String(cause))}</p>`;
     }
   })();
-
-  return () => { /* nothing retained */ };
 }
