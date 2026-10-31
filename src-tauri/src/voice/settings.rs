@@ -82,7 +82,7 @@ impl Settings {
         if self.engine != ENGINE_APPLE && self.engine != ENGINE_SHERPA {
             self.engine.clear();
         }
-        if !model::find(&self.model).is_some() {
+        if model::find(&self.model).is_none() {
             self.model = model::FINAL_DEFAULT.into();
         }
         if self.language.is_empty() {
