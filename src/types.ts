@@ -11,6 +11,8 @@ export interface BranchList { current: string; branches: string[]; defaultBranch
 export interface WorktreeStatus { exists: boolean; branch: string; changes: number; clean: boolean; hasUpstream: boolean; ahead: number; merged: boolean; }
 export interface WorktreeMerge { branch: string; target: string; commits: number; switchedFrom: string | null; }
 export interface WorktreeRemoval { removed: boolean; branch: string; branchDeleted: boolean; note: string; }
+/** One repository's result beside today's top-level payload in a multi-repo worktree reply. */
+export interface RepoOutcome { label: string; result?: unknown; error?: string; }
 export interface GithubRepository { nameWithOwner: string; defaultBranch: string; url: string; }
 export interface GithubStatus { installed: boolean; version: string; authenticated: boolean; login: string | null; repo: GithubRepository | null; error: string | null; }
 export interface GithubItem { kind: 'issue' | 'pull'; number: number; title: string; state: string; url: string; author: string; }

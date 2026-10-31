@@ -439,6 +439,9 @@ if (showFolders) {
     { path: `${orbit}-web`, position: 1, isPrimary: false },
     { path: `${orbit}-docs`, position: 2, isPrimary: false },
   ]);
+  // The primary repository's pull request mirrors into the task, as the native single-link readers serve it.
+  const sample = sessions.find(s => s.id === 'session-1');
+  if (sample) sample.pullRequest = { kind: 'pull', number: 130, url: 'https://github.com/orbit-labs/orbit/pull/130', title: 'Debounce library search', state: 'open', checkedAt: now };
 }
 // One status group per sample folder: the primary repository, the web repository,
 // and the plain docs folder that reports nothing. A task's worktree puts every
@@ -448,16 +451,24 @@ const folderRepos = (task: Session, primary: GitStatus): RepoStatusInfo[] => fol
   : index === 1
     ? { label: folderLabel(folder.path), branch: task.worktreePath ? primary.branch : 'main', ahead: 0, behind: task.worktreePath ? 2 : 0, files: [{ path: 'src/refresh-button.tsx', index: ' ', working: 'M' }, { path: 'package.json', index: '?', working: '?' }] }
     : { label: folderLabel(folder.path), branch: '', ahead: 0, behind: 0, files: [] });
-/** A tiny GitHub for the browser preview: one connected repository and a few issues. */
+/** A tiny GitHub for the browser preview: one connected repository and a few issues.
+ * The ?folders sample's web repository joins under its own 'orbit-web' namespace so its
+ * linked pull request (#57) serves detail and diff without touching the primary's lists. */
 const previewClones = new Map<string, string>();
 const previewGithub = (() => {
-  const repos: Record<string, { nameWithOwner: string; defaultBranch: string; url: string }> = { 'project-1': { nameWithOwner: 'orbit-labs/orbit', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit' } };
+  const repos: Record<string, { nameWithOwner: string; defaultBranch: string; url: string }> = {
+    'project-1': { nameWithOwner: 'orbit-labs/orbit', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit' },
+    ...(showFolders ? { 'orbit-web': { nameWithOwner: 'orbit-labs/orbit-web', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit-web' } } : {}),
+  };
   const issues = [
     { projectId: 'project-1', number: 128, title: 'Search index rebuilds on every keystroke', body: 'Typing in the search box feels sluggish.\n\nSteps:\n1. Open the library view\n2. Type quickly\n\nThe index is recreated per input event.', state: 'open', labels: ['bug', 'performance'], assignees: ['you'], updatedAt: new Date(now - 3600_000).toISOString(), author: 'mara' },
     { projectId: 'project-1', number: 131, title: 'Keyboard shortcut cheat sheet', body: 'Add a `?` overlay listing shortcuts.', state: 'open', labels: ['enhancement'], assignees: [], updatedAt: new Date(now - 86400_000).toISOString(), author: 'devon' },
     { projectId: 'project-1', number: 97, title: 'Dark mode contrast for muted text', body: 'Muted text fails WCAG AA on the charcoal surfaces.', state: 'open', labels: ['design'], assignees: ['you'], updatedAt: new Date(now - 2 * 86400_000).toISOString(), author: 'you' },
   ];
-  const pulls: { projectId: string; number: number; title: string; body: string; base: string; head: string }[] = [{ projectId: 'project-1', number: 130, title: 'Debounce library search', body: '', base: 'main', head: 'feat/debounce' }];
+  const pulls: { projectId: string; number: number; title: string; body: string; base: string; head: string }[] = [
+    { projectId: 'project-1', number: 130, title: 'Debounce library search', body: '', base: 'main', head: 'feat/debounce' },
+    ...(showFolders ? [{ projectId: 'orbit-web', number: 57, title: 'Refresh button polish', body: 'Polishes the refresh button states.', base: 'main', head: 'main' }] : []),
+  ];
   let next = 200;
   const url = (projectId: string, kind: 'issue' | 'pull', number: number) => `${repos[projectId]?.url}/${kind === 'pull' ? 'pull' : 'issues'}/${number}`;
   return {
@@ -1806,7 +1817,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] }); result = s; break;
     }
     case 'git_push': { const checkout = checkoutGit(args.sessionId); pushedBranches.add(checkout.branch); result = `branch '${checkout.branch}' set up to track 'origin/${checkout.branch}'.`; break; }
-    case 'github_status': result = previewGithub.status(args.projectId); break;
+    case 'github_status':
+      // The ?folders sample's web repository answers for itself, as the qualified command does.
+      result = args.folder === 'orbit-web' && showFolders
+        ? { installed: true, version: '2.62.0', authenticated: true, login: 'you', repo: { nameWithOwner: 'orbit-labs/orbit-web', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit-web' }, error: null }
+        : previewGithub.status(args.projectId);
+      break;
     case 'github_repos': result = structuredClone(previewRepos); break;
     // The sample orbit project has an app icon; others show the sidebar's default.
     case 'project_icon': result = args.projectId === 'project-1' ? 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjN2M5Y2ZmJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjNWI1YmQ2Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nOCcgZmlsbD0ndXJsKCNnKScvPjxjaXJjbGUgY3g9JzE2JyBjeT0nMTYnIHI9JzcnIGZpbGw9J25vbmUnIHN0cm9rZT0nd2hpdGUnIHN0cm9rZS13aWR0aD0nMycvPjxjaXJjbGUgY3g9JzIzJyBjeT0nOScgcj0nMi41JyBmaWxsPSd3aGl0ZScvPjwvc3ZnPg==' : null; break;
@@ -1845,6 +1861,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = s; break;
     }
     case 'github_pull_request': {
+      // The ?folders sample's web repository serves its own linked pull request.
+      if (args.folder === 'orbit-web' && showFolders) { result = previewGithub.detail('orbit-web', 57); break; }
       const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
       result = previewGithub.detail(s.projectId, s.pullRequest.number); break;
     }
@@ -1856,6 +1874,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = s; break;
     }
     case 'github_pull_request_diff': {
+      // The ?folders sample's web repository serves its own diff.
+      if (args.folder === 'orbit-web' && showFolders) { result = { patch: 'diff --git a/src/refresh-button.tsx b/src/refresh-button.tsx\nindex 1111111..2222222 100644\n--- a/src/refresh-button.tsx\n+++ b/src/refresh-button.tsx\n@@ -1,3 +1,4 @@\n export function RefreshButton() {\n+  const [busy, setBusy] = useState(false);\n   return <button onClick={refresh}>Refresh</button>;\n }\n', truncated: false }; break; }
       const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
       result = { patch: previewGithub.diff, truncated: false }; break;
     }
@@ -1868,7 +1888,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const pulls: LinkedPull[] = s.pullRequest ? [['', s.pullRequest]] : [];
       // The ?folders sample links one pull request per repository, the primary's legacy '' key first.
       if (showFolders && s.projectId === 'project-1') {
-        if (!pulls.length) pulls.push(['', { kind: 'pull', number: 482, url: 'https://github.com/orbit-labs/orbit/pull/482', title: 'Faster search index', state: 'open', checkedAt: now }]);
+        if (!pulls.length) pulls.push(['', { kind: 'pull', number: 130, url: 'https://github.com/orbit-labs/orbit/pull/130', title: 'Debounce library search', state: 'open', checkedAt: now }]);
         pulls.push(['orbit-labs/orbit-web', { kind: 'pull', number: 57, url: 'https://github.com/orbit-labs/orbit-web/pull/57', title: 'Refresh button polish', state: 'open', checkedAt: now }]);
       }
       result = pulls; break;

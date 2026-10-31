@@ -3964,27 +3964,81 @@ fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
     Ok((store.workspace_root(&task.project_id, Some(session_id))?, number))
 }
 
+/// One repository's checkout and its linked pull request: the repo named by
+/// `folder` (label or path), reading the link from the per-repo task_links row.
+fn linked_pull_in(store: &storage::Store, session_id: &str, qualifier: &str) -> Result<(PathBuf, String, i64)> {
+    let task = store.session(session_id)?;
+    let folder = git_repo_folder(store, &task.project_id, Some(session_id), Some(qualifier))?;
+    let key = github::folder_link_key(&folder).ok_or("This repository has no GitHub remote.")?;
+    let number = store
+        .session_pull_links(session_id)?
+        .into_iter()
+        .find(|(repo, _)| *repo == key)
+        .map(|(_, link)| link.number)
+        .ok_or("This task has no linked pull request.")?;
+    Ok((folder.worktree.clone().unwrap_or(folder.path), key, number))
+}
+
 #[tauri::command]
-async fn github_pull_request(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDetail> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    folder: Option<String>,
+) -> Result<github_pull::PullDetail> {
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, _, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            (root, number)
+        }
+        None => linked_pull(&state, &session_id)?,
+    };
     blocking(move || github_pull::detail(&root, number)).await
 }
 
 #[tauri::command]
-async fn github_pull_request_diff(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDiff> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_pull_request_diff(
+    state: State<'_, AppState>,
+    session_id: String,
+    folder: Option<String>,
+) -> Result<github_pull::PullDiff> {
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, _, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            (root, number)
+        }
+        None => linked_pull(&state, &session_id)?,
+    };
     blocking(move || github_pull::diff(&root, number)).await
 }
 
 /// Merge the task's linked pull request with the chosen method; returns the task with its link updated.
 #[tauri::command]
-async fn github_merge_pull_request(state: State<'_, AppState>, session_id: String, method: String) -> Result<Session> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_merge_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    method: String,
+    folder: Option<String>,
+) -> Result<Session> {
+    let repo_key;
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, key, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            repo_key = key;
+            (root, number)
+        }
+        None => {
+            repo_key = String::new();
+            linked_pull(&state, &session_id)?
+        }
+    };
     github_pull::merge_flag(&method)?;
     let store = state.store.clone();
     blocking(move || {
         let link = github_pull::merge(&root, number, &method)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", &repo_key, Some(&link))
     })
     .await
 }

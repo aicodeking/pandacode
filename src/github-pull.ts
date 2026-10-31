@@ -2,10 +2,11 @@ import './github-pull.css';
 import { escape, icon, markdownHtml } from './dom';
 import { trackSegment } from './motion';
 import type { DiffViewerController } from './diff-viewer';
-import type { Session } from './types';
+import type { Session, TaskLink } from './types';
 
 /* The task's pull request as a view in the inspector: state, checks, reviews,
- * description, files with their diffs, and commits — read through the user's `gh`. */
+ * description, files with their diffs, and commits — read through the user's `gh`.
+ * A multi-repo task lists one entry per repository; each opens the same view. */
 
 export type PullCheck = { name: string; state: 'success' | 'failure' | 'pending' | 'skipped' | 'neutral'; url: string };
 export type PullFile = { path: string; additions: number; deletions: number };
@@ -18,12 +19,17 @@ export type PullDetail = {
   labels: string[]; checks: PullCheck[]; files: PullFile[]; commits: PullCommit[]; timeline: PullComment[];
 };
 export type PullDiff = { patch: string; truncated: boolean };
+/** One repository's linked pull request; '' is the primary repository. */
+export type PullEntry = { repoKey: string; link: TaskLink };
+export type PullSelection = { entries: PullEntry[]; selected: string; onSelect(repoKey: string): void };
 
 export type PullHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openUrl(url: string): Promise<void>;
+  /** The project folder a repository's pull request is fetched through; undefined for the primary. */
+  folderFor(repoKey: string): Promise<string | undefined>;
   /** Remove the link from the task; the inspector falls back to Changes. */
-  unlink(session: Session): Promise<void>;
+  unlink(session: Session, folder?: string, number?: number): Promise<void>;
   /** The task came back with its link marked merged. */
   merged(session: Session): void;
   notify(message: string): void;
@@ -51,6 +57,12 @@ function ago(iso: string): string {
   return new Date(at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
+/** The repo key's short name ("orbit-web" of "orbit-labs/orbit-web") when it is unambiguous. */
+function shortRepo(key: string, all: PullEntry[]): string {
+  const name = key.split('/').pop() ?? key;
+  const others = all.filter(entry => entry.repoKey && entry.repoKey !== key).map(entry => entry.repoKey.split('/').pop());
+  return others.includes(name) ? key : name;
+}
 
 /** One file's section of a multi-file unified diff. */
 export function fileSection(patch: string, path: string): string {
@@ -69,7 +81,10 @@ function checksSummary(checks: PullCheck[]): { tone: string; text: string } {
 export function createPullView(host: PullHost) {
   const details = new Map<string, { at: number; detail: PullDetail }>();
   const diffs = new Map<string, Promise<PullDiff>>();
-  let mounted: { key: string; session: Session; root: HTMLElement; section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean } | undefined;
+  let mounted: {
+    key: string; session: Session; root: HTMLElement; detail: HTMLElement; entry: PullEntry;
+    section: Section; viewers: Map<string, DiffViewerController>; request: number; merge: 'idle' | 'confirm' | 'merging'; method: MergeMethod; checks: boolean;
+  } | undefined;
   let requests = 0;
 
   function dispose(): void {
@@ -77,18 +92,50 @@ export function createPullView(host: PullHost) {
     mounted = undefined;
   }
 
+  /** The entry the view shows: the picked repository's, else the task's primary link. */
+  function entryOf(session: Session, selection?: PullSelection): PullEntry | undefined {
+    if (selection?.entries.length) {
+      const picked = selection.entries.find(entry => entry.repoKey === selection.selected) ?? selection.entries[0];
+      if (picked.repoKey) return picked;
+      return { repoKey: '', link: session.pullRequest ?? picked.link };
+    }
+    return session.pullRequest ? { repoKey: '', link: session.pullRequest } : undefined;
+  }
+
   /** Show the task's PR in `target`; a repeat call for the same PR keeps the view as it is. */
-  function show(target: HTMLElement, session: Session): void {
-    const link = session.pullRequest;
-    if (!link) { dispose(); target.innerHTML = `<div class="inspector-empty">${icon('pull')}<h3>No pull request</h3><p>Link one from the branch menu.</p></div>`; return; }
-    const key = `${session.id}:${link.number}`;
+  function show(target: HTMLElement, session: Session, selection?: PullSelection): void {
+    const entry = entryOf(session, selection);
+    if (!entry) { dispose(); target.innerHTML = `<div class="inspector-empty">${icon('pull')}<h3>No pull request</h3><p>Link one from the branch menu.</p></div>`; return; }
+    // The grouped flag keeps a late per-repo list from leaving a view that lacks its entry row.
+    const grouped = Boolean(selection && selection.entries.length > 1);
+    const key = `${session.id}:${entry.repoKey}:${entry.link.number}:${grouped ? 'm' : 's'}`;
     if (mounted?.key === key && mounted.root.parentElement === target) { mounted.session = session; return; }
     dispose();
     const root = document.createElement('div');
     root.className = 'pull-view';
     root.addEventListener('click', event => void onClick(event));
     target.replaceChildren(root);
-    mounted = { key, session, root, section: 'overview', viewers: new Map(), request: 0, merge: 'idle', method: 'squash', checks: false };
+    // One quiet entry per repository above the detail; a single pull request keeps today's view.
+    let detail = root;
+    if (selection && selection.entries.length > 1) {
+      const row = document.createElement('div');
+      row.className = 'pull-entries';
+      row.setAttribute('role', 'tablist');
+      row.setAttribute('aria-label', 'Pull requests by repository');
+      row.innerHTML = selection.entries.map(item => {
+        const label = item.repoKey ? `${escape(shortRepo(item.repoKey, selection.entries))} #${item.link.number}` : `#${item.link.number}`;
+        return `<button role="tab" class="pull-entry" data-pull-entry="${escape(item.repoKey)}" aria-selected="${item.repoKey === entry.repoKey}" title="${escape(item.repoKey ? `${item.repoKey} pull request ${item.link.number}` : `Pull request ${item.link.number}`)}">${icon('pull')}<span>${label}</span><span class="pull-entry-state">${escape(item.link.state || 'open')}</span></button>`;
+      }).join('');
+      row.addEventListener('click', event => {
+        const pick = (event.target as Element).closest<HTMLButtonElement>('[data-pull-entry]');
+        if (pick) { event.stopPropagation(); selection.onSelect(pick.dataset.pullEntry ?? ''); }
+      });
+      root.append(row);
+      detail = document.createElement('div');
+      detail.className = 'pull-detail';
+      root.append(detail);
+    }
+    mounted = { key, session, root, detail, entry, section: 'overview', viewers: new Map(), request: 0, merge: 'idle', method: 'squash', checks: false };
     void load(false);
   }
 
@@ -98,16 +145,18 @@ export function createPullView(host: PullHost) {
     if (hit && !force && Date.now() - hit.at < FRESH_FOR) { await render(view, hit.detail); return; }
     const request = view.request = ++requests;
     if (hit) { await render(view, hit.detail); view.root.setAttribute('aria-busy', 'true'); }
-    else view.root.innerHTML = `<div class="inspector-empty" role="status">${icon('pull')}<p>Loading pull request #${view.session.pullRequest?.number ?? ''}…</p></div>`;
+    else view.detail.innerHTML = `<div class="inspector-empty" role="status">${icon('pull')}<p>Loading pull request #${view.entry.link.number}…</p></div>`;
     try {
-      const detail = await host.call<PullDetail>('github_pull_request', { sessionId: view.session.id });
+      const folder = view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined;
+      if (mounted !== view || view.request !== request) return;
+      const detail = await host.call<PullDetail>('github_pull_request', { sessionId: view.session.id, ...(folder ? { folder } : {}) });
       details.set(view.key, { at: Date.now(), detail });
       if (force) diffs.delete(view.key);
       if (mounted === view && view.request === request) await render(view, detail);
     } catch (error) {
       if (mounted !== view || view.request !== request) return;
-      const url = view.session.pullRequest?.url ?? '';
-      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(error instanceof Error ? error.message : String(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
+      const url = view.entry.link.url;
+      view.detail.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(error instanceof Error ? error.message : String(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
     } finally { if (mounted === view && view.request === request) view.root.removeAttribute('aria-busy'); }
   }
 
@@ -130,7 +179,7 @@ export function createPullView(host: PullHost) {
     view.method = (view.root.querySelector<HTMLSelectElement>('[data-pull-merge-method]')?.value as MergeMethod | undefined) ?? view.method;
     view.merge = 'merging'; await render(view, detail);
     try {
-      const saved = await host.call<Session>('github_merge_pull_request', { sessionId: view.session.id, method: view.method });
+      const saved = await host.call<Session>('github_merge_pull_request', { sessionId: view.session.id, method: view.method, ...(view.entry.repoKey ? { folder: await host.folderFor(view.entry.repoKey) } : {}) });
       if (mounted === view) { view.session = saved; view.merge = 'idle'; }
       host.notify(`Merged pull request #${detail.number}`);
       host.merged(saved);
@@ -147,7 +196,7 @@ export function createPullView(host: PullHost) {
     const age = ago(state === 'merged' ? detail.mergedAt : detail.createdAt);
     const avatar = detail.author ? `<span class="ds-avatar pull-avatar" aria-hidden="true">${escape(detail.author.slice(0, 1).toUpperCase())}</span><strong>${escape(detail.author)}</strong>` : '';
     return `<header class="pull-header">
-      <div class="pull-topline"><span class="pull-state pull-state-${escape(state)}"><span class="ds-dot"></span>${STATE_LABEL[state] ?? escape(state)}</span><span class="pull-number">#${detail.number}</span>
+      <div class="pull-topline"><span class="pull-state pull-state-${escape(state)}"><span class="ds-dot"></span>${STATE_LABEL[state] ?? escape(state)}</span><span class="pull-number">#${detail.number}</span>${view.entry.repoKey ? `<span class="pull-repo" title="${escape(view.entry.repoKey)}">${escape(view.entry.repoKey)}</span>` : ''}
         <span class="pull-actions"><button class="icon-button" data-pull-action="refresh" aria-label="Refresh pull request" title="Refresh">${icon('refresh')}</button><button class="icon-button" data-pull-action="open" data-url="${escape(detail.url)}" aria-label="Open on GitHub" title="Open on GitHub">${icon('external')}</button><button class="icon-button" data-pull-action="unlink" aria-label="Unlink pull request" title="Unlink from this task">${icon('close')}</button></span></div>
       <h3 class="pull-title ds-title">${escape(detail.title)}</h3>
       <div class="pull-meta"><span class="pull-author">${avatar}${age ? `<span>${escape(state === 'merged' ? `merged ${age}` : age)}</span>` : ''}</span><span class="pull-refs"><code class="ds-chip" title="${escape(detail.base)}">${escape(detail.base)}</code><span class="pull-into">${icon('back')}<span class="sr-only">from</span></span><code class="ds-chip" title="${escape(detail.head)}">${escape(detail.head)}</code></span></div>
@@ -232,7 +281,7 @@ export function createPullView(host: PullHost) {
     if (mounted !== view) return;
     view.viewers.forEach(viewer => viewer.dispose()); view.viewers.clear();
     const tab = (id: Section, label: string, count?: number) => `<button role="tab" data-pull-action="section" data-section="${id}" aria-selected="${view.section === id}"${count === undefined ? '' : ` title="${escape(`${label}: ${count}`)}"`}>${label}</button>`;
-    view.root.innerHTML = `${header(detail)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
+    view.detail.innerHTML = `${header(detail)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
     const tabs = view.root.querySelector<HTMLElement>('.pull-tabs')!;
     trackSegment(tabs, tabs.querySelector<HTMLElement>('[aria-selected="true"]'));
   }
@@ -263,7 +312,7 @@ export function createPullView(host: PullHost) {
     switch (target.dataset.pullAction) {
       case 'refresh': await load(true); break;
       case 'open': if (target.dataset.url) await host.openUrl(target.dataset.url); break;
-      case 'unlink': await host.unlink(view.session); break;
+      case 'unlink': await host.unlink(view.session, view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined, view.entry.link.number); break;
       case 'merge-start': if (detail) { view.merge = 'confirm'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-cancel"]')?.focus(); } break;
       case 'merge-method': { const { openChoiceMenu } = await import('./choice-menu'); if (mounted !== view || !target.isConnected) break; openChoiceMenu({ anchor: target, title: 'Merge method', items: (Object.keys(MERGE_LABEL) as MergeMethod[]).map(method => ({ id: method, label: MERGE_LABEL[method], icon: 'merge', selected: method === view.method })), onSelect: async id => { view.method = id as MergeMethod; if (detail && mounted === view) { await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-method"]')?.focus(); } }, onClose: () => { if (target.isConnected) target.focus(); } }); break; }
       case 'merge-cancel': if (detail) { view.merge = 'idle'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-start"]')?.focus(); } break;

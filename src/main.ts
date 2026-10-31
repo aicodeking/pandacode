@@ -48,7 +48,7 @@ import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, ProjectFolder, RepoFolderInfo, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, LinkedPull, Message, MessagePage, Mode, Project, ProjectFolder, Provider, ProviderId, ProviderModel, RepoFolderInfo, RepoOutcome, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -153,6 +153,10 @@ const state = {
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
+  /** The task's working folders, the primary first; empty until the first refresh answers, so single-folder rendering is unchanged. */
+  taskFolders: [] as RepoFolderInfo[], folderRoots: new Map<string, FileEntry[]>(),
+  /** Every repository's linked pull request ('' = primary) and the PR tab's selected repo key. */
+  linkedPulls: [] as LinkedPull[], selectedPull: '',
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
   attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
@@ -573,6 +577,18 @@ const github = createGithub({
     return { provider: harness.id, model: rememberedModel(harness.id) };
   },
   upsert: saved => { upsertSession(saved); pullView.forget(saved.id); },
+  taskFolders: () => state.taskFolders.map(folder => ({ label: folder.label, isPrimary: folder.isPrimary })),
+  pullCreated: async folder => {
+    const before = new Set(state.linkedPulls.map(([key]) => key));
+    await refreshInspector();
+    // The pull request for `folder` is the per-repo entry that appeared; select and show it.
+    const created = state.linkedPulls.find(([key]) => key && !before.has(key)) ?? state.linkedPulls.find(([key]) => key);
+    state.selectedPull = folder && created ? created[0] : '';
+    const number = created?.[1].number;
+    notify(number ? `Pull request #${number} opened` : 'Pull request opened');
+    if (state.inspectorTab !== 'pull') { state.inspector = true; state.inspectorTab = 'pull'; state.selectedKind = ''; }
+    renderInspector();
+  },
   changed: () => { renderNavigation(); renderHeader(); },
   showPull: task => openPullRequest(task.id),
 });
@@ -608,21 +624,52 @@ const fileTabs = createFileTabs({
 const pullView = createPullView({
   call,
   openUrl: url => call('open_external_url', { url }),
-  unlink: async task => {
-    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
+  folderFor: repoKey => folderForPull(repoKey),
+  unlink: async (task, folder, number) => {
+    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', ...(folder ? { folder } : {}), link: null });
     upsertSession(saved); pullView.forget(task.id);
-    if (state.inspectorTab === 'pull' && task.id === state.sessionId) state.inspectorTab = 'changes';
+    // The per-repo list may hold further links (another repository's live outside the task row), so it reloads.
+    if (task.id === state.sessionId) await refreshInspector(); else renderHeader();
+    if (state.inspectorTab === 'pull' && task.id === state.sessionId && !pullEntries().length) state.inspectorTab = 'changes';
     renderNavigation(); renderHeader(); renderInspector();
-    notify(`Pull request #${task.pullRequest?.number ?? ''} unlinked`);
+    notify(`Pull request #${number ?? task.pullRequest?.number ?? ''} unlinked`);
   },
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify,
 });
 function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; }
+/** The task's linked pull requests per repository, the primary's single-link field first. */
+function pullEntries(): { repoKey: string; link: TaskLink }[] {
+  const s = session();
+  const entries: { repoKey: string; link: TaskLink }[] = [];
+  for (const [repoKey, link] of state.linkedPulls) {
+    if (!repoKey && s?.pullRequest) entries.push({ repoKey: '', link: s.pullRequest });
+    else entries.push({ repoKey, link });
+  }
+  // A primary link saved after the last refresh still shows.
+  if (s?.pullRequest && !entries.some(entry => !entry.repoKey)) entries.unshift({ repoKey: '', link: s.pullRequest });
+  return entries;
+}
+/** The project folder a repository's pull request is read through: its label, found by matching each folder's GitHub identity. */
+let pullFolderMap: { key: string; map: Map<string, string> } | undefined;
+async function folderForPull(repoKey: string): Promise<string | undefined> {
+  if (!repoKey || !state.projectId) return undefined;
+  const key = workspaceKey();
+  if (pullFolderMap?.key !== key) {
+    const context = workspaceContext();
+    const identities = await Promise.all(state.taskFolders.filter(folder => !folder.isPrimary).map(async folder => {
+      const status = await github.status(context.projectId, false, folder.label).catch(() => null);
+      return [status?.repo?.nameWithOwner ?? '', folder.label] as const;
+    }));
+    pullFolderMap = { key, map: new Map(identities.filter(([name]) => name).map(([name, label]) => [name, label])) };
+  }
+  return pullFolderMap.map.get(repoKey);
+}
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
-  if (!session()?.pullRequest) return;
+  if (!session()?.pullRequest && !state.linkedPulls.length) return;
+  state.selectedPull = '';
   inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
 }
 /** After a turn, link the pull request the agent opened, if there is one. */
@@ -633,7 +680,9 @@ async function detectPullRequest(sessionId: string): Promise<void> {
     const saved = await call<Session | null>('github_detect_pull_request', { sessionId });
     if (!saved?.pullRequest) return;
     upsertSession(saved); pullView.forget(sessionId);
-    renderNavigation(); renderHeader(); renderInspector();
+    renderNavigation();
+    // The link may live in another repository, so the per-repo list reloads with the inspector.
+    if (sessionId === state.sessionId) await refreshInspector(); else renderHeader();
     notify(`Linked pull request #${saved.pullRequest.number}${sessionId === state.sessionId ? '' : ` to ${saved.title}`}`);
   } catch { /* Detection is best effort; the branch menu can link it by hand. */ }
 }
@@ -1054,7 +1103,8 @@ async function restoreSelectedFile(): Promise<void> {
 }
 function clearWorkspaceInspector(render = true): void {
   ++inspectorRequest; ++fileRequest;
-  state.git = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
+  state.git = null; state.files = []; state.taskFolders = []; state.folderRoots = new Map(); state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
+  state.linkedPulls = []; state.selectedPull = '';
   state.openFolders = new Set(); state.folderFiles = new Map(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
   state.browserUrl = '';
   selectedFileContext = undefined;
@@ -4498,14 +4548,26 @@ function onAgent(event: AgentEvent): void {
 async function refreshInspector(): Promise<void> {
   void projectRunner.refresh();
   const request = ++inspectorRequest;
-  const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; renderInspector(); return; }
+  const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.taskFolders = []; state.folderRoots = new Map(); state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; state.linkedPulls = []; state.selectedPull = ''; renderInspector(); return; }
   state.inspectorLoading = true; renderInspector();
   const id = p.id, folders = [...state.openFolders], context = workspaceContext(), key = workspaceKey();
-  const [results, children] = await Promise.all([
+  const [results, children, folderList, pulls] = await Promise.all([
     Promise.allSettled([call<GitStatus>('git_status', context), call<FileEntry[]>('list_files', { ...context, path: '' }), call<JjStatus>('jj_status', context)]),
-    Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path }))),
+    Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', folderArgs(context, path)))),
+    call<RepoFolderInfo[]>('workspace_folders', context).catch(() => [] as RepoFolderInfo[]),
+    // Every repository's linked pull request; feeds the PR tab's per-repo entries.
+    context.sessionId && githubEnabled() ? call<LinkedPull[]>('linked_pulls', { sessionId: context.sessionId }).catch(() => [] as LinkedPull[]) : Promise.resolve([] as LinkedPull[]),
   ]);
   if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey()) return;
+  state.linkedPulls = Array.isArray(pulls) ? pulls : [];
+  state.taskFolders = Array.isArray(folderList) ? folderList : [];
+  // A multi-folder task lists every folder's own root; single-folder tasks keep the one unqualified listing.
+  const extras = state.taskFolders.filter(folder => !folder.isPrimary);
+  if (extras.length) {
+    const roots = await Promise.allSettled(extras.map(folder => call<FileEntry[]>('list_files', { ...context, folder: folder.label, path: '' })));
+    if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey()) return;
+    state.folderRoots = new Map(extras.map((folder, index) => [folder.label, roots[index].status === 'fulfilled' ? qualifyFiles(roots[index].value, folder.label) : []]));
+  } else state.folderRoots = new Map();
   // Only folders still open take the new listing; a failed read keeps the last one rather than collapsing the folder.
   children.forEach((result, index) => {
     const path = folders[index];
@@ -4741,7 +4803,7 @@ function closeInspectorTab(view: PanelView): void {
   if (wasSelected) document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
 }
 async function showInspectorViews(anchor: HTMLElement): Promise<void> {
-  const pullLinked = Boolean(githubEnabled() && session()?.pullRequest);
+  const pullLinked = Boolean(githubEnabled() && (session()?.pullRequest || state.linkedPulls.length));
   const views = closedViews(inspectorTabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked));
   await showChoices(anchor, { title: 'Open view', width: 240, actions: true, items: views.map(view => ({ id: view, label: INSPECTOR_TITLES[view], icon: INSPECTOR_ICONS[view] })), onSelect: id => { closeChoiceMenu(); openInspectorView(id as InspectorView); } });
 }
@@ -4755,9 +4817,9 @@ function showChangesView(target: HTMLElement, key: string): void {
     target.replaceChildren(host);
     const context = workspaceContext();
     changesView = mountChangesView(host, {
-      loadDiff: (path, staged) => call<string>('git_diff', { ...context, path, staged }),
-      stage: (paths, staged) => stage(paths, staged),
-      commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
+      loadDiff: (path, staged, folder) => call<string>('git_diff', { ...context, path, staged, ...(folder ? { folder } : {}) }),
+      stage: (paths, staged, folder) => stage(paths, staged, folder),
+      commit: async (message, folder) => { const result = await call<string>('git_commit', { ...context, message, ...(folder ? { folder } : {}) }); await refreshInspector(); notify(result || 'Changes committed'); },
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
       notify,
@@ -4818,12 +4880,16 @@ function renderInspector(): void {
   else hidePanel(inspector, animate, () => { if (inspector.hidden) workspace.classList.add('inspector-closed'); }, $('#inspector-toggle'));
   inspectorDrawn = true; inspectorView = state.view;
   $('#inspector-toggle').classList.toggle('active', visible);
-  const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
+  const pullTask = githubEnabled() && (session()?.pullRequest || state.linkedPulls.length) ? session() : undefined;
   if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
   if (state.inspectorTab === 'file' && !fileTabs.count) state.inspectorTab = threadDefault(inspectorTabs);
   renderInspectorTabs(Boolean(pullTask));
   const pullTab = $('.inspector-tabs').querySelector<HTMLButtonElement>('[data-action="tab-pull"]')!;
-  if (pullTask) { pullTab.title = `Pull request #${pullTask.pullRequest!.number}`; pullTab.setAttribute('aria-label', `Pull request #${pullTask.pullRequest!.number}`); }
+  if (pullTask) {
+    // A task whose only pull request lives in another repository has no primary link to number.
+    const label = pullTask.pullRequest ? `Pull request #${pullTask.pullRequest.number}` : 'Pull requests';
+    pullTab.title = label; pullTab.setAttribute('aria-label', label);
+  }
   const changeCount = state.git?.files.length ?? 0;
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
   $('#inspector-title').textContent = state.inspectorTab === 'file' ? 'Open files' : INSPECTOR_TITLES[state.inspectorTab];
@@ -4840,7 +4906,15 @@ function renderInspector(): void {
   if (showFiles) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (showFiles || state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
   const target = $('#inspector-content');
-  if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
+  if (state.inspectorTab === 'pull' && pullTask && visible) {
+    const entries = pullEntries();
+    if (entries.length > 1) {
+      const selected = entries.some(entry => entry.repoKey === state.selectedPull) ? state.selectedPull : entries[0].repoKey;
+      state.selectedPull = selected;
+      pullView.show(target, pullTask, { entries, selected, onSelect: key => { state.selectedPull = key; renderInspector(); } });
+    } else pullView.show(target, pullTask);
+    return;
+  }
   pullView.dispose();
   if (state.inspectorTab === 'btw' && visible) { btwPanel.show(target); return; }
   btwPanel.dispose();
@@ -4931,10 +5005,10 @@ function attachFile(path: string): void {
   if (state.attachments.length >= 5) { notify('Attach up to 5 files per message.'); return; }
   state.attachments.push(path); renderComposer(); notify('Attached ' + path.split('/').pop());
 }
-async function stage(paths: string[], staged: boolean): Promise<void> {
+async function stage(paths: string[], staged: boolean, folder?: string): Promise<void> {
   if (!project() || !paths.length) return;
   const generation = state.generation;
-  await call('git_stage', { ...workspaceContext(), paths, staged });
+  await call('git_stage', { ...workspaceContext(), paths, staged, ...(folder ? { folder } : {}) });
   if (generation !== state.generation) return;
   state.selectedKind = ''; await refreshInspector();
 }
