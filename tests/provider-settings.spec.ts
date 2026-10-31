@@ -131,10 +131,10 @@ async function delayedConnections(page: Page): Promise<void> {
     const source = await response.text();
     await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
       if (command === 'provider_configuration') return new Promise(resolve => {
-        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
+        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
       });
       if (command === 'provider_set_executable') return new Promise(resolve => {
-        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
+        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
       });
       switch (command) {
     `) });
@@ -152,10 +152,12 @@ test('provider connections preserve other drafts and edits made during a save', 
   await delayedConnections(page);
   const opencode = page.getByLabel('OpenCode executable', { exact: true });
   const antigravity = page.getByLabel('Antigravity ACP executable', { exact: true });
+  const codex = page.getByLabel('Codex executable', { exact: true });
   await antigravity.fill('/draft/agy_acp_server.par');
   await page.evaluate(() => (window as any).releaseProviderConfiguration());
   await expect(opencode).toHaveValue('/installed/opencode');
   await expect(antigravity).toHaveValue('/draft/agy_acp_server.par');
+  await expect(codex).toHaveValue('/installed/codex');
   await opencode.fill('/opt//bin/opencode');
   const apply = page.locator('form[data-provider="opencode"]').getByRole('button', { name: 'Apply', exact: true });
   await apply.click();
@@ -172,6 +174,7 @@ test('provider connections preserve other drafts and edits made during a save', 
   await page.evaluate(() => (window as any).releaseProviderSave());
   await expect(opencode).toHaveValue('/next/opencode');
   await expect(antigravity).toHaveValue('/draft/agy_acp_server.par');
+  await expect(codex).toHaveValue('/installed/codex');
   expect(errors).toEqual([]);
 });
 
@@ -207,6 +210,9 @@ test('provider connections are grouped in Providers and never accept secrets in 
   await expect(dialog.getByRole('button', { name: 'Choose models', exact: true })).toHaveCount(0);
   await expect(dialog.getByText('agy', { exact: true })).toBeVisible();
   await expect(dialog.getByText('grok login', { exact: true })).toBeVisible();
+  await expect(dialog.getByLabel('Codex executable', { exact: true })).toHaveCount(1);
+  await expect(dialog.getByLabel('Kimi executable', { exact: true })).toHaveCount(1);
+  await expect(dialog.getByLabel('Claude Code executable', { exact: true })).toHaveCount(1);
   const paths = dialog.locator('details').filter({ has: page.getByLabel('Grok executable', { exact: true }) });
   await paths.last().locator('summary').click();
   await dialog.getByLabel('Grok executable', { exact: true }).fill('/tmp/my-grok');
