@@ -61,6 +61,28 @@ pub fn start_recording(
 fn locale_for(language: &str) -> String {
     match language {
         "auto" | "" => NSLocale::currentLocale().localeIdentifier().to_string(),
+        // The picker stores bare codes; Apple Speech registers recognizers
+        // under language_COUNTRY locales, so the naive bare-code locale would
+        // miss them. Region-suffixed settings (zh_CN) pass through untouched.
+        "bg" => "bg-BG".into(),
+        "cs" => "cs-CZ".into(),
+        "da" => "da-DK".into(),
+        "el" => "el-GR".into(),
+        "et" => "et-EE".into(),
+        "fi" => "fi-FI".into(),
+        "hr" => "hr-HR".into(),
+        "hu" => "hu-HU".into(),
+        "lt" => "lt-LT".into(),
+        "lv" => "lv-LV".into(),
+        "mt" => "mt-MT".into(),
+        "nl" => "nl-NL".into(),
+        "pl" => "pl-PL".into(),
+        "ro" => "ro-RO".into(),
+        "ru" => "ru-RU".into(),
+        "sk" => "sk-SK".into(),
+        "sl" => "sl-SI".into(),
+        "sv" => "sv-SE".into(),
+        "uk" => "uk-UA".into(),
         code => code.replace('_', "-"),
     }
 }
@@ -275,5 +297,31 @@ mod tests {
         assert_eq!(locale_for("en"), "en");
         assert_eq!(locale_for("zh_CN"), "zh-CN");
         assert!(!locale_for("auto").is_empty());
+    }
+
+    #[test]
+    fn parakeet_languages_map_to_apple_locales() {
+        assert_eq!(locale_for("bg"), "bg-BG");
+        assert_eq!(locale_for("cs"), "cs-CZ");
+        assert_eq!(locale_for("da"), "da-DK");
+        assert_eq!(locale_for("el"), "el-GR");
+        assert_eq!(locale_for("et"), "et-EE");
+        assert_eq!(locale_for("fi"), "fi-FI");
+        assert_eq!(locale_for("hr"), "hr-HR");
+        assert_eq!(locale_for("hu"), "hu-HU");
+        assert_eq!(locale_for("lt"), "lt-LT");
+        assert_eq!(locale_for("lv"), "lv-LV");
+        assert_eq!(locale_for("mt"), "mt-MT");
+        assert_eq!(locale_for("nl"), "nl-NL");
+        assert_eq!(locale_for("pl"), "pl-PL");
+        assert_eq!(locale_for("ro"), "ro-RO");
+        assert_eq!(locale_for("ru"), "ru-RU");
+        assert_eq!(locale_for("sk"), "sk-SK");
+        assert_eq!(locale_for("sl"), "sl-SI");
+        assert_eq!(locale_for("sv"), "sv-SE");
+        assert_eq!(locale_for("uk"), "uk-UA");
+        // Region-suffixed settings keep passing through untouched.
+        assert_eq!(locale_for("pl_PL"), "pl-PL");
+        assert_eq!(locale_for("ru_RU"), "ru-RU");
     }
 }

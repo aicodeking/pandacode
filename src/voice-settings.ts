@@ -13,13 +13,30 @@ const LANGUAGE_OPTIONS: { id: string; label: string }[] = [
   { id: 'zh', label: '中文' },
   { id: 'ja', label: '日本語' },
   { id: 'ko', label: '한국어' },
+  { id: 'bg', label: 'Български' },
+  { id: 'cs', label: 'Čeština' },
+  { id: 'da', label: 'Dansk' },
   { id: 'de', label: 'Deutsch' },
-  { id: 'fr', label: 'Français' },
+  { id: 'el', label: 'Ελληνικά' },
   { id: 'es', label: 'Español' },
-  { id: 'pt', label: 'Português' },
+  { id: 'et', label: 'Eesti' },
+  { id: 'fi', label: 'Suomi' },
+  { id: 'fr', label: 'Français' },
+  { id: 'hr', label: 'Hrvatski' },
+  { id: 'hu', label: 'Magyar' },
   { id: 'it', label: 'Italiano' },
-  { id: 'ru', label: 'Русский' },
+  { id: 'lt', label: 'Lietuvių' },
+  { id: 'lv', label: 'Latviešu' },
+  { id: 'mt', label: 'Malti' },
+  { id: 'nl', label: 'Nederlands' },
   { id: 'pl', label: 'Polski' },
+  { id: 'pt', label: 'Português' },
+  { id: 'ro', label: 'Română' },
+  { id: 'ru', label: 'Русский' },
+  { id: 'sk', label: 'Slovenčina' },
+  { id: 'sl', label: 'Slovenščina' },
+  { id: 'sv', label: 'Svenska' },
+  { id: 'uk', label: 'Українська' },
 ];
 
 const KIND_LABEL: Record<VoiceModelStatus['kind'], string> = {
@@ -73,7 +90,7 @@ export function mountVoiceSettings(host: HTMLElement, options: VoiceSettingsHost
       <h3 class="settings-heading">Streaming components</h3>
       <ul class="voice-models">${live}</ul>
       <div class="settings-group">
-        <div class="setting-row"><div><strong>Language</strong><small>Picks the streaming model and hints recognition.</small></div><select class="settings-select voice-language" aria-label="Dictation language">${LANGUAGE_OPTIONS.map(option => `<option value="${option.id}" ${settings.language === option.id ? 'selected' : ''}>${option.label}</option>`).join('')}</select></div>
+        <div class="setting-row"><div><strong>Language</strong><small>Picks the models and hints recognition. Languages without a streaming model show text when you stop.</small></div><select class="settings-select voice-language" aria-label="Dictation language">${LANGUAGE_OPTIONS.map(option => `<option value="${option.id}" ${settings.language === option.id ? 'selected' : ''}>${option.label}</option>`).join('')}</select></div>
         <div class="setting-row"><div><strong>Fast mode</strong><small>Keep the streaming text as the final transcript — fastest stop-to-text, slightly lower quality.</small></div><input type="checkbox" class="settings-switch" id="voice-fast" aria-label="Fast mode" ${settings.fastMode ? 'checked' : ''}></div>
       </div>` : ''}
       <h3 class="settings-heading">Recording</h3>
