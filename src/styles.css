@@ -628,6 +628,7 @@ button:not(:disabled):active{background-color:var(--accent-dim);transition:none}
 .project-menu-option>.icon:last-child:not(:first-child){--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent-ink)}
 .project-menu-label{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1}
 .project-menu-name{font-size:var(--text-sm);font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 0 auto;max-width:100%}
+.project-menu-folders{flex:0 0 auto;font-size:var(--text-xs);color:var(--faint);white-space:nowrap}
 .project-menu-path{font-size:var(--text-xs);line-height:1.35;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0%;min-width:0}
 .project-menu-option:focus-visible,.project-menu-open:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .project-menu-footer{margin-top:6px;padding-top:5px;flex-shrink:0}

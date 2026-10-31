@@ -4,7 +4,7 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import { providerLogo } from './provider-logos';
 import { uiSizeControls } from './ui-size';
-import type { Project, Provider, ProviderId } from './types';
+import type { Project, ProjectFolder, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountSupportDetails } from './support-settings';
 import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
@@ -13,7 +13,7 @@ import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-import { call, subscribe } from './bridge';
+import { call, chooseFolder, subscribe } from './bridge';
 import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountRemoteSettings } from './remote-settings';
@@ -46,7 +46,14 @@ interface SettingsOptions {
   /** Mounts the optional GitHub row; returns its cleanup. */
   github?(host: HTMLElement): () => void;
   /** Projects listed under General; remove() rejects with the native refusal text. */
-  projects?: { list(): Project[]; remove(id: string): Promise<void> };
+  projects?: {
+    list(): Project[];
+    remove(id: string): Promise<void>;
+    /** Toast for the folder commands' refusal text. */
+    notify(text: string): void;
+    /** Folder changes move projects.path, so the workspace re-lists its projects. */
+    projectsChanged(): Promise<void>;
+  };
   /** Named agent teams and the classic Team setup switch. */
   teams?: Omit<AgentTeamsOptions, 'providers'>;
   /** Settings → Schedules: an optional editor intent, and how a row opens its thread. */
@@ -236,31 +243,63 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     } finally { pending = false; if (live()) refreshButton.disabled = false; }
   }
 
-  /** Projects: each row removes its project after an inline confirmation; the folder stays on disk. */
+  /** Projects: each row removes its project after an inline confirmation; the folder stays on
+      disk. Each row also lists the project's folders — the primary is marked, and folders can
+      be added, promoted or removed (the store refuses to take a project's last one). */
   function mountProjects(slot: HTMLElement, projects: NonNullable<SettingsOptions['projects']>): () => void {
     let confirming = '', error = '';
+    const folderLists = new Map<string, ProjectFolder[]>();
+    const folderRow = (folder: ProjectFolder): string =>
+      `<li class="project-folder" data-folder="${escape(folder.path)}">${icon('folder')}<span class="project-folder-path" title="${escape(folder.path)}">${escape(folder.path)}</span>${folder.isPrimary ? '<span class="project-folder-mark">Primary</span>' : ''}<span class="project-folder-actions">${folder.isPrimary ? '' : `<button type="button" class="secondary-button" data-folder-primary aria-label="Set ${escape(folder.path)} as primary">Set as primary</button>`}<button type="button" class="secondary-button" data-folder-remove aria-label="Remove folder ${escape(folder.path)}">Remove</button></span></li>`;
     const draw = () => {
       const rows = projects.list();
       slot.innerHTML = rows.length ? rows.map(project => confirming === project.id
         ? `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>Remove ${escape(project.name)}?</strong><small>Its tasks are removed from PandaCode. The folder stays on disk.</small>${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-cancel>Cancel</button><button type="button" class="secondary-button" data-project-confirm>Remove project</button></div></div>`
-        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><small class="project-path">${escape(project.path)}</small></div><button type="button" class="secondary-button" data-project-remove aria-label="Remove ${escape(project.name)}">Remove</button></div>`).join('')
+        : `<div class="setting-row project-row" data-project="${escape(project.id)}"><div><strong>${escape(project.name)}</strong><ul class="project-folders">${(folderLists.get(project.id) ?? []).map(folderRow).join('')}</ul><button type="button" class="project-folder-add" data-folder-add aria-label="Add a folder to ${escape(project.name)}">${icon('plus')}Add folder</button></div><div class="project-row-actions"><button type="button" class="secondary-button" data-project-remove aria-label="Remove ${escape(project.name)}">Remove</button></div></div>`).join('')
         : '<div class="setting-row"><div><small>No projects yet.</small></div></div>';
+    };
+    const loadFolders = async (): Promise<void> => {
+      await Promise.all(projects.list().map(async project => {
+        try { folderLists.set(project.id, await call<ProjectFolder[]>('project_folders', { projectId: project.id })); }
+        catch { folderLists.delete(project.id); }
+      }));
+      draw();
+    };
+    /** A folder command answers the updated list; a refusal is toast text, and nothing changes. */
+    const changeFolders = async (id: string, command: 'add_project_folder' | 'remove_project_folder' | 'set_primary_folder', path: string): Promise<void> => {
+      try {
+        folderLists.set(id, await call<ProjectFolder[]>(command, { projectId: id, path }));
+        await projects.projectsChanged();
+      } catch (failure) { projects.notify(failure instanceof Error ? failure.message : String(failure)); }
+      if (live()) draw();
     };
     const onClick = async (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       const id = target?.closest<HTMLElement>('[data-project]')?.dataset.project;
       if (!target || !id) return;
+      const path = target.closest<HTMLElement>('[data-folder]')?.dataset.folder;
       if (target.closest('[data-project-remove]')) { confirming = id; error = ''; draw(); }
       else if (target.closest('[data-project-cancel]')) { confirming = ''; error = ''; draw(); }
       else if (target.closest('[data-project-confirm]')) {
         const button = target.closest<HTMLButtonElement>('button')!;
         button.disabled = true;
-        try { await projects.remove(id); confirming = ''; error = ''; }
+        try { await projects.remove(id); confirming = ''; error = ''; folderLists.delete(id); }
         catch (failure) { error = failure instanceof Error ? failure.message : String(failure); }
         if (live()) draw();
       }
+      else if (target.closest('[data-folder-add]')) {
+        const button = target.closest<HTMLButtonElement>('button')!;
+        button.disabled = true;
+        const name = projects.list().find(project => project.id === id)?.name ?? 'the project';
+        const path = await chooseFolder(`Add a folder to ${name}`);
+        if (path) await changeFolders(id, 'add_project_folder', path);
+        if (live()) draw();
+      }
+      else if (target.closest('[data-folder-primary]') && path) void changeFolders(id, 'set_primary_folder', path);
+      else if (target.closest('[data-folder-remove]') && path) void changeFolders(id, 'remove_project_folder', path);
     };
     slot.addEventListener('click', onClick); draw();
+    void loadFolders();
     return () => slot.removeEventListener('click', onClick);
   }
 
