@@ -181,7 +181,12 @@ export function decorateFileLinks(root: ParentNode, target: HTMLElement): void {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a')) {
     const href = anchor.getAttribute('href') ?? '';
     if (!href) continue;
-    if (/^(?:https?:|mailto:|tel:)/i.test(href)) { anchor.target = '_blank'; anchor.rel = 'noopener noreferrer'; continue; }
+    if (/^(?:https?:|mailto:|tel:)/i.test(href)) {
+      // Only on change: decoration re-runs over a live reply, and each write is a mutation record.
+      if (anchor.target !== '_blank') anchor.target = '_blank';
+      if (anchor.rel !== 'noopener noreferrer') anchor.rel = 'noopener noreferrer';
+      continue;
+    }
     const path = fileReference(href);
     const span = document.createElement('span'); span.append(...anchor.childNodes);
     if (path && hub) {
