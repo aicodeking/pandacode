@@ -5,17 +5,21 @@ import type { VoiceHost, VoiceModelStatus, VoiceSettings } from './voice';
 /* Settings → Voice: turn dictation on, pick the engine and its downloaded
    models, choose tap or hold. Downloads stream progress; nothing is bundled. */
 
+/* Language names are written in their own language, matching the interface
+   language picker, so no catalog needs to translate them. */
 const LANGUAGE_OPTIONS: { id: string; label: string }[] = [
   { id: 'auto', label: 'Detect automatically' },
   { id: 'en', label: 'English' },
-  { id: 'zh', label: 'Chinese' },
-  { id: 'ja', label: 'Japanese' },
-  { id: 'ko', label: 'Korean' },
-  { id: 'de', label: 'German' },
-  { id: 'fr', label: 'French' },
-  { id: 'es', label: 'Spanish' },
-  { id: 'pt', label: 'Portuguese' },
-  { id: 'it', label: 'Italian' },
+  { id: 'zh', label: '中文' },
+  { id: 'ja', label: '日本語' },
+  { id: 'ko', label: '한국어' },
+  { id: 'de', label: 'Deutsch' },
+  { id: 'fr', label: 'Français' },
+  { id: 'es', label: 'Español' },
+  { id: 'pt', label: 'Português' },
+  { id: 'it', label: 'Italiano' },
+  { id: 'ru', label: 'Русский' },
+  { id: 'pl', label: 'Polski' },
 ];
 
 const KIND_LABEL: Record<VoiceModelStatus['kind'], string> = {
