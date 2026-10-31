@@ -14,7 +14,7 @@ async function openFlags(page: Page): Promise<void> {
   await expect(dialog(page)).toBeVisible();
 }
 
-test('emulator flags are saved with per-device overrides and survive reopening', async ({ page }) => {
+test('Android emulator flags are saved with per-device overrides and survive reopening', async ({ page }) => {
   await openFlags(page);
   await expect(dialog(page).getByLabel('Default flags')).toBeVisible();
   // The preview lists one Android device; iOS devices never appear here.
