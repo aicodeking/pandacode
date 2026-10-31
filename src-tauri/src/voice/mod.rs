@@ -14,7 +14,7 @@ pub mod sherpa;
 pub mod settings;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -65,12 +65,12 @@ impl Voice {
     }
 }
 
-pub fn setup(app: &AppHandle, dir: &PathBuf) -> Result<(), std::io::Error> {
+pub fn setup(app: &AppHandle, dir: &Path) -> Result<(), std::io::Error> {
     let models = dir.join("voice").join("models");
     std::fs::create_dir_all(&models)?;
     let settings = settings::load(dir);
     app.manage(Voice {
-        dir: dir.clone(),
+        dir: dir.to_path_buf(),
         settings: Mutex::new(settings),
         session: Mutex::new(None),
         downloads: Mutex::new(Downloads::new()),

@@ -92,7 +92,7 @@ fn build<T: cpal::SizedSample + num_traits::ToPrimitive>(
     let level = level.clone();
     let dropped = dropped.clone();
     let channels = config.channels() as usize;
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let stream_config: cpal::StreamConfig = (*config).into();
     let stream = device
         .build_input_stream(
             stream_config,
