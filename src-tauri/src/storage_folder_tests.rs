@@ -814,3 +814,99 @@ fn set_task_link_keys_the_upsert_on_session_kind_and_repo() {
     assert!(store.session(&task.id).unwrap().pull_request.is_none());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// REGRESSION PIN (green before per-repo linking): the single-link session read
+/// serves only the primary repo's link, whatever other repositories hold, so
+/// legacy readers (mobile, the PR tab) never see another repository's PR.
+#[test]
+fn the_single_link_reader_stays_on_the_primary_repo_key() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let root = scratch("single-reader");
+    let project = store.add_project(&root).unwrap();
+    let task = store
+        .create_session(&project.id, "claude", "sonnet", "full")
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "", Some(&pull_link(1, "Primary repo")))
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "o/lib", Some(&pull_link(2, "Other repo")))
+        .unwrap();
+    let pull = store
+        .session(&task.id)
+        .unwrap()
+        .pull_request
+        .expect("the primary link is readable");
+    assert_eq!((pull.number, pull.title.as_str()), (1, "Primary repo"));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// The multi-link read lists every repository's pull link with its repo key, the
+/// primary's '' first and the rest by key; issue links never appear.
+#[test]
+fn session_pull_links_list_each_repository_with_the_primary_first() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let root = scratch("pull-links");
+    let project = store.add_project(&root).unwrap();
+    let task = store
+        .create_session(&project.id, "claude", "sonnet", "full")
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "o/web", Some(&pull_link(3, "Web repo")))
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "", Some(&pull_link(1, "Primary repo")))
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "o/lib", Some(&pull_link(2, "Lib repo")))
+        .unwrap();
+    store
+        .set_task_link(
+            &task.id,
+            "issue",
+            "",
+            Some(&TaskLink {
+                kind: "issue".into(),
+                number: 9,
+                url: "https://github.com/o/r/issues/9".into(),
+                title: "An issue".into(),
+                state: "open".into(),
+                checked_at: 0,
+            }),
+        )
+        .unwrap();
+    let listed: Vec<(String, i64, String)> = store
+        .session_pull_links(&task.id)
+        .unwrap()
+        .into_iter()
+        .map(|(repo, link)| (repo, link.number, link.title))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            (String::new(), 1, "Primary repo".into()),
+            ("o/lib".into(), 2, "Lib repo".into()),
+            ("o/web".into(), 3, "Web repo".into()),
+        ],
+        "the primary's '' comes first, then the repositories by key"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A legacy session's links are exactly one entry under the primary key.
+#[test]
+fn a_legacy_sessions_pull_links_are_exactly_the_primary_one() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let root = scratch("legacy-pull-links");
+    let project = store.add_project(&root).unwrap();
+    let task = store
+        .create_session(&project.id, "claude", "sonnet", "full")
+        .unwrap();
+    store
+        .set_task_link(&task.id, "pull", "", Some(&pull_link(42, "The only PR")))
+        .unwrap();
+    let listed = store.session_pull_links(&task.id).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!((listed[0].0.as_str(), listed[0].1.number), ("", 42));
+    std::fs::remove_dir_all(&root).unwrap();
+}
