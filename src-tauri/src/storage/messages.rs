@@ -214,7 +214,7 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     /// Record refreshed states without touching which task owns which link.
-    pub fn update_link_states(&self, project_id: &str, states: &[(String, i64, String, String)]) -> Result<()> {
+    pub fn update_link_states(&self, project_id: &str, states: &[(String, String, i64, String, String)]) -> Result<()> {
         if states.is_empty() {
             return Ok(());
         }
@@ -222,10 +222,10 @@ impl Store {
         self.in_transaction(|| {
             let mut update = self
                 .db
-                .prepare_cached("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)")
+                .prepare_cached("UPDATE task_links SET state=?4,title=CASE WHEN ?5='' THEN title ELSE ?5 END,checked_at=?6 WHERE repo=?1 AND kind=?2 AND number=?3 AND session_id IN (SELECT id FROM sessions WHERE project_id=?7)")
                 .map_err(|e| e.to_string())?;
-            for (kind, number, state, title) in states {
-                update.execute(params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
+            for (repo, kind, number, state, title) in states {
+                update.execute(params![repo, kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
             }
             Ok(())
         })

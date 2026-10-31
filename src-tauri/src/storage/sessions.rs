@@ -4,7 +4,7 @@ use super::sql::{
     DISCARD_EMPTY_DRAFTS_SQL, REORDER_SQL, SESSIONS_SQL, SESSION_SQL, SETTLE_ARCHIVED_SQL,
 };
 use super::{
-    id, now, resolve_workspace_root, valid_permission_mode, ContextUsage, Project, RemoteDevice, Folder, RepoFolder, folder_labels,
+    id, now, resolve_workspace_root, valid_permission_mode, ContextUsage, PRIMARY_LINKS_REFUSAL, Project, RemoteDevice, Folder, RepoFolder, folder_labels,
     Result, Session, Store, MAX_MISSING_IDS, MAX_MISSING_ID_CHARS, SESSION_NOT_FOUND,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -81,10 +81,26 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        // A task created after multi-folder pinning records its primary: the
+        // session_repos row whose checkout is the task's own names the folder
+        // that was primary when the task was created, so a later primary change
+        // cannot relabel this task's checkout. Legacy tasks keep today's behavior.
+        let pinned: Option<String> = session.worktree_path.as_ref().and_then(|worktree| {
+            repos
+                .iter()
+                .find(|(_, row_worktree, _)| row_worktree.as_deref() == Some(worktree.as_str()))
+                .map(|(path, _, _)| path.clone())
+        });
+        let primary = pinned.clone().unwrap_or(primary);
+        // Under the pin every other folder is secondary, the current primary
+        // included: the pinned row took the primary slot.
+        let secondary = |f: &Folder| {
+            Some(f.path.as_str()) != pinned.as_deref() && (pinned.is_some() || !f.is_primary)
+        };
         // Labels always come from the folder paths: the primary, the folders, then
         // the dropped folders a task still holds a checkout for.
         let mut label_paths = vec![PathBuf::from(&primary)];
-        for folder in folders.iter().filter(|f| !f.is_primary) {
+        for folder in folders.iter().filter(|f| secondary(f)) {
             label_paths.push(PathBuf::from(&folder.path));
         }
         let folder_set: std::collections::HashSet<&str> =
@@ -96,7 +112,9 @@ impl Store {
                     .as_ref()
                     .map(|wt| (path.clone(), wt.clone(), branch.clone()))
             })
-            .filter(|(path, _, _)| !folder_set.contains(path.as_str()))
+            .filter(|(path, _, _)| {
+                !folder_set.contains(path.as_str()) && Some(path.as_str()) != pinned.as_deref()
+            })
             .collect();
         for (path, _, _) in &orphans {
             label_paths.push(PathBuf::from(path));
@@ -114,7 +132,7 @@ impl Store {
             branch,
         });
         let mut label_index = 1;
-        for folder in folders.iter().filter(|f| !f.is_primary) {
+        for folder in folders.iter().filter(|f| secondary(f)) {
             let entry = match repos.iter().find(|(path, _wt, _)| *path == folder.path) {
                 Some((_, Some(wt), branch)) => RepoFolder {
                     path: PathBuf::from(wt),
@@ -405,6 +423,18 @@ impl Store {
             is_primary: false,
         })
     }
+    /// Whether any task of the project still holds a GitHub link under the
+    /// legacy primary key: those links belong to whichever folder is primary,
+    /// so the primary must stay put until they are settled.
+    fn project_has_unqualified_links(&self, project_id: &str) -> Result<bool> {
+        let count: i64 = self.db.query_row(
+            "SELECT COUNT(*) FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 AND l.repo='' AND l.kind IN ('pull','issue')",
+            [project_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
     /// Remove a folder; the last one stays, and removing the primary promotes the
     /// next folder by position, with projects.path following it in one transaction.
     pub fn remove_project_folder(&self, project_id: &str, path: &Path) -> Result<()> {
@@ -418,6 +448,9 @@ impl Store {
             .find(|f| f.path == path_str)
             .ok_or_else(|| "Folder not found.".to_string())?;
         let was_primary = removed.is_primary;
+        if was_primary && self.project_has_unqualified_links(project_id)? {
+            return Err(PRIMARY_LINKS_REFUSAL.into());
+        }
         let next = folders
             .iter()
             .filter(|f| f.path != path_str)
@@ -456,6 +489,9 @@ impl Store {
             .find(|f| f.path == path_str)
             .ok_or_else(|| "Folder not found.".to_string())?;
         if !folder.is_primary {
+            if self.project_has_unqualified_links(project_id)? {
+                return Err(PRIMARY_LINKS_REFUSAL.into());
+            }
             let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
             transaction
                 .execute(

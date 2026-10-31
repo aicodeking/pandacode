@@ -23,6 +23,11 @@ pub fn valid_permission_mode(mode: &str) -> bool {
 // selected mode, including restrictive modes chosen before this default changed.
 pub const DEFAULT_PERMISSION_MODE: &str = "full";
 
+// Links stored under the legacy '' repo key belong to whichever folder is
+// primary, so moving the primary is refused while any of them exist.
+const PRIMARY_LINKS_REFUSAL: &str =
+    "This project has tasks with linked GitHub items. Settle them before changing the primary folder.";
+
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,12 +151,30 @@ pub struct RepoFolder {
     pub worktree: Option<PathBuf>,
     pub branch: Option<String>,
 }
-/// Folder display names: the basename, parent-qualified only where basenames collide.
+/// Folder display names: the basename, parent-qualified only where basenames
+/// collide, with as many parent levels as the collision needs (`/a/john/x` and
+/// `/b/john/x` stay `john/x`; a shared parent grows another level).
 pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
     let base = |p: &Path| {
         p.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| p.to_string_lossy().to_string())
+    };
+    // The last `levels` components joined with '/', fewer when the path is shorter.
+    let qualified = |p: &Path, levels: usize| -> String {
+        let mut parts = vec![base(p)];
+        let mut parent = p.parent();
+        while parts.len() < levels {
+            match parent {
+                Some(ancestor) if !ancestor.as_os_str().is_empty() => {
+                    parts.push(base(ancestor));
+                    parent = ancestor.parent();
+                }
+                _ => break,
+            }
+        }
+        parts.reverse();
+        parts.join("/")
     };
     let basenames: Vec<String> = paths.iter().map(|p| base(p)).collect();
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -160,14 +183,29 @@ pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
     }
     paths
         .iter()
-        .zip(&basenames)
-        .map(|(p, name)| {
-            if counts[name.as_str()] > 1 {
-                if let Some(parent) = p.parent() {
-                    return format!("{}/{}", base(parent), name);
+        .enumerate()
+        .map(|(index, p)| {
+            if counts[basenames[index].as_str()] <= 1 {
+                return basenames[index].clone();
+            }
+            // Grow parent levels until this spelling differs from every other
+            // colliding path's; the common case settles at one level.
+            let mut levels = 1;
+            loop {
+                let label = qualified(p, levels + 1);
+                if paths.iter().enumerate().all(|(other, q)| {
+                    other == index
+                        || counts[basenames[other].as_str()] <= 1
+                        || basenames[other] != basenames[index]
+                        || qualified(q, levels + 1) != label
+                }) {
+                    return label;
+                }
+                levels += 1;
+                if levels + 1 > p.components().count() {
+                    return label;
                 }
             }
-            name.clone()
         })
         .collect()
 }
@@ -818,3 +856,7 @@ mod tests_upgrade_safety;
 #[cfg(test)]
 #[path = "storage_folder_tests.rs"]
 mod folder_tests;
+
+#[cfg(test)]
+#[path = "storage_identity_tests.rs"]
+mod identity_tests;
