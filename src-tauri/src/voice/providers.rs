@@ -130,12 +130,28 @@ pub fn realtime_url(provider: &Provider, base_override: &str, model: &str) -> St
 }
 
 /// Deepgram's listen URL with the dictation query set.
-pub fn deepgram_url(provider: &Provider, base_override: &str, model: &str) -> String {
+pub fn deepgram_url(
+    provider: &Provider,
+    base_override: &str,
+    model: &str,
+    language: Option<&str>,
+) -> String {
     let base = if base_override.is_empty() { provider.base_url } else { base_override };
     let base = base.trim_end_matches('/');
-    format!(
+    let mut url = format!(
         "{base}/v1/listen?model={model}&interim_results=true&smart_format=true&encoding=linear16&sample_rate=16000&channels=1&endpointing=300"
-    )
+    );
+    if let Some(code) = language {
+        url.push_str(&format!("&language={code}"));
+    }
+    url
+}
+
+/// The ISO-639-1 hint online providers accept, None when the dictation
+/// language is auto (each provider then falls back to its own detection).
+pub fn language_hint(language: &str) -> Option<String> {
+    let code = language.split(['-', '_']).next().unwrap_or("auto");
+    (code != "auto" && !code.is_empty() && code.len() == 2).then(|| code.to_ascii_lowercase())
 }
 
 /// The effective model: the saved pick or the preset default.
@@ -191,10 +207,11 @@ mod tests {
     #[test]
     fn websocket_urls_match_the_protocols() {
         let deepgram = find("deepgram").unwrap();
-        let url = deepgram_url(deepgram, "", "nova-3");
+        let url = deepgram_url(deepgram, "", "nova-3", None);
         assert!(url.starts_with("wss://api.deepgram.com/v1/listen?model=nova-3"));
         assert!(url.contains("interim_results=true"));
         assert!(url.contains("encoding=linear16&sample_rate=16000"));
+        assert!(!url.contains("language"));
         let realtime = find("openai-realtime").unwrap();
         assert_eq!(
             realtime_url(realtime, "", "gpt-4o-mini-transcribe"),
@@ -210,5 +227,21 @@ mod tests {
         let groq = find("groq").unwrap();
         assert_eq!(resolved_model(groq, ""), "whisper-large-v3-turbo");
         assert_eq!(resolved_model(groq, "whisper-large-v3"), "whisper-large-v3");
+    }
+
+    #[test]
+    fn language_hints_strip_regions_and_drop_auto() {
+        assert_eq!(language_hint("auto"), None);
+        assert_eq!(language_hint(""), None);
+        assert_eq!(language_hint("en"), Some("en".to_string()));
+        assert_eq!(language_hint("zh-CN"), Some("zh".to_string()));
+        assert_eq!(language_hint("pt_BR"), Some("pt".to_string()));
+    }
+
+    #[test]
+    fn deepgram_url_carries_the_language_hint() {
+        let deepgram = find("deepgram").unwrap();
+        assert!(deepgram_url(deepgram, "", "nova-3", Some("ja")).contains("&language=ja"));
+        assert!(!deepgram_url(deepgram, "", "nova-3", None).contains("language"));
     }
 }

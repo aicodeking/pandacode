@@ -163,19 +163,20 @@ pub async fn voice_test_provider(
     let model = super::providers::resolved_model(entry, &settings.online_model);
     // A quiet half second: enough to exercise the whole path.
     let samples = vec![0.0f32; super::online::SAMPLE_RATE as usize / 2];
+    let language = super::providers::language_hint(&settings.language);
     match entry.transport {
         super::providers::Transport::Multipart => {
-            transcribe_or_probe(entry, &settings.online_base_url, model, &key, &samples, true).await
+            transcribe_or_probe(entry, &settings.online_base_url, model, &key, &samples, true, language.as_deref()).await
         }
         super::providers::Transport::DeepgramWs => {
-            let url = super::providers::deepgram_url(entry, &settings.online_base_url, model);
+            let url = super::providers::deepgram_url(entry, &settings.online_base_url, model, language.as_deref());
             let mut stream = super::online::connect_deepgram(&url, &key, |_| {}).await?;
             stream.feed(&samples).await?;
             stream.finish().await.map(|_| format!("{label} is connected.", label = entry.label))
         }
         super::providers::Transport::RealtimeWs => {
             let url = super::providers::realtime_url(entry, &settings.online_base_url, model);
-            let mut stream = super::online::connect_realtime(&url, &key, model, |_| {}).await?;
+            let mut stream = super::online::connect_realtime(&url, &key, model, language.as_deref(), |_| {}).await?;
             stream.feed(&samples).await?;
             stream.finish().await.map(|_| format!("{label} is connected.", label = entry.label))
         }
@@ -191,8 +192,9 @@ async fn transcribe_or_probe(
     key: &str,
     samples: &[f32],
     probe: bool,
+    language: Option<&str>,
 ) -> Result<String, String> {
-    let result = super::online::transcribe_multipart(entry, base_override, model, key, samples).await;
+    let result = super::online::transcribe_multipart(entry, base_override, model, key, samples, language).await;
     match result {
         Ok(text) => Ok(if probe && text.is_empty() { format!("{} is connected.", entry.label) } else { text }),
         Err(error) => {
@@ -502,6 +504,7 @@ fn online_start_recording(
     let key = crate::secret_store::get(KEY_SERVICE, &key_account(provider.id))
         .ok_or(format!("Save an API key for {} first.", provider.label))?;
     let model = super::providers::resolved_model(provider, &settings.online_model).to_string();
+    let language = super::providers::language_hint(&settings.language);
     let capture = super::capture::Capture::start()?;
     Ok(tauri::async_runtime::spawn(async move {
         let app = &app;
@@ -513,7 +516,7 @@ fn online_start_recording(
         let mut stream: Option<super::online::OnlineStream> = match provider.transport {
             super::providers::Transport::Multipart => None,
             super::providers::Transport::DeepgramWs => {
-                let url = super::providers::deepgram_url(provider, &settings.online_base_url, &model);
+                let url = super::providers::deepgram_url(provider, &settings.online_base_url, &model, language.as_deref());
                 match super::online::connect_deepgram(&url, &key, {
                     let app = app.clone();
                     move |text| super::emit(&app, super::EVENT_PARTIAL, serde_json::json!({ "text": text }))
@@ -530,7 +533,7 @@ fn online_start_recording(
             }
             super::providers::Transport::RealtimeWs => {
                 let url = super::providers::realtime_url(provider, &settings.online_base_url, &model);
-                match super::online::connect_realtime(&url, &key, &model, {
+                match super::online::connect_realtime(&url, &key, &model, language.as_deref(), {
                     let app = app.clone();
                     move |text| super::emit(&app, super::EVENT_PARTIAL, serde_json::json!({ "text": text }))
                 })
@@ -605,7 +608,7 @@ fn online_start_recording(
             return;
         }
         // Multipart: one request with the whole take.
-        match super::online::transcribe_multipart(provider, &settings.online_base_url, &model, &key, &buffer).await {
+        match super::online::transcribe_multipart(provider, &settings.online_base_url, &model, &key, &buffer, language.as_deref()).await {
             Ok(text) => super::emit(
                 app,
                 super::EVENT_RESULT,
