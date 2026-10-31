@@ -10,7 +10,6 @@ use std::{
 };
 
 const DOWNLOAD_CHUNK: usize = 96 * 1024;
-const UPLOAD_CHUNK: usize = 46 * 1024;
 const STATE_LIMIT: u64 = 64 * 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -347,6 +346,9 @@ rm -f "$archive"
     remote_exec(sandbox, native, &command, COMMAND_TIMEOUT).map(|_| ())
 }
 
+/// Hands the whole file to the sandbox in one call: providers with a file API move it in a
+/// single round trip (one scp on the VPS machines, issue #206); the chunked trait default
+/// still covers providers without one.
 fn upload_file(
     sandbox: &dyn Sandbox,
     native: &str,
@@ -354,31 +356,9 @@ fn upload_file(
     bytes: &[u8],
     private: bool,
 ) -> Result<()> {
-    if bytes.len() <= UPLOAD_CHUNK {
-        return sandbox
-            .upload(native, destination, bytes, private)
-            .map_err(|_| "Could not upload a file to the cloud machine.".into());
-    }
-    let directory = format!("{destination}.parts-{}", uuid::Uuid::new_v4());
-    for (index, chunk) in bytes.chunks(UPLOAD_CHUNK).enumerate() {
-        let part = format!("{directory}/chunk-{index:08}");
-        if sandbox.upload(native, &part, chunk, private).is_err() {
-            let _ = remote_exec(
-                sandbox,
-                native,
-                &format!("rm -rf {}", crate::cloud::shell_quote(&directory)),
-                Duration::from_secs(30),
-            );
-            return Err("Could not upload a file to the cloud machine.".into());
-        }
-    }
-    let command = format!(
-        "set -eu; umask {}; dir={}; trap 'rm -rf \"$dir\"' EXIT; cat \"$dir\"/chunk-* > {}",
-        if private { "077" } else { "022" },
-        crate::cloud::shell_quote(&directory),
-        crate::cloud::shell_quote(destination),
-    );
-    remote_exec(sandbox, native, &command, COMMAND_TIMEOUT).map(|_| ())
+    sandbox
+        .upload(native, destination, bytes, private)
+        .map_err(|_| "Could not upload a file to the cloud machine.".into())
 }
 
 struct TempPath(PathBuf);
@@ -621,6 +601,15 @@ mod tests {
         fn power(&self, _native: &str, _action: &str) -> Result<()> {
             Ok(())
         }
+        /// Records whole-file calls and writes the bytes directly, so the tests pin one
+        /// `upload` per file (issue #206) instead of the trait default's chunking.
+        fn upload(&self, _native: &str, path: &str, bytes: &[u8], _private: bool) -> Result<()> {
+            self.uploads.lock().unwrap().push(bytes.len());
+            let full = Path::new(path);
+            fs::create_dir_all(full.parent().expect("upload paths have parents")).unwrap();
+            fs::write(full, bytes).unwrap();
+            Ok(())
+        }
         fn exec(
             &self,
             _native: &str,
@@ -628,17 +617,6 @@ mod tests {
             _timeout: Duration,
         ) -> Result<(Option<i32>, String)> {
             assert!(command.len() < 64 * 1024);
-            if command.contains("base64 -d") {
-                let start = command.find("printf %s ").unwrap() + "printf %s ".len();
-                let end = command[start..].find(" | base64 -d").unwrap() + start;
-                let encoded = &command[start..end];
-                let padding = encoded.ends_with("==") as usize
-                    + (encoded.ends_with('=') && !encoded.ends_with("==")) as usize;
-                self.uploads
-                    .lock()
-                    .unwrap()
-                    .push(encoded.len() * 3 / 4 - padding);
-            }
             let output = Command::new("sh")
                 .args(["-c", command])
                 .current_dir(&self.root)
@@ -716,12 +694,14 @@ mod tests {
     }
 
     #[test]
-    fn checkout_pull_fast_forwards_and_transfers_large_bundles_in_bounded_chunks() {
+    fn checkout_pull_fast_forwards_and_uploads_bundles_in_one_call() {
         let temp = TempDir::new("roundtrip");
         let (sandbox, local, remote) = checkout(&temp.0);
-        let upload_commands = sandbox.uploads.lock().unwrap();
-        assert!(upload_commands.len() > 1);
-        assert!(upload_commands.iter().sum::<usize>() > 200 * 1024);
+        let uploads = sandbox.uploads.lock().unwrap();
+        // The checkout bundle is ~512 KiB: one whole-file upload, not one call per 46 KiB
+        // piece (issue #206: the per-piece round trips cost tens of minutes over SSH).
+        assert_eq!(uploads.len(), 1);
+        assert!(*uploads.first().unwrap() > 200 * 1024);
 
         let mut remote_data = vec![0u8; 512 * 1024];
         let mut state = 0x8765_4321u32;
