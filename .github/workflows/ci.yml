@@ -56,3 +56,39 @@ jobs:
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - if: ${{ !cancelled() }}
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+
+  router:
+    # x86_64 Linux builds without ONNX Runtime (see `panda_onnx` in src-tauri/build.rs), so Panda Router's
+    # ONNX parity tests run here, on a target that links it.
+    name: Panda Router ONNX parity (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', cache: npm }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run build
+      # Panda Router's ONNX profiler for the parity tests, pinned like panda_router::ASSETS.
+      # The tests fail rather than skip when CI is set and these are missing.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .panda-router
+          key: panda-router-v4-b52d463905808efd892c91917e3010985359e259fe7a514ae083967c98fa2216-ca870c678352403d107496dc78899fa666ed0f56fef63e88ae398fafe5d78c45
+      - name: Fetch Panda Router profiler
+        run: |
+          base=https://raw.githubusercontent.com/aicodeking/PandaOrchestrator/83e408c794ef1d09b6d13b6ad8734e984f552402/artifacts/panda-router-v4
+          mkdir -p .panda-router
+          while read -r sha file; do
+            [ -f ".panda-router/$file" ] || curl -fsSL --retry 3 -o ".panda-router/$file" "$base/$file"
+            echo "$sha  .panda-router/$file" | shasum -a 256 -c -
+          done <<'EOF'
+          b52d463905808efd892c91917e3010985359e259fe7a514ae083967c98fa2216 model.int8.onnx
+          ca870c678352403d107496dc78899fa666ed0f56fef63e88ae398fafe5d78c45 tokenizer.json
+          EOF
+          echo "PANDA_ROUTER_ASSETS=$PWD/.panda-router" >> "$GITHUB_ENV"
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- panda_router model_routing

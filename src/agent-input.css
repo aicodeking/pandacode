@@ -1,24 +1,27 @@
 .live-inputs:empty{display:none}
-.agent-input{margin:12px 0 18px 31px;padding:16px;border:1px solid var(--border);border-radius:5px;background:var(--panel);font-size:.86rem;line-height:1.5}
-.agent-input h3{margin:0 0 12px;font-size:.9rem;font-weight:600}
+.agent-input{margin:12px 0 18px 31px;padding:16px;border-radius:var(--radius-sm);background:var(--panel);font-size:var(--text-sm);line-height:1.5}
+.agent-input h3{margin:0 0 12px;font-size:var(--text-md);font-weight:600}
 .agent-input-fields,.agent-input-question{border:0;padding:0;margin:0;min-width:0}
 .agent-input-question+.agent-input-question,.agent-input-field+.agent-input-field{margin-top:16px}
 .agent-input legend{padding:0;margin-bottom:8px;font-weight:550;overflow-wrap:anywhere;width:100%}
-.agent-input-header{display:block;font-size:.73rem;color:var(--muted);font-weight:400;margin-bottom:2px}
-.agent-input-option{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border:1px solid var(--border);border-radius:3px;margin-top:5px;cursor:pointer}
-.agent-input-option:has(input:checked){background:var(--accent-dim);border-color:var(--focus)}
+.agent-input-header{display:block;font-size:var(--text-xs);color:var(--muted);font-weight:400;margin-bottom:2px}
+.agent-input-option{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;background:var(--fill-hover);border-radius:var(--radius-sm);margin-top:5px;cursor:pointer}
+.agent-input-option:has(input:checked){background:var(--accent-dim)}
 .agent-input-option>span{min-width:0;overflow-wrap:anywhere}.agent-input-option>span>strong{display:block;font-weight:500}.agent-input-option>span>strong strong{font-weight:650}
-.agent-input small{display:block;color:var(--muted);font-size:.76rem;font-weight:400}
+.agent-input small{display:block;color:var(--muted);font-size:var(--text-xs);font-weight:400}
 .agent-input input:is([type=radio],[type=checkbox]){width:15px;height:15px;flex-shrink:0;accent-color:var(--accent);margin:3px 0 0}
 .agent-input-field,.agent-input-custom{display:grid;gap:6px;margin-top:10px;min-width:0}
 .agent-input-custom:has(>input[type=radio]),.agent-input-custom:has(>input[type=checkbox]){grid-template-columns:15px minmax(0,1fr);column-gap:8px}
 .agent-input-custom>input:not([type=radio],[type=checkbox]){grid-column:1/-1}
-.agent-input input:not([type=radio],[type=checkbox]),.agent-input select{width:100%;min-width:0;border:1px solid var(--border);border-radius:3px;padding:8px 10px;background:var(--bg);font:inherit;color:var(--text)}
-.agent-input-message{margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}.agent-input-url{font-family:var(--mono);font-size:.76rem;overflow-wrap:anywhere;color:var(--muted)}
+.agent-input input:not([type=radio],[type=checkbox]),.agent-input select{width:100%;min-width:0;border:0;border-radius:var(--radius-sm);padding:8px 10px;background:var(--bg);font:inherit;color:var(--text)}
+.agent-input-message{margin:0 0 12px;white-space:pre-wrap;overflow-wrap:anywhere}.agent-input-url{font-family:var(--mono);font-size:var(--text-xs);overflow-wrap:anywhere;color:var(--muted)}
 .agent-input-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap}.agent-input-actions button{padding:7px 12px}
 .agent-input-error{margin:10px 0 0;color:var(--danger);white-space:pre-wrap;overflow-wrap:anywhere}
-.workspace[data-wallpaper] .conversation-pane .agent-input{background:var(--thread-surface);border-color:var(--thread-border)}
-.workspace[data-wallpaper] .conversation-pane .agent-input :is(input:not([type=radio],[type=checkbox]),select){background:var(--thread-inset);border-color:var(--thread-border)}
+.workspace[data-wallpaper] .conversation-pane .agent-input{background:var(--thread-surface)}
+.workspace[data-wallpaper] .conversation-pane .agent-input :is(input:not([type=radio],[type=checkbox]),select){background:var(--thread-inset)}
 .workspace[data-wallpaper] .conversation-pane .agent-input-option:has(input:checked){background:var(--thread-accent)}
-.side-thread .agent-input{margin-left:28px;padding:12px;font-size:.8rem}
+.side-thread .agent-input{margin-left:28px;padding:12px;font-size:var(--text-xs)}
 @media(max-width:650px){.agent-input{margin-left:0}}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.agent-input-option,.agent-input input:not([type=radio],[type=checkbox]),.agent-input select{transition:background-color 130ms ease-out,border-color 130ms ease-out}.agent-input-option:hover{border-color:color-mix(in srgb,var(--muted) 50%,var(--border))}}

@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        OnceLock,
+        Arc, OnceLock, PoisonError,
     },
     time::{Duration, Instant},
 };
@@ -340,9 +340,13 @@ fn cache() -> &'static HashMap<&'static str, CacheSlot> {
             "deepseek",
             "commandcode",
             "cline",
+            "kilo",
             "omp",
             "github-copilot",
             "muse",
+            "devin",
+            "zcode",
+            "hermes",
         ]
         .into_iter()
         .map(|id| (id, CacheSlot::default()))
@@ -520,54 +524,101 @@ fn claude_service(config: Option<&str>, secure: Option<&str>) -> String {
     format!("Claude Code-credentials-{}", &hash[..8])
 }
 
+/// `connection` reads one named connection through its own config folder and
+/// environment; without it the global setup is read, as before.
 #[tauri::command]
 pub(crate) async fn agent_usage(
     window: tauri::WebviewWindow,
     provider: String,
     refresh: bool,
+    connection: Option<String>,
 ) -> crate::Result<Usage> {
     if window.label() != "main" {
         return Err("Usage limits are available only in the main application window.".into());
     }
-    query_usage(provider, refresh).await
+    match connection {
+        Some(id) => connection_usage(provider, &id, refresh).await,
+        None => query_usage(provider, refresh).await,
+    }
 }
 
-async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
+pub(crate) async fn query_usage(provider: String, refresh: bool) -> crate::Result<Usage> {
     let slot = cache().get(provider.as_str()).ok_or("Unknown agent.")?;
-    Ok(cached(slot, refresh, || async {
-        static LIMIT: Semaphore = Semaphore::const_new(3);
-        tokio::time::timeout(Duration::from_secs(35), async {
-            let Ok(_permit) = LIMIT.acquire().await else {
-                return FetchError::Unavailable.into_usage(&provider);
-            };
-            fetch_provider(&provider).await
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Usage::empty(
-                &provider,
-                "error",
-                "The usage check timed out. Try again later.",
-            )
-        })
+    Ok(cached(slot, refresh, || bounded(&provider, &[])).await)
+}
+
+async fn connection_usage(provider: String, id: &str, refresh: bool) -> crate::Result<Usage> {
+    let connection = crate::connections::get(id)
+        .filter(|c| c.provider == provider)
+        .ok_or("This connection no longer exists.")?;
+    // Keyed by revision, so an edited connection never shows the old account.
+    // ponytail: slots of deleted or edited connections stay until restart; tiny.
+    static SLOTS: OnceLock<std::sync::Mutex<HashMap<String, Arc<CacheSlot>>>> = OnceLock::new();
+    let slot = SLOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(format!("{}#{}", connection.id, connection.revision))
+        .or_default()
+        .clone();
+    Ok(cached(&slot, refresh, || async move {
+        let name = connection.name.clone();
+        match tokio::task::spawn_blocking(move || crate::connections::launch(&connection)).await {
+            Ok(Ok(launch)) => bounded(&provider, &launch.env).await,
+            _ => Usage::empty(&provider, "unavailable", &format!("The saved values of “{name}” could not be read. Check the connection in Settings.")),
+        }
     })
     .await)
 }
 
-async fn fetch_provider(provider: &str) -> Usage {
+async fn bounded(provider: &str, env: &[(String, String)]) -> Usage {
+    static LIMIT: Semaphore = Semaphore::const_new(3);
+    tokio::time::timeout(Duration::from_secs(35), async {
+        let Ok(_permit) = LIMIT.acquire().await else {
+            return FetchError::Unavailable.into_usage(provider);
+        };
+        fetch_provider(provider, env).await
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Usage::empty(
+            provider,
+            "error",
+            "The usage check timed out. Try again later.",
+        )
+    })
+}
+
+/// A variable as the harness would see it: a connection's own values win over
+/// PandaCode's environment. With no connection this is the process environment.
+fn var(env: &[(String, String)], name: &str) -> Option<String> {
+    env.iter()
+        .rev()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var(name).ok())
+}
+
+async fn fetch_provider(provider: &str, env: &[(String, String)]) -> Usage {
     let mut result = match provider {
-        "codex" => fetch_codex().await,
-        "claude" => fetch_claude().await,
-        "kimi" | "glm" | "opencode" | "antigravity" => crate::agent_usage_providers::fetch(provider).await,
+        "codex" => fetch_codex(env).await,
+        "claude" => fetch_claude(env).await,
+        _ if !env.is_empty() => Usage::empty(provider, "unsupported", "Limits are read for each Claude Code and Codex connection. This harness's limits are shown for its global setup only."),
+        "kimi" | "glm" | "opencode" | "antigravity" | "deepseek" => {
+            crate::agent_usage_providers::fetch(provider).await
+        }
         "grok" => Usage::empty(provider, "unsupported", "Grok does not expose subscription usage through this agent. Check your account dashboard."),
         "mimo" => Usage::empty(provider, "unsupported", "MiMo does not expose account limits through this agent. View your Token Plan dashboard."),
         "omp" => Usage::empty(provider, "unsupported", "omp uses the model provider you configured for it. Check that provider's dashboard for limits."),
         "pi" => Usage::empty(provider, "unsupported", "Pi uses the model provider you configured for it. Check that provider's dashboard for limits."),
-        "deepseek" => Usage::empty(provider, "unsupported", "DeepSeek does not expose balance or limits through this agent. Check the DeepSeek platform."),
         "commandcode" => Usage::empty(provider, "unsupported", "Command Code does not expose credits or limits through this agent. Check Command Code Studio."),
         "cline" => Usage::empty(provider, "unsupported", "Cline does not expose credits or limits through this agent. Check your Cline account."),
+        "kilo" => Usage::empty(provider, "unsupported", "Kilo Code does not expose credits or limits through this agent. Check your Kilo account or the model provider's dashboard."),
         "github-copilot" => Usage::empty(provider, "unsupported", "GitHub Copilot CLI does not expose usage limits through this agent. Check your GitHub Copilot settings."),
         "muse" => Usage::empty(provider, "unsupported", "Muse Code reports its usage windows only inside a running session. Check them with /usage in Muse Code."),
+        "devin" => Usage::empty(provider, "unsupported", "Devin does not expose plan limits through its ACP server. Check usage in your Devin account settings."),
+        "zcode" => Usage::empty(provider, "unsupported", "ZCode does not expose plan usage. Check usage in ZCode itself."),
+        "hermes" => Usage::empty(provider, "unsupported", "Hermes Agent does not expose usage limits through its ACP server. Check your LLM provider's dashboard."),
         _ => Usage::empty(provider, "unsupported", "Usage limits are not available for this agent."),
     };
     if result.dashboard_url.is_none() {
@@ -579,6 +630,7 @@ async fn fetch_provider(provider: &str) -> Usage {
             "deepseek" => Some("https://platform.deepseek.com/usage"),
             "commandcode" => Some("https://commandcode.ai/studio"),
             "cline" => Some("https://app.cline.bot"),
+            "kilo" => Some("https://app.kilo.ai"),
             _ => None,
         }
         .map(str::to_owned);
@@ -586,9 +638,9 @@ async fn fetch_provider(provider: &str) -> Usage {
     result
 }
 
-async fn fetch_codex() -> Usage {
+async fn fetch_codex(env: &[(String, String)]) -> Usage {
     let cwd = crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir);
-    let Ok(mut client) = crate::integrations::ControlClient::start(&cwd).await else {
+    let Ok(mut client) = crate::integrations::ControlClient::start_with_env(&cwd, env).await else {
         return Usage::empty("codex", "error", "Codex usage is unavailable. Check that its CLI is installed and signed in, then refresh.");
     };
     let result = match client
@@ -617,7 +669,11 @@ async fn fetch_codex() -> Usage {
 }
 
 pub(crate) fn claude_config_dir() -> Option<PathBuf> {
-    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
+    claude_config_dir_in(&[])
+}
+
+fn claude_config_dir_in(env: &[(String, String)]) -> Option<PathBuf> {
+    match var(env, "CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
         Some(path) => {
             let path = PathBuf::from(path);
             path.is_absolute().then_some(path)
@@ -626,8 +682,8 @@ pub(crate) fn claude_config_dir() -> Option<PathBuf> {
     }
 }
 
-async fn fetch_claude() -> Usage {
-    let Some(config) = claude_config_dir() else {
+async fn fetch_claude(env: &[(String, String)]) -> Usage {
+    let Some(config) = claude_config_dir_in(env) else {
         return Usage::empty("claude", "unavailable", "Claude's configuration directory could not be determined. Use an absolute CLAUDE_CONFIG_DIR path.");
     };
     let settings = match crate::agent_usage_providers::credential_bytes(&config.join("settings.json")).await {
@@ -642,10 +698,18 @@ async fn fetch_claude() -> Usage {
         crate::provider_settings::claude_connection_mode().is_inherit(),
         |name| std::env::var(name).ok(),
         &settings,
+    ) || claude_override(
+        true,
+        |name| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        },
+        &Value::Null,
     ) {
         return Usage::empty("claude", "unavailable", "Claude is configured with an API key, custom endpoint, or environment credentials. Saved Claude subscription limits do not describe that connection.");
     }
-    let (credential, source) = match read_claude_credential(&config).await {
+    let (credential, source) = match read_claude_credential(&config, env).await {
         Ok(value) => value,
         Err(result) => return *result,
     };
@@ -673,15 +737,16 @@ async fn fetch_claude() -> Usage {
 
 async fn read_claude_credential(
     config: &Path,
+    env: &[(String, String)],
 ) -> Result<(ClaudeCredential, &'static str), Box<Usage>> {
     let unavailable = unreadable_claude_login;
+    #[cfg(not(target_os = "macos"))]
+    let _ = env;
     #[cfg(target_os = "macos")]
     {
         let service = claude_service(
-            std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
-            std::env::var("CLAUDE_SECURESTORAGE_CONFIG_DIR")
-                .ok()
-                .as_deref(),
+            var(env, "CLAUDE_CONFIG_DIR").as_deref(),
+            var(env, "CLAUDE_SECURESTORAGE_CONFIG_DIR").as_deref(),
         );
         let keychain =
             tokio::task::spawn_blocking(move || crate::usage_keychain::read_claude(&service)).await;
@@ -896,6 +961,61 @@ mod tests {
             |name| (name == "CLAUDE_CODE_USE_BEDROCK").then(|| "false".into()),
             &Value::Null
         ));
+    }
+
+    #[test]
+    fn connection_environment_selects_its_own_config_folder_and_login() {
+        let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+        let work = [
+            pair("CLAUDE_CONFIG_DIR", "/tmp/old"),
+            pair("CLAUDE_CONFIG_DIR", "/Users/me/.claude-work"),
+        ];
+        // The connection's last value wins; anything it doesn't set comes from PandaCode's environment.
+        assert_eq!(
+            var(&work, "CLAUDE_CONFIG_DIR").as_deref(),
+            Some("/Users/me/.claude-work")
+        );
+        assert_eq!(var(&work, "PATH"), std::env::var("PATH").ok());
+        assert_eq!(
+            claude_config_dir_in(&work),
+            Some(PathBuf::from("/Users/me/.claude-work"))
+        );
+        assert_eq!(
+            claude_config_dir_in(&[pair("CLAUDE_CONFIG_DIR", "relative")]),
+            None
+        );
+        assert_eq!(claude_config_dir_in(&[]), claude_config_dir());
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            claude_service(var(&work, "CLAUDE_CONFIG_DIR").as_deref(), None),
+            claude_service(Some("/Users/me/.claude-work"), None)
+        );
+    }
+
+    #[tokio::test]
+    async fn connections_of_harnesses_without_a_connection_reader_never_show_global_limits() {
+        let env = [("KIMI_SHARE_DIR".to_owned(), "/tmp/kimi-work".to_owned())];
+        let usage = fetch_provider("kimi", &env).await;
+        assert_eq!(usage.status, "unsupported");
+        assert!(usage.windows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn claude_connection_with_its_own_api_key_is_not_a_subscription() {
+        let dir =
+            std::env::temp_dir().join(format!("pandacode-usage-conn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let env = [
+            (
+                "CLAUDE_CONFIG_DIR".to_owned(),
+                dir.to_string_lossy().into_owned(),
+            ),
+            ("ANTHROPIC_API_KEY".to_owned(), "synthetic-key".to_owned()),
+        ];
+        let usage = fetch_claude(&env).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(usage.status, "unavailable");
+        assert!(usage.message.unwrap().contains("API key"));
     }
 
     #[cfg(target_os = "macos")]

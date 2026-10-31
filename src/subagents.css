@@ -1,26 +1,18 @@
-.subagents-host{position:relative;display:flex;justify-content:flex-end;flex-shrink:0;padding:8px 24px 0;z-index:4;pointer-events:none}
-.subagents-host:has(>.subagents-trigger[hidden]){height:0;padding:0}
-.subagents-trigger{pointer-events:auto;font-size:.72rem;gap:7px;height:29px;padding:0 10px;border-radius:6px;border:1px solid var(--border);background:var(--panel);color:var(--muted);box-shadow:0 2px 8px #00000005;font-variant-numeric:tabular-nums}
-.subagents-trigger>.icon{width:13px;height:13px}
-.subagents-trigger>.icon:last-child{width:10px}
-.subagents-trigger.has-running>.icon:first-child{color:var(--accent-ink)}
-.subagents-trigger:hover,.subagents-trigger[aria-expanded=true]{background:var(--raised);border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
-.subagents-trigger:active{scale:.97}
-.subagents-panel{position:absolute;top:calc(100% + 7px);right:24px;width:min(390px,calc(100% - 32px));max-height:min(540px,calc(100vh - 210px));display:flex;flex-direction:column;pointer-events:auto;border:1px solid var(--border);border-radius:6px;background:var(--panel);box-shadow:0 14px 45px #00000026,0 2px 8px #0000000a;overflow:hidden;text-align:left}
+.subagents-panel{display:flex;min-height:0;flex-direction:column;pointer-events:auto;overflow:hidden;text-align:left}
 .subagents-heading{display:flex;align-items:center;gap:8px;padding:10px 12px;flex-shrink:0}
-.subagents-heading>strong{font-size:.82rem;font-weight:600}
-.subagents-summary{font-size:.7rem;color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
+.subagents-heading>strong{font-size:var(--text-sm);font-weight:600}
+.subagents-summary{font-size:var(--text-2xs);color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
 .subagents-heading .icon-button{width:26px;height:26px}
 .subagents-body{min-height:0;overflow:auto;overscroll-behavior:contain;padding:0 8px 8px;scrollbar-gutter:stable}
 .subagents-list{display:flex;flex-direction:column;gap:3px}
-.subagent-row{width:100%;min-width:0;min-height:54px;justify-content:flex-start;text-align:left;border-radius:4px;padding:9px 10px;gap:10px}
+.subagent-row{width:100%;min-width:0;min-height:54px;justify-content:flex-start;text-align:left;border-radius:var(--radius-sm);padding:9px 10px;gap:10px}
 .subagent-row:hover{background:var(--raised)}
 .subagent-row:active{background:var(--accent-dim)}
 .subagent-row:focus-visible{outline-offset:-2px}
 .subagent-row-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-.subagent-row-copy strong{font-size:.8rem;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.subagent-row-copy small{font-size:.7rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.subagent-row-status,.subagent-detail-status{font-size:.65rem;color:var(--muted);flex-shrink:0}
+.subagent-row-copy strong{font-size:var(--text-xs);font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.subagent-row-copy small{font-size:var(--text-2xs);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.subagent-row-status,.subagent-detail-status{font-size:var(--text-2xs);color:var(--muted);flex-shrink:0}
 .subagent-row>.icon{width:11px;height:11px;color:var(--faint)}
 .subagent-state{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0}
 [data-status=running]>.subagent-state,[data-status=running] .subagent-detail-meta>.subagent-state{background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent)}
@@ -29,23 +21,20 @@
 [data-status=failed]>.subagent-state,[data-status=failed] .subagent-detail-meta>.subagent-state{background:var(--danger)}
 .subagent-detail{padding:8px 8px 12px}
 .subagent-detail-meta{display:flex;align-items:center;gap:8px;margin-bottom:13px}
-.subagent-detail-name{font-size:.88rem;font-weight:600;line-height:1.35;margin:0;flex:1;overflow-wrap:anywhere}
-.subagent-parent,.subagents-notice,.subagent-empty{font-size:.75rem;line-height:1.55;color:var(--muted);overflow-wrap:anywhere}
+.subagent-detail-name{font-size:var(--text-md);font-weight:600;line-height:1.35;margin:0;flex:1;overflow-wrap:anywhere}
+.subagent-parent,.subagents-notice,.subagent-empty{font-size:var(--text-xs);line-height:1.55;color:var(--muted);overflow-wrap:anywhere}
 .subagents-notice{padding:8px 10px}
-.subagents-retry{margin:4px 10px 8px;font-size:.75rem}
-.subagent-assignment{margin:0 0 16px;color:var(--muted);font-size:.73rem}
+.subagents-retry{margin:4px 10px 8px;font-size:var(--text-xs)}
+.subagent-assignment{margin:0 0 16px;color:var(--muted);font-size:var(--text-xs)}
 .subagent-assignment summary{cursor:pointer;width:fit-content}
 .subagent-assignment p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;margin:9px 0}
-.subagent-response{font-size:.82rem;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
-.subagent-action-notice{color:var(--danger);font-size:.73rem;line-height:1.5}
+.subagent-response{font-size:var(--text-sm);line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.subagent-action-notice{color:var(--danger);font-size:var(--text-xs);line-height:1.5}
 .subagent-response.markdown{white-space:normal}
-.subagent-response.markdown pre{font-size:.74rem;padding:10px;max-width:100%}
+.subagent-response.markdown pre{font-size:var(--text-xs);padding:10px;max-width:100%}
 .subagent-tools{margin-top:12px}
 .subagent-tools .tool-activity{padding-left:0}
-.subagent-tools .tool-activity pre{font-size:.7rem;padding:9px}
+.subagent-tools .tool-activity pre{font-size:var(--text-2xs);padding:9px}
 .subagent-tools .tool-activity summary{min-height:25px}
-.side-thread .subagents-host{padding:0 24px 8px}
-.side-thread .subagents-panel{max-height:min(480px,55vh)}
-@media(max-width:700px){.subagents-host,.side-thread .subagents-host{padding-right:16px}.subagents-panel{right:16px}}
-@media(prefers-contrast:more){.subagents-panel,.subagents-trigger{border-color:var(--text);box-shadow:none}}
-@media(prefers-reduced-motion:reduce){.subagents-trigger:active{transform:none}}
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.subagents-trigger,.subagent-row{transition:background-color 140ms ease-out,border-color 140ms ease-out}.subagent-state{transition:background-color 200ms}.subagent-assignment[open]>p{animation:sa-fade 160ms ease-out}@keyframes sa-fade{from{opacity:0}}}

@@ -18,3 +18,6 @@
 .terminal-close-popover>div{display:flex;gap:7px;flex-wrap:wrap;margin-top:3px}
 .terminal-close-popover button{font-size:.74rem;min-height:32px;padding:6px 10px;flex:1;white-space:nowrap}
 @media(max-width:650px){#terminal-project{display:none}.terminal-drawer .drawer-heading{padding-inline:8px}.terminal-tabs{margin-inline:4px}}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.terminal-tab{transition:background-color 130ms ease-out,color 130ms ease-out}.terminal-tab:hover:not(.selected){background:color-mix(in srgb,var(--text) 5%,transparent);color:var(--text)}}

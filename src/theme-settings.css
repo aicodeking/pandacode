@@ -2,33 +2,33 @@
 .colors-dialog{width:min(36rem,calc(100vw - 2rem))}
 .colors-section{display:flex;flex-direction:column;gap:.6rem}
 .colors-section+.colors-section{margin-top:1.3rem}
-.colors-section h3{margin:0;font-size:.74rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.colors-section h3{margin:0;font-size:var(--text-sm);font-weight:var(--weight-strong);color:var(--muted)}
 .accent-choices{display:flex;flex-wrap:wrap;gap:.35rem}
-.accent-choice{display:inline-flex;align-items:center;gap:.45rem;padding:.3rem .65rem .3rem .35rem;border-radius:999px;border:1px solid var(--border);font-size:.78rem;background:var(--panel);cursor:pointer;position:relative}
+.accent-choice{display:inline-flex;align-items:center;gap:.45rem;padding:.3rem .65rem .3rem .35rem;border-radius:var(--radius-full);font-size:var(--text-xs);background:var(--panel);cursor:pointer;position:relative}
 .accent-choice:hover:not(:disabled){background:var(--raised)}
 .accent-choice:disabled,.accent-custom:has(input:disabled){opacity:.45;cursor:default}
-.accent-choice[aria-checked="true"],.accent-custom-on{border-color:var(--text);box-shadow:inset 0 0 0 1px var(--text)}
-.accent-swatch{width:1.1rem;height:1.1rem;border-radius:50%;background:var(--swatch);box-shadow:inset 0 0 0 1px rgb(0 0 0 / .14)}
+.accent-choice[aria-checked="true"],.accent-custom-on{background:var(--accent-dim);color:var(--accent-ink)}
+.accent-swatch{width:1.1rem;height:1.1rem;border-radius:var(--radius-full);background:var(--swatch);}
 .accent-custom input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.colors-note{margin:0;font-size:.74rem;color:var(--muted)}
-.vsix-list{display:flex;flex-direction:column;gap:.25rem;max-height:min(40vh,20rem);overflow:auto;padding:.25rem;border:1px solid var(--border);border-radius:.32rem}
+.colors-note{margin:0;font-size:var(--text-xs);color:var(--muted)}
+.vsix-list{display:flex;flex-direction:column;gap:.25rem;max-height:min(40vh,20rem);overflow:auto;padding:.25rem;border-radius:var(--radius-md)}
 .vsix-row{display:flex;align-items:center;gap:.25rem}
-.vsix-choice{flex:1;min-width:0;display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:.24rem;text-align:left}
+.vsix-choice{flex:1;min-width:0;display:flex;align-items:center;gap:.7rem;padding:.45rem .6rem;border-radius:var(--radius-sm);text-align:left}
 .vsix-choice:hover{background:var(--raised)}
 .vsix-choice[aria-checked="true"]{background:var(--accent-dim);color:var(--accent-ink)}
-.vsix-swatches{display:flex;flex-shrink:0;border-radius:.16rem;overflow:hidden;box-shadow:0 0 0 1px var(--border)}
+.vsix-swatches{display:flex;flex-shrink:0;border-radius:var(--radius-sm);overflow:hidden;}
 .vsix-swatches i{width:.8rem;height:1.6rem;background:var(--swatch)}
-.vsix-swatches .vsix-bamboo{width:3.2rem;background:linear-gradient(90deg,var(--bg),var(--panel) 40%,var(--accent))}
+.vsix-swatches .vsix-bamboo{width:3.2rem;background:var(--accent)}
 .vsix-name{display:flex;flex-direction:column;min-width:0}
-.vsix-name strong{font-size:.82rem;font-weight:560;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vsix-name small{font-size:.7rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vsix-name strong{font-size:var(--text-sm);font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vsix-name small{font-size:var(--text-xs);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vsix-choice[aria-checked="true"] small{color:inherit;opacity:.8}
 .vsix-remove{flex-shrink:0;width:28px;height:28px;color:var(--muted)}
-.vsix-empty{margin:.4rem .6rem .5rem;font-size:.74rem;color:var(--muted)}
+.vsix-empty{margin:.4rem .6rem .5rem;font-size:var(--text-xs);color:var(--muted)}
 .vsix-empty code{font-family:var(--mono);font-size:.92em}
 .vsix-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
 .vsix-install{display:flex;gap:.4rem;flex:1;min-width:14rem}
-.vsix-install input{flex:1;min-width:0;padding:.5rem .7rem;font-size:.82rem;font-family:var(--mono)}
-.vsix-status{margin:0;min-height:1.2em;font-size:.74rem;color:var(--muted);overflow-wrap:anywhere}
+.vsix-install input{flex:1;min-width:0;padding:.5rem .7rem;font-size:var(--text-sm);font-family:var(--mono)}
+.vsix-status{margin:0;min-height:1.2em;font-size:var(--text-xs);color:var(--muted);overflow-wrap:anywhere}
 @media(prefers-contrast:more){.accent-choice[aria-checked="true"]{outline:2px solid var(--text)}}
 

@@ -75,6 +75,23 @@ fn saved_message_content_is_complete_read_only_and_task_scoped() {
 }
 
 #[test]
+fn edit_forks_stop_before_the_message_and_start_a_fresh_harness_session() {
+    let (store, source) = fixture("claude");
+    store.resume(&source.id, "native-source").unwrap();
+    append(&store, &source.id, "user", "First request");
+    append(&store, &source.id, "assistant", "First response");
+    let mistake = append(&store, &source.id, "user", "Mistaken request");
+    append(&store, &source.id, "assistant", "Mistaken response");
+    let fork = before_message(&store, &source.id, mistake).unwrap();
+    assert_eq!(fork.resume_id, None);
+    let copied: Vec<_> = all_messages(&store, &fork.id).into_iter().map(|m| m.content).collect();
+    assert_eq!(copied, ["First request", "First response"]);
+    assert_eq!(all_messages(&store, &source.id).len(), 4);
+    let first = all_messages(&store, &source.id)[0].id;
+    assert!(all_messages(&store, &before_message(&store, &source.id, first).unwrap().id).is_empty());
+}
+
+#[test]
 fn forks_before_handoffs_keep_historical_authors_and_the_current_harness() {
     let (store, source) = fixture("claude");
     append(&store, &source.id, "user", "Original request");

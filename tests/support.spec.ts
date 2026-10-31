@@ -50,10 +50,10 @@ test('one Help button follows the sidebar and board without losing its DOM ident
   const original = await support(page).elementHandle();
   await page.getByRole('button', { name: 'Hide sidebar', exact: true }).click();
   await expect(page.locator('.header-leading > [data-action="support"]')).toBeVisible();
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await expect(support(page)).toBeVisible();
   await expect(support(page)).toHaveCount(1);
-  await page.getByRole('button', { name: 'Conversation view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Conversation', exact: true }).click();
   await page.getByRole('button', { name: 'Show sidebar', exact: true }).click();
   await expect(page.locator('.sidebar-bottom > [data-action="support"]')).toBeVisible();
   expect(await original!.evaluate(node => node === document.querySelector('[data-action="support"]'))).toBe(true);
@@ -68,7 +68,7 @@ test('opening support gives immediate feedback and prevents duplicate opens acro
   await expect(support(page)).toHaveAttribute('aria-busy', 'true');
   await expect(support(page)).toHaveAccessibleName('Opening support…');
   await expect(support(page).locator('.support-spinner')).toBeVisible();
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await expect(support(page)).toBeVisible();
   await support(page).dispatchEvent('click');
   expect(await calls(page)).toBe(1);
@@ -104,7 +104,7 @@ test('Help stays visible in narrow windows with large interface text', async ({ 
   await open(page);
   for (const mode of ['sidebar', 'collapsed', 'board']) {
     if (mode === 'collapsed') await page.getByRole('button', { name: 'Hide sidebar', exact: true }).click();
-    if (mode === 'board') await page.getByRole('button', { name: 'Board view', exact: true }).click();
+    if (mode === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); }
     await expect(support(page)).toBeVisible();
     const rect = await support(page).boundingBox();
     expect(rect!.width).toBeGreaterThanOrEqual(28);

@@ -1,6 +1,7 @@
 /* Settings → Skills & rules (issues #15 and #45): the library, imports, where each item is
  * active per harness and scope, the drift matrix and safety findings. Everything is native
- * (`skills_*` commands in src-tauri/src/skills.rs); this view only draws and asks. */
+ * (`skills_*` commands in src-tauri/src/skills.rs); this view only draws and asks. Catalogs
+ * (#114, #115) index GitHub repositories of skills; importing from one never activates. */
 import './skills-library.css';
 import { escape } from './dom';
 
@@ -18,21 +19,32 @@ export type SkillMatrix = {
   project: string | null;
   harnesses: { harness: string; installed: boolean; prompt: boolean; cells: SkillCell[]; unmanaged: { scope: SkillScope; kind: SkillKind; path: string; detail: string }[] }[];
 };
+export type CatalogSkill = { path: string; id: string; name: string; description: string; files: number; bytes: number; imported: string | null; conflicts: string[] };
+export type CatalogSource = {
+  repo: string; gitRef: string | null; commit: string | null; origin: 'manual' | 'discovered'; state: 'enabled' | 'disabled' | 'ignored';
+  private: boolean; pushedAt: string | null; scannedAt: number; skills: CatalogSkill[];
+};
+export type SkillCatalogs = { sources: CatalogSource[]; discovery: { at: number; checked: number; registered: string[]; failures: string[]; note: string | null } | null };
+export type CatalogImport = { items: SkillItem[]; imported: string[]; skipped: { path: string; name: string; reason: string }[] };
 export type SkillsLibraryHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   /** Projects offered for project scope. */
   projects?(): { id: string; name: string }[];
 };
 
-const HARNESS_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', glm: 'GLM', mimo: 'MiMo', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', omp: 'OMP', pi: 'Pi', muse: 'Muse Code' };
+const HARNESS_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', glm: 'GLM', mimo: 'MiMo', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'OMP', pi: 'Pi', muse: 'Muse Code', zcode: 'ZCode' };
 const harnessName = (id: string) => HARNESS_NAMES[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
 const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-shaped value', approvals: 'Turns off approvals or the sandbox', 'pipe-to-shell': 'Download piped into a shell' };
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost): () => void {
   let items: SkillItem[] = [];
   let matrix: SkillMatrix = { project: null, harnesses: [] };
+  let catalogs: SkillCatalogs = { sources: [], discovery: null };
+  /** Catalog skills chosen for import, as `repo\npath`. */
+  let selected = new Set<string>();
   let projectId = '';
   let source: 'folder' | 'github' = 'folder';
   let pending: { id: string; harness: string; scope: SkillScope } | null = null;
@@ -42,9 +54,10 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
 
   async function refresh(): Promise<void> {
     try {
-      [items, matrix] = await Promise.all([
+      [items, matrix, catalogs] = await Promise.all([
         options.call<SkillItem[]>('skills_list'),
         options.call<SkillMatrix>('skills_matrix', projectId ? { projectId } : {}),
+        options.call<SkillCatalogs>('skills_catalogs'),
       ]);
     } catch (failure) { error = message(failure); }
     if (!disposed) draw();
@@ -96,9 +109,45 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
       ${unmanaged ? `<h4 class="skills-subheading">Found on disk, not managed by PandaCode</h4><ul class="skills-unmanaged">${unmanaged}</ul>` : ''}`;
   }
 
+  function catalogSkillHtml(source: CatalogSource, skill: CatalogSkill): string {
+    const key = `${source.repo}\n${skill.path}`;
+    const library = skill.imported ? `<small>${skill.imported === source.commit ? 'In the library' : `In the library @ ${escape(skill.imported.slice(0, 7))}; a newer version is upstream`}</small>` : '';
+    const conflict = skill.conflicts.length ? `<small class="skills-conflict">Same name in ${skill.conflicts.map(escape).join(', ')}</small>` : '';
+    return `<li class="skills-catalog-skill"><label class="skills-toggle"><input type="checkbox" data-select="${escape(key)}" ${selected.has(key) ? 'checked' : ''} ${busy ? 'disabled' : ''} aria-label="${escape(`Select ${skill.name} from ${source.repo}`)}"><span><strong>${escape(skill.name)}</strong> <code>${escape(skill.path || 'root')}</code> · ${plural(skill.files, 'file')}</span></label>
+      <small>${escape(skill.description)}</small>${library}${conflict}</li>`;
+  }
+  function sourceHtml(source: CatalogSource): string {
+    const enabled = source.state === 'enabled';
+    const repo = escape(source.repo);
+    const tags = [source.origin === 'discovered' ? 'Discovered' : 'Added', source.private ? 'Private' : '', enabled ? '' : 'Disabled'].filter(Boolean).map(tag => `<span class="skills-kind">${tag}</span>`).join('');
+    const at = source.commit ? ` @ ${escape(source.commit.slice(0, 7))}${source.gitRef ? ` (${escape(source.gitRef)})` : ''}` : '';
+    const button = (action: string, label: string, extra = '', name = `${label} ${source.repo}`) =>
+      `<button type="button" class="secondary-button" data-action="${action}" data-repo="${repo}" ${extra} aria-label="${escape(name)}" ${busy ? 'disabled' : ''}>${label}</button>`;
+    const body = enabled ? `<ul class="skills-catalog-skills" aria-label="${escape(`Skills in ${source.repo}`)}">${source.skills.map(skill => catalogSkillHtml(source, skill)).join('')}</ul>
+      <div class="skills-confirm">${button('catalog-import', 'Import selected', '', `Import selected from ${source.repo}`)}${button('catalog-import-all', 'Import all', '', `Import all from ${source.repo}`)}</div>` : '';
+    return `<li class="skills-item skills-catalog" data-repo="${repo}">
+      <div class="skills-item-head"><div><strong>${repo}</strong>${tags}<small>${plural(source.skills.length, 'skill')}${at}</small></div>
+        <div class="skills-confirm">${button('catalog-refresh', 'Refresh')}${enabled ? button('catalog-state', 'Disable', 'data-state="disabled"') : button('catalog-state', 'Enable', 'data-state="enabled"')}${button('catalog-state', 'Ignore', 'data-state="ignored"')}</div></div>
+      ${body}</li>`;
+  }
+  function catalogsHtml(): string {
+    const shown = catalogs.sources.filter(s => s.state !== 'ignored');
+    const ignored = catalogs.sources.filter(s => s.state === 'ignored');
+    const found = catalogs.discovery;
+    const summary = found ? `<p class="skills-note">Checked ${found.checked} ${found.checked === 1 ? 'repository' : 'repositories'} you own.${found.failures.length ? ` Could not read ${found.failures.map(escape).join('; ')}.` : ''}${found.note ? ` ${escape(found.note)}` : ''}</p>` : '';
+    return `<div class="settings-group">
+      <form class="skills-import skills-catalog-add" aria-label="Add a skill catalog" novalidate>
+        <div class="skills-import-row"><input name="catalogRepo" aria-label="Catalog repository" placeholder="owner/name" spellcheck="false" autocomplete="off"><input name="catalogRef" aria-label="Catalog branch, tag or commit" placeholder="Default branch" spellcheck="false" autocomplete="off"><button type="submit" class="secondary-button" ${busy ? 'disabled' : ''}>Scan</button></div>
+        <div class="skills-import-row skills-import-actions"><p class="skills-message">Catalogs list skills; nothing is turned on until you choose a harness.</p><button type="button" class="secondary-button" data-action="discover" ${busy ? 'disabled' : ''}>Find my skill repositories</button></div>
+      </form>
+    </div>${summary}
+    ${shown.length ? `<ul class="settings-group skills-list" aria-label="Catalog sources">${shown.map(sourceHtml).join('')}</ul>` : '<p class="skills-empty">No catalogs yet. Scan a repository, or find the skill repositories in your GitHub account.</p>'}
+    ${ignored.length ? `<ul class="skills-unmanaged" aria-label="Ignored sources">${ignored.map(s => `<li><code>${escape(s.repo)}</code> <button type="button" class="secondary-button" data-action="catalog-state" data-state="enabled" data-repo="${escape(s.repo)}" aria-label="${escape(`Stop ignoring ${s.repo}`)}" ${busy ? 'disabled' : ''}>Stop ignoring</button></li>`).join('')}</ul>` : ''}`;
+  }
+
   function draw(): void {
     const list = projects();
-    const values = clearFields ? {} : Object.fromEntries([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('.skills-import [name]')].map(field => [field.name, field.value]));
+    const values = clearFields ? {} : Object.fromEntries([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('form [name]')].map(field => [field.name, field.value]));
     host.innerHTML = `<div class="settings-group skills-library" aria-label="Skills and rules">
       <form class="skills-import" aria-label="Import a skill or rule" novalidate>
         <div class="skills-import-row">
@@ -113,11 +162,12 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         <p class="skills-error" role="alert" ${error ? '' : 'hidden'}>${escape(error)}</p>
       </form>
     </div>
+    <h3 class="settings-heading">Catalogs</h3>${catalogsHtml()}
     <h3 class="settings-heading">Library</h3>
     ${items.length ? `<ul class="settings-group skills-list" aria-label="Library">${items.map(itemHtml).join('')}</ul>` : '<p class="skills-empty">The library is empty. Import a skill folder (with a SKILL.md) or a rule (one Markdown file).</p>'}
     <h3 class="settings-heading">By harness</h3>${matrixHtml()}`;
     for (const [name, value] of Object.entries(values)) {
-      const field = host.querySelector<HTMLInputElement | HTMLSelectElement>(`.skills-import [name="${name}"]`);
+      const field = host.querySelector<HTMLInputElement | HTMLSelectElement>(`form [name="${name}"]`);
       if (field && name !== 'source' && name !== 'project') field.value = value;
     }
     clearFields = false;
@@ -162,9 +212,47 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     });
   }
 
+  function addCatalog(form: HTMLFormElement): void {
+    const data = new FormData(form);
+    const repo = String(data.get('catalogRepo') ?? '').trim();
+    if (!repo) { error = 'Enter the repository as owner/name.'; draw(); return; }
+    void run(async () => {
+      catalogs = await options.call<SkillCatalogs>('skills_catalog_add', { repo, gitRef: String(data.get('catalogRef') ?? '').trim() || null });
+      clearFields = true;
+      const source = catalogs.sources.find(s => s.repo.toLowerCase() === repo.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '').toLowerCase());
+      return `Found ${plural(source?.skills.length ?? 0, 'skill')} in ${source?.repo ?? repo}.`;
+    });
+  }
+  function catalogAction(action: string, repo: string, state?: string): void {
+    if (action === 'catalog-refresh') void run(async () => { await options.call('skills_catalog_refresh', { repo }); return `Refreshed ${repo}. Library copies stay as imported.`; });
+    if (action === 'catalog-state' && state) void run(async () => {
+      await options.call('skills_catalog_state', { repo, state });
+      return state === 'ignored' ? `Ignoring ${repo}. Discovery will not add it again.` : state === 'disabled' ? `${repo} is disabled.` : `${repo} is enabled.`;
+    });
+    if (action === 'catalog-import' || action === 'catalog-import-all') {
+      const prefix = `${repo}\n`;
+      const paths = action === 'catalog-import' ? [...selected].filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length)) : null;
+      if (paths && !paths.length) { error = 'Select skills to import, or choose Import all.'; draw(); return; }
+      void run(async () => {
+        const result = await options.call<CatalogImport>('skills_catalog_import', { repo, paths });
+        selected = new Set([...selected].filter(key => !key.startsWith(prefix)));
+        const skipped = result.skipped.length ? ` Skipped ${result.skipped.length}: ${result.skipped.map(s => s.reason).join(' ')}` : '';
+        return `Imported ${plural(result.imported.length, 'skill')}.${skipped} Nothing is active until you turn it on.`;
+      });
+    }
+  }
+
   const onClick = (event: Event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
     if (!button) return;
+    if (button.dataset.action === 'discover') {
+      void run(async () => {
+        const found = (await options.call<SkillCatalogs>('skills_discover')).discovery;
+        return found?.registered.length ? `Added ${found.registered.join(', ')}.` : 'No new skill repositories found.';
+      });
+      return;
+    }
+    if (button.dataset.repo) { catalogAction(button.dataset.action!, button.dataset.repo, button.dataset.state); return; }
     const id = button.closest<HTMLElement>('.skills-item')?.dataset.id;
     if (button.dataset.action === 'remove' && id) void run(async () => { await options.call('skills_remove', { id }); return 'Removed.'; });
     if (button.dataset.action === 'acknowledge' && pending) void activate(pending.id, pending.harness, pending.scope, true);
@@ -173,10 +261,18 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
   const onChange = (event: Event) => {
     const target = event.target as HTMLElement;
     if (target instanceof HTMLInputElement && target.dataset.harness) toggle(target);
+    if (target instanceof HTMLInputElement && target.dataset.select) {
+      const key = target.dataset.select;
+      selected = target.checked ? new Set([...selected, key]) : new Set([...selected].filter(k => k !== key));
+    }
     if (target instanceof HTMLSelectElement && target.name === 'source') { source = target.value as typeof source; draw(); }
     if (target instanceof HTMLSelectElement && target.name === 'project') { projectId = target.value; pending = null; void refresh(); }
   };
-  const onSubmit = (event: Event) => { event.preventDefault(); importItem(event.target as HTMLFormElement); };
+  const onSubmit = (event: Event) => {
+    event.preventDefault();
+    const form = event.target as HTMLFormElement;
+    if (form.classList.contains('skills-catalog-add')) addCatalog(form); else importItem(form);
+  };
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
   host.addEventListener('submit', onSubmit);

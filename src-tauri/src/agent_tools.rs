@@ -744,6 +744,7 @@ async fn dispatch(
             let entry = crate::message_queue::add(&store, &target.id, &string(&args, "text"), &json!([]))?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": target.id}));
+            crate::headless::queue_changed(&app, &target.id);
             value(entry)?
         }
         "pandacode_remove_queued" => {
@@ -756,6 +757,7 @@ async fn dispatch(
             crate::message_queue::remove(&store, &id)?;
             drop(store);
             let _ = app.emit("queue-changed", json!({"sessionId": owner}));
+            crate::headless::queue_changed(&app, &owner);
             json!({"removed": true})
         }
         "pandacode_steer_task" | "pandacode_interrupt_task" => {
@@ -827,6 +829,10 @@ async fn request_ui(
     args: Value,
     stopped: Arc<AtomicBool>,
 ) -> Result<Value> {
+    // A headless host has no window to answer app actions; say so instead of timing out.
+    if crate::headless::active() {
+        return Err("This task runs on a headless host with no app window; work with it from a device instead.".into());
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel();
     {

@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- One App Store page. render.mjs opens it as index.html?<n> at 1320 CSS px wide (1320x2868 and 1206x2622); open it in a browser the same way to preview. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body>
+<main class="page">
+  <h1><span class="lead"></span><span class="key"></span></h1>
+  <div class="phone"><img class="screen" alt=""><div class="island"></div></div>
+</main>
+<script>
+  const shots = {
+    1: ['Every agent,', 'one inbox.', 'inbox-light'],
+    2: ['Talk to the agent,', 'not the laptop.', 'task-dark'],
+    3: ['Approve tool calls', 'from anywhere.', 'approval-light'],
+    4: ['Watch it work,', 'live.', 'working-dark'],
+    5: ['Pick a computer,', 'start a task.', 'new-task-light'],
+    6: ['Light, dark, wallpaper.', 'Make it yours.', 'settings-dark'],
+  };
+  const [lead, key, file] = shots[location.search.slice(1)] || shots[1];
+  document.querySelector('.lead').textContent = lead;
+  document.querySelector('.key').textContent = key;
+  document.querySelector('.screen').src = `captures/${file}.png`;
+</script>
+</body>
+</html>

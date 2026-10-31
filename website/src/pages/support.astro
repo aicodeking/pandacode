@@ -1,0 +1,84 @@
+---
+/* Support for the PandaCode mobile app (the App Store and Play support URL) and Connect.
+ * Keep it in step with mobile/ and docs/remote-access.md. */
+import Page from '../layouts/Page.astro';
+import { project } from '../lib/distribution';
+const sections = [
+  ['about', 'What the app is'],
+  ['requirements', 'What you need'],
+  ['connect', 'Connect your phone'],
+  ['faq', 'Questions'],
+  ['delete', 'Delete your account'],
+  ['report', 'Report a problem'],
+] as const;
+---
+<Page title="Support" current="support" eyebrow="HELP WHEN YOU NEED IT."
+  heading="PandaCode on your phone."
+  description="Help for the PandaCode mobile app: what it does, what you need, how to connect it to your computer, and where to report a problem."
+  lede="The PandaCode app for iPhone and Android follows and answers the coding agents running on your computers. Here is how to set it up and what to do when something goes wrong.">
+  <Fragment slot="hero">
+    <div class="legal-summary page-rise">
+      <div><b>A remote, not a runner.</b><span>Your computer does the work. The phone never runs code.</span></div>
+      <div><b>End-to-end encrypted.</b><span>The relay between your devices can’t read your tasks.</span></div>
+      <div><b>Free and open source.</b><span>No ads, no tracking, no subscription.</span></div>
+    </div>
+  </Fragment>
+
+  <div class="legal-layout section-width">
+    <nav class="legal-toc" aria-label="On this page"><p>ON THIS PAGE</p><ol>{sections.map(([id, label]) => <li><a href={`#${id}`}>{label}</a></li>)}</ol></nav>
+    <article class="legal-prose">
+      <section id="about" aria-labelledby="about-title">
+        <h2 id="about-title">What the app is</h2>
+        <p>The mobile app is a viewer and controller for the PandaCode desktop app. One inbox lists the tasks on all your computers. Open one to read its turns as they stream, approve or deny a tool call, answer an agent’s question, send a follow-up, stop a run, or change its model and permissions. You can also start a new task on any of your computers.</p>
+        <p>It never runs or downloads code. Agents run on your computer, with the permissions you set there.</p>
+      </section>
+
+      <section id="requirements" aria-labelledby="requirements-title">
+        <h2 id="requirements-title">What you need</h2>
+        <ul>
+          <li>The <a href={project.releases} target="_blank" rel="noopener noreferrer">PandaCode desktop app</a> on macOS, Windows or Linux, kept up to date.</li>
+          <li>A GitHub account. You sign in with the same account on the phone and on every computer.</li>
+          <li>An iPhone, or an Android phone, with an internet connection. Your computer must be on and online for tasks to update.</li>
+        </ul>
+      </section>
+
+      <section id="connect" aria-labelledby="connect-title">
+        <h2 id="connect-title">Connect your phone</h2>
+        <ol>
+          <li>On your computer, open PandaCode → Settings → Remote access and sign in with GitHub.</li>
+          <li>Turn on <strong>Allow remote control of this computer</strong>.</li>
+          <li>On your phone, open PandaCode and tap Sign in with GitHub. Enter the code it shows on GitHub’s page and approve.</li>
+          <li>Your computer appears under Computers, and its tasks in the Inbox.</li>
+        </ol>
+        <p>Want to look around first? Tap <strong>Explore the demo</strong> on the sign-in screen. It shows sample computers and tasks and needs no account.</p>
+      </section>
+
+      <section id="faq" aria-labelledby="faq-title">
+        <h2 id="faq-title">Questions</h2>
+        <h3>My computer doesn’t show up.</h3>
+        <p>Check that it is signed in to the same GitHub account as the phone, that Allow remote control is on, and that PandaCode is open and online. A computer that is asleep shows as offline.</p>
+        <h3>I sent a message while offline.</h3>
+        <p>It waits on the phone and goes out, in order, when the phone reconnects and the computer is online.</p>
+        <h3>Can someone else see my tasks?</h3>
+        <p>Only devices signed in to your GitHub account can reach your computers, and only while remote control is on. Messages are end-to-end encrypted, so the relay can’t read them. You can remove a device from the device list at any time. Details are in the <a href="/privacy/#connect">Privacy Policy</a>.</p>
+        <h3>Does the phone need my API keys or agent logins?</h3>
+        <p>No. Agents, logins and keys stay on your computer.</p>
+        <h3>The app says Connect is not configured.</h3>
+        <p>That build was made without the Connect relay settings. The store versions always have them; if you built the app yourself, see <code>mobile/README.md</code> in the repository.</p>
+      </section>
+
+      <section id="delete" aria-labelledby="delete-title">
+        <h2 id="delete-title">Delete your account</h2>
+        <p>In the mobile app, open Settings → <strong>Delete account</strong>. It removes your account and every device on it from the relay right away and signs your devices out. Nothing is left on our side.</p>
+        <p>Your GitHub account is not changed. To also remove PandaCode’s access there, open GitHub → Settings → Applications → Authorized OAuth Apps and revoke PandaCode. If you can’t open the app, ask in GitHub issues and we’ll help.</p>
+      </section>
+
+      <section id="report" aria-labelledby="report-title">
+        <h2 id="report-title">Report a problem</h2>
+        <p>Open an issue in <a href={project.issues} target="_blank" rel="noopener noreferrer">GitHub issues</a>. Say which phone and app version you use (Settings shows it), what you did and what happened. Leave out task content you don’t want to be public.</p>
+        <p>To report a security problem privately, follow our <a href={project.security} target="_blank" rel="noopener noreferrer">security policy</a>.</p>
+        <p>See also the <a href="/privacy/">Privacy Policy</a> and the <a href="/license/">PandaCode License</a>.</p>
+      </section>
+    </article>
+  </div>
+</Page>

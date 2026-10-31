@@ -1,0 +1,282 @@
+{
+  "version": "0.1.3-nightly.20261026.3717",
+  "waitS": 45,
+  "startedPids": [
+    25475
+  ],
+  "leftoverPids": [],
+  "homeDeleted": true,
+  "requests": [
+    {
+      "at": "2026-10-30T04:19:21.566Z",
+      "method": "POST",
+      "url": "/batch/",
+      "headers": {
+        "host": "127.0.0.1:50239",
+        "connection": "keep-alive",
+        "content-type": "application/json",
+        "b3": "059f20abe037cda4c41f4fda913dcef7-2eeaa82dba9138df-1-f17a97169362cabe",
+        "traceparent": "00-059f20abe037cda4c41f4fda913dcef7-2eeaa82dba9138df-01",
+        "accept": "*/*",
+        "accept-language": "*",
+        "sec-fetch-mode": "cors",
+        "user-agent": "node",
+        "accept-encoding": "gzip, deflate",
+        "content-length": "2770"
+      },
+      "body": "{\"api_key\":\"phc_XOWci4oZP4VvLiEyrFqkFjP4CZn55mjYYBMREK5Wd6m\",\"batch\":[{\"uuid\":\"01a18b08-7e3b-7a45-9aaf-5c914624ecbd\",\"event\":\"server.boot.heartbeat\",\"distinct_id\":\"3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a\",\"properties\":{\"threadCount\":1,\"projectCount\":1,\"installId\":\"e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89\",\"$process_person_profile\":false,\"platform\":\"darwin\",\"arch\":\"arm64\",\"t3CodeVersion\":\"0.1.3-nightly.20261026.3717\",\"telemetryChannel\":\"nightly\",\"clientType\":\"cli-web-client\",\"serverOs\":\"macOS\",\"serverArch\":\"arm64\",\"serverAppVersion\":\"0.1.3-nightly.20261026.3717\",\"serverMode\":\"web\"},\"timestamp\":\"2026-10-30T04:19:12.059Z\"},{\"uuid\":\"01a18b08-7e3c-7124-9a37-73935957d79f\",\"event\":\"install.owner_observed\",\"distinct_id\":\"3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a\",\"properties\":{\"ownerSource\":\"connect\",\"ownerId\":\"3c5392709af4aad9d1ae4dc098348b8c57eba821688a54910b8d35d82e055b3f\",\"observedBy\":\"server\",\"installId\":\"e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89\",\"$process_person_profile\":false,\"platform\":\"darwin\",\"arch\":\"arm64\",\"t3CodeVersion\":\"0.1.3-nightly.20261026.3717\",\"telemetryChannel\":\"nightly\",\"clientType\":\"cli-web-client\",\"serverOs\":\"macOS\",\"serverArch\":\"arm64\",\"serverAppVersion\":\"0.1.3-nightly.20261026.3717\",\"serverMode\":\"web\"},\"timestamp\":\"2026-10-30T04:19:12.060Z\"},{\"uuid\":\"01a18b08-7e3c-71e0-bdc8-e9b620194beb\",\"event\":\"install.owner_observed\",\"distinct_id\":\"3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a\",\"properties\":{\"ownerSource\":\"openai\",\"ownerId\":\"9a1ec07819133ae492391e158f870f2dcaae0403fad1e06d38b7a38ab9f704a6\",\"observedBy\":\"server\",\"installId\":\"e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89\",\"$process_person_profile\":false,\"platform\":\"darwin\",\"arch\":\"arm64\",\"t3CodeVersion\":\"0.1.3-nightly.20261026.3717\",\"telemetryChannel\":\"nightly\",\"clientType\":\"cli-web-client\",\"serverOs\":\"macOS\",\"serverArch\":\"arm64\",\"serverAppVersion\":\"0.1.3-nightly.20261026.3717\",\"serverMode\":\"web\"},\"timestamp\":\"2026-10-30T04:19:12.060Z\"},{\"uuid\":\"01a18b08-7e3c-70bc-bc6a-379ddb5dc6b4\",\"event\":\"install.owner_observed\",\"distinct_id\":\"3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a\",\"properties\":{\"ownerSource\":\"claude\",\"ownerId\":\"311049fede980dc9c10b444a76620a57438ab32e3854b55b6e76822189cdd06b\",\"observedBy\":\"server\",\"installId\":\"e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89\",\"$process_person_profile\":false,\"platform\":\"darwin\",\"arch\":\"arm64\",\"t3CodeVersion\":\"0.1.3-nightly.20261026.3717\",\"telemetryChannel\":\"nightly\",\"clientType\":\"cli-web-client\",\"serverOs\":\"macOS\",\"serverArch\":\"arm64\",\"serverAppVersion\":\"0.1.3-nightly.20261026.3717\",\"serverMode\":\"web\"},\"timestamp\":\"2026-10-30T04:19:12.060Z\"}]}"
+    }
+  ],
+  "serverLogTail": [
+    "    '54_ProjectionThreadsAutoSettleDisabledAt',",
+    "    '55_OrchestrationV2',",
+    "    '56_RemoveRedundantProjectionIndexes',",
+    "    '57_ScheduledTaskWebhooks',",
+    "    '58_WebhookRelayDeliveries',",
+    "    '59_McpAppModelContext',",
+    "    '60_ThreadSnapshotWindowIndexes',",
+    "    '61_PullRequestReviewGuides',",
+    "    '62_ThreadFailureLookupIndex',",
+    "    '63_DropUnusedV1Projections',",
+    "    '64_CanonicalizeThreadPullRequestLinks',",
+    "    '65_CodexUsageNativeTurnIndex',",
+    "    '66_RepairClientSettlementTimestamps',",
+    "    '67_WebhookDedupe',",
+    "    '68_ShellStopRequestIndex',",
+    "    '69_ThreadMessageSearch'",
+    "  ]",
+    "[00:19:11.680] WARN (#444): Claude Agent CLI health check failed.",
+    "  { errorTag: 'PlatformError' }",
+    "[00:19:11.788] INFO (#6786): Listening on http://127.0.0.1:50240",
+    "[00:19:11.793] INFO (#6783): agent activity publishing standby; waiting for T3 Connect link reconciliation",
+    "[00:19:12.046] INFO (#6783): V2 orchestration recovery completed",
+    "  {",
+    "    terminalizedRuns: 0,",
+    "    stoppedSessions: 0,",
+    "    closedRequests: 0,",
+    "    retiredEffects: 0,",
+    "    requeuedEffects: 0",
+    "  }",
+    "[00:19:12.061] INFO (#7255): Authentication required. Open T3 Code using the pairing URL.",
+    "  pairingUrl: http://127.0.0.1:50240/pair#token=58CX4PPC6XMC",
+    "[00:19:54.608] INFO (#2): V2 orchestration shutdown reconciliation completed",
+    "  {",
+    "    terminalizedRuns: 0,",
+    "    stoppedSessions: 0,",
+    "    closedRequests: 0,",
+    "    retiredEffects: 0,",
+    "    requeuedEffects: 0",
+    "  }",
+    ""
+  ],
+  "analysis": {
+    "batches": 1,
+    "urls": [
+      "POST /batch/"
+    ],
+    "eventNames": [
+      "server.boot.heartbeat",
+      "install.owner_observed"
+    ],
+    "eventCounts": {
+      "server.boot.heartbeat": 1,
+      "install.owner_observed": 3
+    },
+    "propertyKeys": [
+      "distinct_id",
+      "event",
+      "properties.$process_person_profile",
+      "properties.arch",
+      "properties.clientType",
+      "properties.installId",
+      "properties.observedBy",
+      "properties.ownerId",
+      "properties.ownerSource",
+      "properties.platform",
+      "properties.projectCount",
+      "properties.serverAppVersion",
+      "properties.serverArch",
+      "properties.serverMode",
+      "properties.serverOs",
+      "properties.t3CodeVersion",
+      "properties.telemetryChannel",
+      "properties.threadCount",
+      "timestamp",
+      "uuid"
+    ],
+    "keyValues": {
+      "event": [
+        "\"server.boot.heartbeat\"",
+        "\"install.owner_observed\""
+      ],
+      "distinct_id": [
+        "\"3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a\""
+      ],
+      "properties.threadCount": [
+        "1"
+      ],
+      "properties.projectCount": [
+        "1"
+      ],
+      "properties.installId": [
+        "\"e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89\""
+      ],
+      "properties.$process_person_profile": [
+        "false"
+      ],
+      "properties.platform": [
+        "\"darwin\""
+      ],
+      "properties.arch": [
+        "\"arm64\""
+      ],
+      "properties.t3CodeVersion": [
+        "\"0.1.3-nightly.20261026.3717\""
+      ],
+      "properties.telemetryChannel": [
+        "\"nightly\""
+      ],
+      "properties.clientType": [
+        "\"cli-web-client\""
+      ],
+      "properties.serverOs": [
+        "\"macOS\""
+      ],
+      "properties.serverArch": [
+        "\"arm64\""
+      ],
+      "properties.serverAppVersion": [
+        "\"0.1.3-nightly.20261026.3717\""
+      ],
+      "properties.serverMode": [
+        "\"web\""
+      ],
+      "properties.ownerSource": [
+        "\"connect\"",
+        "\"openai\"",
+        "\"claude\""
+      ],
+      "properties.ownerId": [
+        "\"3c5392709af4aad9d1ae4dc098348b8c57eba821688a54910b8d35d82e055b3f\"",
+        "\"9a1ec07819133ae492391e158f870f2dcaae0403fad1e06d38b7a38ab9f704a6\"",
+        "\"311049fede980dc9c10b444a76620a57438ab32e3854b55b6e76822189cdd06b\""
+      ],
+      "properties.observedBy": [
+        "\"server\""
+      ]
+    },
+    "canaries": [
+      {
+        "name": "codexAccountId",
+        "value": "canary-codex-account-1234",
+        "sha256": "3ec7084a37fa7e554d4d4dbe6ad92da2fb732706c1c2288860c3a3b6e6ff5b4a",
+        "hashFoundAt": [
+          "server.boot.heartbeat: distinct_id",
+          "install.owner_observed: distinct_id"
+        ],
+        "rawFoundAs": [],
+        "hashInRaw": true
+      },
+      {
+        "name": "openaiUserId",
+        "value": "user-canaryOpenAI5678",
+        "sha256": "9a1ec07819133ae492391e158f870f2dcaae0403fad1e06d38b7a38ab9f704a6",
+        "hashFoundAt": [
+          "install.owner_observed: properties.ownerId"
+        ],
+        "rawFoundAs": [],
+        "hashInRaw": true
+      },
+      {
+        "name": "codexEmail",
+        "value": "canary.user@example.invalid",
+        "sha256": "291cd770fd0930d53f33c79e11d51383dbda0e6d58d98e0a189e057b4bd6dce5",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "codexName",
+        "value": "Canary Codex Name",
+        "sha256": "6bf2a952c9227706eac4c67acb8639275babd8dc2cc6fac3cc1da94133080903",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "claudeUserId",
+        "value": "canary-claude-userid-9999",
+        "sha256": "abfe23dc6df7909ca372b4bddb7a9d122702c42ec427856d4015f1ca31ef7db4",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "claudeAccountUuid",
+        "value": "canary-claude-uuid-4242",
+        "sha256": "311049fede980dc9c10b444a76620a57438ab32e3854b55b6e76822189cdd06b",
+        "hashFoundAt": [
+          "install.owner_observed: properties.ownerId"
+        ],
+        "rawFoundAs": [],
+        "hashInRaw": true
+      },
+      {
+        "name": "claudeEmail",
+        "value": "canary.claude@example.invalid",
+        "sha256": "2c0d6098f7ef533f82d7bcc7a957f7afca60ec3dd5ea75757a7611e786cd4373",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "claudeDisplayName",
+        "value": "Canary",
+        "sha256": "bd6617f00a64af4a5fa955f29eb1fcf18a651ccfe39fa7a30fb97b4482341ff1",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "connectUserId",
+        "value": "canary-connect-user-7777",
+        "sha256": "3c5392709af4aad9d1ae4dc098348b8c57eba821688a54910b8d35d82e055b3f",
+        "hashFoundAt": [
+          "install.owner_observed: properties.ownerId"
+        ],
+        "rawFoundAs": [],
+        "hashInRaw": true
+      },
+      {
+        "name": "anonymousInstallId",
+        "value": "canary-install-anon-1111",
+        "sha256": "e75d17746ea02465e1ca8b89c9bc3d4b295281d5bb25cc1ee30b182037304b89",
+        "hashFoundAt": [
+          "server.boot.heartbeat: properties.installId",
+          "install.owner_observed: properties.installId"
+        ],
+        "rawFoundAs": [],
+        "hashInRaw": true
+      },
+      {
+        "name": "accessToken",
+        "value": "canary-access-token-abcd",
+        "sha256": "625148b5d2fb97757ae820c587c7e0d8d3061dc41aa8fcacea3071bec1961a8d",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      },
+      {
+        "name": "refreshToken",
+        "value": "canary-refresh-token-efgh",
+        "sha256": "b6b18ac5e6f25c1692660e3e18266b5994135a99fdf3ea9895b4a846abd8cc05",
+        "hashFoundAt": [],
+        "rawFoundAs": [],
+        "hashInRaw": false
+      }
+    ],
+    "atSignLines": [],
+    "emailLines": [],
+    "pathsOrUser": []
+  }
+}

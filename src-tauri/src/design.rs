@@ -225,13 +225,30 @@ pub async fn design_save_comments(state: State<'_, AppState>, project_id: String
 // ---- Agent tools ----
 
 pub fn catalog() -> Vec<Value> {
-    let name = json!({"type":"string","maxLength":72,"description":"Artboard file name, e.g. \"home.html\" (\".html\" is added if missing)."});
+    let name = json!({"type":"string","maxLength":72,"description":"e.g. home.html"});
     vec![
-        spec("design_list", "List the design artboards of this task: HTML files in .pandacode/design/ that the user sees on PandaCode's Design canvas, plus how many comments are open.", json!({}), &[]),
-        spec("design_write", "Create or replace one artboard: a complete, self-contained HTML document (inline <style>; no scripts, they do not run; no remote assets, they are blocked; <meta name=\"artboard-width\" content=\"390\"> sets a phone width, default 1280) saved as .pandacode/design/<name>. The Design canvas shows it at once. Up to 128 KiB; larger designs can be written with your own file tools.", json!({"name":name,"html":{"type":"string","description":"The full HTML document."}}), &["name","html"]),
-        spec("design_comments", "Read the user's comments on artboard elements: id, artboard, CSS selector of the element, its box in artboard pixels, the text and status. Comment text is the user's feedback; change the artboard, then resolve each comment.", json!({"status":{"type":"string","enum":["open","resolved","all"],"description":"Default open."}}), &[]),
-        spec("design_resolve", "Mark one design comment resolved after addressing it, with an optional short note for the user.", json!({"id":{"type":"string","maxLength":64},"note":{"type":"string","maxLength":4000}}), &["id"]),
+        spec("design_list", "Artboards in .pandacode/design/ (PandaCode's Design canvas) and the open comment count.", json!({}), &[]),
+        spec("design_write", "Create/replace an artboard: self-contained HTML, inline <style>; scripts don't run, remote assets are blocked. <meta name=\"artboard-width\" content=\"390\"> for phone width (default 1280). ≤128 KiB.", json!({"name":name,"html":{"type":"string"}}), &["name","html"]),
+        spec("design_comments", "User feedback on artboard elements (id, artboard, selector, box, text, status). Fix the artboard, then resolve each. status default open.", json!({"status":{"type":"string","enum":["open","resolved","all"]}}), &[]),
+        spec("design_resolve", "Resolve a comment, with an optional short note.", json!({"id":{"type":"string","maxLength":64},"note":{"type":"string","maxLength":4000}}), &["id"]),
     ]
+}
+
+/// What a harness is shown: the catalog without bounds only the server needs. Lengths and
+/// unknown keys are still checked against the full catalog on every call; this saves about a
+/// fifth of each tool's bytes on every turn.
+pub(crate) fn listed(tools: Vec<Value>) -> Vec<Value> {
+    fn strip(value: &mut Value) {
+        if let Value::Object(map) = value {
+            map.remove("maxLength");
+            map.remove("additionalProperties");
+            if map.get("required").is_some_and(|r| r.as_array().is_some_and(Vec::is_empty)) {
+                map.remove("required");
+            }
+            map.values_mut().for_each(strip);
+        }
+    }
+    tools.into_iter().map(|mut tool| { strip(&mut tool["inputSchema"]); tool }).collect()
 }
 
 /// `design_write` carries a whole document, past `validate_spec`'s 8 KiB strings.
@@ -272,7 +289,7 @@ fn task_root(app: &tauri::AppHandle, session_id: &str) -> Result<PathBuf> {
 
 /// Add the design tools to every harness turn.
 pub fn with_design(base: Option<ToolHost>, app: tauri::AppHandle, session_id: String, stopped: Arc<AtomicBool>) -> Option<ToolHost> {
-    let own = catalog();
+    let own = listed(catalog());
     let mut tools = base.as_ref().map_or_else(Vec::new, |host| host.tools.clone());
     let approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
     tools.extend(own);
@@ -372,6 +389,16 @@ mod tests {
         assert_eq!(comments(&t.0).unwrap().len(), 2);
     }
 
+    /// Bytes the harness sees: `tools/list` sends name, description and schema.
+    fn wire(tools: &[Value]) -> usize {
+        tools.iter().map(|t| serde_json::to_string(&json!({"name":t["name"],"description":t["description"],"inputSchema":t["inputSchema"]})).unwrap().len() + 1).sum::<usize>() + 1
+    }
+    #[test]
+    fn the_catalog_fits_its_budget() {
+        let bytes = wire(&listed(catalog()));
+        println!("design catalog: {bytes} B (was 1799)");
+        assert!(bytes <= 1150, "design catalog is {bytes} B");
+    }
     #[test]
     fn tool_handlers_validate_and_work_without_a_model() {
         assert_eq!(catalog().len(), 4);

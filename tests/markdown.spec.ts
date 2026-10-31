@@ -74,6 +74,32 @@ test.describe('enriched markdown', () => {
     await expect(probe(page).locator('.katex a')).toHaveCount(0);
   });
 
+  test('chips only real cited links, and a streaming link shows its label at once with no URL syntax', async ({ page }) => {
+    await render(page, 'See [notes](https://granola.ai/notes/1), [slack](slack), [https://github.com/a/b](https://github.com/a/b) and [mail](mailto:jane@example.com).');
+    await expect(probe(page).locator('a.md-cite')).toHaveCount(1);
+    await expect(probe(page).locator('a.md-cite')).toHaveText('notes');
+    await expect(probe(page).locator('a.md-cite .brand-icon')).toHaveCount(1);
+    await expect(probe(page).locator('a[href="mailto:jane@example.com"]')).not.toHaveClass(/md-cite/);
+    const shown = await page.evaluate(async () => {
+      const { streamMarkdown, settledMarkdown } = await import('/src/streaming-markdown.ts');
+      const host = document.createElement('div'); document.body.append(host);
+      const frames: string[] = [];
+      for (const value of ['Kickoff [no', 'Kickoff [notes](https://gran', 'Kickoff [notes](https://granola.ai/n)']) {
+        streamMarkdown(host, value);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        frames.push((host.textContent ?? '').trim());
+      }
+      return { frames, settled: [settledMarkdown('a [x](http'), settledMarkdown('a [x]('), settledMarkdown('- [ ] task'), settledMarkdown('- [x'), settledMarkdown('[x](y) done'), settledMarkdown('run `npm'), settledMarkdown('```\nlist[0'), settledMarkdown('see ![chart](ht')] };
+    });
+    // Never held back: an open link already reads as its label.
+    expect(shown.frames[0]).toBe('Kickoff no');
+    expect(shown.frames[1]).toBe('Kickoff notes');
+    expect(shown.frames[2]).toContain('notes');
+    expect(shown.frames[2]).not.toContain('](');
+    const open = '(#pandacode-open-link)';
+    expect(shown.settled).toEqual([`a [x]${open}`, `a [x]${open}`, '- [ ] task', '- [x', '[x](y) done', 'run `npm`', '```\nlist[0', 'see ']);
+  });
+
   test('keeps local file links as workspace paths', async ({ page }) => {
     await render(page, 'See [main](file:///Users/you/Projects/orbit/src/main.ts) and [a](src/a.ts).');
     await expect(probe(page).locator('a').first()).toHaveAttribute('href', '/Users/you/Projects/orbit/src/main.ts');

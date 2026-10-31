@@ -14,7 +14,7 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', con
 }
 
 /** One retained form per request; answers stay local and are never written to storage. */
-export function createAgentInput(sessionId: string, requestId: string, data: unknown, resolved: () => void): AgentInput {
+export function createAgentInput(sessionId: string, requestId: string, data: unknown, resolved: () => void, remote = false): AgentInput {
   const request = object(data) ? data : {};
   const element = node('form', 'agent-input');
   element.dataset.requestId = requestId;
@@ -34,7 +34,7 @@ export function createAgentInput(sessionId: string, requestId: string, data: unk
   let response: () => AgentInputResponse;
   const fail = (message: string) => { error.textContent = message; error.hidden = false; };
   // Questions may carry Markdown, images from this task's workspace, charts and HTML views.
-  const richContext: RichContext = { image: path => call<string>('workspace_image', { sessionId, path }) };
+  const richContext: RichContext = { image: path => call<string>(remote ? 'remote_workspace_image' : 'workspace_image', { sessionId, path }) };
 
   try {
     if (request.kind === 'questions') {

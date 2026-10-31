@@ -1,17 +1,17 @@
 /* Spawned workers: quiet inline lines in the thread, like tool lines. A line opens its worker
    in the Architect & workers panel; any beyond the first six are one more line away. */
-.team-progress{display:grid;justify-items:start;gap:0;margin:2px 0 12px}
+.team-progress{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;gap:0;margin:2px 0 12px}
 /* Just a line of text, like "Worked for…": as wide as its words, brighter on hover. */
-.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:7px;width:fit-content;max-width:100%;min-width:0;min-height:30px;padding:2px 0;border-radius:2px;background:none;text-align:left;color:var(--muted)}
-.team-progress-worker{font-size:.8rem;line-height:1.5}
+.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:7px;width:fit-content;max-width:100%;min-width:0;min-height:30px;padding:2px 0;border-radius:var(--radius-xs);background:none;text-align:left;color:var(--muted)}
+.team-progress-worker{font-size:var(--text-xs);line-height:1.5}
 .team-progress-worker:hover,.team-progress-more:hover,.team-progress-worker:hover .team-progress-description small{background:none;color:var(--text)}
 .team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
 .team-progress-logo{display:flex;flex:none}
 .team-progress-logo .provider-logo{width:15px;height:15px}
 .team-progress-description{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .team-progress-description strong{font-weight:550;color:var(--text)}
-.team-progress-description small{margin-left:2px;font-size:.74rem;color:var(--muted)}
-.team-progress-status{flex:none;font-size:.8rem;white-space:nowrap;color:var(--muted)}
+.team-progress-description small{margin-left:2px;font-size:var(--text-xs);color:var(--muted)}
+.team-progress-status{flex:none;font-size:var(--text-xs);white-space:nowrap;color:var(--muted)}
 .team-progress-status::before{content:"·";margin-right:7px;color:var(--muted)}
 .team-progress-worker[data-status=Working] .team-progress-status{color:var(--accent-ink)}
 html[data-theme="dark"] .team-progress-worker[data-status=Working] .team-progress-status{color:var(--accent)}
@@ -25,4 +25,7 @@ html[data-theme="dark"] .team-progress-worker[data-status=Working] .team-progres
 @media(prefers-reduced-motion:no-preference){.team-progress-spinner{animation:team-progress-spin .8s linear infinite}}
 @keyframes team-progress-spin{to{transform:rotate(360deg)}}
 .team-progress-worker>.icon{width:11px;height:11px;flex:none;color:var(--muted)}
-.team-progress-more{font-size:.8rem}
+.team-progress-more{font-size:var(--text-xs)}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.team-progress-worker,.team-progress-more,.team-progress-description small,.team-progress-status{transition:color 140ms ease-out}}

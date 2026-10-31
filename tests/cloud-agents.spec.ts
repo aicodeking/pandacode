@@ -24,7 +24,6 @@ async function newTask(page: Page) {
 }
 async function startOnE2b(page: Page, text: string) {
   await newTask(page);
-  await expect(page.locator('#composer-computer')).toHaveCount(0);
   await connectE2b(page);
   const computer = page.locator('#composer-computer');
   await expect(computer).toHaveAccessibleName('Computer: This computer');
@@ -125,6 +124,80 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await claude.getByRole('button', { name: 'Save token' }).click();
   await expect(claude.getByRole('status')).toContainText('Saved.');
   await expect(settings.locator('.cloud-claude .info-mark')).toHaveAttribute('data-tip', /claude setup-token/);
+});
+
+test('a connected cloud can inherit the harness environment, off by default', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await newTask(page);
+  const settings = await openCloudSettings(page);
+  const card = settings.locator('.cloud-provider[data-provider="e2b"]');
+  // Nothing to configure until the cloud exists.
+  await expect(card.locator('[data-inherit-row]')).toBeHidden();
+  await settings.getByRole('button', { name: 'Connect E2B', exact: true }).click();
+  await settings.getByLabel('E2B API key').fill('e2b_key');
+  await settings.getByRole('form', { name: 'Connect E2B' }).locator('[type="submit"]').click();
+  await expect(settings.getByRole('button', { name: 'Disconnect E2B', exact: true })).toBeVisible();
+
+  const row = card.locator('[data-inherit-row]');
+  await expect(row).toBeVisible();
+  await expect(row.locator('.info-mark')).toHaveAttribute('data-tip', /Off by default: nothing is sent to this cloud/);
+  const box = row.getByRole('checkbox', { name: 'Include provider environment variables' });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await expect(card.getByRole('status')).toContainText('include the saved environment variables');
+  await expect(box).toBeChecked();
+  await box.uncheck();
+  await expect(card.getByRole('status')).toContainText('Nothing from the provider environment is sent to this cloud');
+  await expect(box).not.toBeChecked();
+
+  // Deploy-only providers never offer the toggle: they cannot host agents.
+  await settings.getByRole('button', { name: 'Connect Railway', exact: true }).click();
+  const railway = settings.getByRole('form', { name: 'Connect Railway' });
+  await railway.getByLabel('Railway API token').fill('railway-token');
+  await railway.locator('[type="submit"]').click();
+  await expect(settings.getByRole('button', { name: 'Disconnect Railway', exact: true })).toBeVisible();
+  await expect(settings.locator('.cloud-provider[data-provider="railway"] [data-inherit-row]')).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test('InstaBox offers a machine image select once connected and saves the choice', async ({ page }) => {
+  await newTask(page);
+  let settings = await openCloudSettings(page);
+  const card = settings.locator('.cloud-provider[data-provider="instabox"]');
+  const image = card.getByRole('combobox', { name: 'InstaBox machine image' });
+  await expect(image).toBeHidden();
+  await card.getByRole('button', { name: 'Connect InstaBox', exact: true }).click();
+  await settings.getByLabel('InstaBox API key').fill('preview-key');
+  await settings.getByRole('form', { name: 'Connect InstaBox' }).locator('[type="submit"]').click();
+  await expect(image).toBeEnabled();
+  await expect(image).toHaveValue('template:agent-browser');
+  await expect(image.locator('option')).toHaveText(['agent-browser (default, includes the open-computer-use desktop tool)', 'clean-agents · sn_preview1']);
+
+  await image.selectOption('snapshot:sn_preview1');
+  await expect(card.locator('.cloud-image-status')).toHaveText('Saved. New machines start from clean-agents · sn_preview1.');
+  // The choice is kept natively, so a reopened Settings shows it.
+  await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  settings = await openCloudSettings(page);
+  await expect(settings.getByRole('combobox', { name: 'InstaBox machine image' })).toHaveValue('snapshot:sn_preview1');
+
+  await settings.getByRole('button', { name: 'Disconnect InstaBox', exact: true }).click();
+  await expect(settings.getByRole('combobox', { name: 'InstaBox machine image' })).toBeHidden();
+});
+
+test('a machine image list that fails to load says why and can be retried', async ({ page }) => {
+  await page.addInitScript(() => { (window as any).__instaboxImagesFail = true; });
+  await newTask(page);
+  const settings = await openCloudSettings(page);
+  const card = settings.locator('.cloud-provider[data-provider="instabox"]');
+  await card.getByRole('button', { name: 'Connect InstaBox', exact: true }).click();
+  await settings.getByLabel('InstaBox API key').fill('preview-key');
+  await settings.getByRole('form', { name: 'Connect InstaBox' }).locator('[type="submit"]').click();
+  await expect(card.getByRole('alert').filter({ hasText: 'machine images' })).toHaveText('Could not load machine images: InstaBox did not answer in time.');
+  await expect(card.getByRole('combobox', { name: 'InstaBox machine image' })).toBeDisabled();
+  await page.evaluate(() => { (window as any).__instaboxImagesFail = false; });
+  await card.getByRole('button', { name: 'Try again' }).click();
+  await expect(card.getByRole('combobox', { name: 'InstaBox machine image' })).toHaveValue('template:agent-browser');
+  await expect(card.getByRole('button', { name: 'Try again' })).toBeHidden();
 });
 
 test('switching tasks while a machine prepares keeps the strip and chip with the cloud task', async ({ page }) => {

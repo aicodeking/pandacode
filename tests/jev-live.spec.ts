@@ -138,6 +138,8 @@ test('keeps reports, frames, and watch leases isolated when changing tasks', asy
   await page.locator('.task-item[data-id="session-4"]').click();
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-4');
   await expect.poll(() => watched(page, 'run-1', false)).toBe(true);
+  // Inspector panels are per thread: open this task's browser.
+  await page.getByRole('button', { name: 'Open browser', exact: true }).click();
   await expect.poll(() => watched(page, 'other-run', true)).toBe(true);
   await expect(live(page)).toContainText('Other task only');
   expect((await calls(page, 'jev_watch_run')).filter(call => call.args.runId === 'other-run').every(call => call.args.sessionId === 'session-4')).toBe(true);

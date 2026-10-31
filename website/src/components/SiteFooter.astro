@@ -12,7 +12,8 @@ const { home = false } = Astro.props;
     <a href="/privacy/">Privacy</a>
     <a href="/license/">License</a>
     <a href={project.repo} target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
-    <a href={project.issues} target="_blank" rel="noopener noreferrer">Support <span aria-hidden="true">↗</span></a>
+    <a href="/support/">Support</a>
+    <a href={project.issues} target="_blank" rel="noopener noreferrer">Issues <span aria-hidden="true">↗</span></a>
   </nav>
   <a href={home ? '#hero-title' : '#main'}>Back to the top <span aria-hidden="true">↑</span></a>
 </footer>

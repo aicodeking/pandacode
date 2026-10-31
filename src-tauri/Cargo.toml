@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.32"
+version = "0.3.79"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -14,10 +14,11 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "unstable"] }
+tauri = { version = "2", features = ["macos-private-api", "unstable", "tray-icon", "image-png"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "=0.9.12", default-features = false, features = ["parse", "serde"] }
@@ -27,6 +28,7 @@ uuid = { version = "1", features = ["v4", "v7"] }
 portable-pty = "0.9"
 ignore = "0.4.33"
 regex = "1"
+flate2 = "=1.1.10"
 libc = "0.2"
 base64 = "0.22"
 sha2 = "0.10"
@@ -39,11 +41,22 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-updater = ">=2, <2.10"
 tauri-plugin-process = ">=2, <2.4"
+if-addrs = "=0.15.0"
+# Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
+libm = "0.2"
+
+# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links: none exists for
+# Intel macOS, and the x86_64 Linux one needs glibc 2.38 (releases build on Ubuntu 22.04). Keep this
+# predicate in step with `panda_onnx` in build.rs; other targets route with the keyword heuristic.
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), target_os = "windows"))'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
+tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"

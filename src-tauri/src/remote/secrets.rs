@@ -1,18 +1,13 @@
 //! The relay token and the device's X25519 private key, in a 0600 JSON file in the app data
 //! dir. Never the keychain: macOS pins each item to the exact build that made it, and without
 //! an Apple Team ID every update asked for the login password on every read. On Windows the
-//! file inherits the app data dir's ACL, which is per-user by default.
+//! file inherits the app data dir's ACL, which is per-user by default. File handling is shared
+//! with `secret_store`.
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 
 const FILE: &str = "connect-secrets.json";
-/// Held with an exclusive advisory lock around read-modify-write, so two app processes cannot interleave.
-const LOCK: &str = "connect-secrets.lock";
-
-/// Serializes read-modify-write in this process: sign-in, key creation and token refresh can overlap.
-static WRITE: Mutex<()> = Mutex::new(());
+const LABEL: &str = "PandaCode Connect secrets";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Secrets {
@@ -32,39 +27,13 @@ pub(crate) fn read(dir: &Path) -> Secrets {
     })
 }
 
-/// Missing means none; any other read or parse failure is an error.
 fn load(dir: &Path) -> crate::Result<Secrets> {
-    let path = dir.join(FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Secrets::default()),
-        Err(error) => return Err(format!("Could not read PandaCode Connect secrets at {}: {error}", path.display())),
-    };
-    serde_json::from_str(&text).map_err(|error| format!("PandaCode Connect secrets at {} are corrupt: {error}", path.display()))
+    crate::secret_store::load(&dir.join(FILE), LABEL)
 }
 
 /// Replaces the stored secrets with `change(current)`; an empty result deletes the file.
 pub(crate) fn update(dir: &Path, change: impl FnOnce(Secrets) -> Secrets) -> crate::Result<()> {
-    let _guard = WRITE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join(LOCK))
-        .and_then(|file| file.lock().map(|_| file))
-        .map_err(|e| format!("Could not lock PandaCode Connect secrets: {e}"))?;
-    let next = change(load(dir)?);
-    let path = dir.join(FILE);
-    if next == Secrets::default() {
-        return match std::fs::remove_file(&path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!("Could not remove PandaCode Connect secrets: {error}")),
-            _ => Ok(()),
-        };
-    }
-    let text = serde_json::to_vec(&next).map_err(|e| e.to_string())?;
-    let saved = write_atomic(dir, &path, &text).map_err(|e| format!("Could not save PandaCode Connect secrets: {e}"));
-    drop(lock);
-    saved
+    crate::secret_store::update(dir, FILE, LABEL, change)
 }
 
 pub(crate) fn set_token(dir: &Path, token: &str) -> crate::Result<()> {
@@ -78,23 +47,6 @@ pub(crate) fn remove_token(dir: &Path) -> crate::Result<()> {
 
 pub(crate) fn set_key(dir: &Path, key: &str) -> crate::Result<()> {
     update(dir, |s| Secrets { key: Some(key.to_owned()), ..s })
-}
-
-fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let temp = dir.join(format!("{FILE}.{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let written = options.open(&temp).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
-    let renamed = written.and_then(|_| std::fs::rename(&temp, path));
-    if renamed.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    renamed
 }
 
 #[cfg(test)]
@@ -159,7 +111,7 @@ mod tests {
         set_key(&dir, "k").unwrap();
         let mut names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
         names.sort();
-        assert_eq!(names, vec![std::ffi::OsString::from(FILE), std::ffi::OsString::from(LOCK)]);
+        assert_eq!(names, vec![std::ffi::OsString::from(FILE), std::ffi::OsString::from("connect-secrets.lock")]);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

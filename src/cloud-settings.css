@@ -1,15 +1,28 @@
 /* Settings → Agents → Cloud sandboxes. */
-.cloud-provider+.cloud-provider{border-top:1px solid var(--border)}
+.cloud-provider+.cloud-provider{}
 .cloud-form{display:flex;flex-direction:column;gap:8px;padding:0 1rem .9rem}
-.cloud-form label{display:flex;align-items:center;gap:10px;font-size:.8rem}
+.cloud-form label{display:flex;align-items:center;gap:10px;font-size:var(--text-sm)}
 .cloud-form label>span{flex:none;width:7.5rem;color:var(--muted)}
-.cloud-form input{flex:1;min-width:0;height:32px;padding:0 10px;border-radius:3px;border:1px solid color-mix(in srgb,var(--text) 12%,transparent);background:color-mix(in srgb,var(--text) 4%,transparent);color:var(--text);font:inherit;font-size:.82rem}
+.cloud-form input{flex:1;min-width:0;height:32px;padding:0 10px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--text) 4%,transparent);color:var(--text);font:inherit;font-size:var(--text-sm)}
 .cloud-form input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
-.cloud-note{margin:0;font-size:.72rem;line-height:1.5;color:var(--muted)}
-.cloud-progress{margin:0;font-size:.76rem;color:var(--text)}
-.cloud-error{margin:0;font-size:.76rem;color:var(--danger)}
+.cloud-note{margin:0;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
+.cloud-progress{margin:0;font-size:var(--text-xs);color:var(--text)}
+.cloud-error{margin:0;font-size:var(--text-xs);color:var(--danger)}
 .cloud-actions{display:flex;justify-content:flex-end;gap:8px}
 @media(max-width:560px){.cloud-form label{flex-direction:column;align-items:stretch;gap:4px}.cloud-form label>span{width:auto}}
 .cloud-buttons{display:flex;gap:6px;align-items:center}
-.cloud-row-status{margin:-.3rem 1rem .7rem;font-size:.74rem;color:var(--muted)}
+.cloud-row-status{margin:-.3rem 1rem .7rem;font-size:var(--text-xs);color:var(--muted)}
 .cloud-row-status.cloud-error{color:var(--danger)}
+.cloud-inherit{display:flex;align-items:center;gap:8px;margin:-.2rem 1rem .7rem;font-size:.78rem;cursor:pointer}
+.cloud-inherit input{flex:none}
+.cloud-image{display:flex;flex-direction:column;gap:6px;margin:-.3rem 1rem .8rem}
+.cloud-image-row{display:flex;align-items:center;gap:6px}
+.cloud-image label{display:flex;flex:1;min-width:0;align-items:center;gap:10px;font-size:var(--text-sm)}
+.cloud-image label>span{flex:none;width:7.5rem;color:var(--muted)}
+.cloud-image select{flex:1;min-width:0;height:32px;padding:0 8px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--text) 4%,transparent);color:var(--text);font:inherit;font-size:var(--text-sm)}
+.cloud-image select:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.cloud-image select:disabled{opacity:.6}
+.cloud-image-status{margin:0;font-size:var(--text-xs);color:var(--muted)}
+.cloud-image-error{margin:0;font-size:var(--text-xs);color:var(--danger)}
+.cloud-provider:nth-child(even){background:color-mix(in srgb,var(--text) 3.5%,transparent)}
+.cloud-form input,.cloud-image select{background:color-mix(in srgb,var(--text) 6%,transparent)}

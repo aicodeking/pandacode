@@ -1,4 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
+// The workspace view (Conversation, Board, GitHub) is picked from the sidebar's view menu.
+const showView = async (page: Page, name: string) => { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };
 
 /* The GitHub view: repositories on the left, threads / pull requests / issues on the right,
  * and one-click work that opens as an ordinary linked thread. Runs on the preview's sample
@@ -19,7 +21,7 @@ async function expectSideThread(page: Page): Promise<void> {
 async function openHub(page: Page): Promise<void> {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
-  await page.getByRole('button', { name: 'GitHub view' }).click();
+  await showView(page, 'GitHub');
   await expect(hub(page)).toBeVisible();
   await expect(repoList(page).getByRole('option')).toHaveCount(4);
 }
@@ -151,7 +153,9 @@ test('the GitHub view stays out of the way when GitHub is turned off', async ({ 
   await page.addInitScript(() => { localStorage.setItem('pandacode.github', 'off'); localStorage.setItem('pandacode.view', 'github'); });
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
-  await expect(page.getByRole('button', { name: 'GitHub view' })).toBeHidden();
+  await page.getByRole('button', { name: 'Workspace view: Conversation', exact: true }).click();
+  await expect(page.getByRole('menuitemradio', { name: 'Board', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitemradio', { name: 'GitHub', exact: true })).toHaveCount(0);
   await expect(page.locator('.conversation-pane')).toBeVisible();
 });
 
@@ -172,7 +176,7 @@ test('when gh fails, the view says why and how to fix it', async ({ page }) => {
   });
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
-  await page.getByRole('button', { name: 'GitHub view' }).click();
+  await showView(page, 'GitHub');
   const empty = hub(page).locator('.gh-empty');
   await expect(empty).toContainText('Connect GitHub');
   await expect(empty).toContainText('brew install gh');

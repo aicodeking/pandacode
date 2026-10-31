@@ -109,8 +109,8 @@ Both start commands atomically claim the task and enter In progress. Successful
 turns enter Review; failures and explicit cancellation remain In progress.
 Only `set_task_stage` can mark completion. Completed or archived tasks reject
 new turns until reopened or restored, and active tasks reject details/stage edits.
-Completed tasks archive seven days later, at launch or on the minute sweep.
-The sweep emits `sessions-changed` with no data when metadata should be refreshed.
+Nothing archives tasks any more: at startup every archived task becomes an
+unarchived, completed (Settled) one.
 
 | Command | Args | Return |
 |---|---|---|

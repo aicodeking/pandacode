@@ -3,23 +3,23 @@
 .rich-markdown>:last-child{margin-bottom:0}
 .rich-block{margin:10px 0;max-width:100%;overflow:auto}
 .rich-image{display:inline-flex;flex-direction:column;gap:4px;max-width:100%;margin:6px 8px 6px 0;vertical-align:top}
-.rich-image img{display:block;max-width:100%;max-height:360px;border-radius:6px;background:var(--raised);box-shadow:0 0 0 1px var(--border)}
-.rich-caption{font-size:.72rem;color:var(--muted)}
-.rich-missing{font-size:.76rem;color:var(--muted);font-style:italic}
+.rich-image img{display:block;max-width:100%;max-height:360px;border-radius:var(--radius-md);background:var(--raised)}
+.rich-caption{font-size:var(--text-2xs);color:var(--muted)}
+.rich-missing{font-size:var(--text-xs);color:var(--muted);font-style:italic}
 /* Drawings keep a sensible size: a bare viewBox would otherwise fill the whole card. */
 .rich-svg svg{display:block;width:auto;max-width:min(100%,520px);height:auto;max-height:280px}
 .rich-svg svg:not([width]){width:min(100%,520px)}
-.rich-html{padding:10px 12px;border-radius:6px;background:var(--raised)}
-.rich-chart{margin:0;padding:10px 12px 8px;border-radius:6px;background:var(--raised);max-width:560px}
-.rich-chart figcaption{margin-bottom:6px;font-size:.8rem;font-weight:600;color:var(--text)}
+.rich-html{padding:10px 12px;border-radius:var(--radius-md);background:var(--raised)}
+.rich-chart{margin:0;padding:10px 12px 8px;border-radius:var(--radius-md);background:var(--raised);max-width:560px}
+.rich-chart figcaption{margin-bottom:6px;font-size:var(--text-xs);font-weight:600;color:var(--text)}
 .rich-chart svg{display:block;width:100%;height:auto}
 .rich-chart-grid{stroke:var(--border);stroke-width:1}
-.rich-chart-axis,.rich-chart-label{fill:var(--muted);font-size:11px;font-family:inherit}
-.rich-chart-label{fill:var(--text);font-size:12px}
-.rich-chart-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:6px;font-size:.74rem;color:var(--muted)}
-.rich-chart-legend span::before{content:"";display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:3px;background:var(--swatch);vertical-align:-1px}
-.rich-failed{padding:8px 10px;border-radius:6px;background:var(--raised);font-size:.76rem;color:var(--muted)}
+.rich-chart-axis,.rich-chart-label{fill:var(--muted);font-size:var(--text-xs);font-family:inherit}
+.rich-chart-label{fill:var(--text);font-size:var(--text-sm)}
+.rich-chart-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:6px;font-size:var(--text-xs);color:var(--muted)}
+.rich-chart-legend span::before{content:"";display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:var(--radius-sm);background:var(--swatch);vertical-align:-1px}
+.rich-failed{padding:8px 10px;border-radius:var(--radius-md);background:var(--raised);font-size:var(--text-xs);color:var(--muted)}
 .rich-failed p{margin:0 0 6px}
-.rich-failed pre{margin:0;max-height:140px;overflow:auto;font-size:.72rem;white-space:pre-wrap}
+.rich-failed pre{margin:0;max-height:140px;overflow:auto;font-size:var(--text-2xs);white-space:pre-wrap}
 /* Inside an option the copy stays compact: Markdown paragraphs sit inline with the label. */
 .agent-input-option .rich-markdown p,.agent-input legend .rich-markdown p{margin:0}

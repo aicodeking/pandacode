@@ -1,9 +1,60 @@
 //! Line parsers for the agents' own local session logs. Each returns token
 //! counts only; prompts, replies and tool output are never retained.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// A model name shared by every record that names it: about a dozen names cover
+/// 100k+ cached records, so each record holds a pointer instead of its own copy.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Model(Arc<str>);
+impl Model {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl From<&str> for Model {
+    fn from(name: &str) -> Self {
+        // ponytail: names are never forgotten; the set is the handful of models in local logs.
+        static NAMES: OnceLock<Mutex<HashSet<Arc<str>>>> = OnceLock::new();
+        let mut names = NAMES.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(name) = names.get(name) {
+            return Model(name.clone());
+        }
+        let name: Arc<str> = name.into();
+        names.insert(name.clone());
+        Model(name)
+    }
+}
+impl Default for Model {
+    fn default() -> Self {
+        Model::from("")
+    }
+}
+impl std::ops::Deref for Model {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+impl PartialEq<&str> for Model {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
+impl Serialize for Model {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+impl<'de> Deserialize<'de> for Model {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Model::from(String::deserialize(deserializer)?.as_str()))
+    }
+}
 
 /// Prompt size classes, so long-context rates can be applied at pricing time
 /// without keeping each request's size: 0 = up to 200k, 1 = up to 272k, 2 = larger.
@@ -22,7 +73,7 @@ pub(crate) struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<u64>,
     pub hour: i64,
-    pub model: String,
+    pub model: Model,
     pub class: u8,
     pub input: u64,
     pub cache_read: u64,
@@ -47,7 +98,7 @@ impl Record {
 /// State carried between appended chunks of one Codex rollout file.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct CodexState {
-    pub model: Option<String>,
+    pub model: Option<Model>,
     pub total: Option<u64>,
 }
 
@@ -90,12 +141,12 @@ fn count(value: &Value) -> u64 {
 }
 
 /// Normalizes a reported model name; `None` for placeholders that never reach an API.
-fn model_name(value: &Value) -> Option<String> {
+fn model_name(value: &Value) -> Option<Model> {
     let name = value.as_str()?.trim();
     if name.is_empty() || name.starts_with('<') || name.len() > 128 {
         return None;
     }
-    Some(name.to_ascii_lowercase())
+    Some(Model::from(name.to_ascii_lowercase().as_str()))
 }
 
 /// One assistant reply from a Claude Code project log. Streaming writes the same

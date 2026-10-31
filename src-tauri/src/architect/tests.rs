@@ -158,7 +158,7 @@ fn generated_worker_notification_is_typed_but_user_json_and_copies_are_unchanged
         &parent,
         &actor,
         "pandacode_send_team_message",
-        json!({"recipient":"architect","key":"question","message":"Which interface?"}),
+        json!({"recipient":"architect","key":"question","message":"Which interface?","urgent":true}),
     )
     .unwrap();
     let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
@@ -683,7 +683,7 @@ fn persisted_messages_and_checkpoint_survive_restart_without_auto_resuming() {
         };
         let (run, actor) = running_worker(&state, &parent, "a", "src");
         worker_session = run.config.session_id.clone();
-        coordinate(&state,&parent,&actor,"pandacode_send_team_message",json!({"recipient":"architect","key":"restart-message","message":"Parser interface is ready"})).unwrap();
+        coordinate(&state,&parent,&actor,"pandacode_send_team_message",json!({"recipient":"architect","key":"restart-message","message":"Parser interface is ready","urgent":true})).unwrap();
         coordinate(&state,&parent,&actor,"pandacode_checkpoint_worker",json!({"key":"restart-progress","summary":"Parser checks passed","nextSteps":"Wire renderer","blocker":null})).unwrap();
     }
     let store = Store::open(&path).unwrap();
@@ -880,6 +880,7 @@ fn catalog_refresh_rolls_back_context_handoff_when_team_persistence_fails() {
 
 fn config() -> TeamConfig {
     TeamConfig {
+        catalog: Vec::new(),
         auto: false,
         roster_only: false,
         name: None,
@@ -956,6 +957,10 @@ fn worker(id: &str, status: &str, files: &[&str], depends: &[&str]) -> Worker {
         result_revision: 0,
         checkpoint: None,
         timed_out: false,
+        failovers: 0,
+        resume_prompt: None,
+        tool_catalog_version: TOOL_CATALOG_VERSION,
+        parent_worker: None,
     }
 }
 #[test]
@@ -976,16 +981,16 @@ fn worker_summaries_explain_queue_reservations_and_access() {
         worker("reviewer", "queued", &[], &[]),
     ];
     team.workers[3].read_only = true;
-    let result = summaries(&team, 0);
+    let result = summaries(&team, 0, None);
     assert_eq!(result["workers"][1]["queueReason"], "Waiting for editor to finish editing shared files");
     assert_eq!(result["workers"][2]["queueReason"], "Waiting for a dependency");
     assert_eq!(result["workers"][3]["queueReason"], Value::Null);
     assert_eq!(result["workers"][3]["readOnly"], true);
     assert_eq!(result["workers"][1]["files"], json!(["src/main.rs"]));
     team.config.max_parallel = 1;
-    assert_eq!(summaries(&team, 0)["workers"][3]["queueReason"], "Waiting for an available worker slot");
+    assert_eq!(summaries(&team, 0, None)["workers"][3]["queueReason"], "Waiting for an available worker slot");
     team.workers[0].status = "completed".into();
-    assert_eq!(summaries(&team, 0)["workers"][1]["queueReason"], Value::Null);
+    assert_eq!(summaries(&team, 0, None)["workers"][1]["queueReason"], Value::Null);
 }
 #[test]
 fn independent_workers_are_eligible_but_dependencies_and_overlaps_wait() {
@@ -1195,6 +1200,7 @@ fn finish(state: &AppState, prepared: &crate::PreparedRun, answer: &str, success
         prepared.team.as_ref(),
         success,
         false,
+        None,
         &mut |_| {},
     );
 }
@@ -2140,7 +2146,7 @@ fn a_failed_follow_up_never_reports_the_previous_attempts_success() {
         store.finish_task_turn(&retried.config.session_id, false, false).unwrap();
         agents.remove(&retried.config.session_id);
         drop(store);
-        completed_with_agents(&state, &agents, &retried.config.session_id, retried.team.as_ref(), false, false, &mut |_| {});
+        completed_with_agents(&state, &agents, &retried.config.session_id, retried.team.as_ref(), false, false, None, &mut |_| {});
     }
     let review = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
     assert!(!review.prompt.contains("Attempt one"));
@@ -2257,10 +2263,14 @@ fn objective_turn(state: &AppState, sid: &str) -> crate::PreparedRun {
 }
 fn settle(state: &AppState, run: &crate::PreparedRun, successful: bool, stopped: bool) {
     let sid = &run.config.session_id;
+    // As the run loop in lib.rs does: a harness error pauses the model before the team settles.
+    if !successful && !stopped {
+        crate::model_health::record_failure(&run.config.provider, &run.config.model, "provider exploded");
+    }
     let mut agents = state.agents.lock().unwrap();
     state.store.lock().unwrap().finish_task_turn(sid, successful, stopped).unwrap();
     agents.remove(sid);
-    completed_with_agents(state, &agents, sid, run.team.as_ref(), successful, stopped, &mut |_| {});
+    completed_with_agents(state, &agents, sid, run.team.as_ref(), successful, stopped, (!successful && !stopped).then_some("provider exploded"), &mut |_| {});
 }
 const SILENT: i64 = (watchdog::SILENCE_MINUTES + 1) * 60 * 1000;
 #[test]
@@ -2437,4 +2447,870 @@ fn lead_guidance_is_bounded_to_two_kilobytes() {
     assert!(team.config.validate().is_ok());
     team.config.lead_guidance = None;
     assert!(team.config.validate().is_ok());
+}
+
+// Panda Router: `profileId: "auto"` and route_models, routed by the keyword heuristic.
+fn profile(id: &str, provider: &str, model: &str, name: &str) -> WorkerProfile {
+    WorkerProfile { id: id.into(), name: name.into(), provider: provider.into(), model: model.into(), reasoning_effort: None }
+}
+fn routing_catalog() -> Vec<WorkerProfile> {
+    vec![
+        profile("claude-default", "claude", "default", "Default · Claude Opus 5.5 · Claude Code"),
+        profile("claude-opus", "claude", "opus", "Opus · Claude Code"),
+        profile("claude-sonnet", "claude", "sonnet", "Sonnet · Claude Code"),
+        profile("claude-haiku", "claude", "haiku", "Haiku · Claude Code"),
+        profile("codex-luna", "codex", "gpt-6-luna", "GPT-6 Luna · Codex"),
+        profile("kimi-k3", "kimi", "kimi-code/k3", "K3 · Kimi"),
+    ]
+}
+fn heuristic_routes(store: &Store, team: &TeamSnapshot, args: &Value, enabled: bool, mode: Mode) -> routing::AutoRoutes {
+    let config = &team.config;
+    let (keys, jobs) = routing::auto_jobs(args, &["rust".to_string()], &routing::chains(store, team, args).unwrap(), enabled);
+    let prefs = crate::panda_router::Preferences { mode, ..Default::default() };
+    let routes = enabled.then(|| crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &prefs, &routing::pool(config), jobs));
+    routing::auto_from(keys, routes, mode)
+}
+fn routed_call(state: &AppState, sid: &str, args: Value, enabled: bool) -> Result<Value> {
+    routed_call_in(state, sid, args, enabled, Mode::Balanced)
+}
+fn routed_call_in(state: &AppState, sid: &str, args: Value, enabled: bool, mode: Mode) -> Result<Value> {
+    let (team, routes) = {
+        let store = state.store.lock().unwrap();
+        let team = load(&store, sid)?.unwrap();
+        let routes = heuristic_routes(&store, &team, &args, enabled, mode);
+        (team, routes)
+    };
+    dispatch_state_routed(state, sid, team.generation, "pandacode_dispatch_workers", args, &AtomicBool::new(false), &routes).map(|x| x.0)
+}
+use crate::panda_router::Mode;
+fn with_catalog(state: &AppState, sid: &str) {
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, sid).unwrap().unwrap();
+    team.config.catalog = routing_catalog();
+    save(&store, &mut team).unwrap();
+}
+#[test]
+fn catalog_is_validated_like_workers_but_larger() {
+    let mut config = config();
+    config.catalog = routing_catalog();
+    assert!(config.validate().unwrap_err().contains("automatic"));
+    config.auto = true;
+    assert!(config.validate().is_ok());
+    config.catalog = (0..crate::model_routing::MAX_POOL).map(|i| profile(&format!("m{i}"), "codex", &format!("m{i}"), &"·".repeat(60))).collect();
+    assert!(config.validate().is_ok(), "names up to 200 bytes");
+    config.catalog.push(profile("extra", "codex", "x", "X"));
+    assert!(config.validate().is_err());
+    config.catalog = vec![profile("a", "nope", "x", "X")];
+    assert!(config.validate().is_err());
+    config.catalog = vec![profile("a", "codex", "x", "X"), profile("a", "codex", "y", "Y")];
+    assert!(config.validate().is_err());
+    let json = json!({"auto":true,"workers":[],"catalog":[{"id":"a","name":"A","provider":"claude","model":"opus","reasoningEffort":null}],"maxParallel":0,"maxRounds":8,"maxAssignments":24,"workspace":"shared","summaryLimit":3072});
+    let parsed: TeamConfig = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed.catalog.len(), 1);
+    assert!(serde_json::to_value(super::tests::config()).unwrap().get("catalog").is_none());
+}
+#[test]
+fn auto_profile_staffs_the_routed_pick_and_says_so() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let args = json!({"assignments":[
+        auto_assignment("typo", json!({"profileId":"auto","prompt":"Fix a typo in the README heading."})),
+        auto_assignment("proof", json!({"profileId":"auto","reasoningEffort":"high","prompt":"Prove the scheduler never starves a queued worker and refactor the dispatcher across modules accordingly."})),
+    ]});
+    let result = routed_call(&state, &sid, args, true).unwrap();
+    let notes = result["routing"].as_array().unwrap();
+    assert_eq!(notes.len(), 2);
+    assert!(notes.iter().all(|n| n.as_str().unwrap().contains(": routed: ")), "{notes:?}");
+    assert!(notes.iter().all(|n| n.as_str().unwrap().ends_with(", heuristic)")), "{notes:?}");
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    for worker in &team.workers {
+        assert!(routing_catalog().iter().any(|p| p.provider == worker.provider && p.model == worker.model && p.model != "default"), "{}", worker.model);
+        let session = store.session(&worker.session_id).unwrap();
+        assert_eq!((session.provider.as_str(), session.model.as_str()), (worker.provider.as_str(), worker.model.as_str()));
+    }
+    if team.workers[1].provider == "claude" {
+        assert_eq!(team.workers[1].reasoning_effort.as_deref(), Some("high"));
+    }
+    drop(store);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("both", json!({"profileId":"auto","provider":"claude","model":"opus"}))]}), true).unwrap_err();
+    assert!(error.contains("not both"));
+}
+#[test]
+fn replacing_a_failed_auto_worker_escalates_past_its_models() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let task = json!({"profileId":"auto","prompt":"Fix a typo in the README heading."});
+    let first = routed_call(&state, &sid, json!({"assignments":[auto_assignment("try1", task.clone())]}), true).unwrap();
+    let first_id = first["workerIds"][0].as_str().unwrap().to_string();
+    let fail = |id: &str| {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let worker = team.workers.iter_mut().find(|w| w.id == id).unwrap();
+        worker.status = "completed".into();
+        worker.error = Some("tests failed".into());
+        save(&store, &mut team).unwrap();
+    };
+    // Only a failed worker can be replaced.
+    let mut retry = task.clone();
+    retry["replaces"] = json!(first_id);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("early", retry.clone())]}), true).unwrap_err();
+    assert!(error.contains("worker that failed"), "{error}");
+    fail(&first_id);
+    let second = routed_call(&state, &sid, json!({"assignments":[auto_assignment("try2", retry)]}), true).unwrap();
+    let note = second["routing"][0].as_str().unwrap();
+    assert!(note.contains(", escalation") && note.contains(" past "), "{note}");
+    let second_id = second["workerIds"][0].as_str().unwrap().to_string();
+    fail(&second_id);
+    let mut again = task.clone();
+    again["replaces"] = json!(second_id);
+    routed_call(&state, &sid, json!({"assignments":[auto_assignment("try3", again)]}), true).unwrap();
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    let (a, b, c) = (&team.workers[0], &team.workers[1], &team.workers[2]);
+    assert!(a.abandoned && b.abandoned && !c.abandoned);
+    assert!(a.error.as_deref().unwrap().starts_with(&format!("Replaced by worker {second_id}. tests failed")));
+    let chain = |w: &Worker| routing::failed_chain(&store, &team, &w.id).unwrap().map(|c| c.failed.into_iter().map(|m| (m.provider, m.model)).collect::<Vec<_>>());
+    let model = |w: &Worker| (w.provider.clone(), w.model.clone());
+    assert_eq!(chain(a), Some(vec![model(a)]));
+    assert_eq!(chain(b), Some(vec![model(a), model(b)]));
+    assert_eq!(chain(c), None, "not settled");
+    assert!(model(c) != model(a) && model(c) != model(b) && model(b) != model(a));
+    let c_id = c.id.clone();
+    drop(store);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("ghost", json!({"profileId":"auto","replaces":"nope"}))]}), true).unwrap_err();
+    assert!(error.contains("previously returned"), "{error}");
+    // b was already replaced: no second branch around the cap.
+    let mut twice = task.clone();
+    twice["replaces"] = json!(second_id);
+    assert!(routed_call(&state, &sid, json!({"assignments":[auto_assignment("twice", twice)]}), true).unwrap_err().contains("already replaced"));
+    // The third failure (first try + 2 retries) stops auto escalation.
+    fail(&c_id);
+    let mut fourth = task.clone();
+    fourth["replaces"] = json!(c_id);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("try4", fourth)]}), true).unwrap_err();
+    assert!(error.contains("failed 3 times") && error.contains("report the failure to the user"), "{error}");
+    // The cap holds for a hand-picked model too, not only for auto.
+    let manual = json!({"provider":"claude","model":"opus","replaces":c_id});
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("try4-manual", manual)]}), true).unwrap_err();
+    assert!(error.contains("failed 3 times"), "{error}");
+}
+#[test]
+fn a_completed_worker_that_failed_review_can_be_replaced() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let task = json!({"profileId":"auto","prompt":"Fix a typo in the README heading."});
+    let first = routed_call(&state, &sid, json!({"assignments":[auto_assignment("v1", task.clone())]}), true).unwrap();
+    let first_id = first["workerIds"][0].as_str().unwrap().to_string();
+    let set = |status: &str| {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = status.into();
+        save(&store, &mut team).unwrap();
+    };
+    let mut retry = task.clone();
+    retry["replaces"] = json!(first_id);
+    retry["replaceReason"] = json!("cargo test fails in queue::tests");
+    for status in ["stopped", "running"] {
+        set(status);
+        assert!(routed_call(&state, &sid, json!({"assignments":[auto_assignment("v2", retry.clone())]}), true).is_err(), "{status}");
+    }
+    set("completed");
+    let second = routed_call(&state, &sid, json!({"assignments":[auto_assignment("v2", retry)]}), true).unwrap();
+    assert!(second["routing"][0].as_str().unwrap().contains(" past "), "{second}");
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    let (a, b) = (&team.workers[0], &team.workers[1]);
+    assert!(a.abandoned && a.status == "completed");
+    assert_eq!(a.error.as_deref(), Some(format!("Replaced by worker {}: cargo test fails in queue::tests.", b.id).as_str()));
+    assert!((a.provider.as_str(), a.model.as_str()) != (b.provider.as_str(), b.model.as_str()));
+    drop(store);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("v3", json!({"profileId":"auto","replaceReason":"x"}))]}), true).unwrap_err();
+    assert!(error.contains("needs replaces"), "{error}");
+}
+#[test]
+fn a_fresh_auto_worker_opens_on_the_ladder_in_cheap_and_balanced_modes() {
+    // Over the parity fixture's pool, the heuristic's Balanced pick for this task is Opus while its
+    // ladder opens on a cheaper rung.
+    let text = "Refactor the monorepo: split the `core` package into `core-domain` and `core-infra`, migrate every module across all services, keep backward compat shims, and update the build pipeline, CI/CD and docs.";
+    // The parity fixture's pool, by card id under its harness.
+    let parity = ["claude-opus-5.5", "claude-sonnet-5.5", "claude-haiku-5.5", "codex-gpt-6-luna", "codex-gpt-5.6-luna", "glm-5.1", "glm-4.7", "grok-4.6", "kimi-k3", "openrouter-deepseek-v4-flash", "openrouter-gemini-3.8-flash", "claude-fable-5", "muse-wonder-1.0"];
+    let catalog: Vec<_> = parity
+        .iter()
+        .map(|id| {
+            let harness = id.split('-').next().unwrap();
+            profile(id, if harness == "openrouter" { "opencode" } else { harness }, id, id)
+        })
+        .collect();
+    for (mode, opens) in [(Mode::Balanced, true), (Mode::Cheapest, true), (Mode::Quality, false)] {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.catalog = catalog.clone();
+            save(&store, &mut team).unwrap();
+        }
+        let config = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().config;
+        assert_eq!(crate::model_routing::rated_count(&routing::pool(&config)), parity.len());
+        // `files: []` (the whole checkout) leaves the files in scope unknown, as in the dispatch below.
+        let ctx = crate::panda_router::TaskContext { repo_languages: vec!["rust".into()], files_in_scope: None, requires_tools: true };
+        let job = crate::model_routing::Job { text: text.into(), ctx, failed: vec![] };
+        let prefs = crate::panda_router::Preferences { mode, ..Default::default() };
+        let route = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &prefs, &routing::pool(&config), vec![job]).unwrap().remove(0);
+        let (pick, first) = (route.pick.clone().unwrap(), route.ladder[0].clone());
+        if mode == Mode::Balanced {
+            assert_ne!(pick.card_id, first.card_id, "the regression needs pick != ladder[0]");
+        }
+        let result = routed_call_in(&state, &sid, json!({"assignments":[auto_assignment("mono", json!({"profileId":"auto","prompt":text,"files":[]}))]}), true, mode).unwrap();
+        let note = result["routing"][0].as_str().unwrap();
+        let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+        // Cheap opens only on a rung that clears the minimum lower bound (the default 0.5 here).
+        let opener = match mode {
+            Mode::Cheapest => route.ladder.iter().find(|m| m.p_success_lower >= crate::model_routing::min_p()).cloned(),
+            _ if opens => Some(first.clone()),
+            _ => None,
+        };
+        let staffed = opener.as_ref().unwrap_or(&pick);
+        assert_eq!((worker.provider.as_str(), worker.model.as_str()), (staffed.provider.as_str(), staffed.model.as_str()), "{mode:?}: {note}");
+        assert_eq!(note.contains("opener"), opener.is_some(), "{note}");
+        if let Some(staffed) = opener.as_ref() {
+            assert!(mode != Mode::Cheapest || staffed.p_success_lower >= crate::model_routing::min_p(), "{note}");
+        }
+        if mode == Mode::Balanced && pick.card_id != first.card_id {
+            assert!(note.contains(&format!("(ladder 1/{}, opener; policy pick {}; ", route.ladder.len(), pick.name)), "{note}");
+        }
+    }
+}
+#[test]
+fn auto_profile_uses_the_lead_when_routing_is_off() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let result = routed_call(&state, &sid, json!({"assignments":[auto_assignment("off", json!({"profileId":"auto"}))]}), false).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().starts_with("off: not routed (routing is off)"));
+    let store = state.store.lock().unwrap();
+    let (worker, lead) = (&load(&store, &sid).unwrap().unwrap().workers[0], store.session(&sid).unwrap());
+    assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), (lead.provider.as_str(), lead.model.as_str(), "auto"));
+}
+#[test]
+fn auto_profile_in_a_named_team_routes_only_within_its_roster() {
+    let (state, sid) = roster_only_state(false);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.workers = vec![profile("haiku", "claude", "haiku", "Haiku"), profile("luna", "codex", "gpt-6-luna", "Luna")];
+        team.config.catalog = routing_catalog();
+        save(&store, &mut team).unwrap();
+    }
+    let hard = "Prove the scheduler never starves a queued worker and refactor the dispatcher across modules.";
+    let result = routed_call(&state, &sid, json!({"assignments":[auto_assignment("hard", json!({"profileId":"auto","prompt":hard}))]}), true).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().contains("routed: "));
+    let store = state.store.lock().unwrap();
+    let worker = &load(&store, &sid).unwrap().unwrap().workers[0];
+    assert!(["haiku", "luna"].contains(&worker.profile_id.as_str()), "{}", worker.profile_id);
+    drop(store);
+    // Off: the lead is not listed, so the team's first model works instead.
+    routed_call(&state, &sid, json!({"assignments":[auto_assignment("off", json!({"profileId":"auto"}))]}), false).unwrap();
+    let store = state.store.lock().unwrap();
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers[1].profile_id, "haiku");
+}
+#[test]
+fn route_models_reports_compact_picks() {
+    let mut config = config();
+    config.auto = true;
+    config.workers = vec![profile("sonnet", "claude", "sonnet", "Sonnet")];
+    config.catalog = routing_catalog();
+    let args = json!({"tasks":[
+        {"text":"Fix a typo in the README."},
+        {"text":"Investigate the failing scheduler test.","files":3,"failed":[{"provider":"claude","model":"haiku"}]},
+    ],"mode":"quality"});
+    let (pool, jobs, mode) = routing::route_request(&config, &[], args).unwrap();
+    assert_eq!(mode, Some(crate::panda_router::Mode::Quality));
+    assert!(pool.iter().all(|m| m.model != "default"), "default yields to opus");
+    let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &Default::default(), &pool, jobs).unwrap();
+    let out = routing::route_summary(&config, &routes);
+    let tasks = out["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(out["profiler"], "heuristic");
+    for task in tasks {
+        let keys: HashSet<_> = task.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(keys, ["pick", "decidedBy", "alternatives", "ladder", "difficulty", "category", "unrated"].map(String::from).into_iter().collect());
+        assert!(task["alternatives"].as_array().unwrap().len() <= 3);
+        assert!((1..=4).contains(&task["ladder"].as_array().unwrap().len()), "{task}");
+        let p = task["pick"]["pSuccess"].as_f64().unwrap();
+        assert_eq!((p * 100.0).round() / 100.0, p);
+    }
+    let second = &tasks[1];
+    assert!(second["decidedBy"].as_str().unwrap().starts_with("escalation"), "{second}");
+    assert!(std::iter::once(&second["pick"]).chain(second["alternatives"].as_array().unwrap()).all(|m| m["model"] != "haiku"));
+    let sonnet = std::iter::once(&tasks[0]["pick"]).chain(tasks[0]["alternatives"].as_array().unwrap()).find(|m| m["model"] == "sonnet");
+    if let Some(sonnet) = sonnet {
+        assert_eq!(sonnet["profileId"], "sonnet");
+    }
+    for bad in [json!({"tasks":[]}), json!({"tasks":[{"text":""}]}), json!({"tasks":[{"text":"x","failed":[{"provider":"nope","model":"m"}]}]}), json!({"tasks":[{"text":"x"}],"mode":"fast"})] {
+        assert!(routing::route_request(&config, &[], bad).is_err());
+    }
+}
+#[test]
+fn routing_note_joins_the_lead_prompt_only_when_enabled() {
+    let mut config = config();
+    config.auto = true;
+    config.catalog = routing_catalog();
+    let note = routing::prompt_note(&config, true);
+    assert!(note.contains("5 rated models") && note.contains("route_models"), "{note}");
+    assert!(routing::prompt_note(&config, false).is_empty());
+    config.roster_only = true;
+    config.workers = vec![profile("haiku", "claude", "haiku", "Haiku"), profile("luna", "codex", "gpt-6-luna", "Luna")];
+    assert!(routing::prompt_note(&config, true).contains("this team's 2 rated models"));
+    let (state, sid) = auto_state();
+    let store = state.store.lock().unwrap();
+    let text = prompt(&store, &sid, "Go.", Some(&Admission { parent: sid.clone(), generation: 1 })).unwrap();
+    assert!(!text.contains("Panda Router"), "routing is off without setup");
+}
+
+#[test]
+fn an_unchosen_assignment_is_routed_like_auto_while_routing_is_on() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let args = json!({"assignments":[auto_assignment("plain", json!({"prompt":"Fix a typo in the README heading."}))]});
+    assert!(routing::has_auto(&args, true) && !routing::has_auto(&args, false));
+    let picked = json!({"assignments":[auto_assignment("picked", json!({"provider":"claude","model":"opus"}))]});
+    assert!(!routing::has_auto(&picked, true));
+    let result = routed_call(&state, &sid, args, true).unwrap();
+    assert!(result["routing"][0].as_str().unwrap().starts_with("plain: routed: "), "{result}");
+    // Routing off: the lead's own model, as before.
+    let off = routed_call(&state, &sid, json!({"assignments":[auto_assignment("own", json!({}))]}), false).unwrap();
+    assert!(off.get("routing").is_none(), "{off}");
+    let store = state.store.lock().unwrap();
+    let (team, lead) = (load(&store, &sid).unwrap().unwrap(), store.session(&sid).unwrap());
+    assert_eq!(team.workers[0].profile_id, "auto");
+    assert!(routing_catalog().iter().any(|p| p.provider == team.workers[0].provider && p.model == team.workers[0].model));
+    assert_eq!((team.workers[1].provider.as_str(), team.workers[1].model.as_str()), (lead.provider.as_str(), lead.model.as_str()));
+}
+/// An auto team whose catalog runs one model on two harnesses (`provider` first).
+fn failover_state(model: &str, providers: &[&str]) -> (AppState, String, crate::PreparedRun) {
+    let (state, sid) = auto_state();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.catalog = providers.iter().map(|p| profile(&format!("{p}-m"), p, model, model)).collect();
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("fo", json!({"provider":providers[0],"model":model,"reasoningEffort":"high"}))]})).unwrap();
+    let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let worker = &load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0];
+    state.store.lock().unwrap().db.execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&worker.session_id]).unwrap();
+    (state, sid, run)
+}
+#[test]
+fn a_failed_run_fails_over_to_the_same_model_on_another_harness() {
+    let model = "claude-sonnet-5-5";
+    let (state, sid, run) = failover_state(model, &["claude", "commandcode"]);
+    settle(&state, &run, false, false);
+    let store = state.store.lock().unwrap();
+    let worker = load(&store, &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.provider.as_str(), worker.model.as_str(), worker.attempt), ("queued", "commandcode", model, 1));
+    assert_eq!(worker.failovers, 1, "a failover is not a follow-up");
+    assert_eq!(worker.profile_id, "auto", "not a roster entry");
+    let note = worker.error.as_deref().unwrap();
+    assert!(note.starts_with("Failover: ") && note.contains("via claude failed (provider exploded); retried on commandcode"), "{note}");
+    let session = store.session(&worker.session_id).unwrap();
+    assert_eq!((session.provider.as_str(), session.model.as_str(), session.resume_id), ("commandcode", model, None));
+    assert_eq!(session.reasoning_effort.as_deref(), worker.reasoning_effort.as_deref());
+    assert!(!crate::model_health::is_healthy("claude", model));
+    drop(store);
+    // The next launch is the same worker on its new harness.
+    let next = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(next.sid, worker.session_id);
+    crate::model_health::record_success("claude", model);
+}
+#[test]
+fn a_failed_run_without_another_harness_stays_failed_for_the_lead() {
+    // A model no other harness in the pool runs.
+    let (state, sid, run) = failover_state("gpt-6-luna", &["codex"]);
+    settle(&state, &run, false, false);
+    let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.provider.as_str(), worker.attempt), ("failed", "codex", 1));
+    assert_eq!(worker.error.as_deref(), Some("Worker run failed: provider exploded"));
+    assert!(!crate::model_health::is_healthy("codex", "gpt-6-luna"));
+    crate::model_health::record_success("codex", "gpt-6-luna");
+}
+#[test]
+fn failed_runs_count_as_attempts_but_never_escalate() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let task = json!({"profileId":"auto","prompt":"Fix a typo in the README heading."});
+    let first = routed_call(&state, &sid, json!({"assignments":[auto_assignment("r1", task.clone())]}), true).unwrap();
+    let first_id = first["workerIds"][0].as_str().unwrap().to_string();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].status = "failed".into();
+        // Follow-ups do not count; a harness failover does.
+        team.workers[0].attempt = 3;
+        team.workers[0].failovers = 1;
+        save(&store, &mut team).unwrap();
+        let chain = routing::failed_chain(&store, &team, &first_id).unwrap().unwrap();
+        assert!(chain.failed.is_empty());
+        assert_eq!(chain.attempts, 2);
+    }
+    let mut retry = task.clone();
+    retry["replaces"] = json!(first_id);
+    let second = routed_call(&state, &sid, json!({"assignments":[auto_assignment("r2", retry)]}), true).unwrap();
+    assert!(!second["routing"][0].as_str().unwrap().contains(" past "), "{second}");
+    let second_id = second["workerIds"][0].as_str().unwrap().to_string();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[1].status = "failed".into();
+        save(&store, &mut team).unwrap();
+    }
+    let mut third = task.clone();
+    third["replaces"] = json!(second_id);
+    let error = routed_call(&state, &sid, json!({"assignments":[auto_assignment("r3", third)]}), true).unwrap_err();
+    assert!(error.contains("failed 3 times"), "{error}");
+}
+#[test]
+fn orchestration_exclusions_filter_provider_and_exact_model_pools() {
+    use crate::model_routing::{with_exclusions, ExcludedModel, Exclusions};
+    let mut config = config();
+    config.catalog = vec![
+        profile("sonnet", "claude", "sonnet", "Sonnet"),
+        profile("opus", "claude", "opus", "Opus"),
+        profile("luna", "codex", "gpt-6-luna", "Luna"),
+        profile("other", "commandcode", "gpt-6-luna", "Luna"),
+    ];
+    let exclusions = Exclusions {
+        providers: vec!["claude".into()],
+        models: vec![ExcludedModel { provider: "codex".into(), model: "gpt-6-luna".into() }],
+    };
+    with_exclusions(exclusions.clone(), || {
+        let pool = routing::pool(&config);
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool[0].provider, "commandcode");
+        assert!(routing::prompt_note(&config, true).contains("1 rated models"));
+        config.roster_only = true;
+        config.workers = config.catalog.clone();
+        assert_eq!(routing::pool(&config).len(), 1);
+    });
+    assert_eq!(routing::pool(&config).len(), 4);
+}
+
+#[test]
+fn excluded_models_leave_the_roster_unless_all_are_unavailable() {
+    use crate::model_routing::{with_exclusions, Exclusions};
+    let (state, sid) = auto_state();
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.config.workers = vec![profile("sonnet", "claude", "sonnet", "Sonnet"), profile("luna", "codex", "gpt-6-luna", "Luna")];
+    with_exclusions(Exclusions { providers: vec!["claude".into()], models: vec![] }, || {
+        let text = rules(&store, &team, &sid).unwrap().0;
+        assert!(!text.contains("\"id\":\"sonnet\""), "{text}");
+        assert!(text.contains("\"id\":\"luna\""), "{text}");
+        assert!(!text.contains("every model is switched off or paused"));
+        crate::model_health::record_failure("codex", "gpt-6-luna", "unavailable");
+        let text = rules(&store, &team, &sid).unwrap().0;
+        assert!(text.contains("[] (every team model is switched off or paused"), "{text}");
+        assert!(!text.contains("\"id\":\"sonnet\"") && !text.contains("\"id\":\"luna\""), "{text}");
+    });
+}
+
+#[test]
+fn switched_off_or_paused_profiles_are_never_staffed() {
+    use crate::model_routing::{with_exclusions, Exclusions};
+    let (state, sid) = state_fixture();
+    let one = |extra: Value| json!({"assignments":[auto_assignment("x", extra)]});
+    with_exclusions(Exclusions { providers: vec!["codex".into()], models: vec![] }, || {
+        // A named profile that is switched off is refused.
+        let error = call(&state, &sid, "pandacode_dispatch_workers", one(json!({"profileId":"fast"}))).unwrap_err();
+        assert!(error.contains("switched off or paused") && error.contains("\"auto\""), "{error}");
+        // Unrouted, the fallback skips it for the first usable entry.
+        routed_call(&state, &sid, one(json!({"profileId":"auto"})), false).unwrap();
+        crate::model_health::record_failure("kimi", "", "unavailable");
+        // Paused too: nothing in the team is usable, so the worker uses the lead's own model.
+        let error = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("z", json!({"profileId":"kimi"}))]})).unwrap_err();
+        assert!(error.contains("paused"), "{error}");
+        let mut second = auto_assignment("y", json!({"profileId":"auto"}));
+        second["files"] = json!(["src/y"]);
+        routed_call(&state, &sid, json!({"assignments":[second]}), false).unwrap();
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        let picked: Vec<_> = team.workers.iter().map(|w| (w.profile_id.as_str(), w.provider.as_str(), w.model.as_str())).collect();
+        assert_eq!(picked, vec![("kimi", "kimi", ""), ("auto", "claude", "default")]);
+    });
+}
+
+#[test]
+fn explicit_models_in_auto_teams_dispatch_even_when_switched_off() {
+    use crate::model_routing::{with_exclusions, Exclusions};
+    let (state, sid) = auto_state();
+    with_exclusions(Exclusions { providers: vec!["codex".into()], models: vec![] }, || {
+        call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("x", json!({"provider":"codex","model":"gpt-6-luna"}))]})).unwrap();
+    });
+}
+
+#[test]
+fn excluded_harness_is_not_used_for_failover_but_explicit_dispatch_still_works() {
+    crate::model_routing::with_exclusions(crate::model_routing::Exclusions { providers: vec!["commandcode".into(), "claude".into()], models: vec![] }, || {
+        let (state, sid, run) = failover_state("claude-sonnet-5-5", &["claude", "commandcode"]);
+        settle(&state, &run, false, false);
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(team.workers[0].status, "failed");
+        assert_eq!(team.workers[0].provider, "claude");
+        assert_eq!(team.workers[0].failovers, 0);
+    });
+}
+
+#[test]
+fn the_lead_is_told_to_route_first() {
+    let mut config = config();
+    config.auto = true;
+    config.catalog = routing_catalog();
+    let note = routing::prompt_note(&config, true);
+    assert!(note.contains("Router first") && note.contains("profileId \"auto\"") && note.contains("another harness first") && note.contains("your own model"), "{note}");
+    let dispatch = catalog().into_iter().find(|t| t["name"] == "pandacode_dispatch_workers").unwrap();
+    assert!(dispatch["description"].as_str().unwrap().starts_with("Start assignments as one parallel batch; returns IDs. With profileId \"auto\""));
+}
+#[test]
+fn ranked_picks_say_their_tier() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let mut config = config();
+    config.catalog = routing_catalog();
+    let tiers: crate::panda_router::Tiers =
+        routing::pool(&config).iter().map(|m| (crate::panda_router::tier_key(&m.provider, &m.model, &m.name).0, crate::panda_router::Tier::S)).collect();
+    crate::model_routing::with_tiers(tiers, || {
+        let args = json!({"assignments":[auto_assignment("fix", json!({"profileId":"auto","prompt":"Fix the flaky scheduler test."}))]});
+        let result = routed_call(&state, &sid, args, true).unwrap();
+        assert!(result["routing"][0].as_str().unwrap().contains("tier S, P "), "{result}");
+        let (pool, jobs, _) = routing::route_request(&config, &[], json!({"tasks":[{"text":"Fix a typo."}]})).unwrap();
+        let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &Default::default(), &pool, jobs).unwrap();
+        assert_eq!(routing::route_summary(&config, &routes)["tasks"][0]["pick"]["tier"], "S");
+    });
+}
+
+fn sub_call(state: &AppState, sid: &str, caller: &str, name: &str, args: Value) -> Result<Value> {
+    let team = load(&state.store.lock().unwrap(), sid)?.unwrap();
+    let attempt = team.workers.iter().find(|w| w.id == caller).unwrap().attempt;
+    dispatch_as(state, sid, team.generation, Some((caller, attempt)), name, args, &AtomicBool::new(false), &routing::AutoRoutes::default()).map(|x| x.0)
+}
+fn team_of(state: &AppState, sid: &str) -> TeamSnapshot {
+    load(&state.store.lock().unwrap(), sid).unwrap().unwrap()
+}
+fn worker_id(actor: &coordination::Actor) -> String {
+    match actor {
+        coordination::Actor::Worker { id, .. } => id.clone(),
+        coordination::Actor::Architect => panic!("not a worker"),
+    }
+}
+/// The architect's turn, then one direct worker ("engine", scope src) running.
+fn nested_fixture() -> (AppState, String, crate::PreparedRun, crate::PreparedRun, String) {
+    let (state, sid) = state_fixture();
+    let (lead, _) = claim(&state, Launch { sid: sid.clone(), prompt: "Build the feature".into(), images: None, admission: Admission { parent: sid.clone(), generation: 1 } });
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    (state, sid, lead, run, worker_id(&actor))
+}
+
+#[test]
+fn direct_workers_may_dispatch_sub_workers_but_sub_workers_may_not() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let tools = sub_worker_catalog();
+    assert_eq!(tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>(), SUB_WORKER_TOOLS);
+    assert!(tools[0]["description"].as_str().unwrap().contains("otherwise do it yourself"));
+    let docs = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("docs","fast","docs")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    // The same key is the caller's own: it does not collide with the architect's "docs" or "engine".
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("docs","fast","src/docs.rs")]})).unwrap();
+    let team = team_of(&state, &sid);
+    assert_eq!(team.workers.iter().find(|w| w.id == child).unwrap().parent_worker.as_deref(), Some(engine.as_str()));
+    // The caller sees only its own sub-workers; the architect sees everyone.
+    assert_eq!(summaries(&team, 0, Some(&engine))["workers"].as_array().unwrap().len(), 2);
+    assert_eq!(summaries(&team, 0, None)["workers"].as_array().unwrap().len(), 4);
+    assert!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":docs})).is_err());
+    assert!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"cancel","workerId":docs,"reason":"no"})).is_err());
+    assert!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child})).is_ok());
+    assert_eq!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"list"})).unwrap()["workers"].as_array().unwrap().len(), 2);
+    assert!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"finish"})).is_err());
+    assert!(sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"list","workerId":child})).is_err(), "fields of other actions are refused");
+    // The old per-action names, and architect-only tools, are not worker tools.
+    assert!(sub_call(&state, &sid, &engine, "pandacode_read_worker", json!({"workerId":child})).is_err());
+    assert!(sub_call(&state, &sid, &engine, "pandacode_finish_team", json!({"summary":"done"})).is_err());
+    assert!(call(&state, &sid, "pandacode_sub_workers", json!({"action":"list"})).is_err(), "the architect has its own tools");
+    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[{"key":"dep","profileId":"fast","name":"dep","prompt":"Wait for docs.","files":["src/dep"],"dependsOn":[docs]}]})).unwrap_err();
+    assert!(error.contains("Dependencies"), "{error}");
+    // The child runs inside its running parent's reservation, then may not dispatch itself.
+    let lexer = team.workers.iter().find(|w| w.id == child).unwrap();
+    assert!(!conflicts(lexer, team.workers.iter().find(|w| w.id == engine).unwrap()));
+    let mut runs = Vec::new();
+    while let Some(launch) = next_action_state(&state, &mut |_| {}).unwrap() {
+        runs.push(claim(&state, launch));
+    }
+    // Limit 3: engine, the architect's docs and the lexer.
+    assert_eq!(runs.len(), 2);
+    assert!(runs.iter().any(|(run, _)| run.config.session_id == lexer.session_id));
+    let error = sub_call(&state, &sid, &child, "pandacode_dispatch_workers", json!({"assignments":[assignment("deeper","fast","src/lexer/x")]})).unwrap_err();
+    assert!(error.contains("Sub-workers cannot"), "{error}");
+}
+
+#[test]
+fn sub_worker_scopes_stay_inside_the_parent_and_children_are_capped() {
+    let mut parent = worker("p", "running", &["src"], &[]);
+    assert!(within(&parent, &["src/a.rs".into()], false).is_ok());
+    assert!(within(&parent, &["src/a".into(), "src".into()], false).is_ok());
+    // Case-sensitive and component-wise: other filesystems may hold SRC beside src.
+    assert!(within(&parent, &["SRC/a".into()], false).is_err());
+    assert!(within(&parent, &["srcx".into()], false).is_err());
+    assert!(within(&parent, &["src/../docs".into()], false).is_err());
+    assert!(within(&parent, &["src2".into()], false).is_err());
+    assert!(within(&parent, &[], false).is_err());
+    assert!(within(&parent, &["docs".into()], true).is_ok());
+    parent.files.clear();
+    assert!(within(&parent, &[], false).is_ok());
+    parent.read_only = true;
+    assert!(within(&parent, &["src".into()], false).is_err());
+    assert!(within(&parent, &[], true).is_ok());
+
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("out","fast","tests")]})).unwrap_err();
+    assert!(error.contains("inside your own scope"), "{error}");
+    let batch = |keys: &[&str]| json!({"assignments": keys.iter().map(|k| assignment(k, "fast", &format!("src/{k}"))).collect::<Vec<_>>()});
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["a", "b", "c"])).unwrap();
+    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["d"])).unwrap_err();
+    assert!(error.contains("At most 3"), "{error}");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        for w in team.workers.iter_mut().filter(|w| w.parent_worker.is_some()) {
+            w.status = "completed".into();
+        }
+        save(&store, &mut team).unwrap();
+    }
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["d", "e", "f"])).unwrap();
+    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["g"])).unwrap_err();
+    assert!(error.contains("already started 6"), "{error}");
+    // Rejected batches persist nothing.
+    assert_eq!(team_of(&state, &sid).workers.len(), 7);
+}
+
+#[test]
+fn a_parent_parks_until_its_sub_workers_settle_and_resumes_with_their_results() {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let launch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (child_run, _rx) = claim(&state, launch);
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &run, "Started the lexer sub-worker.", true);
+    let before = team_of(&state, &sid);
+    let parent = before.workers.iter().find(|w| w.id == engine).unwrap();
+    assert_eq!(parent.status, "parked");
+    assert!(unsettled(&parent.status) && !active(&parent.status));
+    // Parked work is pending: no architect review yet.
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    finish(&state, &child_run, "Lexer done and tested.", true);
+    let resume = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(resume.sid, parent.session_id);
+    assert!(resume.prompt.contains("Your sub-workers have settled") && resume.prompt.contains("Lexer done and tested.") && resume.prompt.contains(&child), "{}", resume.prompt);
+    let team = team_of(&state, &sid);
+    let resumed = team.workers.iter().find(|w| w.id == engine).unwrap();
+    assert_eq!((resumed.status.as_str(), resumed.attempt, team.round), ("running", 1, before.round));
+    let (again, _rx) = claim(&state, resume);
+    finish(&state, &again, "Engine and lexer verified.", true);
+    assert_eq!(team_of(&state, &sid).workers.iter().find(|w| w.id == engine).unwrap().status, "completed");
+    let review = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(review.sid, sid);
+    assert!(review.prompt.contains("Engine and lexer verified.") && review.prompt.contains("subWorkers"), "{}", review.prompt);
+    let team = team_of(&state, &sid);
+    assert_eq!(team.round, before.round + 1);
+}
+
+#[test]
+fn a_pause_before_a_parked_parent_relaunches_keeps_its_sub_worker_results() {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap();
+    let launch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (child_run, _rx) = claim(&state, launch);
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &run, "Started the lexer sub-worker.", true);
+    finish(&state, &child_run, "Lexer done and tested.", true);
+    let resume = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(resume.prompt.contains("Lexer done and tested."));
+    // Paused (or restarted) after the relaunch was chosen but before its run started.
+    control_state(&state, &sid, "pause").unwrap();
+    assert_eq!(team_of(&state, &sid).workers.iter().find(|w| w.id == engine).unwrap().status, "stopped");
+    control_state(&state, &sid, "resume").unwrap();
+    let again = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!((again.sid.as_str(), again.prompt.as_str()), (resume.sid.as_str(), resume.prompt.as_str()), "Resume sends the sub-worker results, not the original assignment");
+    let (_run, _rx) = claim(&state, again);
+    assert!(team_of(&state, &sid).workers.iter().find(|w| w.id == engine).unwrap().resume_prompt.is_none(), "a started run carries the results itself");
+}
+
+#[test]
+fn a_direct_codex_worker_from_an_older_catalog_restarts_its_context() {
+    let (state, sid) = state_fixture();
+    let (_lead, _) = claim(&state, Launch { sid: sid.clone(), prompt: "Build the feature".into(), images: None, admission: Admission { parent: sid.clone(), generation: 1 } });
+    let (_run, actor) = running_worker(&state, &sid, "engine", "src");
+    let id = worker_id(&actor);
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    let worker = team.workers.iter_mut().find(|w| w.id == id).unwrap();
+    worker.tool_catalog_version = 0;
+    let wsid = worker.session_id.clone();
+    save(&store, &mut team).unwrap();
+    store.db.execute("UPDATE sessions SET provider='codex' WHERE id=?1", [&wsid]).unwrap();
+    store.message(&wsid, "assistant", "Earlier worker history").unwrap();
+    store.resume(&wsid, "old-worker-context").unwrap();
+    let admission = Admission { parent: sid.clone(), generation: team.generation };
+    validate_admission(&store, &wsid, Some(&admission)).unwrap();
+    assert!(store.session(&wsid).unwrap().resume_id.is_none(), "an old worker schema has no sub-worker tools");
+    assert!(crate::context_recovery::pending(&store, &store.session(&wsid).unwrap()).unwrap());
+    assert_eq!(load(&store, &sid).unwrap().unwrap().workers.iter().find(|w| w.id == id).unwrap().tool_catalog_version, TOOL_CATALOG_VERSION);
+    store.resume(&wsid, "fresh-worker-context").unwrap();
+    validate_admission(&store, &wsid, Some(&admission)).unwrap();
+    assert_eq!(store.session(&wsid).unwrap().resume_id.as_deref(), Some("fresh-worker-context"), "refreshed once");
+}
+
+#[test]
+fn every_team_tool_result_can_carry_the_inbox_digest() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let gen = team_of(&state, &sid).generation;
+    let worker = coordination::Actor::Worker { id: engine.clone(), attempt: 1 };
+    coordination::dispatch_state(&state, &sid, gen, &worker, "pandacode_send_team_message", json!({"recipient":"architect","key":"fyi","message":"Parser done"}), &AtomicBool::new(false)).unwrap();
+    let mut listed = call(&state, &sid, "pandacode_list_workers", json!({})).unwrap();
+    assert!(listed.get("inbox").is_none(), "dispatch_as leaves decoration to the host");
+    coordination::add_inbox(&state, &sid, "architect", &mut listed);
+    assert_eq!(listed["inbox"]["unread"], 1);
+    let mut mine = sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"list"})).unwrap();
+    coordination::add_inbox(&state, &sid, &engine, &mut mine);
+    assert!(mine.get("inbox").is_none(), "nothing unread for the sender");
+}
+
+#[test]
+fn a_sub_worker_failure_goes_to_its_parked_parent_not_the_architect() {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    // Another direct worker keeps running, so a direct failure would wake the architect.
+    let (_docs, _) = running_worker(&state, &sid, "docs", "docs");
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer"),{"key":"after","profileId":"fast","name":"after","prompt":"Use the lexer.","files":["src/after"],"dependsOn":[]}]})).unwrap();
+    let team = team_of(&state, &sid);
+    let lexer = team.workers.iter().find(|w| w.name == "lexer").unwrap().id.clone();
+    // A queued sibling that depends on the failing child fails with it at once.
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers.iter_mut().find(|w| w.name == "after").unwrap().depends_on = vec![lexer.clone()];
+        save(&store, &mut team).unwrap();
+    }
+    let launch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (child_run, _rx) = claim(&state, launch);
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &run, "Waiting for the lexer.", true);
+    finish(&state, &child_run, "Could not build.", false);
+    let resume = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let team = team_of(&state, &sid);
+    assert_eq!(resume.sid, team.workers.iter().find(|w| w.id == engine).unwrap().session_id);
+    assert!(team.pending_turn.is_none());
+    assert_eq!(team.workers.iter().find(|w| w.name == "after").unwrap().status, "failed");
+    // The parent finishing resolves its failed sub-workers, so the architect can finish later.
+    let (again, _rx) = claim(&state, resume);
+    finish(&state, &again, "Did the lexer myself.", true);
+    let team = team_of(&state, &sid);
+    assert!(team.workers.iter().filter(|w| w.parent_worker.is_some()).all(|w| w.abandoned));
+}
+
+#[test]
+fn cancelling_or_pausing_a_parent_cascades_to_its_sub_workers() {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let launch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (child_run, _rx) = claim(&state, launch);
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &run, "Waiting for the lexer.", true);
+    assert_eq!(team_of(&state, &sid).workers.iter().find(|w| w.id == engine).unwrap().status, "parked");
+    // Pause keeps the parked parent (it has no process) and stops its child for a later Resume.
+    control_state(&state, &sid, "pause").unwrap();
+    let team = team_of(&state, &sid);
+    assert_eq!(team.workers.iter().find(|w| w.id == engine).unwrap().status, "parked");
+    assert_eq!(team.workers.iter().find(|w| w.id == child).unwrap().status, "stopped");
+    finish(&state, &child_run, "Interrupted.", false);
+    control_state(&state, &sid, "resume").unwrap();
+    let team = team_of(&state, &sid);
+    assert_eq!(team.workers.iter().find(|w| w.id == child).unwrap().status, "queued");
+    assert_eq!(team.workers.iter().find(|w| w.id == engine).unwrap().status, "parked");
+    let launch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(launch.sid, team.workers.iter().find(|w| w.id == child).unwrap().session_id);
+    let (_child_again, _rx) = claim(&state, launch);
+    // Cancelling the parent stops and resolves its children.
+    call(&state, &sid, "pandacode_cancel_worker", json!({"workerId":engine,"reason":"Superseded."})).unwrap();
+    let team = team_of(&state, &sid);
+    let child = team.workers.iter().find(|w| w.id == child).unwrap();
+    assert_eq!((child.status.as_str(), child.abandoned), ("stopped", true));
+    assert!(child.error.as_deref().unwrap().starts_with("Cancelled with its parent worker."));
+    assert!(!team.workers.iter().any(|w| unsettled(&w.status)));
+}
+
+#[test]
+fn a_parked_parent_keeps_its_files_reserved_but_not_from_its_own_sub_workers() {
+    let mut team = new_team("lead".into(), config());
+    let mut child = worker("c", "queued", &["src/a.rs"], &[]);
+    child.parent_worker = Some("p".into());
+    team.workers = vec![worker("p", "parked", &["src"], &[]), worker("other", "queued", &["src/b.rs"], &[]), child];
+    // An unrelated writer would edit files the parent resumes into.
+    assert!(!eligible(&team, 1));
+    assert!(queue_reason(&team, &team.workers[1]).is_some());
+    // Its own sub-worker works inside the parent's reservation.
+    assert!(eligible(&team, 2));
+}
+
+#[test]
+fn team_turn_overhead_stays_within_budget() {
+    // What a harness receives (mcp_host sends name, description and inputSchema).
+    let size = |tools: Vec<Value>| serde_json::to_string(&tools.iter().map(|t| json!({"name":t["name"],"description":t["description"],"inputSchema":t["inputSchema"]})).collect::<Vec<_>>()).unwrap().len();
+    let architect = size([catalog(), coordination::tools(false)].concat());
+    let worker = size([sub_worker_catalog(), coordination::tools(true)].concat());
+    let (state, sid) = state_fixture();
+    state.store.lock().unwrap().db.execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
+    let parent = objective_turn(&state, &sid);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.objective = "Build the parser and its tests. ".repeat(256);
+        save(&store, &mut team).unwrap();
+    }
+    let batch: Vec<_> = ["a", "b", "c", "d"].map(|k| assignment(k, "fast", &format!("src/{k}"))).into();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":batch})).unwrap();
+    finish(&state, &parent, "Waiting for workers.", true);
+    // The fixture runs three at once; the fourth starts when one settles.
+    let mut done = 0;
+    while done < 4 {
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        finish(&state, &run, "Done; tests pass.", true);
+        done += 1;
+    }
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let review = review.config.prompt;
+    // Before catalog version 8: architect tools 8,807 B, worker tools 8,482 B, this review 9,530 B.
+    println!("team turn overhead: architect tools {architect} B, worker tools {worker} B, 4-worker review prompt {} B", review.len());
+    assert!(architect <= 4200, "architect tools {architect} B");
+    assert!(worker <= 3000, "worker tools {worker} B");
+    assert!(review.starts_with("PandaCode architect mode continues"), "{review}");
+    assert!(review.contains("objective unchanged") && review.len() < 4500, "{review}");
+}
+#[test]
+fn a_fresh_architect_conversation_gets_the_whole_objective_again() {
+    let (state, sid) = state_fixture();
+    let parent = objective_turn(&state, &sid);
+    let objective = format!("{} END", "Build the parser and its tests. ".repeat(64));
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.objective = objective.clone();
+        save(&store, &mut team).unwrap();
+    }
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("a","fast","src/a")]})).unwrap();
+    let (run, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &parent, "Waiting.", true);
+    finish(&state, &run, "Done.", true);
+    // No resume ID: the harness starts a new conversation, which has never seen the objective.
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    assert!(review.config.prompt.contains(&objective));
+    assert!(!review.config.prompt.contains("objective unchanged"));
 }

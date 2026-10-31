@@ -7,7 +7,7 @@ Agents and the user can schedule wake-ups and timed messages for any task (threa
 - Native: `src-tauri/src/schedules.rs` (types, validation, IPC commands), `src-tauri/src/schedules/firing.rs` (the clock loop, delivery, `run_finished`), `src-tauri/src/schedules/tools.rs` (agent tools), `src-tauri/src/schedules/tests.rs`. Clock arithmetic is shared with bots: `next_run_on`/`next_run_zoned` in `src-tauri/src/bots/schedule.rs`.
 - Window: the IPC contract is `src/schedules-api.ts` (keep it in step with `schedules.rs`); the thread panel is `src/schedules-thread.ts`, Settings → Schedules is `src/schedules-settings.ts`, and preview mocks are in `src/preview-schedules.ts`.
 
-## Tables (schema 28)
+## Tables (schema 35)
 
 - `task_schedules`: one row per schedule. `session_id` is the receiving task and `watch_session_id` the watched task for `after`; both cascade on task deletion. `created_by` is `user` or `agent`, and `created_by_session` (set to null when that task is deleted) is the agent's thread. Also `kind`, `interval_minutes`, `time_of_day` (HH:MM local), `days` (JSON, 0 = Sunday), `only_on_success`, `next_run_at`, `last_run_at`, `enabled`, `run_count`, `max_runs`, `consecutive_failures`, `trigger_ok` (the pending `after` trigger's result), `workflow_id` (indexed; groups a workflow's steps) and `chain_from_id` (a workflow step's predecessor).
 - `task_schedule_runs`: the run history. `schedule_id` has no foreign key, so history outlives a deleted schedule. Each run records an outcome (`started`, `queued`, `skipped` or `failed`), a detail, its sequence number and whether it was `manual` (Run now). Only the newest 200 runs per task are kept.

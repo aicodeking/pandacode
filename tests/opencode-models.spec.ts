@@ -1,3 +1,4 @@
+import { showHarness } from './model-picker-helper';
 import { expect, test, type Page } from '@playwright/test';
 
 const selectedKey = 'pandacode.preview.opencode-models';
@@ -31,8 +32,8 @@ async function saveModels(page: Page): Promise<void> {
 async function openPicker(page: Page): Promise<void> {
   if (await settings(page).isVisible()) await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-  await picker(page).getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('OpenCode');
-  await expect(picker(page).getByRole('button', { name: 'OpenCode · Default', exact: true })).toBeVisible();
+  await picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('OpenCode');
+  await expect(picker(page).getByRole('option', { name: 'OpenCode · Default', exact: true })).toBeVisible();
 }
 
 async function failuresAndDelay(page: Page): Promise<void> {
@@ -59,7 +60,7 @@ test('selected OpenCode models survive reload and appear in the composer without
   await boot(page);
   await openPicker(page);
   // Nothing selected yet: searching reaches the whole catalog, as OpenCode itself does.
-  await expect(picker(page).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(8);
+  await expect(picker(page).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(8);
   await page.keyboard.press('Escape');
   await openModels(page);
   await modelCheckbox(page, 'Big Pickle').check();
@@ -76,10 +77,10 @@ test('selected OpenCode models survive reload and appear in the composer without
   await saveModels(page);
   expect((await savedIds(page)).sort()).toEqual(['anthropic/claude-sonnet-4-6', 'opencode/big-pickle']);
   await openPicker(page);
-  await expect(picker(page).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(3);
-  await expect(picker(page).getByRole('button', { name: 'OpenCode · Big Pickle', exact: true })).toBeVisible();
-  await expect(picker(page).getByRole('button', { name: 'OpenCode · Claude Sonnet 4.6', exact: true })).toBeVisible();
-  await expect(picker(page).getByRole('button', { name: 'OpenCode · GPT-5.4', exact: true })).toHaveCount(0);
+  await expect(picker(page).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(3);
+  await expect(picker(page).getByRole('option', { name: 'OpenCode · Big Pickle', exact: true })).toBeVisible();
+  await expect(picker(page).getByRole('option', { name: 'OpenCode · Claude Sonnet 4.6', exact: true })).toBeVisible();
+  await expect(picker(page).getByRole('option', { name: 'OpenCode · GPT-5.4', exact: true })).toHaveCount(0);
   await page.reload();
   await expect(page.locator('.task-item.selected')).toBeVisible();
   await page.locator('.task-item[data-id="session-2"]').click();
@@ -89,20 +90,21 @@ test('selected OpenCode models survive reload and appear in the composer without
   await expect(modelCheckbox(page, 'Claude Sonnet 4.6')).toBeChecked();
   await expect(modelCheckbox(page, 'GPT-5.4')).not.toBeChecked();
   await openPicker(page);
-  await expect(picker(page).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(3);
+  await expect(picker(page).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(3);
 });
 
 test('without a saved selection the picker lists Default plus the five most recent OpenCode models', async ({ page }) => {
   await boot(page);
   await openPicker(page);
-  const search = picker(page).getByRole('searchbox', { name: 'Search harnesses and models', exact: true });
+  const search = picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true });
   await search.fill('');
-  const openCode = picker(page).getByRole('button', { name: /^OpenCode ·/ });
+  await showHarness(page, 'opencode');
+  const openCode = picker(page).getByRole('option', { name: /^OpenCode ·/ });
   await expect(openCode).toHaveCount(6);
-  await expect(picker(page).getByRole('button', { name: 'OpenCode · Grok 4', exact: true })).toHaveCount(0);
+  await expect(picker(page).getByRole('option', { name: 'OpenCode · Grok 4', exact: true })).toHaveCount(0);
   // Search still reaches models beyond the short list.
   await search.fill('grok-4');
-  await picker(page).getByRole('button', { name: 'OpenCode · Grok 4', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'OpenCode · Grok 4', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('Grok 4');
   await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
   await expect(openCode).toHaveCount(6);
@@ -115,7 +117,7 @@ test('deselecting a model does not change an existing task using it', async ({ p
   await modelCheckbox(page, 'Big Pickle').check();
   await saveModels(page);
   await openPicker(page);
-  await picker(page).getByRole('button', { name: 'OpenCode · Big Pickle', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'OpenCode · Big Pickle', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('Big Pickle');
   await page.keyboard.press('Escape');
   await openModels(page);
@@ -125,11 +127,11 @@ test('deselecting a model does not change an existing task using it', async ({ p
   await openPicker(page);
   const current = picker(page).locator('[data-provider="opencode"][data-model="opencode/big-pickle"]');
   await expect(current).toHaveAttribute('aria-current', 'true');
-  await picker(page).getByRole('button', { name: 'OpenCode · Default', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'OpenCode · Default', exact: true }).click();
   await page.keyboard.press('Escape');
   await openPicker(page);
   // Clearing the selection makes the whole catalog searchable again.
-  await expect(picker(page).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(8);
+  await expect(picker(page).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(8);
 });
 
 test('refresh and save failures keep draft choices available for retry', async ({ page }) => {
@@ -224,9 +226,10 @@ test('saving in the workspace invalidates the already-open launcher model cache 
   try {
     await launcher.goto('/?view=launcher');
     await openPicker(launcher);
-    await expect(picker(launcher).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(8);
-    await picker(launcher).getByRole('searchbox', { name: 'Search harnesses and models', exact: true }).fill('');
-    await expect(picker(launcher).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(6);
+    await expect(picker(launcher).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(8);
+    await picker(launcher).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('');
+    await showHarness(launcher, 'opencode');
+    await expect(picker(launcher).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(6);
     // Wait for its initial catalog request to finish so this really warms the cache.
     await expect(picker(launcher).locator('[data-catalog-loading="opencode"]')).toBeHidden();
     await launcher.keyboard.press('Escape');
@@ -234,15 +237,17 @@ test('saving in the workspace invalidates the already-open launcher model cache 
     await modelCheckbox(page, 'Big Pickle').check();
     await saveModels(page);
     await openPicker(launcher);
-    await expect(picker(launcher).getByRole('button', { name: 'OpenCode · Big Pickle', exact: true })).toBeVisible();
-    await expect(picker(launcher).getByRole('button', { name: /^OpenCode ·/ })).toHaveCount(2);
+    await expect(picker(launcher).getByRole('option', { name: 'OpenCode · Big Pickle', exact: true })).toBeVisible();
+    await expect(picker(launcher).getByRole('option', { name: /^OpenCode ·/ })).toHaveCount(2);
+    // The first Escape clears the search, the second closes the picker.
+    await launcher.keyboard.press('Escape');
     await launcher.keyboard.press('Escape');
     await modelCheckbox(page, 'Big Pickle').uncheck();
     await modelCheckbox(page, 'GPT-5.4').check();
     await saveModels(page);
     await openPicker(launcher);
-    await expect(picker(launcher).getByRole('button', { name: 'OpenCode · GPT-5.4', exact: true })).toBeVisible();
-    await expect(picker(launcher).getByRole('button', { name: 'OpenCode · Big Pickle', exact: true })).toHaveCount(0);
+    await expect(picker(launcher).getByRole('option', { name: 'OpenCode · GPT-5.4', exact: true })).toBeVisible();
+    await expect(picker(launcher).getByRole('option', { name: 'OpenCode · Big Pickle', exact: true })).toHaveCount(0);
     expect(launcher.url()).toContain('view=launcher');
     await expect(launcher.locator('html')).not.toHaveAttribute('data-overlay-hidden', 'true');
   } finally { await launcher.close(); }

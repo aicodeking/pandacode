@@ -80,20 +80,20 @@ test('the GitHub switch hides mentions, imports, and pull requests without runni
   expect((await calls(page, 'send_message')).at(-1).args.text).toBe('Refers to #128');
   expect((await calls(page, 'github_search')).length + (await calls(page, 'github_status')).length).toBe(before);
   expect(await calls(page, 'github_resolve')).toHaveLength(0);
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Import from GitHub', exact: true })).toBeHidden();
   await expect(page.locator('.link-chip')).toHaveCount(0);
   // Turning it back on restores the chips already stored on tasks.
   await page.evaluate(() => localStorage.removeItem('pandacode.github'));
   await page.reload();
-  await expect(page.getByRole('button', { name: 'Board view', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await expect(page.getByRole('button', { name: /^Workspace view: / })).toBeVisible();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Import from GitHub', exact: true })).toBeVisible();
 });
 
 test('importing issues creates linked Pending tasks, skips ones already on the board, and can update them', async ({ page }) => {
   await probe(page);
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   const board = page.getByRole('region', { name: 'Project board', exact: true });
   await expect(board.locator('.board-card .link-chip')).toHaveText(/#131/);
   await page.getByRole('button', { name: 'Import from GitHub', exact: true }).click();

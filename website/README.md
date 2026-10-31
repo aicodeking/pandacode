@@ -1,7 +1,7 @@
 # PandaCode website
 
-The static PandaCode website: the landing page, the changelog,
-the privacy policy and the PandaCode License (MIT-based). PandaCode is free, open source and collects nothing,
+The static PandaCode website: the landing page (desktop app and iPhone app), the changelog,
+the privacy policy, mobile app support and the PandaCode License (MIT-based). PandaCode is free, open source and collects nothing,
 and the site follows suit: no cookies, no analytics, no remote fonts or scripts, and no
 third-party requests of any kind. Downloads link to
 [GitHub Releases](https://github.com/aicodeking/pandacode/releases/latest); the source is at
@@ -22,6 +22,8 @@ background dev server with `npm --prefix website exec astro -- dev stop`.
 - `src/pages/index.astro` is the landing page. Links to the repository, releases, issues
   and security policy come from `project` in `src/lib/distribution.ts`, next to the
   unsigned-build notes shown under the download buttons (`DistributionNote.astro`).
+- `src/components/MobileApp.astro` presents the iPhone app (PandaCode Connect) with resized
+  copies of `docs/app-store/screenshots` in `public/assets/mobile-*.webp`.
 - `src/components/OpenSource.astro` explains the license, no account, no telemetry and
   how to build from source. Keep its commands in step with the repository README.
 - `src/components/NewFeatures.astro` is the What's New bento: each card's scene plays its
@@ -35,7 +37,7 @@ background dev server with `npm --prefix website exec astro -- dev stop`.
 
 ## Reading pages
 
-`/changelog/`, `/privacy/` and `/license/` share `src/layouts/Page.astro`, `src/pages.css`
+`/changelog/`, `/privacy/`, `/support/` and `/license/` share `src/layouts/Page.astro`, `src/pages.css`
 and `src/scripts/pages.ts` (reveals and the contents rail); the footer is
 `src/components/SiteFooter.astro`. The changelog is built from `../releases/X.Y.Z.md` by
 `src/lib/changelog.ts`, dated from `src/data/release-dates.json` (filled in by
@@ -71,9 +73,18 @@ npx wrangler login        # once; or set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACC
 npx wrangler deploy
 ```
 
-No account ID or secret is stored in the repository. Attach a custom
-domain to the Worker in the Cloudflare dashboard if you have one; once you do,
-add canonical URLs and a sitemap for it. Any other static host works too:
+The public site, https://pandacode.bambooed.ai (the App Store privacy and support URLs:
+`/privacy/` and `/support/`), is a second Worker, `pandacode-site-bambooed`, with the same
+assets and a custom-domain route in `wrangler.bambooed.jsonc`. It is separate so that
+deploying it never changes `pandacode-site` or the relay at `relay.bambooed.ai`:
+
+```sh
+ASTRO_TELEMETRY_DISABLED=1 npm run build
+npx wrangler deploy -c wrangler.bambooed.jsonc
+```
+
+Redeploy it after every content change, and check that `/`, `/privacy/` and `/support/`
+return 200. No account ID or secret is stored in the repository. Any other static host works too:
 serve `dist/` and apply the headers from `public/_headers`.
 
 ## Tests

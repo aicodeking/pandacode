@@ -1,3 +1,4 @@
+import './model-picker.css';
 import './overlay-model-picker.css';
 import { openModelPicker } from './model-picker';
 import { nativeOverlay, overlayCall, type LaunchContext } from './overlay-client';

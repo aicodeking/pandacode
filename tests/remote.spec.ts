@@ -12,7 +12,6 @@ async function openRemoteSettings(page: Page) {
 
 test('signs in with a device code, toggles remote control and lists devices', async ({ page }) => {
   const panel = await openRemoteSettings(page);
-  await expect(page.locator('#composer-computer')).toHaveCount(0);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByLabel('Device code')).toHaveText('WDJB-MJHT');
   await expect(panel.getByRole('button', { name: 'Copy code' })).toBeVisible();
@@ -23,6 +22,11 @@ test('signs in with a device code, toggles remote control and lists devices', as
   await expect(toggle).not.toBeChecked();
   await toggle.check();
   await expect(toggle).toBeChecked();
+  const full = panel.getByRole('checkbox', { name: 'Full access for remote tasks' });
+  await expect(full).not.toBeChecked();
+  await full.check();
+  await expect(full).toBeChecked();
+  await expect(toggle).toBeChecked();
   await expect(panel.locator('.remote-device[data-device="dev-this"]')).toContainText('This computer');
   await expect(panel.locator('.remote-device[data-device="dev-this"]')).toContainText('remote control on');
 
@@ -32,16 +36,8 @@ test('signs in with a device code, toggles remote control and lists devices', as
   await expect(studio.getByRole('img', { name: 'Online' })).toBeVisible();
   await expect(panel.locator('.remote-device[data-device="dev-laptop"]').getByRole('img', { name: 'Offline' })).toBeVisible();
 
-  // Trust toggles show on other computers only.
-  await expect(panel.locator('.remote-device[data-device="dev-this"] [data-trust]')).toHaveCount(0);
-  const trust = panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' });
-  await expect(trust).toBeChecked();
-  await trust.uncheck();
-  await expect(trust).not.toBeChecked();
-  await trust.check();
-  await expect(trust).toBeChecked();
-  await expect(panel.getByRole('checkbox', { name: 'Trusted: Home NAS' })).not.toBeChecked();
-  await expect(panel.locator('.remote-trust .info-mark').first()).toHaveAttribute('data-tip', /compare the fingerprint/i);
+  await expect(panel.getByRole('checkbox', { name: /^Trusted:/ })).toHaveCount(0);
+  await expect(panel.locator('.remote-trust')).toHaveCount(0);
 
   await panel.getByRole('button', { name: 'Revoke Old laptop' }).click();
   await expect(panel.locator('.remote-device[data-device="dev-laptop"]')).toHaveCount(0);
@@ -64,19 +60,25 @@ async function chooseStudio(page: Page) {
   await expect(computer).toHaveAccessibleName('Computer: Studio iMac');
 }
 
-test('the computer choice appears once signed in, one row per computer', async ({ page }) => {
+test('the computer choice offers setup before sign-in and one row per computer after', async ({ page }) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await expect(page.locator('#composer-computer')).toHaveCount(0);
+  // Signed out, Run on still shows so other computers can be set up from it.
+  await page.locator('#composer-computer').click();
+  await page.getByRole('menu', { name: 'Run on' }).getByRole('menuitemradio', { name: 'Set up other computers…' }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Remote access' })).toBeVisible();
+  await page.keyboard.press('Escape');
   const computer = await signedInNewTask(page);
   await expect(computer).toHaveAccessibleName('Computer: This computer');
   await computer.click();
   const menu = page.getByRole('menu', { name: 'Run on' });
   await expect(menu.getByRole('menuitemradio', { name: 'This computer' })).toHaveAttribute('aria-checked', 'true');
   await expect(menu.getByRole('menuitemradio', { name: 'Studio iMac' })).toBeEnabled();
-  await expect(menu.getByRole('menuitemradio', { name: 'Old laptop' })).toBeDisabled();
-  // Untrusted computers are not targets.
-  await expect(menu.getByRole('menuitemradio', { name: 'Home NAS' })).toHaveCount(0);
+  const laptop = menu.getByRole('menuitemradio', { name: 'Old laptop' });
+  await expect(laptop).toBeDisabled();
+  await expect(laptop).toContainText(/Offline.*last seen/);
+  // Every online computer hosting remote control is a target; offline rows stay visible.
+  await expect(menu.getByRole('menuitemradio', { name: 'Home NAS' })).toBeEnabled();
   await page.keyboard.press('Escape');
   // Local / Worktree still shows beside it.
   await expect(page.locator('#composer-area .composer-local')).toHaveText('Local');
@@ -155,11 +157,12 @@ test('sign-in can be cancelled', async ({ page }) => {
   await expect(panel.getByRole('alert')).toHaveCount(0);
 });
 
-test('the trust toggle shows without host mode', async ({ page }) => {
+test('device fingerprints are listed without trust controls when host mode is off', async ({ page }) => {
   const panel = await openRemoteSettings(page);
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByRole('checkbox', { name: 'Allow remote control of this computer' })).not.toBeChecked();
-  await expect(panel.getByRole('checkbox', { name: 'Trusted: Studio iMac' })).toBeChecked();
+  await expect(panel.locator('.remote-device[data-device="dev-studio"]')).toContainText('9b02e4aa71c3d605');
+  await expect(panel.getByRole('checkbox', { name: /^Trusted:/ })).toHaveCount(0);
 });
 
 const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
@@ -172,17 +175,18 @@ test('picking another computer limits the picker to its catalog, and local is re
   await signedInNewTask(page);
   await chooseStudio(page);
   const picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Codex' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
-  await expect(picker.getByRole('region', { name: 'OpenCode' })).toHaveCount(0);
+  const rail = picker.getByRole('tablist', { name: 'Harnesses' });
+  await expect(rail.getByRole('tab', { name: 'Claude Code', exact: true })).toBeVisible();
+  await expect(rail.getByRole('tab', { name: 'Codex', exact: true })).toBeVisible();
+  await expect(rail.getByRole('tab', { name: 'Kimi Code', exact: true })).toHaveCount(0);
+  await expect(rail.getByRole('tab', { name: 'OpenCode', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
 
   const computer = page.locator('#composer-computer');
   await computer.click();
   await page.getByRole('menuitemradio', { name: 'This computer' }).click();
   const local = await openPicker(page);
-  await expect(local.getByRole('region', { name: 'Kimi Code' })).toBeVisible();
+  await expect(local.getByRole('tab', { name: 'Kimi Code', exact: true })).toBeVisible();
 });
 
 test('a model missing on the chosen computer is swapped, with a notice', async ({ page }) => {
@@ -191,12 +195,14 @@ test('a model missing on the chosen computer is swapped, with a notice', async (
   await chooseStudio(page);
   await expect(page.locator('#toast')).toContainText('Studio iMac doesn’t have Kimi Code. Using Claude Code.');
   let picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(picker.getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker.locator('[role="option"][aria-current="true"]')).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.locator('#composer-computer').click();
   await page.getByRole('menuitemradio', { name: 'This computer' }).click();
   picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Kimi Code' }).locator('[aria-current="true"]')).toHaveCount(1);
+  await expect(picker.getByRole('tab', { name: 'Kimi Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker.locator('[role="option"][aria-current="true"]')).toHaveCount(1);
 });
 
 test('a task running on another computer lists that computer’s catalog', async ({ page }) => {
@@ -206,6 +212,6 @@ test('a task running on another computer lists that computer’s catalog', async
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on Studio iMac');
   const picker = await openPicker(page);
-  await expect(picker.getByRole('region', { name: 'Claude Code' })).toBeVisible();
-  await expect(picker.getByRole('region', { name: 'Kimi Code' })).toHaveCount(0);
+  await expect(picker.getByRole('tab', { name: 'Claude Code', exact: true })).toBeVisible();
+  await expect(picker.getByRole('tab', { name: 'Kimi Code', exact: true })).toHaveCount(0);
 });

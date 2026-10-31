@@ -7,12 +7,21 @@ import type { FileEntry, ProviderId, ProviderModel } from './types';
 import { fallbackModel } from './model-catalog';
 import type { OverlayThreadView } from './overlay-thread';
 import { mountFileMentions } from './file-mentions';
+import { CLASSIC, restorePalette } from './palette';
+import { accentTokens } from './palette-core';
+import { parseHex } from './color';
 
 function refreshTheme(): void {
   try { document.documentElement.dataset.theme = localStorage.getItem('pandacode.theme') === 'light' ? 'light' : 'dark'; } catch { /* Default to dark. */ }
+  restorePalette();
+  // palette.ts restores last session's accent on import; classic yellow leaves nothing saved, so derive it.
+  const root = document.documentElement;
+  if (!root.style.getPropertyValue('--accent')) {
+    for (const [name, value] of Object.entries(accentTokens(parseHex(CLASSIC)!.rgb, root.dataset.theme as 'light' | 'dark'))) root.style.setProperty(name, value);
+  }
 }
 refreshTheme();
-window.addEventListener('storage', event => { if (event.key === 'pandacode.theme') refreshTheme(); });
+window.addEventListener('storage', event => { if (event.key === 'pandacode.theme' || event.key === 'pandacode.palette') refreshTheme(); });
 const host = document.querySelector<HTMLDivElement>('#app')!;
 host.innerHTML = `<main class="launcher" aria-label="PandaCode quick launcher"><header class="launcher-heading"><span>${icon('bamboo')}PandaCode</span><button type="button" class="launcher-close" aria-label="Close launcher"><kbd>esc</kbd></button></header><div class="launcher-home"><form class="launcher-compose"><label class="sr-only" for="launcher-prompt">New task</label><textarea id="launcher-prompt" rows="2" maxlength="32768" placeholder="What should we work on?" autofocus></textarea><div class="launcher-compose-footer"><label class="launcher-project">${icon('folder')}<select aria-label="Task project"></select></label><button type="button" class="launcher-agent" aria-label="Choose harness and model" aria-haspopup="dialog" aria-expanded="false"></button><button class="launcher-start" type="submit" aria-label="Start task">${icon('arrow')}</button></div></form><p class="launcher-feedback" role="status" hidden></p><section class="launcher-task-area"><div class="launcher-list-heading"><h2>Active agents <span class="launcher-count"></span></h2><label class="launcher-search">${icon('search')}<input type="search" aria-label="Search tasks" placeholder="Find a task" autocomplete="off"></label></div><div class="launcher-tasks" aria-label="Active agents"><p class="launcher-empty">Loading tasks…</p></div></section><footer class="launcher-footer"><span><kbd>↵</kbd> start task</span><span><kbd>⇧ ↵</kbd> new line</span><span class="launcher-live">Live status</span></footer></div><section class="launcher-thread" hidden></section></main>`;
 const prompt = host.querySelector<HTMLTextAreaElement>('textarea')!;
@@ -119,7 +128,7 @@ function render(): void {
   start.disabled = busy || modelSaving || !snapshot.projects.length || !prompt.value.trim();
   agentButton.disabled = busy || modelSaving || pickerLoading;
   agentButton.setAttribute('aria-busy',String(modelSaving || pickerLoading));
-  const name = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code'}[snapshot.context.provider] || snapshot.context.provider;
+  const name = {codex:'Codex',claude:'Claude Code',kimi:'Kimi Code',opencode:'OpenCode',glm:'GLM',antigravity:'Antigravity',grok:'Grok Build',mimo:'MiMo Token Plan',pi:'Pi',deepseek:'DeepSeek',commandcode:'Command Code',cline:'Cline',kilo:'Kilo Code',omp:'Oh My Pi','github-copilot':'GitHub Copilot CLI',muse:'Muse Code',devin:'Devin CLI',zcode:'ZCode',hermes:'Hermes Agent'}[snapshot.context.provider] || snapshot.context.provider;
   const modelName = modelNames.get(`${snapshot.context.provider}:${snapshot.context.model}`) || fallbackModel(snapshot.context.provider as ProviderId,snapshot.context.model).name;
   const teamCount = snapshot.teamWorkerCount ?? 0;
   const teamLabel = teamCount > 0 ? `+${teamCount} ${teamCount === 1 ? 'model' : 'models'}` : '';

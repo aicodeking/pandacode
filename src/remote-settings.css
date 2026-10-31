@@ -1,9 +1,23 @@
 /* PandaCode Connect: Settings → Remote access. */
-.remote-dot{display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:var(--muted);vertical-align:middle;flex:none}
+.remote-dot{display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:var(--radius-full);background:var(--muted);vertical-align:middle;flex:none}
 .remote-dot[data-online="true"]{background:var(--accent)}
-.remote-badge{margin-left:6px;padding:1px 6px;border-radius:4px;background:rgb(var(--accent-rgb) / .22);font-size:.7rem;font-weight:500}
-.remote-note{margin:.7rem 1rem;color:var(--muted);font-size:.8rem}
-.remote-error{margin:.7rem 1rem;color:var(--text);font-size:.8rem}
-.remote-code{padding:.7rem 1rem;border-top:1px solid var(--border)}
+.remote-badge{margin-left:6px;padding:1px 6px;border-radius:var(--radius-sm);background:rgb(var(--accent-rgb) / .22);font-size:var(--text-xs);font-weight:var(--weight-medium)}
+.remote-note{margin:.7rem 1rem;color:var(--muted);font-size:var(--text-sm)}
+.remote-error{margin:.7rem 1rem;color:var(--text);font-size:var(--text-sm)}
+.remote-load-error{display:flex;align-items:center;gap:10px;margin:.7rem 1rem;color:var(--text);font-size:var(--text-sm)}
+.remote-load-error>.icon{width:16px;height:16px;color:var(--danger);flex:none}
+.remote-load-error>span{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.remote-load-error small{color:var(--muted);overflow-wrap:anywhere}
+.remote-load-error .secondary-button{flex:none}
+.remote-code{padding:.7rem 1rem;}
 .remote-code-row{display:flex;align-items:center;gap:12px;margin:.5rem 0}
-.remote-user-code{font:600 1.5rem/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em}
+.remote-user-code{font:600 var(--text-xl)/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em}
+.remote-device-actions{display:flex;align-items:center;gap:8px;flex:none}
+.remote-device-actions select{width:auto;max-width:150px;padding:6px 10px;font-size:var(--text-sm)}
+.remote-device-actions .primary-button,.remote-device-actions .secondary-button{padding:5px 12px;min-height:30px}
+.setting-row .remote-device-actions input.remote-pair-input{width:84px;height:auto;padding:6px 10px;font:var(--text-sm) ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-align:center}
+.remote-pending{background:rgb(var(--accent-rgb) / .1);}
+.remote-key{font:var(--text-sm) ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+.remote-diagnostics-section{margin-top:1rem}
+.remote-device-actions :is(select,button,input):focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.remote-code{background:color-mix(in srgb,var(--text) 3.5%,transparent)}

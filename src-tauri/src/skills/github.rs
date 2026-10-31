@@ -6,19 +6,19 @@ use super::{Files, MAX_BYTES, MAX_FILES};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-fn valid_repo(repo: &str) -> bool {
+pub(super) fn valid_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     let ok = |part: Option<&str>| part.is_some_and(|p| !p.is_empty() && !p.starts_with(['.', '-']) && p.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b)));
     ok(parts.next()) && ok(parts.next()) && parts.next().is_none()
 }
-fn valid_path(path: &str) -> bool {
+pub(super) fn valid_path(path: &str) -> bool {
     path.split('/').all(|part| !part.is_empty() && part != "." && part != ".." && part.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_. ".contains(&b)))
 }
-fn valid_ref(git_ref: &str) -> bool {
+pub(super) fn valid_ref(git_ref: &str) -> bool {
     !git_ref.is_empty() && !git_ref.starts_with('-') && !git_ref.contains("..") && git_ref.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_./".contains(&b))
 }
 
-fn api(endpoint: &str) -> Result<serde_json::Value, String> {
+pub(super) fn api(endpoint: &str) -> Result<serde_json::Value, String> {
     let home = crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir);
     let capture = crate::github::run_gh(&home, &["api", endpoint], TIMEOUT)?;
     crate::github::json(&capture)

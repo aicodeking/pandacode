@@ -1,0 +1,40 @@
+/* Settings → Model routing → Rank models. Tier hues are not the accent: muted tints over the surface. */
+.model-tiers{--tier-s:color-mix(in srgb,#e5484d 32%,transparent);--tier-a:color-mix(in srgb,#f76b15 30%,transparent);--tier-b:color-mix(in srgb,#e2b203 32%,transparent);--tier-c:color-mix(in srgb,#30a46c 30%,transparent);--tier-d:color-mix(in srgb,#3e7bfa 30%,transparent);--tier-row:color-mix(in srgb,var(--text) 4%,transparent)}
+html[data-theme=dark] .model-tiers{--tier-s:color-mix(in srgb,#e5484d 38%,transparent);--tier-a:color-mix(in srgb,#f76b15 36%,transparent);--tier-b:color-mix(in srgb,#e2b203 34%,transparent);--tier-c:color-mix(in srgb,#30a46c 36%,transparent);--tier-d:color-mix(in srgb,#3e7bfa 40%,transparent)}
+.model-tiers[aria-busy=true] .tier-list{opacity:.6}
+.tier-reset-area,.tier-reset-confirm{display:flex;align-items:center;gap:6px;font-size:var(--text-sm);color:var(--muted)}
+.tier-reset-confirm[hidden]{display:none}
+.tier-list{display:flex;flex-direction:column;gap:4px;padding:2px 1rem 12px;transition:opacity .15s}
+.tier-row{display:flex;gap:4px;min-height:44px}
+.tier-label{flex:none;display:grid;place-items:center;width:44px;border-radius:6px 0 0 6px;font-size:1.05rem;font-weight:700;color:var(--text)}
+.tier-row[data-tier=S] .tier-label{background:var(--tier-s)}
+.tier-row[data-tier=A] .tier-label{background:var(--tier-a)}
+.tier-row[data-tier=B] .tier-label{background:var(--tier-b)}
+.tier-row[data-tier=C] .tier-label{background:var(--tier-c)}
+.tier-row[data-tier=D] .tier-label{background:var(--tier-d)}
+.tier-body{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-content:flex-start;gap:4px;padding:6px;border-radius:0 6px 6px 0;background:var(--tier-row);transition:background-color .12s}
+.tier-unranked{flex-direction:column;margin-top:8px}
+.tier-tray-title{font-size:var(--text-xs);font-weight:600;color:var(--muted)}
+.tier-unranked .tier-body{border-radius:6px;min-height:44px}
+.tier-row[data-drop] .tier-body{background:rgb(var(--accent-rgb) / .22)}
+.tier-empty{margin:0;align-self:center;padding:0 4px;font-size:var(--text-xs);color:var(--muted)}
+.tier-chip-wrap{display:inline-flex;align-items:center;max-width:100%;border-radius:5px;background:var(--panel);touch-action:none}
+.tier-chip-wrap[data-dragging]{position:relative;z-index:5;box-shadow:0 6px 18px rgb(0 0 0 / .18);scale:1.03}
+.tier-chip-wrap[data-held]{box-shadow:0 0 0 2px var(--focus)}
+.tier-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;padding:4px 4px 4px 7px;border-radius:5px 0 0 5px;background:none;color:var(--text);font:inherit;font-size:var(--text-sm);cursor:grab;--press:1}
+.tier-chip:active{cursor:grabbing}
+.tier-chip-menu{display:grid;place-items:center;width:22px;align-self:stretch;padding:0;border-radius:0 5px 5px 0;background:none;color:var(--muted);--press:1}
+.tier-chip-menu:hover,.tier-chip:hover{background:var(--fill-hover)}
+.tier-chip-menu svg{width:14px;height:14px}
+.tier-chip:focus-visible,.tier-chip-menu:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.tier-chip:disabled,.tier-chip-menu:disabled{cursor:default}
+.tier-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tier-logos{display:inline-flex;flex:none}
+.tier-logo{width:14px;height:14px;flex:none;border-radius:3px}
+.tier-logos>.tier-logo+.tier-logo{margin-left:-4px}
+.tier-logo.provider-logo-tile{font-size:9px}
+html[data-theme=dark] img.tier-logo:is([data-provider=glm],[data-provider=mimo],[data-provider=commandcode],[data-provider=hermes]){box-sizing:border-box;padding:1px;background:rgb(255 255 255 / .9)}
+.tier-unrated{flex:none;width:6px;height:6px;border-radius:50%;background:var(--warning,var(--muted))}
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.tier-chip-wrap[data-dragging]{box-shadow:0 0 0 2px var(--text)}}
+.model-tiers:focus{outline:none}
+.tier-error{display:flex;align-items:center;gap:8px}

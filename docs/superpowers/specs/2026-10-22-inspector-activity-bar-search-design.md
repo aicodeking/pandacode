@@ -16,6 +16,11 @@ Files view open as soon as a project is opened.
   accent bar on its outer edge. The `.inspector-tabs` class and the existing
   `data-action` names are kept, so existing actions and tests address the same
   buttons.
+- **Update (2026-10-24):** the icons moved from that column to one row along
+  the panel's top edge, level with the workspace header, so the panel's content
+  keeps its full width. The selected view is underlined on the row's bottom
+  edge, and the view heading below it is a slim row. Everything else here is
+  unchanged.
 - The panel header names the current view (FILES, SEARCH, CHANGES, …) beside
   the refresh button.
 - The icon bar belongs to the panel and closes with it. A bar that stays

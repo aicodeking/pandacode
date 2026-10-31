@@ -1,0 +1,82 @@
+* { margin: 0; box-sizing: border-box; }
+
+html, body { width: 100vw; height: 100vh; overflow: hidden; }
+
+body {
+  font-family: -apple-system, "SF Pro Display", "Helvetica Neue", sans-serif;
+  /* Warm panda paper fading into misty bamboo green. */
+  background:
+    radial-gradient(ellipse 120% 40% at 50% 0%, #fff4d6 0%, transparent 100%),
+    linear-gradient(180deg, #fbf6ea 0%, #f3eedd 45%, #e3e9d3 100%);
+  background-repeat: no-repeat;
+}
+
+/* The desktop's Monday-morning bamboo scene, barely there behind the phone. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 1100px 0 0 0;
+  background: url("../../../public/wallpapers/mon-morning.webp") center / cover;
+  opacity: .22;
+  filter: blur(6px) saturate(.9);
+  mask-image: linear-gradient(transparent, #000 45%);
+}
+
+.page {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 196px;
+}
+
+h1 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  font-size: 104px;
+  line-height: 1.08;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  white-space: nowrap;
+  height: 224px; /* always two lines, so every phone sits at the same height */
+}
+.lead { color: #9a958a; }
+.key { color: #1d1b17; }
+
+/* iPhone 17 Pro Max, drawn: 1320x2868 screen scaled to 980 wide. */
+.phone {
+  --w: 980px;
+  --bezel: 20px;
+  position: relative;
+  margin-top: 132px;
+  width: calc(var(--w) + 2 * var(--bezel));
+  padding: var(--bezel);
+  border-radius: 150px;
+  background: #121212;
+  box-shadow:
+    inset 0 0 0 3px #3b3a38,
+    0 0 0 5px #c9c4b8,
+    0 0 0 6px #a9a397,
+    0 60px 120px -30px rgb(60 52 30 / .45),
+    0 24px 48px -12px rgb(60 52 30 / .25);
+}
+.screen {
+  display: block;
+  width: var(--w);
+  aspect-ratio: 1320 / 2868;
+  border-radius: 130px;
+}
+/* Drawn over any island the capture caught, so every frame matches. */
+.island {
+  position: absolute;
+  top: calc(var(--bezel) + 30px);
+  left: 50%;
+  translate: -50% 0;
+  width: 272px;
+  height: 80px;
+  border-radius: 40px;
+  background: #000;
+}

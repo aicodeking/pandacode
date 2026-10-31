@@ -2,38 +2,39 @@ dialog.conversation-import-dialog{width:min(620px,calc(100vw - 32px));max-height
 .conversation-import{display:flex;flex-direction:column;min-width:0;min-height:0}
 .conversation-import .dialog-description{margin:0 0 14px}
 .import-controls{display:flex;align-items:center;gap:10px;margin-bottom:10px;min-width:0}
-.import-sources{display:flex;gap:2px;padding:3px;border-radius:4px;flex:none;background:color-mix(in srgb,var(--raised) 78%,transparent)}
-.import-sources>button{display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:3px;font-size:.84rem;font-weight:500;color:var(--muted);--press:1}
+.import-sources{display:flex;gap:2px;padding:3px;border-radius:var(--radius-sm);flex:none;background:color-mix(in srgb,var(--raised) 78%,transparent)}
+.import-sources>button{display:flex;align-items:center;gap:6px;padding:5px 11px;border-radius:var(--radius-sm);font-size:var(--text-sm);font-weight:var(--weight-medium);color:var(--muted);--press:1}
 .import-sources>button[aria-pressed=true]{color:var(--text)}
 .import-sources>button>.provider-logo{width:15px;height:15px}
-.import-sources>.segment-thumb{border-radius:3px;background:var(--panel);box-shadow:0 1px 4px rgb(0 0 0 / .1),inset 0 1px 0 rgb(255 255 255 / .4)}
+.import-sources>.segment-thumb{border-radius:var(--radius-sm);background:var(--panel);box-shadow:0 1px 4px rgb(0 0 0 / .1)}
 html[data-theme=dark] .import-sources>.segment-thumb{background:color-mix(in srgb,var(--text) 13%,transparent);box-shadow:0 1px 3px rgb(0 0 0 / .25)}
-.import-search{display:flex;align-items:center;gap:7px;flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--border);border-radius:4px;background:color-mix(in srgb,var(--panel) 68%,transparent);color:var(--muted)}
-.import-search:focus-within{border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
+.import-search{display:flex;align-items:center;gap:7px;flex:1;min-width:0;height:34px;padding:0 10px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--panel) 68%,transparent);color:var(--muted)}
+.import-search:focus-within{box-shadow:var(--focus) 14%,transparent)}
 .import-search>.icon{width:15px;height:15px;flex:none}
-.conversation-import .import-search input{flex:1;min-width:0;height:auto;padding:0;border:0;border-radius:0;outline:0;box-shadow:none;background:transparent;color:var(--text);font:inherit;font-size:.86rem;-webkit-appearance:none;appearance:none}
-.import-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 10px 6px;font-size:.76rem;color:var(--muted)}
+.conversation-import .import-search input{flex:1;min-width:0;height:auto;padding:0;border:0;border-radius:0;outline:0;background:transparent;color:var(--text);font:inherit;font-size:var(--text-sm);-webkit-appearance:none;appearance:none}
+.import-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 10px 6px;font-size:var(--text-xs);color:var(--muted)}
 .import-all{display:flex;align-items:center;gap:8px;cursor:pointer}
 .import-all input,.import-row input{accent-color:var(--accent);width:15px;height:15px;margin:0;flex:none}
 .import-count{font-variant-numeric:tabular-nums}
 .import-list{display:grid;gap:1px;min-height:120px;max-height:min(52dvh,440px);overflow:auto;overscroll-behavior:contain;padding:2px;margin:0 -2px}
-.import-row{display:flex;align-items:center;gap:11px;min-width:0;padding:8px 10px;border-radius:4px;cursor:pointer}
+.import-row{display:flex;align-items:center;gap:11px;min-width:0;padding:8px 10px;border-radius:var(--radius-sm);cursor:pointer}
 .import-row:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
 .import-row:has(input:checked){background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .import-row:has(input:focus-visible){outline:2px solid var(--focus);outline-offset:-2px}
 .import-row.disabled{cursor:default}
 .import-row.disabled .import-copy{opacity:.62}
 .import-copy{flex:1;min-width:0}
-.import-copy strong{display:block;font-size:.88rem;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.import-copy small{display:block;margin-top:2px;font-size:.74rem;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.import-open{display:flex;align-items:center;gap:4px;flex:none;padding:3px 8px;border-radius:8px;font-size:.72rem;font-weight:550;color:var(--focus);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.import-copy strong{display:block;font-size:var(--text-sm);font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-copy small{display:block;margin-top:2px;font-size:var(--text-xs);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.import-open{display:flex;align-items:center;gap:4px;flex:none;padding:3px 8px;border-radius:var(--radius-md);font-size:var(--text-xs);font-weight:var(--weight-medium);color:var(--focus);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .import-open:hover{background:color-mix(in srgb,var(--accent) 22%,transparent)}
 .import-open>.icon{width:11px;height:11px}
-.import-unavailable{flex:none;font-size:.72rem;color:var(--faint)}
-.import-empty{margin:0;padding:28px 10px;text-align:center;font-size:.84rem;color:var(--muted)}
+.import-unavailable{flex:none;font-size:var(--text-xs);color:var(--faint)}
+.import-empty{margin:0;padding:28px 10px;text-align:center;font-size:var(--text-sm);color:var(--muted)}
 .import-more{justify-self:center;margin:8px 0 4px}
-.import-error{margin:10px 2px 0;font-size:.8rem;line-height:1.5;color:var(--danger,#e99380);overflow-wrap:anywhere}
+.import-error{margin:10px 2px 0;font-size:var(--text-sm);line-height:1.5;color:var(--danger,#e99380);overflow-wrap:anywhere}
 .conversation-import .dialog-footer{margin-top:14px}
 @media(max-width:560px){.import-controls{flex-direction:column;align-items:stretch}.import-sources{align-self:flex-start}}
 @media(prefers-contrast:more){.import-row:has(input:checked){outline:1px solid var(--text)}}
 @media(prefers-reduced-transparency:reduce){.import-search{background:var(--panel)}}
+.import-search{background:color-mix(in srgb,var(--text) 6%,transparent)}

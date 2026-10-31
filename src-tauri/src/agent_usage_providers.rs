@@ -5,6 +5,7 @@
 //! https://github.com/MoonshotAI/kimi-code/blob/main/packages/oauth/src/managed-usage.ts
 //! https://github.com/zai-org/zai-coding-plugins/blob/main/plugins/glm-plan-usage/skills/usage-query-skill/scripts/query-usage.mjs
 //! https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/go/v1/usage.ts
+//! https://api-docs.deepseek.com/api/get-user-balance
 use crate::agent_usage::{http_client, request_json, FetchError, Usage, UsageWindow};
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,11 +20,13 @@ const KIMI_BASE: &str = "https://api.kimi.com/coding/v1";
 const KIMI_GLOBAL_BASE: &str = "https://api.kimi.ai/coding/v1";
 const GLM_URL: &str = "https://api.z.ai/api/monitor/usage/quota/limit";
 const OPENCODE_URL: &str = "https://opencode.ai/zen/go/v1/usage";
+const DEEPSEEK_URL: &str = "https://api.deepseek.com/user/balance";
 
 pub(crate) async fn fetch(provider: &str) -> Usage {
     let mut usage = match provider {
         "kimi" => fetch_kimi().await,
         "glm" => fetch_glm().await,
+        "deepseek" => fetch_deepseek().await,
         "opencode" => fetch_opencode().await,
         "antigravity" => fetch_antigravity().await,
         _ => Usage::empty(
@@ -101,7 +104,7 @@ async fn fetch_glm() -> Usage {
     // Only fall back to environment after a successful, empty store lookup.
     let saved = tokio::task::spawn_blocking(crate::provider_settings::glm_key_for_usage).await;
     let saved = saved.ok().and_then(Result::ok).ok_or(());
-    let api_key = match glm_usage_key(saved, env_key("ZAI_API_KEY")) {
+    let api_key = match saved_key_or_environment(saved, env_key("ZAI_API_KEY")) {
         Ok(Some(key)) => key,
         Ok(None) => return Usage::empty("glm", "signedOut", "Add your Z.AI Coding Plan key in Settings → Agents to read its limits."),
         Err(()) => return Usage::empty("glm", "unavailable", "The configured GLM account could not be verified without opening secure storage. View its limits in the Z.AI dashboard."),
@@ -124,13 +127,53 @@ async fn fetch_glm() -> Usage {
     }
 }
 
-fn glm_usage_key(
+fn saved_key_or_environment(
     saved: Result<Option<String>, ()>,
     environment: Option<String>,
 ) -> Result<Option<String>, ()> {
     match saved? {
         Some(saved) => key(&saved).map(Some).ok_or(()),
         None => Ok(environment.and_then(|value| key(&value))),
+    }
+}
+
+async fn fetch_deepseek() -> Usage {
+    // Same rule as GLM: a failed background read cannot establish which key
+    // the harness uses. Only fall back to the environment after a successful,
+    // empty store lookup.
+    let saved = tokio::task::spawn_blocking(crate::provider_settings::deepseek_key_for_usage).await;
+    let saved = saved.ok().and_then(Result::ok).ok_or(());
+    let api_key = match saved_key_or_environment(saved, env_key("DEEPSEEK_API_KEY")) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return Usage::empty(
+                "deepseek",
+                "signedOut",
+                "Add your DeepSeek API key in Settings → Agents to read your balance.",
+            )
+        }
+        Err(()) => {
+            return Usage::empty(
+                "deepseek",
+                "unavailable",
+                "The configured DeepSeek key could not be verified without opening secure storage. View your balance on the DeepSeek platform.",
+            )
+        }
+    };
+    let client = match http_client() {
+        Ok(client) => client,
+        Err(error) => return error.into_usage("deepseek"),
+    };
+    match request_json(
+        client
+            .get(DEEPSEEK_URL)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header("Accept", "application/json"),
+    )
+    .await
+    {
+        Ok(value) => parse_deepseek(&value),
+        Err(error) => error.into_usage("deepseek"),
     }
 }
 
@@ -544,7 +587,7 @@ fn antigravity_command(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, ()> {
-    let mut command = crate::providers::command(path).map_err(|_| ())?.into_std();
+    let mut command = crate::providers::provider_command("antigravity", path).map_err(|_|())?.into_std();
     command.args(args).current_dir(cwd);
     let output = crate::workspace::run_process(command, "Antigravity usage", limit, timeout)
         .map_err(|_| ())?;
@@ -862,6 +905,63 @@ fn parse_glm(value: &Value) -> Usage {
     ready("glm", windows, "Z.AI Coding Plan quota API")
 }
 
+/// DeepSeek's only account endpoint returns a prepaid balance, not plan
+/// windows, so the card is a ready message without progress bars.
+fn parse_deepseek(value: &Value) -> Usage {
+    let mut usage = Usage::empty("deepseek", "ready", "");
+    usage.source = Some("DeepSeek balance API".into());
+    if value["is_available"].as_bool() == Some(false) {
+        usage.status = "unavailable".into();
+        usage.message = Some(
+            "DeepSeek reports the balance is insufficient for API calls. Top up on the DeepSeek platform."
+                .into(),
+        );
+        return usage;
+    }
+    let parts: Vec<String> = value["balance_infos"]
+        .as_array()
+        .map(|entries| entries.iter().take(4).filter_map(deepseek_part).collect())
+        .unwrap_or_default();
+    if parts.is_empty() {
+        usage.status = "unavailable".into();
+        usage.message =
+            Some("DeepSeek did not return a readable balance. Check the DeepSeek platform.".into());
+        return usage;
+    }
+    usage.message = Some(format!("Balance {}.", parts.join(" · ")));
+    usage
+}
+
+fn deepseek_part(entry: &Value) -> Option<String> {
+    let currency = entry["currency"].as_str().map(str::trim).filter(|name| {
+        !name.is_empty() && name.len() <= 8 && name.bytes().all(|b| b.is_ascii_alphanumeric())
+    })?;
+    let total = deepseek_amount(&entry["total_balance"])?;
+    let extras = [
+        ("granted_balance", "granted"),
+        ("topped_up_balance", "topped up"),
+    ]
+    .iter()
+    .filter_map(|(field, label)| {
+        deepseek_amount(&entry[field]).map(|value| format!("{label} {value}"))
+    })
+    .collect::<Vec<_>>();
+    if extras.is_empty() {
+        Some(format!("{currency} {total}"))
+    } else {
+        Some(format!("{currency} {total} ({})", extras.join(", ")))
+    }
+}
+
+fn deepseek_amount(value: &Value) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty()
+        && text.len() <= 24
+        && text.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        && text.parse::<f64>().is_ok())
+        .then(|| text.to_owned())
+}
+
 fn parse_opencode(value: &Value) -> Usage {
     let mut windows = Vec::new();
     for (field, label) in [
@@ -972,26 +1072,82 @@ mod tests {
     }
 
     #[test]
-    fn glm_never_falls_back_to_a_different_account_when_saved_key_is_unreadable() {
+    fn usage_key_never_falls_back_to_a_different_account_when_saved_key_is_unreadable() {
         assert_eq!(
-            glm_usage_key(Ok(Some("saved-A".into())), Some("environment-B".into()))
+            saved_key_or_environment(Ok(Some("saved-A".into())), Some("environment-B".into()))
                 .unwrap()
                 .as_deref(),
             Some("saved-A")
         );
         assert_eq!(
-            glm_usage_key(Ok(None), Some("environment-B".into()))
+            saved_key_or_environment(Ok(None), Some("environment-B".into()))
                 .unwrap()
                 .as_deref(),
             Some("environment-B")
         );
-        assert!(glm_usage_key(Err(()), Some("environment-B".into())).is_err());
-        assert!(glm_usage_key(
+        assert!(saved_key_or_environment(Err(()), Some("environment-B".into())).is_err());
+        assert!(saved_key_or_environment(
             Ok(Some("invalid\nkey".into())),
             Some("environment-B".into())
         )
         .is_err());
-        assert_eq!(glm_usage_key(Ok(None), None).unwrap(), None);
+        assert_eq!(saved_key_or_environment(Ok(None), None).unwrap(), None);
+    }
+
+    #[test]
+    fn deepseek_balance_parses_totals_and_flags_insufficiency() {
+        let usage = parse_deepseek(&json!({
+            "is_available": true,
+            "balance_infos": [
+                {"currency": "CNY", "total_balance": "110.00", "granted_balance": "10.00", "topped_up_balance": "100.00"},
+                {"currency": "USD", "total_balance": "12.50", "granted_balance": "0.00", "topped_up_balance": "12.50"}
+            ]
+        }));
+        assert_eq!(usage.status, "ready");
+        assert!(usage.windows.is_empty());
+        assert_eq!(usage.source.as_deref(), Some("DeepSeek balance API"));
+        assert_eq!(
+            usage.message.as_deref(),
+            Some("Balance CNY 110.00 (granted 10.00, topped up 100.00) · USD 12.50 (granted 0.00, topped up 12.50).")
+        );
+
+        let plain = parse_deepseek(&json!({
+            "is_available": true,
+            "balance_infos": [{"currency": "CNY", "total_balance": "5.00"}]
+        }));
+        assert_eq!(plain.message.as_deref(), Some("Balance CNY 5.00."));
+
+        let insufficient = parse_deepseek(&json!({
+            "is_available": false,
+            "balance_infos": [{"currency": "CNY", "total_balance": "0.00"}]
+        }));
+        assert_eq!(insufficient.status, "unavailable");
+        assert!(
+            insufficient
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("insufficient")),
+            "unexpected message: {:?}",
+            insufficient.message
+        );
+    }
+
+    #[test]
+    fn deepseek_rejects_unreadable_balances() {
+        for body in [
+            json!({}),
+            json!({"is_available": true}),
+            json!({"is_available": true, "balance_infos": []}),
+            json!({"is_available": true, "balance_infos": [{"currency": "CNY", "total_balance": "about 110"}]}),
+            json!({"is_available": true, "balance_infos": [{"currency": "CNY", "total_balance": "1.2.3"}]}),
+            json!({"is_available": true, "balance_infos": [{"currency": "CNY", "total_balance": "."}]}),
+            json!({"is_available": true, "balance_infos": [{"currency": "C\nY", "total_balance": "110.00"}]}),
+            json!({"is_available": true, "balance_infos": [{"currency": "CNY", "total_balance": 110}]}),
+        ] {
+            let usage = parse_deepseek(&body);
+            assert_eq!(usage.status, "unavailable", "case: {body}");
+            assert!(usage.windows.is_empty());
+        }
     }
 
     #[tokio::test]

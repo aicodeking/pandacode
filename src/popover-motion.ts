@@ -1,5 +1,7 @@
-/* Menus and popovers appear and disappear instantly: no grow, fade or blur. Kept as one
- * module so every menu shares the same open/close bookkeeping. */
+/* Menus and popovers settle in from their trigger in a few pixels and leave at once, so
+ * closing state stays synchronous. Kept as one module so every menu shares the same
+ * open/close bookkeeping. */
+import { materializeIn } from './motion';
 
 /** Call after insertion and positioning. The menu is immediately interactive. */
 export function showPopover(panel: HTMLElement, anchor: HTMLElement): void {
@@ -17,6 +19,8 @@ export function showPopover(panel: HTMLElement, anchor: HTMLElement): void {
     : bounds.top + panel.offsetHeight / 2 < trigger.top + trigger.height / 2;
   panel.dataset.placement = above ? 'above' : 'below';
   panel.dataset.popoverState = 'open';
+  // Interactive from the first frame; the motion is only presentation.
+  materializeIn(panel, { scale: 0.985, y: above ? 4 : -4, spring: { response: 0.2 }, origin: above ? '50% 100%' : '50% 0%' });
 }
 
 /** Removes the menu at once. */

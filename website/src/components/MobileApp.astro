@@ -1,0 +1,45 @@
+---
+/* The PandaCode iPhone app (PandaCode Connect) on the landing page. Screenshots are
+ * resized copies of docs/app-store/screenshots; keep the copy in step with /support/. */
+const shots = [
+  ['mobile-inbox', 'The inbox, listing tasks from every computer'],
+  ['mobile-task', 'A task streaming its turns'],
+  ['mobile-approval', 'Approving a tool call from the phone'],
+] as const;
+---
+<section id="mobile" class="mobile-app section-width" aria-labelledby="mobile-title">
+  <div class="mobile-copy reveal">
+    <p class="eyebrow">NEW · PANDACODE FOR IPHONE</p>
+    <h2 id="mobile-title">Step away.<br>Stay in the loop.</h2>
+    <p>See and control your tasks from your phone. One inbox for every computer: read turns as they stream, approve a tool call, answer a question, send a follow-up or start something new.</p>
+    <ul>
+      <li><strong>End-to-end encrypted.</strong> The relay between your devices can’t read your work.</li>
+      <li><strong>A remote, not a runner.</strong> Agents keep running on your computer, with its keys and permissions.</li>
+      <li><strong>Free, no tracking.</strong> Sign in with GitHub. No ads, no analytics.</li>
+    </ul>
+    <p class="mobile-links"><a href="/support/">Set up the app <span aria-hidden="true">→</span></a><a href="/privacy/#connect">How Connect handles your data <span aria-hidden="true">→</span></a></p>
+  </div>
+  <div class="mobile-shots">
+    {shots.map(([file, alt]) => <img src={`/assets/${file}.webp`} width="660" height="1434" alt={alt} loading="lazy" decoding="async">)}
+  </div>
+</section>
+
+<style>
+  .mobile-app { display: grid; grid-template-columns: .9fr 1.1fr; gap: 8%; align-items: center; padding-block: 40px 140px; }
+  .mobile-copy > p:not(.eyebrow) { max-width: 440px; margin-top: 24px; font-size: 18px; line-height: 1.65; color: var(--muted); }
+  ul { display: grid; gap: 14px; margin-top: 28px; padding: 0; list-style: none; }
+  li { font-size: 14px; line-height: 1.6; color: var(--muted); }
+  li strong { color: var(--ink); font-weight: 600; }
+  .mobile-copy .mobile-links { display: flex; flex-wrap: wrap; gap: 14px 26px; font-size: 14px; }
+  .mobile-links a { font-weight: 600; color: var(--ink); text-decoration: underline; text-decoration-color: var(--yellow); text-decoration-thickness: 2px; text-underline-offset: 5px; }
+  .mobile-shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: center; }
+  .mobile-shots img { width: 100%; height: auto; border-radius: 22px; box-shadow: 0 24px 60px #2f3a2426; }
+  .mobile-shots img:nth-child(2) { translate: 0 -28px; }
+  @media (max-width: 760px) {
+    .mobile-app { grid-template-columns: 1fr; gap: 40px; padding-block: 20px 80px; }
+    .mobile-copy > p:not(.eyebrow) { font-size: 16px; }
+    .mobile-shots { gap: 10px; }
+    .mobile-shots img { border-radius: 14px; }
+    .mobile-shots img:nth-child(2) { translate: 0 -14px; }
+  }
+</style>

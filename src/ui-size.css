@@ -1,8 +1,8 @@
 :root{font-size:calc(14px * var(--ui-scale,1))}
 .text-size-setting{flex-wrap:wrap;gap:12px;margin-bottom:14px}
-.text-size-setting>.text-size-controls{display:flex;flex-direction:row;align-items:center;gap:3px;border:1px solid var(--border);border-radius:4px;padding:3px;max-width:100%}
+.text-size-setting>.text-size-controls{display:flex;flex-direction:row;align-items:center;gap:3px;border-radius:4px;padding:3px;max-width:100%}
 .text-size-controls button{min-width:30px;min-height:30px;padding:3px 7px;border-radius:2px;font-size:.8rem;color:var(--muted);white-space:nowrap}
 .text-size-controls button:hover:not(:disabled){background:var(--raised);color:var(--text)}
 .text-size-controls button:disabled{opacity:.35;cursor:default}
 .text-size-controls output{min-width:3.3em;text-align:center;font-size:.78rem;font-variant-numeric:tabular-nums;color:var(--text)}
-.text-size-controls .text-size-reset{margin-left:3px;border-left:1px solid var(--border);border-radius:0 2px 2px 0}
+.text-size-controls .text-size-reset{margin-left:3px;border-radius:0 2px 2px 0}

@@ -104,7 +104,8 @@ test.describe('terminal', () => {
     await expect(drawer(page)).toBeVisible();
     await close.click();
     await expect(warning(page)).toBeVisible();
-    await page.mouse.click(12, 350);
+    // Empty sidebar space below the task list.
+    await page.mouse.click(12, 700);
     await expect(warning(page)).toBeHidden();
     await expect(drawer(page)).toBeVisible();
     expect(await calls(page, 'close_terminal')).toHaveLength(0);

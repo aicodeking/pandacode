@@ -13,7 +13,11 @@ export async function subscribe(name: 'sessions-changed', callback: () => void):
 export async function subscribe(name: 'queue-changed', callback: (event: { sessionId: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'schedules-changed', callback: (event: { sessionId: string | null }) => void): Promise<() => void>;
 export async function subscribe(name: 'bots-changed', callback: () => void): Promise<() => void>;
+export async function subscribe(name: 'bot-shared-channel-changed', callback: (event: { channelId: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'bot-messages-changed', callback: (event: { sessionId?: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'bot-notification', callback: (event: { botId: string; text: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'bot-failover', callback: (event: import('./bots').FailoverAsk) => void): Promise<() => void>;
+export async function subscribe(name: 'bot-model-switch', callback: (event: { botId: string; at: number; text: string; detail: Record<string, unknown> }) => void): Promise<() => void>;
 export async function subscribe(name: 'bot-pairing', callback: (event: { botId: string; channelId: string; senderName: string; code: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'sessions-deleted', callback: (event: {sessionIds: string[]}) => void): Promise<() => void>;
 export async function subscribe(name: 'provider-models-changed', callback: (event: {provider: import('./types').ProviderId}) => void): Promise<() => void>;

@@ -113,7 +113,8 @@ test('reading pages are complete without JavaScript', async ({ browser, baseURL 
     const footer = page.locator('footer');
     await expect(footer.getByRole('link', { name: 'License', exact: true })).toHaveAttribute('href', '/license/');
     await expect(footer.getByRole('link', { name: 'GitHub', exact: true })).toHaveAttribute('href', repo);
-    await expect(footer.getByRole('link', { name: 'Support', exact: true })).toHaveAttribute('href', `${repo}/issues`);
+    await expect(footer.getByRole('link', { name: 'Support', exact: true })).toHaveAttribute('href', '/support/');
+    await expect(footer.getByRole('link', { name: 'Issues', exact: true })).toHaveAttribute('href', `${repo}/issues`);
     await expect(page.locator('.navigation .button')).toHaveAttribute('href', `${repo}/releases/latest`);
     await expectNoOverflow(page);
   }

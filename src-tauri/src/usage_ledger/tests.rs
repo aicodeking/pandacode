@@ -116,7 +116,7 @@ fn scanning_dedupes_claude_replies_resumes_appends_and_forgets_deleted_logs() {
     std::fs::write(project.join("session").join("subagents").join("agent.jsonl"), format!("{}\n", claude("msg_2", "req_2", "2026-09-26T09:10:00Z", usage))).unwrap();
     let mut cache = Cache { version: CACHE_VERSION, files: HashMap::new() };
     let mut files = Vec::new();
-    log_files(&root.join("claude").join("projects"), 0, &mut files);
+    log_files(&root.join("claude").join("projects"), 0, &|_| true, &mut files);
     assert_eq!(files.len(), 3);
     for (path, metadata) in &files {
         let entry = cache.files.entry(path.to_string_lossy().into_owned()).or_insert_with(|| FileEntry {
@@ -149,6 +149,150 @@ fn scanning_dedupes_claude_replies_resumes_appends_and_forgets_deleted_logs() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+#[test]
+fn task_usage_sums_only_linked_session_logs_and_honors_since() {
+    let record = |hour: i64, input: u64, output: u64, key: Option<u64>| Record { key, hour, model: "m".into(), class: 0, input, cache_read: 0, cache_write: 0, cache_write_1h: 0, output };
+    let mut cache = Cache { version: CACHE_VERSION, files: HashMap::new() };
+    // The reply with key 7 appears twice: streamed once, then copied by a resume into the same log.
+    cache.files.insert(
+        "/logs/8f0e7c5a-1111-4222-8333-444455556666".into(),
+        FileEntry { agent: Some(Agent::Claude), session: true, records: vec![record(1, 10, 5, Some(7)), record(1, 10, 5, Some(7)), record(5, 100, 50, Some(8))], ..FileEntry::default() },
+    );
+    cache.files.insert(
+        "/logs/rollout-2026-09-26T08-58-01-aaaa1111-b222-4c33-8d44-555566667777".into(),
+        FileEntry { agent: Some(Agent::Codex), records: vec![record(2, 7, 3, None)], ..FileEntry::default() },
+    );
+    cache.files.insert(
+        "/logs/unlinked".into(),
+        FileEntry { agent: Some(Agent::Claude), records: vec![record(1, 999, 999, None)], ..FileEntry::default() },
+    );
+    let links = ["8f0e7c5a-1111-4222-8333-444455556666".to_string(), "aaaa1111-b222-4c33-8d44-555566667777".to_string()];
+    let usage = task_usage_from_cache(&cache, &links, 0);
+    assert_eq!((usage.input, usage.cache_read, usage.output), (117, 0, 58), "streamed copies count once");
+    assert_eq!((usage.first_used, usage.last_used), (Some(3_600_000), Some(18_000_000)));
+    let since = task_usage_from_cache(&cache, &links, 3);
+    assert_eq!((since.input, since.output), (100, 50));
+    assert_eq!((since.first_used, since.last_used), (Some(18_000_000), Some(18_000_000)));
+}
+
+#[test]
+fn model_names_are_shared_between_records_and_survive_a_cache_round_trip() {
+    let first = parse::claude_line(&claude("msg_1", "req_1", "2026-09-26T08:58:01Z", json!({"input_tokens":1}))).unwrap();
+    let second = parse::claude_line(&claude("msg_2", "req_2", "2026-09-26T08:58:02Z", json!({"input_tokens":1}))).unwrap();
+    assert!(std::ptr::eq(first.model.as_str(), second.model.as_str()), "one allocation per model name");
+    let text = serde_json::to_string(&first).unwrap();
+    assert!(text.contains(r#""model":"claude-opus-5-5""#), "{text}");
+    let back: Record = serde_json::from_str(&text).unwrap();
+    assert_eq!(back, first);
+    assert!(std::ptr::eq(back.model.as_str(), first.model.as_str()));
+}
+
+/// Claude and Codex logs for two linked sessions plus an unrelated one.
+fn sample_logs(root: &Path) -> (Roots, Vec<String>, PathBuf) {
+    let claude_root = root.join("claude").join("projects");
+    let codex_root = root.join("codex").join("sessions");
+    let project = claude_root.join("demo");
+    let day = codex_root.join("2026").join("09").join("20");
+    std::fs::create_dir_all(project.join("8f0e7c5a-1111-4222-8333-444455556666").join("subagents")).unwrap();
+    std::fs::create_dir_all(&day).unwrap();
+    let usage = |input: u64| json!({"input_tokens":input,"cache_read_input_tokens":100,"cache_creation_input_tokens":40,"output_tokens":5});
+    let linked = project.join("8f0e7c5a-1111-4222-8333-444455556666.jsonl");
+    let reply = claude("msg_1", "req_1", "2026-09-26T08:58:01Z", usage(10));
+    std::fs::write(&linked, format!("{reply}\n{reply}\n{}\n", claude("msg_2", "req_2", "2026-09-26T09:30:00Z", usage(20)))).unwrap();
+    std::fs::write(project.join("8f0e7c5a-1111-4222-8333-444455556666").join("subagents").join("agent-1.jsonl"), format!("{}\n", claude("msg_3", "req_3", "2026-09-26T09:40:00Z", usage(30)))).unwrap();
+    std::fs::write(project.join("other.jsonl"), format!("{reply}\n{}\n", claude("msg_4", "req_4", "2026-09-26T10:00:00Z", usage(40)))).unwrap();
+    let rollout = [codex_context("gpt-6-astra"), codex_tokens("2026-09-20T10:05:00Z", 1_110, 1_000, 900, 100), codex_tokens("2026-09-20T10:06:00Z", 1_110, 1_000, 900, 100), codex_tokens("2026-09-20T11:05:00Z", 2_000, 800, 100, 90)];
+    std::fs::write(day.join("rollout-2026-09-20T10-00-00-aaaa1111-b222-4c33-8d44-555566667777.jsonl"), rollout.join("\n") + "\n").unwrap();
+    std::fs::write(day.join("rollout-2026-09-20T10-00-00-bbbb1111-b222-4c33-8d44-555566667777.jsonl"), rollout.join("\n") + "\n").unwrap();
+    let roots = vec![(Agent::Claude, vec![claude_root]), (Agent::Codex, vec![codex_root])];
+    let links = vec!["8f0e7c5a-1111-4222-8333-444455556666".to_string(), "aaaa1111-b222-4c33-8d44-555566667777".to_string()];
+    (roots, links, linked)
+}
+
+#[test]
+fn linked_refresh_matches_a_full_scan_through_appends_and_deletes() {
+    let root = std::env::temp_dir().join(format!("pandacode-ledger-{}", uuid::Uuid::new_v4()));
+    let (roots, links, linked) = sample_logs(&root);
+    let empty = || Cache { version: CACHE_VERSION, files: HashMap::new() };
+    let (mut full, mut slim) = (empty(), empty());
+    let totals = |full: &mut Cache, slim: &mut Cache| {
+        refresh_cache(full, &roots, 0);
+        refresh_linked(slim, &roots, &links, 0);
+        let expected = task_usage_from_cache(full, &links, 0);
+        assert_eq!(task_usage_from_cache(slim, &links, 0), expected);
+        assert_eq!(task_usage_from_cache(slim, &links, 1_790_413_081 / 3600 + 1), task_usage_from_cache(full, &links, 1_790_413_081 / 3600 + 1));
+        expected
+    };
+    // First sight walks the roots and reads only the linked files.
+    let first = totals(&mut full, &mut slim);
+    assert_eq!((first.input, first.cache_read, first.output), (10 + 20 + 100 + 700, 200 + 900 + 100, 10 + 100 + 90));
+    assert_eq!(slim.files.len(), 2, "unlinked and subagent logs are not read");
+    // Later run ends only stat the cached files and read what was appended.
+    let mut file = std::fs::OpenOptions::new().append(true).open(&linked).unwrap();
+    writeln!(file, "{}", claude("msg_5", "req_5", "2026-09-26T12:00:00Z", json!({"input_tokens":7,"output_tokens":3}))).unwrap();
+    drop(file);
+    let appended = totals(&mut full, &mut slim);
+    assert_eq!((appended.input - first.input, appended.output - first.output), (7, 3));
+    // A deleted log stops counting, as in a full scan.
+    std::fs::remove_file(&linked).unwrap();
+    let deleted = totals(&mut full, &mut slim);
+    assert_eq!(deleted.input, 800);
+    assert_eq!(slim.files.len(), 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn linked_refresh_follows_archived_rollouts_and_extra_logs_of_a_session() {
+    let root = std::env::temp_dir().join(format!("pandacode-ledger-{}", uuid::Uuid::new_v4()));
+    let (mut roots, links, _) = sample_logs(&root);
+    let archive = root.join("codex").join("archived_sessions");
+    std::fs::create_dir_all(&archive).unwrap();
+    roots[1].1.push(archive.clone());
+    let empty = || Cache { version: CACHE_VERSION, files: HashMap::new() };
+    let (mut full, mut slim) = (empty(), empty());
+    let totals = |full: &mut Cache, slim: &mut Cache| {
+        refresh_cache(full, &roots, 0);
+        refresh_linked(slim, &roots, &links, 0);
+        let expected = task_usage_from_cache(full, &links, 0);
+        assert_eq!(task_usage_from_cache(slim, &links, 0), expected);
+        expected
+    };
+    let first = totals(&mut full, &mut slim);
+    // Codex moves a finished rollout into archived_sessions; it still counts, once.
+    let name = "rollout-2026-09-20T10-00-00-aaaa1111-b222-4c33-8d44-555566667777.jsonl";
+    std::fs::rename(root.join("codex").join("sessions").join("2026").join("09").join("20").join(name), archive.join(name)).unwrap();
+    assert_eq!(totals(&mut full, &mut slim), first);
+    assert!(slim.files.keys().any(|key| key.contains("archived_sessions")));
+    assert_eq!(slim.files.len(), 2, "the old rollout path is forgotten");
+    // The same session logged under a second project adds its new replies.
+    let other = root.join("claude").join("projects").join("elsewhere");
+    std::fs::create_dir_all(&other).unwrap();
+    let reply = claude("msg_9", "req_9", "2026-09-27T08:00:00Z", json!({"input_tokens":4,"output_tokens":6}));
+    std::fs::write(other.join("8f0e7c5a-1111-4222-8333-444455556666.jsonl"), format!("{reply}\n")).unwrap();
+    let second = totals(&mut full, &mut slim);
+    assert_eq!((second.input - first.input, second.output - first.output), (4, 6));
+    assert_eq!(slim.files.len(), 3);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_saved_cache_reloads_to_the_same_ledger_and_task_totals() {
+    let root = std::env::temp_dir().join(format!("pandacode-ledger-{}", uuid::Uuid::new_v4()));
+    let (roots, links, _) = sample_logs(&root);
+    let mut cache = Cache { version: CACHE_VERSION, files: HashMap::new() };
+    assert!(refresh_cache(&mut cache, &roots, 0));
+    assert!(!refresh_cache(&mut cache, &roots, 0), "an unchanged scan leaves nothing to save");
+    let path = root.join("app").join("usage-ledger-cache.json");
+    assert!(save_cache(&path, &cache));
+    assert!(!path.with_extension("tmp").exists());
+    let loaded = load_cache(&path);
+    let ledger = |cache: &Cache| serde_json::to_value(aggregate(cache, &book(), 0, 1)).unwrap();
+    assert_eq!(ledger(&loaded), ledger(&cache));
+    assert_eq!(task_usage_from_cache(&loaded, &links, 0), task_usage_from_cache(&cache, &links, 0));
+    assert_eq!(load_cache(&root.join("missing.json")).files.len(), 0);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 /// `cargo test --lib live_local_logs -- --ignored --nocapture` prints totals only.
 #[test]
 #[ignore]
@@ -156,10 +300,10 @@ fn live_local_logs() {
     let since = crate::storage::now() - HISTORY_DAYS * 86_400_000;
     let mut cache = Cache { version: CACHE_VERSION, files: HashMap::new() };
     let started = std::time::Instant::now();
-    refresh_cache(&mut cache, since);
+    refresh_cache(&mut cache, &agent_roots(), since);
     let first = started.elapsed();
     let started = std::time::Instant::now();
-    refresh_cache(&mut cache, since);
+    refresh_cache(&mut cache, &agent_roots(), since);
     let again = started.elapsed();
     let ledger = aggregate(&cache, &PriceBook::bundled(), since.div_euclid(3_600_000), 0);
     for agent in [Agent::Claude, Agent::Codex] {
