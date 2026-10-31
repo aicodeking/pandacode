@@ -158,6 +158,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
     case 'teams': return '<div id="agent-teams-settings"></div><div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
+        <div class="setting-row"><div><strong>Android emulator flags</strong><small>Extra launch flags for Android emulators: renderer, snapshots and networking.</small></div><button type="button" class="secondary-button" data-action="emulator-flags">Set flags</button></div>
         <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
       </div>
       <div id="capabilities-settings"></div>`;
