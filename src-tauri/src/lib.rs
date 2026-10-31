@@ -715,6 +715,74 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     }
     store.remove_project(&project_id)
 }
+/// One folder of a multi-folder project, as the Settings folder list reads it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderOut {
+    path: String,
+    position: i64,
+    is_primary: bool,
+}
+/// A task's working folder: the project folder itself, or the task's own checkout.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoFolderOut {
+    path: PathBuf,
+    label: String,
+    is_primary: bool,
+    worktree: Option<PathBuf>,
+    branch: Option<String>,
+}
+fn folders_out(folders: &[storage::Folder]) -> Vec<FolderOut> {
+    folders
+        .iter()
+        .map(|folder| FolderOut {
+            path: folder.path.clone(),
+            position: folder.position,
+            is_primary: folder.is_primary,
+        })
+        .collect()
+}
+fn repo_folders_out(folders: Vec<storage::RepoFolder>) -> Vec<RepoFolderOut> {
+    folders
+        .into_iter()
+        .map(|folder| RepoFolderOut {
+            path: folder.path,
+            label: folder.label,
+            is_primary: folder.is_primary,
+            worktree: folder.worktree,
+            branch: folder.branch,
+        })
+        .collect()
+}
+#[tauri::command]
+async fn project_folders(state: State<'_, AppState>, project_id: String) -> Result<Vec<FolderOut>> {
+    Ok(folders_out(&state.store.lock().map_err(|e| e.to_string())?.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn add_project_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.add_project_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn remove_project_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.remove_project_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn set_primary_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.set_primary_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+/// The task's working folders, the primary first, each with its checkout and branch.
+#[tauri::command]
+async fn workspace_folders(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<Vec<RepoFolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    Ok(repo_folders_out(git_status_folders(&store, &project_id, session_id.as_deref())?))
+}
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
     let (project, worktrees) = {
@@ -4841,6 +4909,10 @@ pub fn run() {
                 add_project,
                 remove_project,
                 relink_project,
+                project_folders,
+                add_project_folder,
+                remove_project_folder,
+                set_primary_folder,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
@@ -4882,6 +4954,7 @@ pub fn run() {
                 list_providers,
                 list_provider_models,
                 git_status,
+                workspace_folders,
                 git_diff,
                 jj_status,
                 jj_diff,

@@ -25,7 +25,14 @@ export interface ReasoningEffort { id: string; name: string; description: string
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; }
 export interface Provider { id: ProviderId; name: string; installed: boolean; path: string | null; version: string; models: ProviderModel[]; }
 export interface GitFile { path: string; index: string; working: string; }
-export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; }
+export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; /** One entry per project folder, the primary first; set for multi-folder projects. */ repos?: RepoStatusInfo[]; }
+export interface RepoStatusInfo { label: string; branch: string; ahead: number; behind: number; files: GitFile[]; }
+/** One folder of a multi-folder project; exactly one is primary. */
+export interface ProjectFolder { path: string; position: number; isPrimary: boolean; }
+/** A task's working folder: the project folder itself, or the task's own checkout. */
+export interface RepoFolderInfo { path: string; label: string; isPrimary: boolean; worktree: string | null; branch: string | null; }
+/** One repository's linked pull request: the task_links repo key ('' = primary) beside the link. */
+export type LinkedPull = [string, TaskLink];
 export interface FileEntry { name: string; path: string; isDir: boolean; }
 export interface ToolActivity { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string; }
 export interface SubagentActivity { id: string; parentId: string | null; name: string; prompt: string; status: 'running' | 'waiting' | 'completed' | 'failed' | 'stopped'; response: string; tools: ToolActivity[]; startedAt: number; updatedAt: number; }
