@@ -242,7 +242,8 @@ function scheduleTiming(f: Fields): string {
   const minutes = (value: unknown) => { const n = Number(value); return n < 60 ? `${n} min` : `${Math.round(n / 6) / 10} h`.replace('.0 ', ' '); };
   const time = field(f, 'timeOfDay'), kind = field(f, 'kind');
   if (kind === 'interval' && Number(f.intervalMinutes) > 0) return `every ${minutes(f.intervalMinutes)}`;
-  if ((kind === 'daily' || kind === 'weekdays' || kind === 'weekly') && time) return `${kind} at ${time}`;
+  if (kind === 'cron' && field(f, 'cron')) return `${field(f, 'cron')}${field(f, 'timezone') ? ` · ${field(f, 'timezone')}` : ''}`;
+  if ((kind === 'daily' || kind === 'weekdays' || kind === 'weekly') && time) return `${kind} at ${time}${field(f, 'timezone') ? ` · ${field(f, 'timezone')}` : ''}`;
   if (kind === 'after' || field(f, 'afterTaskId')) return 'after another thread';
   if (Number(f.inMinutes) > 0) return `in ${minutes(f.inMinutes)}`;
   const at = field(f, 'at');

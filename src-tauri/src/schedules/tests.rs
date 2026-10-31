@@ -27,8 +27,8 @@ fn once(store: &Store) -> TaskSchedule {
 #[test]
 fn schema_version_is_28_with_schedule_tables() {
     let store = store();
-    assert_eq!(crate::storage::SCHEMA_VERSION, 36);
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
+    assert_eq!(crate::storage::SCHEMA_VERSION, 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
     assert!(list(&store, None).unwrap().is_empty());
     assert_eq!(settings(&store).unwrap(), SchedulerSettings::default());
 }
@@ -325,4 +325,76 @@ fn agent_timing_infers_the_kind_and_after_defaults_to_one_run() {
     assert_eq!(every["scheduled"]["stopsAfter"], "stops after 20 runs; pass maxRuns up to 1000 to keep going");
     assert!(call("pandacode_schedule_wakeup", json!({"note": "x", "afterTaskId": "a"})).unwrap_err().contains("its own turn end"));
     assert!(call("pandacode_schedule_message", json!({"taskId": "zz", "text": "x", "inMinutes": 5})).unwrap_err().starts_with("No thread"));
+}
+
+#[test]
+fn cron_schedules_require_a_valid_expression() {
+    let store = store();
+    let make = |cron: Option<&str>| create(&store, &ScheduleInput { cron: cron.map(str::to_owned), ..input("cron") }, "user", None, NOW);
+    let missing = make(None).unwrap_err();
+    assert!(missing.contains("cron"), "{missing}");
+    let bad_field = make(Some("60 9 * * *")).unwrap_err();
+    assert!(bad_field.contains("cron minute field"), "{bad_field}");
+    assert!(make(Some("0 5 30 2 *")).unwrap_err().contains("does not fire within 5 years"));
+    assert!(make(Some("not a cron")).is_err());
+}
+
+#[test]
+fn timezones_validate_and_round_trip() {
+    let store = store();
+    let make = |input: ScheduleInput| create(&store, &input, "user", None, NOW);
+    let mars = make(ScheduleInput { time_of_day: Some("09:00".into()), timezone: Some("Mars/Olympus".into()), ..input("daily") }).unwrap_err();
+    assert!(mars.contains("Unknown timezone: Mars/Olympus"), "{mars}");
+    let cron_mars = make(ScheduleInput { cron: Some("0 9 * * *".into()), timezone: Some("Mars/Olympus".into()), ..input("cron") }).unwrap_err();
+    assert!(cron_mars.contains("Unknown timezone"), "{cron_mars}");
+    // Empty means the computer's local zone (today's behaviour) and is accepted.
+    make(ScheduleInput { time_of_day: Some("09:00".into()), timezone: Some("".into()), ..input("daily") }).unwrap();
+    let stored = make(ScheduleInput { cron: Some("0 9 * * *".into()), timezone: Some("Asia/Tokyo".into()), ..input("cron") }).unwrap();
+    assert_eq!(get(&store, &stored.id).unwrap().timezone.as_deref(), Some("Asia/Tokyo"), "a valid IANA name is stored and read back");
+}
+
+#[test]
+fn cron_kind_ignores_interval_and_time_of_day_like_other_kinds() {
+    let store = store();
+    // Other kinds drop mismatched timing fields (a daily plan never stores an
+    // interval); cron follows that precedent instead of refusing.
+    let cron = create(&store, &ScheduleInput { cron: Some("*/15 9-17 * * 1-5".into()), interval_minutes: Some(30), time_of_day: Some("09:00".into()), days: vec![1], ..input("cron") }, "user", None, NOW).unwrap();
+    let stored = get(&store, &cron.id).unwrap();
+    assert_eq!((stored.kind.as_str(), stored.cron.as_deref()), ("cron", Some("*/15 9-17 * * 1-5")));
+    assert_eq!(stored.interval_minutes, None);
+    assert_eq!(stored.time_of_day, None);
+    assert!(stored.days.is_empty());
+    assert!(stored.next_run_at.is_some_and(|at| at > NOW), "the first cron slot is scheduled");
+}
+
+#[test]
+fn cron_cadence_shows_the_expression_and_the_timezone_suffix() {
+    let store = store();
+    let cron = create(&store, &ScheduleInput { cron: Some("*/15 9-17 * * 1-5".into()), timezone: Some("Asia/Tokyo".into()), ..input("cron") }, "user", None, NOW).unwrap();
+    assert_eq!(cadence(&cron), "*/15 9-17 * * 1-5 · Asia/Tokyo");
+    let fired = advance(&store, &cron, NOW, false).unwrap();
+    assert!(message(&fired, false, NOW).contains("· */15 9-17 * * 1-5 · Asia/Tokyo · run 1"), "the fired trace keeps the exact cadence");
+    // The suffix applies to any kind with a timezone set, and never without one.
+    let daily = create(&store, &ScheduleInput { time_of_day: Some("09:00".into()), timezone: Some("Asia/Tokyo".into()), ..input("daily") }, "user", None, NOW).unwrap();
+    assert_eq!(cadence(&daily), "Daily at 09:00 · Asia/Tokyo");
+    let local = create(&store, &ScheduleInput { time_of_day: Some("09:00".into()), ..input("daily") }, "user", None, NOW).unwrap();
+    assert_eq!(cadence(&local), "Daily at 09:00");
+}
+
+#[test]
+fn agent_tools_accept_cron_and_timezone() {
+    let store = store();
+    let running = std::collections::HashSet::new();
+    let call = |args: Value| tools::dispatch(&store, "a", "pandacode_schedule_wakeup", &args, &running, NOW);
+    let (made, changed) = call(json!({"note": "Poll CI", "kind": "cron", "cron": "*/15 9-17 * * 1-5", "timezone": "Asia/Tokyo"})).unwrap();
+    assert_eq!(changed.as_deref(), Some("a"));
+    let id = made["scheduled"]["id"].as_str().unwrap().to_owned();
+    let stored = get(&store, &id).unwrap();
+    assert_eq!((stored.kind.as_str(), stored.cron.as_deref(), stored.timezone.as_deref()), ("cron", Some("*/15 9-17 * * 1-5"), Some("Asia/Tokyo")));
+    assert_eq!(stored.max_runs, Some(20), "a recurring agent schedule defaults to 20 runs");
+    assert_eq!(made["scheduled"]["cadence"], "*/15 9-17 * * 1-5 · Asia/Tokyo");
+    let mars = call(json!({"note": "x", "kind": "cron", "cron": "0 9 * * *", "timezone": "Mars/Olympus"})).unwrap_err();
+    assert!(mars.contains("Unknown timezone"), "{mars}");
+    let missing = call(json!({"note": "x", "kind": "cron"})).unwrap_err();
+    assert!(missing.contains("cron"), "{missing}");
 }

@@ -3,8 +3,9 @@
 import { call } from './bridge';
 
 /** once: at runAt · interval: every intervalMinutes · daily/weekdays: at timeOfDay ·
- *  weekly: at timeOfDay on `days` (0 = Sunday) · after: when watchSessionId's run ends. */
-export type ScheduleKind = 'once' | 'interval' | 'daily' | 'weekdays' | 'weekly' | 'after';
+ *  weekly: at timeOfDay on `days` (0 = Sunday) · cron: the `cron` expression ·
+ *  after: when watchSessionId's run ends. */
+export type ScheduleKind = 'once' | 'interval' | 'daily' | 'weekdays' | 'weekly' | 'cron' | 'after';
 export type ScheduleOrigin = 'user' | 'agent';
 export type RunOutcome = 'started' | 'queued' | 'skipped' | 'failed';
 
@@ -24,6 +25,10 @@ export interface TaskSchedule {
   timeOfDay: string | null;
   /** Weekly days, 0 = Sunday. Empty for other kinds. */
   days: number[];
+  /** For `cron`: the five-field expression (minute hour day-of-month month day-of-week). */
+  cron?: string | null;
+  /** IANA timezone for the clock kinds; null = this computer's local time. */
+  timezone?: string | null;
   /** For `after`: the task whose run end fires this one. */
   watchSessionId: string | null;
   watchSessionTitle: string | null;
@@ -71,6 +76,10 @@ export interface ScheduleInput {
   intervalMinutes?: number | null;
   timeOfDay?: string | null;
   days?: number[];
+  /** For `cron`: the five-field expression (minute hour day-of-month month day-of-week). */
+  cron?: string | null;
+  /** IANA timezone for the clock kinds; null/empty = this computer's local time. */
+  timezone?: string | null;
   /** For once: absolute time in ms. */
   runAt?: number | null;
   watchSessionId?: string | null;
@@ -132,9 +141,11 @@ export function clockTime(hhmm: string): string {
 }
 
 /** "Once", "Every 30 min", "Daily at 9:00 AM", "Weekdays at 9:00 AM", "Weekly on Mon, Wed at 6:30 PM",
- *  "After “Build” finishes". Only the first letter is capital, so callers may lowercase it mid-sentence. */
-export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' | 'timeOfDay' | 'days' | 'watchSessionTitle' | 'onlyOnSuccess'>): string {
+ *  the cron expression, or "After “Build” finishes" — clock kinds carry " · <timezone>" when one is set.
+ *  Only the first letter is capital, so callers may lowercase it mid-sentence. */
+export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' | 'timeOfDay' | 'days' | 'cron' | 'timezone' | 'watchSessionTitle' | 'onlyOnSuccess'>): string {
   const time = clockTime(schedule.timeOfDay ?? '');
+  const zone = schedule.timezone?.trim() ? ` · ${schedule.timezone.trim()}` : '';
   switch (schedule.kind) {
     case 'once': return 'Once';
     case 'interval': {
@@ -142,9 +153,10 @@ export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' 
       return minutes % 1440 === 0 ? `Every ${minutes / 1440 === 1 ? 'day' : `${minutes / 1440} days`}`
         : minutes % 60 === 0 ? `Every ${minutes / 60 === 1 ? 'hour' : `${minutes / 60} hours`}` : `Every ${minutes} min`;
     }
-    case 'daily': return `Daily at ${time}`;
-    case 'weekdays': return `Weekdays at ${time}`;
-    case 'weekly': return `Weekly on ${[...schedule.days].sort().map(day => DAY_NAMES[day]).join(', ')} at ${time}`;
+    case 'daily': return `Daily at ${time}${zone}`;
+    case 'weekdays': return `Weekdays at ${time}${zone}`;
+    case 'weekly': return `Weekly on ${[...schedule.days].sort().map(day => DAY_NAMES[day]).join(', ')} at ${time}${zone}`;
+    case 'cron': return `${schedule.cron?.trim() || ''}${zone}`;
     case 'after': return `After “${schedule.watchSessionTitle ?? 'a thread'}” ${schedule.onlyOnSuccess ? 'succeeds' : 'finishes'}`;
   }
 }
