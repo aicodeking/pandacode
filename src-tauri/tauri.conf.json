@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PandaCode",
-  "version": "0.3.83",
+  "version": "0.3.84",
   "identifier": "ai.pandacode.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
