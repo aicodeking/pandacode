@@ -3244,14 +3244,14 @@ mod tests {
         assert_eq!(newest, SCHEMA_VERSION, "bump SCHEMA_VERSION with every new migration step");
     }
 
-    /// Schema 35 carries the per-task auto_writes flag: NOT NULL, default 0,
+    /// Schema 37 carries the per-task auto_writes flag: NOT NULL, default 0,
     /// and a CHECK that admits only 0 or 1.
     #[test]
-    fn auto_writes_column_arrives_in_schema_35_with_default_zero_and_a_strict_check() {
+    fn auto_writes_column_arrives_in_the_newest_schema_with_default_zero_and_a_strict_check() {
         let (store, session) = empty_session();
-        assert_eq!(SCHEMA_VERSION, 35, "schema 35 introduces sessions.auto_writes");
+        assert_eq!(SCHEMA_VERSION, 37, "the newest schema introduces sessions.auto_writes");
         let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 35);
+        assert_eq!(version, 37);
         let (notnull, default): (i64, Option<String>) = store
             .db
             .query_row(
