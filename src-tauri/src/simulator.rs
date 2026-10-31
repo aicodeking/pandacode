@@ -5,6 +5,7 @@
 pub mod android;
 pub mod android_setup;
 pub mod commands;
+pub mod emulator_flags;
 pub mod duo;
 pub mod stream;
 pub mod tools;

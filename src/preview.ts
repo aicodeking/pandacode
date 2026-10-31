@@ -480,6 +480,7 @@ const previewSimulator = (() => {
     { udid: '8E3F5041-3C4D-4E5F-A0B1-2C3D4E5F6071', name: 'iPad Pro 13-inch (M5)', runtime: 'iOS 26.2', state: 'Shutdown', family: 'pad', deviceType: 'com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-16GB' },
   ];
   let selected: string | null = null, seq = 1, dark = false;
+  const emulatorFlags: { default: string; devices: Record<string, string> } = { default: '', devices: {} };
   const inputs: unknown[] = [];
   let lastTap: { x: number; y: number } | null = null;
   const poses = new Map<string, 'closed' | 'book' | 'open'>();
@@ -543,6 +544,16 @@ const previewSimulator = (() => {
     },
     appearance(mode: unknown) { dark = mode === 'dark'; seq++; return `Appearance set to ${mode}.`; },
     async capture(udid: unknown) { return (await frame(device(udid).udid)).slice(8); },
+    emulatorFlags() { return structuredClone(emulatorFlags); },
+    setEmulatorFlags(defaultText: unknown, devices: Record<string, string>) {
+      emulatorFlags.default = String(defaultText ?? '').trim();
+      emulatorFlags.devices = {};
+      for (const [udid, text] of Object.entries(devices ?? {})) {
+        const flags = String(text).trim();
+        if (flags) emulatorFlags.devices[udid] = flags;
+      }
+      return structuredClone(emulatorFlags);
+    },
   };
 })();
 /** Imported VS Code themes, as the native importer would store them. */
@@ -1797,6 +1808,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
+    case 'simulator_emulator_flags': result = previewSimulator.emulatorFlags(); break;
+    case 'simulator_set_emulator_flags': result = previewSimulator.setEmulatorFlags(args.default, args.devices); break;
     case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');

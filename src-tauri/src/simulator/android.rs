@@ -149,7 +149,7 @@ pub fn boot(name: &str) -> Result<(), String> {
     let emulator = emulator_path().ok_or("Install the Android emulator to boot this device.")?;
     // The emulator keeps running after this returns; it is not a child we wait on.
     let mut command = Command::new(emulator);
-    command.args(["-avd", name, "-no-window", "-no-audio", "-no-boot-anim", "-gpu", "auto"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command.args(super::emulator_flags::boot_args(name)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

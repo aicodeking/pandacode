@@ -4680,6 +4680,13 @@ async function showColorsSettings(): Promise<void> {
   colorsSettingsCleanup = mountThemeSettings(host, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) });
   dialog.addEventListener('close', () => { colorsSettingsCleanup?.(); colorsSettingsCleanup = undefined; }, { once: true });
 }
+async function showEmulatorFlagsSettings(): Promise<void> {
+  const dialog = modal('Android emulator flags', '<div id="emulator-flags-content"><p class="dialog-loading">Loading flags…</p></div>', 'emulator-flags-dialog');
+  const host = dialog.querySelector<HTMLElement>('#emulator-flags-content')!;
+  const { mountEmulatorFlags } = await import('./emulator-flags-settings');
+  if (!dialog.open || !host.isConnected) return;
+  mountEmulatorFlags(host, notify);
+}
 async function showWallpaperSettings(): Promise<void> {
   const dialog = modal('Wallpapers', '<div id="wallpaper-settings-content"><div class="dialog-loading">Loading scenes…</div></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'wallpaper-settings-dialog');
   const host = dialog.querySelector<HTMLElement>('#wallpaper-settings-content')!;
@@ -5665,6 +5672,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'moodboards': await showMoodboards(); break;
     case 'detach-moodboard': state.moodboardAttachments.set(state.sessionId, (state.moodboardAttachments.get(state.sessionId) ?? []).filter(item => item.id !== element.dataset.id)); renderComposer(); break;
     case 'agent-integrations': await showAgentIntegrations(workspaceContext()); break;
+    case 'emulator-flags': await showEmulatorFlagsSettings(); break;
     case 'jev-settings': await openJevSettings(); break;
     case 'jev-tests': await openJevTests(); break;
     case 'jev-assist': await openJevAssist(); break;

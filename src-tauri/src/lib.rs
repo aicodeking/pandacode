@@ -4116,6 +4116,8 @@ pub fn run() {
                 simulator::commands::simulator_input,
                 simulator::commands::simulator_appearance,
                 simulator::commands::simulator_capture,
+                simulator::commands::simulator_emulator_flags,
+                simulator::commands::simulator_set_emulator_flags,
                 simulator::android_setup::android_setup,
                 vm::commands::vm_status,
                 vm::commands::vm_show,
