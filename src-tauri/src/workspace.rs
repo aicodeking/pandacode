@@ -570,12 +570,8 @@ fn untracked_path(root: &Path, path: &str) -> Result<Vec<String>, String> {
         STATUS_LIMIT,
         false,
     )?)?;
-    Ok(output
-        .bytes
-        .split(|byte| *byte == 0)
-        .any(|entry| entry == path.as_bytes())
-        .then(|| vec![path.to_string()])
-        .unwrap_or_default())
+    let untracked = output.bytes.split(|byte| *byte == 0).any(|entry| entry == path.as_bytes());
+    Ok(if untracked { vec![path.to_string()] } else { Vec::new() })
 }
 
 pub fn git_diff(root: &Path, path: Option<String>, staged: bool) -> Result<String, String> {
