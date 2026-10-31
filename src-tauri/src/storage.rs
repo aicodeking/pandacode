@@ -130,6 +130,47 @@ pub struct TaskLink {
     pub state: String,
     pub checked_at: i64,
 }
+/// One folder of a multi-folder project; `projects.path` always equals the primary row's path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Folder {
+    pub path: String,
+    pub position: i64,
+    pub is_primary: bool,
+}
+/// A task's working folder: the project folder itself, or a checkout recorded for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoFolder {
+    pub path: PathBuf,
+    pub label: String,
+    pub is_primary: bool,
+    pub worktree: Option<PathBuf>,
+    pub branch: Option<String>,
+}
+/// Folder display names: the basename, parent-qualified only where basenames collide.
+pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
+    let base = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.to_string_lossy().to_string())
+    };
+    let basenames: Vec<String> = paths.iter().map(|p| base(p)).collect();
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for name in &basenames {
+        *counts.entry(name.as_str()).or_insert(0) += 1;
+    }
+    paths
+        .iter()
+        .zip(&basenames)
+        .map(|(p, name)| {
+            if counts[name.as_str()] > 1 {
+                if let Some(parent) = p.parent() {
+                    return format!("{}/{}", base(parent), name);
+                }
+            }
+            name.clone()
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -200,9 +241,8 @@ pub(crate) use schema_v38::{
     V38_BOT_INDEXES, V38_SCHEMA_INDEXES, V38_TRACKER_INDEXES, V38_TRACKER_TABLES,
     V38_TRACKER_TRIGGERS,
 };
-/// The newest `PRAGMA user_version`. Hot-query indexes and trackers are additive
-/// at version 37 so releases through v0.3.151 can still open the database.
-pub const SCHEMA_VERSION: i64 = 37;
+/// The newest `PRAGMA user_version`. Folder associations and per-repository links require version 38.
+pub const SCHEMA_VERSION: i64 = 38;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 /// The error every lookup of a task that has no row returns.
@@ -685,7 +725,7 @@ impl Store {
                     }
                 }
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
-                  PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+                  PRAGMA user_version=36;").map_err(|e|e.to_string())?;
             }
             if version < 37 {
                 // Whether a remote device last saved each schedule, so the team gate is checked
@@ -707,6 +747,22 @@ impl Store {
             let upgrade_started = (version < SCHEMA_VERSION).then(std::time::Instant::now);
             if upgrade_started.is_some() {
                 upgrade_v38(&migration)?;
+            }
+            if version < 38 {
+                // Multi-folder projects: each project keeps an ordered folder list with one
+                // primary (projects.path follows it), a task can point a folder at its own
+                // checkout, and task links are keyed per repo ('' stays the primary link
+                // today's single-link readers serve). SQLite cannot alter a primary key,
+                // so task_links is rebuilt and every legacy row lands under repo=''.
+                migration.execute_batch("CREATE TABLE IF NOT EXISTS project_folders(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,path TEXT NOT NULL,position INTEGER NOT NULL DEFAULT 0,is_primary INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(project_id,path),UNIQUE(path));
+                  CREATE TABLE IF NOT EXISTS session_repos(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,path TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,PRIMARY KEY(session_id,path));
+                  INSERT OR IGNORE INTO project_folders(project_id,path,position,is_primary) SELECT id,path,0,1 FROM projects;").map_err(|e|e.to_string())?;
+                migration.execute_batch("ALTER TABLE task_links RENAME TO task_links_v37;
+                  CREATE TABLE task_links(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('issue','pull')),repo TEXT NOT NULL DEFAULT '',number INTEGER NOT NULL,url TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT '',checked_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,kind,repo));
+                  INSERT INTO task_links(session_id,kind,repo,number,url,title,state,checked_at) SELECT session_id,kind,'',number,url,title,state,checked_at FROM task_links_v37;
+                  DROP TABLE task_links_v37;
+                  CREATE INDEX IF NOT EXISTS task_links_number ON task_links(kind,number);
+                  PRAGMA user_version=38;").map_err(|e|e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
             if let Some(started) = upgrade_started {
@@ -759,3 +815,6 @@ mod tests_migrations;
 mod tests_sessions;
 #[cfg(test)]
 mod tests_upgrade_safety;
+#[cfg(test)]
+#[path = "storage_folder_tests.rs"]
+mod folder_tests;

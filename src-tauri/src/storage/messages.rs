@@ -103,7 +103,7 @@ impl Store {
             // One task (`session`): a primary-key seek instead of reading every link.
             let mut stmt = self
                 .db
-                .prepare_cached("SELECT kind,number,url,title,state,checked_at FROM task_links WHERE session_id=?1")
+                .prepare_cached("SELECT kind,number,url,title,state,checked_at FROM task_links WHERE session_id=?1 AND repo=''")
                 .map_err(|e| e.to_string())?;
             let links = stmt
                 .query_map([&session.id], |r| link(r, 0))
@@ -123,7 +123,7 @@ impl Store {
             }
             let mut stmt = self
                 .db
-                .prepare_cached("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
+                .prepare_cached("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links WHERE repo=''")
                 .map_err(|e| e.to_string())?;
             let rows = stmt
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, link(r, 1)?)))
@@ -142,8 +142,9 @@ impl Store {
         }
         Ok(())
     }
-    /// Replace the task's link of one kind; `None` removes it.
-    pub fn set_task_link(&self, sid: &str, kind: &str, link: Option<&TaskLink>) -> Result<Session> {
+    /// Replace the task's link of one kind for one repo; `''` is the primary repo
+    /// whose link the single-link readers serve. `None` removes it.
+    pub fn set_task_link(&self, sid: &str, kind: &str, repo: &str, link: Option<&TaskLink>) -> Result<Session> {
         if !["issue", "pull"].contains(&kind) {
             return Err("Unknown link kind.".into());
         }
@@ -153,12 +154,12 @@ impl Store {
                 if link.number <= 0 || link.url.len() > 2048 || link.title.len() > 1024 || link.state.len() > 32 {
                     return Err("Invalid GitHub link.".into());
                 }
-                self.db.execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
-                    params![sid, kind, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
+                self.db.execute("INSERT INTO task_links(session_id,kind,repo,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(session_id,kind,repo) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
+                    params![sid, kind, repo, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
             }
             None => {
                 self.db
-                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2", params![sid, kind])
+                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2 AND repo=?3", params![sid, kind, repo])
                     .map_err(|e| e.to_string())?;
             }
         }
