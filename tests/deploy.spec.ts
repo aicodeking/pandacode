@@ -57,6 +57,34 @@ test('deploy offers connected platforms and starts a task with the brief', async
   expect(sent.text).not.toContain('vcp_token');
 });
 
+test('Netlify connects a project, starts a deploy task and disconnects', async ({ page }, testInfo) => {
+  await open(page);
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  const menu = page.getByRole('menu', { name: 'Deploy' });
+  await expect(menu.getByRole('menuitem', { name: 'Deploy to Netlify' })).toBeDisabled();
+  await page.keyboard.press('Escape');
+  const site = '12345678-1234-4234-8234-123456789abc';
+  await connect(page, 'Netlify', { 'Personal access token': 'netlify-test-token', 'Project ID': site });
+  expect((await calls(page, 'cloud_connect')).at(-1)).toEqual({ provider: 'netlify', key: 'netlify-test-token', options: { siteId: site } });
+  const card = settings(page).locator('.cloud-provider[data-provider="netlify"]');
+  await expect(card).toContainText(`Connected · ${site}`);
+  await card.screenshot({ path: testInfo.outputPath('netlify-connected.png') });
+  await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  await menu.getByRole('menuitem', { name: 'Deploy to Netlify' }).click();
+  await expect.poll(async () => (await calls(page, 'send_message')).length).toBe(1);
+  const sent = (await calls(page, 'send_message'))[0];
+  expect(sent.text).toMatch(/^Deploy this project to Netlify\./);
+  expect(sent.text).toContain('--no-build');
+  expect(sent.text).toContain('pandacode_cloud_cli');
+  expect(sent.text).toContain('deploy --prod');
+  expect(sent.text).not.toContain('netlify-test-token');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings(page).getByRole('button', { name: 'Disconnect Netlify', exact: true }).click();
+  await expect(settings(page).getByRole('button', { name: 'Connect Netlify', exact: true })).toBeVisible();
+});
+
 test('Railway connects with a workspace and starts a deploy task', async ({ page }) => {
   await open(page);
   await connect(page, 'Railway', { 'API token': 'railway_token', 'Workspace ID': 'ws-1' });

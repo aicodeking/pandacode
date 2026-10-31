@@ -1,0 +1,178 @@
+.changes-view {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--text);
+  font-size: var(--text-xs);
+  container-type: inline-size;
+}
+.changes-view button { color: inherit; font: inherit; }
+.changes-view button:not(:disabled):active:not([aria-haspopup]) { scale: .96; }
+.changes-view button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+.cv-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 4px 0 6px;
+  white-space: nowrap;
+}
+.cv-scope {
+  height: 24px;
+  gap: 5px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-weight: var(--weight-medium) !important;
+}
+.cv-scope .icon { width: var(--icon-sm); height: var(--icon-sm); color: var(--muted); }
+.cv-scope .cv-caret { width: 12px; height: 12px; }
+.cv-scope:hover, .cv-icon:hover:not(:disabled) { background: var(--raised); }
+.cv-files { color: var(--muted); }
+.cv-adds, .cv-add { color: var(--success); font-family: var(--mono); font-size: var(--text-2xs); }
+.cv-dels, .cv-del { color: var(--danger); font-family: var(--mono); font-size: var(--text-2xs); }
+.cv-spacer { flex: 1 1 0; }
+.cv-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: var(--text-2xs); }
+.cv-icon {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  color: var(--muted) !important;
+}
+.cv-icon:hover:not(:disabled) { color: var(--text) !important; }
+.cv-icon:disabled { opacity: .4; cursor: default; }
+.cv-icon .icon { width: var(--icon-sm); height: var(--icon-sm); }
+
+.cv-commit {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 6px;
+}
+.cv-commit[hidden] { display: none; }
+.cv-commit-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 24px;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--text);
+}
+.cv-commit-submit {
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--on-accent) !important;
+  font-weight: var(--weight-medium) !important;
+}
+.cv-commit-submit:hover:not(:disabled) { background: var(--accent-hover); }
+.cv-commit-submit:disabled { opacity: .45; cursor: default; }
+
+.cv-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  outline: none;
+}
+.cv-file { }
+.cv-file-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px 0 2px;
+  background: var(--panel);
+  white-space: nowrap;
+}
+.cv-file.collapsed .cv-file-header { }
+.cv-toggle { width: 20px; height: 20px; flex: 0 0 auto; border-radius: var(--radius-sm); color: var(--muted) !important; }
+.cv-toggle:hover { background: var(--raised); }
+.cv-chevron { width: 13px; height: 13px; rotate: 90deg; }
+.cv-file.collapsed .cv-chevron { rotate: 0deg; }
+.cv-file-icon { display: inline-flex; flex: 0 0 auto; }
+.cv-file-icon :is(img, svg) { width: 14px; height: 14px; }
+.cv-file-name {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+.cv-name { font-weight: var(--weight-regular); flex: 0 0 auto; }
+.cv-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cv-copy { width: 20px; height: 20px; visibility: hidden; }
+.cv-file-header:hover .cv-copy, .cv-copy:focus-visible { visibility: visible; }
+.cv-copy .icon { width: 13px; height: 13px; }
+/* Narrow panels give the folder the copy button's room; Copy path stays in the file menu. */
+@container (max-width: 380px) { .cv-copy { display: none; } }
+.cv-stat { display: inline-flex; gap: 6px; margin-left: auto; flex: 0 0 auto; }
+.cv-pill {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-2xs);
+  line-height: 17px;
+  color: var(--muted);
+  background: var(--fill-active);
+}
+.cv-pill[data-status="added"], .cv-pill[data-status="untracked"] { color: var(--success); background: var(--tone-success-bg); }
+.cv-pill[data-status="deleted"], .cv-pill[data-status="conflict"] { color: var(--danger); background: var(--tone-danger-bg); }
+.cv-pill[data-status="modified"], .cv-pill[data-status="renamed"], .cv-pill[data-status="copied"] { color: var(--info); background: var(--tone-info-bg); }
+.cv-file-header > .cv-icon { width: 22px; height: 22px; }
+
+.cv-file-body { position: relative; }
+.cv-file-body[hidden] { display: none; }
+.cv-diff-next { position: absolute; inset: 0 0 auto; visibility: hidden; pointer-events: none; }
+.cv-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 0 12px;
+  color: var(--muted);
+}
+.cv-error .icon { width: 14px; height: 14px; color: var(--danger); flex: 0 0 auto; }
+.cv-link { color: var(--accent-ink) !important; text-decoration: underline; text-underline-offset: 2px; }
+.cv-raw { margin: 0; padding: 6px 10px; font: var(--text-xs)/1.35 var(--mono); white-space: pre; overflow-x: auto; }
+
+/* The inline diff is a plain strip under its file header: no toolbar, card or inner scroll. */
+.cv-file-body .diff-viewer { --diff-line-height: 1.15rem; max-height: none; overflow: visible; background: transparent; border-radius: 0; }
+.cv-file-body .diff-viewer-toolbar { display: none; }
+.cv-file-body .diff-viewer-content { overflow: visible; scrollbar-gutter: auto; }
+.cv-file-body .diff-viewer-status, .cv-file-body .diff-viewer-note { padding: 6px 12px; font-size: var(--text-2xs); }
+.cv-file-body .diff-viewer-raw { padding: 6px 10px; font-size: var(--text-2xs); line-height: 1.35; }
+.cv-file-body .diff-viewer-file + .diff-viewer-file { margin-top: 0; }
+.changes-view .cv-file-body diffs-container {
+  --diffs-font-size: var(--text-2xs);
+  --diffs-gap-inline: 6px;
+  --diffs-gap-block: 0px;
+  --diffs-min-number-column-width-default: 3ch;
+}
+
+.cv-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 160px;
+  padding: 24px 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.cv-state .icon { width: 18px; height: 18px; }
+.cv-state-clean .icon { color: var(--success); }
+.cv-state-error .icon { color: var(--danger); }

@@ -1,33 +1,27 @@
-/* Shared material and motion. Every floating surface is one warm glass: a yellow
-   light catching the top edge, blur condensing as it arrives. Springs come from
+/* Shared material and motion. Every floating surface is one flat glass: a solid
+   translucent fill over a blur, with no edge, ring or highlight. Springs come from
    motion.ts as linear() curves; these are the fallbacks where linear() is missing. */
 :root{
   --spring:cubic-bezier(.22,1,.36,1);--spring-duration:340ms;
   --spring-fast:cubic-bezier(.2,.9,.3,1);--spring-fast-duration:240ms;
   --spring-bounce:cubic-bezier(.34,1.4,.64,1);--spring-bounce-duration:380ms;
-  /* A clear, neutral glass: mostly the blurred workspace, a whisper of warm light at the top. */
-  --glass-glow:rgb(var(--accent-rgb) / .13);
+  /* A clear, neutral glass: mostly the blurred workspace. */
   --glass-warm:rgb(255 254 250 / .72);
   --glass-tint:rgb(250 250 248 / .62);
-  --glass-edge:rgb(255 255 255 / .75);
-  --glass-ring:rgb(20 18 8 / .1);
-  --glass-highlight:rgb(255 255 255 / .95);
   --glass-shadow-deep:rgb(24 21 10 / .3);
   --glass-shadow-near:rgb(24 21 10 / .1);
   --glass-fill:rgb(255 255 255 / .58);
   --glass-fill-hover:rgb(255 255 255 / .82);
   --glass-line:rgb(20 18 8 / .08);
   --scrim:rgb(24 21 12 / .14);
-  --sheet-radius:8px;
+  --sheet-radius:var(--radius-lg);
+  /* One radius for every small floating glass (toast, dock popover, pinned dock). */
+  --glass-radius:var(--radius-lg);
   --press:.97;
 }
 html[data-theme="dark"]{
-  --glass-glow:rgb(var(--accent-rgb) / .07);
   --glass-warm:rgb(46 45 41 / .64);
   --glass-tint:rgb(26 26 24 / .58);
-  --glass-edge:rgb(255 255 255 / .11);
-  --glass-ring:rgb(0 0 0 / .55);
-  --glass-highlight:rgb(255 255 255 / .1);
   --glass-shadow-deep:rgb(0 0 0 / .6);
   --glass-shadow-near:rgb(0 0 0 / .32);
   --glass-fill:rgb(255 255 255 / .045);
@@ -38,57 +32,55 @@ html[data-theme="dark"]{
 
 /* Modal glass. The scrim dims and blurs the workspace; the plate is the sheet. */
 .dialog-scrim{position:fixed;inset:0;z-index:90;pointer-events:none;background:var(--scrim);backdrop-filter:blur(5px) saturate(1.05);-webkit-backdrop-filter:blur(5px) saturate(1.05)}
-/* The sheet: heavy blur and saturation do the work, so the tint can stay light. A sheen
-   fades down from the top edge, warm light pools at its center, and a hairline outlines it. */
-.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border:.5px solid var(--glass-edge);border-radius:var(--sheet-radius);
-  background:radial-gradient(70% 46% at 50% -8%,var(--glass-glow),transparent 72%),linear-gradient(180deg,var(--glass-warm),var(--glass-tint) 46%);
+/* The sheet: heavy blur and saturation do the work, so the tint can stay light. */
+.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border-radius:var(--sheet-radius);
+  background:var(--glass-warm);
   backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
-  box-shadow:0 0 0 .5px var(--glass-ring),0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near),inset 0 1px 0 var(--glass-highlight),inset 0 0 0 1px rgb(255 255 255 / .04)}
+  box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near)}
 html[data-theme="dark"] .dialog-plate{backdrop-filter:blur(54px) saturate(1.7) brightness(.92);-webkit-backdrop-filter:blur(54px) saturate(1.7) brightness(.92)}
 /* Every dialog variant hands its material to the plate; the ghost is the departing copy. */
 html[data-theme] dialog:is(#dialog,.dialog-ghost){background:transparent;border-color:transparent;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
 html[data-theme] dialog:is(#dialog,.dialog-ghost)::backdrop{background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none}
 .dialog-ghost{overflow:hidden!important}
 .dialog-ghost::-webkit-scrollbar{display:none}
-/* Content sits on the glass as frosted fills and hairlines, not solid boxes. */
-dialog .settings-group{background:var(--glass-fill);border-color:var(--glass-line)}
-dialog .settings-group>*+*{border-color:var(--glass-line)}
+/* Content sits on the glass as frosted fills, not solid boxes. */
+dialog .settings-group{background:var(--glass-fill)}
 dialog .settings-tabs{background:var(--glass-fill)}
 dialog:is(#dialog,.dialog-ghost){border-radius:var(--sheet-radius)}
 .dialog-heading{margin-bottom:14px}
-.dialog-heading h2{font-size:1.14rem;font-weight:650;letter-spacing:-.022em}
-.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:50%;background:var(--glass-fill);color:var(--muted);transition:background-color 140ms,color 140ms,transform var(--spring-fast-duration) var(--spring-fast)}
+.dialog-heading h2{font-size:var(--text-lg);font-weight:var(--weight-strong);letter-spacing:-.022em}
+.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:50%;background:var(--glass-fill);color:var(--muted);transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
 .dialog-heading [data-action="close-dialog"]:hover{background:var(--glass-fill-hover);color:var(--text)}
-.dialog-heading [data-action="close-dialog"] .icon{width:14px;height:14px}
+.dialog-heading [data-action="close-dialog"] .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 /* Low specificity on purpose: fields a component frames itself (search boxes) keep their own look. */
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background:var(--glass-fill);border-color:var(--glass-line);transition:border-color 140ms,background-color 140ms,box-shadow 160ms}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background:var(--glass-fill);transition:border-color 140ms,background-color 140ms,box-shadow 160ms}
 html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:hover){background:var(--glass-fill-hover)}
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background:var(--glass-fill-hover);border-color:color-mix(in srgb,var(--accent) 70%,var(--glass-line));box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .2)}
-dialog .secondary-button{background:var(--glass-fill);border-color:var(--glass-line);box-shadow:inset 0 1px 0 rgb(255 255 255 / .06)}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background:var(--glass-fill-hover);box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .2)}
+dialog .secondary-button{background:var(--glass-fill);box-shadow:none}
 dialog .secondary-button:not(:disabled):hover{background:var(--glass-fill-hover)}
-dialog .primary-button{border-radius:4px}
+dialog .primary-button{border-radius:var(--radius-sm)}
 dialog .dialog-footer{margin-top:20px}
 /* Go to anything: one frosted search field and soft, rounded results. */
-html[data-theme] dialog .command-search input{background:none;border:0;box-shadow:none;padding:9px 0;font-size:1rem}
-dialog .command-search:focus-within{border-color:color-mix(in srgb,var(--accent) 60%,var(--glass-line));box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
-dialog .command-results>button{border-radius:4px}
+html[data-theme] dialog .command-search input{background:none;border:0;box-shadow:none;padding:9px 0;font-size:var(--text-lg)}
+dialog .command-search:focus-within{box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
+dialog .command-results>button{border-radius:var(--radius-sm)}
 dialog .command-results>button:hover{background:var(--glass-fill-hover)}
-dialog .command-results>button.command-selected{background:color-mix(in srgb,var(--accent) 22%,transparent);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--accent) 45%,transparent)}
-dialog .command-footer{border-top-color:var(--glass-line)}
+dialog .command-results>button.command-selected{background:color-mix(in srgb,var(--accent) 22%,transparent);box-shadow:none}
 
 /* Segmented controls: the selected option hands its highlight to one gliding pill. */
 [data-segmented]{position:relative;isolation:isolate}
 [data-segmented]>*{position:relative;z-index:1}
-[data-segmented]>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);transform:translate(var(--seg-x,0px),var(--seg-y,0px));pointer-events:none;will-change:transform}
-[data-segmented][data-segment-ready]>.segment-thumb{transition:transform var(--spring-duration) var(--spring),width var(--spring-duration) var(--spring),height var(--spring-duration) var(--spring)}
+[data-segmented]>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);transform:translate(var(--seg-x,0px),var(--seg-y,0px));transform-origin:0 0;pointer-events:none;will-change:transform}
+/* Size snaps; motion.ts carries it with a `scale` FLIP while the translate glides. */
+[data-segmented][data-segment-ready]>.segment-thumb{transition:transform var(--spring-duration) var(--spring)}
 [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){background:transparent!important;box-shadow:none!important}
-.view-switch>.segment-thumb{border-radius:2px;background:var(--raised);box-shadow:0 1px 3px #00000012,inset 0 1px 0 rgb(255 255 255 / .35)}
-.inspector-tabs>.segment-thumb{border-radius:2px;background:#fff;box-shadow:0 1px 3px rgb(0 0 0 / .08)}
-.settings-tabs>.segment-thumb{border-radius:.2rem;background:var(--panel);box-shadow:0 1px 4px rgb(0 0 0 / .09),inset 0 1px 0 rgb(255 255 255 / .4)}
-html[data-theme="dark"] .inspector-tabs>.segment-thumb{background:#3a3a35;box-shadow:0 1px 3px rgb(0 0 0 / .25),inset 0 1px 0 rgb(255 255 255 / .05)}
-html[data-theme="dark"] :is(.view-switch,.settings-tabs)>.segment-thumb{box-shadow:0 1px 3px rgb(0 0 0 / .25),inset 0 1px 0 rgb(255 255 255 / .05)}
+.view-switch>.segment-thumb{border-radius:var(--radius-xs);background:var(--raised);box-shadow:0 1px 3px rgb(0 0 0 / .07)}
+.inspector-tabs>.segment-thumb{border-radius:var(--radius-xs);background:var(--bg);box-shadow:0 1px 3px rgb(0 0 0 / .08)}
+.settings-tabs>.segment-thumb{border-radius:var(--radius-sm);background:var(--panel);box-shadow:0 1px 4px rgb(0 0 0 / .09)}
+html[data-theme="dark"] .inspector-tabs>.segment-thumb{background:#3a3a35;box-shadow:0 1px 3px rgb(0 0 0 / .25)}
+html[data-theme="dark"] :is(.view-switch,.settings-tabs)>.segment-thumb{box-shadow:0 1px 3px rgb(0 0 0 / .25)}
 html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs>.segment-thumb{background:color-mix(in srgb,var(--text) 12%,transparent)}
-.view-switch button,.inspector-tabs button,.settings-tabs button{transition:color 160ms,transform var(--spring-fast-duration) var(--spring-fast)}
+.view-switch button,.inspector-tabs button,.settings-tabs button{transition:color 160ms,scale var(--spring-fast-duration) var(--spring-fast)}
 
 /* Respond on press: instant down, spring back on release. */
 /* `scale`, not `transform`: a pressed button keeps any transform that positions it. */
@@ -99,12 +91,12 @@ button:not(:disabled):active{scale:var(--press)}
 /* Menu anchors keep their geometry: a popover is positioned from the trigger's box on press. */
 button[aria-haspopup],.model-picker,.mode-picker,.composer-project,.project-filter,.board-project-filter,.settings-select{--press:1}
 .browser-address button:not(:disabled):active{transform:rotate(90deg) scale(.9)}
-.task-item{transition:background-color 140ms,color 140ms,transform var(--spring-fast-duration) var(--spring-fast)}
+.task-item{transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
 
 /* Yellow actions glow when they are about to be used. */
-.new-task-button,.primary-button,.send-button,.commit-button{box-shadow:inset 0 1px 0 rgb(255 255 255 / .28)}
-:is(.new-task-button,.primary-button,.commit-button):not(:disabled):hover{box-shadow:inset 0 1px 0 rgb(255 255 255 / .32),0 10px 24px -12px rgb(var(--accent-rgb) / .7),0 2px 6px -3px rgb(120 90 0 / .25)}
-.send-button:not(:disabled):not(.stop-button):hover{box-shadow:inset 0 1px 0 rgb(255 255 255 / .32),0 8px 20px -10px rgb(var(--accent-rgb) / .75)}
+.new-task-button,.primary-button,.send-button,.commit-button{box-shadow:none}
+:is(.new-task-button,.primary-button,.commit-button):not(:disabled):hover{box-shadow:0 10px 24px -12px rgb(var(--accent-rgb) / .7),0 2px 6px -3px rgb(120 90 0 / .25)}
+.send-button:not(:disabled):not(.stop-button):hover{box-shadow:0 8px 20px -10px rgb(var(--accent-rgb) / .75)}
 .send-button.stop-button{box-shadow:none}
 .composer{transition:border-color 160ms,box-shadow 220ms var(--spring-fast)}
 .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14),0 12px 32px -14px rgb(var(--accent-rgb) / .35),0 8px 24px rgb(0 0 0 / .035)}
@@ -113,15 +105,17 @@ html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--ac
 /* Small state changes ease instead of snapping. */
 .task-indicator{transition:background-color 200ms,box-shadow 200ms}
 .inspector-tabs button>span,.attachments>span{transition:background-color 160ms,color 160ms}
-.stage-button,.file-attach,.change-group-title button{transition:opacity 140ms,transform var(--spring-fast-duration) var(--spring-fast)}
+.stage-button,.file-attach,.change-group-title button{transition:opacity 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
 .activity-toggle .icon,.turn-activity-summary>.icon,.tool-activity summary>.icon:last-child{transition:transform var(--spring-duration) var(--spring)}
-.icon-button,.sidebar-bottom>button{transition:background-color 140ms,color 140ms,transform var(--spring-fast-duration) var(--spring-fast)}
+.icon-button,.sidebar-bottom>button{transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
+/* The action dock springs its items itself (action-dock.ts), so CSS transitions stay off there. */
+.action-dock button{transition:none}
 
 @media(prefers-reduced-motion:reduce){
   [data-segmented][data-segment-ready]>.segment-thumb{transition:none}
 }
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
-  .dialog-plate,.toast{background:#fff;backdrop-filter:none;-webkit-backdrop-filter:none}
+  .dialog-plate,.toast{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
   .dialog-scrim{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgb(35 35 30 / .32)}
   html[data-theme="dark"] :is(.dialog-plate,.toast){background:#272724}
   html[data-theme="dark"] .dialog-scrim{background:rgb(0 0 0 / .5)}
@@ -129,42 +123,42 @@ html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--ac
   dialog .settings-tabs{background:var(--raised)}
 }
 @media(prefers-contrast:more){
-  .dialog-plate,.toast{border-color:var(--border)}
+  .dialog-plate,.toast{border:1px solid var(--border)}
   [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){outline:1px solid var(--text);outline-offset:-1px}
 }
 
 /* Framed search fields share the sheet's frosted look. */
-html[data-theme] dialog .import-search{background:var(--glass-fill);border:.5px solid var(--glass-line);border-radius:4px}
-html[data-theme] dialog .import-search:focus-within{border-color:color-mix(in srgb,var(--accent) 60%,var(--glass-line));box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
+html[data-theme] dialog .import-search{background:var(--glass-fill);border-radius:var(--radius-sm)}
+html[data-theme] dialog .import-search:focus-within{box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
 
 /* Slim controls in every modal: shorter fields and buttons, tighter rows and tabs. */
 html[data-theme] dialog{padding:18px 20px 16px}
 html[data-theme] dialog .dialog-heading{margin-bottom:12px}
-html[data-theme] dialog .dialog-heading h2{font-size:1.04rem}
+html[data-theme] dialog .dialog-heading h2{font-size:var(--text-lg)}
 html[data-theme] dialog .dialog-heading [data-action="close-dialog"]{width:24px;height:24px}
-html[data-theme] dialog .dialog-heading [data-action="close-dialog"] .icon{width:12px;height:12px}
-html[data-theme] dialog .dialog-description{font-size:.78rem;margin:-4px 0 12px}
-html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){padding:6px 10px;font-size:.82rem;border-radius:3px;min-height:30px}
-html[data-theme] dialog :where(textarea){padding:7px 10px;font-size:.84rem;border-radius:4px}
-html[data-theme] dialog :is(.primary-button,.secondary-button){min-height:30px;padding:5px 12px;font-size:.8rem;border-radius:3px;gap:6px}
+html[data-theme] dialog .dialog-heading [data-action="close-dialog"] .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+html[data-theme] dialog .dialog-description{font-size:var(--text-xs);margin:-4px 0 12px}
+html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){padding:6px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm);min-height:30px}
+html[data-theme] dialog :where(textarea){padding:7px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm)}
+html[data-theme] dialog :is(.primary-button,.secondary-button){min-height:30px;padding:5px 12px;font-size:var(--text-xs);border-radius:var(--radius-sm);gap:6px}
 html[data-theme] dialog :is(.primary-button,.secondary-button)>.icon{width:12px;height:12px}
 html[data-theme] dialog .dialog-footer{margin-top:16px;gap:6px}
-html[data-theme] dialog .field-label{margin:10px 0 5px;font-size:.76rem}
-html[data-theme] dialog .settings-tabs{padding:3px;margin-bottom:1rem;border-radius:4px}
-html[data-theme] dialog .settings-tabs button{padding:.32rem .8rem;font-size:.82rem}
+html[data-theme] dialog .field-label{margin:10px 0 5px;font-size:var(--text-xs)}
+html[data-theme] dialog .settings-tabs{padding:3px;margin-bottom:1rem;border-radius:var(--radius-sm)}
+html[data-theme] dialog .settings-tabs button{padding:.32rem .8rem;font-size:var(--text-sm)}
 html[data-theme] dialog .settings-home .setting-row{min-height:2.45rem;padding:.42rem .85rem}
-html[data-theme] dialog .settings-home .setting-row strong{font-size:.84rem}
-html[data-theme] dialog .settings-home .setting-row small{font-size:.74rem}
-html[data-theme] dialog .settings-home .secondary-button{min-height:1.75rem;padding:.25rem .6rem;font-size:.78rem}
-html[data-theme] dialog .settings-home .settings-select{padding:.35rem .6rem;font-size:.8rem;min-width:9.5rem}
-html[data-theme] dialog .settings-home .text-size-controls button{padding:.25rem .45rem;font-size:.8rem}
-html[data-theme] dialog .settings-group{border-radius:.3rem}
+html[data-theme] dialog .settings-home .setting-row strong{font-size:var(--text-sm)}
+html[data-theme] dialog .settings-home .setting-row small{font-size:var(--text-xs)}
+html[data-theme] dialog .settings-home .secondary-button{min-height:1.75rem;padding:.25rem .6rem;font-size:var(--text-xs)}
+html[data-theme] dialog .settings-home .settings-select{padding:.35rem .6rem;font-size:var(--text-xs);min-width:9.5rem}
+html[data-theme] dialog .settings-home .text-size-controls button{padding:.25rem .45rem;font-size:var(--text-xs)}
+html[data-theme] dialog .settings-group{border-radius:var(--radius-md)}
 html[data-theme] dialog .bots-field :is(input,select){padding:6px 10px}
 html[data-theme] dialog .bots-field textarea{padding:7px 10px}
-html[data-theme] dialog :is(.bots-tabs,.usage-tabs)>button{padding:4px 10px;font-size:.8rem}
+html[data-theme] dialog :is(.bots-tabs,.usage-tabs)>button{padding:4px 10px;font-size:var(--text-xs)}
 html[data-theme] dialog .bots-items>li{padding:7px 9px 7px 12px}
-html[data-theme] dialog .bots-items :is(.secondary-button,.primary-button){min-height:26px;padding:3px 10px;font-size:.76rem}
+html[data-theme] dialog .bots-items :is(.secondary-button,.primary-button){min-height:26px;padding:3px 10px;font-size:var(--text-xs)}
 html[data-theme] dialog .command-search{padding:1px 12px}
-html[data-theme] dialog .command-search input{padding:8px 0;font-size:.94rem;min-height:0}
+html[data-theme] dialog .command-search input{padding:8px 0;font-size:var(--text-md);min-height:0}
 html[data-theme] dialog .command-results>button{min-height:30px;padding:5px 10px}
 html[data-theme] dialog .import-search{height:30px}

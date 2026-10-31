@@ -10,9 +10,9 @@ impl Bridge {
         server: Option<&mcp_host::Server>,
     ) -> Result<Self, String> {
         let directory = std::env::temp_dir().join(format!("pandacode-pi-{}", uuid::Uuid::new_v4()));
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = &mut std::fs::DirBuilder::new();
         #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        std::os::unix::fs::DirBuilderExt::mode(builder, 0o700);
         builder.create(&directory).map_err(|e| e.to_string())?;
         let bridge = Self(directory);
         let path = bridge.0.join("bridge.mjs");
@@ -235,7 +235,7 @@ impl Discovery {
 }
 
 pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command(provider, path)?;
     command.args(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
     if provider == "omp" {
         command.args(["--no-rules", "--no-lsp", "--no-title"]);
@@ -304,6 +304,8 @@ pub(super) fn stop_settled(provider: &str, value: &Value) -> bool {
         "omp" => value["type"] == "prompt_result" || value["type"] == "session_settled",
         // Muse ends an interrupted turn with `turn/completed` (terminal `cancelled`).
         "muse" => value["method"] == "turn/completed",
+        // ZCode settles through its `turn.completed` event (a cancelled run included).
+        "zcode" => zcode::stop_settled(value),
         _ => false,
     }
 }
@@ -344,6 +346,8 @@ impl Protocol {
                     self.text_delta(&id, None, field(event, "delta"), &mut step);
                 } else if event["type"] == "thinking_start" {
                     step.events.push(self.event("status", "Reasoning", None));
+                } else if event["type"] == "thinking_delta" {
+                    self.thinking(field(event, "delta"), &mut step);
                 }
             }
             "message_end" if value["message"]["role"] == "assistant" => {
@@ -629,6 +633,13 @@ mod tests {
     }
 
     #[test]
+    fn thinking_deltas_surface_as_thinking_events() {
+        let mut p = ready();
+        let step = p.receive(json!({"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Hmm"}})).unwrap();
+        assert!(step.events.iter().any(|e| e.kind == "thinking" && e.text == "Hmm"));
+    }
+
+    #[test]
     fn bridge_must_be_ready_before_any_prompt() {
         // get_state may answer before the bridge's ready status; it waits for it.
         let mut early = Protocol::new(super::super::tests::config("pi"));
@@ -798,7 +809,9 @@ mod tests {
     #[ignore]
     async fn installed_pi_lists_models_without_prompting() {
         let path = executable("pi").expect("Pi is installed");
-        assert!(!models(&path, "pi").await.unwrap().is_empty());
+        let catalog = models(&path, "pi").await.unwrap();
+        assert!(catalog.len() > 1, "Pi should advertise models beyond Default");
+        println!("Pi advertised {} models beyond Default", catalog.len() - 1);
     }
 
     fn omp_ready() -> Protocol {

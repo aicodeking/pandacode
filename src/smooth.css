@@ -1,17 +1,16 @@
 /* Seamless chrome: panels meet without divider lines and read apart by their tones.
- * Cards, inputs and menus keep their outlines; Increase Contrast restores every line. */
+ * Nothing keeps an outline; Increase Contrast restores every line. */
 html .sidebar,html .workspace[data-wallpaper]>.sidebar{border-right:0}
 html .workspace>.inspector{border-left:0}
-html .sidebar :is(.sidebar-note,.sidebar-bots){border-top:0}
+html .sidebar .sidebar-bots{border-top:0}
 html .workspace-header,html .inspector-heading{border-bottom:0}
 /* The right sidebar's tab header is the sidebar, not a band of its own. */
 html .inspector-heading,html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-heading{background:transparent}
 
 /* Header tools: quiet clusters split by hairline gaps; active tools tint, they don't fill. */
 .header-actions{align-items:center;gap:2px}
-.header-divider{width:1px;height:16px;margin:0 6px;border-radius:1px;background:color-mix(in srgb,var(--text) 12%,transparent)}
-.header-actions>.view-switch{margin-right:2px}
-.header-actions .icon-button{border-radius:3px;color:var(--muted)}
+.header-divider{width:0;height:16px;margin:0 4px;background:none}
+.header-actions .icon-button{border-radius:var(--radius-sm);color:var(--muted)}
 .header-actions .icon-button:hover{color:var(--text);background:color-mix(in srgb,var(--text) 7%,transparent)}
 html .header-actions .icon-button.active,html .workspace[data-wallpaper] .header-actions .icon-button.active{color:var(--accent-ink);background:color-mix(in srgb,var(--text) 8%,transparent)}
 html[data-theme="dark"] .header-actions .icon-button.active{color:var(--accent)}
@@ -27,7 +26,7 @@ html .drawer-heading{border-bottom:0}
 @media(prefers-contrast:more){
   html .sidebar{border-right:1px solid var(--border)}
   html .workspace>.inspector{border-left:1px solid var(--border)}
-  html .sidebar :is(.sidebar-note,.sidebar-bots){border-top:1px solid var(--border)}
+  html .sidebar .sidebar-bots{border-top:1px solid var(--border)}
   html :is(.workspace-header,.inspector-heading){border-bottom:1px solid var(--border)}
 }
 
@@ -39,13 +38,15 @@ html .drawer-heading{border-bottom:0}
 .message>.message-content{padding-left:0}
 /* Flush with the right edge of the centered 830px column, not centered within it. */
 html .transcript>.user-message{width:fit-content;max-width:min(78%,640px);margin-left:auto;margin-right:max(0px,calc((100% - 830px) / 2))}
-.user-message>.message-content{text-align:left;padding:9px 14px;border-radius:7px 7px 2px 7px;background:color-mix(in srgb,var(--text) 7%,transparent)}
-.user-message>.message-content .message-context{margin-top:6px;text-align:left}
+.user-message>.message-content{text-align:left;padding:9px 14px;border-radius:var(--radius-md);background:color-mix(in srgb,var(--text) 7%,transparent)}
+.user-message>.message-content .message-attachments{margin-top:6px}
 /* Rows that once lined up with the author avatar now start at the column edge, like replies. */
 html .workspace:not(.side-thread) :is(.transcript,#stream-region)>:is(.turn-activity,.tool-activity,.tool-activity-status-row,.coordination-status,.turn-changes-row){padding-left:0}
 html .message>.message-actions{position:absolute;top:100%;left:0;margin:2px 0 0;padding:0;min-height:24px;opacity:0;z-index:2;transition:opacity 140ms ease}
 html .message>.message-actions button{width:24px;height:24px;min-height:24px;padding:4px}
-.message>.message-actions .icon{width:14px;height:14px}
+.message>.message-actions .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
+/* Under a traced answer they stay visible at rest, like the reference. */
+html .message.after-trace>.message-actions{opacity:.6}
 html .message:hover>.message-actions,html .message>.message-actions:focus-within,html .message>.message-actions:hover{opacity:1}
 @media(hover:none){html .message>.message-actions{opacity:.7}}
 @media(prefers-contrast:more){.user-message>.message-content{outline:1px solid var(--border)}}

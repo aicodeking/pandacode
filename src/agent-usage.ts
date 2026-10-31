@@ -1,5 +1,6 @@
 import './agent-usage.css';
 import { call, preview } from './bridge';
+import type { ConnectionSnapshot } from './connections';
 import { escape, icon } from './dom';
 import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
@@ -30,7 +31,7 @@ export interface AgentUsage {
 const help = 'Reads account limits from your locally configured agent accounts. Requests go directly to the provider or its CLI, never through PandaCode servers. No prompts are sent. Results are cached for one minute; Refresh is limited to once every ten seconds per provider. Some providers do not expose their limits. Usage is shared with other apps using the same account.';
 const STATUS: Record<AgentUsage['status'], string> = { ready: '', unavailable: 'Unavailable', signedOut: 'Sign-in needed', error: 'Unavailable', unsupported: 'Not exposed' };
 const RANGES: [Range, string][] = [['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
-const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse' };
+const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
 type Tab = 'overview' | ProviderId;
 
 function validWindows(result: AgentUsage | undefined): UsageWindow[] {
@@ -89,6 +90,19 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3><span class="usage-plan"></span></header><div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
     host.insertBefore(card, footer); cards.set(provider.id, card);
   }
+  // Named connections (issue #137): each is read through its own config folder and environment.
+  const connectionsReady = call<ConnectionSnapshot>('connections_list').then(snapshot => {
+    if (disposed) return [];
+    const named = snapshot.connections.filter(c => cards.has(c.provider));
+    for (const connection of named) {
+      const card = cards.get(connection.provider)!;
+      if (!card.querySelector('.usage-connection-default')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', '<h4 class="usage-connection-default">Default setup</h4>');
+      const section = document.createElement('section'); section.className = 'usage-connection'; section.dataset.connection = connection.id; section.setAttribute('aria-label', connection.name);
+      section.innerHTML = `<header class="usage-card-heading"><h4>${escape(connection.name)}</h4><span class="usage-plan"></span></header><div class="usage-card-body" role="status">Checking limits…</div>`;
+      card.querySelector('.usage-card-cost')!.before(section);
+    }
+    return named;
+  }).catch(() => []);
   if (!installed.length) agentList.innerHTML = `<div class="usage-empty">${icon('activity')}<p>No installed agents found.</p><button class="secondary-button" data-action="settings">Open Settings</button></div>`;
 
   function costState(): CostState {
@@ -161,6 +175,20 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, installed.length) }, worker));
+    for (const connection of await connectionsReady) {
+      if (disposed) return;
+      const provider = installed.find(item => item.id === connection.provider)!;
+      const section = cards.get(provider.id)?.querySelector<HTMLElement>(`.usage-connection[data-connection="${CSS.escape(connection.id)}"]`);
+      if (!section) continue;
+      let result: AgentUsage;
+      try {
+        result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force, connection: connection.id });
+        if (!result || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
+      } catch (cause) {
+        result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: cause instanceof Error && cause.message ? cause.message : 'Could not read limits. Try Refresh.' };
+      }
+      if (!disposed) renderCard(section, { ...provider, name: connection.name }, result);
+    }
   }
   async function loadLedger(force: boolean): Promise<void> {
     if (ledgerPending) return;

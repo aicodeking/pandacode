@@ -238,7 +238,11 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
     let args = harness_arguments(context)?;
     let executable = crate::providers::executable(context.provider)
         .ok_or("Install this harness before opening its console.")?;
+    if context.provider == "hermes" && executable.file_stem().is_some_and(|s| s == "hermes-acp") {
+        return Err("Hermes ACP server does not have an interactive console. Install the `hermes` CLI for terminal chat, or continue in PandaCode.".into());
+    }
     let mut cmd = crate::providers::pty_command(&executable)?;
+    crate::provider_settings::apply_environment(context.provider, &mut cmd);
     for name in crate::providers::claude_auth::removed_environment(context.provider) { cmd.env_remove(name); }
     cmd.args(args);
     if matches!(context.provider, "claude" | "glm" | "mimo") {
@@ -266,6 +270,11 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
             cmd.env(key, value);
         }
     }
+    if context.provider == "devin" {
+        // The REPL runs its agent as a `devin acp` child, which would otherwise
+        // wait for host credentials when PandaCode starts inside Devin Desktop.
+        cmd.env_remove("ACP_BACKEND");
+    }
     if context.provider == "opencode" {
         cmd.env(
             "OPENCODE_CONFIG_CONTENT",
@@ -281,7 +290,14 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
     if provider == "antigravity" {
         return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse") {
+    if provider == "hermes" {
+        if let Some(exe) = crate::providers::executable("hermes") {
+            if exe.file_stem().is_some_and(|s| s == "hermes-acp") {
+                return Err("Hermes ACP server does not have an interactive console. Install the `hermes` CLI for terminal chat, or continue in PandaCode.".into());
+            }
+        }
+    }
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -321,7 +337,8 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
         args.push(
             match provider {
                 "codex" | "muse" => "resume",
-                "claude" | "glm" | "mimo" | "grok" => "--resume",
+                "claude" | "glm" | "mimo" | "grok" | "devin" | "hermes" => "--resume",
+                "cline" => "--id",
                 _ => "--session",
             }
             .into(),
@@ -356,6 +373,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 "plan" => "plan",
                 "full" => "bypassPermissions",
                 "auto" => "acceptEdits",
+                "review" => "auto",
                 _ => "default",
             };
             args.extend(["--permission-mode".into(), mode.into()]);
@@ -398,6 +416,32 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             };
             args.extend(["--no-auto-update".into(), "--permission-mode".into(), mode.into()]);
         }
+        "devin" => {
+            // The REPL's permission modes have no Plan; ACP tasks get Devin's own Plan mode.
+            let mode = match context.mode {
+                "plan" => return Err("Devin's console cannot start in Plan mode. Use task chat, or type /plan in the console.".into()),
+                "full" => "dangerous",
+                _ => "accept-edits",
+            };
+            args.extend(["--permission-mode".into(), mode.into()]);
+        }
+        "hermes" => {
+            if context.mode == "full" {
+                args.push("--yolo".into());
+            }
+        }
+        "cline" => {
+            args.push("-i".into());
+            if context.mode == "plan" {
+                args.push("--plan".into());
+            } else if context.mode == "full" {
+                args.extend(["--auto-approve".into(), "true".into()]);
+            } else {
+                // Cline CLI defaults --auto-approve to true unless explicitly turned off.
+                // For approval modes (ask, review, auto), enforce manual tool confirmation.
+                args.extend(["--auto-approve".into(), "false".into()]);
+            }
+        }
         _ => {
             match context.mode {
                 "plan" => args.push("--plan".into()),
@@ -430,7 +474,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             ]),
             "claude" | "glm" | "mimo" => args.extend(["--effort".into(), effort.into()]),
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
-            "pi" | "omp" => args.extend(["--thinking".into(), effort.into()]),
+            "pi" | "omp" | "cline" => args.extend(["--thinking".into(), effort.into()]),
             "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
             _ => {} // The Kimi TUI restores its persisted thinking setting.
         }
@@ -908,6 +952,7 @@ mod tests {
             ("kimi", "--session"),
             ("glm", "--resume"),
             ("opencode", "--session"),
+            ("cline", "--id"),
         ] {
             let context = HarnessContext {
                 session_id: "task",
@@ -985,6 +1030,69 @@ mod tests {
         assert_eq!([&private[..at], &private[at + 2..]].concat(), args);
         let full = harness_arguments(&HarnessContext { mode: "full", resume_id: None, ..context }).unwrap();
         assert!(full.contains(&"--disable-approval".to_owned()) && full.contains(&"--disable-sandbox".to_owned()));
+    }
+
+    #[test]
+    fn cline_console_sets_tui_mode_effort_and_resume() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: None,
+            model: Some("anthropic/claude-sonnet-5.5"),
+            reasoning_effort: Some("high"),
+            mode: "plan",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(
+            args,
+            [
+                "-i",
+                "--plan",
+                "--model",
+                "anthropic/claude-sonnet-5.5",
+                "--thinking",
+                "high"
+            ]
+        );
+
+        let full_context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: Some("1792719287191_NBdt7_cli"),
+            model: None,
+            reasoning_effort: None,
+            mode: "full",
+        };
+        let full_args = harness_arguments(&full_context).unwrap();
+        assert_eq!(
+            full_args,
+            ["--id", "1792719287191_NBdt7_cli", "-i", "--auto-approve", "true"]
+        );
+
+        let ask_context = HarnessContext {
+            session_id: "task",
+            provider: "cline",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let ask_args = harness_arguments(&ask_context).unwrap();
+        assert_eq!(ask_args, ["-i", "--auto-approve", "false"]);
+    }
+
+    #[test]
+    fn hermes_console_uses_resume_and_yolo_and_model() {
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "hermes",
+            resume_id: Some("session-123"),
+            model: Some("nous/hermes-3-llama-3.1-405b"),
+            reasoning_effort: None,
+            mode: "full",
+        };
+        let args = harness_arguments(&context).unwrap();
+        assert_eq!(args, ["--resume", "session-123", "--yolo", "--model", "nous/hermes-3-llama-3.1-405b"]);
     }
 
     #[test]
@@ -1111,6 +1219,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(mimo, ["--permission-mode", "acceptEdits", "--model", "mimo-v2.6-pro"]);
+        // Approve for me is Claude Code's auto mode, as in task runs.
+        for provider in ["claude", "glm", "mimo"] {
+            let review = harness_arguments(&HarnessContext { provider, mode: "review", ..context }).unwrap();
+            assert!(review.windows(2).any(|args| args == ["--permission-mode", "auto"]), "{provider}");
+        }
     }
 
     struct TestShell {

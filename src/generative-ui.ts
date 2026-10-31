@@ -83,7 +83,7 @@ export function fillComposer(text: string): boolean {
   return true;
 }
 
-const COPY_STYLE = ':host{display:block;position:relative}button{position:absolute;top:6px;right:6px;display:grid;place-items:center;width:24px;height:24px;color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:5px;padding:0;cursor:pointer;opacity:0}svg{width:14px;height:14px}:host(:hover) button,button:focus-visible{opacity:1}button:hover{color:var(--text)}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}@media (hover:none){button{opacity:1}}';
+const COPY_STYLE = ':host{display:block;position:relative}button{position:absolute;top:6px;right:6px;display:grid;place-items:center;width:24px;height:24px;color:var(--muted);background:var(--panel);border:0;border-radius:5px;padding:0;cursor:pointer;opacity:0}svg{width:14px;height:14px}:host(:hover) button,button:focus-visible{opacity:1}button:hover{color:var(--text)}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}@media (hover:none){button{opacity:1}}';
 
 /** A code block with a copy button. The block stays in the light DOM (slotted), so app styles,
  * find-in-thread and streaming updates see it unchanged. */

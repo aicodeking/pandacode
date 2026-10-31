@@ -15,7 +15,7 @@ const REQUEST_ID: &str = "pandacode-commands";
 /// Pi and its fork omp (which names the request `get_available_commands`).
 pub async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     let path = crate::providers::executable(provider).ok_or("Install the harness to discover its commands.")?;
-    let mut command = crate::providers::command(&path)?;
+    let mut command = crate::providers::provider_command(provider, &path)?;
     command.args(["--mode", "rpc", "--no-session"]);
     let request = if provider == "omp" { "get_available_commands" } else { "get_commands" };
     discover_process(command, cwd, Duration::from_secs(15), provider, request).await

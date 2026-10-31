@@ -4,10 +4,19 @@ import { icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { fallbackModel } from './model-catalog';
 
-const pending = (worker: TeamWorker): boolean => !worker.abandoned && ['running', 'waiting', 'queued'].includes(worker.status);
+const pending = (worker: TeamWorker): boolean => !worker.abandoned && ['running', 'waiting', 'queued', 'parked'].includes(worker.status);
 const workerLabels: Record<TeamWorker['status'], string> = {
-  running: 'Working', waiting: 'Needs attention', queued: 'Queued', completed: 'Completed', failed: 'Failed', stopped: 'Stopped',
+  running: 'Working', waiting: 'Needs attention', queued: 'Queued', parked: 'Waiting on sub-workers', completed: 'Completed', failed: 'Failed', stopped: 'Stopped',
 };
+
+const signatures = new WeakMap<TeamSnapshot, string>();
+/** Everything a snapshot can show (panel, thread lines, sidebar, composer) but its revision and
+ *  timestamps, so a snapshot that changed nothing visible repaints nothing. */
+export function teamSignature(team: TeamSnapshot): string {
+  let signature = signatures.get(team);
+  if (signature === undefined) signatures.set(team, signature = JSON.stringify({ ...team, revision: 0, updatedAt: 0, workers: team.workers.map(worker => ({ ...worker, updatedAt: 0 })) }));
+  return signature;
+}
 
 function text(root: Element, selector: string, value: string): void {
   const element = root.querySelector<HTMLElement>(selector)!;

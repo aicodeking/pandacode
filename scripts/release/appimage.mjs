@@ -6,9 +6,13 @@
 // finished image is unpacked, those four libraries are dropped, and the image is
 // rebuilt with the same runtime, compression and block size. Hosts then use their
 // own Wayland/EGL stack, as they already do for libGL and their GPU drivers.
+//
+// The same pass makes linuxdeploy-plugin-gtk's hook keep a GDK_BACKEND the user set
+// (it forces x11), so a host whose Xwayland can't present the window can run the
+// AppImage on GTK's Wayland backend with GDK_BACKEND=wayland.
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, mkdtemp, open, readdir, rename, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -24,6 +28,34 @@ const WAYLAND_LIBRARY = /^libwayland-(?:client|cursor|egl|server)\.so(?:\.|$)/;
 
 // squashfs superblock compression ids; mksquashfs accepts these names.
 export const SQUASHFS_COMPRESSIONS = Object.freeze({ 1: 'gzip', 2: 'lzma', 3: 'lzo', 4: 'xz', 5: 'lz4', 6: 'zstd' });
+
+// Every Tauri AppImage carries this hook; AppRun sources it before starting the app.
+export const GTK_HOOK = 'apprun-hooks/linuxdeploy-plugin-gtk.sh';
+// The plugin writes `export GDK_BACKEND=x11 # Crash with Wayland backend on Wayland`.
+const FORCED_BACKEND = /^([ \t]*)export GDK_BACKEND=x11(?=[ \t]*(?:#.*)?$)/gm;
+const DEFAULT_BACKEND = 'export GDK_BACKEND="${GDK_BACKEND:-x11}"';
+
+/** The GTK hook with X11 as a default instead of forced. Throws if the hook changed shape. */
+export function respectGdkBackend(script) {
+  const rewritten = script.replace(FORCED_BACKEND, (_, indent) => `${indent}${DEFAULT_BACKEND}`);
+  if (rewritten !== script || script.includes(DEFAULT_BACKEND)) return rewritten;
+  throw new Error(`${GTK_HOOK} no longer contains "export GDK_BACKEND=x11"; update respectGdkBackend in scripts/release/appimage.mjs.`);
+}
+
+async function rewriteGtkHook(root) {
+  const hook = join(root, GTK_HOOK);
+  let script;
+  try {
+    script = await readFile(hook, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new Error(`The AppImage has no ${GTK_HOOK}; GDK_BACKEND could not be made overridable.`);
+    throw error;
+  }
+  const rewritten = respectGdkBackend(script);
+  if (rewritten === script) return false;
+  await writeFile(hook, rewritten);
+  return true;
+}
 
 export function waylandLibraries(names) {
   return names.filter(name => WAYLAND_LIBRARY.test(name));
@@ -70,8 +102,8 @@ async function readHeader(appImage, offset) {
 }
 
 /**
- * Rebuild an AppImage without the Wayland libraries copied from the build host.
- * Returns false when there was nothing to remove.
+ * Rebuild an AppImage without the Wayland libraries copied from the build host and
+ * with an overridable GDK_BACKEND. Returns false when there was nothing to change.
  */
 export async function repackAppImage(appImage, { command = execute, log = () => {} } = {}) {
   const offset = await appImageOffset(appImage, command);
@@ -99,8 +131,9 @@ export async function repackAppImage(appImage, { command = execute, log = () => 
         removed.push(`${directory}/${name}`);
       }
     }
-    if (!removed.length) {
-      log('No bundled Wayland libraries found; leaving the AppImage unchanged.');
+    const hookRewritten = await rewriteGtkHook(root);
+    if (!removed.length && !hookRewritten) {
+      log('No bundled Wayland libraries and GDK_BACKEND already overridable; leaving the AppImage unchanged.');
       return false;
     }
     const squashfs = join(work, 'appimage.squashfs');
@@ -116,7 +149,8 @@ export async function repackAppImage(appImage, { command = execute, log = () => 
     await chmod(rebuilt, 0o755);
     if (await appImageOffset(rebuilt, command) !== offset) throw new Error('The rebuilt AppImage does not start at the same runtime offset.');
     await rename(rebuilt, appImage);
-    log(`Removed ${removed.join(', ')}; the AppImage now uses the host's Wayland libraries.`);
+    if (removed.length) log(`Removed ${removed.join(', ')}; the AppImage now uses the host's Wayland libraries.`);
+    if (hookRewritten) log(`${GTK_HOOK} now keeps a GDK_BACKEND set by the user (default x11).`);
     return true;
   } finally {
     await rm(rebuilt, { force: true });

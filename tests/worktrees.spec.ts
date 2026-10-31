@@ -93,7 +93,7 @@ test('an existing branch is offered for reuse instead of failing', async ({ page
   await expect(dialog.locator('.worktree-error')).toContainText('already exists');
 });
 
-test('archiving a clean worktree task offers removal and reports a kept unmerged branch', async ({ page }) => {
+test('settling a clean worktree task offers removal and reports a kept unmerged branch', async ({ page }) => {
   await probe(page);
   await page.locator('.new-task-button').click();
   await chip(page).click();
@@ -102,18 +102,18 @@ test('archiving a clean worktree task offers removal and reports a kept unmerged
   await page.locator('#dialog').getByRole('button', { name: 'Use a worktree', exact: true }).click();
   await expect(page.locator('#dialog')).toBeHidden();
   await page.locator('#task-menu-trigger').click();
-  await page.getByRole('dialog', { name: 'Task actions', exact: true }).getByRole('menuitem', { name: 'Archive task', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Archive task', exact: true });
+  await page.getByRole('dialog', { name: 'Task actions', exact: true }).getByRole('menuitem', { name: 'Settle task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Settle task', exact: true });
   await expect(dialog).toContainText('worktree is clean');
   await expect(dialog).toContainText('not pushed or merged');
   const remove = dialog.getByRole('checkbox', { name: /Remove the worktree folder/ });
   await expect(remove).not.toBeChecked();
   await remove.check();
-  await dialog.getByRole('button', { name: 'Archive task', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Settle task', exact: true }).click();
   await expect(page.locator('#toast')).toContainText('pandacode/cleanup-me was kept');
   expect((await calls(page, 'remove_worktree')).at(-1).args).toMatchObject({ deleteBranch: true });
-  expect((await calls(page, 'update_session')).at(-1).args).toMatchObject({ archived: true });
-  await expect(page.locator('.composer-area')).toContainText('This task is archived.');
+  expect((await calls(page, 'set_task_stage')).at(-1).args).toMatchObject({ stage: 'completed' });
+  await expect(page.locator('.composer-area')).toContainText('This task is settled.');
 });
 
 test('a dirty worktree is never removed and cancel keeps the task active', async ({ page }) => {
@@ -130,7 +130,7 @@ test('a dirty worktree is never removed and cancel keeps the task active', async
   await menu(page).getByRole('menuitem', { name: /Remove worktree/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Remove worktree', exact: true });
   await expect(dialog).toContainText('2 uncommitted changes');
-  await expect(dialog.getByRole('button', { name: 'Remove and archive', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Remove and settle', exact: true })).toBeDisabled();
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(await calls(page, 'remove_worktree')).toHaveLength(0);
@@ -226,9 +226,16 @@ test('merges a worktree into main locally, then offers to remove it', async ({ p
   const dialog = page.getByRole('dialog', { name: 'Remove worktree', exact: true });
   await expect(dialog).toContainText('its branch is merged');
   await expect(dialog.getByRole('checkbox')).toBeChecked();
-  await dialog.getByRole('button', { name: 'Remove and archive', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Remove and settle', exact: true }).click();
   await expect(page.locator('#toast')).toContainText('deleted pandacode/ship-it');
   expect((await calls(page, 'remove_worktree')).at(-1).args).toMatchObject({ deleteBranch: true });
+  // The settled draft is never reopened: New task, from here or elsewhere, starts a fresh one.
+  for (const from of [null, 'session-1']) {
+    if (from) await page.locator(`.task-item[data-id="${from}"]`).click();
+    await page.locator('.new-task-button').click();
+    await expect(page.locator('.board-completed-note')).toHaveCount(0);
+    await expect(prompt(page)).toBeEnabled();
+  }
 });
 
 test('a merge that conflicts says so and leaves the worktree alone', async ({ page }) => {

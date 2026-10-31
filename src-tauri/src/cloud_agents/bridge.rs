@@ -39,6 +39,9 @@ pub(crate) struct Spec {
     pub attach: bool,
     /// Where progress is written for the app ([`Status`] as JSON).
     pub status: PathBuf,
+    /// The app data dir, so this process reads provider keys from PandaCode's secrets file.
+    #[serde(default)]
+    pub secrets: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -356,6 +359,9 @@ pub fn handle() -> bool {
         let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(&path);
         let spec: Spec = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        if let Some(dir) = &spec.secrets {
+            crate::secret_store::setup(dir);
+        }
         let sandbox = crate::cloud::sandbox::connected(&spec.provider)?;
         let status_path = spec.status.clone();
         let mut status = move |status: &Status| {
@@ -499,6 +505,7 @@ pub(crate) mod tests {
             env: vec![("KEY".into(), "it's secret".into())],
             attach: false,
             status: PathBuf::new(),
+            secrets: None,
         }
     }
 

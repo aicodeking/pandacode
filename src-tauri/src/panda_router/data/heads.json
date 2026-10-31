@@ -1,0 +1,136 @@
+{
+  "taxonomy_version": "1.0.0",
+  "temperatures": {
+    "category": 1.0965523788595883,
+    "difficulty": 1.3347925395866695,
+    "skills": [
+      1.1041760351671137,
+      1.1274237973998877,
+      1.2066254852305645,
+      0.9800157272468131,
+      1.1269119757052857,
+      1.1768613439702853,
+      1.1540651857844257,
+      1.2020589626734033,
+      1.0029569078951888,
+      1.0872562968937012
+    ],
+    "flags": 1.1771387298758098,
+    "checklist": 1.0620638661850224,
+    "out_tokens_width": 1.2581787183303044
+  },
+  "label_order": {
+    "categories": [
+      "implementation",
+      "bugfix",
+      "refactor",
+      "test_writing",
+      "code_review",
+      "research",
+      "planning",
+      "docs_writing",
+      "ui_frontend",
+      "data_analysis",
+      "devops_infra",
+      "math_reasoning",
+      "chat_simple"
+    ],
+    "skill_axes": [
+      "coding",
+      "debugging",
+      "reasoning",
+      "math",
+      "writing",
+      "research",
+      "review",
+      "planning",
+      "ui_frontend",
+      "data_analysis"
+    ],
+    "flags": [
+      "needs_tools",
+      "needs_vision",
+      "long_context",
+      "needs_review",
+      "ambiguous_spec",
+      "multi_file",
+      "needs_web"
+    ],
+    "checklist": [
+      "edits_code",
+      "touches_gt3_files",
+      "new_feature",
+      "has_failing_behavior",
+      "needs_root_cause",
+      "needs_run_commands",
+      "needs_browser_or_web",
+      "has_images",
+      "input_gt_50k_tokens",
+      "concurrency_or_distributed",
+      "security_sensitive",
+      "formal_math_or_proof",
+      "domain_expertise",
+      "clear_acceptance_criteria",
+      "undefined_terms",
+      "design_decisions",
+      "visual_ui_work",
+      "writes_prose",
+      "data_processing",
+      "infra_config",
+      "multi_step_plan",
+      "reviews_existing_work",
+      "trivial_one_liner",
+      "high_stakes"
+    ],
+    "difficulty_levels": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "skill_levels": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+    ],
+    "out_tokens_quantiles": [
+      "p10",
+      "p50",
+      "p90"
+    ],
+    "outputs": [
+      "category",
+      "difficulty",
+      "skills",
+      "flags",
+      "checklist",
+      "out_tokens"
+    ]
+  },
+  "backbone": "/vol/runs/t150m_s32m_soup",
+  "max_len": 512,
+  "buckets": [
+    64,
+    128,
+    256,
+    512
+  ],
+  "source_checkpoint": "/tmp/ck_0.7",
+  "int8_excluded_nodes": [],
+  "int8_per_channel": true,
+  "opset": 17
+}

@@ -13,7 +13,7 @@ const DISCOVERY_FAILED: &str =
 
 pub async fn discover(cwd: &Path) -> Result<Catalog, String> {
     let path = crate::providers::executable("muse").ok_or("Install the harness to discover its commands.")?;
-    let mut command = crate::providers::command(&path)?;
+    let mut command = crate::providers::provider_command("muse", &path)?;
     command.args(["serve", "--no-session-log"]).args(crate::providers::privacy::muse_arguments()).env("MUSE_LOGIN", "0");
     let mut pipe = Pipe::spawn(command, cwd, Duration::from_secs(20)).map_err(|_| DISCOVERY_FAILED.to_owned())?;
     let result = async {

@@ -1,10 +1,10 @@
 .task-pin{display:inline-flex;color:var(--accent);flex:none}
-.task-pin .icon{width:12px;height:12px}
-.activity-heading>.icon{width:13px;height:13px;color:var(--accent)}
+.task-pin .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+.activity-heading>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent)}
 .task-item[draggable=true]{position:relative;cursor:grab}
 .task-item[draggable=true]:active{cursor:grabbing}
 .task-item.task-dragging{opacity:.45}
-.task-item.drop-before::before,.task-item.drop-after::after{content:"";position:absolute;inset-inline:7px;height:2px;border-radius:1px;background:var(--accent);pointer-events:none}
+.task-item.drop-before::before,.task-item.drop-after::after{content:"";position:absolute;inset-inline:7px;height:2px;border-radius:var(--radius-xs);background:var(--accent);pointer-events:none}
 .task-item.drop-before::before{top:-2px}
 .task-item.drop-after::after{bottom:-2px}
 .navigation[aria-busy=true] .task-item{cursor:progress}

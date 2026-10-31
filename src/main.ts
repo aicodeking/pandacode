@@ -1,7 +1,10 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
-import { bindThreadReordering, compareThreadOrder, threadGroupRows } from './thread-order';
-import { FOLDER_LIMIT, PROJECT_LIMIT, folderGroups, readCollapsed, shownTasks } from './sidebar-tree';
+import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
+import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
+import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
+import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
+import './model-picker.css';
 import './smooth.css';
 import './wallpapers.css';
 import './turn-changes.css';
@@ -10,65 +13,85 @@ import './motion.css';
 import './sidebar-tree.css';
 import './inspector-bar.css';
 import './message-queue.css';
+import './schedules.css';
+import './bot-shared-channels.css';
+import './bots.css';
 import './usage-limit.css';
 import './document-viewer.css';
 import './tool-trace.css';
-import { renderDocument, setDocumentView } from './document-viewer';
+import './tool-cards.css';
+import './trace-motion.css';
+import './action-dock.css';
+import { mountActionDock, mountAgents } from './action-dock';
+import { setDocumentView } from './document-viewer';
 import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
+import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
+import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
-import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast, trackSegment } from './motion';
-import { updateTeamProgress } from './team-progress';
+import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast } from './motion';
+import { teamSignature, updateTeamProgress } from './team-progress';
+import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
 import { mountWallpapers } from './wallpapers';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, ToolActivity, TurnChanges } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, morph } from './dom';
 import { botAvatarHtml } from './bot-avatars';
+import * as botThread from './bot-thread';
+import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
-import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus } from './tool-activity';
+import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
+import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
+import { choreograph, enterHeader, enterText, foldTurn, readingTrace } from './trace-motion';
 import { groupTurns, formatDuration, turnLabel } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette } from './palette';
-import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
+import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { approvalMode, approvalModes } from './approval-modes';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
 import { TerminalPanel } from './terminal-panel';
 import { ProjectRunner } from './run-project';
-import { captureTranscriptAnchor } from './transcript-scroll';
+import { captureTranscriptAnchor, followTranscriptBottom } from './transcript-scroll';
 import { Subagents } from './subagents';
 import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
+import { decorateTranscript, initOrchestration, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
-import { LOCAL, behindDialog, behindText, computerControl, computerItems } from './remote-target';
+import type { RemoteStart } from './remote-progress';
+import type { RoutingMode, RoutingStatus } from './model-routing';
+import { CONNECT_SETUP, LOCAL, behindDialog, behindText, cancelledRemoteStart, clearRemoteStart, computerControl, computerItems, lastSeenText, remoteStart, remoteStartAttached, remoteStartStrip, startStageText, trackRemoteStart } from './remote-target';
 import './cloud-agents.css';
 import { SETUP_CHOICE, cloudActionItems, cloudIcon, cloudProvider, cloudStrip, deleteMachineDialog, harnessRefusal, type CloudStage, type CloudTarget } from './cloud-agents';
-import { botsBarHtml, botsListHtml, botsPanelHeadHtml, storedSidebarView, storeSidebarView, syncSeen, type SidebarView } from './sidebar-bots';
+import { botsBarHtml, botsListHtml, botsPanelHeadHtml, markAllBotsRead, moveBot, pinnedBots, setBotPinned, storedSidebarView, storeSidebarView, syncSeen, type BotSignals, type SidebarView } from './sidebar-bots';
+import { sharedChannelActionsHtml, sharedChannelComposerHtml, sharedChannelThreadHtml, type SharedChannelDetail, type SharedChannelSummary, type SharedChannelUiOptions } from './bot-shared-channels';
 import { connectAgentUiActions, type AgentUiAction } from './agent-ui-actions';
 import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
+import { createFileTabs } from './file-tabs';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
-import { startAppUpdates } from './app-updates';
+import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
+import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
 import { isMac, isWindows, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
@@ -77,32 +100,51 @@ import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
 import { isChatProject, NO_PROJECT } from './chats';
+import { mountAgentsDock } from './agents-dock';
+import { mountChangesView, type ChangesView } from './changes-view';
+import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
+import { TailText } from './tail-text';
+import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
 
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { text: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
+type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
+/** Views this platform can show; the inspector's open tabs and selection persist across launches. */
+const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view === 'simulator' ? isMac || isWindows : view === 'vm' ? isMac : true);
+let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
+/** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
+type PanelView = InspectorView | 'file';
+const INSPECTOR_TITLES: Record<InspectorView, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design' };
+const INSPECTOR_TIPS: Partial<Record<InspectorView, string>> = { simulator: 'iOS & Android simulators', design: 'Design canvas' };
+const INSPECTOR_ICONS: Record<InspectorView, string> = { files: 'file', search: 'search', changes: 'branch', browser: 'globe', pull: 'pull', simulator: 'phone', vm: 'monitor', design: 'sketch' };
+/** Tab buttons keep the actions the old icon bar used, so every handler and shortcut still applies. */
+const INSPECTOR_ACTIONS: Record<InspectorView, string> = { files: 'tab-files', search: 'tab-search', changes: 'tab-changes', browser: 'browser', pull: 'tab-pull', simulator: 'tab-simulator', vm: 'tab-vm', design: 'tab-design' };
 const state = {
   projects: [] as Project[], sessions: [] as Session[], providers: [] as Provider[],
   projectId: '', sessionId: '', messages: [] as Message[], messagesLoading: false, messagesError: '', streams: new Map<string, Stream>(),
   view: (({ board: 'board', github: 'github' } as Record<string, 'board' | 'github'>)[localStorage.getItem('pandacode.view') ?? ''] ?? 'conversation') as WorkspaceView, boardPanel: false,
   sidebarCollapsed: localStorage.getItem('pandacode.sidebarCollapsed') === 'true',
-  query: '', archived: false, inspector: false, inspectorTab: 'files' as 'changes' | 'files' | 'search' | 'browser' | 'pull' | 'simulator' | 'vm' | 'design',
+  query: '', inspector: false, inspectorTab: threadDefault(inspectorTabs) as PanelView,
   projectFilter: localStorage.getItem('pandacode.projectFilter') ?? '', collapsedFolders: readCollapsed(localStorage, 'pandacode.collapsedFolders'), expandedFolders: new Set<string>(),
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
-  git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], filePath: '', gitError: '', filesError: '', inspectorLoading: false,
-  selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff' | 'file', selectedStaged: false, filePreviewLoading: false,
+  git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
+  selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
   attachments: [] as string[], drafts: new Map<string, string>(), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
+  sharedChannelId: '', sharedChannelDetail: null as SharedChannelDetail | null, sharedChannelRequest: 0,
+  sharedChannelDrafts: new Map<string, string>(), sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
 };
 let renderFrame = 0;
 let navigationFrame = 0;
+let settledDock: HTMLElement | null = null;
+const settledResize = new ResizeObserver(() => { if (settledDock) $('#navigation').style.setProperty('--settled-height', `${settledDock.offsetHeight}px`); });
 type FinishingStream = { stream: Stream; finishedAt: number; error?: string };
 const finishingStreams = new Map<string, FinishingStream>();
 // Ignore late snapshots/events for IDs removed during this window's lifetime.
@@ -132,15 +174,17 @@ let creatingTask = false;
 let openingSupport = false;
 let activityTimer = 0;
 let workTimer = 0;
+let channelWorkingLabelTimer = 0;
 let browserPanel: BrowserPanel | undefined, browserWanted = false;
 let simulatorPanel: ReturnType<typeof import('./simulator').mountSimulator> | undefined, simulatorLoading: Promise<void> | undefined;
 let vmPanel: ReturnType<typeof import('./vm-panel').mountVmPanel> | undefined, vmLoading: Promise<void> | undefined;
 let designPanel: ReturnType<typeof import('./design-canvas').mountDesignCanvas> | undefined, designLoading: Promise<void> | undefined;
+let progressPip: import('./progress-pip').ProgressPip | undefined, progressPipLoading: Promise<void> | undefined;
 let browserLifecycle = Promise.resolve();
 let browserOwner = '', browserRevision = 0, inspectorSuppressed = false;
 /** The user's last explicit inspector toggle; a task without saved panel state follows it. */
 let inspectorChosen = true;
-type ThreadPanel = { workspace: string; open: boolean; tab: typeof state.inspectorTab; folder: string; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
+type ThreadPanel = { workspace: string; open: boolean; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
 const threadPanels = new Map<string, ThreadPanel>();
 const teams = new Map<string, TeamSnapshot | null>();
 let architectView: ArchitectView | undefined;
@@ -159,7 +203,7 @@ void call<import('./jev').JevConfiguration>('jev_configuration').then(config => 
 window.addEventListener('pandacode:jev-settings', event => setJevAvailability(Boolean((event as CustomEvent<import('./jev').JevConfiguration>).detail.decisionsEnabled)));
 async function ensureArchitectView(): Promise<ArchitectView> {
   return architectLoading ??= import('./architect').then(({ ArchitectView }) => {
-    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)) });
+    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice) });
     architectView.setAssistEnabled(jevDecisionsEnabled);
     $('#subagents-host').before(architectView.host);
     architectView.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
@@ -175,19 +219,28 @@ function onArchitect(team: TeamEvent): void {
   if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error)) notify(team.error);
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
-  const task = state.sessions.find(s => s.id === team.sessionId);
+  const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
   if (task && teamActive(team)) { task.status = 'running'; task.taskStage = 'in_progress'; }
   if (task && !teamActive(team) && !state.streams.has(task.id)) task.status = 'idle';
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); });
-  if (team.sessionId === state.sessionId) {
-    if (wasActive !== teamActive(team)) renderComposer();
-    else refreshModelLabels();
-  }
+  // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
+  if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
+  if (team.sessionId === state.sessionId) scheduleTeamRender(wasActive !== teamActive(team));
   scheduleNavigation();
+}
+/** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
+let teamFrame = 0, teamComposer = false;
+function scheduleTeamRender(composer: boolean): void {
+  teamComposer ||= composer;
+  teamFrame ||= requestAnimationFrame(() => {
+    const full = teamComposer; teamFrame = 0; teamComposer = false;
+    if (full) renderComposer(); else refreshModelLabels();
+  });
 }
 async function loadTeam(id: string): Promise<TeamSnapshot | null> {
   const known = teams.has(id), before = teams.get(id);
-  const loaded = await call<TeamSnapshot | null>('architect_get', { sessionId: id });
+  // A task on another computer shows the team its host runs; older hosts have none to show.
+  const loaded = state.sessions.find(task => task.id === id)?.remoteDevice ? await call<TeamSnapshot | null>('remote_team', { sessionId: id }).catch(() => null) : await call<TeamSnapshot | null>('architect_get', { sessionId: id });
   if (deletedSessions.has(id)) return null;
   // An update or a removal that arrived during the fetch is newer than this snapshot.
   if (teams.has(id) !== known || teams.get(id) !== before) return teams.get(id) ?? null;
@@ -197,9 +250,21 @@ async function loadTeam(id: string): Promise<TeamSnapshot | null> {
   if (id === state.sessionId) architectView?.setTask(id, loaded, state.providers);
   return loaded;
 }
+/** A mirror's host reports changed worker rows (`team` events) and run ends: reread its team. */
+const mirrorTeamReads = new Map<string, number>();
+function refreshMirrorTeam(id: string): void {
+  if (mirrorTeamReads.has(id)) return;
+  mirrorTeamReads.set(id, window.setTimeout(() => {
+    mirrorTeamReads.delete(id);
+    void call<TeamSnapshot | null>('remote_team', { sessionId: id }).then(team => {
+      if (team) onArchitect(team); else if (teams.get(id)) onArchitect({ sessionId: id, removed: true });
+    }).catch(() => undefined);
+  }, 300));
+}
 async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   if (architectSetupCleanup) { architectSetupCleanup(); return; }
   const task = session(); if (!task) return;
+  if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
   closeMenus();
   const request = ++architectSetupRequest;
   const { openArchitectSetup } = await import('./architect');
@@ -224,74 +289,198 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   }, () => { architectSetupCleanup = undefined; });
 }
 /** Team mode needs no setup: the task's selected model leads, and the lead (or the user's prompt) picks worker models. */
-const TEAM_TIP = 'Team mode: your selected model becomes the lead. It plans the work, starts other agents in parallel, picks a model for each worker on its own, and reviews their results. To choose the workers yourself, just say so in your prompt, like "use Sonnet 5.5 workers" or "have Codex review it". Click to turn Team on or off.';
-/** Team toggles an automatic team, or with Settings → Classic team setup opens Architect & workers. */
+const TEAM_TIP = 'Team mode: your selected model becomes the lead. It plans the work, starts other agents in parallel and reviews their results. Cheap, Balanced and Best set how Panda Router picks each worker\'s model; with routing off the lead picks a model for each worker on its own. To choose the workers yourself, just say so in your prompt, like "use Sonnet 5.5 workers" or "have Codex review it".';
+const routeIcon = (path: string) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+/** The Team menu's team kinds. Each one is Panda Router's global mode, so the next task pre-checks the kind used last. */
+/** The kinds are one global setting: every automatic team follows it, and new tasks start with it. */
+const TEAM_KINDS_HINT = 'Worker models for every team · remembered', TEAM_KINDS_OFF_HINT = 'Worker models for every team · turns routing on';
+const TEAM_KINDS: { id: RoutingMode; label: string; description: string; leading: string }[] = [
+  { id: 'cheapest', label: 'Cheap team', description: 'Cheapest model likely to pass', leading: routeIcon('<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.2"/>') },
+  { id: 'balanced', label: 'Balanced team', description: 'Best value for the cost', leading: routeIcon('<path d="M12 4v16M7 20h10M5 8h14M5 8l-3 6a3 3 0 0 0 6 0zM19 8l-3 6a3 3 0 0 0 6 0z"/>') },
+  { id: 'quality', label: 'Best team', description: 'Strongest model for each worker', leading: icon('spark') },
+];
+/** The task's team as the Team button names it: off, a named agent team, a routed kind, or a team whose lead picks models. */
+function teamState(s: Session): { id: string; label: string } {
+  const team = teams.get(s.id);
+  if (!team) return { id: 'off', label: 'Team' };
+  if (team.config.rosterOnly) return { id: 'named', label: team.config.name?.trim() || 'Team' };
+  const kind = team.config.auto && routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
+  return kind ?? { id: 'lead', label: 'Team' };
+}
+const teamButtonHtml = (s: Session) => `${teamToggles.has(s.id) ? '<span class="support-spinner" aria-hidden="true"></span>' : icon('worktree')}<span>${escape(teamState(s).label)}</span>${icon('down')}`;
+/** Team opens the team menu, or with Settings → Classic team setup opens Architect & workers. */
 function teamButton(s: Session): string {
-  const on = Boolean(teams.get(s.id));
+  if (s.remoteDevice) return '';
+  const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-pressed="${on}" title="Architect & workers">${icon('worktree')}<span>Team</span></button>`
-    : `<button type="button" class="composer-team-button" data-action="team-toggle" aria-label="Team" aria-description="${escape(TEAM_TIP)}" aria-pressed="${on}" data-tip="${escape(TEAM_TIP)}">${icon('worktree')}<span>Team</span></button>`;
+    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} title="Architect & workers">${icon('worktree')}<span>Team</span></button>`
+    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(TEAM_TIP)}" data-tip="${escape(TEAM_TIP)}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
-const AUTO_ROSTER_MAX = 24, AUTO_PER_HARNESS = 6;
-/** Installed models the lead may pick from; it can also name any other model directly. */
-async function autoRoster(): Promise<WorkerProfile[]> {
-  const installed = state.providers.filter(p => p.installed);
-  const catalogs = await Promise.allSettled(installed.map(p => loadModels(p.id)));
-  const roster: WorkerProfile[] = [], ids = new Set<string>();
-  installed.forEach((harness, index) => {
-    const result = catalogs[index];
-    for (const model of (result.status === 'fulfilled' ? result.value : harness.models).slice(0, AUTO_PER_HARNESS)) {
-      const id = `${harness.id}-${model.id}`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-+$/, '').slice(0, 80);
-      if (!model.id || roster.length >= AUTO_ROSTER_MAX || ids.has(id)) continue;
-      ids.add(id);
-      roster.push({ id, name: `${model.name} · ${harness.name}`.slice(0, 80), provider: harness.id, model: model.id, reasoningEffort: null });
+/** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
+let routing: RoutingStatus | null = null;
+/** Every change of `routing` (a Team menu pick, a Settings status) takes a ticket; a reply lands only
+ * while no newer change has started. Reads (status, prepare) take none: they land only if no change
+ * started after them and none is pending, so a read never overrides a change. */
+let routingTicket = 0, routingConfiguring = 0, routingFailedAt = 0;
+let routingLoad: Promise<RoutingStatus | null> | null = null;
+/** A Settings status that arrived during a Team menu configure; applied if that configure fails. */
+let routingMissed: RoutingStatus | null = null;
+const ROUTING_RETRY_MS = 3000;
+/** Redraws only the Team button's label, so the prompt keeps its focus and caret. */
+function syncTeamButton(): void {
+  const trigger = document.querySelector<HTMLElement>('#team-trigger'), s = session(); if (!trigger || !s) return;
+  const html = teamButtonHtml(s);
+  if (trigger.innerHTML !== html) trigger.innerHTML = html;
+  trigger.toggleAttribute('data-on', Boolean(teams.get(s.id)));
+  trigger.setAttribute('aria-busy', String(teamToggles.has(s.id)));
+}
+function applyRouting(ticket: number, next: RoutingStatus): boolean {
+  if (ticket !== routingTicket) return false;
+  routing = next; syncTeamButton(); return true;
+}
+/** A read started at `ticket` lands only if no change started since and none is pending. */
+function applyRead(ticket: number, next: RoutingStatus): void {
+  if (!routingConfiguring) applyRouting(ticket, next);
+}
+/** Reads the status once at a time; every caller shares the request in flight. */
+function loadRouting(): Promise<RoutingStatus | null> {
+  return routingLoad ??= (async () => {
+    const ticket = routingTicket;
+    try {
+      const next = await call<RoutingStatus>('model_routing_status');
+      routingFailedAt = 0; applyRead(ticket, next); return next;
+    } catch (cause) { routingFailedAt = Date.now(); console.warn('Model routing status is unavailable', cause); return null; }
+    finally { routingLoad = null; }
+  })();
+}
+/** Until a status has loaded, a local task asks again when it renders (no request once loaded). */
+function retryRouting(s: Session | undefined): void {
+  if (!routing && s && !s.remoteDevice && Date.now() - routingFailedAt >= ROUTING_RETRY_MS) void loadRouting();
+}
+// Settings' status is newer than anything in flight, except a configure started here, whose reply follows.
+window.addEventListener('pandacode:routing', event => {
+  const next = (event as CustomEvent<RoutingStatus>).detail;
+  if (routingConfiguring) routingMissed = next; else applyRouting(++routingTicket, next);
+});
+window.addEventListener('focus', () => void loadRouting());
+void loadRouting();
+/** Turns routing on in `mode`; a refusal throws, so the menu shows it. */
+async function configureRouting(mode: RoutingMode): Promise<void> {
+  if (routing?.enabled && routing.mode === mode) return;
+  const ticket = ++routingTicket;
+  routingConfiguring++;
+  let saved = false;
+  try { applyRouting(ticket, await call<RoutingStatus>('model_routing_configure', { enabled: true, mode })); saved = true; }
+  finally {
+    routingConfiguring--;
+    // A Settings status that arrived meanwhile: re-read after a save (it may be newer), apply it after a failure.
+    if (!routingConfiguring && routingMissed) {
+      const missed = routingMissed; routingMissed = null;
+      if (saved) void loadRouting(); else applyRouting(++routingTicket, missed);
     }
-  });
-  return roster;
+  }
 }
-let teamToggleBusy = false;
-async function toggleTeam(): Promise<void> {
-  const task = session(); if (!task || teamToggleBusy) return;
-  closeMenus();
-  teamToggleBusy = true;
+/** No team, a team whose lead picks models, or a team whose workers Panda Router picks by kind (the global mode). */
+async function showTeamMenu(anchor: HTMLElement): Promise<void> {
+  const task = session(); if (!task) return;
+  if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
+  if (!teams.has(task.id)) await loadTeam(task.id);
+  const { id: current, label } = teamState(task), team = teams.get(task.id);
+  const routed = routing?.enabled === true;
+  // A kind replaces a named agent team, and turns routing on when it is off (or its status is unknown).
+  const note = current === 'named' ? `Replaces ${label}` : '';
+  const items = [
+    { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
+    ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: icon('worktree') }] : []),
+    ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: icon('worktree') }] : []),
+    ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: k.leading, heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
+  ].map(item => ({ ...item, selected: item.id === current }));
+  // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
+  let turnedOn = false;
+  await showChoices(anchor, { title: 'Team', width: 320, items, afterClose: () => { if (turnedOn && task.id === state.sessionId) renderComposer(); }, onSelect: async id => {
+    if (id === current || id === 'named') return;
+    if (id === 'off') { await setTeam(task, false); return; }
+    // The team turns on first, so a refusal leaves the global mode alone; an automatic team only changes kind.
+    const keep = team && !team.config.rosterOnly && team.config.auto;
+    if (!keep) { if (!await setTeam(task, true, false)) return; turnedOn = true; }
+    if (id === 'lead') return;
+    await configureRouting(id as RoutingMode);
+    if (!routed) prepareModelRouting();
+  } });
+}
+/** An automatic team's config with the current installed models (the capped roster for the lead,
+ * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
+async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+  const limits = base ?? library?.lastSetup?.config;
+  return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
+}
+/** Warms Panda Router's profiler when a team starts; failures only reach the console. */
+function prepareModelRouting(): void {
+  void loadRouting()
+    .then(status => {
+      // The cached status may be newer than the shared read this joined.
+      if (!(routing ?? status)?.enabled) return;
+      const ticket = routingTicket;
+      return call<RoutingStatus>('model_routing_prepare').then(next => applyRead(ticket, next));
+    })
+    .catch(cause => console.warn('Model routing could not prepare', cause));
+}
+const teamToggles = new Set<string>();
+const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${task.remoteDevice?.name ?? 'the other computer'}.`;
+/** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
+ * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
+async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
+  if (configuringSessions.has(task.id)) return false;
+  teamToggles.add(task.id); configuringSessions.add(task.id);
   try {
-    const team = teams.get(task.id) ?? await loadTeam(task.id);
+    // In place: the Team menu stays anchored to the button while it applies.
+    if (task.id === state.sessionId) syncTeamButton();
     let config: TeamConfig | null = null;
-    if (!team) {
-      const [library, workers] = await Promise.all([call<TeamLibrary>('architect_profiles'), autoRoster()]);
-      const limits = library.lastSetup?.config;
-      config = { auto: true, workers, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
+    if (on) {
+      prepareModelRouting();
+      config = await autoTeamConfig();
     }
-    if (task.id !== state.sessionId) return;
+    if (task.id !== state.sessionId) return false;
     const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect: null, profileId: null });
     onArchitect(saved ?? { sessionId: task.id, removed: true });
     await reloadSessions();
-    if (task.id !== state.sessionId) return;
-    renderComposer();
-  } finally { teamToggleBusy = false; }
+    teamToggles.delete(task.id); configuringSessions.delete(task.id);
+    if (task.id === state.sessionId) { if (render) renderComposer(); else syncTeamButton(); }
+    return true;
+  } finally {
+    // A failed save keeps the menu open with its error, so only the button is redrawn.
+    if (teamToggles.delete(task.id) && task.id === state.sessionId) syncTeamButton();
+    configuringSessions.delete(task.id);
+    run(dispatchQueue(task.id));
+  }
 }
 const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
+/** Sort arrows for the sidebar's sort and view menu. */
+const SORT_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16m-3-3 3 3 3-3M17 20V4m-3 3 3-3 3 3"/></svg>';
 const $app = document.querySelector<HTMLDivElement>('#app')!;
 $app.innerHTML = `<div class="workspace">
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
-    <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span></div>
+    <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span>${button('view-menu', 'Workspace view: Conversation', 'thread', 'view-menu', 'id="view-menu" aria-haspopup="menu" aria-expanded="false"')}</div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
-    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
-    <div id="navigation" class="navigation"></div>
-    <div id="sidebar-note" class="sidebar-note" hidden></div>
+    <div class="sidebar-projects"><button id="project-filter" class="project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span data-filter-label>All projects</span>${icon('down')}</button><button id="sidebar-sort" class="icon-button sidebar-sort" data-action="sidebar-sort" aria-label="Sort and view" title="Sort and view" aria-haspopup="menu" aria-expanded="false">${SORT_ICON}</button>${button('import-conversations', 'Import conversations', 'download', 'import-trigger')}${button('add-project', 'Open project', 'plus')}</div>
+    <div class="sidebar-search">${icon('search')}<input id="sidebar-filter" type="search" aria-label="Filter tasks" placeholder="Filter tasks" autocomplete="off" spellcheck="false" maxlength="200" aria-keyshortcuts="/"><button type="button" class="sidebar-search-clear" data-action="clear-sidebar-filter" tabindex="-1" aria-label="Clear filter" title="Clear filter">${icon('close')}</button></div>
+    <div class="navigation-frame"><div id="navigation" class="navigation"></div></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
     <div id="sidebar-bots" class="sidebar-bots"></div>
-    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="archive-view" id="archive-toggle" title="Archived tasks" aria-label="Archived tasks">${icon('archive')}</button><button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
+    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
-    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}<button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button><div class="view-switch" role="group" aria-label="Workspace view"><button data-action="conversation-view" aria-label="Conversation view" aria-pressed="true">${icon('chat')}<span>Conversation</span></button><button data-action="board-view" aria-label="Board view" aria-pressed="false">${icon('board')}<span>Board</span></button><button data-action="github-view" aria-label="GitHub view" aria-pressed="false">${icon('github')}<span>GitHub</span></button></div><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}<span class="header-divider" aria-hidden="true"></span>${button('moodboards', 'Project moodboards', 'images')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}<span class="header-divider" aria-hidden="true"></span>${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div></header>
-    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><div id="subagents-host" class="subagents-host" hidden></div><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div></section></div>
+    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('worktree')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div></div></header>
+    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
-  <aside id="inspector" class="inspector" aria-label="Project inspector"><nav class="inspector-tabs" aria-label="Panel views"><button class="selected" data-action="tab-files" aria-label="Files" title="Files">${icon('file')}</button><button data-action="tab-search" aria-label="Search" title="Search">${icon('search')}</button><button data-action="tab-changes" aria-label="Changes" title="Changes">${icon('branch')}<span id="changes-count"></span></button><button data-action="browser" aria-label="Browser" title="Browser">${icon('globe')}</button><button data-action="tab-pull" hidden>${icon('pull')}</button><button data-action="tab-simulator" aria-label="Simulators" title="iOS & Android simulators" ${isMac || isWindows ? '' : 'hidden'}>${icon('phone')}</button><button data-action="tab-vm" aria-label="Virtual machines" title="Virtual machines" ${isMac ? '' : 'hidden'}>${icon('monitor')}</button><button data-action="tab-design" aria-label="Design" title="Design canvas">${icon('sketch')}</button></nav><header class="inspector-heading"><h2 id="inspector-title" class="inspector-title">Files</h2>${button('refresh-inspector', 'Refresh project', 'refresh')}</header><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section></aside>
+  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
+mountAgentsDock(document.querySelector<HTMLElement>('#agents-dock-host')!, { openTask: id => run((async () => { await reloadSessions(); await selectSession(id, true); })()) });
 publishSpringEasings();
+mountActionDock($('#action-dock'));
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
 const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report);
 const projectRunner = new ProjectRunner({
@@ -301,11 +490,35 @@ const projectRunner = new ProjectRunner({
   notify,
 });
 let sidebarDragging = false, orderingBusy = false;
+/** The open thread stays in the section it was opened from, so its row does not jump from under the click. */
+let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
+const collapsedSections = readCollapsed(localStorage, COLLAPSED_SECTIONS_KEY);
+/** Settled lists its newest rows first, then pages in more on request. */
+const COMPLETED_FIRST = 10, COMPLETED_PAGE = 25;
+let completedShown = COMPLETED_FIRST;
+let sidebarSort: SidebarSort = readSort(localStorage);
+let projectOrder: string[] = readProjectOrder(localStorage);
+/** "3:45 PM" from "Resets 3:45 PM"; nothing when the harness did not report a reset time. */
+function limitReset(until: number | null | undefined, now: number): string {
+  return until ? resetLabel(until, now).replace(/^Resets /, '') : '';
+}
+/** A last run that ended badly: an error, or cut short by a restart. */
+const FAILED_STATUS = new Set(['error', 'interrupted']);
+/** Long branch names keep their tail ("…ant-search"), where branches usually differ. */
+function branchLabel(branch: string): string {
+  const chars = [...branch], tail = chars.length > 14 ? chars.slice(-8).join('') : '';
+  return `<span class="task-branch-name"><span class="task-branch-head">${escape(tail ? chars.slice(0, -8).join('') : branch)}</span>${tail ? `<span class="task-branch-tail">${escape(tail)}</span>` : ''}</span>`;
+}
+/** Threads whose turn finished out of sight (shown unread until opened); read on first draw. */
+let unreviewed: Set<string> | undefined;
+function saveUnreviewed(): void { try { localStorage.setItem(UNREVIEWED_KEY, JSON.stringify([...unreviewed ?? []])); } catch { /* per-launch only */ } }
 bindThreadReordering($('#navigation'), {
   busy: () => orderingBusy,
   dragging: active => { sidebarDragging = active; if (!active) renderNavigation(); },
   reorder: (ids, focus) => run(reorderThreads(ids, focus)),
-  menu: row => run(showSidebarTaskMenu(row)),
+  reorderFolders: (ids, focus) => reorderFolders(ids, focus),
+  menu: (row, point) => run(showSidebarTaskMenu(row, point)),
+  folderMenu: (heading, point) => run(showFolderMenu(heading, point)),
 });
 /* Branch and worktree control, plus optional GitHub through the user's gh CLI. */
 const github = createGithub({
@@ -324,6 +537,10 @@ const github = createGithub({
 /* Per-thread token saving: packs ride along with messages as folded guidance. */
 const tokenSaver = createTokenSaver({
   call, notify,
+  contextUsage: sessionId => {
+    const s = session();
+    return s && s.id === sessionId ? state.streams.get(s.id)?.contextUsage ?? s.contextUsage ?? null : null;
+  },
   changed: sessionId => {
     if (sessionId !== state.sessionId) return;
     const current = document.querySelector<HTMLElement>('.composer-saver-button');
@@ -331,10 +548,33 @@ const tokenSaver = createTokenSaver({
   },
 });
 void tokenSaver.loadTools();
+/* Per-task token totals from the agents' own logs; one fetch per session, refetched when a run ends. */
+const taskUsage = new Map<string, TaskTokenUsage | null>();
+function usageLine(usage: TaskTokenUsage): string {
+  return `This task so far: ${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out, ${tokenCount(usage.cacheRead)} cache reads.`;
+}
+function ensureTaskUsage(sessionId: string): void {
+  if (taskUsage.has(sessionId)) return;
+  taskUsage.set(sessionId, null);
+  void call<TaskTokenUsage | null>('task_token_usage', { sessionId }).then(usage => {
+    taskUsage.set(sessionId, usage ?? null);
+    if (state.sessionId === sessionId) renderContextUsage();
+  }).catch(() => taskUsage.delete(sessionId));
+}
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
   open: path => run(openFile(path, 'file')),
+});
+const fileTabs = createFileTabs({
+  call,
+  canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId,
+  attach: path => attachFile(path),
+  preview: (path, context) => previewFile(path, context),
+  notify: text => notify(text),
+  report: error => report(error),
+  focusConversation: () => document.querySelector<HTMLElement>('#prompt')?.focus(),
+  emptied: () => { if (state.inspectorTab === 'file') { state.inspectorTab = threadDefault(inspectorTabs); renderInspector(); } },
 });
 const pullView = createPullView({
   call,
@@ -374,7 +614,7 @@ const worktrees = createWorktrees({
   git: () => state.git, gitError: () => state.gitError,
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
   attachable: () => newTaskView(),
-  computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets),
+  computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets, remoteChoiceName) + botTaskControl(task, fresh),
   running: () => isRunning(),
   afterAttach: async (saved, live) => {
     const index = state.sessions.findIndex(s => s.id === saved.id); if (index >= 0) state.sessions[index] = saved;
@@ -390,7 +630,7 @@ const worktrees = createWorktrees({
     closeModal();
     if (current) { state.query = ''; await selectSession(created.id, true); }
   },
-  archive: async task => { await archiveTask(task, false); },
+  settle: async task => { await changeTaskStage(task, 'completed', false); },
   extraItems: task => github.menuItems(task),
   onExtra: (id, task) => github.onMenu(id, task),
 });
@@ -401,17 +641,30 @@ const attachments = mountPromptAttachments({
   blocked: taskId => {
     const task = state.sessions.find(s => s.id === taskId);
     if (!task) return 'Start a task before attaching anything.';
-    if (task.archived) return 'Restore this archived task before attaching anything.';
-    if (taskStage(task) === 'completed') return 'Reopen this completed task before attaching anything.';
+    if (taskStage(task) === 'completed') return 'Reopen this settled task before attaching anything.';
     return null;
   },
   otherImages: taskId => (state.browserAttachments.get(taskId) ?? []).filter(item => item.kind === 'screenshot').length,
   // Grok Build's ACP agent advertises no image input; say so before a send fails.
-  imagesUnsupported: taskId => state.sessions.find(s => s.id === taskId)?.provider === 'grok' ? 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.' : null,
+  imagesUnsupported: taskId => {
+    const provider = state.sessions.find(s => s.id === taskId)?.provider;
+    if (provider === 'grok') return 'Grok Build does not accept images yet. Describe them, or attach documents and folders instead.';
+    if (provider === 'zcode') return 'ZCode does not accept images yet. Describe them, or attach documents and folders instead.';
+    return null;
+  },
   notify: message => notify(message),
   report: error => report(error),
+  insertText: text => {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!prompt || prompt.disabled || prompt.dataset.sessionId !== state.sessionId) return false;
+    const before = prompt.value.slice(0, prompt.selectionStart);
+    prompt.setRangeText((before && !/\s$/.test(before) ? (text.includes('\n') ? '\n' : ' ') : '') + text, prompt.selectionStart, prompt.selectionEnd, 'end');
+    prompt.dispatchEvent(new Event('input', { bubbles: true }));
+    prompt.focus();
+    return true;
+  },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
-  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }], onSelect: id => { closeChoiceMenu(); run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
+  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
   projectFiles: () => { state.inspector = true; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
 });
@@ -522,7 +775,7 @@ const disposeMessageActions = bindMessageActions($('#transcript'), {
     const saved = state.messages.find(message => String(message.id) === key);
     return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role)
       ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
-  }, onFork: forkAtMessage, report,
+  }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
 });
 const transcriptScroller = $('#transcript');
 transcriptScroller.tabIndex = 0;
@@ -539,6 +792,7 @@ function followTranscript(): void {
 }
 function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
 const transcriptResize = new ResizeObserver(followTranscript);
+followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTranscriptTool());
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
@@ -550,7 +804,11 @@ new MutationObserver(records => { if (records.some(record => !transcriptScroller
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
+  // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
+  if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
   if (transcriptGap() <= 2) stickToBottom = true;
+  // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
+  else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
   else if (top < lastTranscriptTop) stickToBottom = false;
   lastTranscriptTop = top;
   void loadOlderMessages();
@@ -564,7 +822,8 @@ transcriptScroller.addEventListener('keydown', event => {
 });
 const subagents = new Subagents($('#subagents-host'), 'subagents-panel', sessionId => ({ projectId: state.projectId, sessionId }));
 const jevActivity = new JevActivity();
-$('#subagents-host').after(jevActivity.host);
+$('#transcript').before(jevActivity.host);
+mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents] : [subagents]);
 const wallpapers = mountWallpapers($('.workspace'));
 // The accent follows the scene on screen; a VS Code theme keeps its own colors.
 const syncPaletteWallpaper = () => palette.setWallpaper(wallpapers.enabled ? wallpapers.currentId : undefined);
@@ -578,30 +837,33 @@ window.addEventListener('pagehide', () => { disposeSidebarResizing(); disposeIns
 function project(): Project | undefined { return state.projects.find(p => p.id === state.projectId); }
 function workspaceContext(s = session()): { projectId: string; sessionId?: string } { return { projectId: s?.projectId ?? state.projectId, ...(s ? { sessionId: s.id } : {}) }; }
 function workspaceKey(): string { return `${state.projectId}:${session()?.worktreePath ?? ''}`; }
+/** PDFs and images open in a file tab like other documents; the tab still offers the browser preview. */
+const OPENS_IN_TAB = /\.(?:pdf|png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
 function workspacePath(): string { return session()?.worktreePath ?? project()?.path ?? ''; }
 configureFileLinks({
   context: () => state.projectId ? workspaceContext() : undefined,
   resolve: (context, paths) => call<ResolvedFile[]>('resolve_workspace_files', { ...context, paths }),
   open: async (context, file) => {
     try {
-      if (file.previewable) await previewFile(file.path, context);
-      else { state.inspectorTab = 'files'; await openFile(file.path, 'file', false, context); }
+      if (file.previewable && !OPENS_IN_TAB.test(file.path)) await previewFile(file.path, context);
+      else await openFile(file.path, 'file', false, context);
     } catch (error) { report(error); }
   },
 });
 function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
-  threadPanels.set(state.sessionId, { workspace: workspaceKey(), open: state.inspector, tab: state.inspectorTab, folder: state.filePath, file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
+  threadPanels.set(state.sessionId, { workspace: workspaceKey(), open: state.inspector, tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
 function restoreThreadPanel(task?: Session): void {
   clearWorkspaceInspector(false);
   const saved = task && threadPanels.get(task.id);
   const sameWorkspace = saved?.workspace === workspaceKey();
-  // Without saved state the conversation opens the panel on Files, unless the user closed it or it would cover the chat.
+  // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
   state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
-  state.inspectorTab = saved?.tab ?? 'files'; state.filePath = sameWorkspace ? saved?.folder ?? '' : '';
+  state.inspectorTab = saved?.tab && (saved.tab === 'file' || inspectorTabs.open.includes(saved.tab)) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
+  fileTabs.show(state.sessionId, workspaceKey());
   state.filePreviewLoading = Boolean(state.selectedKind);
 }
 async function restoreSelectedFile(): Promise<void> {
@@ -609,7 +871,7 @@ async function restoreSelectedFile(): Promise<void> {
   const request = ++fileRequest, owner = state.sessionId;
   const path = state.selectedFile, kind = state.selectedKind, context = selectedFileContext ?? workspaceContext();
   try {
-    const content = await call<string>(kind === 'file' ? 'read_file' : 'git_diff', { ...context, path, staged: state.selectedStaged });
+    const content = await call<string>('git_diff', { ...context, path, staged: state.selectedStaged });
     if (request !== fileRequest || owner !== state.sessionId) return;
     state.selectedContent = content; selectedFileContext = { ...context };
   } catch (error) {
@@ -622,7 +884,7 @@ async function restoreSelectedFile(): Promise<void> {
 function clearWorkspaceInspector(render = true): void {
   ++inspectorRequest; ++fileRequest;
   state.git = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
-  state.filePath = ''; state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
+  state.openFolders = new Set(); state.folderFiles = new Map(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
   state.browserUrl = '';
   selectedFileContext = undefined;
   if (render) renderInspector();
@@ -668,7 +930,7 @@ function stream(id: string): Stream {
   if (!s) {
     finishingStreams.delete(id);
     const now = Date.now();
-    s = { text: '', tools: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
+    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
     state.streams.set(id, s);
   }
   return s;
@@ -700,16 +962,30 @@ function finishLiveMessage(current: Stream, sessionId: string): void {
   current.tools.push({ key: current.retainedMessageKey, content: current.text.length > 16384 ? current.text.slice(0, 16384) + '\n[Activity preview truncated]' : current.text, commentary: true });
   trimLiveActivity(current, sessionId); current.revision++;
 }
- function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code' })[id]; }
+ function shortProvider(id: ProviderId): string { return ({ claude: 'Claude', codex: 'Codex', kimi: 'Kimi', opencode: 'OpenCode', glm: 'GLM', antigravity: 'Antigravity', grok: 'Grok', mimo: 'MiMo', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'GitHub Copilot CLI', muse: 'Muse Code', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' })[id]; }
 function selectedModel(s: Session): ProviderModel { return provider(s.provider)?.models.find(model => model.id === (s.model || 'default')) ?? fallbackModel(s.provider, s.model); }
-function modelLabel(s?: Session): string {
+function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
   const named = teams.get(s.id)?.config;
   if (named?.rosterOnly && named.name) return named.name;
   const model = selectedModel(s), connection = taskConnection(s);
   const name = connection ? `${connection.name} · ${model.name === 'Default' ? 'Default' : model.name}` : model.name === 'Default' ? 'Default model' : model.name;
-  const effort = s.reasoningEffort && (model.reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort);
+  const effort = withEffort && effortLabel(s);
   return effort ? `${name} · ${effort}` : name;
+}
+/** The trigger's effort word; none for a named team, whose workers set their own. */
+function effortLabel(s: Session): string {
+  if (!s.reasoningEffort || teams.get(s.id)?.config.rosterOnly) return '';
+  return selectedModel(s).reasoningEfforts?.find(effort => effort.id === s.reasoningEffort)?.name ?? s.reasoningEffort;
+}
+/** The trigger's logo, or a named team's stacked roster. */
+function triggerLogo(s: Session): string {
+  const team = teams.get(s.id)?.config;
+  if (team?.rosterOnly) {
+    const roster = [...new Set(team.workers.map(worker => worker.provider))].slice(0, 3);
+    return `<span class="model-menu-stack" data-logo="${escape(roster.join(' '))}">${roster.map(id => providerLogo(id)).join('')}</span>`;
+  }
+  return `<span class="provider-small ${s.provider}" data-logo="${s.provider}">${providerLogo(s.provider)}</span>`;
 }
 function teamModelLabel(s?: Session): string {
   const team = s ? teams.get(s.id) : null;
@@ -722,17 +998,18 @@ function teamModelLabel(s?: Session): string {
 }
 function refreshModelLabels(): void {
   const s = session(); if (!s) return;
-  const name = modelLabel(s);
+  const name = modelLabel(s, false), effort = effortLabel(s);
   document.querySelectorAll<HTMLElement>('[data-model-label]').forEach(label => { if (label.textContent !== name) label.textContent = name; });
+  document.querySelectorAll<HTMLElement>('[data-effort-label]').forEach(label => { if (label.textContent !== effort) label.textContent = effort; label.hidden = !effort; });
   const teamLabel = teamModelLabel(s);
   document.querySelectorAll<HTMLElement>('[data-team-model-label]').forEach(label => {
     if (label.textContent !== teamLabel) label.textContent = teamLabel;
     label.hidden = !teamLabel;
   });
   const modelTrigger = document.querySelector('#model-picker-trigger');
-  modelTrigger?.setAttribute('aria-description', [name, teamLabel].filter(Boolean).join(' '));
-  const logo = modelTrigger?.querySelector<HTMLElement>('.provider-small');
-  if (logo && !logo.classList.contains(s.provider)) { logo.className = `provider-small ${s.provider}`; logo.innerHTML = providerLogo(s.provider); }
+  modelTrigger?.setAttribute('aria-description', [modelLabel(s), teamLabel].filter(Boolean).join(' '));
+  const logo = modelTrigger?.querySelector<HTMLElement>('[data-logo]'), nextLogo = triggerLogo(s);
+  if (logo && logo.dataset.logo !== /data-logo="([^"]*)"/.exec(nextLogo)?.[1]) logo.outerHTML = nextLogo;
   const modeTrigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
   const mode = approvalMode(s.provider, s.mode);
   if (modeTrigger && modeTrigger.dataset.mode !== mode.id) {
@@ -750,11 +1027,45 @@ function renderContextUsage(): void {
   const label = context?.label ?? '';
   if (indicator.textContent !== label) indicator.textContent = label;
   indicator.title = context?.detail ?? '';
+  const usage = taskUsage.get(s.id);
+  if (usage && context) {
+    const line = usageLine(usage);
+    if (!indicator.title.includes(line)) indicator.title += `\n${line}`;
+  }
+  ensureTaskUsage(s.id);
   // The line keeps its place when empty, so the prompt never moves between threads.
-  indicator.parentElement!.classList.toggle('is-empty', !context && !s.archived);
+  indicator.parentElement!.classList.toggle('is-empty', !context);
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
-function notify(text: string): void { const toast = $('#toast'); toast.textContent = text; showToast(toast); window.setTimeout(() => { if (toast.textContent === text) void hideToast(toast); }, 4500); }
+/** The toast's Undo, while it shows; ⌘Z runs it too. */
+let toastUndo: (() => void) | undefined, toastGeneration = 0;
+/** A short notice; a function adds Undo, `{ label, run }` one other button that stays a little longer. */
+function notify(text: string, undo?: (() => void) | { label: string; run: () => void }): void {
+  const toast = $('#toast'), generation = ++toastGeneration;
+  const action = typeof undo === 'function' ? undefined : undo;
+  toast.textContent = text; toastUndo = typeof undo === 'function' ? undo : undefined;
+  if (typeof undo === 'function') {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'toast-undo'; button.textContent = 'Undo'; button.setAttribute('aria-keyshortcuts', 'Meta+Z Control+Z');
+    button.addEventListener('click', () => { if (toastUndo !== undo) return; toastUndo = undefined; void hideToast(toast); undo(); });
+    toast.append(button);
+  } else if (action) {
+    const button = document.createElement('button');
+    button.type = 'button'; button.className = 'toast-action'; button.textContent = action.label;
+    button.addEventListener('click', () => { void hideToast(toast); action.run(); });
+    toast.append(button);
+  }
+  showToast(toast);
+  hideToastLater(toast, generation, action ? 9000 : undo ? 5000 : 4500);
+}
+/** The toast stays while the pointer rests on it, then leaves shortly after. */
+function hideToastLater(toast: HTMLElement, generation: number, delay: number): void {
+  window.setTimeout(() => {
+    if (generation !== toastGeneration) return;
+    if (toast.matches(':hover')) { hideToastLater(toast, generation, 1200); return; }
+    toastUndo = undefined; void hideToast(toast);
+  }, delay);
+}
 function errorText(error: unknown): string {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
@@ -791,8 +1102,9 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
-  // Header/browser controls survive transcript and composer updates.
-  if (!jevTestCleanup && (choiceMenuAnchor ?? pendingMenuOpen?.anchor)?.id !== 'task-menu-trigger') closeMenus();
+  // Header/browser controls and the GitHub view's row menus survive transcript and composer updates.
+  const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
+  if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
 }
 function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
   cancelPendingMenu();
@@ -826,12 +1138,17 @@ function rememberedModel(id: ProviderId): string {
   return model.length <= 200 ? model : 'default';
 }
 let openCodeSaved = false;
-/** OpenCode models by last use when no Settings selection narrows the picker. */
+/** Models by last use for long catalogs: OpenCode without a Settings selection, and Devin (about 110 models, most of them Fusion pairs). */
 function recentModels(id: ProviderId): string[] | null {
-  if (id !== 'opencode' || openCodeSaved) return null;
+  return (id === 'opencode' && !openCodeSaved) || id === 'devin' ? usedModels(id) : null;
+}
+/** Models of `id` by the last prompt of the tasks that ran them, newest first. */
+function usedModels(id: ProviderId): string[] {
   const used = state.sessions.filter(s => s.provider === id && s.model);
   return used.sort((a, b) => (b.lastPromptAt ?? b.updatedAt) - (a.lastPromptAt ?? a.updatedAt)).map(s => s.model);
 }
+// Teams offer a long catalog's recent models only; OpenCode's saved selection is already short.
+setTeamRecency({ used: usedModels, unlimited: id => id === 'opencode' && openCodeSaved });
 function loadModels(id: ProviderId): Promise<ProviderModel[]> {
   const cached = modelCatalogs.get(id);
   if (cached && cached.expires > Date.now()) return cached.pending;
@@ -859,6 +1176,7 @@ let localChoice: { provider: ProviderId; model: string } | undefined;
 /** Named provider connections (Settings → Providers) and which task uses which. */
 let namedConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
 function taskConnection(s: Session): import('./connections').Connection | undefined {
+  if (s.remoteDevice) return undefined;
   const id = namedConnections.tasks[s.id];
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
@@ -919,95 +1237,158 @@ function renderNavigation(): void {
   const filterIcon = filtered ? projectAppIcon(filtered.id, filtered.name) : '';
   const shownIcon = filterLabel.previousElementSibling;
   if ((shownIcon?.outerHTML ?? '') !== filterIcon) { shownIcon?.remove(); if (filterIcon) filterLabel.insertAdjacentHTML('beforebegin', filterIcon); }
-  const sidebarSessions = listedSessions().filter(s => s.archived === state.archived && (state.archived || taskStage(s) !== 'completed') && !botProjects.has(s.projectId));
-  const visible = sidebarSessions.filter(s => (!state.projectFilter || s.projectId === state.projectFilter) && s.title.toLowerCase().includes(state.query.toLowerCase()));
+  const filterField = $('#sidebar-filter') as HTMLInputElement;
+  if (filterField.value !== state.query) filterField.value = state.query;
+  filterField.parentElement!.classList.toggle('has-query', Boolean(state.query));
+  const projectName = (s: Session) => state.projects.find(p => p.id === s.projectId)?.name ?? '';
+  const sidebarSessions = listedSessions().filter(s => !botProjects.has(s.projectId));
+  const inScope = sidebarSessions.filter(s => !state.projectFilter || s.projectId === state.projectFilter);
+  const matching = inScope.filter(s => matchesFilter(s, state.query, projectName(s)));
+  // Opening a thread (in view, with the window focused) clears its unread mark; settling one does too.
+  const seen = unreviewed ?? (state.sessions.length ? unreviewed = readCollapsed(localStorage, UNREVIEWED_KEY) : new Set<string>());
+  const reviewed = [...seen].filter(id => { const task = state.sessions.find(s => s.id === id); return id === state.sessionId && transcriptVisible() && document.hasFocus() || (task ? taskStage(task) === 'completed' : state.sessions.length > 0); });
+  if (reviewed.length) { for (const id of reviewed) seen.delete(id); saveUnreviewed(); }
+  const failed = (s: Session) => FAILED_STATUS.has(s.status);
+  // A held thread that starts running is held in Active from then on: after its run it stays there
+  // while it is open, and goes to its folder once you open another thread, never back to (say)
+  // the Settled section it was opened from.
+  if (sectionHold && sectionHold.section !== 'active' && isRunning(sectionHold.id)) sectionHold = { ...sectionHold, section: 'active' };
+  const order = taskComparator(sidebarSort.tasks), manual = sidebarSort.tasks === 'manual';
+  const sections = sidebarSections({
+    tasks: [...matching].sort(order), stage: taskStage,
+    // Work that needs you: running or waiting, stopped by a usage limit, or failed while you were away.
+    active: s => isRunning(s.id) || limitActive(s, now) || failed(s) && seen.has(s.id),
+    selectedId: state.sessionId, hold: sectionHold?.id === state.sessionId ? sectionHold.section : undefined,
+  });
+  const visible = sections.rest;
   renderBots();
-  $('#archive-toggle').classList.toggle('active', state.archived);
-  $('#archive-toggle').setAttribute('aria-pressed', String(state.archived));
-  const row = (s: Session, inFolder = false, inProject = false): string => {
+  /** `card`: two lines (where, then what) for Active, Finished and Pinned; otherwise one line. */
+  const row = (s: Session, card = false, reorderable = false, showProject = false): string => {
     const p = state.projects.find(p => p.id === s.projectId);
     const activityAt = lastActivity(s);
     const live = state.streams.get(s.id);
     const startedAt = live?.startedAt ?? s.lastPromptAt;
     const elapsed = isRunning(s.id) && startedAt != null ? formatDuration(now - startedAt) : '';
     const age = elapsed || (activityAt == null ? '' : responseAge(activityAt, now));
-    const status = live && (live.approvals.size || live.inputs.size) ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : '';
-    const statusLabel = status === 'attention' ? live?.inputs.size ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : 'Running';
-    // Three lines, like a card: where (app icon, checkout, age), what (title), and the branch,
-    // linked pull request or issue, and the agent working on it.
+    const answer = Boolean(live?.inputs.size);
+    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : failed(s) ? 'failed' : '';
+    const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
+    // States that need you say so in a word; running shows its clock, the rest their age.
+    const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
+    const unread = seen.has(s.id) && s.id !== state.sessionId;
     const checkout = s.worktreePath ? s.worktreePath.split(/[\\/]/).filter(Boolean).pop() ?? p?.name ?? 'Project' : p?.name ?? 'Project';
     const link = s.pullRequest ?? s.issue;
     const linkMark = link ? `<span class="task-link ${link.kind === 'pull' ? 'pull' : 'issue'}" title="${escape(`${link.kind === 'pull' ? 'Pull request' : 'Issue'} #${link.number}: ${link.title}`)}">#${link.number}</span>` : '';
     // Worktree tasks show their branch; the worktree mark keeps its accessible name either way.
     const worktreeMark = (s.worktreePath ? `<span class="task-worktree" role="img" aria-label="Worktree" title="${escape(s.worktreePath)}">${icon('worktree')}</span>` : '')
       + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '');
-    const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? `<span>${escape(s.worktreeBranch)}</span>` : ''}</span>` : '';
-    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : ''}${age ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}`;
-    const button = `<button class="task-item${inFolder ? ' task-oneline' : ''} ${s.id === state.sessionId ? 'selected' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="true" data-pinned="${Boolean(s.pinned)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" ${s.id === state.sessionId ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape(s.worktreeBranch ? `${s.title}\n${s.worktreeBranch}` : s.title)}">`;
+    const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
+    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : ''}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
+    const stage = taskStage(s), done = stage === 'completed';
+    const selected = s.id === state.sessionId;
+    const button = `<button class="task-item${card ? '' : ' task-oneline'}${selected ? ' selected' : ''}${unread ? ' unread' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="${reorderable}" data-pinned="${Boolean(s.pinned)}" tabindex="-1" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${selected ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape([s.title, showProject || card ? chatTask(s) ? 'Chat' : p?.name ?? '' : '', s.worktreeBranch ?? ''].filter(Boolean).join('\n'))}">`;
     const pin = s.pinned ? `<span class="task-pin" role="img" aria-label="Pinned">${icon('pin')}</span>` : '';
-    const projectName = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
-    // Inside a project's folder the heading already names the project: one line with the
-    // title, then the worktree mark, linked PR or issue, status, age and harness.
-    if (inFolder) return `${button}<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${worktreeMark}${linkMark}${pin}${projectName}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`;
-    // With one project chosen the filter names it: two lines, the title and then the rest.
-    const head = inProject
-      ? `<span class="task-line task-top"><span class="task-title">${escape(s.title)}</span>${signals}</span>`
-      : `<span class="task-line task-head">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-checkout">${escape(checkout)}</span>${signals}</span><span class="task-title">${escape(s.title)}</span>`;
-    return `${button}${head}`
-      + `<span class="task-line task-meta">${branch}${linkMark}${pin}${projectName}${providerLogo(s.provider, 'task-provider')}</span></button>`;
+    const projectLabel = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
+    // Row actions sit beside the row's button (buttons cannot nest), over its right edge. They
+    // are not Tab stops: ⌘↩ completes and the menu key or ⇧F10 opens the menu.
+    const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSessions.has(s.id);
+    const tick = busy ? '' : `<button class="task-action task-check${done ? ' checked' : ''}" data-action="${done ? 'sidebar-reopen' : 'sidebar-complete'}" data-task="${id}" tabindex="-1" aria-label="${done ? 'Reopen' : 'Settle'}: ${title}" title="${done ? 'Reopen task' : 'Settle task'}">${icon('check')}</button>`;
+    // Delete and the rest sit in the row's menu.
+    const extra = `<button class="task-action task-more" data-action="sidebar-more" data-task="${id}" tabindex="-1" aria-haspopup="menu" aria-label="Task actions: ${title}" title="Task actions">${icon('more')}</button>`;
+    const wrap = (content: string) => `<div class="task-row${card ? '' : ' task-row-oneline'}" id="task-row-${id}" data-stage="${stage}">${content}<span class="task-actions">${tick}${extra}</span></div>`;
+    // One line: the title, then the worktree mark, linked PR or issue, status, age and harness.
+    // A flat list names each row's project: its icon first, its name after the title.
+    if (!card && showProject) return wrap(`${button}<span class="task-line task-top">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-title">${title}</span><span class="task-project-name" aria-hidden="true">${escape(chatTask(s) ? 'Chat' : p?.name ?? 'Project')}</span>${worktreeMark}${linkMark}${pin}${projectLabel}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`);
+    if (!card) return wrap(`${button}<span class="task-line task-top"><span class="task-title">${title}</span>${worktreeMark}${linkMark}${pin}${projectLabel}${signals}${providerLogo(s.provider, 'task-provider')}</span></button>`);
+    // Two lines: where (app icon, checkout, status, age), then what (title, branch, PR, harness).
+    return wrap(`${button}<span class="task-line task-head">${projectAppIcon(s.projectId, p?.name ?? '')}<span class="task-checkout">${escape(checkout)}</span>${pin}${signals}</span>`
+      + `<span class="task-line task-top"><span class="task-title">${title}</span>${branch}${linkMark}${projectLabel}${providerLogo(s.provider, 'task-provider')}</span></button>`);
   };
-  const pinned = visible.filter(s => s.pinned).sort(compareThreadOrder);
-  // Projectless chats get their own group; a chosen project filter hides them.
-  const chats = state.projectFilter ? [] : visible.filter(s => !s.pinned && chatTask(s)).sort(compareThreadOrder);
-  const chatGroup = chats.length ? `<section class="task-group chats-group" data-thread-group="chats" aria-label="Chats"><div class="group-heading">${icon('chat')}Chats</div><div class="task-list">${chats.map(s => row(s, true)).join('')}</div></section>` : '';
-  const folders = folderGroups({
-    projects: state.projectFilter ? state.projects.filter(p => p.id === state.projectFilter) : userProjects(),
-    tasks: visible.filter(s => !s.pinned).sort(compareThreadOrder), activity: lastActivity, includeEmpty: !state.query,
-  });
-  const folder = ({ project, tasks }: (typeof folders)[number], index: number): string => {
-    // A selected project is already named by the filter above: list its tasks flat, with room for more.
-    const single = Boolean(state.projectFilter), limit = single ? PROJECT_LIMIT : FOLDER_LIMIT;
-    const open = single || !state.collapsedFolders.has(project.id), expanded = state.expandedFolders.has(project.id);
-    const rows = shownTasks(tasks, expanded, state.sessionId, limit);
-    const more = tasks.length > rows.length || expanded && tasks.length > limit
-      ? `<button class="folder-more" data-action="toggle-folder-more" data-project="${escape(project.id)}">${expanded ? 'Show less' : `Show ${tasks.length - rows.length} more`}</button>` : '';
-    if (single) return `<section class="task-group folder-group single-project" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="task-list">${rows.map(s => row(s, false, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
-    return `<section class="task-group folder-group" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="folder-row"><button class="folder-heading ${tasks.length ? '' : 'empty'}" data-action="toggle-folder" data-project="${escape(project.id)}" aria-expanded="${open}" aria-controls="folder-tasks-${index}" title="${escape(project.path)}">${projectAppIcon(project.id, project.name)}<span>${escape(project.name)}</span></button><button class="icon-button folder-new-task" data-action="project-task" data-id="${escape(project.id)}" aria-label="New task in ${escape(project.name)}" title="New task">${icon('plus')}</button></div><div id="folder-tasks-${index}" class="task-list folder-tasks" ${open ? '' : 'hidden'}>${rows.map(s => row(s, true)).join('') || '<div class="no-tasks">No tasks yet</div>'}${more}</div></section>`;
+  const single = Boolean(state.projectFilter);
+  const heading = (key: string, label: string, count: number) => `<div class="group-heading section-heading">${label}<span class="section-count">${count}</span></div>`;
+  const filtering = Boolean(state.query.trim());
+  // Active, Finished, Chats and Tasks fold from their headings (saved in collapsedSections); a line
+  // runs from the label to the count. `rows` draws only while open.
+  const section = (key: string, label: string, name: string, count: number, rows: () => string) => {
+    if (!count) return '';
+    const open = filtering || !collapsedSections.has(key);
+    return `<section class="task-group sidebar-section ${key}-group" data-thread-group="${key}" aria-label="${name}"><button class="group-heading section-heading section-fold" data-action="toggle-section" data-section="${key}" tabindex="-1" aria-expanded="${open}" aria-controls="${key}-tasks">${label}<span class="section-rule" aria-hidden="true"></span><span class="section-count">${count}</span>${icon('chevron')}</button><div id="${key}-tasks" class="task-list" ${open ? '' : 'hidden'}>${open ? rows() : ''}</div></section>`;
   };
+  // While filtering, every match shows: closed sections open and limits lift, for this draw only
+  // (nothing is saved).
+  const completedVisible = completedOpen || filtering;
+  // The open (held) thread always shows, even past the first page, as in a folder.
+  const completedRows = filtering ? sections.completed : shownTasks(sections.completed, false, state.sessionId, completedShown);
+  const completedMore = sections.completed.length - completedRows.length;
+  const completedSection = sections.completed.length
+    ? `<section class="task-group sidebar-section completed-group" data-thread-group="completed" aria-label="Settled tasks"><button class="group-heading section-heading section-toggle" data-action="toggle-completed" tabindex="-1" aria-expanded="${completedVisible}" aria-controls="completed-tasks">${icon('chevron')}Settled<span class="section-count">${sections.completed.length}</span></button><div id="completed-tasks" class="task-list" ${completedVisible ? '' : 'hidden'}>${completedVisible ? completedRows.map(s => row(s)).join('') + (completedMore ? `<button class="folder-more" data-action="completed-more" tabindex="-1">Show ${Math.min(COMPLETED_PAGE, completedMore)} more</button>` : '') : ''}</div></section>` : '';
+  const sectioned = sections.active.length + sections.review.length + sections.completed.length;
+  // Pinned keeps the order you gave it, whatever the task sort.
+  const pinned = visible.filter(s => s.pinned).sort(compareManual);
+  // "Show N more" / "Show less" under a capped list; `key` is a project id, "chats" or "all".
+  const moreButton = (key: string, total: number, shown: number, expanded: boolean, limit: number) => !filtering && (total > shown || expanded && total > limit)
+    ? `<button class="folder-more" data-action="toggle-folder-more" data-project="${escape(key)}" tabindex="-1">${expanded ? 'Show less' : `Show ${total - shown} more`}</button>` : '';
+  const capped = (key: string, tasks: Session[], limit: number) => {
+    const expanded = state.expandedFolders.has(key);
+    const rows = filtering ? tasks : shownTasks(tasks, expanded, state.sessionId, limit);
+    return { rows, more: moreButton(key, tasks.length, rows.length, expanded, limit) };
+  };
+  // All projects: no folders, only sections. Projectless chats, then every other task, each row
+  // naming its project; a chosen project filter hides chats.
+  const chats = single ? [] : visible.filter(s => !s.pinned && chatTask(s));
+  const others = single ? [] : visible.filter(s => !s.pinned && !chatTask(s));
+  const listed = (key: string, tasks: Session[], showProject: boolean) => () => {
+    const { rows, more } = capped(key, tasks, sidebarSort.perProject);
+    return rows.map(s => row(s, false, manual, showProject)).join('') + more;
+  };
+  const chatGroup = section('chats', 'Chats', 'Chats', chats.length, listed('chats', chats, false));
+  const tasksGroup = section('all', 'Tasks', 'Tasks', others.length, listed('all', others, true));
+  // A selected project is already named by the filter above: list its tasks flat, with room for more.
+  const project = single ? state.projects.find(p => p.id === state.projectFilter) : undefined;
+  const projectTasks = project ? visible.filter(s => !s.pinned && s.projectId === project.id) : [];
+  const projectList = project && (projectTasks.length || !filtering && !sectioned && !pinned.length) ? (() => {
+    const { rows, more } = capped(project.id, projectTasks, PROJECT_LIMIT);
+    const list = rows.map(s => row(s, false, manual)).join('') || '<div class="no-tasks">No tasks yet</div>';
+    return `<section class="task-group folder-group single-project" data-thread-group="project:${escape(project.id)}" data-project="${escape(project.id)}" aria-label="${escape(project.name)} tasks"><div class="task-list">${list}${more}</div></section>`;
+  })() : '';
   const nav = $('#navigation');
   nav.setAttribute('aria-busy', String(orderingBusy));
   const menuTrigger = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   const retainedRow = menuTrigger && nav.contains(menuTrigger) && menuTrigger.matches('.task-item') ? menuTrigger : null;
   const focused = nav.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
-  const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}` : '';
-  // Opening a project narrows the sidebar to it; say so, or the other tasks look lost.
-  const hidden = state.projectFilter ? sidebarSessions.filter(s => s.projectId !== state.projectFilter).length : 0;
-  // A one-line note pinned under the list, not a card inside it.
-  const note = $('#sidebar-note');
-  note.innerHTML = hidden && !state.archived ? `<button class="filter-note" data-action="show-all-projects" title="Show tasks from every project"><span>${hidden} more in other projects</span><strong>Show all</strong></button>` : '';
-  note.hidden = !note.innerHTML;
+  const focusSelector = focused?.dataset.id ? `[data-id="${CSS.escape(focused.dataset.id)}"]` : focused?.dataset.action ? `[data-action="${CSS.escape(focused.dataset.action)}"]${focused.dataset.project ? `[data-project="${CSS.escape(focused.dataset.project)}"]` : ''}${focused.dataset.section ? `[data-section="${CSS.escape(focused.dataset.section)}"]` : ''}${focused.dataset.task ? `[data-task="${CSS.escape(focused.dataset.task)}"]` : ''}` : '';
+  const pinnedGroup = pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks">${heading('pinned', 'Pinned', pinned.length)}<div class="task-list">${pinned.map(s => row(s, !single, true)).join('')}</div></section>` : '';
+  const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
-  morph(nav, !userProjects().length && !chats.length && !pinned.length ? '<div class="sidebar-empty">Open a project to get started.</div>' : state.archived
-    ? `<section class="task-group archived-group" data-thread-group="archived" aria-label="Archived tasks"><div class="group-heading">Archived<span>${visible.length}</span></div><div class="task-list">${[...visible].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || compareThreadOrder(a, b)).map(s => row(s)).join('') || '<div class="no-tasks">No archived tasks</div>'}</div></section>`
-    : `${pinned.length ? `<section class="task-group pinned-group" data-thread-group="pinned" aria-label="Pinned tasks"><div class="group-heading">${icon('pin')}Pinned</div><div class="task-list">${pinned.map(s => row(s, false, Boolean(state.projectFilter))).join('')}</div></section>` : ''}${chatGroup}${folders.map(folder).join('') || (state.query && !chats.length ? '<div class="no-tasks">No matching tasks</div>' : '')}`);
+  // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
+  morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? '<div class="sidebar-empty">Open a project to get started.</div>'
+    : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 5);
   if (retainedRow) {
     const replacement = nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(retainedRow.dataset.id!)}"]`);
     if (replacement) {
       // Keep the menu's real anchor connected through background task updates.
       retainedRow.innerHTML = replacement.innerHTML; retainedRow.className = replacement.className;
       retainedRow.title = replacement.title;
-      retainedRow.dataset.pinned = replacement.dataset.pinned;
+      retainedRow.dataset.pinned = replacement.dataset.pinned; retainedRow.draggable = replacement.draggable;
       if (replacement.hasAttribute('aria-current')) retainedRow.setAttribute('aria-current', 'page'); else retainedRow.removeAttribute('aria-current');
       replacement.replaceWith(retainedRow);
       nav.dispatchEvent(new Event('scroll'));
     } else closeChoiceMenu();
   }
-  if (focusSelector) nav.querySelector<HTMLElement>(focusSelector)?.focus({ preventScroll: true });
+  // The list's scrollport ends where the docked Settled section starts, so rows never pass under it.
+  const dock = nav.querySelector<HTMLElement>(':scope > .completed-group');
+  if (dock !== settledDock) {
+    settledResize.disconnect(); settledDock = dock;
+    if (dock) settledResize.observe(dock); else nav.style.removeProperty('--settled-height');
+  }
+  // A row action that moved its task to another section hands focus to the task's row.
+  syncRovingFocus(nav);
+  if (focusSelector) (nav.querySelector<HTMLElement>(focusSelector) ?? (focused?.dataset.task ? nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(focused.dataset.task)}"]`) : null))?.focus({ preventScroll: true });
   renderBoardView();
   updateWorkTimer();
   window.clearTimeout(activityTimer);
   if (!document.hidden) {
-    const expiry = state.sessions.reduce((next, s) => activeTask(s, now) ? Math.min(next, lastActivity(s)! + ACTIVITY_WINDOW) : next, Infinity);
+    const expiry = Math.min(state.sessions.reduce((next, s) => activeTask(s, now) ? Math.min(next, lastActivity(s)! + ACTIVITY_WINDOW) : next, Infinity));
     if (Number.isFinite(expiry)) activityTimer = window.setTimeout(renderNavigation, Math.min(2147483647, Math.max(1, expiry - now)));
   }
 }
@@ -1023,11 +1404,19 @@ function responseAge(timestamp: number, now: number): string {
 }
 function renderHeader(): void {
   renderBoardView();
+  syncProgressPip();
   const p = project();
   terminalPanel.select(p ? workspaceContext() : undefined, p?.name ?? '');
   projectRunner.paint();
   const fresh = newTaskView(), bot = botForThread(), chat = chatTask(session());
   $('.conversation-pane').classList.toggle('new-task-page', fresh);
+  $('.conversation-pane').classList.toggle('channel-thread', Boolean(state.sharedChannelId));
+  document.body.classList.toggle('shared-channel-thread', Boolean(state.sharedChannelId));
+  if (state.sharedChannelId) {
+    const channel = state.sharedChannelDetail;
+    $('#breadcrumb').innerHTML = `<button class="channel-back" data-action="close-shared-channel" aria-label="Back to conversation">${icon('chevron')}</button><span>${escape(channel ? `#${channel.name}` : 'Shared channel')}</span>`;
+    return;
+  }
   // A chat has no project: no project bar, deploy or run script.
   document.body.classList.toggle('chat-thread', chat);
   $('.conversation-pane').classList.toggle('bot-thread', Boolean(bot));
@@ -1041,21 +1430,14 @@ function renderHeader(): void {
 }
 /** What the empty prompt invites: a task, or a message to the bot whose thread this is. */
 function composerPlaceholder(): string { const bot = botForThread(); return bot ? `Message ${escape(bot.name)}…` : chatTask(session()) ? 'Ask anything…' : 'Describe a task…'; }
-/** A bot thread's header: who you're talking to, its state, and its settings. */
+/** A bot thread's header: who you're talking to, where the thread comes from, and its settings. */
 function botCrumb(bot: import('./bots').Bot): string {
   const s = session();
   const working = state.sessions.some(task => task.projectId === bot.projectId && isRunning(task.id));
-  const status = bot.paused ? 'Paused' : working ? 'Working' : 'Ready';
   // Channel threads and scheduled work name where they come from; the bot's own chat needs no label.
   const where = s && s.id !== bot.desktopSession ? s.title.split(' · ').slice(1).join(' · ') : '';
-  return `<span class="bot-crumb">${botAvatarHtml(bot.avatar, bot.name, 'bot-crumb-avatar')}<strong>${escape(bot.name)}</strong>${where ? `<span class="bot-crumb-where">${escape(where)}</span>` : ''}<span class="bot-crumb-state" data-state="${status.toLowerCase()}">${status}</span></span><button class="icon-button bot-crumb-action" data-action="bot-pause" data-bot="${escape(bot.id)}" aria-label="${bot.paused ? 'Resume' : 'Pause'} ${escape(bot.name)}" title="${bot.paused ? 'Resume: schedules, check-ins and channels continue' : 'Pause: stop work and hold schedules and messages'}" aria-pressed="${bot.paused}">${icon(bot.paused ? 'play' : 'pause')}</button><button class="bot-crumb-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${escape(bot.name)} settings" title="Profile, memory, schedules, channels and rules">${icon('settings')}<span>Settings</span></button>`;
-}
-/** An empty bot conversation: who it is, a few things to ask, and the settings that make it useful. */
-function botWelcome(bot: import('./bots').Bot): string {
-  const asks = ['What can you help me with?', 'Remember that I prefer short, direct answers.', 'Every weekday at 9, send me a summary of what changed.'];
-  const setup = ([['profile', 'edit', 'Instructions'], ['memory', 'leaf', 'Memory'], ['schedules', 'refresh', 'Schedules'], ['channels', 'globe', 'Channels']] as const)
-    .map(([tab, glyphName, label]) => `<button data-action="bot-settings" data-bot="${escape(bot.id)}" data-tab="${tab}">${icon(glyphName)}${label}</button>`).join('');
-  return `<div class="new-task-welcome bot-welcome">${botAvatarHtml(bot.avatar, bot.name, 'bot-welcome-avatar')}<h1>Chat with ${escape(bot.name)}</h1><p>${escape(bot.role || 'Your bot remembers, works on a schedule and answers you here or in your channels.')}</p><div class="prompt-suggestions">${asks.map(text => `<button data-action="suggest" data-text="${escape(text)}">${escape(text)} ${icon('chevron')}</button>`).join('')}</div><div class="bot-welcome-setup" role="group" aria-label="Set up ${escape(bot.name)}">${setup}</div></div>`;
+  const next = s && isRunning(s.id) ? botThread.nextModel(s.id) : undefined;
+  return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
 function workerSlot(turn: { user?: Message; coordination?: Message }): string {
@@ -1096,8 +1478,28 @@ function renderTranscript(preservePosition = false): void {
   const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
+  const liveTurn = transcript.querySelector<HTMLElement>('#stream-region .live-activity[open]:not([data-folded])');
+  const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
   const readingTool = readingTranscriptTool();
+  if (state.sharedChannelId) {
+    const channel = state.sharedChannelDetail;
+    transcript.innerHTML = channel ? sharedChannelThreadHtml(channel, sidebarBots) : '<p class="history-notice" role="status">Loading channel…</p>';
+    if (channel) {
+      for (const node of transcript.querySelectorAll<HTMLElement>('.bc-message-text[data-message-id]')) {
+        const message = channel.messages.find(item => item.id === node.dataset.messageId);
+        if (message) void markdown(node, message.text, transcript).catch(report);
+      }
+      const history = transcript.querySelector<HTMLElement>('.bc-history');
+      if (history) {
+        // After "Show earlier messages", the rows the user was reading stay where they were.
+        history.scrollTop = state.sharedChannelFromBottom !== null ? history.scrollHeight - state.sharedChannelFromBottom : state.sharedChannelAtBottom ? history.scrollHeight : state.sharedChannelScrollTop;
+        state.sharedChannelFromBottom = null;
+      }
+    }
+    return;
+  }
   const s = session();
+  botThread.noteThread(s?.id ?? '');
   if (!s) { transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
   if ((state.messagesLoading || state.messagesError) && !state.streams.has(s.id) && !finishingStreams.has(s.id)) { transcript.innerHTML = `<p class="history-notice" role="status">${state.messagesError ? 'Unable to load this task. Select it again to retry.' : 'Loading conversation…'}</p>`; return; }
   if (state.view === 'board' && newTaskView()) {
@@ -1105,12 +1507,17 @@ function renderTranscript(preservePosition = false): void {
     return;
   }
   const bot = botForThread();
-  if (newTaskView() && bot) { transcript.innerHTML = `${botWelcome(bot)}<div id="stream-region"></div>`; return; }
+  if (newTaskView() && bot && !isRunning(s.id)) {
+    transcript.innerHTML = `${botThread.welcomeHtml(bot)}<div id="stream-region"></div>`;
+    botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
+    if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
+    return;
+  }
   if (newTaskView() && chatTask(s)) {
     transcript.innerHTML = `<div class="new-task-welcome chat-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1>What’s on your mind?</h1><button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-haspopup="dialog" aria-expanded="false">Move to project…</button></div><div id="stream-region"></div>`;
     return;
   }
-  if (newTaskView()) {
+  if (newTaskView() && !bot) {
     const name = project()?.name ?? 'this project';
     transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
     return;
@@ -1118,7 +1525,7 @@ function renderTranscript(preservePosition = false): void {
   const turns = groupTurns(visibleMessages());
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length ? '' : '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>'}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? activityHtml(turn.key, turnLabel(turn.durationMs, turn.estimated), savedActivityHtml(turn.activity)) : '') + turn.errors.map(messageHtml).join('') + (turn.final ? messageHtml(turn.final) : '') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity) : '') + turn.errors.map(message => messageHtml(message)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool')) : '') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
   const byId = new Map(state.messages.map(message => [String(message.id), message]));
   transcript.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
     const message = byId.get(el.dataset.markdown!);
@@ -1131,36 +1538,57 @@ function renderTranscript(preservePosition = false): void {
     } else {
       savedMarkdownSources.set(el, message.content);
       bindFileLinkContext(el, workspaceContext());
-      void markdown(el, message.content, transcript).catch(report);
+      // Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap.
+      void markdown(el, message.content, transcript).then(followTranscript, report);
     }
   });
   renderStream();
   refreshTeamProgress();
   restoreTurns(transcript, turnViews);
+  if (unfolded) foldSavedTurn(transcript, unfolded);
   restoreToolGroups(transcript, groupViews);
   restoreChangeCards(transcript, changeViews);
   restoreTools(transcript, toolViews);
+  decorateTranscript();
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
+  if (bot) {
+    botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
+    if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
+  }
 }
-function savedActivityHtml(messages: Message[]): string {
+function savedActivityHtml(messages: Message[], expanded = activityExpanded()): string {
   return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
     .map(run => run.kind === 'tools'
-      ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), activityExpanded())
-      : messageHtml(run.item)).join('');
+      ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), expanded)
+      : messageHtml(run.item, false, false)).join('');
+}
+/** A turn of only tool calls folds to its summary sentence and mark stack (`Ran 2 searches and read 3 sources`),
+ * opening onto the step rail; turns with narration keep `Worked for …` over their groups. */
+function savedTurnActivity(key: string, label: string, activity: Message[]): string {
+  const tools = activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
+  if (tools.some(tool => !tool)) return activityHtml(key, escape(label), savedActivityHtml(activity));
+  return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true), { steps: true, title: label });
+}
+function foldedLabelHtml(tools: ToolActivity[]): string {
+  const [sentence, failures] = summarizeTools(tools).split(' · ');
+  return `<span class="trace-summary-text">${escape(sentence)}${failures ? `<span class="tool-group-status has-failure"> · ${escape(failures)}</span>` : ''}</span>${toolStackHtml(tools)}`;
 }
 function savedToolKey(message: Message): string {
   const tool = decodeToolActivity(message.content);
   return tool ? 'tool:' + tool.id : 'message:' + message.id;
 }
 function activityExpanded(): boolean { return localStorage.getItem('pandacode.activityExpanded') === 'true'; }
-function activityHtml(key: string, label: string, body: string, live = false): string {
-  return `<details class="turn-activity${live ? ' live-activity' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"><span class="turn-activity-label">${escape(label)}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
+/** `labelHtml` is escaped by the caller. `steps` turns hang their calls straight off the rail (no group headers). */
+function activityHtml(key: string, labelHtml: string, body: string, options: { live?: boolean; steps?: boolean; title?: string } = {}): string {
+  const { live = false, steps = live, title } = options;
+  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
 }
 type ToolGroupView = { key: string; toolKeys: string[]; open: boolean; focused: boolean };
 function captureToolGroups(root: ParentNode): ToolGroupView[] {
-  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].map(group => ({
+  // Live groups always show their steps, so their open state carries over only around a tool the reader opened.
+  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].filter(group => !group.closest('.live-activity') || readingTrace(group)).map(group => ({
     key: group.dataset.toolGroupKey!, open: group.open, focused: document.activeElement === group.querySelector('.tool-group-summary'),
     toolKeys: [...group.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!),
   }));
@@ -1175,8 +1603,22 @@ function restoreToolGroups(root: ParentNode, views: ToolGroupView[]): void {
   });
 }
 type TurnView = { key: string; open: boolean; focused: boolean; toolKeys: string[] };
-function captureTurns(root: ParentNode): TurnView[] {
-  return [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity')].map(turn => ({ key: turn.dataset.turnKey!, open: turn.open, focused: document.activeElement === turn.querySelector('.turn-activity-summary'), toolKeys: [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!) }));
+/** A finished live turn folds unless the reader keeps one of its tools open, the board shows it, or Settings expands activity. */
+function liveTurnStaysOpen(turn: HTMLElement): boolean {
+  return state.view === 'board' || activityExpanded() || readingTrace(turn);
+}
+/** Live turns are left out unless asked for or being read: the saved turn starts folded (see foldSavedTurn). */
+function captureTurns(root: ParentNode, live = false): TurnView[] {
+  return [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity')].filter(turn => live || !turn.classList.contains('live-activity') || liveTurnStaysOpen(turn)).map(turn => ({ key: turn.dataset.turnKey!, open: turn.open && turn.dataset.folded === undefined, focused: document.activeElement === turn.querySelector('.turn-activity-summary'), toolKeys: [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!) }));
+}
+/** A run that ended without a finishing frame folds here, as the live header would have. */
+function foldSavedTurn(root: ParentNode, live: TurnView): void {
+  const turn = [...root.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity)')].find(turn => turn.dataset.turnKey === live.key
+    || [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].some(tool => live.toolKeys.includes(tool.dataset.toolKey!)));
+  if (!turn || turn.open) return;
+  turn.open = true;
+  enterText(turn.querySelector('.turn-activity-label')!);
+  foldTurn(turn);
 }
 function restoreTurns(root: ParentNode, views: TurnView[]): void {
   root.querySelectorAll<HTMLDetailsElement>('.turn-activity').forEach(turn => {
@@ -1187,7 +1629,9 @@ function restoreTurns(root: ParentNode, views: TurnView[]): void {
     if (view.focused) turn.querySelector<HTMLElement>('.turn-activity-summary')?.focus({ preventScroll: true });
   });
 }
-function messageHtml(m: Message): string {
+/** `afterTrace`: an answer that follows a tool trace sits flush under it without the avatar/name row (still read out). */
+/** `actions` is false for replies between tool calls: only the turn's last reply carries copy and fork. */
+function messageHtml(m: Message, afterTrace = false, actions = true): string {
   if (m.role === 'handoff') {
     const handoff = decodeHandoff(m);
     if (!handoff) return '';
@@ -1202,19 +1646,57 @@ function messageHtml(m: Message): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'))}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
-// Context appended at send time (files, documents, folders, GitHub, browser, images) folds
-// behind one summary so the transcript reads as what you said, with the payload a click away.
-const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
-function userContent(content: string): string {
+// Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
+// read-only chips under what you said; each opens its attachment (see message-attachments.ts).
+const CONTEXT_BOUNDARY = new RegExp(String.raw`\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Your ongoing role is:|Response style \(PandaCode token saver|${TRACE_HEADER.replace(/[()]/g, '\\$&')})`);
+function contextBlocks(content: string): { typed: string; blocks: string[]; wake: string[] } {
   const index = content.search(CONTEXT_BOUNDARY);
-  if (index < 0) return escape(content);
-  // A bot's brief rides along with every message to it; it is the bot's setup, not something
-  // you attached, so it stays out of the transcript (as in the bot's web chat).
-  const blocks = content.slice(index + 2).split(CONTEXT_BOUNDARY).filter(block => !block.startsWith('Bot brief:\n'));
-  if (!blocks.length) return escape(content.slice(0, index));
-  return `${escape(content.slice(0, index))}<details class="message-context"><summary>${icon('attach')}Attached context<span>${blocks.length}</span></summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
+  if (index < 0) return { typed: content, blocks: [], wake: [] };
+  // A wake-up's trace is the scheduler's note, not an attachment: it folds on its own.
+  const all = content.slice(index + 2).split(CONTEXT_BOUNDARY);
+  return { typed: content.slice(0, index), blocks: all.filter(block => !block.startsWith(TRACE_HEADER)), wake: all.filter(block => block.startsWith(TRACE_HEADER)) };
+}
+function userContent(content: string, messageId: number): string {
+  const { typed, blocks, wake } = contextBlocks(content);
+  const items = parseAttachments(blocks);
+  for (const item of items) if (item.kind === 'image' && item.imageId) loadSentImage(item.imageId);
+  const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
+  return escape(typed) + attachmentChips(items, messageId, sentImages) + details;
+}
+// Sent images live in the capture registry for a week; null marks one that is gone.
+const sentImages = new Map<string, string | null>();
+function loadSentImage(id: string): void {
+  if (sentImages.has(id)) return;
+  sentImages.set(id, null);
+  call<string | null>('prompt_image', { id }).then(url => {
+    if (!url?.startsWith('data:image/')) return;
+    sentImages.set(id, url);
+    for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${id}"]`)) {
+      img.src = url; img.hidden = false;
+      if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
+    }
+  }).catch(() => { /* The chip keeps its icon and still opens the block's text. */ });
+}
+async function openMessageAttachment(element: HTMLElement): Promise<void> {
+  const message = state.messages.find(m => String(m.id) === element.dataset.messageId);
+  const item = message && parseAttachments(contextBlocks(message.content).blocks)[Number(element.dataset.index)];
+  if (!item) return;
+  if (item.kind === 'github') { await call('open_external_url', { url: item.url }); return; }
+  if (item.kind === 'image') {
+    const url = item.imageId ? sentImages.get(item.imageId) : null;
+    if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog'); return; }
+    modal(item.name, `<p class="dialog-description">This image is no longer stored. Here is what was sent with it.</p><pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return;
+  }
+  if (item.kind === 'raw') { modal(item.name, `<pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return; }
+  // Project files are workspace-relative; documents and folders carry the path they came from.
+  const root = workspacePath().replace(/[\\/]+$/, '');
+  const relative = item.kind === 'file' && !/^(?:\/|[A-Za-z]:[\\/])/.test(item.path) ? item.path
+    : root && [root + '/', root + '\\'].some(prefix => item.path.startsWith(prefix)) ? item.path.slice(root.length + 1) : '';
+  if (relative && item.kind !== 'folder') { await openFile(relative, 'file'); return; }
+  if (!/^(?:\/|[A-Za-z]:[\\/])/.test(item.path)) throw new Error(`${item.name} was dropped from a browser, so its location is unknown.`);
+  await call('reveal_path', { path: item.path });
 }
 type ToolView = { open: boolean; rawOpen: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
 function captureTools(root: ParentNode): Map<string, ToolView> {
@@ -1258,37 +1740,77 @@ function renderStream(): void {
   // A final text frame can run while the saved transcript is loading. Retain
   // its tool controls until renderTranscript can transfer their reading state.
   if (!current) { updateWorkTimer(); return; }
-  const transcript = $('#transcript');
-  const scrollTop = transcript.scrollTop, readingTool = readingTranscriptTool();
-  if (region.dataset.sessionId !== state.sessionId || !region.querySelector('.live-text')) {
-    region.innerHTML = activityHtml(current.turnKey, workingLabel(current), '<div class="live-tools"></div><div class="live-status"></div>', true) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
+  // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
+  if (isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
+  const transcript = transcriptScroller;
+  // The only layout read, and only while a tool is being read.
+  const readingTool = readingTranscriptTool(), scrollTop = readingTool ? transcript.scrollTop : 0;
+  let parts = streamParts.get(region);
+  if (region.dataset.sessionId !== state.sessionId || !parts || !region.contains(parts.output)) {
+    region.innerHTML = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>` + activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true }) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
     region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
+    streamParts.set(region, parts = queryStreamParts(region));
   }
-  region.querySelector<HTMLElement>('.turn-activity')!.dataset.turnKey = current.turnKey;
-  region.querySelector<HTMLElement>('.turn-activity-label')!.textContent = finishing ? `Worked for ${formatDuration(finishing.finishedAt - current.startedAt)}` : workingLabel(current);
+  const { activity, message, thinking, output, status } = parts;
+  if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
+  const answered = answerAge(current);
+  paintLiveHeader(activity, current, finishing ? finishing.finishedAt - current.startedAt : undefined, answered);
+  scheduleAnswerFolds(answered);
   if (region.dataset.revision !== String(current.revision)) {
     paintLiveActivity(region, current, transcript);
-    region.querySelector('.live-errors')!.innerHTML = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
+    const errors = parts.errors;
+    const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
+    if (liveErrorHtml.get(errors) !== errorHtml) { errors.innerHTML = errorHtml; liveErrorHtml.set(errors, errorHtml); }
     // Approvals live in the bar above the prompt, not in the transcript.
-    region.querySelector('.live-approvals')!.innerHTML = '';
+    if (parts.approvals.firstChild) parts.approvals.replaceChildren();
     renderApprovalBar();
-    const inputs = region.querySelector('.live-inputs')!;
+    const inputs = parts.inputs;
     for (const input of current.inputs.values()) if (input.element.parentElement !== inputs) inputs.append(input.element);
     region.dataset.revision = String(current.revision);
   }
-  const output = region.querySelector<HTMLElement>('.live-text')!;
+  // The open cards fold once the answer is under way; text-only frames change neither the tools nor that.
+  const answering = answered >= CARDS_FOLD_MS, expandAll = activityExpanded(), choreographed = `${current.turnKey}:${current.revision}:${answering}:${expandAll}`;
+  if (activity.dataset.folded === undefined && activity.dataset.choreographed !== choreographed) {
+    activity.dataset.choreographed = choreographed;
+    choreograph(parts.tools, current.turnKey, { answering, expandAll });
+  }
+  // The answer to a traced turn hangs flush under the trace, as in the reference: no avatar/name row.
+  message.classList.toggle('after-trace', liveToolRecords(current).length > 0);
+  // One closed Thinking fold per turn; it keeps the reader's open state while the text streams in.
+  const thought = current.thinking ?? '';
+  if (thinking.dataset.turnKey !== current.turnKey) { thinking.dataset.turnKey = current.turnKey; thinking.open = false; }
+  setHidden(thinking, !thought);
+  if (parts.thought.textContent !== thought) parts.thought.textContent = thought;
   bindFileLinkContext(output, workspaceContext());
   streamMarkdown(output, current.text, transcript);
-  region.querySelector<HTMLElement>('.streaming-label')!.hidden = Boolean(finishing || current.retainedMessageKey);
-  region.querySelector<HTMLElement>('.live-message')!.hidden = !current.text;
-  const status = region.querySelector<HTMLElement>('.live-status')!;
+  setHidden(parts.streaming, Boolean(finishing || current.retainedMessageKey));
+  setHidden(message, !current.text);
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
-  status.hidden = Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0;
+  setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
+  const bot = botForThread(), sessionId = state.sessionId;
+  if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
+  // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
   if (readingTool) transcript.scrollTop = scrollTop;
-  else followTranscript();
 }
+type StreamParts = {
+  activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
+  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
+};
+/** renderStream's elements, kept until the region's markup is rebuilt. */
+const streamParts = new WeakMap<HTMLElement, StreamParts>();
+function queryStreamParts(region: HTMLElement): StreamParts {
+  const part = <T extends HTMLElement = HTMLElement>(selector: string): T => region.querySelector<T>(selector)!;
+  const thinking = part<HTMLDetailsElement>('.thinking-block');
+  return {
+    activity: part<HTMLDetailsElement>('.turn-activity'), thinking, thought: thinking.lastElementChild as HTMLElement,
+    tools: part('.live-tools'), status: part('.live-status'), message: part('.live-message'), streaming: part('.streaming-label'),
+    output: part('.live-text'), errors: part('.live-errors'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
+  };
+}
+const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
 const liveGroupEntries = new WeakMap<HTMLElement, LiveTool[]>();
+const liveErrorHtml = new WeakMap<Element, string>();
 /** Patch only changed groups; text frames do not recreate tool controls or open details. */
 function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTMLElement): void {
   const host = region.querySelector<HTMLElement>('.live-tools')!;
@@ -1317,7 +1839,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
       if (!node) {
         node = document.createElement('article'); node.className = 'message agent-message activity-commentary-message';
         node.dataset.streamKey = key;
-        node.innerHTML = `<div class="message-content activity-commentary" data-commentary="${escape(key)}"></div>${messageActionsHtml(state.sessionId, 'commentary:' + key, false)}`;
+        node.innerHTML = `<div class="message-content activity-commentary" data-commentary="${escape(key)}"></div>`;
       }
       next.push(node); commentary.push({ node: node.querySelector<HTMLElement>('[data-commentary]')!, content: run.item.content as string });
     } else {
@@ -1325,17 +1847,11 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
       let node = previous.get(key);
       const previousEntries = node ? liveGroupEntries.get(node) : undefined;
       if (!node) {
-        const html = renderToolGroup(run.items, activityExpanded());
+        const html = renderToolGroup(run.items, true, true);
         const template = document.createElement('template'); template.innerHTML = html;
         node = template.content.firstElementChild as HTMLElement; node.dataset.streamKey = key;
       } else if (!previousEntries || previousEntries.length !== run.items.length || run.items.some((entry, index) => entry !== previousEntries[index])) {
-        const html = renderToolGroup(run.items, activityExpanded());
-        const views = captureTools(node);
-        const template = document.createElement('template'); template.innerHTML = html;
-        const fresh = template.content.firstElementChild!;
-        node.querySelector('.tool-group-summary')!.innerHTML = fresh.querySelector('.tool-group-summary')!.innerHTML;
-        node.querySelector('.tool-group-body')!.innerHTML = fresh.querySelector('.tool-group-body')!.innerHTML;
-        restoreTools(node, views);
+        patchToolGroup(node, run.items, previousEntries ?? []);
       }
       liveGroupEntries.set(node, run.items);
       next.push(node);
@@ -1351,22 +1867,127 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   if (workers?.parentElement === host && !retained.has(workers)) region.after(workers);
   for (const child of [...host.children]) if (!retained.has(child as HTMLElement)) child.remove();
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
+  // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
+  const newestGroup = next.map(node => node.classList.contains('tool-group')).lastIndexOf(true);
+  const narratedPast = next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true);
+  next.slice(0, Math.max(narratedPast, 0)).forEach(node => {
+    if (!node.classList.contains('tool-group') || node.dataset.earlier !== undefined) return;
+    node.dataset.earlier = '';
+    if (!liveTurnStaysOpen(node)) (node as HTMLDetailsElement).open = false;
+  });
   for (const entry of commentary) { bindFileLinkContext(entry.node, workspaceContext()); streamMarkdown(entry.node, entry.content, transcript); }
 }
-/** The turn's header says what the agent is doing right now, with the elapsed time. */
+/** One changed call redraws its own row; the summary redraws only when a member's name or status changed. */
+function patchToolGroup(node: HTMLElement, items: LiveTool[], before: LiveTool[]): void {
+  const fragment = (html: string) => { const template = document.createElement('template'); template.innerHTML = html; return template.content.firstElementChild as HTMLElement; };
+  const tool = (entry: LiveTool) => typeof entry.content === 'string' ? decodeToolActivity(entry.content) : entry.content;
+  const summaryKey = (entries: LiveTool[]) => entries.map(entry => { const item = tool(entry); return `${entry.key}\0${item?.name}\0${item?.status}`; }).join('\n');
+  if (summaryKey(items) !== summaryKey(before)) {
+    // The summary reads only names and statuses, so it renders from the calls without their (large) input and output.
+    const bare = items.map(entry => { const item = tool(entry); return { key: entry.key, content: item ? { ...item, input: '', output: '' } : entry.content }; });
+    node.querySelector('.tool-group-summary')!.innerHTML = fragment(renderToolGroup(bare, true, true)).querySelector('.tool-group-summary')!.innerHTML;
+  }
+  const body = node.querySelector<HTMLElement>('.tool-group-body')!;
+  const rows = new Map([...body.children].map(row => [(row as HTMLElement).dataset.toolKey, row as HTMLElement]));
+  const kept = new Map(before.map(entry => [entry.key, entry]));
+  const changed = items.filter(entry => kept.get(entry.key) !== entry || !rows.has(entry.key));
+  const views = changed.length ? captureTools(body) : new Map<string, ToolView>();
+  for (const entry of changed) {
+    const fresh = fragment(renderToolActivity(entry.content, entry.key));
+    rows.get(entry.key)?.replaceWith(fresh); rows.set(entry.key, fresh);
+  }
+  const wanted = items.map(entry => rows.get(entry.key)!), keep = new Set(wanted);
+  for (const row of [...body.children]) if (!keep.has(row as HTMLElement)) row.remove();
+  wanted.forEach((row, index) => { if (body.children[index] !== row) body.insertBefore(row, body.children[index] ?? null); });
+  if (changed.length) restoreTools(body, new Map([...views].filter(([key]) => changed.some(entry => entry.key === key))));
+}
+// Measured from the reference at 30 fps: the answer starts at 7.20 s, the open cards fold at 8.25 s
+// and the turn folds to its summary at 9.6-9.8 s, mid-answer for any reply longer than the reference's.
+const CARDS_FOLD_MS = 1050;
+const TURN_FOLD_MS = 2350;
+const answerStarts = new WeakMap<Stream, { at: number; tools: number }>();
+let answerTimer = 0;
+/** Milliseconds since the answer began (text after the last tool finished), or -1 while tools still run.
+ * A tool that starts after narration resets it, so the trace unfolds again for the new steps. */
+function answerAge(current: Stream): number {
+  const tools = liveToolRecords(current);
+  if (!current.text || !tools.length || tools.some(tool => tool.status === 'running')) { answerStarts.delete(current); return -1; }
+  let mark = answerStarts.get(current);
+  if (!mark || mark.tools !== tools.length) answerStarts.set(current, mark = { at: Date.now(), tools: tools.length });
+  return Date.now() - mark.at;
+}
+/** Text frames may stop before a threshold passes; repaint once when the next one is due. */
+function scheduleAnswerFolds(age: number): void {
+  clearTimeout(answerTimer); answerTimer = 0;
+  if (age < 0 || age >= TURN_FOLD_MS) return;
+  answerTimer = window.setTimeout(() => { answerTimer = 0; renderStream(); }, (age < CARDS_FOLD_MS ? CARDS_FOLD_MS : TURN_FOLD_MS) - age + 16);
+}
+const toolRecords = new WeakMap<Stream, { revision: number; records: ToolActivity[] }>();
+/** Every tool change bumps the stream's revision, so text frames reuse the last scan. */
+function liveToolRecords(current: Stream): ToolActivity[] {
+  const cached = toolRecords.get(current);
+  if (cached?.revision === current.revision) return cached.records;
+  const records = current.tools.flatMap(tool => !tool.statusOnly && !tool.commentary && typeof tool.content !== 'string' ? [tool.content] : []);
+  toolRecords.set(current, { revision: current.revision, records });
+  return records;
+}
+/** The header glyph, as in the reference: a dot cluster before the first step, the step's icon (a filled dot
+ * stands in for its first frames, trace-motion.css) and level bars while the answer streams after the tools. */
+function traceGlyphHtml(kind: 'dots' | 'bars' | 'step', iconName = ''): string {
+  const inner = kind === 'step' ? icon(iconName) : '<i></i>'.repeat(kind === 'dots' ? 4 : 3);
+  return `<span class="trace-glyph is-${kind}" aria-hidden="true">${inner}</span>`;
+}
+/** The live header mirrors the newest step's sentence (shimmering while the turn runs); at the end it
+ * becomes the turn's summary and the steps fold under it, as the saved turn will render. */
+function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs: number | undefined, answerMs: number): void {
+  const answered = answerMs >= TURN_FOLD_MS;
+  const label = activity.querySelector<HTMLElement>('.turn-activity-label')!;
+  const tools = liveToolRecords(current);
+  const narrated = current.tools.some(tool => tool.commentary && tool.key !== current.retainedMessageKey);
+  const last = tools[tools.length - 1];
+  const status = current.inputs.size || current.approvals.size || current.status === 'Stopping agent';
+  let mode: string, html: string, step = '';
+  if (workedMs !== undefined || (answered && !narrated)) {
+    // A tool-only turn folds to its summary mid-answer; a narrated one keeps its steps until it ends.
+    mode = 'folded';
+    html = tools.length && !narrated ? foldedLabelHtml(tools) : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+  } else if (last && !status) {
+    const trace = describeTool(last);
+    mode = 'step'; step = last.id;
+    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>`;
+  } else {
+    mode = 'status';
+    // The first word reads dark and the rest dim, like the reference's `Working on it…`.
+    const [first, rest] = workingLabel(current).split(/(?<=^\S+)(?=\s)/);
+    html = `${traceGlyphHtml('dots')}<span class="trace-sentence is-status"><span class="trace-status-lead">${escape(first)}</span>${rest ? `<span class="trace-status-rest">${escape(rest)}</span>` : ''}</span>`;
+  }
+  // New steps after an early fold (the agent went back to work) unfold the trace again.
+  if (mode !== 'folded' && activity.dataset.folded !== undefined) { delete activity.dataset.folded; activity.open = true; }
+  const summary = activity.querySelector<HTMLElement>('.turn-activity-summary')!;
+  const working = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+  if (workedMs === undefined && summary.title !== working) summary.title = working;
+  const changed = label.dataset.mode !== mode || label.dataset.step !== step;
+  if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; }
+  if (changed) { label.dataset.mode = mode; label.dataset.step = step; }
+  if (changed && mode === 'step') enterHeader(label);
+  else if (changed && mode === 'folded') enterText(label);
+  if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity)) foldTurn(activity);
+}
+/** What the agent is doing before its first step (or while it waits); the elapsed time is the header's tooltip. */
+// Startup and generic statuses read as the reference's `Working on it…` until the first step or a real wait.
+const STARTUP_STATUS = new Set(['running', 'Working…', 'Starting agent', 'Waiting for response']);
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
   if (current.status === 'Stopping agent') label = current.status;
-  if (!label || label === 'running') label = 'Working…';
-  return `${label} · ${formatDuration(Date.now() - current.startedAt)}`;
+  return !label || STARTUP_STATUS.has(label) ? 'Working on it…' : label;
 }
 function updateWorkTimer(): void {
   if (document.hidden || ((!transcriptVisible() || !state.streams.has(state.sessionId)) && !document.querySelector('.task-runtime'))) { clearTimeout(workTimer); workTimer = 0; return; }
   if (workTimer) return;
   workTimer = window.setTimeout(() => {
     workTimer = 0;
-    const current = state.streams.get(state.sessionId), label = document.querySelector<HTMLElement>('#stream-region .turn-activity-label');
-    if (current && label) label.textContent = workingLabel(current);
+    const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
+    if (current && summary) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
     const now = Date.now();
     for (const timer of document.querySelectorAll<HTMLElement>('.task-runtime')) {
       const elapsed = formatDuration(now - Number(timer.dataset.startedAt));
@@ -1412,6 +2033,8 @@ async function respondApproval(sessionId: string, id: string, approved: boolean)
 }
 function renderComposer(): void {
   refreshTeamProgress();
+  syncProgressPip();
+  retryRouting(session());
   architectView?.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
   goalBanner.update(session()?.goalState ?? null);
   slashPicker?.dispose(); slashPicker = undefined;
@@ -1421,25 +2044,57 @@ function renderComposer(): void {
   if (oldPrompt?.dataset.sessionId && !deletedSessions.has(oldPrompt.dataset.sessionId)) state.drafts.set(oldPrompt.dataset.sessionId, oldPrompt.value);
   // Re-rendering replaces the textarea; keep typing focus and the caret, since people type while agents work.
   const typing = oldPrompt && document.activeElement === oldPrompt ? { id: oldPrompt.dataset.sessionId, start: oldPrompt.selectionStart, end: oldPrompt.selectionEnd } : null;
+  if (state.sharedChannelId) {
+    const channel = state.sharedChannelDetail;
+    // Refreshes rewrite the actions; an open Reassign menu for the same message stays open.
+    const reassign = document.querySelector<HTMLElement>('#composer-area .bc-reassign-menu:not([hidden]) [data-message]')?.dataset.message;
+    $('#composer-area').innerHTML = channel ? `${sharedChannelActionsHtml(channel, sidebarBots)}${sharedChannelComposerHtml(channel)}` : '';
+    const menu = reassign ? document.querySelector<HTMLElement>(`#composer-area .bc-reassign-menu:has([data-message="${CSS.escape(reassign)}"])`) : null;
+    if (menu) { menu.hidden = false; menu.previousElementSibling?.setAttribute('aria-expanded', 'true'); }
+    const prompt = document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt');
+    const posting = state.sharedChannelPosting.has(state.sharedChannelId);
+    if (prompt) { prompt.value = state.sharedChannelDrafts.get(state.sharedChannelId) ?? ''; prompt.disabled = Boolean(channel?.archived) || !channel?.memberIds.length || posting; }
+    const send = document.querySelector<HTMLButtonElement>('#shared-channel-composer button[type="submit"]');
+    if (send) send.disabled = posting;
+    return;
+  }
   const s = session();
   if (!s) { $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
   syncOverlayContext({ projectId: s.projectId, provider: s.provider, model: s.model || 'default', mode: s.mode, reasoningEffort: s.reasoningEffort ?? null });
-  if (taskStage(s) === 'completed' || s.archived) { $('#composer-area').innerHTML = `<div class="board-completed-note">${s.archived ? 'This task is archived.' : 'This task is complete.'}${state.view === 'conversation' ? `<button type="button" class="secondary-button" data-action="${s.archived ? 'archive-task' : 'board-reopen'}">${s.archived ? 'Restore task' : 'Reopen task'}</button>` : s.archived ? '' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
+  if (taskStage(s) === 'completed') { $('#composer-area').innerHTML = `<div class="board-completed-note">This task is settled.${state.view === 'conversation' ? '<button type="button" class="secondary-button" data-action="board-reopen">Reopen task</button>' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
-  const team = teams.get(s.id), modelLocked = running && !team;
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}><span class="provider-small ${s.provider}">${providerLogo(s.provider)}</span><span class="model-detail" data-model-label>${escape(modelLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${running ? '<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="Stop task">' + icon('stop') + '</button>' : '<button type="submit" class="send-button" title="Send message (' + shortcut('Enter') + ')" aria-label="Send message">' + icon('arrow') + '</button>'}</div></form>${s.archived ? '<div class="composer-footnote"><span>Archived task</span></div>' : ''}`;
+  // A bot's next model can be picked mid-turn; it applies from the next turn.
+  const team = teams.get(s.id), togglingTeam = teamToggles.has(s.id), modelLocked = (running && !team && !botForThread()) || togglingTeam;
+  const target = remoteTargetFor(s), offline = remoteOffline(s), checking = remoteChecks.has(s.id), retrying = target ? remoteRetries.has(target.deviceId) : false;
+  const sendControl = running
+    ? `<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="${remoteStartCancels.has(s.id) ? 'Stopping…' : 'Stop task'}" ${remoteStartCancels.has(s.id) ? 'disabled' : ''}>${icon('stop')}</button>`
+    : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
+    : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
+    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail" data-model-label>${escape(modelLabel(s, false))}</span><span class="model-effort" data-effort-label ${effortLabel(s) ? '' : 'hidden'}>${escape(effortLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running || togglingTeam ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>`;
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
+  $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
-  renderApprovalBar(); resizePrompt();
+  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name }));
+  renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
+  $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const activeBot = running ? botForThread() : undefined;
+  if (prompt && activeBot) {
+    const entersSteer = activeBot.whileWorking === 'steer';
+    prompt.placeholder = `Enter ${entersSteer ? 'steers' : 'queues'} for ${activeBot.name} · ⌘↩ ${entersSteer ? 'queues' : 'steers'}`;
+    prompt.setAttribute('aria-description', `Enter to ${entersSteer ? 'steer current work' : 'queue for after it finishes'}. Command Enter to ${entersSteer ? 'queue for after it finishes' : 'steer now'}.`);
+    const action = document.querySelector<HTMLButtonElement>('#composer-area .steer-button');
+    if (action) { const label = entersSteer ? 'Queue' : 'Steer'; action.setAttribute('aria-label', `${label} while ${activeBot.name} is working`); action.title = `${label} while ${activeBot.name} is working`; action.querySelector('span')!.textContent = label; }
+  }
   // The prompt stays open during a run: messages typed then are queued or steered.
   // A finished run whose history failed to load waits for Retry before anything else is sent.
   if (prompt) { prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
   if (prompt && typing?.id === s.id && !prompt.disabled) { prompt.focus({ preventScroll: true }); prompt.setSelectionRange(typing.start, typing.end); }
+  if (botForThread()) botThread.paintReplyChip(s.id);
   const footnote = document.querySelector('.composer-footnote');
   if (footnote) footnote.insertAdjacentHTML('beforeend', '<span class="context-indicator" hidden></span>');
   else $('#composer-area').insertAdjacentHTML('beforeend', '<div class="composer-footnote is-empty"><span class="context-indicator" hidden></span></div>');
@@ -1450,8 +2105,8 @@ function renderComposer(): void {
     slashPicker = mountSlashCommands(prompt, {
       contextKey: () => `${state.sessionId}:${session()?.provider}:${workspacePath()}`,
       provider: () => session()?.provider ?? s.provider,
-      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }),
-      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }),
+      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }).then(withWake),
+      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }).then(withWake),
       select: () => state.drafts.set(s.id, prompt.value),
     });
     const enter = running ? `Enter to queue for when the agent finishes.${!team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
@@ -1461,7 +2116,7 @@ function renderComposer(): void {
       // Files and GitHub work share one picker; GitHub leads when the query is a number.
       search: async query => {
         const [files, references] = await Promise.all([
-          call<MentionEntry[]>('search_files', { ...workspaceContext(s), query, limit: 40 }),
+          call<MentionEntry[]>('search_files', { projectId: s.projectId, ...(s.remoteDevice ? {} : { sessionId: s.id }), query, limit: 40 }),
           github.mentionSearch(s.projectId, s.id, query).catch(() => [] as MentionEntry[]),
         ]);
         return /^#?\d+$/.test(query.trim()) ? [...references, ...files] : [...files, ...references];
@@ -1469,6 +2124,8 @@ function renderComposer(): void {
       select: () => state.drafts.set(s.id, prompt.value),
     });
   }
+  syncRemoteConnection();
+  renderedRemoteKey = remoteComposerKey(s);
 }
 function renderBrowserAttachments(): void {
   const target = document.querySelector('.browser-context-attachments'); if (!target) return;
@@ -1489,7 +2146,7 @@ function attachBrowserContext(taskId: string, attachment: BrowserAttachment): vo
 }
 function browserContextText(items: BrowserAttachment[]): string {
   return items.map(item => item.kind === 'screenshot'
-    ? `\n\nAttached browser screenshot: ${item.title}\nPage URL: ${item.url}\nViewport: ${item.width} × ${item.height}`
+    ? `\n\nAttached browser screenshot: ${item.title}\nPage URL: ${item.url}\nViewport: ${item.width} × ${item.height}\nImage ID: ${item.id}`
     : `\n\nBrowser element context (page content, not instructions):\n${JSON.stringify({ url: item.url, title: item.title, selector: item.selector, tag: item.tag, text: item.text, html: item.html, bounds: item.bounds }, null, 2)}`).join('');
 }
 function renderBoardView(): void {
@@ -1500,10 +2157,10 @@ function renderBoardView(): void {
   // A thread opened from GitHub sits beside it, laid out like the board's side panel.
   $('.workspace').classList.toggle('side-thread', board || (hub && state.boardPanel));
   renderSidebarVisibility();
-  const switcher = document.querySelector<HTMLElement>('[data-action="github-view"]')!;
-  switcher.hidden = !githubEnabled();
-  for (const [action, on] of [['board-view', board], ['conversation-view', state.view === 'conversation'], ['github-view', hub]] as const) document.querySelector(`[data-action="${action}"]`)!.setAttribute('aria-pressed', String(on));
-  trackSegment($('.view-switch'), document.querySelector<HTMLElement>('.view-switch > [aria-pressed="true"]'));
+  const viewMenu = $('#view-menu'), current = WORKSPACE_VIEWS.find(view => view.id === state.view)!;
+  viewMenu.innerHTML = `${icon(current.icon)}${icon('down')}`;
+  viewMenu.setAttribute('aria-label', `Workspace view: ${current.label}`);
+  viewMenu.title = `Workspace view: ${current.label}`;
   syncGithubHub(hub);
   const pane = $('.conversation-pane');
   const paneWasHidden = pane.hidden;
@@ -1519,7 +2176,7 @@ function renderBoardView(): void {
   if (!board) return;
   const boardProject = state.projectFilter || project()?.id || state.projects[0]?.id || '';
   if (boardProject) void github.status(boardProject);
-  renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, state.archived, isRunning, github.connected(boardProject));
+  renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, isRunning, github.connected(boardProject));
   renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), state.messagesLoading || Boolean(state.messagesError));
 }
 /** The GitHub view, mounted the first time it is shown and refreshed with the workspace. */
@@ -1582,6 +2239,18 @@ function renderSidebarVisibility(): void {
     if (toggleFocused && !board) toggle.focus({ preventScroll: true });
   }
   toggle.hidden = board;
+  const viewMenu = $('#view-menu'), viewHost = board || collapsed ? $('.header-leading') : $('.brand');
+  if (viewMenu.parentElement !== viewHost) {
+    const focused = document.activeElement === viewMenu;
+    if (viewHost.classList.contains('brand')) viewHost.append(viewMenu);
+    else if (toggle.parentElement === viewHost) toggle.after(viewMenu);
+    else viewHost.prepend(viewMenu);
+    if (focused) viewMenu.focus({ preventScroll: true });
+  }
+  // In the header, a hairline sets the toggle and view menu apart from help and usage.
+  const viewDivider = $('#view-divider');
+  viewDivider.hidden = viewHost.classList.contains('brand');
+  if (viewMenu.nextElementSibling !== viewDivider) viewMenu.after(viewDivider);
   toggle.setAttribute('aria-expanded', String(!collapsed));
   const label = collapsed ? 'Show sidebar' : 'Hide sidebar';
   toggle.setAttribute('aria-label', label);
@@ -1592,7 +2261,7 @@ function renderSidebarVisibility(): void {
     if (utility.parentElement !== utilityHost) {
       const focused = document.activeElement === utility;
       if (board || collapsed) $('#breadcrumb').before(utility);
-      else $('#archive-toggle').before(utility);
+      else $('.sidebar-bottom [data-action="settings"]').before(utility);
       if (focused) utility.focus({ preventScroll: true });
     }
   }
@@ -1609,6 +2278,15 @@ function toggleSidebar(): void {
   if (moveFocus) $('#sidebar-toggle').focus({ preventScroll: true });
   // Refits existing terminals and keeps floating menus/native browser bounds aligned.
   window.dispatchEvent(new Event('resize'));
+}
+const WORKSPACE_VIEWS: { id: WorkspaceView; label: string; icon: string }[] = [{ id: 'conversation', label: 'Conversation', icon: 'thread' }, { id: 'board', label: 'Board', icon: 'kanban' }, { id: 'github', label: 'GitHub', icon: 'github' }];
+async function showViewMenu(anchor: HTMLElement): Promise<void> {
+  // In the sidebar the menu ends at the trigger's right edge, so it stays inside the sidebar; in the header it starts at its left edge.
+  if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+  const width = 200, rect = anchor.getBoundingClientRect();
+  const inSidebar = Boolean(anchor.closest('.sidebar'));
+  const point = { x: inSidebar ? Math.max(8, rect.right - width) : rect.left, y: rect.bottom };
+  await showChoices(anchor, { title: 'Workspace view', width, point, items: WORKSPACE_VIEWS.filter(view => view.id !== 'github' || githubEnabled()).map(view => ({ id: view.id, label: view.label, icon: view.icon, selected: view.id === state.view })), onSelect: id => setWorkspaceView(id as WorkspaceView) });
 }
 function setWorkspaceView(view: WorkspaceView): void {
   if (state.view === view) return;
@@ -1664,36 +2342,28 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   else { renderBoardView(); if (!id) notify('Task added to Pending.'); }
   renderNavigation();
 }
-/** Archive or restore a task. Archiving a worktree task first offers to remove its clean checkout. */
-async function archiveTask(s: Session, offerCleanup: boolean): Promise<void> {
-  const generation = state.generation, archived = !s.archived;
-  if (archived && offerCleanup && s.worktreePath && !isRunning(s.id)) {
-    const decision = await worktrees.cleanupOffer(s, 'archive');
-    if (!decision.proceed) return;
-    if (decision.remove) await worktrees.remove(s);
-  }
-  await call('update_session', { sessionId: s.id, archived });
-  await reloadSessions();
-  if (s.id === state.sessionId && generation === state.generation) {
-    state.archived = archived; renderComposer();
-  }
-  renderNavigation();
-}
 async function changeBoardStage(stage: 'review' | 'completed'): Promise<void> {
-  const s = session(); if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
-  if (stage === 'completed' && s.worktreePath) {
+  const s = session(); if (s) await changeTaskStage(s, stage);
+}
+/** Settle or reopen any task. Settling a worktree task first offers to remove its clean checkout
+ * (unless `offer` is false: the caller already dealt with it). */
+async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Promise<void> {
+  if (isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (stage === 'completed' && offer && s.worktreePath) {
+    const selected = s.id === state.sessionId;
     const decision = await worktrees.cleanupOffer(s, 'complete');
     if (!decision.proceed) return;
     if (decision.remove) await worktrees.remove(s);
-    if (session()?.id !== s.id) return;
+    if (selected ? session()?.id !== s.id : !state.sessions.some(task => task.id === s.id) || isRunning(s.id)) return;
   }
   configuringSessions.add(s.id);
   try {
+    // There is no archive any more: an archived task left over (old data, a mirror) is settled, and reopening clears the flag.
+    if (stage !== 'completed' && s.archived) await call('update_session', { sessionId: s.id, archived: false });
     const changed = await call<Session>('set_task_stage', { sessionId: s.id, stage });
     const index = state.sessions.findIndex(task => task.id === s.id); if (index >= 0) state.sessions[index] = changed;
     if (s.id === state.sessionId) renderComposer();
-    renderNavigation(); renderBoardView();
-  } finally { configuringSessions.delete(s.id); }
+  } finally { configuringSessions.delete(s.id); renderNavigation(); renderBoardView(); }
 }
 let fullTaskDescription: { id: string; value: string } | undefined;
 let sessionsReload = 0;
@@ -1712,7 +2382,8 @@ async function startBoardTask(id: string): Promise<void> {
       state.messages = [...state.messages, { id: transientId--, sessionId: id, role: 'user', content: text, createdAt: Date.now() }];
       render();
     } else renderNavigation();
-    const team = await loadTeam(id);
+    // A mirror's team (if any) runs on its host, which starts it from the routed prompt.
+    const team = await loadTeam(id) && !selected.remoteDevice;
     await call(team ? 'architect_start' : 'start_task', { sessionId: id, ...(team ? { text } : {}) });
   } catch (error) {
     state.streams.delete(id);
@@ -1730,8 +2401,39 @@ function render(): void { renderNavigation(); renderHeader(); renderTranscript()
 function setMessagePage(page: MessagePage): void {
   const firstId = page.messages[0]?.id;
   const earlier = firstId && page.hasOlder ? state.messages.filter(message => message.id > 0 && message.id < firstId) : [];
-  state.messages = [...earlier, ...page.messages];
+  state.messages = withMirrorPrompt(state.sessionId, [...earlier, ...page.messages]);
   if (!earlier.length) state.hasOlder = page.hasOlder;
+}
+/* A task on another computer gets its messages copied from the host when a run ends
+ * (remote/mirror.rs), so saved history lacks a prompt just sent there. The prompt stays
+ * in the transcript until a saved user message newer than `after` (the host's copy) arrives. */
+const mirrorPrompts = new Map<string, { message: Message; after: number }[]>();
+const latestUserId = (messages: readonly Message[]): number => messages.reduce((max, message) => message.role === 'user' && message.id > max ? message.id : max, 0);
+/** Every prompt (a first message, then steers) waits for its own host copy: each takes the first saved user message newer than its `after`. */
+function withMirrorPrompt(id: string, messages: Message[]): Message[] {
+  const pending = mirrorPrompts.get(id); if (!pending?.length) return messages;
+  const saved = messages.filter(message => message.role === 'user' && message.id > 0).map(message => message.id).sort((a, b) => a - b), taken = new Set<number>();
+  const kept = pending.filter(entry => {
+    const copy = saved.find(messageId => messageId > entry.after && !taken.has(messageId));
+    if (copy === undefined) return true;
+    taken.add(copy); return false;
+  });
+  if (kept.length) mirrorPrompts.set(id, kept); else mirrorPrompts.delete(id);
+  const dropped = new Set(pending.filter(entry => !kept.includes(entry)).map(entry => entry.message));
+  const shown = messages.filter(message => !dropped.has(message));
+  return [...shown, ...kept.map(entry => entry.message).filter(message => !shown.includes(message))];
+}
+function addMirrorPrompt(id: string, message: Message, after: number): void { mirrorPrompts.set(id, [...(mirrorPrompts.get(id) ?? []), { message, after }]); }
+function dropMirrorPrompt(id: string, message: Message): void {
+  const kept = (mirrorPrompts.get(id) ?? []).filter(entry => entry.message !== message);
+  if (kept.length) mirrorPrompts.set(id, kept); else mirrorPrompts.delete(id);
+}
+/** The transient user message for a prompt being sent, remembered while it runs on another computer. */
+function sentPrompt(task: Session, content: string, createdAt: number): Message {
+  const message: Message = { id: transientId--, sessionId: task.id, role: 'user', content, createdAt };
+  const known = task.id === state.sessionId ? state.messages : threadPages.get(task.id)?.messages;
+  if (task.remoteDevice && known) addMirrorPrompt(task.id, message, latestUserId(known));
+  return message;
 }
 
 async function latestMessagePage(sessionId: string): Promise<MessagePage> {
@@ -1751,9 +2453,9 @@ async function latestMessagePage(sessionId: string): Promise<MessagePage> {
   return latest;
 }
 
-async function loadOlderMessages(): Promise<void> {
+async function loadOlderMessages(anywhere = false): Promise<void> {
   const transcript = $('#transcript'), sessionId = state.sessionId, generation = state.generation;
-  if (!sessionId || !state.hasOlder || state.messagesLoading || state.messagesError || !transcriptVisible() || transcript.scrollTop > 200) return;
+  if (!sessionId || !state.hasOlder || state.messagesLoading || state.messagesError || !transcriptVisible() || (!anywhere && transcript.scrollTop > 200)) return;
   if (olderMessagesRequest?.sessionId === sessionId && olderMessagesRequest.generation === generation) return;
   const beforeId = state.messages.find(message => message.id > 0)?.id;
   if (!beforeId) return;
@@ -1770,41 +2472,83 @@ async function loadOlderMessages(): Promise<void> {
     if (sessionId === state.sessionId && generation === state.generation) notify('Could not load earlier messages. Scroll up to retry.');
   } finally {
     if (olderMessagesRequest === request) { olderMessagesRequest = undefined; transcript.removeAttribute('aria-busy'); }
+    if (mirrorOlderPending === sessionId) { mirrorOlderPending = ''; void mirrorMessages({ sessionId, older: true }); }
   }
 }
 
+/* A mirror's history arrives from its host newest page first, then older pages beneath it
+ * (remote/mirror.rs sync). The open thread redraws for newer messages, and prepends older
+ * ones in place until it holds one page; scrolling up loads the rest as for any thread. */
+const MIRROR_PREPEND = 100;
+let mirrorOlderPending = '';
+async function mirrorMessages(event: { sessionId: string; older?: boolean }): Promise<void> {
+  const { sessionId } = event, generation = state.generation;
+  if (sessionId !== state.sessionId || state.streams.has(sessionId) || finishingStreams.has(sessionId)) return;
+  const saved = state.messages.filter(message => message.id > 0).length;
+  if (event.older && saved && !state.messagesLoading) {
+    state.hasOlder = true;
+    if (olderMessagesRequest?.sessionId === sessionId) { mirrorOlderPending = sessionId; return; }
+    if (saved < MIRROR_PREPEND) await loadOlderMessages(true);
+    return;
+  }
+  const page = await latestMessagePage(sessionId);
+  if (sessionId !== state.sessionId || generation !== state.generation || state.streams.has(sessionId)) return;
+  // Replacing the page here also tells an earlier load still in flight to keep it.
+  setMessagePage(page); state.messagesLoading = false; state.messagesError = ''; renderTranscript(); if (stickToBottom) stickTranscript();
+}
+
 const pendingMessageForks = new Set<string>();
-async function forkAtMessage(sessionId: string, messageId: number): Promise<void> {
+/** `draft` makes an Edit: the fork stops before the message, which waits in the composer. */
+async function forkAtMessage(sessionId: string, messageId: number, draft?: string): Promise<void> {
   const key = JSON.stringify([sessionId, messageId]);
   if (pendingMessageForks.has(key)) return;
   pendingMessageForks.add(key);
   const generation = state.generation;
   try {
-    const fork = await call<Session>('fork_session_at_message', { sessionId, messageId });
+    const fork = await call<Session>('fork_session_at_message', { sessionId, messageId, exclusive: draft !== undefined });
     state.sessions = [fork, ...state.sessions.filter(task => task.id !== fork.id)];
+    if (draft) state.drafts.set(fork.id, draft);
     if (generation === state.generation) {
       await selectSession(fork.id, true);
-      notify('Conversation forked. Both tasks use the same checkout.');
+      if (draft !== undefined) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+      notify(draft !== undefined ? 'Rewound to before your message. Edit it and send.' : 'Conversation forked. Both tasks use the same checkout.');
     } else {
       scheduleNavigation();
       notify('Conversation forked. Your new task is in the task list.');
     }
   } finally { pendingMessageForks.delete(key); }
 }
+async function editAtMessage(sessionId: string, messageId: number): Promise<void> {
+  if (isRunning(sessionId)) throw new Error('Stop the agent before editing a message.');
+  const content = await call<string>('get_message_content', { sessionId, messageId });
+  // Attached context (files, images) is not re-attached; only what you typed returns.
+  await forkAtMessage(sessionId, messageId, contextBlocks(content).typed);
+}
 
 /* Each thread's last page. Switching back draws it in the same frame as the click; the
- * saved history then refreshes behind it and redraws only if something changed. */
+ * saved history then refreshes behind it and redraws only if something changed. Bounded by
+ * size too: a thread scrolled far back keeps only its newest messages (older ones reload on
+ * scroll), and the least recently opened threads are forgotten first. */
 const THREAD_PAGES = 24;
-const threadPages = new Map<string, MessagePage>();
+const THREAD_PAGES_CHARS = 4_000_000, THREAD_PAGE_CHARS = 1_000_000;
+const threadPages = new Map<string, MessagePage & { chars: number }>();
 function rememberThread(id: string): void {
   const messages = state.messages.filter(message => message.id > 0);
   // Only a page that really is this thread's: other paths can switch tasks without a reload.
   if (!id || !messages.length || messages.some(message => message.sessionId !== id)) return;
-  threadPages.delete(id); threadPages.set(id, { messages, hasOlder: state.hasOlder });
-  if (threadPages.size > THREAD_PAGES) threadPages.delete(threadPages.keys().next().value as string);
+  let start = messages.length - 1, chars = messages[start].content.length;
+  while (start > 0 && chars + messages[start - 1].content.length <= THREAD_PAGE_CHARS) chars += messages[--start].content.length;
+  threadPages.delete(id); threadPages.set(id, { messages: start ? messages.slice(start) : messages, hasOlder: state.hasOlder || start > 0, chars });
+  let total = 0; for (const page of threadPages.values()) total += page.chars;
+  for (const [key, page] of threadPages) {
+    if (key === id || (threadPages.size <= THREAD_PAGES && total <= THREAD_PAGES_CHARS)) break;
+    threadPages.delete(key); total -= page.chars;
+  }
 }
 const pageSignature = (messages: Message[]): string => messages.filter(message => message.id > 0).map(message => `${message.id}:${message.content.length}`).join(',');
 
+// The menu bar item lists finished tasks until they are viewed.
+function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
 async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
@@ -1812,6 +2556,12 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
   if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); }
+  // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
+  // section its row is in while it stays open, so the row never jumps from under the pointer.
+  if (changingTask) {
+    const section = sectionOf(document.querySelector<HTMLElement>(`#navigation .task-item[data-id="${CSS.escape(id)}"]`)?.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup);
+    sectionHold = section ? { id, section } : undefined;
+  }
   if (previousTask && previousTask.id !== id) {
     if (previousTask.taskDescription) previousTask.taskDescription = [...previousTask.taskDescription].slice(0, 512).join('');
     fullTaskDescription = undefined;
@@ -1819,10 +2569,9 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   if (state.view !== 'conversation') state.boardPanel = true;
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
-  if (state.collapsedFolders.delete(s.projectId)) saveCollapsedFolders();
-  state.sessionId = s.id; activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.archived = s.archived; state.attachments = [];
+  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
   const remembered = changingTask ? threadPages.get(id) : undefined;
-  state.messages = remembered ? [...remembered.messages] : []; state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
+  state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
   renderInspector();
   if (changingTask) run(restoreSelectedFile());
@@ -1910,7 +2659,7 @@ function removeDeletedSessions(ids: string[]): void {
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
     attachments.clear(id); pendingPromptActivity.delete(id);
     subagents.forget(id);
-    threadPanels.delete(id);
+    threadPanels.delete(id); fileTabs.forget(id);
   }
   state.sessions = state.sessions.filter(task => !removed.has(task.id));
   ++sessionsReload;
@@ -1968,9 +2717,9 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'export': await exportTask(task, argumentsText || undefined); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new', argumentsText); break;
     case 'agents': showCommands(); break;
-    case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('.subagents-trigger'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>'); break; }
+    case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('#agents-toggle:not([hidden])'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>'); break; }
     case 'mention':
-      if (argumentsText) { await call('read_file', { ...workspaceContext(task), path: argumentsText }); if (task.id === state.sessionId) attachFile(argumentsText); }
+      if (argumentsText) { await projectFileText(task, argumentsText); if (task.id === state.sessionId) attachFile(argumentsText); }
       else { state.inspector = true; state.inspectorTab = 'files'; renderInspector(); }
       break;
     case 'cd': {
@@ -2031,16 +2780,49 @@ function composerPayload(s: Session): { text: string; items: QueuedMessage['atta
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
   return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
 }
+async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[], browserItems: BrowserAttachment[], moodboardItems: { id: string; projectId: string; name: string }[], forceQueue = false): Promise<void> {
+  const contexts = await Promise.all(paths.map(path => fileContext(s, path)));
+  const imageIds = [...browserItems.filter(item => item.kind === 'screenshot').map(item => item.id), ...attachments.imageIds(promptItems)];
+  const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id)
+    || (imageIds.length || moodboardItems.length ? 'Please review the attached material.' : '');
+  await call('bot_message', { botId: bot.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id), forceQueue });
+}
 function clearComposer(s: Session): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (prompt) prompt.value = '';
   state.drafts.delete(s.id); attachments.clear(s.id); state.attachments = [];
 }
 /** Queues the composer's message to send when the agent finishes. */
-async function enqueueFromComposer(): Promise<void> {
+async function enqueueFromComposer(forceQueue = false): Promise<void> {
   const s = session(); if (!s) return;
+  if (remoteOffline(s)) { renderComposer(); return; }
   const { text, items } = composerPayload(s);
+  if (isWake(text)) { await wakeFromComposer(s, text); return; }
+  const bot = sidebarBots.find(item => item.desktopSession === s.id);
+  if (bot) {
+    const promptItems = attachments.list(s.id), paths = [...state.attachments];
+    const browserItems = [...(state.browserAttachments.get(s.id) ?? [])];
+    const moodboardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
+    if (!text && !paths.length && !browserItems.length && !moodboardItems.length && !promptItems.length) return;
+    clearComposer(s);
+    state.browserAttachments.delete(s.id);
+    const sentBoards = new Set(moodboardItems.map(item => item.id));
+    state.moodboardAttachments.set(s.id, (state.moodboardAttachments.get(s.id) ?? []).filter(item => !sentBoards.has(item.id)));
+    renderComposer(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+    try {
+      await botMessageFromComposer(s, bot, text, promptItems, paths, browserItems, moodboardItems, forceQueue);
+      // The gateway may have queued it; show the row now rather than on the next queue event.
+      setQueue(s.id, await call<QueuedMessage[]>('queue_list', { sessionId: s.id }).catch(() => queueOf(s.id)));
+    } catch (error) {
+      restoreComposer(s, text, promptItems, paths);
+      if (browserItems.length) state.browserAttachments.set(s.id, browserItems);
+      if (moodboardItems.length) state.moodboardAttachments.set(s.id, [...moodboardItems, ...(state.moodboardAttachments.get(s.id) ?? [])]);
+      throw error;
+    } finally { if (s.id === state.sessionId) renderComposer(); }
+    return;
+  }
   if (!text && !items.length) return;
+  clearComposerNote(s);
   // Clear at once so the next message can be typed while this one is saved.
   const promptItems = attachments.list(s.id), paths = [...state.attachments];
   clearComposer(s); renderComposer(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
@@ -2069,26 +2851,41 @@ const steers = new Map<string, Steer>();
 const steeringQueued = new Set<string>();
 /** Sends text into the running turn and shows it at once as a pending user message. */
 async function steer(s: Session, text: string): Promise<void> {
-  const result = await call<{ id?: string; mode?: SteerMode } | null>('steer_task', { sessionId: s.id, text });
-  const messageId = transientId--, known = result?.id ? steers.get(result.id) : undefined;
-  if (result?.id) steers.set(result.id, { sessionId: s.id, text, mode: known?.mode ?? result.mode ?? 'live', status: known?.status ?? 'pending', messageId });
-  if (s.id !== state.sessionId) return;
-  state.messages = [...state.messages, { id: messageId, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() }]; renderTranscript(true);
+  const message = sentPrompt(s, text, Date.now());
+  if (s.id === state.sessionId) { state.messages = [...state.messages, message]; renderTranscript(true); }
+  try {
+    const result = await call<{ id?: string; mode?: SteerMode } | null>('steer_task', { sessionId: s.id, text });
+    const known = result?.id ? steers.get(result.id) : undefined;
+    if (result?.id) steers.set(result.id, { sessionId: s.id, text, mode: known?.mode ?? result.mode ?? 'live', status: known?.status ?? 'pending', messageId: message.id });
+  } catch (error) {
+    dropMirrorPrompt(s.id, message);
+    if (s.id === state.sessionId) { state.messages = state.messages.filter(item => item !== message); renderTranscript(true); }
+    throw error;
+  }
 }
 function steerEvent(event: AgentEvent): void {
   const data = event.data as { id?: string; status?: SteerStatus; mode?: SteerMode } | undefined;
   if (!data?.id || !data.status) return;
   const known = steers.get(data.id);
   if (known?.status === 'failed') return;
-  steers.set(data.id, { sessionId: event.sessionId, text: event.text, ...known, mode: data.mode ?? known?.mode ?? 'live', status: data.status });
-  if (data.status === 'failed') void requeueSteer(event.sessionId, event.text || known?.text || '');
-  if (event.sessionId === state.sessionId && known?.messageId !== undefined) renderTranscript(true);
+  // A steer this window did not send (a bot routes Enter natively) still shows as the user's message.
+  // The event can beat `steer_task`'s reply: then the bubble sendSteer already drew is this steer.
+  const linked = new Set([...steers.values()].map(item => item.messageId));
+  const drawn = !known && event.sessionId === state.sessionId ? state.messages.find(m => m.id < 0 && m.role === 'user' && m.content === event.text && !linked.has(m.id)) : undefined;
+  const shown = drawn ? drawn.id : !known && data.status !== 'failed' && event.text && event.sessionId === state.sessionId ? transientId-- : undefined;
+  if (shown !== undefined && !drawn) state.messages = [...state.messages, { id: shown, sessionId: event.sessionId, role: 'user', content: event.text, createdAt: Date.now() }];
+  steers.set(data.id, { sessionId: event.sessionId, text: event.text, ...known, ...(shown !== undefined ? { messageId: shown } : {}), mode: data.mode ?? known?.mode ?? 'live', status: data.status });
+  if (data.status === 'failed') void requeueSteer(event.sessionId, event.text || known?.text || '', (event.data as { reason?: string } | undefined)?.reason || 'The agent could not take it during this turn.');
+  if (event.sessionId === state.sessionId && (known?.messageId !== undefined || shown !== undefined)) renderTranscript(true);
 }
+/** Queued entries whose steer did not land, with the reason (the queue shows "Not steered"). */
+const notSteered = new Map<string, string>();
 /** A steer the agent could not take goes back to the queue, so nothing typed is lost. */
-async function requeueSteer(sessionId: string, text: string): Promise<void> {
+async function requeueSteer(sessionId: string, text: string, reason: string): Promise<void> {
   if (!text) return;
   const entry = await call<QueuedMessage>('queue_add', { sessionId, text, attachments: [] }).catch(() => null);
   const s = state.sessions.find(item => item.id === sessionId);
+  if (entry) notSteered.set(entry.id, reason);
   if (entry) { setQueue(sessionId, [...queueOf(sessionId), entry]); notify('The agent could not take that message, so it was queued.'); }
   else { if (s) restoreComposer(s, text, [], []); notify('The agent could not take that message; it is back in the prompt.'); }
   if (sessionId === state.sessionId) renderComposer();
@@ -2102,19 +2899,39 @@ function steerStateHtml(m: Message): string {
 /** Sends the composer's text into the running turn; anything that cannot steer is queued instead. */
 async function steerFromComposer(): Promise<void> {
   const s = session(); if (!s) return;
+  if (remoteOffline(s)) { renderComposer(); return; }
   const { text, items } = composerPayload(s);
+  const bot = sidebarBots.find(item => item.desktopSession === s.id);
+  if (bot?.whileWorking === 'steer') return enqueueFromComposer(true);
+  if (bot && (items.length || (state.browserAttachments.get(s.id) ?? []).length || (state.moodboardAttachments.get(s.id) ?? []).length)) {
+    notify('Attachments travel with queued messages, so this one was queued.');
+    return enqueueFromComposer();
+  }
   if (!text) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
   if (items.length || teams.get(s.id)) {
     notify(items.length ? 'Attachments travel with queued messages, so this one was queued.' : 'A team takes messages between runs, so this one was queued.');
     return enqueueFromComposer();
   }
-  clearComposer(s); renderComposer();
+  clearComposerNote(s); clearComposer(s); renderComposer();
+  // A mirror whose start has not attached has no run to steer yet: the message waits in the queue.
+  const starting = remoteStart(s.id);
+  if (starting && starting.stage !== 'error') {
+    const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
+    if (entry) { setQueue(s.id, [...queueOf(s.id), entry]); notify(`${starting.device} is still starting this task; your message is queued for after it.`); }
+    else restoreComposer(s, text, [], []);
+    if (s.id === state.sessionId) renderComposer();
+    return;
+  }
   try {
     await steer(s, text);
   } catch (error) {
+    // A host that has not approved this device would refuse it queued too: say so, keep the text.
+    if (remoteRefusal(s, error)) { restoreComposer(s, text, [], []); if (s.id === state.sessionId) renderComposer(); return; }
     // Not taken mid-turn: keep it for after the run instead of losing it.
-    notify(`${error instanceof Error ? error.message : String(error)} Queued instead.`);
+    const reason = error instanceof Error ? error.message : String(error);
+    notify(/\bqueued\b/i.test(reason) ? reason : `${reason} Queued instead.`);
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
+    if (entry) notSteered.set(entry.id, reason);
     if (entry) setQueue(s.id, [...queueOf(s.id), entry]); else restoreComposer(s, text, [], []);
     if (s.id === state.sessionId) renderComposer();
   }
@@ -2123,6 +2940,8 @@ async function steerFromComposer(): Promise<void> {
 async function steerQueued(s: Session, id: string): Promise<void> {
   const entry = queueOf(s.id).find(item => item.id === id); if (!entry || steeringQueued.has(id)) return;
   if (entry.attachments.length) { notify('Queued messages with attachments are sent after the run.'); return; }
+  const starting = remoteStart(s.id);
+  if (starting && starting.stage !== 'error') { notify(`${starting.device} is still starting this task; the message stays queued.`); return; }
   steeringQueued.add(id); renderComposer();
   try {
     await steer(s, entry.text);
@@ -2138,7 +2957,7 @@ async function saveQueueEdit(): Promise<void> {
 async function queueAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
-  if (action === 'queue-steer') return steerQueued(s, id).catch(error => { if (!isRunning(s.id)) run(dispatchQueue(s.id)); throw error; });
+  if (action === 'queue-steer') return steerQueued(s, id).catch(error => { if (remoteRefusal(s, error)) return; if (!isRunning(s.id)) run(dispatchQueue(s.id)); throw error; });
   if (action === 'queue-send-now') return sendQueuedNow(s, id);
   if (action === 'queue-edit') { state.queueEditing = id; renderComposer(); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
   if (action === 'queue-cancel') { state.queueEditing = ''; renderComposer(); return; }
@@ -2159,7 +2978,7 @@ async function sendQueuedNow(s: Session, id: string): Promise<void> {
   }
   sendFirst.set(s.id, { id, stopping: true, hold: state.queueHolds.get(s.id) });
   runEndings.set(s.id, 'stopped');
-  const team = teams.get(s.id);
+  const team = teams.get(s.id) && !s.remoteDevice;
   await call(team ? 'architect_control' : 'stop_session', { sessionId: s.id, ...(team ? { action: 'stop' } : {}) });
   notify('Stopping the run to send this message…');
 }
@@ -2187,7 +3006,7 @@ async function dispatchQueue(id: string): Promise<void> {
   const task = state.sessions.find(item => item.id === id);
   const first = sendFirst.get(id), next = queueOf(id).find(item => item.id === first?.id) ?? queueOf(id)[0];
   if (first && next?.id !== first.id) sendFirst.delete(id);
-  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
+  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
@@ -2196,24 +3015,26 @@ async function dispatchQueue(id: string): Promise<void> {
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
   } catch (error) {
-    state.queueHolds.set(id, 'failed'); notify(error instanceof Error ? error.message : String(error));
+    state.queueHolds.set(id, 'failed'); if (!remoteRefusal(task, error)) notify(error instanceof Error ? error.message : String(error));
   } finally { state.queueBusy.delete(id); if (id === state.sessionId) renderComposer(); renderNavigation(); }
 }
 /** Starts a turn with a queued message, for the open task or one in the background. */
 async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void> {
   const promptItems = entry.attachments.filter(item => item.kind !== 'path') as unknown as ReturnType<typeof attachments.list>;
   const paths = entry.attachments.flatMap(item => item.kind === 'path' ? [item.path] : []);
+  let sent: Message | undefined;
   try {
-    const files = await Promise.all(paths.map(async path => { const content = await call<string>('read_file', { ...workspaceContext(task), path }); return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}\n\`\`\``; }));
+    const files = await Promise.all(paths.map(async path => { const content = await projectFileText(task, path); return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}\n\`\`\``; }));
     const content = entry.text + files.join('') + attachments.contextFor(promptItems);
     const sentAt = Date.now();
     task.lastPromptAt = sentAt; task.draft = false; pendingPromptActivity.set(task.id, sentAt);
     stream(task.id).lastPromptAt = sentAt; stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
-    if (task.id === state.sessionId) { state.messages = [...state.messages, { id: transientId--, sessionId: task.id, role: 'user', content, createdAt: sentAt }]; render(); } else renderNavigation();
-    await call(teams.get(task.id) ? 'architect_start' : 'send_message', { sessionId: task.id, text: content, imageIds: attachments.imageIds(promptItems), moodboardIds: [] });
+    sent = sentPrompt(task, content, sentAt);
+    if (task.id === state.sessionId) { state.messages = [...state.messages, sent]; render(); } else renderNavigation();
+    await call(teams.get(task.id) && !task.remoteDevice ? 'architect_start' : 'send_message', { sessionId: task.id, text: content, imageIds: attachments.imageIds(promptItems), moodboardIds: [] });
   } catch (error) {
     // Put it back at the front and hold, so nothing is lost or sent out of order.
-    pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle';
+    pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle'; if (sent) dropMirrorPrompt(task.id, sent);
     // A synthetic entry (no id, e.g. continuing after a limit) was never queued.
     if (entry.id) {
       const restored = await call<QueuedMessage>('queue_restore', { entry }).catch(() => null);
@@ -2237,7 +3058,7 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
-async function continueAfterLimit(task: Session): Promise<void> {
+async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishingStreams.has(task.id)) return;
   const hold = state.queueHolds.get(task.id);
   if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
@@ -2245,14 +3066,31 @@ async function continueAfterLimit(task: Session): Promise<void> {
   state.queueBusy.add(task.id);
   try {
     const at = Date.now();
-    await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Continue where you left off.', attachments: [], createdAt: at, updatedAt: at });
+    await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text, attachments: [], createdAt: at, updatedAt: at });
     task.limitedAt = null; task.limitedUntil = null;
   } catch (error) { notify(error instanceof Error ? error.message : String(error)); }
   finally { state.queueBusy.delete(task.id); if (task.id === state.sessionId) renderComposer(); renderNavigation(); }
 }
+/** The harness's other named connections a limited task can continue on (issue #137). */
+function limitAlternatives(s: Session): { id: string; name: string }[] {
+  if (s.remoteDevice) return [];
+  const current = namedConnections.tasks[s.id];
+  return namedConnections.connections.filter(c => c.provider === s.provider && c.id !== current);
+}
+/** Moves the task to another connection and resends with its context: a harness session can't resume
+ *  across config folders, so connection_assign starts a fresh one that context recovery fills in. */
+async function continueOnConnection(task: Session, id: string): Promise<void> {
+  const target = limitAlternatives(task).find(c => c.id === id);
+  if (!target || isRunning(task.id) || state.queueBusy.has(task.id)) return;
+  const from = taskConnection(task)?.name ?? `the default ${provider(task.provider)?.name ?? task.provider} setup`;
+  onNamedConnections(await call('connection_assign', { sessionId: task.id, connectionId: id }));
+  task.resumeId = null;
+  await continueAfterLimit(task, `Continue where you left off. (Moved to the connection “${target.name}” because ${from} reached its usage limit.)`);
+}
 async function limitAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   if (action === 'limit-continue') return continueAfterLimit(s);
+  if (action === 'limit-switch') return continueOnConnection(s, element.dataset.connection ?? '');
   if (action === 'limit-dismiss') { await call('clear_usage_limit', { sessionId: s.id }); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; scheduleLimitResumes(); renderComposer(); renderNavigation(); return; }
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
@@ -2260,15 +3098,82 @@ async function limitAction(action: string, element: HTMLElement): Promise<void> 
     finally { scheduleLimitResumes(); renderComposer(); }
   }
 }
+/** A project file's text as it is here. A task on another computer has no checkout here, so its
+ * files are read from this computer's copy of the project, which the host cloned the same repo of. */
+async function projectFileText(s: Session, path: string): Promise<string> {
+  if (!s.remoteDevice) return call<string>('read_file', { ...workspaceContext(s), path });
+  try { return await call<string>('read_file', { projectId: s.projectId, path }); }
+  catch { throw new Error(`${path} can’t be read on this computer, so it can’t go to ${s.remoteDevice.name}. Remove it, or paste the part you need.`); }
+}
 async function fileContext(s: Session, path: string): Promise<string> {
-  const content = await call<string>('read_file', { ...workspaceContext(s), path });
+  const content = await projectFileText(s, path);
   return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
+}
+/** `/wake` is handled here for every harness, so it works whether or not the CLI knows it. */
+const WAKE_SLASH: SlashCommand = { id: 'pandacode:wake', name: '/wake', description: 'Wake this thread later', argumentHint: '[30m | 9:00 | tomorrow] [message]', kind: 'action', source: 'PandaCode' };
+function withWake(catalog: { commands: SlashCommand[]; warnings: string[] }): { commands: SlashCommand[]; warnings: string[] } {
+  return catalog.commands.some(command => command.name === '/wake') ? catalog : { ...catalog, commands: [WAKE_SLASH, ...catalog.commands] };
+}
+/** Checked without awaiting, so an ordinary send prepares in the same task as the click. */
+const WAKE_TEXT = /^\/wake(?:\s+([\s\S]*))?$/i;
+const isWake = (text: string) => WAKE_TEXT.test(text.trim());
+/** Runs a typed `/wake …` and clears the prompt; false when the text is something else. */
+async function wakeFromComposer(s: Session, text: string): Promise<boolean> {
+  const match = WAKE_TEXT.exec(text.trim()); if (!match) return false;
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  await wakeCommand(s.id, match[1] ?? '', document.querySelector<HTMLElement>('#composer') ?? $('#composer-area'));
+  if (prompt?.isConnected && prompt.value.trim() === text.trim()) { prompt.value = ''; resizePrompt(); }
+  state.drafts.delete(s.id);
+  return true;
+}
+const mirrorLocalSlash = new Set(['console', 'goal', 'usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs', 'fork', 'archive', 'delete', 'export', 'worktree', 'cd', 'plan', 'fast', 'diff', 'integrations', 'pwd']);
+function remoteSlashUnavailable(action: string): boolean { return action.startsWith('console:') || mirrorLocalSlash.has(action); }
+/** One line above the prompt for the task, kept across composer redraws until the next send. */
+const composerNotes = new Map<string, string>();
+function showComposerNote(s: Session, text: string): void {
+  composerNotes.set(s.id, text);
+  if (s.id !== state.sessionId) return;
+  syncComposerNote(s); announce(text);
+}
+function clearComposerNote(s: Session): void { if (composerNotes.delete(s.id) && s.id === state.sessionId) syncComposerNote(s); }
+function syncComposerNote(s: Session): void {
+  const composer = document.querySelector('#composer'), old = document.querySelector<HTMLElement>('#composer-area .composer-inline-note:not(.remote-missing-note)');
+  const text = composerNotes.get(s.id), markup = text ? `<div class="composer-inline-note">${escape(text)}</div>` : '';
+  if (old) { if (old.outerHTML !== markup) { if (markup) old.outerHTML = markup; else old.remove(); } }
+  else if (markup && composer) composer.insertAdjacentHTML('beforebegin', markup);
+}
+/** The composer's one live region: notes and connection status are drawn silently and read from here. */
+function announce(text: string): void {
+  const region = document.querySelector<HTMLElement>('#composer-live'); if (!region) return;
+  if (region.textContent === text) region.textContent = '';
+  queueMicrotask(() => { region.textContent = text; });
+}
+/** A host's refusal under scoped pairing (remote/grants.rs), which names the host. */
+const scopeRefusal = (error: unknown): string | null => {
+  const text = errorText(error);
+  return /Waiting for approval on |has blocked this device|can only view tasks on |is not allowed to do that on /.test(text) ? text : null;
+};
+/** Shows a mirror task's scope refusal inline instead of as a toast; false for any other error. */
+function remoteRefusal(s: Session, error: unknown): boolean {
+  const text = s.remoteDevice ? scopeRefusal(error) : null;
+  if (text) showComposerNote(s, text);
+  return Boolean(text);
 }
 async function send(): Promise<void> {
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
-  if (!text || !s || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
-  const target = !s.remoteDevice && newTaskView() ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
+  if (!s) return;
+  if (isWake(text)) { await wakeFromComposer(s, text); return; }
+  const bot = sidebarBots.find(item => item.desktopSession === s.id);
+  const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
+  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
+  clearComposerNote(s);
+  if (remoteOffline(s)) { renderComposer(); return; }
+  const fresh = !s.remoteDevice && newTaskView();
+  const target = fresh ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
   if (target) return sendRemote(s, target, draft, text);
+  if (fresh && remoteChoice !== LOCAL && !cloudProvider(remoteChoice)) { renderComposer(); return; }
+  // A failed start elsewhere no longer applies once this task is sent another way.
+  clearRemoteStart(s.id);
   const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
   // Preparing attachments or awaiting admission blocks only this task.
@@ -2287,6 +3192,10 @@ async function send(): Promise<void> {
       if (!resolved.action && resolved.acceptsAttachments === false && (filePaths.length || browserItems.length || moodboardItems.length || promptItems.length)) throw new Error('This command does not accept attachments. Remove them before running it.');
       if (resolved.action) {
         configuringSessions.delete(s.id);
+        if (s.remoteDevice && remoteSlashUnavailable(resolved.action)) {
+          showComposerNote(s, `${text} needs a checkout on this computer. Run it in a local task, or ask the remote agent in plain text.`);
+          return;
+        }
         if (state.sessionId !== s.id) throw new Error('Return to the task to run this command.');
         const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
         if (prompt?.value !== draft) throw new Error('Your message changed while commands were loading. Send it again.');
@@ -2309,12 +3218,13 @@ async function send(): Promise<void> {
   // Sending by hand is an explicit continue: release a held queue, which then follows this run.
   state.queueHolds.delete(s.id);
   pendingPromptActivity.set(s.id, sentAt); renderNavigation();
-  let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false;
+  let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false, sent: Message | undefined;
   const isCurrent = () => state.sessionId === s.id;
   try {
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     // Mentioned issues and pull requests travel with the message, so every harness can read them.
-    const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
+    const rawContent = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + await botTaskBrief(s) + tokenSaver.contextFor(s.id);
+    const content = rawContent || (bot ? 'Please review the attached material.' : rawContent);
     const sentIds = new Set(browserItems.map(item => item.id));
     const remaining = (state.browserAttachments.get(s.id) ?? []).filter(item => !sentIds.has(item.id));
     if (remaining.length) state.browserAttachments.set(s.id, remaining); else state.browserAttachments.delete(s.id);
@@ -2327,20 +3237,20 @@ async function send(): Promise<void> {
     const currentPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
     if (currentPrompt?.dataset.sessionId === s.id && currentPrompt.value === draft) currentPrompt.value = '';
     if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
+    sent = sentPrompt(s, content, Date.now());
     if (isCurrent()) {
       stickToBottom = true;
-      state.messages = [...state.messages, { id: transientId--, sessionId: s.id, role: 'user', content, createdAt: Date.now() }];
+      state.messages = [...state.messages, sent];
       state.attachments = state.attachments.filter(path => !filePaths.includes(path)); render();
-      const sent = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
-      if (sent.length) enterView(sent[sent.length - 1], 12);
+      const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
+      if (shown.length) enterView(shown[shown.length - 1], 12);
     } else renderNavigation();
     const imageIds = [...screenshots, ...attachments.imageIds(promptItems)];
     // A bot's own conversation goes through the bot, which adds its brief and memories.
-    const bot = sidebarBots.find(item => item.desktopSession === s.id);
-    if (bot && !imageIds.length && !moodboardItems.length && !teams.get(s.id)) await call('bot_message', { botId: bot.id, text: content });
-    else await call(teams.get(s.id) && !moodboardItems.length ? 'architect_start' : 'send_message', { sessionId: s.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
+    if (bot) await call('bot_message', { botId: bot.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
+    else await call(teams.get(s.id) && !s.remoteDevice && !moodboardItems.length ? 'architect_start' : 'send_message', { sessionId: s.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
   } catch (error) {
-    pendingPromptActivity.delete(s.id);
+    pendingPromptActivity.delete(s.id); if (sent) dropMirrorPrompt(s.id, sent);
     state.streams.delete(s.id); s.status = 'idle';
     // A rejected first prompt may not have been saved; follow native storage on whether the task is listed.
     if (wasDraft) void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; renderNavigation(); }).catch(() => undefined);
@@ -2364,6 +3274,7 @@ async function send(): Promise<void> {
       const saved = await latestMessagePage(s.id);
       if (isCurrent() && generation === state.generation) { setMessagePage(saved); state.messagesLoading = false; render(); }
     }
+    if (remoteRefusal(s, error)) return;
     throw error;
   } finally { pendingPromptActivity.delete(s.id); configuringSessions.delete(s.id); }
 }
@@ -2379,7 +3290,7 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     if (!current()) return;
     finishingStreams.delete(sessionId);
     if (sessionId !== state.sessionId || generation !== state.generation) return;
-    setMessagePage(saved); state.messagesLoading = false; state.messagesError = '';
+    setMessagePage(saved); state.messagesLoading = false; state.messagesError = ''; mirrorPrompts.delete(sessionId);
     renderTranscript(); renderComposer(); await refreshInspector();
   } catch (error) {
     if (!current()) return;
@@ -2402,9 +3313,11 @@ function completeTurnChanges(event: AgentEvent): void {
     messages.push({ id: transientId--, sessionId: event.sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: data.turnChanges });
     state.messages = messages;
   }
-  if (current) { current.text = ''; current.retainedMessageKey = undefined; current.tools = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
+  if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
   if (event.sessionId === state.sessionId) {
     renderTranscript();
+    // A task on another computer has its messages copied when the run ends; its `done` reloads them.
+    if (session()?.remoteDevice) return;
     // Reconcile once at completion with persisted IDs and full text. This also
     // wins over an older history request made while switching to a busy task.
     const request = ++completedHistoryRequest, generation = state.generation;
@@ -2415,6 +3328,7 @@ function completeTurnChanges(event: AgentEvent): void {
   }
 }
 function onAgent(event: AgentEvent): void {
+  remoteStartAttached(event.sessionId);
   if (botsView) queueMicrotask(() => botsView?.agent(event.sessionId, event.kind));
   if ((event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
   if (deletedSessions.has(event.sessionId)) return;
@@ -2444,6 +3358,10 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'turn_start') return;
   if (event.kind === 'commands_changed') { if (event.sessionId === state.sessionId) slashPicker?.refresh(true); return; }
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
+  // Hosts send `team` (a changed worker row) only for mirrors; it is not a local event kind.
+  const workerRow = (event.kind as string) === 'team';
+  if ((workerRow || event.kind === 'done' && teams.get(event.sessionId)) && state.sessions.find(task => task.id === event.sessionId)?.remoteDevice) refreshMirrorTeam(event.sessionId);
+  if (workerRow) return;
   // Native reports each steer's pending, delivered or failed state.
   if (event.kind === 'steer') { steerEvent(event); return; }
   const s = state.sessions.find(s => s.id === event.sessionId);
@@ -2459,12 +3377,14 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'done') {
     if (s) refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
-    if (s && botProjects.has(s.projectId)) void refreshBotPreviews();
+    if (s && botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
     for (const [id, item] of steers) if (item.sessionId === event.sessionId) steers.delete(id);
     const finishing = { stream: state.streams.get(event.sessionId) ?? stream(event.sessionId), finishedAt: Date.now() };
     clearAgentInputs(finishing.stream);
     finishingStreams.set(event.sessionId, finishing);
     state.streams.delete(event.sessionId); if (s) s.status = 'idle';
+    // A turn that finished out of view (another thread, the board, another app) shows unread until opened.
+    if (s && (s.id !== state.sessionId || !transcriptVisible() || !document.hasFocus())) { (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(s.id); saveUnreviewed(); }
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
@@ -2473,8 +3393,13 @@ function onAgent(event: AgentEvent): void {
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
     if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
     else if (ending) state.queueHolds.set(event.sessionId, ending);
+    if (s && botProjects.has(s.projectId)) {
+      if (ending === 'failed') failedBotProjects.add(s.projectId);
+      else if (!ending) failedBotProjects.delete(s.projectId);
+    }
     if (!ending) void maybeTurnChecks(event.sessionId);
     if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
+    void applyNextBotModel(event.sessionId);
     void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
   }
   if (event.kind === 'session') return;
@@ -2483,7 +3408,8 @@ function onAgent(event: AgentEvent): void {
     const until = (event.data as { resetsAt?: number | null } | undefined)?.resetsAt ?? null;
     if (s) { s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false; }
     runEndings.set(event.sessionId, 'limited');
-    notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    // A bot's limit already shows as its sidebar chip and above its composer.
+    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     return;
   }
@@ -2493,15 +3419,17 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
   if (event.kind === 'text') {
     if (event.text && current.retainedMessageKey) {
-      current.text = ''; current.retainedMessageKey = undefined; current.revision++;
+      current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
     }
-    current.text = (current.text + event.text).slice(-262144);
+    current.body.append(event.text);
     if (event.text.trim()) {
       updateStreamStatus(current, 'Generating response');
       current.lastResponseAt = Date.now();
       if (s) { becameActive = !activeTask(s); s.lastResponseAt = current.lastResponseAt; }
     }
   }
+  // Not saved with the transcript, so the fold lives only while the turn streams.
+  if ((event.kind as string) === 'thinking') current.thought.append(event.text);
   if (event.kind === 'tool') {
     const tool = event.tool;
     const key = tool ? 'tool:' + tool.id : 'live:' + transientId--;
@@ -2519,7 +3447,7 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); current.tools.push({ key: 'error:' + transientId--, content: 'Error: ' + event.text.slice(0, 8192), statusOnly: true }); trimLiveActivity(current, event.sessionId); current.revision++; notify(event.text); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${s?.title ?? 'Task'} needs approval`); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -2530,9 +3458,9 @@ function onAgent(event: AgentEvent): void {
       if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
       if (event.sessionId === state.sessionId) renderStream();
       scheduleNavigation();
-    }));
+    }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
-    if (event.sessionId !== state.sessionId) notify(`${s?.title ?? 'Task'} needs your answer`);
+    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`);
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
@@ -2552,22 +3480,31 @@ async function refreshInspector(): Promise<void> {
   const request = ++inspectorRequest;
   const p = project(); if (!p) { state.git = null; state.jj = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = false; renderInspector(); return; }
   state.inspectorLoading = true; renderInspector();
-  const id = p.id, folder = state.filePath, context = workspaceContext(), key = workspaceKey();
-  const results = await Promise.allSettled([call<GitStatus>('git_status', context), call<FileEntry[]>('list_files', { ...context, path: folder }), call<JjStatus>('jj_status', context)]);
-  if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey() || folder !== state.filePath) return;
+  const id = p.id, folders = [...state.openFolders], context = workspaceContext(), key = workspaceKey();
+  const [results, children] = await Promise.all([
+    Promise.allSettled([call<GitStatus>('git_status', context), call<FileEntry[]>('list_files', { ...context, path: '' }), call<JjStatus>('jj_status', context)]),
+    Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path }))),
+  ]);
+  if (request !== inspectorRequest || id !== state.projectId || key !== workspaceKey()) return;
+  // Only folders still open take the new listing; a failed read keeps the last one rather than collapsing the folder.
+  children.forEach((result, index) => {
+    const path = folders[index];
+    if (result.status === 'fulfilled' && state.openFolders.has(path)) state.folderFiles.set(path, result.value);
+  });
   state.inspectorLoading = false;
   state.git = results[0].status === 'fulfilled' ? results[0].value : null;
+  if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
   state.filesError = results[1].status === 'rejected' ? errorText(results[1].reason) || 'The folder could not be read.' : '';
-  renderInspector(); renderHeader();
+  renderInspector(); renderHeader(); if (state.inspector && state.inspectorTab === 'file') fileTabs.reload();
 }
 /** The simulator panel stays mounted once opened; hiding it stops its frames. */
 function syncSimulatorPanel(): void {
   const wanted = (isMac || isWindows) && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed;
   $('#simulator-panel').hidden = !wanted;
-  if (wanted) { $('#inspector-content').hidden = true; $('.inspector-heading>[data-action="refresh-inspector"]').hidden = true; }
+  if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { simulatorPanel?.hide(); return; }
   if (simulatorPanel) { simulatorPanel.show(); return; }
   simulatorLoading ??= import('./simulator').then(({ mountSimulator }) => {
@@ -2583,7 +3520,7 @@ function syncSimulatorPanel(): void {
 function syncVmPanel(): void {
   const wanted = isMac && state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed;
   $('#vm-panel').hidden = !wanted;
-  if (wanted) { $('#inspector-content').hidden = true; $('.inspector-heading>[data-action="refresh-inspector"]').hidden = true; }
+  if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { vmPanel?.hide(); return; }
   if (vmPanel) { vmPanel.show(); return; }
   vmLoading ??= import('./vm-panel').then(({ mountVmPanel }) => {
@@ -2595,11 +3532,21 @@ function syncVmPanel(): void {
     if (state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed) vmPanel.show();
   }).catch(error => { vmLoading = undefined; report(error); });
 }
+/** The thread's visual progress PiP: conversation view only, never on the new-task page. */
+function syncProgressPip(): void {
+  const id = state.sessionId, allowed = Boolean(id) && state.view === 'conversation' && !newTaskView();
+  if (progressPip) { progressPip.update(id, allowed, allowed && isRunning()); return; }
+  if (!id) return;
+  progressPipLoading ??= import('./progress-pip').then(({ mountProgressPip }) => {
+    progressPip = mountProgressPip($('#progress-pip'), { call, notify });
+    syncProgressPip();
+  }).catch(error => { progressPipLoading = undefined; report(error); });
+}
 /** The design canvas stays mounted once opened; hidden, it makes no calls. */
 function syncDesignPanel(): void {
   const wanted = state.inspector && state.inspectorTab === 'design' && !inspectorSuppressed;
   $('#design-panel').hidden = !wanted;
-  if (wanted) { $('#inspector-content').hidden = true; $('.inspector-heading>[data-action="refresh-inspector"]').hidden = true; }
+  if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { designPanel?.hide(); return; }
   if (designPanel) { designPanel.show(); return; }
   designLoading ??= import('./design-canvas').then(({ mountDesignCanvas }) => {
@@ -2621,7 +3568,7 @@ function syncBrowserPanel(): void {
   $('#browser-toggle').classList.toggle('active', wanted);
   $('#browser-panel').hidden = !wanted;
   $('#inspector-content').hidden = wanted;
-  $('.inspector-heading>[data-action="refresh-inspector"]').hidden = wanted;
+  $('#inspector-refresh').hidden = wanted;
   if (browserWanted === wanted && browserOwner === ownerKey) { browserPanel?.refresh(); return; }
   browserWanted = wanted; browserOwner = ownerKey;
   const revision = ++browserRevision;
@@ -2663,7 +3610,7 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   await active();
   const { action, args } = request;
   if (action === 'open_task') { await selectSession(String(args.taskId)); return { opened: state.sessionId === args.taskId }; }
-  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); state.inspectorTab = 'files'; await openFile(String(args.path), 'file'); return { opened: state.selectedFile === args.path }; }
+  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); await openFile(String(args.path), 'file'); return { opened: fileTabs.active === args.path }; }
   if (action === 'open_terminal') { if (!terminalPanel.open) await toggleTerminal(); return { opened: terminalPanel.open }; }
   if (action === 'run_project') return projectRunner.run(request.requestId, active);
   if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active); return { opened: true }; }
@@ -2683,35 +3630,140 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   }
   throw new Error('Unknown app action.');
 }
-const INSPECTOR_TITLES: Record<typeof state.inspectorTab, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design' };
+/** Adds the selected view's tab when something opened it, then draws the strip in the open order. */
+function renderInspectorTabs(pullLinked: boolean): void {
+  const tabs = state.inspectorTab === 'file' ? inspectorTabs : openTab(inspectorTabs, state.inspectorTab);
+  if (!sameTabs(tabs, inspectorTabs)) { inspectorTabs = tabs; saveTabs(localStorage, tabs); }
+  const nav = $('.inspector-tabs'), add = nav.querySelector<HTMLElement>('.inspector-tab-add')!;
+  const shown = tabs.open.filter(view => view !== 'pull' || pullLinked);
+  const files = nav.querySelector<HTMLElement>(':scope>.file-panel-tab')!;
+  files.hidden = !fileTabs.count;
+  const items = [files, ...nav.querySelectorAll<HTMLElement>(':scope>.inspector-tab:not(.file-panel-tab)')];
+  for (const item of items) {
+    const view = item.dataset.view as PanelView, selected = view === state.inspectorTab;
+    if (item !== files) {
+      item.hidden = !shown.includes(view as InspectorView);
+      item.querySelector<HTMLElement>('.inspector-tab-close')!.hidden = shown.length < 2;
+    }
+    const tab = item.querySelector<HTMLElement>('.inspector-tab-button')!;
+    tab.classList.toggle('selected', selected);
+    if (selected) tab.setAttribute('aria-current', 'true'); else tab.removeAttribute('aria-current');
+  }
+  // Move nodes only when the order changed, so a focused tab keeps focus.
+  if (items.filter(item => !item.hidden && item !== files).map(item => item.dataset.view).join() !== shown.join()) for (const view of shown) nav.insertBefore(items.find(item => item.dataset.view === view)!, add);
+  add.hidden = !closedViews(tabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked)).length;
+  const current = items.find(item => item.dataset.view === state.inspectorTab);
+  if (current && !current.hidden && nav.clientWidth) {
+    if (current.offsetLeft < nav.scrollLeft) nav.scrollLeft = current.offsetLeft;
+    else if (current.offsetLeft + current.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = current.offsetLeft + current.offsetWidth - nav.clientWidth;
+  }
+}
+function openInspectorView(view: InspectorView): void {
+  const tab = document.querySelector<HTMLElement>(`.inspector-tab[data-view="${view}"] .inspector-tab-button`);
+  if (tab) run(action(tab.dataset.action!, tab));
+}
+function closeInspectorTab(view: PanelView): void {
+  if (view === 'file') {
+    fileTabs.forget(state.sessionId);
+    if (state.inspectorTab === 'file') state.inspectorTab = threadDefault(inspectorTabs);
+    renderInspector();
+    document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
+    return;
+  }
+  const next = closeTab(inspectorTabs, view);
+  if (next === inspectorTabs) return;
+  const wasSelected = state.inspectorTab === view;
+  inspectorTabs = next; saveTabs(localStorage, next);
+  if (wasSelected) { ++fileRequest; state.inspectorTab = next.selected; state.selectedKind = ''; }
+  renderInspector();
+  if (wasSelected) document.querySelector<HTMLElement>(`.inspector-tab[data-view="${state.inspectorTab}"] .inspector-tab-button`)?.focus();
+}
+async function showInspectorViews(anchor: HTMLElement): Promise<void> {
+  const pullLinked = Boolean(githubEnabled() && session()?.pullRequest);
+  const views = closedViews(inspectorTabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked));
+  await showChoices(anchor, { title: 'Open view', width: 240, actions: true, items: views.map(view => ({ id: view, label: INSPECTOR_TITLES[view], icon: INSPECTOR_ICONS[view] })), onSelect: id => { closeChoiceMenu(); openInspectorView(id as InspectorView); } });
+}
+/** One Changes view lives while the Changes tab shows the same checkout, so folds, scroll and loaded diffs survive refreshes. */
+let changesView: ChangesView | undefined, changesViewKey = '';
+function disposeChangesView(): void { changesView?.dispose(); changesView = undefined; changesViewKey = ''; }
+function showChangesView(target: HTMLElement, key: string): void {
+  if (!changesView || changesViewKey !== key || !target.querySelector(':scope>.changes-view')) {
+    disposeChangesView();
+    const host = document.createElement('div');
+    target.replaceChildren(host);
+    const context = workspaceContext();
+    changesView = mountChangesView(host, {
+      loadDiff: (path, staged) => call<string>('git_diff', { ...context, path, staged }),
+      stage: (paths, staged) => stage(paths, staged),
+      commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
+      openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
+      refresh: () => run(refreshInspector()),
+      notify,
+      choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
+      worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
+    });
+    changesViewKey = key;
+  }
+  changesView.update(state.git, undefined);
+}
+/** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
+function fileTree(files: FileEntry[], depth: number): string {
+  return files.map(file => {
+    const open = file.isDir && state.openFolders.has(file.path), path = escape(file.path);
+    const row = `<div class="file-row" style="--depth:${depth}"><button data-action="${file.isDir ? 'toggle-file-folder' : isPreviewableFile(file.path) && !OPENS_IN_TAB.test(file.path) ? 'preview-file' : 'open-file'}" data-path="${path}"${file.isDir ? ` aria-expanded="${open}"` : ''}>${file.isDir ? icon('chevron', 'file-twisty') : '<span class="file-twisty"></span>'}${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span></button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('view-source', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${path}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${path}"`) : ''}</div>`;
+    return row + (open ? fileTree(state.folderFiles.get(file.path) ?? [], depth + 1) : '');
+  }).join('');
+}
+async function toggleFolder(path: string): Promise<void> {
+  // The tree redraws from scratch, so keyboard focus returns to the folder row it was on.
+  const render = () => {
+    const focused = (document.activeElement as HTMLElement | null)?.dataset.path === path;
+    renderInspector();
+    if (focused) document.querySelector<HTMLElement>(`#inspector-content [data-action="toggle-file-folder"][data-path="${CSS.escape(path)}"]`)?.focus();
+  };
+  if (state.openFolders.delete(path)) { state.folderFiles.delete(path); render(); return; }
+  state.openFolders.add(path); render();
+  const key = workspaceKey();
+  try {
+    const files = await call<FileEntry[]>('list_files', { ...workspaceContext(), path });
+    if (key === workspaceKey() && state.openFolders.has(path)) state.folderFiles.set(path, files);
+  } catch (error) {
+    if (key !== workspaceKey()) return;
+    state.openFolders.delete(path); report(error);
+  }
+  render();
+}
 function renderInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
-  const visible = state.inspector && !inspectorSuppressed;
+  // A shared channel has no checkout of its own, so the inspector steps aside.
+  const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
   const inspector = $('#inspector');
   inspector.hidden = !visible;
   // Keep the resize edge immediately interactive and native browser bounds stable.
   $('.workspace').classList.toggle('inspector-closed', !visible);
   $('#inspector-toggle').classList.toggle('active', visible);
   const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
-  if (state.inspectorTab === 'pull' && !pullTask) state.inspectorTab = 'changes';
+  if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
+  if (state.inspectorTab === 'file' && !fileTabs.count) state.inspectorTab = threadDefault(inspectorTabs);
+  renderInspectorTabs(Boolean(pullTask));
   const pullTab = $('.inspector-tabs').querySelector<HTMLButtonElement>('[data-action="tab-pull"]')!;
-  pullTab.hidden = !pullTask;
   if (pullTask) { pullTab.title = `Pull request #${pullTask.pullRequest!.number}`; pullTab.setAttribute('aria-label', `Pull request #${pullTask.pullRequest!.number}`); }
-  $('.inspector-tabs').querySelectorAll('button').forEach(el => {
-    const selected = el.dataset.action === (state.inspectorTab === 'browser' ? 'browser' : 'tab-' + state.inspectorTab);
-    el.classList.toggle('selected', selected);
-    if (selected) el.setAttribute('aria-current', 'true'); else el.removeAttribute('aria-current');
-  });
   const changeCount = state.git?.files.length ?? 0;
   $('.inspector-tabs [data-action="tab-changes"]').setAttribute('aria-label', changeCount ? `Changes, ${changeCount} changed ${changeCount === 1 ? 'file' : 'files'}` : 'Changes');
-  $('#inspector-title').textContent = INSPECTOR_TITLES[state.inspectorTab];
+  $('#inspector-title').textContent = state.inspectorTab === 'file' ? 'Open files' : INSPECTOR_TITLES[state.inspectorTab];
   $('#changes-count').textContent = state.git?.files.length ? String(state.git.files.length) : '';
+  const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
+  const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
+  if (!keepChanges) disposeChangesView();
   syncBrowserPanel();
   syncSimulatorPanel();
   syncVmPanel();
   syncDesignPanel();
-  if (state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
+  const showFiles = state.inspectorTab === 'file';
+  $('#file-panel').hidden = !showFiles;
+  if (showFiles) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
+  if (showFiles || state.inspectorTab === 'browser' || state.inspectorTab === 'simulator' || state.inspectorTab === 'vm' || state.inspectorTab === 'design') { pullView.dispose(); return; }
   const target = $('#inspector-content');
   if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
   pullView.dispose();
@@ -2719,6 +3771,8 @@ function renderInspector(): void {
   const remote = session()?.remoteDevice;
   if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
   if (state.inspectorTab === 'search' && !state.selectedKind) { searchPanel.show(target); return; }
+  // A refresh keeps the mounted Changes view on screen until the new status arrives.
+  if (state.inspectorLoading && changesView) return;
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
   const loadError = state.inspectorTab === 'changes' ? state.gitError : state.filesError;
   if (loadError) {
@@ -2728,8 +3782,7 @@ function renderInspector(): void {
   }
   if (state.selectedKind) {
     if (state.filePreviewLoading) { target.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
-    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${state.selectedKind === 'file' ? selectedFileContext?.sessionId && selectedFileContext.sessionId !== state.sessionId ? '' : `<button data-action="attach-file" data-path="${escape(state.selectedFile)}">${icon('attach')} Attach</button>` : button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div>${state.selectedKind === 'diff' ? '<div class="inspector-diff-host"></div>' : '<div class="document-host"></div>'}`;
-    if (state.selectedKind === 'file') renderDocument(target.querySelector<HTMLElement>('.document-host')!, state.selectedFile, state.selectedContent);
+    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div><div class="inspector-diff-host"></div>`;
     if (state.selectedKind === 'diff' && state.inspector) {
       const host = target.querySelector<HTMLElement>('.inspector-diff-host')!;
       const patch = state.selectedContent, path = state.selectedFile;
@@ -2742,7 +3795,7 @@ function renderInspector(): void {
     return;
   }
   if (state.inspectorTab === 'files') {
-    target.innerHTML = `<div class="file-folder-path"><span>${escape(project()?.name)}${state.filePath ? ' / ' + escape(state.filePath) : ''}</span>${state.filePath ? button('parent-folder', 'Go to parent folder', 'arrow') : ''}</div><div class="file-list">${state.files.map(file => `<div class="file-row"><button data-action="${file.isDir ? 'open-folder' : isPreviewableFile(file.path) ? 'preview-file' : 'open-file'}" data-path="${escape(file.path)}">${fileIcon(file.name, file.isDir)}<span>${escape(file.name)}</span>${file.isDir ? icon('chevron') : ''}</button>${!file.isDir && /\.(html?|svg)$/i.test(file.path) ? button('open-file', 'View source of ' + file.name, 'file', 'file-attach', `data-path="${escape(file.path)}"`) : ''}${!file.isDir ? button('attach-file', 'Attach ' + file.name, 'plus', 'file-attach', `data-path="${escape(file.path)}"`) : ''}</div>`).join('') || '<div class="inspector-empty">This folder is empty.</div>'}</div>`; return;
+    target.innerHTML = `<div class="file-folder-path"><span>${escape(project()?.name)}</span>${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`; return;
   }
   if (state.jj?.isRepo && !state.jj.colocated) {
     showJjPanel(target, state.jj, {
@@ -2752,10 +3805,7 @@ function renderInspector(): void {
     return;
   }
   if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+'<h3>No Git repository</h3><p>Open a Git repository to review changes.</p></div>'; return; }
-  const staged = state.git.files.filter(file => ![' ', '?', '!', '.'].includes(file.index));
-  const unstaged = state.git.files.filter(file => ![' ', '!', '.'].includes(file.working) || file.index === '?');
-  const fileRows = (files: typeof staged, isStaged: boolean) => files.map(file => `<div class="change-row"><button class="change-file" data-action="open-diff" data-path="${escape(file.path)}" data-staged="${isStaged}">${fileIcon(file.path.split('/').pop() ?? file.path, false)}<span><strong>${escape(file.path.split('/').pop())}</strong><small>${escape(file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : 'root')}</small></span><span class="file-status ${file.index === '?' ? 'new' : ''}">${file.index === '?' ? 'A' : escape(isStaged ? file.index : file.working)}</span></button>${button(isStaged ? 'unstage-file' : 'stage-file', isStaged ? 'Unstage file' : 'Stage file', isStaged ? 'close' : 'plus', 'stage-button', `data-path="${escape(file.path)}"`)}</div>`).join('');
-  target.innerHTML = `<div class="branch-card"><span>${icon('branch')}<span>${escape(state.git.branch || 'No commits yet')}</span>${jjChip(state.jj)}</span><button data-action="worktree" title="Create isolated worktree" aria-label="Create isolated worktree">${icon('plus')}</button></div><div class="change-summary"><span>${state.git.files.length ? state.git.files.length + ' changed files' : 'Working tree clean'}</span>${state.git.files.length ? '' : icon('check')}</div>${staged.length ? `<section class="change-group"><div class="change-group-title"><span>Staged <small>${staged.length}</small></span><button data-action="unstage-all">Unstage all</button></div>${fileRows(staged, true)}</section>` : ''}${unstaged.length ? `<section class="change-group"><div class="change-group-title"><span>Changes <small>${unstaged.length}</small></span><button data-action="stage-all">Stage all</button></div>${fileRows(unstaged, false)}</section>` : ''}<form id="commit-form" class="commit-form"><label for="commit-message">Commit message</label><textarea id="commit-message" placeholder="Describe these changes…" rows="3" aria-label="Commit message"></textarea><button class="commit-button" ${!staged.length ? 'disabled' : ''}>${icon('check')}Commit${staged.length ? ' ' + staged.length + ' file' + (staged.length > 1 ? 's' : '') : ''}</button></form>`;
+  showChangesView(target, changesKey);
 }
 async function openRunPreview(url: string, context: { projectId: string; sessionId?: string }): Promise<void> {
   const current = () => state.projectId === context.projectId && state.sessionId === (context.sessionId ?? '');
@@ -2779,9 +3829,17 @@ async function previewFile(path: string, context = workspaceContext(), active?: 
   if (!browserPanel) throw new Error('Browser could not be opened.');
   await browserPanel.navigate(file.url);
 }
-async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext()): Promise<void> {
+async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false): Promise<void> {
   const p = project(); if (!p) return;
-  const request = ++fileRequest, generation = state.generation; const content = await call<string>(kind === 'file' ? 'read_file' : 'git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
+  // Files open as tabs in the inspector's Open files view beside their task's conversation.
+  if (kind === 'file') {
+    if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
+    if (context.sessionId && context.sessionId !== state.sessionId) return;
+    if (state.view !== 'conversation' && !state.boardPanel) setWorkspaceView('conversation');
+    fileTabs.open(path, context, source);
+    ++fileRequest; inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'file'; state.selectedKind = ''; renderInspector(); return;
+  }
+  const request = ++fileRequest, generation = state.generation; const content = await call<string>('git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
   selectedFileContext = { ...context };
   state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; state.inspector = true; renderInspector();
 }
@@ -2924,22 +3982,29 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
   });
 }
+/** One line for the picker: the lead's model, then the worker count. */
+function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
+  const { architect, config } = profile.setup;
+  const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
+  return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
+}
 async function showModel(anchor: HTMLElement): Promise<void> {
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
   const selected = session(); if (!selected || configuringSessions.has(selected.id)) return;
-  if (teams.get(selected.id) && !teams.get(selected.id)?.config.auto) { await showArchitectSetup(anchor); return; }
-  if (isRunning()) return;
+  if (teams.get(selected.id) && !selected.remoteDevice && !teams.get(selected.id)?.config.auto) { await showArchitectSetup(anchor); return; }
+  const botNext = Boolean(botForThread());
+  if (isRunning() && !botNext) return;
   closeProjectPicker();
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
-  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || isRunning()) return;
+  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || (isRunning() && !botNext)) return;
   const device = composerDevice();
   const named = library && !device ? namedTeams(library) : [];
   modelPickerCleanup = openModelPicker({
-    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: teamDetail(profile, id => provider(id)?.name ?? id), provider: profile.setup.architect.provider, selected: isTeam(teams.get(selected.id)?.config, profile) })),
+    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
@@ -2971,6 +4036,11 @@ async function showModel(anchor: HTMLElement): Promise<void> {
       } finally { configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model, connection) => {
+      if (botNext && isRunning(selected.id) && selected.id === state.sessionId) {
+        const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
+        botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
+        renderHeader(); return;
+      }
       if (selected.id !== state.sessionId || generation !== state.generation || isRunning()) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
@@ -2978,6 +4048,12 @@ async function showModel(anchor: HTMLElement): Promise<void> {
         if (teams.get(selected.id)?.config.rosterOnly) {
           await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
           onArchitect({ sessionId: selected.id, removed: true });
+        }
+        // An automatic team keeps its limits but learns about newly installed models.
+        const auto = teams.get(selected.id)?.config;
+        if (auto?.auto && !auto.rosterOnly) {
+          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
+          onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
@@ -3036,7 +4112,8 @@ async function createTask(projectId = state.projectId): Promise<void> {
   // (typed text or a worktree) is reopened; from inside one, New task starts another.
   const current = state.sessionId;
   leaveDraft('');
-  const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id));
+  // A settled draft (its worktree removed) is never reopened.
+  const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
   if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
   creatingTask = true;
   let created: Session;
@@ -3071,22 +4148,27 @@ async function createChat(): Promise<void> {
 async function forgetChat(projectId: string): Promise<void> {
   if (await call<boolean>('chat_cleanup', { projectId }).catch(() => false)) state.projects = state.projects.filter(p => p.id !== projectId);
 }
-type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'>;
+type ChoiceOptions = Omit<Parameters<typeof import('./choice-menu').openChoiceMenu>[0], 'anchor' | 'onClose'> & { afterClose?: () => void };
 async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise<void> {
-  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
-  if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+  // A second click on the trigger closes its menu; a right-click (a point) moves it there instead.
+  if (!options.point && pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+  if (!options.point && choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
   if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
   choiceMenuAnchor = anchor;
-  choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => { choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; } });
+  choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
+    choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
+    if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
+    options.afterClose?.();
+  } });
 }
 async function showMode(anchor: HTMLElement): Promise<void> {
   const s = session(); if (!s || isRunning() || configuringSessions.has(s.id)) return;
   const generation = state.generation;
-  const modes = approvalModes(s.provider);
+  const modes = approvalModes(s.provider, s.mode);
   await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, selected: s.mode === mode.id })), onSelect: async id => {
     if (s.id !== state.sessionId || generation !== state.generation || isRunning() || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
@@ -3113,7 +4195,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'rename', label: 'Rename task', icon: 'edit' },
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
-    { id: 'archive-task', label: s.archived ? 'Restore task' : 'Archive task', icon: 'archive' },
+    taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSessions.has(s.id) },
     ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
@@ -3132,7 +4214,7 @@ async function pinTask(id: string): Promise<void> {
     const saved = await call<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
     const current = state.sessions.find(item => item.id === id);
     if (current) { current.pinned = saved.pinned; current.sidebarOrder = saved.sidebarOrder; }
-    notify(saved.pinned ? 'Task pinned' : 'Task unpinned');
+    notify(saved.pinned ? 'Task pinned' : 'Task unpinned', saved.pinned ? undefined : () => run(pinTask(id)));
   } finally { orderingBusy = false; renderNavigation(); }
 }
 async function reorderThreads(ids: string[], focus: string): Promise<void> {
@@ -3152,17 +4234,68 @@ async function reorderThreads(ids: string[], focus: string): Promise<void> {
     }
   }
 }
-async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
+/** Row buttons and the row menu act on any sidebar task, not only the open one. */
+function sidebarTaskAction(kind: 'complete' | 'reopen' | 'delete', id: string): void {
+  const task = state.sessions.find(item => item.id === id); if (!task) return;
+  const current = () => state.sessions.find(item => item.id === id);
+  if (kind === 'delete') showDeleteTask(task);
+  else {
+    // Undo puts back exactly what settling took away: the stage and the unread mark.
+    const before = taskStage(task), unread = unreviewed?.has(id) ?? false;
+    run(changeTaskStage(task, kind === 'complete' ? 'completed' : 'review').then(() => {
+      const saved = current();
+      if (kind === 'complete' && saved && taskStage(saved) === 'completed') notify('Task settled', () => {
+        const again = current(); if (!again) return;
+        run(changeTaskStage(again, before).then(() => {
+          if (!unread || id === state.sessionId) return;
+          (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(id); saveUnreviewed(); renderNavigation();
+        }));
+      });
+    }));
+  }
+}
+async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: number }): Promise<void> {
   const id = anchor.dataset.id!, task = state.sessions.find(item => item.id === id);
   if (!task) return;
   const ids = threadGroupRows(anchor).map(row => row.dataset.id!), index = ids.indexOf(id);
-  await showChoices(anchor, { title: 'Task actions', actions: true, items: [
+  const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
+  // Active and Settled keep their own order: no Move up/down there.
+  const movable = !['active', 'completed'].includes(group);
+  const fixed = !anchor.draggable, busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
+  const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
+  const branch = task.worktreeBranch ?? '';
+  await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
     { id: 'pin', label: task.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
-    { id: 'up', label: 'Move up', icon: 'arrow', disabled: orderingBusy || index < 1 },
-    { id: 'down', label: 'Move down', icon: 'down', disabled: orderingBusy || index === ids.length - 1 },
-  ], onSelect: choice => {
+    ...movable ? [
+      { id: 'up', label: 'Move up', icon: 'arrow', disabled: fixed || orderingBusy || index < 1 },
+      { id: 'down', label: 'Move down', leading: icon('arrow', 'icon-down'), disabled: fixed || orderingBusy || index === ids.length - 1 },
+    ] : [],
+    { id: 'rename', label: 'Rename…', icon: 'edit', separator: true },
+    ...task.archived ? [] : [{ id: 'wake', label: 'Schedule a wake-up…', icon: 'clock' }],
+    ...id === state.sessionId ? [] : [{ id: 'unread', label: unread ? 'Mark as read' : 'Mark as unread', icon: 'chat' }],
+    ...branch && !task.archived && !task.remoteDevice ? [{ id: 'branch-task', label: `New task from ${branch}…`, icon: 'worktree' }] : [],
+    ...branch ? [{ id: 'copy-branch', label: 'Copy branch name', icon: 'copy', separator: true }] : [],
+    ...path ? [{ id: 'copy-path', label: task.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy', separator: !branch }] : [],
+    { id: 'copy-id', label: 'Copy task ID', icon: 'copy', separator: !branch && !path },
+    { id: 'stage', label: done ? 'Reopen' : 'Settle', icon: done ? 'undo' : 'check', disabled: busy, separator: true },
+    { id: 'delete', label: 'Delete task…', icon: 'trash', danger: true, disabled: busy || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting this task.' : undefined },
+  ], onSelect: async choice => {
     closeChoiceMenu();
     if (choice === 'pin') { run(pinTask(id)); return; }
+    if (choice === 'wake') { openWakeComposer(anchor.isConnected ? anchor : $('#navigation'), id); return; }
+    if (choice === 'stage' || choice === 'delete') { sidebarTaskAction(choice === 'stage' ? done ? 'reopen' : 'complete' : choice, id); return; }
+    // Renames the row's task in place; the open thread stays open.
+    if (choice === 'rename') { showRename(task); return; }
+    if (choice === 'branch-task') { await selectSession(id); worktrees.openDialog('new'); return; }
+    if (choice === 'unread') {
+      const seen = unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY);
+      if (unread) seen.delete(id); else seen.add(id);
+      saveUnreviewed(); renderNavigation(); return;
+    }
+    if (choice === 'copy-branch' || choice === 'copy-path' || choice === 'copy-id') {
+      await navigator.clipboard.writeText(choice === 'copy-branch' ? branch : choice === 'copy-path' ? path : id);
+      notify(choice === 'copy-branch' ? 'Branch name copied' : choice === 'copy-path' ? 'Path copied' : 'Task ID copied'); return;
+    }
     // Resolve the current list after an agent activity change or project filter.
     const row = $('#navigation').querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(id)}"]`);
     if (!row) return;
@@ -3174,12 +4307,96 @@ async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
     }
   } });
 }
+/** A folder's menu (… or right-click): new task, collapse the others, reveal, remove. */
+async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: number }): Promise<void> {
+  const id = heading.dataset.project!, project = state.projects.find(p => p.id === id);
+  if (!project) return;
+  const anchor = heading.parentElement?.querySelector<HTMLElement>('.folder-actions') ?? heading;
+  await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
+    { id: 'new', label: 'New task', icon: 'plus' },
+    { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
+    { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
+    { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
+  ], onSelect: async choice => {
+    closeChoiceMenu();
+    if (choice === 'new') { await createTask(id); return; }
+    if (choice === 'reveal') { await call('reveal_path', { path: project.path }); return; }
+    if (choice === 'remove') { showRemoveProject(project); return; }
+    for (const other of userProjects()) if (other.id !== id) state.collapsedFolders.add(other.id);
+    state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
+  } });
+}
+function showRemoveProject(project: Project): void {
+  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+}
+/** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
+function reorderFolders(ids: string[], focus: string): void {
+  projectOrder = [...ids, ...projectOrder.filter(id => !ids.includes(id))];
+  try { localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(projectOrder)); } catch { /* per-launch preference only */ }
+  renderNavigation();
+  $('#navigation').querySelector<HTMLElement>(`.folder-heading[data-project="${CSS.escape(focus)}"]`)?.focus({ preventScroll: true });
+}
+/** Sort and view: task order and tasks per section. Saved per window. */
+async function showSidebarSort(anchor: HTMLElement): Promise<void> {
+  const sort = sidebarSort;
+  await showChoices(anchor, { title: 'Sort and view', width: 280, items: [
+    { id: 'tasks:manual', label: 'Manual', description: 'drag to arrange', heading: 'Sort tasks', selected: sort.tasks === 'manual' },
+    { id: 'tasks:recent', label: 'Recent activity', selected: sort.tasks === 'recent' },
+    { id: 'tasks:created', label: 'Created', selected: sort.tasks === 'created' },
+    ...PER_PROJECT.map(count => ({ id: `perProject:${count}`, label: `${count} tasks`, short: String(count), segment: 'Show per section', selected: sort.perProject === count })),
+  ], onSelect: id => {
+    const [key, value] = id.split(':');
+    const next: SidebarSort = key === 'perProject' ? { ...sidebarSort, perProject: Number(value) } : { ...sidebarSort, [key]: value };
+    sidebarSort = readSort({ getItem: () => JSON.stringify(next) });
+    try { localStorage.setItem(SORT_KEY, JSON.stringify(sidebarSort)); } catch { /* per-launch preference only */ }
+    renderNavigation();
+  } });
+}
+/** Rows in the order they are drawn, skipping closed folders and sections. */
+function visibleSidebarRows(): HTMLElement[] {
+  return [...$('#navigation').querySelectorAll<HTMLElement>('.task-item')].filter(row => !row.closest('[hidden]'));
+}
+/** ⌘1…⌘9 open the Nth visible task, ⌘⇧[ and ⌘⇧] the previous and next, / filters, ⌘Z undoes. */
+function sidebarShortcut(event: KeyboardEvent): boolean {
+  const command = event.metaKey || event.ctrlKey, target = event.target as HTMLElement;
+  const typing = target.matches('input, textarea, select, [contenteditable="true"]');
+  if (event.key === 'Escape' && target.id === 'sidebar-filter') {
+    event.preventDefault();
+    if ((target as HTMLInputElement).value) { state.query = ''; renderNavigation(); } else target.blur();
+    return true;
+  }
+  // Never take keys meant for the prompt or any other field.
+  if (typing) return false;
+  if (command && !event.shiftKey && !event.altKey && /^[1-9]$/.test(event.key)) {
+    const row = visibleSidebarRows()[Number(event.key) - 1];
+    if (row) { event.preventDefault(); run(selectSession(row.dataset.id!)); }
+    return Boolean(row);
+  }
+  if (command && event.shiftKey && !event.altKey && (event.code === 'BracketLeft' || event.code === 'BracketRight')) {
+    const rows = visibleSidebarRows(), index = rows.findIndex(row => row.dataset.id === state.sessionId);
+    const next = rows[index < 0 ? 0 : index + (event.code === 'BracketLeft' ? -1 : 1)];
+    event.preventDefault();
+    if (next) run(selectSession(next.dataset.id!));
+    return true;
+  }
+  // / filters from the task list or anywhere that is not a control (the typing guard above already
+  // passed); when the field is not shown (a narrow window) the key is left alone.
+  const filter = $('#sidebar-filter');
+  const control = !$('#navigation').contains(target) && target.closest('button, a[href], [role="button"], [role="menuitem"], [role="tab"], summary');
+  if (event.key === '/' && !command && !event.altKey && !control && filter.getClientRects().length) {
+    event.preventDefault(); filter.focus(); return true;
+  }
+  if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && toastUndo) {
+    event.preventDefault(); const undo = toastUndo; toastUndo = undefined; void hideToast($('#toast')); undo(); return true;
+  }
+  return false;
+}
 /** A project's favicon or app icon; the sidebar redraws once a new one has loaded. */
 function projectAppIcon(projectId: string, name: string): string {
   return projectIconHtml(projectId, name, id => call<string | null>('project_icon', { projectId: id }), () => renderNavigation());
 }
 async function showProjectFilter(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', items: [
+  await showChoices(anchor, { title: 'Filter projects', searchPlaceholder: 'Search projects…', width: 300, items: [
     { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
     ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter })),
   ], onSelect: async id => {
@@ -3221,8 +4438,8 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
     },
   });
 }
-function showDeleteTask(): void {
-  const task = session(); if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
+function showDeleteTask(task = session()): void {
+  if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
   const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog');
   const form = dialog.querySelector<HTMLFormElement>('#delete-task-form')!;
   const confirm = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
@@ -3247,7 +4464,7 @@ function showDeleteTask(): void {
     })();
   });
 }
-function showRename(): void { const s = session(); if (!s) return; modal('Rename task', `<form id="rename-form"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
+function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
 let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
   const generation = ++settingsDiscoveryGeneration;
@@ -3266,11 +4483,13 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
 let settingsView: import('./settings').SettingsView | undefined;
 let settingsOpening: Promise<void> | undefined;
 let settingsReturnFocus: HTMLElement | null = null;
-async function showSettings(section?: import('./settings').SettingsSection): Promise<void> {
+async function showSettings(section?: import('./settings').SettingsSection, intent?: { newForSession?: string; editScheduleId?: string }): Promise<void> {
   // "Back to settings" in a dialog returns here; the dialog closes first.
   if (document.querySelector<HTMLDialogElement>('#dialog')?.open) closeModal();
   closeMenus();
   const host = $('#settings-page');
+  // A schedules intent needs a fresh mount; the page reads it once.
+  if (settingsView && intent) closeSettings();
   if (settingsView) { if (section) settingsView.show(section); return; }
   if (settingsOpening) { await settingsOpening; if (section) (settingsView as import("./settings").SettingsView | undefined)?.show(section); return; }
   settingsReturnFocus = document.activeElement as HTMLElement | null;
@@ -3289,6 +4508,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })) },
       remote: remoteHost,
+      schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -3488,7 +4708,7 @@ function botsOptions(providers: Provider[]): import('./bots').BotsOptions {
   };
 }
 async function showBots(open: { botId?: string; startNew?: boolean } = {}): Promise<void> {
-  const dialog = modal('Bots', '<div id="bots-host"><p role="status">Loading bots…</p></div>', 'bots-dialog');
+  const dialog = modal(open.startNew ? 'New bot' : 'Bots', '<div id="bots-host"><p role="status">Loading bots…</p></div>', 'bots-dialog');
   const host = dialog.querySelector<HTMLElement>('#bots-host')!;
   try {
     const [{ mountBots }, providers] = await Promise.all([
@@ -3517,17 +4737,66 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
 /** Bots shown in the sidebar. Their workspaces stay out of the project tree, and their
  * conversations deliver queued messages natively, so the window never sends them twice. */
 let sidebarBots: import('./bots').Bot[] = [];
+let sidebarChannels: SharedChannelSummary[] = [];
 let botProjects = new Set<string>();
 let botProjectsLoad: Promise<void> | undefined;
+const botSwitches = new Map<string, BotActivity[]>();
+const botMessages = new Map<string, botThread.BotMessageMarker[]>();
+const botFailovers = new Map<string, FailoverAsk>();
+const botFailoverErrors = new Map<string, string>();
+const botThreadMetaLoaded = new Set<string>();
+const botThreadMetaRequests = new Map<string, number>();
 function ensureBotProjects(): Promise<void> { return botProjectsLoad ??= reloadBotProjects(false); }
 async function reloadBotProjects(withProjects = true): Promise<void> {
-  sidebarBots = await call<import('./bots').Bot[]>('bots_list').catch(() => sidebarBots);
+  const [nextBots, nextChannels] = await Promise.all([
+    call<import('./bots').Bot[]>('bots_list').catch(() => sidebarBots),
+    call<SharedChannelSummary[]>('bot_shared_channels').catch(() => sidebarChannels),
+  ]);
+  sidebarBots = nextBots;
+  sidebarChannels = nextChannels;
+  botsLoaded = true;
   botProjects = new Set(sidebarBots.map(bot => bot.projectId));
+  taskBots = new Map(Object.entries(await call<Record<string, string>>('bot_task_links').catch(() => Object.fromEntries(taskBots))));
   // An earlier build could leave the filter on a bot's workspace; send it back to All projects.
   if (botProjects.has(state.projectFilter)) setProjectFilter('');
   // A new bot brings a workspace project; a renamed bot renames it.
   if (withProjects) state.projects = await call<Project[]>('list_projects');
   renderNavigation(); renderHeader();
+}
+/* A project task can start with a bot (#114): its first message carries the bot's brief and
+ * skills, and it uses the bot's harness and model. The task keeps its own project and checkout. */
+let taskBots = new Map<string, string>();
+const NO_BOT = 'none';
+function botTaskControl(task: Session, fresh: boolean): string {
+  const bot = sidebarBots.find(item => item.id === taskBots.get(task.id));
+  if (!fresh) return bot ? `<span class="composer-computer composer-computer-fixed" aria-label="Bot: ${escape(bot.name)} (fixed for this task)">${icon('bot')}<span>with ${escape(bot.name)}</span></span>` : '';
+  if (!sidebarBots.length || botProjects.has(task.projectId) || chatTask(task) || task.remoteDevice || task.cloud || remoteChoice !== LOCAL) return '';
+  const name = bot?.name ?? 'No bot';
+  return `<button type="button" id="composer-bot" class="composer-computer" data-action="bot-task-menu" aria-label="Bot: ${escape(name)}" aria-haspopup="dialog" aria-expanded="false" title="Start this task with a bot">${icon('bot')}<span>${escape(name)}</span>${icon('down')}</button>`;
+}
+async function showBotTaskMenu(anchor: HTMLElement): Promise<void> {
+  const task = session(); if (!task) return;
+  const chosen = taskBots.get(task.id) ?? NO_BOT;
+  const items = [{ id: NO_BOT, label: 'No bot', icon: 'close', selected: chosen === NO_BOT }, ...sidebarBots.map(bot => ({ id: bot.id, label: bot.name, description: bot.role, icon: 'bot', selected: bot.id === chosen }))];
+  await showChoices(anchor, { title: 'Bot', width: 280, items, onSelect: id => { closeChoiceMenu(); run(assignTaskBot(task, id === NO_BOT ? null : id)); } });
+}
+async function assignTaskBot(task: Session, botId: string | null): Promise<void> {
+  if (!newTaskView() || state.sessionId !== task.id) throw new Error('Choose a bot before the task\'s first message.');
+  if (configuringSessions.has(task.id)) return;
+  configuringSessions.add(task.id);
+  try {
+    const bot = await call<import('./bots').Bot | null>('bot_assign_task', { sessionId: task.id, botId });
+    if (bot) {
+      taskBots.set(task.id, bot.id);
+      // The bot's harness and model become the task's defaults; the picker can still change them.
+      if (bot.provider !== task.provider || bot.model !== task.model) upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model }));
+    } else taskBots.delete(task.id);
+  } finally { configuringSessions.delete(task.id); }
+  if (state.sessionId === task.id) render();
+}
+/** The bot's brief for a task's next message, once per brief version; empty without a bot. */
+async function botTaskBrief(task: Session): Promise<string> {
+  return taskBots.has(task.id) ? await call<string | null>('bot_task_brief', { sessionId: task.id }) ?? '' : '';
 }
 const userProjects = (): Project[] => state.projects.filter(project => !botProjects.has(project.id) && !isChatProject(project));
 /** Whether a task runs as a projectless chat. */
@@ -3535,11 +4804,129 @@ const chatTask = (task: Session | undefined): boolean => Boolean(task && isChatP
 /* PandaCode Connect. A new task can start on another computer: the context bar offers the
  * signed-in account's targets; the started task is an ordinary session with `remoteDevice`. */
 const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, openUrl: url => call('open_external_url', { url }) };
-let remoteTargets: RemoteTarget[] = [], remoteChoice = LOCAL;
+type RemoteAccountDevice = Omit<RemoteTarget, 'deviceId'> & { id: string; current: boolean; host: boolean };
+let remoteTargets: RemoteTarget[] = [], remoteChoice = LOCAL, remoteSignedIn = false, remoteConnected = false, remotePresenceReady = false;
+/** The chosen computer's last known name, for when it leaves the list (signed out or revoked). */
+let remoteChoiceName: string | undefined;
+/** What the composer was last drawn with, so presence updates redraw it only when this changes. */
+let renderedRemoteKey = '';
+let pairingPrompt: (() => void) | undefined, pairingLoading = false;
+const remoteChecks = new Set<string>(), remoteStartCancels = new Set<string>(), remoteRetries = new Set<string>(), remoteRetryErrors = new Map<string, string>();
+function remoteDeviceId(s: Session): string | undefined {
+  return s.remoteDevice?.id ?? (!s.cloud && newTaskView() && remoteChoice !== LOCAL && !cloudProvider(remoteChoice) ? remoteChoice : undefined);
+}
+function remoteTargetFor(s: Session): RemoteTarget | undefined {
+  const id = remoteDeviceId(s); if (!id) return undefined;
+  const target = remoteTargets.find(item => item.deviceId === id);
+  if (target) return target;
+  return s.remoteDevice && remotePresenceReady ? { deviceId: id, name: s.remoteDevice.name, platform: '', online: false, lastSeen: null } : undefined;
+}
+function remoteOffline(s: Session): boolean {
+  const id = remoteDeviceId(s); if (!id || !remotePresenceReady) return false;
+  const target = remoteTargetFor(s);
+  return !target || !target.online || (remoteSignedIn && !remoteConnected);
+}
+/** A New task's chosen computer that is no longer in the account's list, or undefined. */
+function remoteMissing(s: Session): string | undefined {
+  if (s.remoteDevice || s.cloud || !newTaskView() || remoteChoice === LOCAL || cloudProvider(remoteChoice) || !remotePresenceReady) return undefined;
+  return remoteTargets.some(item => item.deviceId === remoteChoice) ? undefined : remoteChoiceName ?? 'That computer';
+}
+function remoteMissingNote(s: Session): string {
+  const name = remoteMissing(s);
+  return name ? `<div class="composer-inline-note remote-missing-note"><span>${escape(name)} is no longer paired.</span><button type="button" class="remote-note-action" data-action="remote-choose-computer">Choose another</button></div>` : '';
+}
+function remoteComposerKey(s: Session): string {
+  const target = remoteTargetFor(s);
+  return JSON.stringify([s.id, remoteOffline(s), target?.deviceId ?? null, remoteMissing(s) ?? null]);
+}
+/** The status line of a task whose computer is out of reach. Drawn silently; its text is announced from the composer's live region. */
+function syncRemoteConnection(): void {
+  const region = document.querySelector<HTMLElement>('#stream-region'), s = session(), old = region?.querySelector<HTMLElement>(':scope > .remote-connection');
+  if (!region || !s?.remoteDevice || !remoteOffline(s)) { old?.remove(); return; }
+  const target = remoteTargetFor(s)!, retrying = remoteRetries.has(target.deviceId), failure = remoteRetryErrors.get(target.deviceId);
+  const text = retrying ? `Reconnecting to ${target.name}…` : failure ? `Couldn’t reconnect to ${target.name}: ${failure}` : remoteSignedIn && !remoteConnected ? `Reconnecting to ${target.name}…` : `${target.name} is offline · ${lastSeenText(target)}`;
+  const markup = `<div class="remote-connection"><span>${escape(text)}</span><button type="button" class="secondary-button" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}${retrying ? 'Reconnecting…' : 'Retry'}</button></div>`;
+  if (old?.outerHTML === markup) return;
+  if (old?.querySelector('span')?.textContent !== text) announce(text);
+  if (old) old.outerHTML = markup; else region.insertAdjacentHTML('beforeend', markup);
+}
 async function refreshRemoteTargets(signedIn: boolean): Promise<void> {
-  remoteTargets = signedIn ? await call<RemoteTarget[]>('remote_targets').catch(() => remoteTargets) : [];
-  if (!cloudProvider(remoteChoice) && !remoteTargets.some(target => target.deviceId === remoteChoice && target.online)) remoteChoice = LOCAL;
+  remoteSignedIn = signedIn;
+  if (signedIn) {
+    const devices = await call<RemoteAccountDevice[]>('remote_devices').catch(() => undefined);
+    if (devices) remoteTargets = devices.filter(device => !device.current && device.host).map(({ id: deviceId, name, platform, online, lastSeen }) => ({ deviceId, name, platform, online, lastSeen }));
+  } else remoteTargets = [];
+  remotePresenceReady = true;
+  const chosen = remoteTargets.find(item => item.deviceId === remoteChoice);
+  if (chosen) remoteChoiceName = chosen.name;
+  for (const target of remoteTargets) if (target.online) remoteRetryErrors.delete(target.deviceId);
+  syncPairingPrompt(signedIn);
+  // The chip and status update in place; the prompt is redrawn only when what it offers changes,
+  // so presence never closes an open @ menu, a picker or an IME composition.
   renderHeader();
+  const s = session(); if (!s) return;
+  if (remoteComposerKey(s) !== renderedRemoteKey) renderComposer(); else syncRemoteConnection();
+}
+/** Devices asking this computer for access (src/remote-pairing-prompt.ts), while signed in to Connect. */
+function syncPairingPrompt(signedIn: boolean): void {
+  if (!signedIn) { pairingPrompt?.(); pairingPrompt = undefined; return; }
+  if (pairingPrompt || pairingLoading) return;
+  pairingLoading = true;
+  import('./remote-pairing-prompt').then(module => { if (remoteSignedIn && !pairingPrompt) pairingPrompt = module.mountPairingPrompt(remoteHost); })
+    .catch(error => console.warn('Could not load the pairing prompt', error))
+    .finally(() => { pairingLoading = false; });
+}
+/** Retry: reconnects to the relay now (`remote_reconnect`), then resubscribes, with any failure shown inline. */
+async function retryRemoteConnection(): Promise<void> {
+  const s = session(), id = s && remoteDeviceId(s); if (!s || !id || remoteRetries.has(id)) return;
+  remoteRetries.add(id); remoteRetryErrors.delete(id); clearComposerNote(s); renderComposer();
+  try {
+    await call('remote_reconnect');
+    await call('remote_resubscribe');
+    await refreshRemoteTargets(remoteSignedIn);
+  } catch (error) {
+    const reason = errorText(error);
+    remoteRetryErrors.set(id, reason);
+    // A running mirror says so in its status line; a New task above its prompt.
+    if (!s.remoteDevice) showComposerNote(s, `Couldn’t reconnect to ${remoteTargetFor(s)?.name ?? remoteMissing(s) ?? 'the other computer'}: ${reason}`);
+  } finally { remoteRetries.delete(id); if (s.id === state.sessionId) renderComposer(); }
+}
+async function stopRemoteStart(s: Session, starting: NonNullable<ReturnType<typeof remoteStart>>): Promise<void> {
+  if (remoteStartCancels.has(s.id)) return;
+  const current = state.streams.get(s.id), previousStatus = current?.status, previousEnding = runEndings.get(s.id);
+  starting.cancelling = true; remoteStartCancels.add(s.id); runEndings.set(s.id, 'stopped');
+  if (current) { current.status = 'Stopping…'; current.revision++; }
+  renderStream(); renderComposer();
+  try {
+    const reply = await call<{ cancelled: boolean; pending?: boolean }>('remote_cancel_start', { sessionId: starting.mirrorId ?? s.id });
+    if (reply.cancelled) {
+      // The draft comes back to the composer; no run ended, so nothing may report one.
+      if (previousEnding) runEndings.set(s.id, previousEnding); else runEndings.delete(s.id);
+      cancelledRemoteStart(s.id);
+      return;
+    }
+    // The host has not answered yet: Stopping… stays until the start fails or attaches (sendRemote then stops it).
+    if (reply.pending) return;
+    // Too late to cancel: the host made the task, so it is stopped like any run.
+    starting.cancelling = false; remoteStartCancels.delete(s.id); remoteStartAttached(starting.mirrorId ?? s.id);
+    if (current) { current.status = 'Stopping agent'; current.revision++; clearAgentInputs(current); }
+    renderStream(); renderComposer();
+    await call('stop_session', { sessionId: starting.mirrorId ?? s.id });
+  } catch (error) {
+    starting.cancelling = false; remoteStartCancels.delete(s.id);
+    if (previousEnding) runEndings.set(s.id, previousEnding); else runEndings.delete(s.id);
+    if (current) { current.status = previousStatus ?? ''; current.revision++; }
+    renderStream(); renderComposer(); throw error;
+  }
+}
+async function stopTask(s: Session): Promise<void> {
+  const starting = remoteStart(s.id);
+  if (starting && starting.stage !== 'error') return stopRemoteStart(s, starting);
+  runEndings.set(s.id, 'stopped');
+  const current = state.streams.get(s.id);
+  if (current) { current.status = 'Stopping agent'; current.revision++; clearAgentInputs(current); renderStream(); }
+  const team = teams.get(s.id) && !s.remoteDevice;
+  await call(team ? 'architect_control' : 'stop_session', { sessionId: s.id, ...(team ? { action: 'stop' } : {}) });
 }
 /* Cloud agents (docs/cloud-agents.md): connected cloud providers are "Run on" targets too,
  * whether or not Connect is signed in. A cloud task is an ordinary session with `cloud`. */
@@ -3617,18 +5004,25 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
 }
 async function initRemote(): Promise<void> {
   let signedIn = false;
-  await subscribe('remote://status', (status: RemoteStatus) => { signedIn = status.signedIn; run(refreshRemoteTargets(signedIn)); });
+  await subscribe('remote://status', (status: RemoteStatus) => { signedIn = status.signedIn; remoteConnected = status.connected; run(refreshRemoteTargets(signedIn)); });
   await subscribe('remote://presence', () => run(refreshRemoteTargets(signedIn)));
+  // A start whose reply was lost links later (`resume_start`) and brings the host's worktree note.
+  await (subscribe as unknown as (name: string, callback: (note: { sessionId: string; note: string }) => void) => Promise<unknown>)('remote://start-note', ({ sessionId, note }) => {
+    const mirror = state.sessions.find(task => task.id === sessionId);
+    if (mirror) showComposerNote(mirror, note);
+  });
   // A build without the Connect commands, or a signed-out one, simply offers no other computers.
   const status = await call<RemoteStatus>('remote_status').catch(() => undefined);
-  if (status) { signedIn = status.signedIn; await refreshRemoteTargets(signedIn); }
+  if (status) { signedIn = status.signedIn; remoteConnected = status.connected; await refreshRemoteTargets(signedIn); }
 }
 async function showComputerMenu(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Run on', width: 280, items: computerItems(remoteTargets, remoteChoice, cloudTargets), onSelect: id => {
     closeChoiceMenu();
     if (id === SETUP_CHOICE) { run(showSettings('cloud')); return; }
-    remoteChoice = id; renderHeader();
+    if (id === CONNECT_SETUP) { run(showSettings('remote')); return; }
+    remoteChoice = id; remoteChoiceName = remoteTargets.find(item => item.deviceId === id)?.name; renderHeader();
     const task = session();
+    if (task && remoteComposerKey(task) !== renderedRemoteKey) renderComposer();
     if (cloudProvider(id)) { if (task && newTaskView()) { const refusal = harnessRefusal(task.provider, provider(task.provider)?.name ?? task.provider); if (refusal) notify(refusal); } return; }
     if (task && newTaskView()) run(adaptPickerToComputer(task, id, remoteTargets.find(item => item.deviceId === id)?.name ?? 'That computer'));
   } });
@@ -3644,9 +5038,12 @@ function confirmBehind(name: string, check: RemoteRepoCheck): Promise<boolean> {
 }
 /** A New task sent with another computer chosen: check GitHub, then start it there with the same settings. */
 async function sendRemote(s: Session, target: RemoteTarget, draft: string, text: string): Promise<void> {
-  const filePaths = [...state.attachments], promptItems = attachments.list(s.id);
-  if ((state.browserAttachments.get(s.id) ?? []).length || (state.moodboardAttachments.get(s.id) ?? []).length || attachments.imageIds(promptItems).length) throw new Error(`Images and browser captures can’t be sent to ${target.name} yet. Remove them, or run on this computer.`);
-  configuringSessions.add(s.id);
+  const filePaths = [...state.attachments], promptItems = attachments.list(s.id), browserItems = state.browserAttachments.get(s.id) ?? [];
+  if ((state.moodboardAttachments.get(s.id) ?? []).length) throw new Error(`Moodboards can’t be sent to ${target.name} yet. Remove them, or run on this computer.`);
+  // Images and screenshots are copied to the other computer natively (remote/images.rs).
+  const imageIds = [...browserItems.filter(a => a.kind === 'screenshot').map(a => a.id), ...attachments.imageIds(promptItems)];
+  if (imageIds.length > MAX_IMAGES) throw new Error(`Attach up to ${MAX_IMAGES} images per message, including browser screenshots.`);
+  configuringSessions.add(s.id); remoteChecks.add(s.id); renderComposer();
   try {
     const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
     if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
@@ -3654,28 +5051,104 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const prompt = () => document.querySelector<HTMLTextAreaElement>('#prompt');
     if (state.sessionId !== s.id || prompt()?.value !== draft) throw new Error('Your task or message changed. Send it again.');
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
-    const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
-    const { sessionId } = await call<{ sessionId: string }>('remote_start_task', {
+    const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
+    remoteChecks.delete(s.id);
+    // Shown at once, like send(): the prompt, and a turn below it that reports the start's
+    // stages until the host's events stream in. Saved history gets the host's copy of the
+    // prompt after the run (remote/mirror.rs); until then `mirrorPrompts` keeps this one.
+    const sentAt = Date.now(), sent: Message = { id: transientId--, sessionId: s.id, role: 'user', content, createdAt: sentAt };
+    const before = { status: s.status, taskStage: s.taskStage };
+    addMirrorPrompt(s.id, sent, 0);
+    const live = stream(s.id); live.lastPromptAt = sentAt; live.status = `Connecting to ${target.name}…`;
+    s.status = 'running'; s.taskStage = 'in_progress';
+    const sentField = prompt(); if (sentField?.dataset.sessionId === s.id && sentField.value === draft) sentField.value = '';
+    if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
+    if (state.sessionId === s.id) {
+      stickToBottom = true; state.messages = [...state.messages, sent]; render();
+      const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
+      if (shown.length) enterView(shown[shown.length - 1], 12);
+    }
+    const onStage = (start: RemoteStart) => {
+      // Once the agent has said or done something, its own status wins over a late stage.
+      if (start.stage === 'error' || remoteStartCancels.has(s.id) || state.streams.get(s.id) !== live || live.text || live.tools.length) return;
+      updateStreamStatus(live, startStageText(start)); live.revision++;
+      if (state.sessionId === s.id) renderStream();
+    };
+    // A failure shows in the strip above the composer with Retry, so it is not also a toast.
+    const started = await trackRemoteStart(s.id, target, startId => call<{ sessionId: string; note?: string }>('remote_start_task', {
       // The empty New task draft becomes the mirror, so no stray draft is left behind.
       sessionId: s.id, deviceId: target.deviceId, projectId: s.projectId, prompt: content, provider: s.provider, model: s.model, mode: s.mode,
-      effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath), branch: s.worktreeBranch || state.git?.branch || check.branch || null,
-    });
+      effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath), branch: s.worktreeBranch || state.git?.branch || check.branch || null, startId, imageIds,
+    }), undefined, onStage).catch((error: unknown) => { if (!remoteStartCancels.has(s.id)) console.error(error); return undefined; });
+    if (!started || started.sessionId !== s.id) {
+      // The prompt leaves the transcript: back to the composer on failure, to the mirror's own row otherwise.
+      dropMirrorPrompt(s.id, sent);
+      if (state.streams.get(s.id) === live) state.streams.delete(s.id);
+      // A sessions reload meanwhile may have replaced the draft's object.
+      for (const task of new Set([s, state.sessions.find(task => task.id === s.id)])) if (task) Object.assign(task, before);
+      if (state.sessionId === s.id) state.messages = state.messages.filter(message => message !== sent);
+      if (!started) {
+        const field = prompt(); if (field?.dataset.sessionId === s.id && !field.value) field.value = draft;
+        if (!state.drafts.get(s.id)) state.drafts.set(s.id, draft);
+        if (remoteStartCancels.has(s.id) && runEndings.get(s.id) === 'stopped') runEndings.delete(s.id);
+        if (state.sessionId === s.id) render(); else renderNavigation();
+        return;
+      }
+      addMirrorPrompt(started.sessionId, { ...sent, sessionId: started.sessionId }, 0);
+      if (!state.streams.has(started.sessionId)) state.streams.set(started.sessionId, live);
+    }
+    const { sessionId } = started;
     attachments.consume(s.id, promptItems);
+    const sentIds = new Set(browserItems.map(item => item.id)), remaining = (state.browserAttachments.get(s.id) ?? []).filter(item => !sentIds.has(item.id));
+    if (remaining.length) state.browserAttachments.set(s.id, remaining); else state.browserAttachments.delete(s.id);
     state.attachments = state.attachments.filter(path => !filePaths.includes(path));
-    const field = prompt(); if (field?.dataset.sessionId === s.id) field.value = '';
-    state.drafts.delete(s.id);
     await reloadSessions();
     state.query = ''; await selectSession(sessionId, true);
-  } finally { configuringSessions.delete(s.id); }
+    // A busy or dirty checkout on the host gave way to a worktree: say so once, under the prompt.
+    const mirror = state.sessions.find(task => task.id === sessionId);
+    if (started.note && mirror) showComposerNote(mirror, started.note);
+    if (remoteStartCancels.delete(s.id)) {
+      // Stop was pressed while the host could not yet say whether the start was cancelled; it attached, so stop it now.
+      runEndings.set(sessionId, 'stopped');
+      const current = state.streams.get(sessionId);
+      if (current) { current.status = 'Stopping agent'; current.revision++; clearAgentInputs(current); }
+      if (sessionId === state.sessionId) { renderStream(); renderComposer(); }
+      await call('stop_session', { sessionId });
+    }
+  } finally {
+    configuringSessions.delete(s.id); remoteStartCancels.delete(s.id);
+    if (remoteChecks.delete(s.id) && s.id === state.sessionId) renderComposer();
+  }
 }
 /** The sidebar shows tasks or bots; the bar at its bottom switches between them. */
 let sidebarView: SidebarView = storedSidebarView();
 let botsQuery = '';
+/** Skeleton rows show until the first bots_list answers, so the empty state never flashes. */
+let botsLoaded = false;
+let hiddenBotsOpen = (() => { try { return localStorage.getItem('pandacode.botsHiddenOpen') === 'true'; } catch { return false; } })();
+let botsListPendingRender = false;
+/** Bot workspaces whose run finished while another thread was open; cleared when the bot opens. */
+const respondedBots = new Set<string>();
+const failedBotProjects = new Set<string>();
+function botSignals(bot: import('./bots').Bot, unread: Map<string, number>): BotSignals {
+  const tasks = state.sessions.filter(task => task.projectId === bot.projectId), now = Date.now();
+  const live = tasks.map(task => state.streams.get(task.id)).filter(item => item !== undefined);
+  const limited = tasks.find(task => limitActive(task, now));
+  return {
+    waiting: live.some(item => item.inputs.size) ? 'question' : live.some(item => item.approvals.size) ? 'approval' : undefined,
+    failed: failedBotProjects.has(bot.projectId),
+    limited: limited ? { until: limited.limitedUntil ?? null } : undefined,
+    working: tasks.some(task => isRunning(task.id)), unread: unread.get(bot.id) ?? 0, responded: respondedBots.has(bot.projectId),
+  };
+}
 function renderBots(): void {
   const bar = document.querySelector<HTMLElement>('#sidebar-bots'), panel = document.querySelector<HTMLElement>('#sidebar-bots-panel');
   if (!bar || !panel) return;
   const current = session(), open = state.view === 'conversation' ? current?.projectId : undefined;
-  const unread = syncSeen(sidebarBots, open);
+  if (open) respondedBots.delete(open);
+  const unread = syncSeen(sidebarBots, open, bot => state.sessions.filter(task => task.projectId === bot.projectId && task.lastResponseAt).map(task => task.lastResponseAt!));
+  const markRead = panel.querySelector<HTMLButtonElement>('.bots-mark-read');
+  if (markRead) markRead.hidden = unread.size === 0;
   document.querySelector('.sidebar')?.classList.toggle('bots-view', sidebarView === 'bots');
   const barHtml = botsBarHtml(sidebarView, sidebarBots.length, unread.size);
   if (bar.innerHTML !== barHtml) bar.innerHTML = barHtml;
@@ -3683,10 +5156,218 @@ function renderBots(): void {
   if (!panel.firstElementChild) {
     panel.innerHTML = botsPanelHeadHtml();
     panel.querySelector<HTMLInputElement>('[data-bots-search]')!.addEventListener('input', event => { botsQuery = (event.target as HTMLInputElement).value; renderBots(); });
+    document.addEventListener('pointerdown', event => {
+      const target = event.target as Element | null;
+      if (target?.closest('#sidebar-bots-panel')) return;
+      hideCreateBotMenu();
+    }, true);
+    bindBotRows(panel.querySelector<HTMLElement>('.bots-panel-list')!);
   }
   const list = panel.querySelector<HTMLElement>('.bots-panel-list')!;
-  const html = botsListHtml({ bots: sidebarBots, selectedProject: current?.projectId, working: bot => state.sessions.some(task => task.projectId === bot.projectId && isRunning(task.id)) }, unread, botsQuery);
-  if (list.innerHTML !== html) list.innerHTML = html;
+  const html = botsListHtml({ bots: sidebarBots, channels: sidebarChannels, selectedProject: state.sharedChannelId ? undefined : current?.projectId, selectedChannel: state.sharedChannelId, signals: bot => botSignals(bot, unread), loaded: botsLoaded, hiddenOpen: hiddenBotsOpen }, botsQuery);
+  if (list.innerHTML !== html) {
+    const menuAnchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
+    if (menuAnchor && list.contains(menuAnchor)) botsListPendingRender = true;
+    else { list.innerHTML = html; botsListPendingRender = false; }
+  }
+}
+/** Right-click (or the context-menu key) opens a row's menu; rows drag to reorder. */
+function bindBotRows(list: HTMLElement): void {
+  const rowOf = (target: EventTarget | null) => (target as HTMLElement | null)?.closest<HTMLElement>('[data-bot-row]') ?? null;
+  // A right click can also produce a non-primary click on the nested open button.
+  // Keep that event from navigating away while the context menu opens.
+  list.addEventListener('click', event => {
+    if (event.button !== 0) { event.preventDefault(); event.stopPropagation(); }
+  }, true);
+  list.addEventListener('contextmenu', event => {
+    const row = rowOf(event.target); if (!row) return;
+    event.preventDefault();
+    run(showBotMenu(row.querySelector<HTMLElement>('.bot-row-open')!, row.dataset.botRow!));
+  });
+  list.addEventListener('contextmenu', event => {
+    const row = (event.target as HTMLElement | null)?.closest<HTMLElement>('.channel-row[data-channel]'); if (!row) return;
+    event.preventDefault();
+    run(showSharedChannelMenu(row, row.dataset.channel!));
+  });
+  let dragged = '', draggedGroup = '';
+  list.addEventListener('dragstart', event => {
+    const row = rowOf(event.target); if (!row) return;
+    if (!['pinned', 'bots'].includes(row.dataset.botGroup ?? '')) { event.preventDefault(); return; }
+    dragged = row.dataset.botRow!; draggedGroup = row.dataset.botGroup ?? ''; event.dataTransfer?.setData('text/plain', dragged);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+  });
+  list.addEventListener('dragover', event => { const row = rowOf(event.target); if (dragged && row?.dataset.botGroup === draggedGroup) { event.preventDefault(); row.classList.add('drag-over'); } });
+  list.addEventListener('dragleave', event => { const row = rowOf(event.target); if (row && !row.contains(event.relatedTarget as Node | null)) row.classList.remove('drag-over'); });
+  list.addEventListener('drop', event => {
+    const row = rowOf(event.target); if (!dragged || !row) return;
+    if (row.dataset.botGroup !== draggedGroup) return;
+    event.preventDefault();
+    const shown = [...list.querySelectorAll<HTMLElement>('[data-bot-row]')].map(item => item.dataset.botRow!);
+    if (row.dataset.botRow !== dragged) { moveBot(shown, dragged, row.dataset.botRow!); renderBots(); }
+    dragged = ''; draggedGroup = '';
+  });
+  list.addEventListener('dragend', () => { list.querySelectorAll('.drag-over').forEach(item => item.classList.remove('drag-over')); dragged = ''; draggedGroup = ''; });
+  list.addEventListener('keydown', event => {
+    if (!event.altKey || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const row = rowOf(event.target), group = row?.dataset.botGroup;
+    if (!row || !['pinned', 'bots'].includes(group ?? '')) return;
+    const peers = [...list.querySelectorAll<HTMLElement>(`[data-bot-group="${group}"]`)];
+    const index = peers.indexOf(row), next = index + (event.key === 'ArrowUp' ? -1 : 1);
+    if (next < 0 || next >= peers.length) return;
+    event.preventDefault();
+    const all = [...list.querySelectorAll<HTMLElement>('[data-bot-row]')].map(item => item.dataset.botRow!);
+    const before = event.key === 'ArrowUp' ? peers[next].dataset.botRow! : peers[next + 1]?.dataset.botRow ?? null;
+    moveBot(all, row.dataset.botRow!, before);
+    const id = row.dataset.botRow!;
+    const live = document.querySelector<HTMLElement>('#bots-reorder-live');
+    if (live) live.textContent = `Moved ${sidebarBots.find(bot => bot.id === id)?.name ?? 'bot'} ${event.key === 'ArrowUp' ? 'up' : 'down'} within ${group}.`;
+    renderBots();
+    document.querySelector<HTMLButtonElement>(`[data-bot-row="${CSS.escape(id)}"] .bot-row-open`)?.focus();
+  });
+}
+async function showBotMenu(anchor: HTMLElement, botId: string): Promise<void> {
+  const bot = sidebarBots.find(item => item.id === botId); if (!bot) return;
+  const pinned = pinnedBots().has(bot.id);
+  await showChoices(anchor, { title: `${bot.name} actions`, actions: true, items: [
+    { id: 'pin', label: pinned ? 'Unpin' : 'Pin', icon: 'pin' },
+    { id: 'edit', label: 'Edit bot', icon: 'edit' },
+    { id: 'duplicate', label: 'Duplicate bot', icon: 'copy' },
+    { id: 'hide', label: bot.paused ? 'Restore' : 'Hide (pause)', icon: bot.paused ? 'play' : 'pause' },
+    { id: 'delete', label: 'Delete bot…', icon: 'trash', danger: true },
+  ], onSelect: id => { closeChoiceMenu(); run(botMenuAction(id, bot.id)); } });
+}
+async function showCreateBotMenu(anchor: HTMLElement): Promise<void> {
+  const menu = document.querySelector<HTMLElement>('#bot-create-menu'); if (!menu) return;
+  menu.hidden = !menu.hidden;
+  anchor.setAttribute('aria-expanded', String(!menu.hidden));
+  if (!menu.hidden) menu.querySelector<HTMLElement>('[role=menuitem]')?.focus();
+}
+function hideCreateBotMenu(): void {
+  const menu = document.querySelector<HTMLElement>('#bot-create-menu');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  document.querySelector('[data-action="new-bot-menu"]')?.setAttribute('aria-expanded', 'false');
+}
+function syncChannelWorkingLabel(): void {
+  if (channelWorkingLabelTimer) { window.clearInterval(channelWorkingLabelTimer); channelWorkingLabelTimer = 0; }
+  if (!state.sharedChannelId || !state.sharedChannelDetail?.activeBotIds.length) return;
+  channelWorkingLabelTimer = window.setInterval(() => {
+    if (!state.sharedChannelId || !state.sharedChannelDetail?.activeBotIds.length) { syncChannelWorkingLabel(); return; }
+    const label = document.querySelector<HTMLElement>('.bc-history .bc-working .bot-working-label');
+    if (label) label.textContent = botThread.pickLabel(label.textContent ?? '');
+  }, 4_000);
+}
+/** Channel history rows per page, as `HISTORY_PAGE` in `shared_channels.rs`. */
+const CHANNEL_PAGE = 100;
+async function refreshSharedChannel(channelId = state.sharedChannelId): Promise<void> {
+  if (!channelId) return;
+  const request = ++state.sharedChannelRequest;
+  const history = document.querySelector<HTMLElement>('.bc-history');
+  if (history) {
+    state.sharedChannelScrollTop = history.scrollTop;
+    state.sharedChannelAtBottom = history.scrollHeight - history.clientHeight - history.scrollTop < 32;
+  }
+  const prompt = document.querySelector<HTMLTextAreaElement>('#shared-channel-prompt');
+  if (prompt && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, prompt.value);
+  try {
+    const detail = await call<SharedChannelDetail>('bot_shared_channel_detail', { channelId, limit: state.sharedChannelLimits.get(channelId) ?? CHANNEL_PAGE });
+    if (request !== state.sharedChannelRequest || channelId !== state.sharedChannelId) return;
+    state.sharedChannelDetail = detail;
+    renderHeader(); renderTranscript(true); renderComposer(); renderBots();
+    syncChannelWorkingLabel();
+  } catch (error) { if (channelId === state.sharedChannelId) notify(error instanceof Error ? error.message : String(error)); }
+}
+function activateSharedChannel(channelId: string): void {
+  state.sharedChannelId = channelId;
+  state.sharedChannelDetail = null;
+  state.sharedChannelScrollTop = 0;
+  state.sharedChannelAtBottom = true;
+  state.view = 'conversation'; state.boardPanel = false;
+  render(); renderInspector(); renderBots();
+  void refreshSharedChannel(channelId);
+}
+function closeSharedChannel(): void {
+  state.sharedChannelId = ''; state.sharedChannelDetail = null;
+  state.sharedChannelRequest++;
+  syncChannelWorkingLabel();
+  render(); renderInspector(); renderBots();
+}
+function sharedChannelUi(): SharedChannelUiOptions {
+  return { call, bots: sidebarBots, modal, closeModal, changed: () => reloadBotProjects(false), openChannel: activateSharedChannel, notify };
+}
+async function createSharedChannel(): Promise<void> {
+  const { openCreateChannel } = await import('./bot-shared-channels');
+  openCreateChannel(sharedChannelUi());
+}
+async function openSharedChannel(id: string): Promise<void> {
+  const { openSharedChannel } = await import('./bot-shared-channels');
+  await openSharedChannel(id, sharedChannelUi());
+}
+async function showSharedChannelMenu(anchor: HTMLElement, channelId: string): Promise<void> {
+  const channel = sidebarChannels.find(item => item.id === channelId); if (!channel) return;
+  await showChoices(anchor, { title: `#${channel.name} actions`, actions: true, items: channel.archived
+    ? [{ id: 'restore', label: 'Restore', icon: 'undo' }]
+    : [{ id: 'edit', label: 'Edit', icon: 'edit' }, { id: 'delete', label: 'Delete', icon: 'trash', danger: true }],
+  onSelect: id => { closeChoiceMenu(); run(sharedChannelMenuAction(id, channel)); } });
+}
+async function sharedChannelMenuAction(action: string, channel: SharedChannelSummary): Promise<void> {
+  try {
+    if (action === 'edit') {
+      const { openSharedChannelSettings } = await import('./bot-shared-channels');
+      await openSharedChannelSettings(channel.id, sharedChannelUi());
+    }
+    else {
+      await call('bot_shared_channel_archive', { channelId: channel.id, archived: action !== 'restore' });
+      await reloadBotProjects(false);
+    }
+  } catch (error) { notify(error instanceof Error ? error.message : String(error)); }
+}
+async function botMenuAction(id: string, botId: string): Promise<void> {
+  const bot = sidebarBots.find(item => item.id === botId); if (!bot) return;
+  if (id === 'pin') { setBotPinned(bot.id, !pinnedBots().has(bot.id)); renderBots(); }
+  else if (id === 'edit') await showBotSettings(bot.id);
+  else if (id === 'hide') await setBotPaused(bot, !bot.paused);
+  else if (id === 'duplicate') await duplicateBot(bot);
+  else if (id === 'delete') await deleteBot(bot);
+}
+async function setBotPaused(bot: import('./bots').Bot, paused: boolean): Promise<void> {
+  try {
+    await call('bot_set_paused', { botId: bot.id, paused });
+    notify(paused ? `${bot.name} paused` : `${bot.name} resumed`);
+  } catch (error) {
+    notify(`Couldn’t ${paused ? 'pause' : 'resume'} ${bot.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await reloadBotProjects(false);
+}
+async function duplicateBot(bot: import('./bots').Bot): Promise<void> {
+  try {
+    const { bot: source } = await call<import('./bots').BotDetail>('bot_detail', { botId: bot.id });
+    const input: import('./bots').BotInput = { name: `${[...source.name].slice(0, 55).join('')} copy`, role: source.role, instructions: source.instructions, goals: source.goals, avatar: source.avatar, provider: source.provider, model: source.model, mode: source.mode, heartbeatMinutes: source.heartbeatMinutes, color: source.color ?? '', reasoningEffort: source.reasoningEffort ?? '', backupModels: source.backupModels ?? [], fallbackMode: source.fallbackMode ?? 'ask', notify: source.notify ?? true, whileWorking: source.whileWorking ?? 'queue', showPlan: source.showPlan ?? false };
+    await call('bot_create', { input });
+    notify(`${input.name} created`);
+  } catch (error) {
+    notify(`Couldn’t duplicate ${bot.name}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  await reloadBotProjects();
+}
+async function deleteBot(bot: import('./bots').Bot): Promise<void> {
+  if (!await confirmBotDelete(bot.name)) return;
+  try { await call('bot_delete', { botId: bot.id }); }
+  catch (error) { notify(`Couldn’t delete ${bot.name}: ${error instanceof Error ? error.message : String(error)}`); return; }
+  setBotPinned(bot.id, false);
+  notify(`${bot.name} deleted`);
+  await reloadBotProjects(); await reloadSessions();
+  if (!session()) state.sessionId = '';
+  render();
+}
+function confirmBotDelete(name: string): Promise<boolean> {
+  const dialog = modal(`Delete ${name}?`, '<form id="delete-bot-form"><p class="delete-task-description">This removes the bot, its conversations and its channel connections. Its workspace folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete bot</button></div></form>', 'delete-task-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('#delete-bot-form')!;
+  form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(false), { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+  });
 }
 function setSidebarView(view: SidebarView): void {
   sidebarView = view; storeSidebarView(view); renderBots();
@@ -3702,9 +5383,58 @@ function botForThread(): import('./bots').Bot | undefined {
   const s = state.view === 'conversation' ? session() : undefined;
   return s ? sidebarBots.find(bot => bot.projectId === s.projectId) : undefined;
 }
+function switchKey(item: BotActivity): string {
+  return [item.at, item.detail.sessionId, item.detail.provider, item.detail.model, item.detail.cause, item.detail.back].join(':');
+}
+function mergeBotSwitches(current: BotActivity[], incoming: BotActivity[]): BotActivity[] {
+  const merged = new Map<string, BotActivity>();
+  for (const item of [...current, ...incoming]) merged.set(switchKey(item), item);
+  return [...merged.values()].sort((a, b) => a.at - b.at);
+}
+async function refreshBotThreadMeta(bot: import('./bots').Bot, sessionId: string, force = false): Promise<void> {
+  if (!force && (botThreadMetaLoaded.has(sessionId) || botThreadMetaRequests.has(sessionId))) return;
+  const request = (botThreadMetaRequests.get(sessionId) ?? 0) + 1;
+  botThreadMetaRequests.set(sessionId, request);
+  try {
+    const [ask, switches, messages] = await Promise.all([
+      call<FailoverAsk | null>('bot_failover_pending', { sessionId }),
+      call<BotActivity[]>('bot_model_switches', { sessionId }),
+      call<botThread.BotMessageMarker[]>('bot_message_markers', { sessionId }),
+    ]);
+    if (botThreadMetaRequests.get(sessionId) !== request) return;
+    if (ask?.sessionId === sessionId) botFailovers.set(sessionId, ask); else botFailovers.delete(sessionId);
+    botSwitches.set(sessionId, mergeBotSwitches(botSwitches.get(sessionId) ?? [], switches));
+    botMessages.set(sessionId, messages);
+    botThreadMetaLoaded.add(sessionId);
+    if (state.sessionId === sessionId && botForThread()?.id === bot.id) { renderTranscript(true); renderComposer(); }
+  } catch (error) {
+    console.warn('Could not load bot conversation markers:', error);
+  } finally {
+    if (botThreadMetaRequests.get(sessionId) === request) botThreadMetaRequests.delete(sessionId);
+  }
+}
+function renderBotFailover(): void {
+  const host = document.querySelector<HTMLElement>('#bot-failover-bar');
+  const ask = botFailovers.get(state.sessionId);
+  if (host) host.innerHTML = `${botThread.failoverHtml(ask)}${ask && botFailoverErrors.has(state.sessionId) ? `<p class="bot-failover-error" role="alert">${escape(botFailoverErrors.get(state.sessionId)!)}</p>` : ''}`;
+}
+/** A model picked during a bot's turn takes over once the turn ends; if the next turn already
+ *  started (a queued message), it stays pending and is tried again at that turn's end. */
+async function applyNextBotModel(sessionId: string): Promise<void> {
+  const next = botThread.nextModel(sessionId);
+  if (!next || isRunning(sessionId)) return;
+  try {
+    const updated = await call<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
+    botThread.setNextModel(sessionId, undefined);
+    state.sessions = state.sessions.map(task => task.id === sessionId ? updated : task);
+    if (sessionId === state.sessionId) { renderComposer(); renderHeader(); }
+  } catch (error) { console.warn('The bot keeps its model until the next turn ends:', error); }
+}
 /** Opens a bot's conversation in this app, creating it the first time. */
 async function openBot(botId: string): Promise<void> {
+  const bot = sidebarBots.find(item => item.id === botId); if (bot) respondedBots.delete(bot.projectId);
   const id = await call<string>('bot_desktop_thread', { botId });
+  if (bot) { sidebarBots = sidebarBots.map(item => item.id === botId ? { ...item, desktopSession: id } : item); renderBots(); }
   if (!state.sessions.some(task => task.id === id)) await reloadSessions();
   await selectSession(id, true);
 }
@@ -3726,7 +5456,7 @@ function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
   const tasks = listedSessions().filter(s => s.title.toLowerCase().includes(query.toLowerCase())).slice(0, 12);
   $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}" data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
@@ -3748,6 +5478,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'board-view': setWorkspaceView('board'); break;
     case 'conversation-view': setWorkspaceView('conversation'); break;
     case 'github-view': setWorkspaceView('github'); break;
+    case 'wake-later': openWakeComposer(document.querySelector<HTMLElement>('#composer') ?? $('#composer-area')); break;
     case 'toggle-sidebar': toggleSidebar(); break;
     case 'board-add': showBoardTaskForm(); break;
     case 'board-open': await selectSession(element.dataset.id!); break;
@@ -3757,9 +5488,19 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'board-complete': await changeBoardStage('completed'); break;
     case 'board-reopen': await changeBoardStage('review'); break;
     case 'project-task': await createTask(element.dataset.id!); break;
-    case 'toggle-folder': { const id = element.dataset.project!; if (!state.collapsedFolders.delete(id)) state.collapsedFolders.add(id); saveCollapsedFolders(); renderNavigation(); break; }
+    case 'toggle-folder': {
+      // While filtering every folder shows its matches; a click must not quietly save open/closed.
+      if (state.query.trim()) break;
+      const id = element.dataset.project!;
+      if (element.getAttribute('aria-expanded') === 'true') state.collapsedFolders.add(id); else state.collapsedFolders.delete(id);
+      saveCollapsedFolders(); renderNavigation(); break;
+    }
+    case 'completed-more': completedShown += COMPLETED_PAGE; renderNavigation(); break;
+    case 'sidebar-sort': await showSidebarSort(element); break;
+    case 'view-menu': await showViewMenu(element); break;
+    case 'folder-menu': { const heading = element.parentElement?.querySelector<HTMLElement>('.folder-heading'); if (heading) await showFolderMenu(heading); break; }
+    case 'clear-sidebar-filter': state.query = ''; renderNavigation(); $('#sidebar-filter').focus(); break;
     case 'toggle-folder-more': { const id = element.dataset.project!; if (!state.expandedFolders.delete(id)) state.expandedFolders.add(id); renderNavigation(); break; }
-    case 'show-all-projects': setProjectFilter(''); renderNavigation(); break;
     case 'add-project': showOpenProject(); break;
     case 'browse-project': {
       const input = document.querySelector<HTMLInputElement>('#project-folder'); if (!input) break;
@@ -3770,14 +5511,24 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     }
     case 'open-turn-diff': await showTurnDiff(element); break;
     case 'select-task': await selectSession(element.dataset.id!); break;
+    case 'sidebar-complete': sidebarTaskAction('complete', element.dataset.task!); break;
+    case 'sidebar-reopen': sidebarTaskAction('reopen', element.dataset.task!); break;
+    case 'sidebar-delete': sidebarTaskAction('delete', element.dataset.task!); break;
+    case 'sidebar-more': { const row = element.closest('.task-row')?.querySelector<HTMLElement>('.task-item'); if (row) await showSidebarTaskMenu(row); break; }
+    case 'toggle-section': {
+      if (state.query.trim()) break;
+      const key = element.dataset.section!;
+      if (!collapsedSections.delete(key)) collapsedSections.add(key);
+      try { localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify([...collapsedSections])); } catch { /* per-launch preference only */ }
+      renderNavigation(); break;
+    }
+    case 'toggle-completed': if (state.query.trim()) break; completedOpen = !completedOpen; completedShown = COMPLETED_FIRST; try { localStorage.setItem(COMPLETED_OPEN_KEY, String(completedOpen)); } catch { /* per-launch preference only */ } renderNavigation(); break;
     case 'select-project': await selectProject(element.dataset.id!); break;
-    case 'archive-view': state.archived = !state.archived; renderNavigation(); break;
     case 'toggle-theme': toggleTheme(); break;
     case 'colors-settings': await showColorsSettings(); break;
     case 'ui-size-decrease': changeUiScale(-1); break;
     case 'ui-size-increase': changeUiScale(1); break;
     case 'ui-size-reset': setUiScale(1); break;
-    case 'archive-task': { const s = session(); if (s) await archiveTask(s, true); break; }
     case 'delete-task': showDeleteTask(); break;
     case 'search': showCommands(); break;
     case 'retry-response': { const finishing = finishingStreams.get(state.sessionId); if (finishing) await finishResponse(state.sessionId, finishing); break; }
@@ -3793,11 +5544,20 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'jev-assist': await openJevAssist(); break;
     case 'agent-usage': await showAgentUsage(); break;
     case 'bots': await showBots(); break;
-    case 'new-bot': await showBots({ startNew: true }); break;
+    case 'new-bot': hideCreateBotMenu(); await showBots({ startNew: true }); break;
+    case 'new-bot-menu': await showCreateBotMenu(element); break;
+    case 'new-channel': hideCreateBotMenu(); await createSharedChannel(); break;
+    case 'open-shared-channel': if (element.dataset.channel) await openSharedChannel(element.dataset.channel); break;
+    case 'close-shared-channel': closeSharedChannel(); break;
+    case 'shared-channel-settings': if (state.sharedChannelId) { const { openSharedChannelSettings } = await import('./bot-shared-channels'); await openSharedChannelSettings(state.sharedChannelId, sharedChannelUi()); } break;
     case 'bot-settings': if (element.dataset.bot) await showBotSettings(element.dataset.bot, element.dataset.tab as import('./bots').Section | undefined); break;
-    case 'bot-pause': if (element.dataset.bot) { const bot = sidebarBots.find(item => item.id === element.dataset.bot); if (bot) { await call('bot_set_paused', { botId: bot.id, paused: !bot.paused }); notify(bot.paused ? `${bot.name} resumed` : `${bot.name} paused`); await reloadBotProjects(false); } } break;
+    case 'bot-pause': if (element.dataset.bot) { const bot = sidebarBots.find(item => item.id === element.dataset.bot); if (bot) await setBotPaused(bot, !bot.paused); } break;
+    case 'toggle-hidden-bots': hiddenBotsOpen = !hiddenBotsOpen; try { localStorage.setItem('pandacode.botsHiddenOpen', String(hiddenBotsOpen)); } catch { /* Keep the choice for this window. */ } renderBots(); break;
+    case 'mark-bots-read': markAllBotsRead(sidebarBots, bot => state.sessions.filter(task => task.projectId === bot.projectId && task.lastResponseAt).map(task => task.lastResponseAt!)); renderBots(); break;
     case 'open-bot': if (element.dataset.bot) await openBot(element.dataset.bot); break;
     case 'computer-menu': await showComputerMenu(element); break;
+    case 'remote-choose-computer': { const chip = document.querySelector<HTMLElement>('#composer-computer'); if (chip) await showComputerMenu(chip); break; }
+    case 'bot-task-menu': await showBotTaskMenu(element); break;
     case 'cloud-menu': await showCloudMenu(element); break;
     case 'toggle-bots-view': setSidebarView(sidebarView === 'bots' ? 'tasks' : 'bots'); break;
     case 'import-conversations': await showConversationImport(); break;
@@ -3823,6 +5583,9 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'terminal': await toggleTerminal(); break;
     case 'toggle-inspector': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;
     case 'tab-vm': openVm(); break;
+    case 'inspector-add-tab': await showInspectorViews(element); break;
+    case 'close-inspector-tab': closeInspectorTab(element.dataset.view as PanelView); break;
+    case 'tab-open-files': state.inspectorTab = 'file'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
@@ -3833,12 +5596,14 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
-    case 'open-folder': state.filePath = element.dataset.path!; await refreshInspector(); break;
-    case 'parent-folder': state.filePath = state.filePath.split('/').slice(0, -1).join('/'); await refreshInspector(); break;
+    case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
+    case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
     case 'preview-file': await previewFile(element.dataset.path!); break;
     case 'preview-selected-file': await previewFile(state.selectedFile, selectedFileContext); break;
     case 'open-file': await openFile(element.dataset.path!, 'file'); break;
+    case 'open-message-attachment': await openMessageAttachment(element); break;
+    case 'view-source': await openFile(element.dataset.path!, 'file', false, workspaceContext(), true); break;
     case 'open-diff': await openFile(element.dataset.path!, 'diff', element.dataset.staged === 'true'); break;
     case 'back-inspector': state.selectedKind = ''; renderInspector(); break;
     case 'attach': await attachments.openMenu(element); break;
@@ -3860,9 +5625,10 @@ async function action(name: string, element: HTMLElement): Promise<void> {
       break;
     }
     case 'architect-setup': await showArchitectSetup(element); break;
-    case 'team-toggle': await toggleTeam(); break;
+    case 'team-menu': await showTeamMenu(element); break;
     case 'steer': await steerFromComposer(); break;
-    case 'stop': if (session()) { runEndings.set(state.sessionId, 'stopped'); await call(teams.get(state.sessionId) ? 'architect_control' : 'stop_session', { sessionId: state.sessionId, ...(teams.get(state.sessionId) ? { action: 'stop' } : {}) }); notify('Stopping task…'); } break;
+    case 'remote-retry': await retryRemoteConnection(); break;
+    case 'stop': if (session()) { notify('Stopping task…'); await stopTask(session()!); } break;
     case 'approval-allow': case 'approval-deny': await respondApproval(state.sessionId, element.dataset.request!, name === 'approval-allow'); break;
     case 'approval-allow-all': case 'approval-deny-all': { const sessionId = state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }
     case 'approval-group': approvalGroupOpen = !approvalGroupOpen; renderApprovalBar(); break;
@@ -3871,9 +5637,67 @@ async function action(name: string, element: HTMLElement): Promise<void> {
   }
 }
 mountExternalLinks(document, url => call('open_external_url', { url }), report);
-document.addEventListener('click', event => { if ((event.target as Element).closest('.markdown,.streaming-content,.message-content')) return; const element = (event.target as Element).closest<HTMLElement>('[data-action]'); if (!element || element instanceof HTMLButtonElement && element.disabled) return; event.preventDefault(); run(action(element.dataset.action!, element)); });
+document.addEventListener('click', event => {
+  const button = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-shared-action]');
+  if (!button || !state.sharedChannelId) return;
+  const action = button.dataset.sharedAction;
+  if (action === 'reassign-toggle') { const menu = button.nextElementSibling as HTMLElement | null; if (menu) { menu.hidden = !menu.hidden; button.setAttribute('aria-expanded', String(!menu.hidden)); } return; }
+  const channelId = state.sharedChannelId, messageId = button.dataset.message;
+  if (action === 'earlier') {
+    const history = button.closest<HTMLElement>('.bc-history');
+    state.sharedChannelLimits.set(channelId, (state.sharedChannelLimits.get(channelId) ?? CHANNEL_PAGE) + CHANNEL_PAGE);
+    button.disabled = true;
+    if (history) state.sharedChannelFromBottom = history.scrollHeight - history.scrollTop;
+    run(refreshSharedChannel(channelId));
+    return;
+  }
+  if (action === 'stop') run(call('bot_shared_channel_stop', { channelId }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
+  else if (action === 'continue' && messageId) run(call('bot_shared_channel_continue', { channelId, messageId }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
+  else if (action === 'reassign' && messageId && button.dataset.bot) run(call('bot_shared_channel_reassign', { channelId, messageId, botId: button.dataset.bot }).then(() => refreshSharedChannel(channelId)).catch(error => notify(String(error))));
+});
+document.addEventListener('click', event => { const target = event.target as Element; if (target.closest('.markdown,.streaming-content,.message-content') && !target.closest('.message-attachments')) return; const element = target.closest<HTMLElement>('[data-action]'); if (!element || element instanceof HTMLButtonElement && element.disabled) return; event.preventDefault(); run(action(element.dataset.action!, element)); });
+document.addEventListener('click', event => {
+  const button = (event.target as Element).closest<HTMLButtonElement>('[data-failover]');
+  if (!button || button.disabled) return;
+  const card = button.closest<HTMLElement>('.bot-failover'), sessionId = card?.dataset.failoverSession;
+  const action = button.dataset.failover;
+  if (!card || !sessionId || !botFailovers.has(sessionId) || (action !== 'send' && action !== 'wait')) return;
+  event.preventDefault(); button.disabled = true;
+  const always = card.querySelector<HTMLInputElement>('[data-failover-always]')?.checked ?? false;
+  run((async () => {
+    try {
+      botFailoverErrors.delete(sessionId);
+      await call('bot_failover_decide', { sessionId, action, always });
+      botFailovers.delete(sessionId);
+      if (state.sessionId === sessionId) renderComposer();
+    } catch (error) {
+      botFailoverErrors.set(sessionId, error instanceof Error ? error.message : String(error));
+      if (state.sessionId === sessionId) renderComposer();
+      if (button.isConnected) button.disabled = false;
+    }
+  })());
+});
 document.addEventListener('submit', event => {
   const form = event.target as HTMLFormElement; event.preventDefault();
+  if (form.id === 'shared-channel-composer' && state.sharedChannelId) {
+    const channelId = state.sharedChannelId, text = String(new FormData(form).get('text') ?? '').trim();
+    if (!text) return;
+    state.sharedChannelDrafts.delete(channelId);
+    const channel = state.sharedChannelDetail;
+    const recipients = (channel?.memberIds ?? []).filter(id => {
+      const name = sidebarBots.find(bot => bot.id === id)?.name;
+      return Boolean(name && new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}(?=$|\\s|[^\\p{L}\\p{N}_])`, 'iu').test(text));
+    }).slice(0, 2);
+    state.sharedChannelPosting.add(channelId); renderComposer();
+    // A failed post goes back to its own channel's draft, unless something new was typed there.
+    run(call('bot_shared_channel_post', { channelId, text, ...(recipients.length ? { recipients } : {}) }).then(() => { state.sharedChannelPosting.delete(channelId); return refreshSharedChannel(channelId); }).catch(error => {
+      state.sharedChannelPosting.delete(channelId);
+      if (!state.sharedChannelDrafts.get(channelId)?.trim()) state.sharedChannelDrafts.set(channelId, text);
+      notify(error instanceof Error ? error.message : String(error));
+      if (channelId === state.sharedChannelId) renderComposer();
+    }));
+    return;
+  }
   if (form.id === 'composer') { run(send()); return; }
   const data = new FormData(form); const submitter = form.querySelector<HTMLButtonElement>('button:not([type="button"])'); if (submitter) submitter.disabled = true;
   run((async () => {
@@ -3881,7 +5705,8 @@ document.addEventListener('submit', event => {
       if (form.id === 'board-task-form') { await saveBoardTaskForm(form, data); }
       else if (form.id === 'open-project-form') {
         const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
-      } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: state.sessionId, title }); closeModal(); await reloadSessions(); }
+      } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
+      else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
       else if (form.id.startsWith('github-')) { await github.submit(form, data); }
       else if (form.id === 'commit-form') { const message = document.querySelector<HTMLTextAreaElement>('#commit-message')!.value.trim(); if (!message) { notify('Enter a commit message.'); return; } const result = await call<string>('git_commit', { ...workspaceContext(), message }); await refreshInspector(); notify(result || 'Changes committed'); }
@@ -3896,7 +5721,12 @@ function resizePrompt(): void {
   prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? 'auto' : 'hidden';
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
-document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); });
+document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
+document.addEventListener('scroll', event => {
+  if (!state.sharedChannelId) return;
+  const history = (event.target as Element | null)?.closest?.('.bc-history') as HTMLElement | null;
+  if (history) { state.sharedChannelScrollTop = history.scrollTop; state.sharedChannelAtBottom = history.scrollHeight - history.clientHeight - history.scrollTop < 32; }
+}, true);
 document.addEventListener('change', event => {
   const input = event.target as HTMLInputElement;
   if (input.id === 'daily-wallpapers') wallpapers.setEnabled(input.checked);
@@ -3906,7 +5736,7 @@ document.addEventListener('change', event => {
   if (input.id === 'compact-mode') { document.body.classList.toggle('compact', input.checked); localStorage.setItem('pandacode.compact', String(input.checked)); }
   if (input.id === 'expand-tool-activity') {
     localStorage.setItem('pandacode.activityExpanded', String(input.checked));
-    document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group').forEach(group => { group.open = input.checked; });
+    document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
   }
 });
 document.addEventListener('keydown', event => {
@@ -3933,6 +5763,7 @@ document.addEventListener('keydown', event => {
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
   if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
   if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
+  if (sidebarShortcut(event)) return;
   if (command && event.key.toLowerCase() === 'n') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
   else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
@@ -3943,10 +5774,11 @@ document.addEventListener('keydown', event => {
     if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
+  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !event.isComposing) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey)) { event.preventDefault(); run(saveQueueEdit()); }
   else if (event.key === 'Escape' && settingsView && !event.defaultPrevented && !document.querySelector<HTMLDialogElement>('#dialog')?.open && !document.querySelector('.floating-menu')) { event.preventDefault(); closeSettings(); }
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }
-  else if (event.key === 'Escape' && isRunning() && !terminalPanel.open && !event.defaultPrevented) { event.preventDefault(); runEndings.set(state.sessionId, 'stopped'); run(call(teams.get(state.sessionId) ? 'architect_control' : 'stop_session', { sessionId: state.sessionId, ...(teams.get(state.sessionId) ? { action: 'stop' } : {}) })); }
+  else if (event.key === 'Escape' && isRunning() && !terminalPanel.open && !event.defaultPrevented) { event.preventDefault(); if (session()) run(stopTask(session()!)); }
 });
 let dialogBackdropPressed = false;
 function outsideDialog(event: MouseEvent): boolean {
@@ -3976,20 +5808,62 @@ async function boot(): Promise<void> {
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
   await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
   await subscribe('sessions-changed', () => run(reloadSessions()));
+  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
-  // bridge.ts has no typed overload for this event yet.
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
-  run(subscribe('agent-event', (event: AgentEvent) => { if (event.kind === 'done' && event.sessionId === state.sessionId) void designPanel?.refresh(); }).then(() => undefined));
+  run(subscribe('agent-event', (event: AgentEvent) => {
+    if (event.kind !== 'done') return;
+    // A run can finish while another task is open; its totals refresh when next shown.
+    taskUsage.delete(event.sessionId);
+    if (event.sessionId !== state.sessionId) return;
+    ensureTaskUsage(event.sessionId);
+    void designPanel?.refresh();
+    progressPip?.refresh(event.sessionId);
+    if (document.hasFocus()) markTraySeen(event.sessionId);
+  }).then(() => undefined));
+  run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {
+    if (typeof sessionId !== 'string') return;
+    if (!state.sessions.some(s => s.id === sessionId)) await reloadSessions();
+    if (state.view !== 'conversation') state.boardPanel = true;
+    await selectSession(sessionId, true);
+  })())).then(() => undefined));
+  run((subscribe as (name: string, callback: (event: { sessionId?: string } | null) => void) => Promise<() => void>)('progress-changed', event => progressPip?.refresh(event?.sessionId)).then(() => undefined));
   run(subscribe('simulator-changed', event => { if (event?.show) openSimulator(); void simulatorPanel?.refresh(); }).then(() => undefined));
   run(subscribe('bots-changed', () => run((async () => { botProjectsLoad = reloadBotProjects(); await botProjectsLoad; botsView?.refresh(); })())).then(() => undefined));
+  run(subscribe('bot-shared-channel-changed', event => { run(reloadBotProjects(false)); if (state.sharedChannelId && (!event?.channelId || event.channelId === state.sharedChannelId)) void refreshSharedChannel(); }).then(() => undefined));
+  run(subscribe('bot-messages-changed', () => {
+    botThreadMetaLoaded.clear();
+    const bot = botForThread();
+    if (bot && state.sessionId) void refreshBotThreadMeta(bot, state.sessionId, true);
+  }).then(() => undefined));
   run(initRemote());
   run(initCloudAgents());
+  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), title: id => state.sessions.find(s => s.id === id)?.title }));
   run(subscribe('bot-notification', event => { if (event?.text) notify(String(event.text).replace(/\s+/g, ' ').slice(0, 160)); }).then(() => undefined));
+  run(subscribe('bot-failover', (ask: FailoverAsk) => {
+    if (!ask?.sessionId) return;
+    botFailovers.set(ask.sessionId, ask);
+    if (state.sessionId === ask.sessionId) renderComposer();
+  }).then(() => undefined));
+  run(subscribe('bot-model-switch', (event: { botId?: string; at?: number; text?: string; detail?: Record<string, unknown> }) => {
+    const sessionId = typeof event?.detail?.sessionId === 'string' ? event.detail.sessionId : '';
+    const bot = sidebarBots.find(item => item.id === event?.botId);
+    if (!sessionId || !bot) return;
+    const activity: BotActivity = { id: Number(event.at) || Date.now(), kind: 'model-switch', summary: event.text ?? '', detail: event.detail ?? {}, at: Number(event.at) || Date.now() };
+    botSwitches.set(sessionId, mergeBotSwitches(botSwitches.get(sessionId) ?? [], [activity]));
+    if (state.sessionId === sessionId) renderTranscript(true);
+    void refreshBotThreadMeta(bot, sessionId, true);
+  }).then(() => undefined));
   // Bots appear in the sidebar once loaded; startup does not wait for them.
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`); }).then(() => undefined));
+  // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
+  run(initWakeups({
+    sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
+    openSettings: intent => run(showSettings('schedules', intent)),
+  }));
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
   await subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
@@ -4037,24 +5911,13 @@ async function boot(): Promise<void> {
   if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
-const updates = startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify });
-{
-  const pill = $('#update-status');
-  const paint = () => {
-    const current = updates.state;
-    pill.hidden = current.kind !== 'ready' && current.kind !== 'installing';
-    if (current.kind !== 'ready' && current.kind !== 'installing') return;
-    pill.title = current.kind === 'ready' ? `PandaCode ${current.version} is ready. Restart now, or it restarts on its own when your agents are done.` : `Installing ${current.version}…`;
-    (pill as HTMLButtonElement).disabled = current.kind === 'installing';
-  };
-  updates.subscribe(paint);
-  pill.addEventListener('click', () => { void updates.restart(); });
-  paint();
-}
+mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));
 const agentUpdates = initializeAgentUpdates({
   modal, closeModal, report, providers: () => state.providers,
   providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 renderThemeToggle(); render(); renderInspector(); run(boot());
+// The diff engine (module, highlighter workers, themes) starts right after the first paint.
+preloadDiffsAfterPaint();
 if (!preview) initializeNativeAppearance();

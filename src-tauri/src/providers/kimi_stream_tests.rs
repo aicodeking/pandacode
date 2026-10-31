@@ -82,7 +82,16 @@ fn foreign_sessions_nontext_content_and_thoughts_do_not_become_answer_text() {
     let first = protocol.receive(chunk(None, "Commentary")).unwrap().events;
     let mut thinking = chunk(None, "internal thought");
     thinking["params"]["update"]["sessionUpdate"] = json!("agent_thought_chunk");
-    assert!(protocol.receive(thinking).unwrap().events.is_empty());
+    assert!(protocol.receive(thinking).unwrap().events.iter().all(|e| e.kind == "thinking"));
     let answer = protocol.receive(chunk(None, "Answer")).unwrap().events;
     assert_ne!(starts(&first), starts(&answer));
+}
+
+#[test]
+fn acp_thought_chunks_surface_as_thinking_events() {
+    let mut protocol = Protocol::new(config("kimi"));
+    protocol.remote_id = "main".into();
+    protocol.phase = 1;
+    let step = protocol.receive(json!({"method":"session/update","params":{"sessionId":"main","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Considering"}}}})).unwrap();
+    assert!(step.events.iter().any(|e| e.kind == "thinking" && e.text == "Considering"));
 }

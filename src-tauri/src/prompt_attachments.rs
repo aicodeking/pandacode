@@ -229,6 +229,21 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
     })
 }
 
+/// A sent image or screenshot as a `data:` URL, so the transcript can show it again.
+/// Only registry IDs are accepted; None when the capture was pruned or never existed.
+pub fn image_data_url(dir: &Path, id: &str) -> Result<Option<String>, String> {
+    if uuid::Uuid::parse_str(id).map(|parsed| parsed.to_string()) != Ok(id.to_owned()) {
+        return Err("Invalid image.".into());
+    }
+    let path = dir.join(format!("{id}.png"));
+    let Ok(metadata) = std::fs::symlink_metadata(&path) else { return Ok(None) };
+    if !metadata.is_file() || metadata.len() > MAX_IMAGE_PNG as u64 {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(Some(format!("data:image/png;base64,{}", STANDARD.encode(bytes))))
+}
+
 fn extension(path: &Path) -> String {
     path.extension()
         .and_then(|ext| ext.to_str())
@@ -499,6 +514,17 @@ mod tests {
     use super::*;
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    #[test]
+    fn sent_images_are_read_back_by_registry_id_only() {
+        let dir = temp_dir("sent-image");
+        let id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(dir.join(format!("{id}.png")), [1, 2, 3]).unwrap();
+        assert_eq!(image_data_url(&dir, &id).unwrap().as_deref(), Some("data:image/png;base64,AQID"));
+        assert_eq!(image_data_url(&dir, &uuid::Uuid::new_v4().to_string()).unwrap(), None);
+        assert!(image_data_url(&dir, "../secret").is_err());
+        assert!(image_data_url(&dir, &id.to_uppercase()).is_err());
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("pandacode-{label}-{}", uuid::Uuid::new_v4()));

@@ -6,9 +6,10 @@
 export type Spring = { damping?: number; response?: number; velocity?: number };
 
 export const reducedMotion = (): boolean => matchMedia('(prefers-reduced-motion: reduce)').matches;
-/** PandaCode is instant: surfaces appear and leave without motion. Every caller has an
- *  instant path for this, so flipping it back restores the springs. */
-const MOTION = false;
+/** Motion is on but restrained: short critically damped springs (~120–220 ms of visible
+ *  travel), a few pixels of movement, never gating input. Every caller has an instant path,
+ *  so setting this to false makes the whole interface instant again. */
+const MOTION = true;
 const canAnimate = (element: Element): boolean => MOTION && !document.hidden && typeof element.animate === 'function';
 const FRAME = 1000 / 60;
 
@@ -57,9 +58,9 @@ export function springEasing(spring: Spring): { easing: string; duration: number
 /** Publishes spring curves for stylesheet transitions (segmented pills, switches, hover). */
 export function publishSpringEasings(root: HTMLElement = document.documentElement): void {
   const curves: Record<string, Spring> = {
-    '--spring': { damping: 1, response: 0.36 },
-    '--spring-fast': { damping: 1, response: 0.24 },
-    '--spring-bounce': { damping: 0.72, response: 0.34 },
+    '--spring': { damping: 1, response: 0.28 },
+    '--spring-fast': { damping: 1, response: 0.2 },
+    '--spring-bounce': { damping: 0.8, response: 0.3 },
   };
   for (const [name, spring] of Object.entries(curves)) {
     const curve = springEasing(spring);
@@ -141,7 +142,7 @@ type Materialize = { scale?: number; x?: number; y?: number; spring?: Spring; or
 
 /** Glass arrives as a material: its blur condenses while it scales and rises into place.
  *  Interrupting a departure continues from wherever the surface currently is. */
-export function materializeIn(element: HTMLElement, { scale = 0.96, x = 0, y = 10, spring = { response: 0.34 }, origin }: Materialize = {}): Animation | undefined {
+export function materializeIn(element: HTMLElement, { scale = 0.97, x = 0, y = 6, spring = { response: 0.24 }, origin }: Materialize = {}): Animation | undefined {
   if (!canAnimate(element)) return undefined;
   if (origin) element.style.transformOrigin = origin;
   const live = running.has(element) ? presentation(element) : undefined;
@@ -152,20 +153,21 @@ export function materializeIn(element: HTMLElement, { scale = 0.96, x = 0, y = 1
     opacity: live?.opacity ?? 0, scale: live?.scale ?? scale, x: live?.x ?? x, y: live?.y ?? y,
     backdrop: clear ? (live && filterShape(live.backdrop) === filterShape(target) ? live.backdrop : clear) : undefined,
   };
-  // Opacity and blur lead the spring: the glass is solid before it finishes settling.
+  // Opacity leads the spring and blur leads it harder, so nothing bleeds through mid-flight.
+  const blurLead = (progress: number): number => Math.max(0, Math.min(1, progress * 2.2));
   const { keyframes, duration } = springKeyframes(spring, progress => ({
     opacity: start.opacity + (1 - start.opacity) * opacityLead(progress),
     transform: `translate(${px(start.x * (1 - progress))}, ${px(start.y * (1 - progress))}) scale(${fixed(start.scale + (1 - start.scale) * progress)})`,
-    ...(start.backdrop ? backdropFrame(progress >= 1 ? target : mixFilter(start.backdrop, target, opacityLead(progress))) : {}),
+    ...(start.backdrop ? backdropFrame(progress >= 1 ? target : mixFilter(start.backdrop, target, blurLead(progress))) : {}),
   }));
   return play(element, keyframes, duration);
 }
 
 /** Leaves along the arrival path, faster, from whatever is currently on screen. */
-export function materializeOut(element: HTMLElement, { scale = 0.97, x = 0, y = 6 }: Materialize = {}): Promise<void> {
+export function materializeOut(element: HTMLElement, { scale = 0.98, x = 0, y = 4 }: Materialize = {}): Promise<void> {
   if (!canAnimate(element) || !element.isConnected) return Promise.resolve();
   const live = presentation(element);
-  const duration = reducedMotion() ? 90 : 150;
+  const duration = reducedMotion() ? 90 : 130;
   const from: Keyframe = { opacity: live.opacity, transform: `translate(${px(live.x)}, ${px(live.y)}) scale(${fixed(live.scale)})` };
   const to: Keyframe = { opacity: 0, transform: `translate(${px(x)}, ${px(y)}) scale(${fixed(scale)})` };
   if (reducedMotion()) return settle(play(element, [{ opacity: live.opacity }, { opacity: 0 }], duration, 'ease-in'), duration);
@@ -179,7 +181,7 @@ const offset = (side: Side, distance: number): { x: number; y: number } => ({ le
 
 /** A pane glides in from the edge it lives on, so its home is obvious. Drawers that
  *  emerge from a window edge keep full opacity: only their position travels. */
-export function glideIn(element: HTMLElement, side: Side, distance = 18, { fade = true, spring = { response: 0.38 } }: { fade?: boolean; spring?: Spring } = {}): void {
+export function glideIn(element: HTMLElement, side: Side, distance = 12, { fade = true, spring = { response: 0.26 } }: { fade?: boolean; spring?: Spring } = {}): void {
   if (!canAnimate(element)) return;
   if (reducedMotion()) { if (fade) play(element, [{ opacity: 0 }, { opacity: 1 }], 140, 'ease-out'); return; }
   const { x, y } = offset(side, distance);
@@ -189,7 +191,7 @@ export function glideIn(element: HTMLElement, side: Side, distance = 18, { fade 
 
 /** A pane is uncovered from one edge without moving: its geometry (and anything
  *  aligned to it, such as native views) is exact from the first frame. */
-export function revealIn(element: HTMLElement, side: Side, spring: Spring = { response: 0.4 }): void {
+export function revealIn(element: HTMLElement, side: Side, spring: Spring = { response: 0.28 }): void {
   if (!canAnimate(element) || reducedMotion()) return;
   const inset = (progress: number): string => {
     const hidden = `${((1 - progress) * 100).toFixed(2)}%`;
@@ -200,10 +202,10 @@ export function revealIn(element: HTMLElement, side: Side, spring: Spring = { re
 }
 
 /** Returns along the same edge; resolves once the pane may be hidden. */
-export function glideOut(element: HTMLElement, side: Side, distance = 14): Promise<void> {
+export function glideOut(element: HTMLElement, side: Side, distance = 10): Promise<void> {
   if (!canAnimate(element) || element.hidden || !element.isConnected) return Promise.resolve();
   const { x, y } = offset(side, distance);
-  const duration = reducedMotion() ? 90 : 140;
+  const duration = reducedMotion() ? 90 : 120;
   const frames: Keyframe[] = reducedMotion()
     ? [{ opacity: 1 }, { opacity: 0 }]
     : [{ opacity: 1, transform: 'translate(0px, 0px)' }, { opacity: 0, transform: `translate(${px(x)}, ${px(y)})` }];
@@ -211,7 +213,7 @@ export function glideOut(element: HTMLElement, side: Side, distance = 14): Promi
 }
 
 /** A view that just became current rises softly into place. */
-export function enterView(element: HTMLElement, distance = 10, spring: Spring = { response: 0.4 }): void {
+export function enterView(element: HTMLElement, distance = 6, spring: Spring = { response: 0.26 }): void {
   if (!canAnimate(element) || element.hidden) return;
   if (reducedMotion()) { play(element, [{ opacity: 0 }, { opacity: 1 }], 150, 'ease-out'); return; }
   const { keyframes, duration } = springKeyframes(spring, progress => ({ opacity: opacityLead(progress), transform: `translateY(${px(distance * (1 - progress))}) scale(${fixed(0.99 + 0.01 * progress)})` }));
@@ -219,31 +221,26 @@ export function enterView(element: HTMLElement, distance = 10, spring: Spring = 
 }
 
 /** Lists arrive as lists: a short cascade, capped so nobody waits for it. */
-export function cascade(elements: Iterable<HTMLElement>, stepMs = 22, maxDelayMs = 200): void {
-  if (document.hidden || reducedMotion()) return;
-  const { keyframes, duration } = springKeyframes({ response: 0.4 }, progress => ({ opacity: opacityLead(progress), transform: `translateY(${px(12 * (1 - progress))})` }));
+export function cascade(elements: Iterable<HTMLElement>, stepMs = 16, maxDelayMs = 120): void {
+  if (!MOTION || document.hidden || reducedMotion()) return;
+  const { keyframes, duration } = springKeyframes({ response: 0.26 }, progress => ({ opacity: opacityLead(progress), transform: `translateY(${px(6 * (1 - progress))})` }));
   let index = 0;
   for (const element of elements) play(element, keyframes, duration, 'linear', Math.min(maxDelayMs, index++ * stepMs));
 }
 
-/* Toast: arrives from below and leaves the same way. */
+/* Toast: drifts up into the bottom-right corner and eases out toward the edge it came from. */
 let toastGeneration = 0;
 export function showToast(toast: HTMLElement): void {
   toastGeneration++;
+  const visible = !toast.hidden && !running.has(toast);
   toast.hidden = false;
-  if (!canAnimate(toast)) return;
+  if (!canAnimate(toast) || visible) return;
   if (reducedMotion()) { play(toast, [{ opacity: 0 }, { opacity: 1 }], 120, 'ease-out'); return; }
-  const { keyframes, duration } = springKeyframes({ damping: 0.9, response: 0.4 }, progress => ({ opacity: opacityLead(progress), transform: `translateY(${px(16 * (1 - progress))}) scale(${fixed(0.95 + 0.05 * progress)})` }));
-  play(toast, keyframes, duration);
+  materializeIn(toast, { scale: 0.98, x: 6, y: 10, spring: { response: 0.3 }, origin: '100% 100%' });
 }
 export async function hideToast(toast: HTMLElement): Promise<void> {
   const generation = toastGeneration;
-  if (canAnimate(toast) && !toast.hidden) {
-    const frames: Keyframe[] = reducedMotion()
-      ? [{ opacity: 1 }, { opacity: 0 }]
-      : [{ opacity: 1, transform: 'translateY(0px) scale(1)' }, { opacity: 0, transform: 'translateY(10px) scale(.97)' }];
-    await settle(play(toast, frames, 140, 'cubic-bezier(.4, 0, .9, .6)'), 140);
-  }
+  if (canAnimate(toast) && !toast.hidden) await materializeOut(toast, { scale: 0.98, x: 10, y: 0 });
   if (generation === toastGeneration) toast.hidden = true;
 }
 
@@ -270,14 +267,21 @@ function fitPlate(plate: HTMLElement, dialog: HTMLDialogElement, previous?: Rect
   const keys = ['left', 'top', 'width', 'height'] as const;
   const moved = previous && keys.some(key => Math.abs(previous[key] - next[key]) > 0.5);
   if (moved && canAnimate(plate) && !reducedMotion()) {
-    // Content changed inside the open dialog: the sheet morphs to its new size and the
-    // dialog is clipped to it meanwhile (clip-path leaves fixed descendants alone). A
-    // morph already in flight retargets from wherever the sheet currently is.
-    const style = getComputedStyle(plate);
-    const from: Rect = running.has(plate) ? Object.fromEntries(keys.map(key => [key, Number.parseFloat(style[key]) || 0])) as Rect : previous;
+    // Content changed inside the open dialog: the sheet takes its new geometry at once and
+    // a FLIP transform carries it from the old box (layout never animates); the dialog is
+    // clipped to it meanwhile (clip-path leaves fixed descendants alone). A morph already
+    // in flight retargets from wherever the sheet currently is on screen.
+    const live = running.has(plate) ? running.get(plate) : undefined;
+    const box = live ? plate.getBoundingClientRect() : undefined;
+    live?.cancel();
+    const from: Rect = box ? { left: box.left, top: box.top, width: box.width, height: box.height } : previous;
     const mix = (start: number, end: number, progress: number): number => start + (end - start) * progress;
-    const { samples, duration } = springProgress({ response: 0.36 });
-    play(plate, samples.map(progress => Object.fromEntries(keys.map(key => [key, px(mix(from[key], next[key], progress))]))), duration);
+    const { samples, duration } = springProgress({ response: 0.28 });
+    plate.style.transformOrigin = '0 0';
+    play(plate, samples.map(progress => {
+      const width = mix(from.width, next.width, progress), height = mix(from.height, next.height, progress);
+      return { transform: `translate(${px(mix(from.left, next.left, progress) - next.left)}, ${px(mix(from.top, next.top, progress) - next.top)}) scale(${fixed(width / next.width)}, ${fixed(height / next.height)})` };
+    }), duration);
     const radius = getComputedStyle(dialog).borderRadius;
     play(dialog, samples.map(progress => {
       const top = mix(from.top, next.top, progress) - next.top, left = mix(from.left, next.left, progress) - next.left;
@@ -344,7 +348,7 @@ function dismissGhost(ghost: HTMLElement): void {
 }
 function contentArrives(dialog: HTMLDialogElement, x: number, delay: number): void {
   if (!canAnimate(dialog) || reducedMotion()) return;
-  const { keyframes, duration } = springKeyframes({ response: 0.34 }, progress => ({ opacity: opacityLead(progress), transform: `translate(${px(x * (1 - progress))}, ${px(6 * (1 - progress))})` }));
+  const { keyframes, duration } = springKeyframes({ response: 0.24 }, progress => ({ opacity: opacityLead(progress), transform: `translate(${px(x * (1 - progress))}, ${px(4 * (1 - progress))})` }));
   for (const child of dialog.children) play(child as HTMLElement, keyframes, duration, 'linear', delay);
 }
 
@@ -362,9 +366,9 @@ export function installDialogMotion(dialog: HTMLDialogElement): () => void {
     scrim.hidden = false; plate.hidden = false;
     rect = fitPlate(plate, dialog);
     if (!canAnimate(dialog)) return;
-    play(scrim, [{ opacity: presentation(scrim).opacity }, { opacity: 1 }], reducedMotion() ? 120 : 240, 'ease-out');
-    materializeIn(plate, { scale: 0.94, y: 16, spring: { response: 0.4 }, origin: '50% 45%' });
-    contentArrives(dialog, 0, 40);
+    play(scrim, [{ opacity: presentation(scrim).opacity }, { opacity: 1 }], reducedMotion() ? 120 : 180, 'ease-out');
+    materializeIn(plate, { scale: 0.97, y: 8, spring: { response: 0.26 }, origin: '50% 45%' });
+    contentArrives(dialog, 0, 20);
   }
   function depart(): void {
     if (!dialog.open || departed) return;
@@ -373,9 +377,10 @@ export function installDialogMotion(dialog: HTMLDialogElement): () => void {
     rect = undefined;
     if (!canAnimate(dialog) || !bounds) { scrim.hidden = true; plate.hidden = true; return; }
     const ghost = ghostOf(dialog, bounds);
-    void materializeOut(ghost, { scale: 0.97, y: 8 }).then(() => dismissGhost(ghost));
-    void materializeOut(plate, { scale: 0.95, y: 8 }).then(() => { if (!dialog.open) plate.hidden = true; });
-    void settle(play(scrim, [{ opacity: presentation(scrim).opacity }, { opacity: 0 }], 170, 'ease-out'), 170).then(() => { if (!dialog.open) scrim.hidden = true; });
+    void materializeOut(ghost, { scale: 0.98, y: 6 }).then(() => dismissGhost(ghost));
+    plate.style.transformOrigin = '50% 45%';
+    void materializeOut(plate, { scale: 0.97, y: 6 }).then(() => { if (!dialog.open) plate.hidden = true; });
+    void settle(play(scrim, [{ opacity: presentation(scrim).opacity }, { opacity: 0 }], 140, 'ease-out'), 140).then(() => { if (!dialog.open) scrim.hidden = true; });
   }
   function refit(): void { if (dialog.open && !departed) rect = fitPlate(plate, dialog, rect); }
 
@@ -394,7 +399,7 @@ export function installDialogMotion(dialog: HTMLDialogElement): () => void {
   const contentChanged = (record: MutationRecord) => record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].some(node => !overlay(node));
   const observer = new MutationObserver(records => {
     if (records.some(record => record.type === 'attributes' && record.attributeName === 'open' && dialog.open)) { arrive(); return; }
-    if (dialog.open && !departed && records.some(contentChanged)) { refit(); contentArrives(dialog, 12, 0); }
+    if (dialog.open && !departed && records.some(contentChanged)) { refit(); contentArrives(dialog, 8, 0); }
   });
   observer.observe(dialog, { attributes: true, attributeFilter: ['open'], childList: true });
   return () => {
@@ -428,6 +433,16 @@ export function trackSegment(group: HTMLElement, selected: HTMLElement | null): 
   place(group, selected);
 }
 function place(group: HTMLElement, selected: HTMLElement): void {
+  // The pill's size snaps and a `scale` FLIP carries it from the old size, alongside the
+  // stylesheet's translate transition: no layout property ever animates.
+  const thumb = group.querySelector<HTMLElement>(':scope > .segment-thumb');
+  const width = Number.parseFloat(group.style.getPropertyValue('--seg-w')) || 0, height = Number.parseFloat(group.style.getPropertyValue('--seg-h')) || 0;
+  if (thumb && group.dataset.segmentReady !== undefined && width && height && selected.offsetWidth && selected.offsetHeight && canAnimate(thumb) && !reducedMotion()
+    && (Math.abs(width - selected.offsetWidth) > 0.5 || Math.abs(height - selected.offsetHeight) > 0.5)) {
+    const sx = width / selected.offsetWidth, sy = height / selected.offsetHeight;
+    const { keyframes, duration } = springKeyframes({ damping: 1, response: 0.28 }, progress => ({ scale: `${fixed(sx + (1 - sx) * progress)} ${fixed(sy + (1 - sy) * progress)}` }));
+    play(thumb, keyframes, duration);
+  }
   group.style.setProperty('--seg-x', px(selected.offsetLeft));
   group.style.setProperty('--seg-y', px(selected.offsetTop));
   group.style.setProperty('--seg-w', px(selected.offsetWidth));

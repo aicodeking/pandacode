@@ -1,0 +1,83 @@
+.bot-shared-dialog { width: min(620px, calc(100vw - 32px)); max-height: min(82vh, 760px); padding: 0; }
+.bots-panel-head { position: relative; }
+.bot-create-menu { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; display: flex; width: 186px; flex-direction: column; gap: 2px; padding: 6px; border-radius: var(--radius-md); background: var(--glass-warm); backdrop-filter: blur(26px) saturate(1.45); -webkit-backdrop-filter: blur(26px) saturate(1.45); box-shadow: 0 14px 36px -10px var(--glass-shadow-deep); }
+.bot-create-menu[hidden] { display: none; }
+.bot-create-menu button { display: flex; align-items: center; gap: 9px; min-height: 32px; padding: 5px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.bot-create-menu button:hover, .bot-create-menu button:focus-visible { background: rgb(var(--accent-rgb) / .14); outline: none; }
+.bot-create-menu .icon { width: 16px; height: 16px; color: var(--text-muted); }
+.bot-shared-dialog:has(.bc-channel) { width: min(760px, calc(100vw - 32px)); }
+.conversation-pane.channel-thread #transcript { display: flex; flex-direction: column; padding: 0; }
+.conversation-pane.channel-thread .transcript { overflow: hidden; }
+.conversation-pane.channel-thread #transcript > .bc-channel { max-width: none; margin: 0; }
+.conversation-pane.channel-thread .bc-header { padding: 16px 32px; }
+.conversation-pane.channel-thread .bc-history { width: min(100%, 894px); align-self: center; padding: 20px 32px; }
+.conversation-pane.channel-thread .bc-message { max-width: min(88%, 760px); }
+.conversation-pane.channel-thread .bc-archived { width: min(calc(100% - 64px), 830px); margin: 14px auto 0; }
+.conversation-pane.channel-thread #composer-area .bc-channel-actions { max-width: 830px; }
+.conversation-pane.channel-thread #composer-area .bc-composer { max-width: 830px; margin: 0 auto; }
+.channel-back { display: inline-grid !important; width: 24px; height: 24px; flex: none; place-items: center; border-radius: 6px; color: var(--text-muted) !important; }
+.channel-back:hover { background: var(--surface-raised); }
+.channel-back .icon { width: 14px; height: 14px; transform: rotate(180deg); }
+.bc-channel { display: flex; width: 100%; min-height: 0; max-height: none; flex: 1; flex-direction: column; }
+.bc-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 20px 14px; }
+.bc-title { display: inline-flex; min-width: 0; align-items: center; gap: 12px; color: var(--text); }
+.bc-member-names { overflow: hidden; color: var(--text-muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.bc-settings { display: inline-grid; place-items: center; flex: none; padding: 0; }
+.bc-settings .icon { width: 15px; height: 15px; color: var(--text-quiet); }
+.bc-faces { display: inline-flex; flex: none; align-items: center; }
+.bc-face, .bc-face-count, .bc-empty-face { width: 28px; height: 28px; margin-left: -6px; box-shadow: 0 0 0 2px var(--glass-bg, var(--surface)); border-radius: 50%; }
+.bc-face:first-child { margin-left: 0; }
+.bc-face { display: inline-block; overflow: hidden; }
+.bc-face .bot-avatar, .bc-pick-face { width: 100%; height: 100%; }
+.bc-face-count, .bc-empty-face { display: inline-grid; place-items: center; background: var(--surface-raised); color: var(--text-muted); font-size: 10px; font-weight: 650; }
+.bc-empty-face { width: 32px; height: 32px; margin: 0; box-shadow: none; background: var(--fill-hover); }
+.bc-empty-face .icon { width: 16px; height: 16px; }
+.bc-cluster .bc-face, .bc-cluster .bc-face-count, .bc-cluster .bc-empty-face { width: 34px; height: 34px; }
+.bc-history { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 12px; overflow: auto; padding: 18px 20px; }
+.bc-empty { display: grid; flex: 1; align-content: center; justify-items: center; gap: 16px; color: var(--text-muted); text-align: center; }
+.bc-empty p { max-width: 270px; margin: 0; line-height: 1.45; }
+.bc-archived { margin: 14px 20px 0; padding: 9px 12px; border-radius: var(--radius-lg); background: var(--fill-hover); color: var(--text-muted); font-size: 12px; }
+.bc-message { display: flex; align-items: flex-start; gap: 10px; max-width: 88%; }
+.bc-message.from-user { align-self: flex-end; }
+.bc-message-avatar { width: 28px; height: 28px; flex: none; }
+.bc-message-main { min-width: 0; }
+.bc-message-main header { display: flex; align-items: baseline; gap: 8px; color: var(--bot-color, var(--text)); font-size: 12px; }
+.bc-message-main header strong { color: var(--bot-color, var(--text)); }
+.bc-message-status, .bc-assigned small { color: var(--text-quiet); font-size: 10px; }
+.bc-message-text { margin: 4px 0 0; padding: 10px 12px; border-radius: 12px; background: var(--surface-raised); color: var(--text); overflow-wrap: anywhere; }
+.bc-message-text>*:first-child { margin-top: 0; }
+.bc-message-text>*:last-child { margin-bottom: 0; }
+.bc-message.from-user .bc-message-text { background: var(--accent-tint); }
+.bc-assigned { display: flex; align-self: center; align-items: center; gap: 8px; color: var(--text-muted); font-size: 11px; }
+.bc-working { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px 10px; padding: 12px 0; }
+.bc-working-faces { display: flex; }
+.bc-working-faces .bc-face { width: 23px; height: 23px; }
+.bc-channel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 830px; margin: 0 auto 8px; padding: 0 6px; color: var(--text-muted); font-size: 12px; }
+.bc-channel-actions > span[role=status] { margin-right: auto; }
+.bc-channel-actions > span:not([role=status]) { flex: 1; }
+.bc-reassign-menu { display: flex; flex-basis: 100%; flex-direction: column; gap: 2px; }
+.bc-reassign-menu[hidden] { display: none; }
+.bc-reassign-menu button { display: flex; align-items: center; gap: 8px; padding: 6px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.bc-reassign-menu button:hover { background: var(--surface-raised); }
+.bc-composer textarea { min-height: 58px; overflow-y: auto; resize: none; }
+.bc-composer textarea:focus-visible { outline: none; }
+.bc-create-form, .bc-settings-form { display: grid; gap: 11px; padding: 0 20px 18px; }
+.bc-create-form .dialog-description { margin: 0; }
+.bc-create-form input[name=name], .bc-settings-form input[name=name], .bc-settings-form select { min-height: 36px; padding: 7px 10px; border: 0; border-radius: var(--radius-sm); background: var(--fill-hover); color: var(--text); font: inherit; }
+.bc-member-list { display: flex; flex-direction: column; gap: 5px; max-height: 220px; overflow: auto; min-width: 0; margin: 0; padding: 0; border: 0; }
+.bc-member-list { align-items: stretch; justify-content: flex-start; }
+.bc-member-list legend { padding: 0 0 4px; color: var(--text-muted); font-size: 11px; }
+.bc-member-list label { display: flex; min-height: 32px; align-items: center; gap: 9px; padding: 3px 5px; border-radius: 7px; cursor: pointer; }
+.bc-member-list input[type=checkbox] { width: auto; flex: none; margin: 0; }
+.bc-member-list label:hover { background: var(--surface-raised); }
+.bc-pick-face { width: 25px; height: 25px; flex: none; overflow: hidden; border-radius: 50%; }
+.bc-channel .dialog-footer, .bc-create-form .dialog-footer, .bc-settings-form .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 3px; }
+.bots-group-channels > div[role=list] { display: flex; flex-direction: column; gap: 3px; }
+.bots-group-channels .channel-row { display: flex; min-width: 0; align-items: center; justify-content: flex-start; gap: 9px; padding: 6px 8px; border-radius: 9px; color: var(--text); cursor: pointer; }
+.bots-group-channels .channel-row:hover { background: var(--surface-raised); }
+.bots-group-channels .channel-row.selected { background: rgb(var(--accent-rgb) / .22); }
+.bots-group-channels .channel-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bots-group-channels .channel-row .bc-faces .bc-face { width: 21px; height: 21px; }
+.bots-group-channels .channel-row .bc-face-count { width: 21px; height: 21px; font-size: 8px; }
+.bots-group-channels .bots-group-label { margin-top: 13px; }
+.bc-earlier { flex: none; align-self: center; }

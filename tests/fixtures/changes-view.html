@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <title>Changes view harness</title>
+  <style>body { margin: 0; } #host { width: 460px; height: 700px; border-right: 1px solid var(--border); background: var(--panel); }</style>
+</head>
+<body>
+  <div id="host"></div>
+  <script type="module">
+    import '/src/styles.css';
+    import { mountChangesView } from '/src/changes-view.ts';
+    const calls = [];
+    const diffs = {};
+    const pending = new Map();
+    const harness = {
+      calls, diffs, pending,
+      hold: false,
+      mount() {
+        harness.view = mountChangesView(document.getElementById('host'), {
+          loadDiff(path, staged) {
+            calls.push(['loadDiff', path, staged]);
+            const text = diffs[path];
+            if (text instanceof Error) return Promise.reject(text);
+            if (harness.hold) return new Promise(resolve => pending.set(path, () => resolve(text ?? '')));
+            return Promise.resolve(text ?? '');
+          },
+          async stage(paths, staged) { calls.push(['stage', paths, staged]); },
+          async commit(message) { calls.push(['commit', message]); },
+          openFile(path) { calls.push(['openFile', path]); },
+          refresh() { calls.push(['refresh']); },
+          notify(message) { calls.push(['notify', message]); },
+          choose(anchor, title, items, onSelect) {
+            calls.push(['choose', title, items]);
+            harness.lastMenu = { title, items, onSelect };
+          },
+        });
+      },
+    };
+    window.harness = harness;
+    window.harnessReady = true;
+  </script>
+</body>
+</html>

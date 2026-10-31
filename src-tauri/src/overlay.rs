@@ -159,9 +159,13 @@ fn validate_selection(selection: &ModelSelection) -> Result<()> {
         "deepseek",
         "commandcode",
         "cline",
+        "kilo",
         "omp",
         "github-copilot",
         "muse",
+        "devin",
+        "zcode",
+        "hermes",
     ]
     .contains(&selection.provider.as_str())
         || selection.model.trim().is_empty()
@@ -1754,9 +1758,13 @@ mod tests {
             "deepseek",
             "commandcode",
             "cline",
+            "kilo",
             "omp",
             "github-copilot",
             "muse",
+            "devin",
+            "zcode",
+            "hermes",
         ] {
             for mode in [None, Some("ask"), Some("auto"), Some("plan"), Some("full")] {
                 let mut saved = serde_json::json!({"provider":provider,"model":"default"});
@@ -1862,7 +1870,7 @@ mod tests {
             &project.id,
             &LaunchContext {
                 provider: "kimi".into(),
-                reasoning_effort: Some("high".into()),
+                reasoning_effort: Some("high level".into()),
                 ..LaunchContext::default()
             },
             true,
@@ -1903,6 +1911,7 @@ mod tests {
             &state,
             &original.id,
             Some(TeamConfig {
+                catalog: Vec::new(),
                 auto: false,
                 roster_only: false,
                 name: None,

@@ -1,8 +1,10 @@
 import { MAX_FRAME_BYTES, MAX_REF_CHARS } from "./limits.ts";
+import { parseNotifyBody, type NotifyBody } from "./push.ts";
 import { isUuid } from "./validate.ts";
 
 export type ClientFrame =
   | { kind: "host"; enabled: boolean }
+  | { kind: "notify"; body: NotifyBody }
   | { kind: "send"; to: string; body: string; ref?: string }
   | { kind: "invalid"; error: string };
 
@@ -22,6 +24,10 @@ export function parseClientFrame(raw: unknown): ClientFrame {
   const f = v as Record<string, unknown>;
   if (f.kind === "host") {
     return typeof f.enabled === "boolean" ? { kind: "host", enabled: f.enabled } : { kind: "invalid", error: "host.enabled must be a boolean" };
+  }
+  if (f.kind === "notify") {
+    const body = parseNotifyBody(f.body);
+    return typeof body === "string" ? { kind: "invalid", error: body } : { kind: "notify", body };
   }
   if (f.kind !== undefined) return { kind: "invalid", error: "unknown frame kind" };
   if (!isUuid(f.to)) return { kind: "invalid", error: "to must be a device id" };

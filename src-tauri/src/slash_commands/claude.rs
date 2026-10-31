@@ -28,7 +28,7 @@ pub async fn discover_for(provider: &str, cwd: &Path) -> Result<Catalog, String>
 }
 
 fn discovery_command(path: &Path, provider: &str) -> Result<Command, String> {
-    let mut command = crate::providers::command(path)?;
+    let mut command = crate::providers::provider_command(provider, path)?;
     command.env_remove("CLAUDECODE");
     crate::providers::claude_auth::configure(&mut command, provider);
     command.args([

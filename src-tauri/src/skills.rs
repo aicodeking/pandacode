@@ -3,8 +3,10 @@
 //! source, content hash and activations. Activation writes them where each harness reads them
 //! (`skills/adapter.rs`), never over a file PandaCode did not write, and reports drift.
 mod adapter;
+mod catalog;
 mod github;
 mod safety;
+pub(crate) mod scoped;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -168,7 +170,18 @@ fn valid_id(id: &str) -> bool {
 fn frontmatter(text: &str) -> (Option<String>, Option<String>, &str) {
     let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else { return (None, None, text) };
     let Some(end) = rest.find("\n---") else { return (None, None, text) };
-    let field = |key: &str| rest[..end].lines().find_map(|line| line.strip_prefix(key)).map(|v| v.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty());
+    let lines: Vec<&str> = rest[..end].lines().collect();
+    let field = |key: &str| {
+        let at = lines.iter().position(|line| line.starts_with(key))?;
+        let value = lines[at][key.len()..].trim();
+        // A YAML block scalar (`description: >-`) continues on the indented lines below it.
+        let value = if matches!(value, "|" | ">" | "|-" | ">-" | "|+" | ">+") {
+            lines[at + 1..].iter().take_while(|l| l.starts_with([' ', '\t']) || l.trim().is_empty()).map(|l| l.trim()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
+        } else {
+            value.trim_matches(['"', '\'']).to_string()
+        };
+        Some(value).filter(|v| !v.is_empty())
+    };
     let body = rest[end + 4..].trim_start_matches(['\r', '\n']);
     (field("name:"), field("description:"), body)
 }
@@ -282,6 +295,12 @@ impl Library {
     /// Add or update an item. Updating keeps activations; they show as outdated until the
     /// user activates again, so a new version never reaches a harness without them.
     pub fn import(&self, kind: Kind, files: Files, fallback_name: &str, source: Source) -> Result<Item, String> {
+        self.import_as(kind, files, fallback_name, source, false)
+    }
+
+    /// `import`, refusing (under the library lock, so a concurrent import cannot slip in
+    /// between a check and the write) to replace an item that came from another source.
+    pub(crate) fn import_as(&self, kind: Kind, files: Files, fallback_name: &str, source: Source, same_source_only: bool) -> Result<Item, String> {
         let files = normalize(kind, files)?;
         let main = files.iter().find(|(p, _)| p == main_file(kind)).map(|(_, b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
         let (name, description, body) = frontmatter(&main);
@@ -296,6 +315,9 @@ impl Library {
         let previous = self.load(&id).ok();
         if previous.as_ref().is_some_and(|p| p.kind != kind) {
             return Err(format!("A {} named {id} is already in the library.", if kind == Kind::Skill { "rule" } else { "skill" }));
+        }
+        if let Some(taken) = previous.as_ref().filter(|p| same_source_only && !p.source.location.eq_ignore_ascii_case(&source.location)) {
+            return Err(format!("{id} is already in the library from {}.", taken.source.location));
         }
         let folder = self.dir.join(&id);
         let _ = fs::remove_dir_all(&folder);
@@ -504,10 +526,13 @@ fn active_in<'m>(meta: &'m Meta, harness: &str, scope: Scope, project: &Option<S
     meta.activations.iter().find(|a| a.harness == harness && a.scope == scope && a.project == *project)
 }
 
-fn library(app: &AppHandle) -> Result<Library, String> {
+pub(crate) fn library(app: &AppHandle) -> Result<Library, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("skills");
     let home = crate::agent_usage_providers::home().ok_or("Could not find your home folder.")?;
     Ok(Library::new(dir, home))
+}
+fn repo_name(repo: &str) -> String {
+    repo.trim().trim_start_matches("https://github.com/").trim_end_matches('/').trim_end_matches(".git").to_string()
 }
 fn root(state: &AppState, project_id: Option<String>, session_id: Option<String>) -> Result<Option<PathBuf>, String> {
     project_id.map(|id| state.root(&id, session_id.as_deref())).transpose()
@@ -534,7 +559,7 @@ pub async fn skills_import_folder(app: AppHandle, path: String, kind: Kind) -> c
 #[tauri::command]
 pub async fn skills_import_github(app: AppHandle, repo: String, path: String, git_ref: Option<String>, kind: Kind) -> crate::Result<Item> {
     crate::blocking(move || {
-        let repo = repo.trim().trim_start_matches("https://github.com/").trim_end_matches(".git").to_string();
+        let repo = repo_name(&repo);
         let (files, commit) = github::fetch(&repo, &path, git_ref.as_deref())?;
         let path = path.trim_matches('/').to_string();
         let name = path.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or(repo.rsplit('/').next().unwrap_or_default()).to_string();
@@ -568,5 +593,33 @@ pub async fn skills_remove(app: AppHandle, id: String) -> crate::Result<Vec<Item
     crate::blocking(move || library(&app)?.remove(&id)).await
 }
 
+#[tauri::command]
+pub async fn skills_catalogs(app: AppHandle) -> crate::Result<catalog::Catalogs> {
+    crate::blocking(move || library(&app)?.catalogs()).await
+}
+#[tauri::command]
+pub async fn skills_catalog_add(app: AppHandle, repo: String, git_ref: Option<String>) -> crate::Result<catalog::Catalogs> {
+    let git_ref = git_ref.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+    crate::blocking(move || library(&app)?.add_catalog(&github::api, &repo_name(&repo), git_ref)).await
+}
+#[tauri::command]
+pub async fn skills_catalog_refresh(app: AppHandle, repo: String) -> crate::Result<catalog::Catalogs> {
+    crate::blocking(move || library(&app)?.refresh_catalog(&github::api, &repo)).await
+}
+#[tauri::command]
+pub async fn skills_catalog_state(app: AppHandle, repo: String, state: catalog::State) -> crate::Result<catalog::Catalogs> {
+    crate::blocking(move || library(&app)?.set_catalog_state(&repo, state)).await
+}
+#[tauri::command]
+pub async fn skills_catalog_import(app: AppHandle, repo: String, paths: Option<Vec<String>>) -> crate::Result<catalog::Imported> {
+    crate::blocking(move || library(&app)?.import_catalog(&github::api, &repo, paths.as_deref())).await
+}
+#[tauri::command]
+pub async fn skills_discover(app: AppHandle) -> crate::Result<catalog::Catalogs> {
+    crate::blocking(move || library(&app)?.discover(&github::api)).await
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod catalog_tests;

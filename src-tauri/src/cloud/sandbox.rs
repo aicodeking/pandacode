@@ -76,7 +76,7 @@ pub trait Sandbox: Send + Sync {
     }
 }
 
-fn download_command(path: &str, offset: u64, max: usize) -> String {
+pub(super) fn download_command(path: &str, offset: u64, max: usize) -> String {
     format!("[ -f {p} ] && tail -c +{} {p} 2>/dev/null | head -c {max} | base64 2>/dev/null | tr -d '\\n'", offset + 1, p = super::shell_quote(path))
 }
 
@@ -88,8 +88,13 @@ pub fn checked((code, output): (Option<i32>, String)) -> Result<()> {
 }
 
 /// Every provider cloud agents can run on, with its display name.
-pub const AGENT_PROVIDERS: [(&str, &str); 15] = [
+pub const AGENT_PROVIDERS: [(&str, &str); 21] = [
     ("daytona", "Daytona"),
+    ("docker", "Docker"),
+    ("digitalocean", "DigitalOcean"),
+    ("vultr", "Vultr"),
+    ("hetzner", "Hetzner"),
+    ("runpod", "RunPod"),
     ("cloudflare", "Cloudflare"),
     ("aws", "AWS EC2"),
     ("gcloud", "Google Cloud"),
@@ -103,6 +108,7 @@ pub const AGENT_PROVIDERS: [(&str, &str); 15] = [
     ("freestyle", "Freestyle"),
     ("railway", "Railway"),
     ("boat", "boat"),
+    ("instabox", "InstaBox"),
     ("agentcore", "AWS AgentCore"),
 ];
 
@@ -110,6 +116,11 @@ pub const AGENT_PROVIDERS: [(&str, &str); 15] = [
 pub fn connected(provider: &str) -> Result<Box<dyn Sandbox>> {
     Ok(match provider {
         "daytona" => Box::new(Daytona::connected()?),
+        "docker" => super::docker::sandbox()?,
+        "digitalocean" => super::digitalocean::sandbox()?,
+        "vultr" => super::vultr::sandbox()?,
+        "hetzner" => super::hetzner::sandbox()?,
+        "runpod" => super::runpod::sandbox()?,
         "cloudflare" => Box::new(Cloudflare::connected()?),
         "aws" => Box::new(Aws::connected()?),
         "gcloud" => super::gcloud_vm::sandbox()?,
@@ -123,14 +134,19 @@ pub fn connected(provider: &str) -> Result<Box<dyn Sandbox>> {
         "freestyle" => super::freestyle::sandbox()?,
         "railway" => super::railway_sandbox::sandbox()?,
         "boat" => super::boat::sandbox()?,
+        "instabox" => super::instabox::sandbox()?,
         _ => return Err("This provider can't run cloud agents.".into()),
     })
 }
 
 /// Settings → Cloud for the providers added with cloud agents: check, then save. Daytona,
-/// Cloudflare, AWS, Vercel, Railway and Google Cloud keep their own arms in `commands`.
+/// Docker, Cloudflare, AWS, Vercel, Railway and Google Cloud keep their own arms in `commands`.
 pub fn connect(provider: &str, key: &str, options: &Value) -> Result<()> {
     match provider {
+        "digitalocean" => super::digitalocean::connect(key, options),
+        "vultr" => super::vultr::connect(key, options),
+        "hetzner" => super::hetzner::connect(key, options),
+        "runpod" => super::runpod::connect(key, options),
         "e2b" => super::e2b::connect(key, options),
         "modal" => super::modal::connect(key, options),
         "codesandbox" => super::codesandbox::connect(key, options),
@@ -139,11 +155,16 @@ pub fn connect(provider: &str, key: &str, options: &Value) -> Result<()> {
         "tensorlake" => super::tensorlake::connect(key, options),
         "freestyle" => super::freestyle::connect(key, options),
         "boat" => super::boat::connect(key, options),
+        "instabox" => super::instabox::connect(key, options),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
 pub fn disconnect(provider: &str) -> Result<()> {
     match provider {
+        "digitalocean" => super::digitalocean::disconnect(),
+        "vultr" => super::vultr::disconnect(),
+        "hetzner" => super::hetzner::disconnect(),
+        "runpod" => super::runpod::disconnect(),
         "e2b" => super::e2b::disconnect(),
         "modal" => super::modal::disconnect(),
         "codesandbox" => super::codesandbox::disconnect(),
@@ -152,11 +173,12 @@ pub fn disconnect(provider: &str) -> Result<()> {
         "tensorlake" => super::tensorlake::disconnect(),
         "freestyle" => super::freestyle::disconnect(),
         "boat" => super::boat::disconnect(),
+        "instabox" => super::instabox::disconnect(),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
 /// Providers whose connect/disconnect live in this registry.
-pub const KEYED: [&str; 8] = ["e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat"];
+pub const KEYED: [&str; 13] = ["digitalocean", "vultr", "hetzner", "runpod", "e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"];
 
 /// Whether a provider is connected well enough to run cloud agents (no network call).
 pub fn ready(provider: &str) -> bool {

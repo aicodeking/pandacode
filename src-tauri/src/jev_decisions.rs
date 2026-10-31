@@ -1,5 +1,8 @@
 //! Optional, advisory Jev workflows using bounded local evidence.
 mod api;
+pub(crate) mod models;
+pub(crate) use api::Provider;
+pub(crate) use models::DecisionModel;
 
 use crate::{
     architect,
@@ -862,7 +865,7 @@ fn prepare(app: &tauri::AppHandle, sid: &str, request: &Request) -> Result<Prepa
     } else {
         Vec::new()
     };
-    let (enabled, key) = crate::jev::decision_credentials().unwrap_or((false, String::new()));
+    let (enabled, key, _) = crate::jev::decision_credentials().unwrap_or((false, String::new(), api::Provider::TypeSafe));
     let state = app.state::<AppState>();
     let store = state
         .store
@@ -913,12 +916,12 @@ pub async fn run_for_task(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is closing.".into());
     }
-    let (enabled, key) = crate::jev::decision_credentials()?;
+    let (enabled, key, provider) = crate::jev::decision_credentials()?;
     if !enabled {
         return Err("Enable decision assistance in Jev settings first. Normal PandaCode tasks do not need Jev.".into());
     }
     if key.is_empty() {
-        return Err("Add your TypeSafe key in Jev settings to use decision assistance.".into());
+        return Err("Add your decision provider key in Jev settings to use decision assistance.".into());
     }
     let prepared = prepare(&app, sid, &request)?;
     if request
@@ -937,6 +940,7 @@ pub async fn run_for_task(
         &prepared.state,
         prepared.questions.clone(),
         stopped.clone(),
+        &provider,
     )
     .await?;
     if stopped.load(Ordering::Acquire) {
@@ -1145,6 +1149,7 @@ mod tests {
     }
     fn configure_workers(store: &Store, task: &Session) {
         let config = architect::TeamConfig {
+            catalog: Vec::new(),
             auto: false,
             roster_only: false,
             name: None,

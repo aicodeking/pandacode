@@ -28,14 +28,15 @@ export type WorktreeHost = {
   afterCreate(session: Session, live: boolean, current: boolean): Promise<void>;
   /** The checkout moved to another branch; reload its status. */
   branchChanged(): Promise<void>;
-  archive(session: Session): Promise<void>;
+  /** Settle the task (stage completed) without asking about its checkout again. */
+  settle(session: Session): Promise<void>;
   /** Extra menu rows from integrations, with their own handler. */
   extraItems(session: Session): ChoiceItem[];
   /** The computer control (PandaCode Connect) for the context bar; empty when there is none. */
   computer(session: Session, fresh: boolean): string;
   onExtra(id: string, session: Session, anchor: HTMLElement): Promise<void> | void;
 };
-export type CleanupIntent = 'archive' | 'complete' | 'remove';
+export type CleanupIntent = 'complete' | 'remove';
 export type CleanupDecision = { proceed: boolean; remove: boolean };
 
 export function worktreeMissing(session: Session | undefined, gitError: string): boolean {
@@ -90,12 +91,12 @@ export function createWorktrees(host: WorktreeHost) {
     const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, icon: session.worktreePath ? 'worktree' : 'branch', disabled: true }];
     if (missing) {
       items.push({ id: 'worktree-recreate', label: 'Recreate worktree', description: 'Check the branch out again at the same path.', icon: 'refresh' });
-      items.push({ id: 'archive-task', label: 'Archive task', description: 'Keep the history; forget the checkout.', icon: 'archive' });
+      items.push({ id: 'settle-task', label: 'Settle task', description: 'Keep the history; forget the checkout.', icon: 'check' });
     } else if (session.worktreePath) {
       const target = (await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null))?.defaultBranch || 'main';
       items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
       items.push(...host.extraItems(session));
-      items.push({ id: 'worktree-remove', label: 'Remove worktree…', description: 'Archives the task; refuses when work would be lost.', icon: 'close', disabled: host.running() });
+      items.push({ id: 'worktree-remove', label: 'Remove worktree…', description: 'Settles the task; refuses when work would be lost.', icon: 'close', disabled: host.running() });
       items.push({ id: 'copy-path', label: 'Copy worktree path', icon: 'copy' });
     } else {
       // The project's own checkout can move between branches; worktree tasks keep theirs.
@@ -121,7 +122,7 @@ export function createWorktrees(host: WorktreeHost) {
         case 'switch-default': await switchTo(current, ''); break;
         // The picker replaces this menu, so it opens once this one has closed.
         case 'switch-other': window.setTimeout(() => void pickBranch(current, anchor), 0); break;
-        case 'archive-task': await host.archive(current); break;
+        case 'settle-task': await host.settle(current); break;
         case 'copy-path': await navigator.clipboard.writeText(path); host.notify(current.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
         default: await host.onExtra(id, current, anchor);
       }
@@ -205,24 +206,24 @@ export function createWorktrees(host: WorktreeHost) {
     return true;
   }
 
-  /** Ask before archiving or completing a worktree task; nothing is removed here. */
+  /** Ask before settling a worktree task or removing its checkout; nothing is removed here. */
   function cleanupOffer(session: Session, intent: CleanupIntent): Promise<CleanupDecision> {
     if (!session.worktreePath) return Promise.resolve({ proceed: true, remove: false });
     return host.call<WorktreeStatus>('worktree_status', { sessionId: session.id }).catch(() => undefined).then(status => new Promise<CleanupDecision>(resolve => {
       if (!status) { resolve({ proceed: true, remove: false }); return; }
       if (!status.exists && intent !== 'remove') { resolve({ proceed: true, remove: false }); return; }
-      const verb = intent === 'archive' ? 'Archive task' : intent === 'complete' ? 'Mark complete' : 'Remove worktree';
+      const verb = intent === 'complete' ? 'Settle task' : 'Remove worktree';
       const branch = status.branch || session.worktreeBranch || 'its branch';
       const unpublished = !status.merged && (!status.hasUpstream || status.ahead > 0);
       let summary: string, control = '';
-      if (!status.exists) summary = `The worktree folder is already gone. ${verb === 'Remove worktree' ? 'Its registration is pruned and the task is archived.' : ''}`;
+      if (!status.exists) summary = `The worktree folder is already gone. ${verb === 'Remove worktree' ? 'Its registration is pruned and the task is settled.' : ''}`;
       else if (!status.clean) summary = `Its worktree has ${status.changes} uncommitted change${status.changes === 1 ? '' : 's'}, so the checkout stays at <code>${escape(session.worktreePath)}</code>.${intent === 'remove' ? ' Commit or discard them first.' : ''}`;
       else {
         summary = `Its worktree is clean${status.merged ? ' and its branch is merged' : unpublished ? `, but <strong>${escape(branch)}</strong> has commits that are not pushed or merged` : ''}.`;
         control = `<label class="worktree-cleanup-option"><input type="checkbox" name="remove" ${intent === 'remove' || !unpublished ? 'checked' : ''}><span>Remove the worktree folder${status.merged ? ` and delete <code>${escape(branch)}</code>` : `; <code>${escape(branch)}</code> is kept until it is merged`}</span></label>`;
       }
       const canProceed = intent !== 'remove' || (status.exists ? status.clean : true);
-      const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and archive' : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
+      const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${canProceed ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and settle' : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
       cleanup?.resolve({ proceed: false, remove: false });
       cleanup = { resolve, dialog };
       dialog.addEventListener('close', () => { if (cleanup?.dialog === dialog) { cleanup = undefined; resolve({ proceed: false, remove: false }); } }, { once: true });
@@ -239,7 +240,7 @@ export function createWorktrees(host: WorktreeHost) {
     const decision = await cleanupOffer(session, 'remove');
     if (!decision.proceed) return;
     if (decision.remove || !(await host.call<WorktreeStatus>('worktree_status', { sessionId: session.id })).exists) await remove(session);
-    await host.archive(session);
+    await host.settle(session);
   }
 
   /** Merge the worktree's committed branch into main locally, then offer to clean it up. */

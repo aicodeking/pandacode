@@ -383,11 +383,16 @@ pub(super) async fn fork_session_at_message(
     state: State<'_, AppState>,
     session_id: String,
     message_id: i64,
+    exclusive: Option<bool>,
 ) -> Result<Session> {
     let store = state.store.clone();
     let task = blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        crate::conversation_fork::at_message(&store, &session_id, message_id)
+        if exclusive == Some(true) {
+            crate::conversation_fork::before_message(&store, &session_id, message_id)
+        } else {
+            crate::conversation_fork::at_message(&store, &session_id, message_id)
+        }
     })
     .await?;
     let _ = app.emit("sessions-changed", ());

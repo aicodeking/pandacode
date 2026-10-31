@@ -60,14 +60,14 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = acp_catalog::refresh_lock("deepseek", path).await;
     if let Some(models) = acp_catalog::get("deepseek", path) { return Ok(models); }
     let discovery = acp_catalog::begin("deepseek", path);
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("deepseek", path)?;
     command.args(acp::DEEPSEEK_ARGS);
     let key = configure(&mut command)?;
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false)
         .await
         .map_err(|error| key.as_ref().map_or(error.clone(), |key| error.replace(key, "[redacted]")))?;
     acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    Ok(acp::parse_models_for("deepseek", &metadata))
 }
 
 #[cfg(test)]
@@ -93,11 +93,13 @@ mod tests {
                 {"value":"[\"deepseek-official\",\"deepseek-v4-pro\"]","name":"DeepSeek-V4-Pro"}]}]},
             {"id":"reasoning_effort","name":"Reasoning effort","category":"thought_level","type":"select","currentValue":"high","options":[
                 {"value":"off","name":"Off"},{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]});
-        let models = acp::parse_models(&metadata);
+        let models = acp::parse_models_for("deepseek", &metadata);
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "[\"deepseek-official\",\"deepseek-v4-flash\"]", "[\"deepseek-official\",\"deepseek-v4-pro\"]"]);
         assert_eq!(models[1].name, "DeepSeek-V4-Flash");
-        assert_eq!(models[1].reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["off", "low", "high", "max"]);
-        assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("high"));
+        for model in models.iter().skip(1) {
+            assert_eq!(model.reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["off", "low", "high", "max"]);
+            assert_eq!(model.default_reasoning_effort.as_deref(), Some("high"));
+        }
         for effort in ["off", "low", "high", "max"] {
             assert!(validate_reasoning_effort("deepseek", Some(effort)).is_ok());
         }
@@ -110,27 +112,30 @@ mod tests {
         cfg.reasoning_effort = effort.map(str::to_owned);
         let mut p = Protocol::new(cfg);
         let mut writes = Vec::new();
-        // Recorded `initialize` and `session/new` results from dsh 0.1.5-rc.1.
+        // dsh initialization and session options, including an Account model.
         writes.extend(p.receive(json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentInfo":{"name":"deepseek-harness-acp","version":"0.0.1"},"agentCapabilities":{"mcpCapabilities":{"http":true},"promptCapabilities":{"image":false,"audio":false,"embeddedContext":false},"sessionCapabilities":{"close":{},"list":{},"resume":{}}},"authMethods":[]}})).unwrap().write);
         assert_eq!(writes[0]["method"], "session/new");
         writes.extend(p.receive(json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"ds-1","configOptions":[
-            {"id":"model","category":"model","type":"select","currentValue":"[\"deepseek-official\",\"deepseek-v4-flash\"]","options":[{"group":"deepseek-official","name":"DeepSeek","options":[{"value":"[\"deepseek-official\",\"deepseek-v4-flash\"]","name":"DeepSeek-V4-Flash"},{"value":"[\"deepseek-official\",\"deepseek-v4-pro\"]","name":"DeepSeek-V4-Pro"}]}]},
+            {"id":"model","category":"model","type":"select","currentValue":"[\"deepseek-official\",\"deepseek-v4-flash\"]","options":[{"group":"deepseek-official","name":"DeepSeek","options":[{"value":"[\"deepseek-official\",\"deepseek-v4-flash\"]","name":"DeepSeek-V4-Flash"},{"value":"[\"deepseek-official\",\"deepseek-v4-pro\"]","name":"DeepSeek-V4-Pro"}]},{"group":"deepseek-account","options":[{"value":"[\"deepseek-account\",\"DeepSeek-V4.1-Flash\"]","name":"DeepSeek-V4.1-Flash"}]}]},
             {"id":"reasoning_effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"off"},{"value":"low"},{"value":"high"},{"value":"max"}]}]}})).unwrap().write);
         (p, writes)
     }
 
     #[test]
     fn sets_model_and_effort_options_then_prompts_with_plan_prefix() {
-        let pro = "[\"deepseek-official\",\"deepseek-v4-pro\"]";
-        let (mut p, writes) = ready("plan", pro, Some("max"));
-        let set = &writes[1];
-        assert_eq!((set["id"].clone(), set["method"].clone()), (json!(5), json!("session/set_config_option")));
-        assert_eq!((set["params"]["configId"].clone(), set["params"]["value"].clone()), (json!("model"), json!(pro)));
-        let set = p.receive(json!({"jsonrpc":"2.0","id":5,"result":{}})).unwrap().write.remove(0);
-        assert_eq!((set["params"]["configId"].clone(), set["params"]["value"].clone()), (json!("reasoning_effort"), json!("max")));
-        let prompt = p.receive(json!({"jsonrpc":"2.0","id":6,"result":{}})).unwrap().write.remove(0);
-        assert_eq!(prompt["method"], "session/prompt");
-        assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().starts_with("Plan mode is on"));
+        for pro in ["[\"deepseek-official\",\"deepseek-v4-pro\"]", "[\"deepseek-account\",\"DeepSeek-V4.1-Flash\"]"] {
+            let (mut p, writes) = ready("plan", pro, Some("max"));
+            let set = &writes[1];
+            assert_eq!((set["id"].clone(), set["method"].clone()), (json!(5), json!("session/set_config_option")));
+            assert_eq!((set["params"]["configId"].clone(), set["params"]["value"].clone()), (json!("model"), json!(pro)));
+            let set = p.receive(json!({"jsonrpc":"2.0","id":5,"result":{"configOptions":[
+                {"id":"reasoning_effort","category":"thought_level","type":"select","currentValue":"high","options":[
+                    {"value":"off"},{"value":"low"},{"value":"high"},{"value":"max"}]}]}})).unwrap().write.remove(0);
+            assert_eq!((set["params"]["configId"].clone(), set["params"]["value"].clone()), (json!("reasoning_effort"), json!("max")));
+            let prompt = p.receive(json!({"jsonrpc":"2.0","id":6,"result":{}})).unwrap().write.remove(0);
+            assert_eq!(prompt["method"], "session/prompt");
+            assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().starts_with("Plan mode is on"));
+        }
     }
 
     fn permission(p: &mut Protocol, tool: &str) -> Step {

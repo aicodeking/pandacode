@@ -33,8 +33,25 @@ pub(crate) fn configure(command: &mut Command, provider: &str) {
     apply_mode(command, provider, crate::provider_settings::claude_connection_mode());
 }
 
+/// The variables the key-based relays (GLM Coding Plan, MiMo Token Plan) scrub from
+/// their Claude process, shared by the harness console and cloud inheritance so a
+/// saved variable cannot change the relay's routing remotely.
+pub(crate) const RELAY_SCRUB: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ZAI_API_KEY",
+    "MIMO_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
 pub(crate) fn removed_environment(provider: &str) -> &'static [&'static str] {
-    if provider == "claude" && crate::provider_settings::claude_connection_mode() == Mode::Subscription { OVERRIDES } else { &[] }
+    match provider {
+        "claude" if crate::provider_settings::claude_connection_mode() == Mode::Subscription => OVERRIDES,
+        "glm" | "mimo" => RELAY_SCRUB,
+        _ => &[],
+    }
 }
 
 fn apply_mode(command: &mut Command, provider: &str, mode: Mode) {
@@ -95,7 +112,7 @@ fn saved_login(value: &Value) -> &'static str {
 
 fn inspect_saved_login() -> &'static str {
     let Some(path) = super::executable("claude") else { return "unknown"; };
-    let Ok(command) = super::command(&path) else { return "unknown"; };
+    let Ok(command) = super::provider_command("claude", &path) else { return "unknown"; };
     inspect_saved_login_command(command)
 }
 
@@ -115,7 +132,14 @@ fn inspect_saved_login_command(mut command: Command) -> &'static str {
 
 #[tauri::command]
 pub async fn provider_claude_status() -> crate::Result<Status> {
-    crate::blocking(|| Ok(describe(crate::provider_settings::claude_connection_mode(), |name| std::env::var(name).ok(), inspect_saved_login()))).await
+    crate::blocking(|| {
+        // Launches overlay the saved provider environment (Settings → Providers),
+        // so the status reports what tasks will actually see, not just this process.
+        let saved = crate::provider_settings::environment("claude");
+        Ok(describe(crate::provider_settings::claude_connection_mode(), |name| {
+            std::env::var(name).ok().or_else(|| saved.iter().find(|(key, _)| key == name).map(|(_, value)| value.clone()))
+        }, inspect_saved_login()))
+    }).await
 }
 
 #[cfg(test)]

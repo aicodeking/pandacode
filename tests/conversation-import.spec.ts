@@ -36,8 +36,8 @@ test('imports selected Claude Code conversations into their projects and marks t
   expect(request.provider).toBe('claude');
   expect(request.ids).toHaveLength(2);
   // Each lands in the project for its folder; a new folder becomes a project.
-  await expect(page.getByRole('region', { name: 'orbit tasks', exact: true })).toContainText('Fix login redirect loop');
-  await expect(page.getByRole('region', { name: 'marketing-site tasks', exact: true })).toContainText('Draft the pricing page copy');
+  await expect(page.locator('#navigation .task-item', { hasText: 'Fix login redirect loop' })).toHaveAttribute('title', /\norbit(\n|$)/);
+  await expect(page.locator('#navigation .task-item', { hasText: 'Draft the pricing page copy' })).toHaveAttribute('title', /\nmarketing-site(\n|$)/);
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Fix login redirect loop');
   await expect(page.locator('#transcript')).toContainText('This conversation was imported into PandaCode.');
 
@@ -62,7 +62,7 @@ test('searches, switches to Codex, and selects all importable conversations', as
   await dialog(page).locator('.import-commit').click();
   await expect(dialog(page)).toBeHidden();
   expect((await calls(page, 'import_conversations')).at(-1).args).toMatchObject({ provider: 'codex', ids: ['4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f'] });
-  await expect(page.getByRole('region', { name: 'pandacode tasks', exact: true })).toContainText('Speed up the search index');
+  await expect(page.locator('#navigation .task-item', { hasText: 'Speed up the search index' })).toHaveAttribute('title', /\npandacode(\n|$)/);
 });
 
 test('is reachable from Go to anything', async ({ page }) => {

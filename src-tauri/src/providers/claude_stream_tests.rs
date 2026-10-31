@@ -185,3 +185,17 @@ fn steer_written_as_the_turn_ends_runs_as_a_second_turn_of_the_same_run() {
     assert_eq!(done, [false, false, false, false, false, false, true], "only the steered turn's result ends the run");
     assert_eq!(delivered, 1);
 }
+
+#[test]
+fn thinking_deltas_surface_as_thinking_events() {
+    let events = events(&[
+        json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"main"}}}),
+        json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}),
+        json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the "}}}),
+        json!({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"tests."}}}),
+        json!({"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done"}}}),
+    ]);
+    let thinking: String = events.iter().filter(|e| e.kind == "thinking").map(|e| e.text.as_str()).collect();
+    assert_eq!(thinking, "Check the tests.");
+    assert_eq!(text(&events), "Done");
+}

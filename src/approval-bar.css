@@ -1,30 +1,33 @@
 /* The approval bar: one slim line per request, directly above the prompt, in its width. */
-.approval-bar{min-width:0;max-width:100%;overflow:hidden;margin:0 0 6px;padding:3px 4px 3px 10px;border-radius:6px;background:var(--panel);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .28),0 6px 18px -10px rgb(0 0 0 / .35);color:var(--text);font-size:.82rem}
+.approval-bar{min-width:0;max-width:100%;overflow:hidden;margin:0 0 6px;padding:3px 4px 3px 10px;border-radius:var(--radius-md);background:var(--panel);box-shadow:0 6px 18px -10px rgb(0 0 0 / .35);color:var(--text);font-size:var(--text-sm)}
 /* Tracks may not grow to a long command's width: the summary truncates, the buttons stay. */
 .approval-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr);gap:1px}
 .approval-row{min-width:0}
 .approval-row .approval-summary{display:block}
-.approval-bar.is-group .approval-list{margin-top:2px;padding-top:3px;border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent)}
+.approval-bar.is-group .approval-list{margin-top:2px;padding-top:3px}
 .approval-line{display:flex;align-items:center;gap:9px;min-width:0;min-height:34px}
 .approval-mark{width:14px;height:14px;flex:none;color:var(--accent-ink)}
 html[data-theme="dark"] .approval-mark{color:var(--accent)}
-.approval-summary{flex:1;min-width:0;display:flex;align-items:baseline;justify-content:flex-start;gap:8px;overflow:hidden;padding:0;text-align:left;color:var(--text);font-family:var(--mono);font-size:.78rem;white-space:nowrap;text-overflow:ellipsis;background:none}
+.approval-summary{flex:1;min-width:0;display:flex;align-items:baseline;justify-content:flex-start;gap:8px;overflow:hidden;padding:0;text-align:left;color:var(--text);font-family:var(--mono);font-size:var(--text-xs);white-space:nowrap;text-overflow:ellipsis;background:none}
 span.approval-summary{display:block}
 button.approval-summary{cursor:pointer}
 button.approval-summary:hover{color:var(--text)}
-.approval-group .approval-summary{font-family:inherit;font-size:.82rem}
+.approval-group .approval-summary{font-family:inherit;font-size:var(--text-sm)}
 .approval-group .approval-summary strong{flex:none;font-weight:600}
-.approval-group .approval-summary span{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-family:var(--mono);font-size:.76rem}
+.approval-group .approval-summary span{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-family:var(--mono);font-size:var(--text-xs)}
 .approval-chevron{width:12px;height:12px;flex:none;align-self:center;color:var(--muted);transition:transform 160ms ease-out}
 .approval-bar.is-expanded .approval-chevron{transform:rotate(90deg)}
 .approval-row .approval-line{min-height:32px}
 .approval-bar.is-group .approval-row{padding-left:2px}
 .approval-actions{display:flex;flex:none;align-items:center;gap:4px}
-.approval-actions button{height:24px;padding:0 10px;border-radius:4px;font-size:.76rem;font-weight:550;--press:1}
+.approval-actions button{height:24px;padding:0 10px;border-radius:var(--radius-sm);font-size:var(--text-xs);font-weight:550;--press:1}
 .approval-deny{color:var(--muted)}
 .approval-deny:hover:not(:disabled){color:var(--text);background:var(--raised)}
 .approval-allow{background:var(--accent);color:var(--on-accent)}
 .approval-allow:hover:not(:disabled){background:var(--accent-hover,var(--accent))}
 .approval-actions button:disabled{opacity:.5;cursor:default}
-.approval-full{margin:0 0 6px 23px;padding:6px 8px;max-height:160px;overflow:auto;border-radius:4px;background:var(--raised);font-family:var(--mono);font-size:.74rem;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
+.approval-full{margin:0 0 6px 23px;padding:6px 8px;max-height:160px;overflow:auto;border-radius:var(--radius-sm);background:var(--raised);font-family:var(--mono);font-size:var(--text-xs);line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
 @media (prefers-contrast:more){.approval-bar{box-shadow:inset 0 0 0 1px var(--text)}}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.approval-summary,.approval-deny,.approval-allow{transition:background-color 130ms ease-out,color 130ms ease-out}.approval-full{animation:ab-fade 160ms ease-out}@keyframes ab-fade{from{opacity:0}}}

@@ -35,7 +35,7 @@ async function timeTo(page: Page, time: string): Promise<void> {
 
 async function scrimAlphas(page: Page): Promise<number[]> {
   return page.locator('.workspace-wallpaper').evaluate(node => {
-    const background = getComputedStyle(node, '::after').backgroundImage;
+    const background = getComputedStyle(node, '::after').backgroundColor;
     return [...background.matchAll(/rgba?\(([^)]+)\)/g)].map(match => {
       const parts = match[1].match(/[\d.]+/g) ?? [];
       return parts.length === 4 ? Number(parts[3]) : 1;

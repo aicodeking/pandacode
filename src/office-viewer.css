@@ -1,0 +1,23 @@
+.office-viewer{display:flex;flex-direction:column;min-height:100%}
+.office-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px 16px;font-size:.75rem;color:var(--muted);position:sticky;top:0;z-index:2;background:var(--bg)}
+.pdf-pages{display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px;background:color-mix(in srgb,var(--text) 6%,var(--bg))}
+.pdf-page{width:min(100%,1100px);background:#fff;box-shadow:0 1px 4px rgb(0 0 0 / .35)}
+.pdf-page>canvas{display:block;width:100%;height:100%}
+.pdf-page.failed{background:var(--raised)}
+.docx-host{background:color-mix(in srgb,var(--text) 6%,var(--bg))}
+.sheet-tabs button{padding:3px 10px;border-radius:3px;font-size:.75rem;color:var(--muted);--press:1}
+.sheet-tabs button[aria-pressed="true"]{background:color-mix(in srgb,var(--text) 9%,transparent);color:var(--text)}
+.sheet-tabs span{margin-left:auto}
+.sheet-scroll{overflow:auto;flex:1}
+.sheet-grid{border-collapse:collapse;font-size:.78rem;font-variant-numeric:tabular-nums}
+.sheet-grid th,.sheet-grid td{padding:3px 8px;white-space:nowrap;max-width:360px;overflow:hidden;text-overflow:ellipsis;text-align:left}
+.sheet-grid thead th{position:sticky;top:0;z-index:1;background:var(--raised);color:var(--muted);font-weight:500;text-align:center}
+.sheet-grid tbody th{position:sticky;left:0;background:var(--raised);color:var(--muted);font-weight:500;text-align:right}
+.sheet-grid td{color:var(--text)}
+.office-viewer[data-kind="sheet"]{height:100%;min-height:0}
+.office-viewer[data-kind="sheet"] .sheet-scroll{min-height:0}
+.image-stage{display:flex;align-items:center;justify-content:center;flex:1;padding:20px;background:var(--surface-sunken)}
+.image-stage>img{max-width:100%;max-height:calc(100vh - 160px);object-fit:contain;cursor:zoom-in}
+.office-viewer[data-actual] .image-stage{display:block;overflow:auto}
+.office-viewer[data-actual] .image-stage>img{max-width:none;max-height:none;cursor:zoom-out}
+.sheet-grid tbody tr:nth-child(even) td{background:var(--fill-hover)}

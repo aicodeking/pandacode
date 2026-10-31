@@ -11,10 +11,12 @@ const MAX_TEXT: usize = 4000;
 const MAX_DESCRIPTION: usize = 500;
 const MAX_FILE: u64 = 64 * 1024;
 const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
-/// Harnesses whose running turn accepts a message (mirrors `canSteer` in `message-queue.ts`).
-const STEERING: [&str; 6] = ["claude", "glm", "mimo", "codex", "pi", "muse"];
-const HARNESSES: [&str; 14] = [
-    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "omp", "muse",
+/// Harnesses whose running turn takes a message. Claude-family harnesses steer on
+/// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
+/// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
+const STEERING: [&str; 9] = ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode", "devin"];
+const HARNESSES: [&str; 19] = [
+    "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
 ];
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -371,5 +373,27 @@ mod tests {
         assert_eq!(out[1], "/review");
         assert!(out[2].ends_with("npm test") && out[2].contains("report"));
         assert!(out[3].contains("confirm") && out[3].ends_with("Merge?"));
+    }
+
+    #[test]
+    fn every_harness_the_app_supports_can_run_a_recipe() {
+        let r = recipe(vec![step("prompt", Some("hi"), None, &[])]);
+        for (provider, _) in crate::providers::PROVIDERS {
+            assert!(HARNESSES.contains(&provider), "{provider} is missing from the recipe harnesses");
+            assert!(dry_run(&r, provider, &[]).is_ok(), "{provider} cannot run a recipe");
+        }
+    }
+
+    #[test]
+    fn a_steer_step_is_supported_only_where_the_turn_takes_a_message() {
+        let r = recipe(vec![step("check", Some("npm test"), None, &["steer"])]);
+        for provider in ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode", "devin"] {
+            let reports = dry_run(&r, provider, &[]).unwrap();
+            assert_eq!(reports[0].status, "supported", "{provider} takes a message mid-turn");
+        }
+        for provider in ["kimi", "grok", "deepseek", "commandcode", "cline", "antigravity", "github-copilot", "hermes"] {
+            let reports = dry_run(&r, provider, &[]).unwrap();
+            assert_eq!(reports[0].status, "fallback", "{provider} holds the message until the run ends");
+        }
     }
 }

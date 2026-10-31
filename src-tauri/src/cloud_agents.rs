@@ -41,7 +41,7 @@ pub(crate) struct State {
 
 impl State {
     pub(crate) fn native(&self) -> Option<&str> {
-        self.machine.as_deref().and_then(|id| id.split_once(':')).map(|(_, native)| native)
+        self.machine.as_deref().and_then(crate::cloud::split).map(|(_, native)| native)
     }
     /// A run that was started and has not been finalized: its output may still need saving
     /// or its changes pulling (whatever the stage, e.g. `syncing` when PandaCode quit).
@@ -133,7 +133,7 @@ mod tests {
             store.db.execute_batch("ALTER TABLE sessions DROP COLUMN cloud; PRAGMA user_version=26;").unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (27, 27));
+        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (crate::storage::SCHEMA_VERSION, crate::storage::SCHEMA_VERSION));
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         assert_eq!(task.cloud, None);

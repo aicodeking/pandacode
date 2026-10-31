@@ -1,4 +1,6 @@
 .diff-viewer {
+  /* Row height; also sizes the placeholders of hunk groups that have not mounted yet. */
+  --diff-line-height: 1.45rem;
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -8,7 +10,7 @@
   overflow: hidden;
   color: var(--text);
   background: color-mix(in srgb, var(--panel) 82%, transparent);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .diff-viewer-toolbar {
   display: flex;
@@ -26,7 +28,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: .82rem;
+  font-size: var(--text-xs);
   color: var(--muted);
 }
 .diff-viewer-controls { display: flex; align-items: center; gap: 8px; }
@@ -35,18 +37,18 @@
   display: flex;
   align-items: center;
   padding: 3px;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--bg) 68%, transparent);
 }
 .diff-viewer-button {
   min-height: 30px;
   padding: 5px 9px;
   border: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: .8rem;
+  font-size: var(--text-xs);
   line-height: 1.2;
   cursor: pointer;
   touch-action: manipulation;
@@ -56,7 +58,6 @@
 .diff-viewer-button[aria-pressed="true"] {
   background: var(--raised);
   color: var(--text);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
 }
 .diff-viewer-wrap[aria-pressed="true"] { color: var(--accent); background: var(--accent-dim); }
 :root[data-theme="light"] .diff-viewer-wrap[aria-pressed="true"] { color: var(--accent-ink); }
@@ -70,7 +71,7 @@
   margin: 0;
   padding: 13px 16px;
   color: var(--muted);
-  font-size: .86rem;
+  font-size: var(--text-sm);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -86,20 +87,35 @@
 }
 .diff-viewer-file { min-width: 0; }
 .diff-viewer-file + .diff-viewer-file { margin-top: 16px; }
+/* A long file is mounted in hunk groups; its continuations sit flush. */
+.diff-viewer-file + .diff-viewer-continued { margin-top: 0; }
 .diff-viewer-file diffs-container {
   display: block;
   --diffs-font-family: var(--mono);
-  --diffs-font-size: .86rem;
-  --diffs-line-height: 1.45rem;
+  --diffs-font-size: var(--mono-size);
+  --diffs-line-height: var(--diff-line-height);
 }
 .diff-viewer-raw {
   padding: 12px 16px;
   margin: 0;
-  font: .86rem/1.6 var(--mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  font: var(--mono-size)/var(--leading-code) var(--mono);
+  white-space: pre;
+  overflow-x: auto;
   tab-size: 2;
 }
 @media (prefers-reduced-motion: reduce) {
   .diff-viewer-button { transition: none; }
 }
+
+/* Add/delete rows use the shared 12% tones, not the library's saturated defaults. */
+diffs-container {
+  --diffs-bg-addition-override: var(--diff-add-bg);
+  --diffs-bg-addition-number-override: var(--diff-add-bg);
+  --diffs-bg-deletion-override: var(--diff-del-bg);
+  --diffs-bg-deletion-number-override: var(--diff-del-bg);
+  --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--success) 24%, transparent);
+  --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--danger) 24%, transparent);
+}
+
+/* Micro-interactions: only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){.diff-viewer-button[aria-pressed]{transition:background-color 130ms ease-out,color 130ms ease-out}}

@@ -1,11 +1,12 @@
 .overlay-settings{margin-top:1rem}
-.overlay-shortcut-form{padding:.7rem 1rem .85rem;border-top:1px solid var(--border)}
+.overlay-shortcut-form{padding:.7rem 1rem .85rem;}
 .overlay-shortcut-heading{display:flex;align-items:center;gap:6px;margin-bottom:.45rem}
-.overlay-shortcut-heading>label{font-size:.8rem;font-weight:500}
+.overlay-shortcut-heading>label{font-size:var(--text-sm);font-weight:var(--weight-medium)}
 .overlay-shortcut-heading>.info-mark{margin-left:0}
 .overlay-shortcut-controls{display:flex;gap:.5rem;align-items:center}
-.overlay-shortcut-controls>input{min-width:0;flex:1;font-family:var(--mono);font-size:.74rem;min-height:2.35rem;padding:.5rem .65rem;background:var(--bg);border:1px solid var(--border);border-radius:.2rem;color:var(--text)}
-.overlay-shortcut-form>small{display:block;margin-top:.6rem;font-size:.71rem;color:var(--muted);line-height:1.5}
-.overlay-settings-status{font-size:.75rem;color:var(--muted);margin:.6rem 0 0;overflow-wrap:anywhere}
+.overlay-shortcut-controls>input{min-width:0;flex:1;font-family:var(--mono);font-size:var(--text-xs);min-height:2.35rem;padding:.5rem .65rem;background:var(--bg);border-radius:var(--radius-sm);color:var(--text)}
+.overlay-shortcut-form>small{display:block;margin-top:.6rem;font-size:var(--text-xs);color:var(--muted);line-height:1.5}
+.overlay-settings-status{font-size:var(--text-xs);color:var(--muted);margin:.6rem 0 0;overflow-wrap:anywhere}
 .overlay-settings-status.error{color:var(--danger,#e98c82)}
 @media(max-width:500px){.overlay-shortcut-controls{flex-wrap:wrap}.overlay-shortcut-controls>input{flex-basis:100%}}
+.overlay-shortcut-controls>input{background:color-mix(in srgb,var(--text) 6%,transparent)}

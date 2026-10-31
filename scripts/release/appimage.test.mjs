@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { mksquashfsArguments, parseSquashfsHeader, repackAppImage, waylandLibraries } from './appimage.mjs';
+import { GTK_HOOK, mksquashfsArguments, parseSquashfsHeader, repackAppImage, respectGdkBackend, waylandLibraries } from './appimage.mjs';
 
 const OFFSET = 100;
+// Lines from linuxdeploy-plugin-gtk's generated hook.
+const HOOK = '#! /usr/bin/env bash\n\nexport APPDIR="${APPDIR:-"$(dirname "$(realpath "$0")")"}"\nexport GTK_DATA_PREFIX="$APPDIR"\nexport GDK_BACKEND=x11 # Crash with Wayland backend on Wayland\n';
 
 function header({ blockSize = 131072, compression = 6, magic = 0x73717368 } = {}) {
   const buffer = Buffer.alloc(96);
@@ -15,7 +17,7 @@ function header({ blockSize = 131072, compression = 6, magic = 0x73717368 } = {}
   return buffer;
 }
 
-async function fakeAppImage(directory, { wayland = true } = {}) {
+async function fakeAppImage(directory, { wayland = true, hook = '#!/bin/bash\nexport GDK_BACKEND=x11\n' } = {}) {
   const path = join(directory, 'PandaCode_1.2.3_amd64.AppImage');
   const bytes = Buffer.alloc(200, 1);
   header().copy(bytes, OFFSET);
@@ -28,6 +30,10 @@ async function fakeAppImage(directory, { wayland = true } = {}) {
       const lib = join(options.cwd, 'squashfs-root/usr/lib');
       await mkdir(lib, { recursive: true });
       await writeFile(join(lib, 'libgtk-3.so.0'), 'gtk');
+      if (hook !== null) {
+        await mkdir(join(options.cwd, 'squashfs-root/apprun-hooks'), { recursive: true });
+        await writeFile(join(options.cwd, 'squashfs-root', GTK_HOOK), hook);
+      }
       if (wayland) for (const name of ['libwayland-client.so.0', 'libwayland-server.so.0']) await writeFile(join(lib, name), 'wayland');
       return { stdout: '', stderr: '' };
     }
@@ -81,10 +87,46 @@ test('rebuilds the AppImage with the same runtime and without Wayland libraries'
   }
 });
 
-test('leaves an AppImage alone when it has no bundled Wayland libraries', async () => {
+test('the GTK hook keeps a GDK_BACKEND the user set, defaulting to x11', () => {
+  const rewritten = respectGdkBackend('#!/bin/bash\nexport GTK_DATA_PREFIX="$APPDIR"\n  export GDK_BACKEND=x11\nexport GTK_THEME=Adwaita\n');
+  assert.equal(rewritten, '#!/bin/bash\nexport GTK_DATA_PREFIX="$APPDIR"\n  export GDK_BACKEND="${GDK_BACKEND:-x11}"\nexport GTK_THEME=Adwaita\n');
+  assert.equal(respectGdkBackend(rewritten), rewritten, 'running twice changes nothing');
+  assert.throws(() => respectGdkBackend('#!/bin/bash\nexport GTK_THEME=Adwaita\n'), /no longer contains/);
+  assert.match(respectGdkBackend(HOOK), /^export GDK_BACKEND="\$\{GDK_BACKEND:-x11\}" # Crash with Wayland backend on Wayland$/m, 'keeps the plugin comment');
+  assert.throws(() => respectGdkBackend('export GDK_BACKEND=x11wayland\n'), /no longer contains/);
+});
+
+test('rewrites the GTK hook even when there are no Wayland libraries to remove', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pandacode-appimage-test-'));
   try {
     const { path, calls, command } = await fakeAppImage(directory, { wayland: false });
+    let hook;
+    const capture = async (executable, args, options) => {
+      if (executable === 'mksquashfs') hook = await readFile(join(args[0], GTK_HOOK), 'utf8');
+      return command(executable, args, options);
+    };
+    assert.equal(await repackAppImage(path, { command: capture }), true);
+    assert.equal(hook, '#!/bin/bash\nexport GDK_BACKEND="${GDK_BACKEND:-x11}"\n');
+    assert.ok(calls.some(call => call.executable === 'mksquashfs'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('fails loudly when the AppImage has no GTK hook', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pandacode-appimage-test-'));
+  try {
+    const { path, command } = await fakeAppImage(directory, { hook: null });
+    await assert.rejects(() => repackAppImage(path, { command }), /has no apprun-hooks\/linuxdeploy-plugin-gtk\.sh/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('leaves an AppImage alone when there is nothing to change', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pandacode-appimage-test-'));
+  try {
+    const { path, calls, command } = await fakeAppImage(directory, { wayland: false, hook: 'export GDK_BACKEND="${GDK_BACKEND:-x11}"\n' });
     const before = await readFile(path);
     assert.equal(await repackAppImage(path, { command }), false);
     assert.equal(calls.some(call => call.executable === 'mksquashfs'), false);

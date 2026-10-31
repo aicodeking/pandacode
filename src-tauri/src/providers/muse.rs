@@ -120,7 +120,7 @@ fn initialize() -> Value {
 
 /// Reads the model catalog from a memory-only host. No session and no prompt.
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("muse", path)?;
     command.args(["serve", "--no-session-log"]).args(super::privacy::muse_arguments()).env("MUSE_LOGIN", "0");
     command
         .current_dir(std::env::temp_dir())
@@ -469,6 +469,7 @@ impl Protocol {
                 }
             }
             "reasoning" if !completed => step.events.push(self.event("status", "Reasoning", None)),
+            "reasoning" => self.thinking(field(item, "text"), step),
             "userMessage" if item["steered"] == true || item.get("commandId").is_some() => {
                 // A steer taken into the running turn.
                 if !self.muse_steer_seen(field(item, "commandId"), step) && item["steered"] == true && item.get("commandId").is_none() {
@@ -795,6 +796,13 @@ mod tests {
     }
 
     #[test]
+    fn completed_reasoning_items_surface_as_thinking_events() {
+        let (mut p, _) = started("ask", "default", false);
+        let step = p.receive(frame("item/completed", json!({"item":{"itemId":"r","kind":"reasoning","turnId":TURN_ID,"status":"completed","text":"Weighing options"}}))).unwrap();
+        assert!(step.events.iter().any(|e| e.kind == "thinking" && e.text == "Weighing options"));
+    }
+
+    #[test]
     fn modes_map_to_wire_approval_modes_and_process_sandbox_flags() {
         assert_eq!(approval_mode("ask"), "promptUnmatched");
         assert_eq!(approval_mode("auto"), "onRequest");
@@ -871,7 +879,7 @@ mod tests {
         assert_eq!(writes[3]["params"]["mode"], "denyUnmatched");
         assert_eq!(writes[4]["params"]["model"]["modelId"], "muse-wonder-1.0");
         // Plan mode also tells the model to stay read-only.
-        assert!(writes[5]["params"]["input"][0]["text"].as_str().unwrap().starts_with(acp::GROK_PLAN_PREFIX));
+        assert!(writes[5]["params"]["input"][0]["text"].as_str().unwrap().starts_with(acp::READ_ONLY_PLAN_PREFIX));
     }
 
     #[test]

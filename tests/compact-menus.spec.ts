@@ -14,7 +14,7 @@ test('menu rows keep label and detail on one line and never wrap', async ({ page
   await open(page);
   await page.getByRole('button', { name: 'Attach files for context' }).click();
   const rows = page.getByRole('dialog', { name: 'Attach', exact: true }).getByRole('menuitem');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(6);
   const heights = await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   for (const height of heights) expect(height).toBeLessThanOrEqual(36);
   const first = rows.first();
@@ -110,12 +110,14 @@ test('setting rows on the Settings page stay one line tall with notes and live s
   await expect(github.locator('.info-mark')).toHaveCount(0);
 });
 
-test('the project menu is solid and borderless, with equal insets, a slim underlined search and no tick', async ({ page }) => {
+test('the project menu is flat glass with equal insets, a borderless search and a trailing check on the choice', async ({ page }) => {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.locator('#project-filter').click();
   const menu = page.locator('.floating-menu').first();
   await expect(menu).toBeVisible();
+  // Measure once the menu has arrived (it scales in a few percent).
+  await expect.poll(() => menu.evaluate(element => element.getAnimations().length)).toBe(0);
   const layout = await menu.evaluate(element => {
     const box = element.getBoundingClientRect(), border = parseFloat(getComputedStyle(element).borderTopWidth);
     const search = element.querySelector<HTMLElement>('[class*="menu-search"]')!;
@@ -124,12 +126,14 @@ test('the project menu is solid and borderless, with equal insets, a slim underl
     return {
       insets: [search.getBoundingClientRect().top - box.top, rows[0].left - box.left, box.right - rows[0].right, box.bottom - rows[rows.length - 1].bottom].map(value => Math.round(value - border)),
       searchBorders: [style.borderTopWidth, style.borderLeftWidth, style.borderRightWidth, style.borderBottomWidth],
-      ticks: [...element.querySelectorAll('[aria-checked="true"]>.icon:last-child,[aria-selected="true"]>.icon:last-child')].filter(icon => (icon as HTMLElement).offsetParent).length,
-      surface: { image: getComputedStyle(element).backgroundImage, alpha: getComputedStyle(element).backgroundColor.startsWith('rgba') ? 'translucent' : 'solid', border: getComputedStyle(element).borderTopColor, blur: getComputedStyle(element).backdropFilter },
+      ticks: [...element.querySelectorAll('[aria-checked="true"]>.icon:last-child,[aria-selected="true"]>.icon:last-child')].filter(icon => icon.getClientRects().length > 0).length,
+      surface: { glass: getComputedStyle(element).backgroundImage === 'none' && /^rgba\(/.test(getComputedStyle(element).backgroundColor), blur: getComputedStyle(element).backdropFilter.includes('blur'), width: Math.round(box.width) },
     };
   });
   expect(new Set(layout.insets).size).toBe(1);
-  expect(layout.searchBorders).toEqual(['0px', '0px', '0px', '1px']);
-  expect(layout.ticks).toBe(0);
-  expect(layout.surface).toEqual({ image: 'none', alpha: 'solid', border: 'rgba(0, 0, 0, 0)', blur: 'none' });
+  expect(layout.searchBorders).toEqual(['0px', '0px', '0px', '0px']);
+  // "All projects" is the current choice: one trailing check, no filled row.
+  expect(layout.ticks).toBe(1);
+  // The flat --glass-* material (AGENTS.md): a translucent solid fill, no gradient; reduced transparency/contrast fall back to a solid panel.
+  expect(layout.surface).toEqual({ glass: true, blur: true, width: 300 });
 });

@@ -12,8 +12,12 @@ function viewport(transcript: HTMLElement): { top: number; bottom: number; scale
   const rect = transcript.getBoundingClientRect();
   // Surfaces use border-box sizing. Keep fractional layout pixels: offsetHeight
   // rounds them, which magnifies anchoring errors over a long prepended page.
-  const height = parseFloat(getComputedStyle(transcript).height);
-  return { top: rect.top, bottom: rect.bottom, scale: height > 0 && rect.height > 0 ? rect.height / height : 1 };
+  const style = getComputedStyle(transcript), height = parseFloat(style.height);
+  const scale = height > 0 && rect.height > 0 ? rect.height / height : 1;
+  // The reading line sits below anything floating over the transcript (the frosted header,
+  // its fade, the team bars), which scroll-padding-top clears; anchor to what is read there.
+  const clear = (parseFloat(style.scrollPaddingTop) || 0) * scale;
+  return { top: Math.min(rect.top + clear, rect.bottom), bottom: rect.bottom, scale };
 }
 
 /** Preserve the visible message or tool while content is inserted above it. */
@@ -23,8 +27,10 @@ export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
   const previous = scrollRounding.get(transcript);
   const remainder = previous?.top === scrollTop ? previous.remainder : 0;
   const attributes = ['data-message-id', 'data-tool-key', 'data-turn-key', 'data-change-key'];
-  const anchors = [...transcript.querySelectorAll<HTMLElement>(attributes.map(name => `[${name}]`).join(','))]
-    .filter(node => node.getClientRects().length)
+  const selector = attributes.map(name => `[${name}]`).join(',');
+  // Innermost anchors only: a turn wrapper grows when earlier messages join its turn, so it moves.
+  const anchors = [...transcript.querySelectorAll<HTMLElement>(selector)]
+    .filter(node => node.getClientRects().length && !node.querySelector(selector))
     .map(node => ({ node, rect: node.getBoundingClientRect() }))
     .filter(({ rect }) => rect.bottom > top && rect.top < bottom)
     .sort((a, b) => Math.abs(a.rect.top - top) - Math.abs(b.rect.top - top))
@@ -44,9 +50,17 @@ export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
   };
 }
 
+/** A transcript whose owner keeps it pinned to the bottom after layout (a ResizeObserver),
+ *  with a layout-free test of whether it is following now. */
+const followers = new WeakMap<HTMLElement, () => boolean>();
+export function followTranscriptBottom(transcript: HTMLElement, following: () => boolean): void { followers.set(transcript, following); }
+
 /** Capture immediately before an async Markdown paint, respecting new user scrolls. */
 export function preserveTranscriptPosition(transcript: HTMLElement, changed?: HTMLElement): () => void {
-  const follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140
+  // Following: the owner pins after layout, before paint, so measuring here would only force layout.
+  const following = followers.get(transcript);
+  if (following?.()) return () => {};
+  const follow = !following && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140
     && !document.activeElement?.closest('details');
   if (follow) return () => { transcript.scrollTop = transcript.scrollHeight; };
   // Streaming at the bottom cannot move content above it. Avoid scanning loaded

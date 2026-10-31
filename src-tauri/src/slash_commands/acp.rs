@@ -7,10 +7,19 @@ pub(super) const NO_COMMANDS: &str = "The harness did not advertise additional c
 pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     let path = crate::providers::executable(provider)
         .ok_or("Install the harness ACP server or choose its executable in Settings → Agents.")?;
-    let mut command = crate::providers::command(&path)?;
+    if provider == "devin" {
+        // Devin's discovery session is deleted afterwards, and its models come
+        // from their own fuller probe, so this catalog never replaces them.
+        let frame = crate::providers::devin_commands(&path, cwd).await?;
+        return frame.as_ref().and_then(|frame| parse_runtime(provider, frame)).ok_or(NO_COMMANDS.into());
+    }
+    let mut command = crate::providers::provider_command(provider, &path)?;
     match provider {
         "opencode" => {
             command.arg("acp");
+        }
+        "kilo" => {
+            command.arg("acp").env("KILO_DISABLE_AUTOUPDATE", "true");
         }
         // Command Code serves ACP from its `acp` command and reads the saved key
         // before its own login.
@@ -28,6 +37,9 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         }
         "github-copilot" => {
             command.args(["--no-auto-update", "--acp", "--stdio"]);
+        }
+        "hermes" => {
+            crate::providers::hermes::configure_command(&mut command, &path);
         }
         _ => {
             #[cfg(target_os = "linux")]
@@ -51,11 +63,13 @@ pub(super) fn parse_runtime(provider: &str, frame: &Value) -> Option<Catalog> {
     {
         return None;
     }
-    Some(parse_entries(
-        frame["params"]["update"]["availableCommands"].as_array()?,
-        provider,
-        &HashSet::new(),
-    ))
+    let entries = frame["params"]["update"]["availableCommands"].as_array()?;
+    if provider == "devin" {
+        let hidden = |entry: &&Value| entry["name"].as_str().is_some_and(|name| crate::providers::DEVIN_HIDDEN_COMMANDS.contains(&name));
+        let shown: Vec<Value> = entries.iter().filter(|entry| !hidden(entry)).cloned().collect();
+        return Some(parse_entries(&shown, provider, &HashSet::new()));
+    }
+    Some(parse_entries(entries, provider, &HashSet::new()))
 }
 
 #[cfg(test)]
@@ -63,8 +77,20 @@ mod tests {
     use super::*;
     use serde_json::json;
     #[test]
+    fn devin_account_and_mode_commands_stay_with_its_cli_and_the_mode_picker() {
+        let frame = json!({"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[
+            {"name":"login","description":"Authenticate with an API key","input":{"hint":"[api-key]"}},
+            {"name":"bypass","description":"Switch to Bypass Permissions mode"},
+            {"name":"compact","description":"Compact the conversation"},
+            {"name":"review","description":"Review changes"}]}}});
+        let catalog = parse_runtime("devin", &frame).unwrap();
+        let ids: Vec<_> = catalog.commands.iter().map(|command| command.id.as_str()).collect();
+        assert_eq!(ids, ["devin:/compact", "devin:/review"]);
+    }
+
+    #[test]
     fn commands_use_real_provider_names_and_advertised_hints() {
-        for provider in ["opencode", "antigravity", "grok", "github-copilot"] {
+        for provider in ["opencode", "kilo", "antigravity", "grok", "github-copilot", "hermes"] {
             let catalog = parse_runtime(provider,&json!({"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"review","description":"Review changes","input":{"hint":"[focus]"}}]}}})).unwrap();
             assert_eq!(catalog.commands[0].id, format!("{provider}:/review"));
             assert_eq!(

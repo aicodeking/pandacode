@@ -1,6 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const trigger = (page: Page) => page.getByRole('button', { name: 'Team', exact: true });
+/** The Team button opens No team · Cheap · Balanced · Best; a team on carries `data-on`. */
+const trigger = (page: Page) => page.locator('#team-trigger');
+async function pickTeam(page: Page, kind: string): Promise<void> {
+  await trigger(page).click();
+  await page.getByRole('menuitemradio', { name: kind, exact: true }).click();
+  await expect(page.getByRole('menuitemradio', { name: kind, exact: true })).toBeHidden();
+}
 const errors = new WeakMap<Page, string[]>();
 const calls = (page: Page, command: string) => page.evaluate(command => (window as any).__teamProfiles.calls.filter((call: any) => call.command === command), command);
 const read = (page: Page, command: string, args: Record<string, unknown> = {}): Promise<any> => page.evaluate(({ command, args }) => (window as any).__teamProfiles.invoke(command, args), { command, args });
@@ -45,10 +51,10 @@ async function newConversation(page: Page): Promise<string> {
   return (await currentId(page))!;
 }
 
-/** Turning Team on remembers an automatic team for new tasks; the toggle is the whole setup. */
+/** Turning Team on remembers an automatic team for new tasks; the menu pick is the whole setup. */
 async function turnOn(page: Page): Promise<void> {
-  await trigger(page).click();
-  await expect(trigger(page)).toHaveAttribute('aria-pressed', 'true');
+  await pickTeam(page, 'Balanced team');
+  await expect(trigger(page)).toHaveAttribute('data-on', '');
 }
 
 async function assertAutoDefault(page: Page, id: string, lead: { provider: string; model: string }): Promise<void> {
@@ -70,7 +76,8 @@ test.describe('team inheritance', () => {
     await page.reload();
     const id = await newConversation(page);
     expect(id).not.toBe('session-2');
-    await expect(trigger(page)).toHaveAttribute('aria-pressed', 'true');
+    await expect(trigger(page)).toHaveAttribute('data-on', '');
+    await expect(trigger(page)).toHaveAccessibleName('Balanced team');
     const fresh = await read(page, 'get_task', { sessionId: id });
     await assertAutoDefault(page, id, fresh);
     expect(await calls(page, 'architect_start')).toHaveLength(0);
@@ -80,7 +87,7 @@ test.describe('team inheritance', () => {
   test('board tasks and worktrees inherit the automatic team without adding worker tasks', async ({ page }) => {
     await install(page); await turnOn(page);
     const before = await read(page, 'list_sessions');
-    await page.getByRole('button', { name: 'Board view', exact: true }).click();
+    await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
     const board = page.getByRole('region', { name: 'Project board', exact: true });
     await board.getByRole('button', { name: 'Add task', exact: true }).click();
     const form = page.locator('#dialog');
@@ -90,7 +97,7 @@ test.describe('team inheritance', () => {
     await expect(card).toBeVisible();
     const boardId = (await card.getAttribute('data-id'))!;
     await assertAutoDefault(page, boardId, await read(page, 'get_task', { sessionId: boardId }));
-    await page.getByRole('button', { name: 'Conversation view', exact: true }).click();
+    await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Conversation', exact: true }).click();
     // A started conversation spawns a sibling worktree task; an unstarted one would convert in place.
     await page.locator('.task-item[data-id="session-1"]').click();
     await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
@@ -109,11 +116,11 @@ test.describe('team inheritance', () => {
 
   test('turning Team off disables inheritance for future tasks', async ({ page }) => {
     await install(page); await turnOn(page);
-    await trigger(page).click();
-    await expect(trigger(page)).toHaveAttribute('aria-pressed', 'false');
+    await pickTeam(page, 'No team');
+    await expect(trigger(page)).not.toHaveAttribute('data-on');
     expect((await library(page)).enabled).toBe(false);
     await page.reload(); await newConversation(page);
-    await expect(trigger(page)).toHaveAttribute('aria-pressed', 'false');
+    await expect(trigger(page)).not.toHaveAttribute('data-on');
     expect(await read(page, 'architect_get', { sessionId: await currentId(page) })).toBeNull();
   });
 });

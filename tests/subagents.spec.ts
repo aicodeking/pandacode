@@ -7,7 +7,8 @@ type Subagent = {
   tools: { id: string; name: string; status: string; input: string; output: string }[];
   startedAt: number; updatedAt: number;
 };
-const trigger = (page: Page) => page.getByRole('button', { name: 'Subagents', exact: true });
+// Subagents open from the action dock's Agents item, named with the running count.
+const trigger = (page: Page) => page.locator('#agents-toggle');
 const panel = (page: Page) => page.getByRole('region', { name: 'Subagents', exact: true });
 const response = (page: Page) => panel(page).locator('.subagent-response');
 const row = (page: Page, id: string) => panel(page).locator(`button[data-subagent-id="${id}"]`);
@@ -85,7 +86,7 @@ async function selectTask(page: Page, index: number, view: View): Promise<void> 
 
 async function useView(page: Page, view: View): Promise<void> {
   if (view === 'board') {
-    await page.getByRole('button', { name: 'Board view', exact: true }).click();
+    await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
     await selectTask(page, 1, view);
   }
 }
@@ -120,10 +121,10 @@ test.describe('subagents', () => {
       await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper', 'mon-morning');
       await trigger(page).click(); await expect(panel(page)).toBeVisible();
       await expect(panel(page)).toHaveCSS('opacity', '1'); await expect(panel(page)).toHaveCSS('filter', 'none');
-      const material = await subagentSurface(panel(page));
-      // Solid like the dropdowns: no translucency, blur, gradient or border.
-      expect(material.alpha).toBe(1); expect(material.image).toBe('none');
-      expect(material.blur === 'none' || material.blur === '').toBe(true);
+      // The Agents flyout around the panel is the app's glass: translucent over a blur, with no gradient or border.
+      const material = await subagentSurface(page.locator('#agents-flyout'));
+      expect(material.alpha).toBeLessThan(1); expect(material.image).toBe('none');
+      expect(material.blur).toContain('blur');
       await expect(panel(page)).toHaveCSS('border-top-color', 'rgba(0, 0, 0, 0)');
       const normalRow = await row(page, 'reader').evaluate(node => getComputedStyle(node).backgroundColor);
       await row(page, 'reader').hover();
@@ -133,7 +134,7 @@ test.describe('subagents', () => {
       await row(page, 'reader').click();
       await expect(response(page)).toContainText('Search is ready.');
       await expect(response(page)).toHaveCSS('filter', 'none'); await expect(response(page)).toHaveCSS('opacity', '1');
-      expect(await subagentSurface(panel(page))).toEqual(material);
+      expect(await subagentSurface(page.locator('#agents-flyout'))).toEqual(material);
       expect(await panel(page).evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
       await page.screenshot({ path: `/private/tmp/pandacode-subagents-frost-${browserName}-${theme}-${view}-detail.png`, animations: 'disabled' });
       const preferences = browserName === 'chromium' ? ['prefers-contrast', 'prefers-reduced-transparency'] : ['prefers-contrast'];
@@ -143,12 +144,12 @@ test.describe('subagents', () => {
         else await page.emulateMedia({ contrast: 'more' });
         await expect(page.locator('.workspace')).not.toHaveAttribute('data-wallpaper');
         await expect(panel(page)).toBeVisible(); await expect(response(page)).toContainText('Search is ready.');
-        const accessible = await subagentSurface(panel(page));
+        const accessible = await subagentSurface(page.locator('#agents-flyout'));
         expect(accessible.alpha).toBe(1); expect(accessible.blur).toBe('none'); expect(accessible.image).toBe('none');
         if (cdp) await cdp.send('Emulation.setEmulatedMedia', { features: [] });
         else await page.emulateMedia({ contrast: 'no-preference' });
         await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper', 'mon-morning');
-        expect(await subagentSurface(panel(page))).toEqual(material);
+        expect(await subagentSurface(page.locator('#agents-flyout'))).toEqual(material);
       }
       await cdp?.detach();
     });
@@ -179,7 +180,7 @@ test.describe('subagents', () => {
         'session-1': [child('shared', 'First task child', { response: 'Do not show the previous task child.' })],
         'session-2': [child('other', 'Other child', { response: 'Unselected child response.' }), child('shared', 'Selected reviewer', { response: 'Saved target child response.' })],
       });
-      if (view === 'board') await page.getByRole('button', { name: 'Board view', exact: true }).click();
+      if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); }
       await page.evaluate(() => (window as any).__subagents.publishOverlay({ sessionId: 'session-2', subagentId: 'shared' }));
       await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
       await expect(panel(page)).toBeVisible();
@@ -206,13 +207,13 @@ test.describe('subagents', () => {
       await useView(page, view);
       await expect(trigger(page)).toBeHidden();
       await upsert(page, [child('reader', 'Reader'), child('reviewer', 'Reviewer')]);
-      await expect(trigger(page)).toContainText('2 running');
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents: 2 running');
       await trigger(page).click();
       await expect(panel(page)).toBeVisible();
       await expect(row(page, 'reader')).toContainText('Reader');
       await expect(row(page, 'reviewer')).toContainText('Reviewer');
       await upsert(page, [child('tests', 'Test runner', { parentId: 'reader' })]);
-      await expect(trigger(page)).toContainText('3 running');
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents: 3 running');
       await expect(row(page, 'tests')).toContainText('Test runner');
       await expect(row(page, 'tests')).toContainText('Reader');
       await page.screenshot({ path: `/private/tmp/pandacode-subagents-${view}-list.png`, animations: 'disabled' });
@@ -228,17 +229,19 @@ test.describe('subagents', () => {
       await expect(response(page).locator('strong')).toHaveText('Found the issue.');
       await expect(panel(page).locator('.subagent-tools')).toContainText('Read');
       await panel(page).locator('.subagent-tools details.tool-activity > summary').click();
-      await expect(panel(page).locator('.subagent-tools')).toContainText('src/search.ts');
+      // The card names the file by basename; its chip carries the full path.
+      await expect(panel(page).locator('.subagent-tools')).toContainText('search.ts');
+      await expect(panel(page).locator('.subagent-tools .tool-trace-chip').first()).toHaveAttribute('title', 'src/search.ts');
       await expect(panel(page).locator('.subagent-tools')).toContainText('const index = buildIndex(items);');
       await page.screenshot({ path: `/private/tmp/pandacode-subagents-${view}-detail.png`, animations: 'disabled' });
       await upsert(page, [child('reader', 'Reader', { status: 'completed', response: 'Index reuse fixed.', updatedAt: 1_800_000_000_003 })]);
-      await expect(trigger(page)).toContainText('2 running');
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents: 2 running');
       await expect(response(page)).toHaveText('Index reuse fixed.');
       await expect(transcript(page)).not.toContainText('Index reuse fixed.');
       await panel(page).getByRole('button', { name: 'Back to Subagents', exact: true }).click();
       await expect(row(page, 'reader')).toContainText(/completed/i);
       await upsert(page, [child('reviewer', 'Reviewer', { status: 'failed' }), child('tests', 'Test runner', { parentId: 'reader', status: 'stopped' })]);
-      await expect(trigger(page)).toContainText('3 subagents');
+      await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents');
       await expect(row(page, 'reviewer')).toContainText(/failed/i);
       await expect(row(page, 'tests')).toContainText(/stopped/i);
     });
@@ -315,7 +318,7 @@ test.describe('subagents', () => {
     await panel(page).getByRole('button', { name: 'Back to Subagents', exact: true }).click();
     await expect(row(page, 'old')).toContainText(/completed/i);
     await expect(row(page, 'new')).toBeVisible();
-    await expect(trigger(page)).toContainText('1 running');
+    await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents: 1 running');
   });
 
   test('does not display a previous task when its delayed subagent history resolves', async ({ page }) => {

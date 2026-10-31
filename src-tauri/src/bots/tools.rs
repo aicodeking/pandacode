@@ -2,7 +2,7 @@
 //! memory, schedules it can set for itself, and proactive messages to the user.
 //! They only exist in tasks that belong to a bot, and only touch that bot.
 
-use super::{gateway, schedule, owner_of};
+use super::{gateway, schedule, shared_channels, owner_of};
 use crate::agent_tools::{spec, validate_spec};
 use crate::providers::ToolHost;
 use crate::{AppState, Result};
@@ -22,6 +22,7 @@ pub(crate) fn catalog() -> Vec<Value> {
         spec("bot_list_schedules", "List this bot's schedules with IDs, timing and whether they are on.", json!({}), &[]),
         spec("bot_cancel_schedule", "Delete one of this bot's schedules by ID (from bot_list_schedules).", json!({"scheduleId": id}), &["scheduleId"]),
         spec("bot_notify", "Message the user now, on the channel they last used (and the desktop app). Use for results, reminders, or decisions they need to make; do not use it to chat.", json!({"text": {"type":"string","maxLength":4000}}), &["text"]),
+        spec("bot_message_bot", "Send a short work request to another bot by exact name or ID. The other bot works in its own desktop conversation and sends an update back here. Do not message yourself; collaboration chains stop after three bot-to-bot hops.", json!({"to":{"type":"string","maxLength":80},"text":{"type":"string","maxLength":8000}}), &["to","text"]),
     ]
 }
 
@@ -67,8 +68,35 @@ pub(crate) fn with_bot(base: Option<ToolHost>, app: tauri::AppHandle, session_id
 
 pub(crate) async fn dispatch(app: &tauri::AppHandle, session_id: &str, name: &str, args: &Value) -> Result<Value> {
     let state = app.state::<AppState>();
-    let (bot, _) = owner_of(&*state.store.lock().map_err(|e| e.to_string())?, session_id)?.ok_or("This task no longer belongs to a bot.")?;
+    let (bot, source_thread) = owner_of(&*state.store.lock().map_err(|e| e.to_string())?, session_id)?.ok_or("This task no longer belongs to a bot.")?;
     let string = |key: &str| args[key].as_str().unwrap_or_default().to_owned();
+    if name == "pandacode_bot_message_bot" {
+        let requested = string("to").trim().to_owned();
+        let text = string("text");
+        let target = {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let all = super::list(&store)?;
+            let exact_id = all.iter().find(|candidate| candidate.id == requested);
+            let matches: Vec<_> = all.iter().filter(|candidate| candidate.name.eq_ignore_ascii_case(&requested)).collect();
+            if let Some(target) = exact_id {
+                target.clone()
+            } else if matches.len() == 1 {
+                matches[0].clone()
+            } else if matches.is_empty() {
+                return Err("Choose another bot by its exact name or ID.".into());
+            } else {
+                return Err("More than one bot has that name. Use its ID.".into());
+            }
+        };
+        let depth = {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            shared_channels::current_hop_depth(&store, session_id)?
+        };
+        let depth = next_message_hop(&bot.id, &target.id, depth)?;
+        let id = shared_channels::deliver_bot_message(app, &bot, &source_thread, &target, &text, depth).await?;
+        let _ = app.emit("bot-messages-changed", ());
+        return Ok(json!({"messageId":id,"to":target.name,"status":"sent"}));
+    }
     let result = match name {
         "pandacode_bot_notify" => {
             gateway::notify(app, &bot, &string("text")).await;
@@ -114,4 +142,29 @@ pub(crate) async fn dispatch(app: &tauri::AppHandle, session_id: &str, name: &st
     };
     let _ = app.emit("bots-changed", ());
     Ok(result)
+}
+
+fn next_message_hop(source: &str, target: &str, current: u8) -> Result<u8> {
+    if source == target { return Err("A bot cannot message itself.".into()); }
+    if current >= 3 { return Err("Bot collaboration is limited to three hops.".into()); }
+    Ok(current + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_message_tool_rejects_self_and_stops_after_three_hops() {
+        assert!(next_message_hop("scout", "scout", 0).is_err());
+        assert_eq!(next_message_hop("scout", "writer", 0).unwrap(), 1);
+        assert_eq!(next_message_hop("writer", "ledger", 2).unwrap(), 3);
+        assert!(next_message_hop("ledger", "scout", 3).is_err());
+    }
+
+    #[test]
+    fn bot_message_tool_is_self_scoped_and_registered() {
+        assert!(catalog().iter().any(|item| item["name"].as_str().is_some_and(|name| name.ends_with("bot_message_bot"))));
+        assert!(self_scoped("pandacode_bot_message_bot"));
+    }
 }

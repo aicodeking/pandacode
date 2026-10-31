@@ -214,3 +214,20 @@ fn notifications_without_routing_ids_keep_legacy_compatibility() {
             .done
     );
 }
+
+#[test]
+fn reasoning_summary_deltas_surface_as_thinking_events() {
+    let mut p = protocol();
+    let mut thinking = String::new();
+    for frame in [
+        json!({"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main","turnId":"turn-main","itemId":"r1","delta":"Plan","summaryIndex":0}}),
+        json!({"method":"item/reasoning/summaryPartAdded","params":{"threadId":"main","turnId":"turn-main","itemId":"r1","summaryIndex":1}}),
+        json!({"method":"item/reasoning/summaryTextDelta","params":{"threadId":"main","turnId":"turn-main","itemId":"r1","delta":"Act","summaryIndex":1}}),
+    ] {
+        for event in p.receive(frame).unwrap().events {
+            assert_eq!(event.kind, "thinking");
+            thinking.push_str(&event.text);
+        }
+    }
+    assert_eq!(thinking, "Plan\n\nAct");
+}

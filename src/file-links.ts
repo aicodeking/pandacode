@@ -98,6 +98,13 @@ export function bindFileLinkContext(target: HTMLElement, context: FileLinkContex
 
 export function captureFileLinkContext(target: HTMLElement): object | undefined { return capture(target); }
 
+/** A document's relative image path from its folder (a leading / is the workspace root, as on GitHub). */
+export function workspaceImagePath(src: string, documentPath: string): string | undefined {
+  if (!src || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(src)) return undefined;
+  const folder = documentPath.slice(0, documentPath.lastIndexOf('/') + 1).split('/').map(encodeURIComponent).join('/');
+  try { return decodeURIComponent(new URL(src, `file:///${folder}`).pathname.slice(1)); } catch { return undefined; }
+}
+
 function capture(target: HTMLElement): Hub | undefined {
   let bound = targets.get(target);
   if (!bound) {
@@ -174,7 +181,12 @@ export function decorateFileLinks(root: ParentNode, target: HTMLElement): void {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>('a')) {
     const href = anchor.getAttribute('href') ?? '';
     if (!href) continue;
-    if (/^(?:https?:|mailto:|tel:)/i.test(href)) { anchor.target = '_blank'; anchor.rel = 'noopener noreferrer'; continue; }
+    if (/^(?:https?:|mailto:|tel:)/i.test(href)) {
+      // Only on change: decoration re-runs over a live reply, and each write is a mutation record.
+      if (anchor.target !== '_blank') anchor.target = '_blank';
+      if (anchor.rel !== 'noopener noreferrer') anchor.rel = 'noopener noreferrer';
+      continue;
+    }
     const path = fileReference(href);
     const span = document.createElement('span'); span.append(...anchor.childNodes);
     if (path && hub) {

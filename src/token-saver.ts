@@ -10,7 +10,7 @@
 export type PackId = 'caveman' | 'lean-code' | 'quiet-tools' | 'rtk';
 export type Level = 'lite' | 'full' | 'ultra';
 export type Pack = { id: PackId; title: string; summary: string; saves: string; source: string; needs?: 'rtk' };
-export type ThreadSaver = { packs: PackId[]; level: Level; sentKey?: string; turns?: number };
+export type ThreadSaver = { packs: PackId[]; level: Level; sentKey?: string; turns?: number; /** When the current configuration was last sent, for measured usage. */ changedAt?: number };
 type Store = { defaults: ThreadSaver | null; threads: Record<string, ThreadSaver> };
 
 export const PACKS: Pack[] = [
@@ -69,7 +69,7 @@ const valid = (packs: unknown): PackId[] => Array.isArray(packs) ? PACKS.map(pac
 /** A thread's saver; a new thread starts from the saved default, if any. */
 export function threadSaver(sessionId: string): ThreadSaver {
   const store = read(), saved = store.threads[sessionId] ?? store.defaults ?? { packs: [], level: 'full' };
-  return { ...saved, packs: valid(saved.packs), level: LEVELS.some(level => level.id === saved.level) ? saved.level : 'full' };
+  return { ...saved, packs: valid(saved.packs), level: LEVELS.some(level => level.id === saved.level) ? saved.level : 'full', changedAt: typeof saved.changedAt === 'number' ? saved.changedAt : undefined };
 }
 export function updateThread(sessionId: string, patch: Partial<Pick<ThreadSaver, 'packs' | 'level'>>): ThreadSaver {
   const store = read(), next = { ...threadSaver(sessionId), ...patch };
@@ -102,7 +102,7 @@ export function contextFor(sessionId: string, available: { rtk: boolean }): stri
   const changed = key !== (saver.sentKey ?? '');
   const due = Boolean(key) && (changed || turns >= REMIND_EVERY);
   const store = read();
-  write({ ...store, threads: { ...store.threads, [sessionId]: { ...saver, sentKey: key, turns: due || changed ? 0 : turns } } });
+  write({ ...store, threads: { ...store.threads, [sessionId]: { ...saver, sentKey: key, turns: due || changed ? 0 : turns, ...(changed && { changedAt: Date.now() }) } } });
   if (!changed && !due) return '';
   return `\n\n${guidance(saver.packs, saver.level, available)}`;
 }
@@ -112,4 +112,19 @@ export function estimate(packs: PackId[], level: Level, available: { rtk: boolea
   const share: Record<PackId, number> = { caveman: level === 'lite' ? 0.12 : level === 'full' ? 0.25 : 0.35, 'lean-code': 0.12, 'quiet-tools': 0.15, rtk: 0.2 };
   const kept = packs.filter(id => id !== 'rtk' || available.rtk).reduce((left, id) => left * (1 - share[id]), 1);
   return Math.round((1 - kept) * 100);
+}
+
+/** Share of the context window at which the panel offers to tighten a thread's saver. */
+export const CONTEXT_TIGHTEN_AT = 0.75;
+
+/** What Tighten applies in one click: packs to add, and Ultra when the level is below it. */
+export type Tighten = { addPacks: PackId[]; level?: Level };
+
+/** The tightening to offer once a thread's context is mostly full, or null when nothing is left or the window is unknown. */
+export function suggestion(packs: PackId[], level: Level, usage: { usedTokens: number; contextWindow?: number | null } | null | undefined): Tighten | null {
+  if (!usage?.contextWindow || usage.usedTokens / usage.contextWindow < CONTEXT_TIGHTEN_AT) return null;
+  const addPacks = (['caveman', 'quiet-tools'] as PackId[]).filter(id => !packs.includes(id));
+  const nextLevel = level !== 'ultra' ? 'ultra' as Level : undefined;
+  if (!addPacks.length && !nextLevel) return null;
+  return { addPacks, ...(nextLevel && { level: nextLevel }) };
 }

@@ -36,6 +36,11 @@ pub struct Settings {
     pub enabled: bool,
     #[serde(default)]
     pub decisions_enabled: bool,
+    /// "typesafe" (default) or "openrouter"; the OpenRouter key lives in `secret_store`.
+    #[serde(default = "default_provider")]
+    pub decision_provider: String,
+    #[serde(default)]
+    pub decision_model: String,
     pub python_path: String,
     pub chrome_path: String,
     pub text_model: String,
@@ -46,12 +51,22 @@ impl Default for Settings {
         Self {
             enabled: false,
             decisions_enabled: false,
+            decision_provider: default_provider(),
+            decision_model: String::new(),
             python_path: String::new(),
             chrome_path: String::new(),
             text_model: "inception/mercury-2.5".into(),
             text_base_url: "https://openrouter.ai/api/v1".into(),
         }
     }
+}
+fn default_provider() -> String {
+    "typesafe".into()
+}
+const SECRET_SERVICE: &str = "app.pandacode.jev";
+const OPENROUTER_ACCOUNT: &str = "openrouter";
+fn openrouter_key() -> Option<String> {
+    crate::secret_store::get(SECRET_SERVICE, OPENROUTER_ACCOUNT)
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -70,6 +85,7 @@ pub struct Configuration {
     settings: Settings,
     typesafe_key_saved: bool,
     text_key_saved: bool,
+    openrouter_key_saved: bool,
 }
 impl From<&Saved> for Configuration {
     fn from(saved: &Saved) -> Self {
@@ -77,6 +93,7 @@ impl From<&Saved> for Configuration {
             settings: saved.settings.clone(),
             typesafe_key_saved: !saved.typesafe_key.is_empty(),
             text_key_saved: !saved.text_key.is_empty(),
+            openrouter_key_saved: openrouter_key().is_some(),
         }
     }
 }
@@ -255,12 +272,19 @@ pub fn enabled() -> bool {
 pub fn decisions_enabled() -> bool {
     runtime().is_ok_and(|state| state.saved.settings.decisions_enabled)
 }
-pub(crate) fn decision_credentials() -> Result<(bool, String)> {
+pub(crate) fn decision_credentials() -> Result<(bool, String, crate::jev_decisions::Provider)> {
+    use crate::jev_decisions::Provider;
     let state = runtime()?;
-    Ok((
-        state.saved.settings.decisions_enabled,
-        state.saved.typesafe_key.clone(),
-    ))
+    let settings = &state.saved.settings;
+    let (key, provider) = if settings.decision_provider == "openrouter" {
+        (
+            openrouter_key().unwrap_or_default(),
+            Provider::OpenRouter { model: settings.decision_model.clone() },
+        )
+    } else {
+        (state.saved.typesafe_key.clone(), Provider::TypeSafe)
+    };
+    Ok((settings.decisions_enabled, key, provider))
 }
 pub fn is_busy() -> bool {
     crate::jev_decisions::is_busy()
@@ -402,6 +426,20 @@ fn validate_saved(mut saved: Saved) -> Result<Saved> {
         return Err("Text model API URLs cannot contain query parameters or fragments.".into());
     }
     saved.settings.text_base_url = base.trim_end_matches('/').into();
+    saved.settings.decision_model = saved.settings.decision_model.trim().into();
+    match saved.settings.decision_provider.as_str() {
+        "typesafe" => saved.settings.decision_model.clear(),
+        "openrouter" => {
+            let model = &saved.settings.decision_model;
+            if model.len() > 200 || model.chars().any(char::is_control) {
+                return Err("Choose a valid OpenRouter decision model.".into());
+            }
+            if model.is_empty() && saved.settings.decisions_enabled {
+                return Err("Choose an OpenRouter decision model.".into());
+            }
+        }
+        _ => return Err("Choose TypeSafe or OpenRouter for decisions.".into()),
+    }
     saved.typesafe_key = key(saved.typesafe_key)?;
     saved.text_key = key(saved.text_key)?;
     Ok(saved)
@@ -477,6 +515,7 @@ pub async fn jev_save_configuration(
     settings: Settings,
     typesafe_key: Option<String>,
     text_key: Option<String>,
+    openrouter_key: Option<String>,
 ) -> Result<Configuration> {
     crate::blocking(move || {
         let mut state = runtime()?;
@@ -494,10 +533,19 @@ pub async fn jev_save_configuration(
             next.text_key = value;
         }
         let next = validate_saved(next)?;
+        let openrouter_key = openrouter_key.map(key).transpose()?;
+        if decision_needs_key(&next, &openrouter_key) {
+            return Err("Add your OpenRouter API key to use it for decisions.".into());
+        }
         private_write(
             &state.dir.join("settings.json"),
             &serde_json::to_vec(&next).map_err(|_| "Could not encode Jev settings.")?,
         )?;
+        match openrouter_key.as_deref() {
+            Some("") => crate::secret_store::remove(SECRET_SERVICE, OPENROUTER_ACCOUNT),
+            Some(value) => crate::secret_store::set(SECRET_SERVICE, OPENROUTER_ACCOUNT, value)?,
+            None => {}
+        }
         if !next.settings.enabled {
             for active in state.active.values() {
                 active.stopped.store(true, Ordering::SeqCst);
@@ -508,6 +556,20 @@ pub async fn jev_save_configuration(
         Ok(Configuration::from(&state.saved))
     })
     .await
+}
+
+// Decisions on OpenRouter need a key, either already saved or arriving with this save.
+fn decision_needs_key(next: &Saved, incoming: &Option<String>) -> bool {
+    next.settings.decisions_enabled
+        && next.settings.decision_provider == "openrouter"
+        && match incoming.as_deref() {
+            Some(value) => value.is_empty(),
+            None => openrouter_key().is_none(),
+        }
+}
+#[tauri::command]
+pub async fn jev_decision_models(provider: String) -> Result<Vec<crate::jev_decisions::DecisionModel>> {
+    crate::jev_decisions::models::list(&provider).await
 }
 
 fn venv_python(dir: &Path) -> PathBuf {
@@ -1693,6 +1755,30 @@ mod tests {
             ..saved
         })
         .is_err());
+    }
+    #[test]
+    fn decision_provider_defaults_to_typesafe_and_validates_openrouter() {
+        assert_eq!(Settings::default().decision_provider, "typesafe");
+        let with = |provider: &str, model: &str, enabled: bool| {
+            validate_saved(Saved {
+                settings: Settings {
+                    decisions_enabled: enabled,
+                    decision_provider: provider.into(),
+                    decision_model: model.into(),
+                    ..Settings::default()
+                },
+                ..Saved::default()
+            })
+        };
+        assert!(with("typesafe", "ignored", true).unwrap().settings.decision_model.is_empty());
+        assert!(with("openrouter", "", true).is_err());
+        assert!(with("openrouter", "", false).is_ok());
+        assert_eq!(with("openrouter", " vendor/model ", true).unwrap().settings.decision_model, "vendor/model");
+        assert!(with("other", "", false).is_err());
+        let saved = Saved { settings: Settings { decisions_enabled: true, decision_provider: "openrouter".into(), decision_model: "v/m".into(), ..Settings::default() }, ..Saved::default() };
+        assert!(decision_needs_key(&saved, &None));
+        assert!(decision_needs_key(&saved, &Some(String::new())));
+        assert!(!decision_needs_key(&saved, &Some("sk-or-test".into())));
     }
     #[test]
     fn verifies_assertions_instead_of_model_done() {

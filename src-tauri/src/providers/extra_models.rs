@@ -33,7 +33,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
         if !seen.insert(id.to_owned()) {
             continue;
         }
-        let efforts = entry["variants"]
+        let mut efforts: Vec<_> = entry["variants"]
             .as_object()
             .into_iter()
             .flat_map(|variants| variants.keys())
@@ -41,6 +41,9 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             .take(20)
             .map(|id| effort_info(id, None))
             .collect();
+        // Variant keys arrive sorted by name; the slider reads least to most.
+        let rank = |id: &str| ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"].iter().position(|known| *known == id).unwrap_or(usize::MAX);
+        efforts.sort_by_key(|effort| rank(&effort.id));
         models.push(ModelInfo {
             id: id.into(),
             name: model_text(entry["name"].as_str(), id, 160),
@@ -98,7 +101,7 @@ async fn discover(
     args: &[&str],
     parse: fn(&[u8]) -> Result<Vec<ModelInfo>, String>,
 ) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("opencode", path)?;
     command
         .args(args)
         .current_dir(std::env::temp_dir())
@@ -203,9 +206,21 @@ mod tests {
         assert_eq!(parsed[1].id, "vendor/id");
         assert_eq!(parsed[1].name, "Actual model");
         assert_eq!(parsed[1].context_window, Some(200000));
-        assert_eq!(parsed[1].reasoning_efforts.len(), 2);
+        assert_eq!(parsed[1].reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["low", "high"]);
         assert!(!serde_json::to_string(&parsed).unwrap().contains("SECRET"));
         assert_eq!(parsed[2].name, "Other model");
+    }
+    /// Recorded from `opencode models --verbose` 1.19.0 (trimmed).
+    #[test]
+    fn recorded_variants_become_ordered_efforts() {
+        let parsed = parse(br#"opencode/deepseek-v4.1-flash-free
+{"id":"deepseek-v4.1-flash-free","providerID":"opencode","name":"DeepSeek V4.1 Flash Free","limit":{"context":200000,"output":32000},"variants":{"low":{"reasoningEffort":"low"},"high":{"reasoningEffort":"high"},"max":{"reasoningEffort":"max"}}}
+openrouter/z-ai/glm-5.2
+{"id":"z-ai/glm-5.2","providerID":"openrouter","name":"GLM 5.2","variants":{"none":{},"high":{},"xhigh":{}}}
+"#).unwrap();
+        let ids = |index: usize| parsed[index].reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(ids(1), ["low", "high", "max"]);
+        assert_eq!(ids(2), ["none", "high", "xhigh"]);
     }
     #[test]
     fn malformed_catalog_errors_do_not_echo_input() {

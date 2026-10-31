@@ -40,6 +40,12 @@ also carries:
 - `latest.json`, written by `scripts/release/updater-manifest.mjs`, naming the version,
   notes and each platform's file and signature.
 
+Settings → About → Updates is Automatic (install when idle and no agent works), Notify
+me (check, then ask with Install and restart / Later in the header) or Off; the old
+`on`/`off` preference maps to Automatic/Off. On Linux a run without `APPIMAGE` (an
+unpacked AppImage or a package) is never installed over: `app_update_install_supported`
+returns false and the app only reports new versions.
+
 The app reads `releases/latest/download/latest.json`, so publishing a release is what
 ships the update. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
 and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; without them the installers still build but
@@ -50,6 +56,32 @@ is lost, existing installs can no longer update and people must reinstall a buil
 a new key; if it leaks, rotate it the same way. The maintainer's copy lives outside the
 repository (never commit it). Update downloads need the release to be publicly
 readable, so automatic updates start working once the repository is public.
+
+## SBOMs and scan coverage
+
+The `sbom` job in `release.yml` runs after the builds and attaches these to the
+release (it never blocks publishing; a failed job just means they are missing):
+
+- `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
+  (`.dmg`, `-setup.exe`, `.AppImage`) and macOS updater archive;
+- `pandacode-npm.cdx.json` and `pandacode-rust.cdx.json`: inventories of
+  `package-lock.json` and `Cargo.lock` at the release commit. The website, relay and
+  npx package are not shipped in the app and are excluded;
+- `SBOM-COVERAGE.json` and `SBOM-COVERAGE.md`: scanner names and versions, the
+  vulnerability database build time, the commit, the version, each artifact's SHA-256
+  and platform, the component count, grype's finding counts by severity, and the limits.
+
+An inventory that errors or finds no components is listed as **incomplete** and its scan
+as `not-scanned`; it is never reported as clean. Compressed installers often end up
+incomplete, which is why the lockfile SBOMs are published beside them. The WebView and
+other operating-system libraries are supplied by the host, not bundled, and not scanned.
+The same summary appears on the workflow run page. Findings are reported, not gating;
+record any reviewed exception (scope, reason, owner, expiry) in the release notes.
+
+syft and grype are pinned by version and SHA-256 in the job's `env`. To upgrade, take the
+new Linux amd64 tarball's checksum from the tool's `*_checksums.txt` release asset and
+change the version and checksum together. Actions in the workflow are pinned by full
+commit SHA; keep it that way. Run the helper's tests with `npm run test:release`.
 
 ## `npx pandacode`
 
@@ -157,6 +189,9 @@ On Linux it also needs `mksquashfs` (`squashfs-tools`). The script rebuilds the
 finished AppImage without the Wayland libraries linuxdeploy copied from the
 Ubuntu 22.04 build host: those older copies stop newer Mesa EGL stacks from
 loading and leave WebKit's web process with a blank window (Tauri issue #15665).
+It also rewrites `export GDK_BACKEND=x11` in `apprun-hooks/linuxdeploy-plugin-gtk.sh`
+to `export GDK_BACKEND="${GDK_BACKEND:-x11}"`, so users can choose Wayland, and fails
+the build if that hook or line is missing.
 The image keeps its runtime and is signed again after the rebuild when update
 signing is configured, so publish the asset `build.mjs` produces rather than the
 raw `tauri build` output.
@@ -166,6 +201,14 @@ raw `tauri build` output.
 Builds are unsigned by default: macOS gets an ad-hoc signature, Windows and
 Linux are not signed. Users see first-launch warnings, which the release notes
 explain.
+
+An ad-hoc macOS build is not notarized, and Gatekeeper refuses to open it.
+**Open Anyway** in System Settings → Privacy & Security does not always clear
+that warning, so the release notes name the step that does:
+`xattr -dr com.apple.quarantine /Applications/PandaCode.app`. `npx pandacode`
+signs the app locally and needs no such step. The notes come from
+`scripts/release/install-notes.mjs`, which takes `--signed` when a Developer ID
+signature was used and then asks for no workaround.
 
 To ship Developer ID signed and notarized macOS builds, add these repository
 secrets (Settings → Secrets and variables → Actions):

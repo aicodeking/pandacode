@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openInspectorTab } from './inspector-tab-helper';
 import { readFileSync } from 'node:fs';
 
 // The inspector's VM panel in the browser preview: Tart setup, creating and starting a
@@ -36,6 +37,7 @@ async function open(page: Page): Promise<void> {
   await page.goto('/');
   await expect(page.locator('#prompt')).toBeVisible();
   if (!(await page.locator('#inspector').isVisible())) await page.locator('#inspector-toggle').click();
+  await openInspectorTab(page, 'tab-vm');
   await page.locator('.inspector-tabs [data-action="tab-vm"]').click();
   await expect(page.locator('#inspector-content')).toBeHidden();
   await expect(panel(page)).toBeVisible();

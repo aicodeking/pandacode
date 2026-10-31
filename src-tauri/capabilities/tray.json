@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-capability",
+  "description": "Menu bar popover. Application commands are restricted by the native allowlist.",
+  "webviews": ["tray"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

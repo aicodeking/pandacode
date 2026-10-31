@@ -11,7 +11,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         return Ok(models);
     }
     let discovery = acp_catalog::begin("github-copilot", path);
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("github-copilot", path)?;
     command.args(["--no-auto-update", "--acp", "--stdio"]);
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await.map_err(|error| {
         if error.contains("Authentication is required") {

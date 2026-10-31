@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openInspectorTab } from './inspector-tab-helper';
 
 // The preview's pretend simulator draws a home screen at 402×874 points; nothing here
 // touches Xcode. Calls are recorded so gestures can be checked in points.
@@ -27,6 +28,7 @@ async function open(page: Page): Promise<void> {
 async function showSimulator(page: Page): Promise<void> {
   await expect(page.locator('.task-item.selected')).toBeVisible(); // the panel opens once the task loads
   if (!(await page.locator('#inspector').isVisible())) await page.locator('#inspector-toggle').click();
+  await openInspectorTab(page, 'tab-simulator');
   await page.locator('.inspector-tabs [data-action="tab-simulator"]').click();
 }
 /** The display after facing forward: the screen is centered in the stage. */
@@ -123,6 +125,7 @@ test('power, device choice and agent requests to show the simulator', async ({ p
   await expect(panel.locator('.sim-device-name')).toHaveText('iPad Air 11-inch (M3)');
   expect((await calls(page, 'simulator_select')).at(-1).args).toEqual({ udid: '5B7E2C1A-0D3F-4E8B-9A61-2F4C8D7E9B10' });
   // An agent booting a device brings the panel back.
+  await openInspectorTab(page, 'tab-files');
   await page.locator('.inspector-tabs [data-action="tab-files"]').click();
   await expect(panel).toBeHidden();
   await page.evaluate(() => (window as any).__simEmit('simulator-changed', { udid: '5B7E2C1A-0D3F-4E8B-9A61-2F4C8D7E9B10', show: true }));

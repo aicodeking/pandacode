@@ -30,20 +30,20 @@ the task so chips and recovery never need Git.
 
 ## Cleaning up
 
-Archiving or completing a worktree task checks the checkout first. A clean
+Settling a worktree task checks the checkout first. A clean
 checkout can be removed together with its branch in the same step (the branch
 is deleted only when it is merged into the main checkout; otherwise it is kept
 and the dialog says so). Commits that are neither pushed nor merged leave the
 removal unchecked by default. A checkout with uncommitted changes is never
-removed; the dialog names the count and the task is archived on its own.
-**Remove worktree…** in the chip menu uses the same guard and archives the task.
+removed; the dialog names the count and the task is settled on its own.
+**Remove worktree…** in the chip menu uses the same guard and settles the task.
 Removal runs `git worktree remove` without `--force`, then `git worktree prune`.
 
 ## When the folder is gone
 
 If a worktree folder disappears, the chip reads **Worktree missing**. The menu
 offers **Recreate worktree**, which prunes the stale registration and checks the
-stored branch out at the same path, or **Archive task**, which keeps the history
+stored branch out at the same path, or **Settle task**, which keeps the history
 and forgets the checkout.
 
 ## Native behavior
