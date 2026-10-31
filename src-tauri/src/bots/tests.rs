@@ -836,9 +836,20 @@ fn web_chat_locale_follows_accept_language() {
     assert_eq!(web::ui_language(Some("zh-TW,zh;q=0.8,en;q=0.7")), "zh-Hant-TW");
     assert_eq!(web::ui_language(Some("zh-HK")), "zh-Hant-HK");
     assert_eq!(web::ui_language(Some("zh-Hant-HK")), "zh-Hant-HK");
-    assert_eq!(web::ui_language(Some("ja-JP")), "en-US");
-    // The first supported candidate wins.
-    assert_eq!(web::ui_language(Some("fr-FR,zh-HK;q=0.8")), "zh-Hant-HK");
+    assert_eq!(web::ui_language(Some("de-DE")), "de");
+    assert_eq!(web::ui_language(Some("es-419")), "es");
+    assert_eq!(web::ui_language(Some("fr")), "fr");
+    assert_eq!(web::ui_language(Some("it-IT")), "it");
+    assert_eq!(web::ui_language(Some("ja-JP")), "ja");
+    assert_eq!(web::ui_language(Some("ko-KR")), "ko");
+    assert_eq!(web::ui_language(Some("pl")), "pl");
+    assert_eq!(web::ui_language(Some("pt-BR")), "pt-BR");
+    assert_eq!(web::ui_language(Some("pt-PT")), "pt-BR");
+    assert_eq!(web::ui_language(Some("ru-RU")), "ru");
+    assert_eq!(web::ui_language(Some("nl-NL")), "en-US");
+    // Unsupported languages are skipped; the first supported candidate wins.
+    assert_eq!(web::ui_language(Some("nl-NL,fr-FR;q=0.9")), "fr");
+    assert_eq!(web::ui_language(Some("nl-NL,zh-HK;q=0.8")), "zh-Hant-HK");
 }
 
 #[test]
