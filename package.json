@@ -1,7 +1,7 @@
 {
   "name": "pandacode",
   "private": true,
-  "version": "0.3.82",
+  "version": "0.3.83",
   "description": "Open-source desktop workspace for coding agents: Claude Code, Codex, Kimi Code, OpenCode and more.",
   "license": "SEE LICENSE IN LICENSE",
   "homepage": "https://github.com/aicodeking/pandacode#readme",
