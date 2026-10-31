@@ -73,14 +73,16 @@ export function createGithub(host: GithubHost) {
     const entry = statuses.get(projectId);
     return entry && entry.value ? entry.value : undefined;
   }
-  /** Connection state for a project, or one folder's when `folder` names it; cached, and never queried while switched off. */
-  function status(projectId: string, force = false, folder?: string): Promise<GithubStatus | null> {
+  /** Connection state for a project, or one folder's when `folder` names it (`sessionId`
+   *  resolves the folder against that task's own folders, orphaned ones included);
+   *  cached, and never queried while switched off. */
+  function status(projectId: string, force = false, folder?: string, sessionId?: string): Promise<GithubStatus | null> {
     if (!githubEnabled() || !projectId) return Promise.resolve(null);
-    const key = folder ? `${projectId}\0${folder}` : projectId;
+    const key = sessionId ? `${projectId}\0${folder ?? ''}\0${sessionId}` : folder ? `${projectId}\0${folder}` : projectId;
     const entry = statuses.get(key);
     if (entry?.pending) return entry.pending;
     if (entry && !force && Date.now() - entry.at < STATUS_TTL) return Promise.resolve(entry.value);
-    const pending = host.call<GithubStatus>('github_status', { projectId, ...(folder ? { folder } : {}) }).then(value => {
+    const pending = host.call<GithubStatus>('github_status', { projectId, ...(folder ? { folder } : {}), ...(sessionId ? { sessionId } : {}) }).then(value => {
       statuses.set(key, { at: Date.now(), value });
       if (!folder) host.changed();
       return value;
@@ -308,9 +310,12 @@ export function createGithub(host: GithubHost) {
     if (!force && Date.now() - last < REFRESH_INTERVAL) return;
     refreshed.set(projectId, Date.now());
     try {
-      const updates = await host.call<{ sessionId: string; link: TaskLink }[]>('github_refresh_links', { projectId });
+      const updates = await host.call<{ sessionId: string; repo: string; link: TaskLink }[]>('github_refresh_links', { projectId });
       let changed = false;
-      for (const { sessionId, link } of updates) {
+      for (const { sessionId, repo, link } of updates) {
+        // Only the primary identity feeds session.pullRequest/issue; the other
+        // repositories' links are read from their per-repo rows by the PR tab.
+        if (repo !== '') continue;
         const session = host.sessions().find(s => s.id === sessionId); if (!session) continue;
         const key = link.kind === 'pull' ? 'pullRequest' : 'issue';
         if (session[key]?.state !== link.state || session[key]?.title !== link.title) { session[key] = link; changed = true; }

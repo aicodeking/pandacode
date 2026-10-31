@@ -451,6 +451,18 @@ const folderRepos = (task: Session, primary: GitStatus): RepoStatusInfo[] => fol
   : index === 1
     ? { label: folderLabel(folder.path), branch: task.worktreePath ? primary.branch : 'main', ahead: 0, behind: task.worktreePath ? 2 : 0, files: [{ path: 'src/refresh-button.tsx', index: ' ', working: 'M' }, { path: 'package.json', index: '?', working: '?' }] }
     : { label: folderLabel(folder.path), branch: '', ahead: 0, behind: 0, files: [] });
+/** The flat per-repository entries a worktree command reply carries beside its
+ * primary payload: the primary first, then the ?folders sample's web repository,
+ * which rides the task's branch beside its own checkout. */
+const worktreeRepos = (task: Session, primary: unknown): { label: string; result?: unknown; error?: string }[] => {
+  const folders = foldersOut(task.projectId);
+  const repos: { label: string; result?: unknown; error?: string }[] = [{ label: folderLabel(folders[0].path), result: primary }];
+  if (showFolders && task.projectId === 'project-1' && task.worktreePath && task.worktreeBranch) {
+    const web = folders.find(f => !f.isPrimary && f.path.endsWith('-web'));
+    if (web) repos.push({ label: folderLabel(web.path), result: primary });
+  }
+  return repos;
+};
 /** A tiny GitHub for the browser preview: one connected repository and a few issues.
  * The ?folders sample's web repository joins under its own 'orbit-web' namespace so its
  * linked pull request (#57) serves detail and diff without touching the primary's lists. */
@@ -1754,7 +1766,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const source = session(args.sessionId);
       const worktree = previewWorktree(source, args);
       const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
-      sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id); result = created; break;
+      sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id);
+      // One outcome per additional repository checkout beside the new task, as the native reply carries.
+      const web = showFolders && created.projectId === 'project-1' ? foldersOut(created.projectId).find(f => !f.isPrimary && f.path.endsWith('-web')) : undefined;
+      result = { ...created, repos: web ? [{ label: folderLabel(web.path), result: { path: `${web.path}-worktrees/${worktree.branch.replaceAll('/', '-')}`, branch: worktree.branch } }] : [] };
+      break;
     }
     case 'attach_worktree': {
       const s = session(args.sessionId);
@@ -1773,7 +1789,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'worktree_status': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
       const checkout = worktreeGit.get(s.worktreePath);
-      result = checkout ? { exists: true, branch: checkout.branch, changes: checkout.files.length, clean: !checkout.files.length, hasUpstream: pushedBranches.has(checkout.branch), ahead: pushedBranches.has(checkout.branch) ? 0 : 1, merged: mergedBranches.has(checkout.branch) } : { exists: false, branch: s.worktreeBranch ?? '', changes: 0, clean: true, hasUpstream: false, ahead: 0, merged: false };
+      const status = checkout ? { exists: true, branch: checkout.branch, changes: checkout.files.length, clean: !checkout.files.length, hasUpstream: pushedBranches.has(checkout.branch), ahead: pushedBranches.has(checkout.branch) ? 0 : 1, merged: mergedBranches.has(checkout.branch) } : { exists: false, branch: s.worktreeBranch ?? '', changes: 0, clean: true, hasUpstream: false, ahead: 0, merged: false };
+      result = { ...status, repos: worktreeRepos(s, status) };
       break;
     }
     case 'worktree_paths': {
@@ -1798,7 +1815,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (checkout.files.length) throw new Error('The worktree has uncommitted changes. Commit or discard them first; only committed work is merged.');
       const commits = mergedBranches.has(checkout.branch) ? 0 : 1;
       mergedBranches.add(checkout.branch);
-      result = { branch: checkout.branch, target: 'main', commits, switchedFrom: null }; break;
+      const merged = { branch: checkout.branch, target: 'main', commits, switchedFrom: null };
+      result = { ...merged, repos: worktreeRepos(s, merged) }; break;
     }
     case 'remove_worktree': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
@@ -1808,13 +1826,22 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       worktreeGit.delete(s.worktreePath);
       const deletable = args.deleteBranch && mergedBranches.has(branch);
       if (deletable) previewBranches.delete(branch);
-      result = { removed: Boolean(checkout), branch, branchDeleted: Boolean(deletable), note: args.deleteBranch && !deletable && branch ? `Branch ${branch} was kept: error: the branch '${branch}' is not fully merged` : '' }; break;
+      const removal = { removed: Boolean(checkout), branch, branchDeleted: Boolean(deletable), note: args.deleteBranch && !deletable && branch ? `Branch ${branch} was kept: error: the branch '${branch}' is not fully merged` : '' };
+      result = { ...removal, repos: worktreeRepos(s, removal) }; break;
     }
     case 'recreate_worktree': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
       if (worktreeGit.has(s.worktreePath)) throw new Error('The worktree folder already exists.');
       if (!s.worktreeBranch || !previewBranches.has(s.worktreeBranch)) throw new Error('The worktree\u2019s branch is unknown; create a new worktree instead.');
-      worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] }); result = s; break;
+      worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] });
+      const folders = foldersOut(s.projectId);
+      const repos: { label: string; result?: unknown; error?: string }[] = [{ label: folderLabel(folders[0].path), result: s.worktreePath }];
+      // Each repository recreates its own checkout, as the native reply lists.
+      if (showFolders && s.projectId === 'project-1') {
+        const web = folders.find(f => !f.isPrimary && f.path.endsWith('-web'));
+        if (web) repos.push({ label: folderLabel(web.path), result: `${web.path}-worktrees/${s.worktreeBranch.replaceAll('/', '-')}` });
+      }
+      result = { ...s, repos }; break;
     }
     case 'git_push': { const checkout = checkoutGit(args.sessionId); pushedBranches.add(checkout.branch); result = `branch '${checkout.branch}' set up to track 'origin/${checkout.branch}'.`; break; }
     case 'github_status':
@@ -1840,7 +1867,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'github_search': result = previewGithub.search(args.projectId, String(args.query ?? '')); break;
     case 'github_issues': result = previewGithub.issues(args.projectId, args.filter ?? {}); break;
     case 'github_resolve': result = previewGithub.resolve(args.projectId, (args.numbers ?? []) as number[]); break;
-    case 'github_refresh_links': result = sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue, s.pullRequest].filter(Boolean).map(link => ({ sessionId: s.id, link: previewGithub.refresh(s.projectId, link!) }))); break;
+    case 'github_refresh_links': result = sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue, s.pullRequest].filter(Boolean).map(link => ({ sessionId: s.id, repo: '', link: previewGithub.refresh(s.projectId, link!) }))); break;
     case 'set_task_link': {
       const s = session(args.sessionId);
       if (!['issue', 'pull'].includes(args.kind)) throw new Error('Unknown link kind.');

@@ -2871,7 +2871,17 @@ mod tests {
                 .db
                 .query_row("SELECT COUNT(*) FROM session_repos", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(repos, 0, "a single-folder task records no per-repo rows");
+            assert_eq!(repos, 1, "a single-folder task records only the primary pin");
+            let (path, worktree): (String, String) = store
+                .db
+                .query_row("SELECT path,worktree_path FROM session_repos", [], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap();
+            assert_eq!(PathBuf::from(path), PathBuf::from(&project.path), "the pin names the primary folder");
+            assert_eq!(
+                PathBuf::from(worktree),
+                fs::canonicalize(f.base.join("project-worktrees/pandacode-solo")).unwrap(),
+                "the pin carries the task's worktree"
+            );
             assert_eq!(store.workspace_folders(&project.id, &task.id).unwrap().len(), 1);
         }
     }
@@ -3021,7 +3031,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(repos, 1, "exactly the additional repository is recorded");
+            assert_eq!(repos, 2, "the primary pin plus the additional repository are recorded");
         }
         assert!(
             store

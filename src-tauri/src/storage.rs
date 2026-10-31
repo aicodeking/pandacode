@@ -22,6 +22,11 @@ pub fn valid_permission_mode(mode: &str) -> bool {
 // selected mode, including restrictive modes chosen before this default changed.
 pub const DEFAULT_PERMISSION_MODE: &str = "full";
 
+// Links stored under the legacy '' repo key belong to whichever folder is
+// primary, so moving the primary is refused while any of them exist.
+const PRIMARY_LINKS_REFUSAL: &str =
+    "This project has tasks with linked GitHub items. Settle them before changing the primary folder.";
+
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,12 +150,30 @@ pub struct RepoFolder {
     pub worktree: Option<PathBuf>,
     pub branch: Option<String>,
 }
-/// Folder display names: the basename, parent-qualified only where basenames collide.
+/// Folder display names: the basename, parent-qualified only where basenames
+/// collide, with as many parent levels as the collision needs (`/a/john/x` and
+/// `/b/john/x` stay `john/x`; a shared parent grows another level).
 pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
     let base = |p: &Path| {
         p.file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| p.to_string_lossy().to_string())
+    };
+    // The last `levels` components joined with '/', fewer when the path is shorter.
+    let qualified = |p: &Path, levels: usize| -> String {
+        let mut parts = vec![base(p)];
+        let mut parent = p.parent();
+        while parts.len() < levels {
+            match parent {
+                Some(ancestor) if !ancestor.as_os_str().is_empty() => {
+                    parts.push(base(ancestor));
+                    parent = ancestor.parent();
+                }
+                _ => break,
+            }
+        }
+        parts.reverse();
+        parts.join("/")
     };
     let basenames: Vec<String> = paths.iter().map(|p| base(p)).collect();
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -159,14 +182,29 @@ pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
     }
     paths
         .iter()
-        .zip(&basenames)
-        .map(|(p, name)| {
-            if counts[name.as_str()] > 1 {
-                if let Some(parent) = p.parent() {
-                    return format!("{}/{}", base(parent), name);
+        .enumerate()
+        .map(|(index, p)| {
+            if counts[basenames[index].as_str()] <= 1 {
+                return basenames[index].clone();
+            }
+            // Grow parent levels until this spelling differs from every other
+            // colliding path's; the common case settles at one level.
+            let mut levels = 1;
+            loop {
+                let label = qualified(p, levels + 1);
+                if paths.iter().enumerate().all(|(other, q)| {
+                    other == index
+                        || counts[basenames[other].as_str()] <= 1
+                        || basenames[other] != basenames[index]
+                        || qualified(q, levels + 1) != label
+                }) {
+                    return label;
+                }
+                levels += 1;
+                if levels + 1 > p.components().count() {
+                    return label;
                 }
             }
-            name.clone()
         })
         .collect()
 }
@@ -927,6 +965,18 @@ impl Store {
             is_primary: false,
         })
     }
+    /// Whether any task of the project still holds a GitHub link under the
+    /// legacy primary key: those links belong to whichever folder is primary,
+    /// so the primary must stay put until they are settled.
+    fn project_has_unqualified_links(&self, project_id: &str) -> Result<bool> {
+        let count: i64 = self.db.query_row(
+            "SELECT COUNT(*) FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 AND l.repo='' AND l.kind IN ('pull','issue')",
+            [project_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
     /// Remove a folder; the last one stays, and removing the primary promotes the
     /// next folder by position, with projects.path following it in one transaction.
     pub fn remove_project_folder(&self, project_id: &str, path: &Path) -> Result<()> {
@@ -940,6 +990,9 @@ impl Store {
             .find(|f| f.path == path_str)
             .ok_or_else(|| "Folder not found.".to_string())?;
         let was_primary = removed.is_primary;
+        if was_primary && self.project_has_unqualified_links(project_id)? {
+            return Err(PRIMARY_LINKS_REFUSAL.into());
+        }
         let next = folders
             .iter()
             .filter(|f| f.path != path_str)
@@ -978,6 +1031,9 @@ impl Store {
             .find(|f| f.path == path_str)
             .ok_or_else(|| "Folder not found.".to_string())?;
         if !folder.is_primary {
+            if self.project_has_unqualified_links(project_id)? {
+                return Err(PRIMARY_LINKS_REFUSAL.into());
+            }
             let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
             transaction
                 .execute(
@@ -1374,10 +1430,12 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     /// Record refreshed states without touching which task owns which link.
-    pub fn update_link_states(&self, project_id: &str, states: &[(String, i64, String, String)]) -> Result<()> {
-        for (kind, number, state, title) in states {
-            self.db.execute("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)",
-                params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
+    /// Each state names its repository key, so two repos sharing a number never
+    /// cross-update each other's rows.
+    pub fn update_link_states(&self, project_id: &str, states: &[(String, String, i64, String, String)]) -> Result<()> {
+        for (repo, kind, number, state, title) in states {
+            self.db.execute("UPDATE task_links SET state=?4,title=CASE WHEN ?5='' THEN title ELSE ?5 END,checked_at=?6 WHERE repo=?1 AND kind=?2 AND number=?3 AND session_id IN (SELECT id FROM sessions WHERE project_id=?7)",
+                params![repo, kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -1440,10 +1498,26 @@ impl Store {
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
+        // A task created after multi-folder pinning records its primary: the
+        // session_repos row whose checkout is the task's own names the folder
+        // that was primary when the task was created, so a later primary change
+        // cannot relabel this task's checkout. Legacy tasks keep today's behavior.
+        let pinned: Option<String> = session.worktree_path.as_ref().and_then(|worktree| {
+            repos
+                .iter()
+                .find(|(_, row_worktree, _)| row_worktree.as_deref() == Some(worktree.as_str()))
+                .map(|(path, _, _)| path.clone())
+        });
+        let primary = pinned.clone().unwrap_or(primary);
+        // Under the pin every other folder is secondary, the current primary
+        // included: the pinned row took the primary slot.
+        let secondary = |f: &Folder| {
+            Some(f.path.as_str()) != pinned.as_deref() && (pinned.is_some() || !f.is_primary)
+        };
         // Labels always come from the folder paths: the primary, the folders, then
         // the dropped folders a task still holds a checkout for.
         let mut label_paths = vec![PathBuf::from(&primary)];
-        for folder in folders.iter().filter(|f| !f.is_primary) {
+        for folder in folders.iter().filter(|f| secondary(f)) {
             label_paths.push(PathBuf::from(&folder.path));
         }
         let folder_set: std::collections::HashSet<&str> =
@@ -1455,7 +1529,9 @@ impl Store {
                     .as_ref()
                     .map(|wt| (path.clone(), wt.clone(), branch.clone()))
             })
-            .filter(|(path, _, _)| !folder_set.contains(path.as_str()))
+            .filter(|(path, _, _)| {
+                !folder_set.contains(path.as_str()) && Some(path.as_str()) != pinned.as_deref()
+            })
             .collect();
         for (path, _, _) in &orphans {
             label_paths.push(PathBuf::from(path));
@@ -1473,7 +1549,7 @@ impl Store {
             branch,
         });
         let mut label_index = 1;
-        for folder in folders.iter().filter(|f| !f.is_primary) {
+        for folder in folders.iter().filter(|f| secondary(f)) {
             let entry = match repos.iter().find(|(path, _wt, _)| *path == folder.path) {
                 Some((_, Some(wt), branch)) => RepoFolder {
                     path: PathBuf::from(wt),
@@ -2383,6 +2459,10 @@ mod sidebar_tests;
 #[cfg(test)]
 #[path = "storage_folder_tests.rs"]
 mod folder_tests;
+
+#[cfg(test)]
+#[path = "storage_identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1739,7 +1739,13 @@ fn prepare_task_run_in_project(
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     let folders = store.workspace_folders(&session.project_id, &session_id)?;
-    let extra_dirs: Vec<PathBuf> = folders.iter().filter(|folder| !folder.is_primary).map(|folder| folder.path.clone()).collect();
+    // Cloud tasks sync one checkout to their machine; a folder added after the
+    // task was created must not flow its local path into the remote run config.
+    let extra_dirs: Vec<PathBuf> = if session.cloud.is_some() {
+        Vec::new()
+    } else {
+        folders.iter().filter(|folder| !folder.is_primary).map(|folder| folder.path.clone()).collect()
+    };
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
     let (prompt, skill, maintenance) = match admission.command {
@@ -1838,9 +1844,11 @@ fn prepare_task_run_in_project(
     };
     let mut prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
     // A multi-folder task's harness learns the other checkouts through the run
-    // config (its own mechanism) and this note; empty for single-folder tasks.
-    // Maintenance turns keep the prompt bare, like the title note and instructions.
-    if !maintenance {
+    // config (its own mechanism) and this note; empty for single-folder tasks,
+    // and for cloud runs, whose machine only holds the one synced checkout
+    // (extra_dirs are stripped for them above). Maintenance turns keep the
+    // prompt bare, like the title note and instructions.
+    if !maintenance && session.cloud.is_none() {
         prompt.push_str(&folders_note(&folders));
     }
     let config = RunConfig {
@@ -1899,12 +1907,8 @@ fn prepare_cloud_attach(
         .filter(|cloud| cloud.active())
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
-    // Cloud tasks run one checkout today; the folders still feed the run config.
-    let extra_dirs: Vec<PathBuf> = store.workspace_folders(&session.project_id, &session_id)?
-        .into_iter()
-        .filter(|folder| !folder.is_primary)
-        .map(|folder| folder.path)
-        .collect();
+    // Cloud tasks sync one checkout; the run config never carries local folder paths.
+    let extra_dirs: Vec<PathBuf> = Vec::new();
     store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
     store.reattach_turn(&session_id)?;
     let config = RunConfig {
@@ -3201,13 +3205,20 @@ pub fn create_worktree_task_with_repos(
     existing: bool,
     inherit_defaults: bool,
 ) -> Result<(Session, Vec<RepoWorktreeOutcome>)> {
-    let (source, root, extras) = {
+    let (source, root, extras, primary_folder) = {
         let store = store.lock().map_err(|e| e.to_string())?;
         let source = store.session(session_id)?;
         let project_id = source.project_id.clone();
         let root = store.workspace_root(&project_id, Some(session_id))?;
         let extras = extra_repo_folders(&store, &project_id)?;
-        (source, root, extras)
+        // The primary folder is pinned like the extras, so a later primary
+        // change cannot relabel this task's checkout (workspace_folders).
+        let primary_folder = store
+            .project_folders(&project_id)?
+            .into_iter()
+            .find(|folder| folder.is_primary)
+            .map(|folder| PathBuf::from(folder.path));
+        (source, root, extras, primary_folder)
     };
     let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing)?;
     let mut outcomes = Vec::new();
@@ -3238,6 +3249,9 @@ pub fn create_worktree_task_with_repos(
             source.mode = storage::DEFAULT_PERMISSION_MODE.into();
         }
         let task = store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
+        if let Some(primary) = &primary_folder {
+            store.set_session_repo(&task.id, primary, Some(&worktree.path), Some(&worktree.branch))?;
+        }
         for (folder, path, worktree_branch) in &created {
             store.set_session_repo(&task.id, folder, Some(path), Some(worktree_branch))?;
         }
@@ -3256,14 +3270,15 @@ pub fn create_worktree_task_with_repos(
     Ok((task, outcomes))
 }
 
-/// The created task with its primary fields at the top level, plus one entry
-/// per additional repository checkout (success or failure).
+/// The created task with its primary fields at the top level, plus one flat
+/// entry per additional repository checkout (success or failure), in the
+/// RepoOutcome shape the other worktree commands reply with.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreatedWorktreeTask {
     #[serde(flatten)]
     session: Session,
-    repos: Vec<RepoWorktreeOutcome>,
+    repos: Vec<RepoOutcome>,
 }
 
 #[tauri::command]
@@ -3278,6 +3293,16 @@ async fn create_worktree(
     blocking(move || {
         let (session, repos) =
             create_worktree_task_with_repos(&store, &session_id, branch, base, existing.unwrap_or(false), true)?;
+        let repos = repos
+            .into_iter()
+            .map(|repo| match repo.result {
+                Ok(worktree) => match serde_json::to_value(worktree) {
+                    Ok(result) => RepoOutcome { label: repo.label, result: Some(result), error: None },
+                    Err(error) => RepoOutcome { label: repo.label, result: None, error: Some(error.to_string()) },
+                },
+                Err(error) => RepoOutcome { label: repo.label, result: None, error: Some(error) },
+            })
+            .collect();
         Ok(CreatedWorktreeTask { session, repos })
     })
     .await
@@ -3855,6 +3880,9 @@ async fn github_resolve(
 #[serde(rename_all = "camelCase")]
 struct LinkedTask {
     session_id: String,
+    /// The task_links repo key the link belongs under: '' for the primary
+    /// identity, otherwise the repository's `owner/name`.
+    repo: String,
     link: storage::TaskLink,
 }
 
@@ -3870,7 +3898,7 @@ async fn github_refresh_links(state: State<'_, AppState>, project_id: String) ->
     blocking(move || {
         let links = store.lock().map_err(|e| e.to_string())?.project_links(&project_id)?;
         if !links.is_empty() {
-            let mut states: Vec<(String, i64, String, String)> = Vec::new();
+            let mut states: Vec<(String, String, i64, String, String)> = Vec::new();
             for (index, folder) in folders.iter().enumerate() {
                 let Some(key) = github::folder_link_key(folder) else { continue };
                 // One refresh per identity: the first folder holding the key queries it.
@@ -3887,7 +3915,7 @@ async fn github_refresh_links(state: State<'_, AppState>, project_id: String) ->
                 }
                 let repo = github::repository(&folder.path).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
                 for state in github::link_states(&folder.path, &repo, &wanted)? {
-                    states.push((state.kind, state.number, state.state, state.title));
+                    states.push((key.clone(), state.kind, state.number, state.state, state.title));
                 }
             }
             if !states.is_empty() {
@@ -3899,7 +3927,7 @@ async fn github_refresh_links(state: State<'_, AppState>, project_id: String) ->
             .map_err(|e| e.to_string())?
             .project_links(&project_id)?
             .into_iter()
-            .map(|(session_id, _repo, link)| LinkedTask { session_id, link })
+            .map(|(session_id, repo, link)| LinkedTask { session_id, repo, link })
             .collect())
     })
     .await

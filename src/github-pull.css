@@ -122,5 +122,6 @@
 .pull-entry{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:var(--ds-radius-chip);color:var(--muted);font-size:var(--ds-text-meta);background:var(--ds-raised)}
 .pull-entry .icon{width:var(--icon-sm);height:var(--icon-sm)}
 .pull-entry[aria-selected="true"]{color:var(--text);font-weight:var(--weight-medium);background:var(--accent-dim)}
+.pull-entry:disabled{opacity:.55;color:var(--muted);background:var(--raised);cursor:default}
 .pull-entry-state{font-size:var(--text-2xs);color:var(--faint);text-transform:capitalize}
 .pull-repo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--text-2xs)}

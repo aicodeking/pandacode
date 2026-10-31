@@ -451,7 +451,9 @@ impl Tracker {
         }
         let (key, index, relative) = self.resolve_path(value)?;
         // `label/relative` names a folder directly; labels may carry slashes
-        // (parent-disambiguated), so match whole label prefixes.
+        // (parent-disambiguated), so match whole label prefixes. A relative path
+        // still means the primary first: the label only reassigns it when the
+        // primary folder has no such file.
         let mut named: Option<(usize, &str)> = None;
         for (index, folder) in self.roots.iter().enumerate() {
             if folder.primary {
@@ -465,11 +467,22 @@ impl Tracker {
             }
         }
         if let Some((index, rest)) = named {
-            let origin = (index, rest.to_owned());
-            let resolved = self.roots.get(index)?.canonical.join(&rest);
-            return self
-                .remember(key.clone(), origin)
-                .map(|key| (key, resolved));
+            let primary = self
+                .roots
+                .iter()
+                .position(|folder| folder.primary)
+                .unwrap_or(0);
+            let in_primary = self
+                .roots
+                .get(primary)
+                .is_some_and(|folder| folder.canonical.join(&relative).exists());
+            if !in_primary {
+                let origin = (index, rest.to_owned());
+                let resolved = self.roots.get(index)?.canonical.join(&rest);
+                return self
+                    .remember(key.clone(), origin)
+                    .map(|key| (key, resolved));
+            }
         }
         let resolved = self
             .roots

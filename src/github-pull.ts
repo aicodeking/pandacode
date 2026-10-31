@@ -26,8 +26,9 @@ export type PullSelection = { entries: PullEntry[]; selected: string; onSelect(r
 export type PullHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   openUrl(url: string): Promise<void>;
-  /** The project folder a repository's pull request is fetched through; undefined for the primary. */
-  folderFor(repoKey: string): Promise<string | undefined>;
+  /** The project folder a repository's pull request is fetched through; undefined for
+   *  the primary, null when no folder of the task can serve the repository any more. */
+  folderFor(repoKey: string): Promise<string | null | undefined>;
   /** Remove the link from the task; the inspector falls back to Changes. */
   unlink(session: Session, folder?: string, number?: number): Promise<void>;
   /** The task came back with its link marked merged. */
@@ -139,6 +140,12 @@ export function createPullView(host: PullHost) {
     void load(false);
   }
 
+  /** The repository's folder is gone from the task: its entry goes quiet and inert. */
+  function disableEntry(view: NonNullable<typeof mounted>): void {
+    const tab = view.root.querySelector<HTMLButtonElement>(`[data-pull-entry="${CSS.escape(view.entry.repoKey)}"]`);
+    if (tab) { tab.disabled = true; tab.title = `${view.entry.repoKey} was removed from this task`; }
+  }
+
   async function load(force: boolean): Promise<void> {
     const view = mounted; if (!view) return;
     const hit = details.get(view.key);
@@ -149,6 +156,11 @@ export function createPullView(host: PullHost) {
     try {
       const folder = view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined;
       if (mounted !== view || view.request !== request) return;
+      if (folder === null) {
+        disableEntry(view);
+        view.detail.innerHTML = `<div class="inspector-empty">${icon('info')}<h3>Repository removed</h3><p class="pull-muted">No folder of this task checks out ${escape(view.entry.repoKey)} any more, so its pull request cannot be read here.</p></div>`;
+        return;
+      }
       const detail = await host.call<PullDetail>('github_pull_request', { sessionId: view.session.id, ...(folder ? { folder } : {}) });
       details.set(view.key, { at: Date.now(), detail });
       if (force) diffs.delete(view.key);
@@ -176,10 +188,12 @@ export function createPullView(host: PullHost) {
 
   async function merge(view: NonNullable<typeof mounted>): Promise<void> {
     const detail = details.get(view.key)?.detail; if (!detail || view.merge === 'merging') return;
+    const folder = view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined;
+    if (folder === null) { host.notify(`Repository ${view.entry.repoKey} was removed from this task; its pull request cannot be merged here.`); return; }
     view.method = (view.root.querySelector<HTMLSelectElement>('[data-pull-merge-method]')?.value as MergeMethod | undefined) ?? view.method;
     view.merge = 'merging'; await render(view, detail);
     try {
-      const saved = await host.call<Session>('github_merge_pull_request', { sessionId: view.session.id, method: view.method, ...(view.entry.repoKey ? { folder: await host.folderFor(view.entry.repoKey) } : {}) });
+      const saved = await host.call<Session>('github_merge_pull_request', { sessionId: view.session.id, method: view.method, ...(folder ? { folder } : {}) });
       if (mounted === view) { view.session = saved; view.merge = 'idle'; }
       host.notify(`Merged pull request #${detail.number}`);
       host.merged(saved);
@@ -294,8 +308,10 @@ export function createPullView(host: PullHost) {
     button.setAttribute('aria-expanded', 'true');
     diffHost.hidden = false; diffHost.innerHTML = '<p class="pull-muted pull-pad" role="status">Loading diff…</p>';
     try {
+      const folder = view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined;
+      if (folder === null) { diffHost.innerHTML = `<p class="pull-muted pull-pad">Repository ${escape(view.entry.repoKey)} was removed from this task.</p>`; return; }
       let pending = diffs.get(view.key);
-      if (!pending) { pending = host.call<PullDiff>('github_pull_request_diff', { sessionId: view.session.id }); diffs.set(view.key, pending); pending.catch(() => diffs.delete(view.key)); }
+      if (!pending) { pending = host.call<PullDiff>('github_pull_request_diff', { sessionId: view.session.id, ...(folder ? { folder } : {}) }); diffs.set(view.key, pending); pending.catch(() => diffs.delete(view.key)); }
       const [{ patch, truncated }, { mountDiffViewer }] = await Promise.all([pending, import('./diff-viewer')]);
       if (mounted !== view || !diffHost.isConnected || button.getAttribute('aria-expanded') !== 'true') return;
       const section = fileSection(patch, path);
@@ -312,7 +328,11 @@ export function createPullView(host: PullHost) {
     switch (target.dataset.pullAction) {
       case 'refresh': await load(true); break;
       case 'open': if (target.dataset.url) await host.openUrl(target.dataset.url); break;
-      case 'unlink': await host.unlink(view.session, view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined, view.entry.link.number); break;
+      case 'unlink': {
+        const folder = view.entry.repoKey ? await host.folderFor(view.entry.repoKey) : undefined;
+        if (folder === null) { host.notify(`Repository ${view.entry.repoKey} was removed from this task; its pull request cannot be unlinked here.`); break; }
+        await host.unlink(view.session, folder, view.entry.link.number); break;
+      }
       case 'merge-start': if (detail) { view.merge = 'confirm'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-cancel"]')?.focus(); } break;
       case 'merge-method': { const { openChoiceMenu } = await import('./choice-menu'); if (mounted !== view || !target.isConnected) break; openChoiceMenu({ anchor: target, title: 'Merge method', items: (Object.keys(MERGE_LABEL) as MergeMethod[]).map(method => ({ id: method, label: MERGE_LABEL[method], icon: 'merge', selected: method === view.method })), onSelect: async id => { view.method = id as MergeMethod; if (detail && mounted === view) { await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-method"]')?.focus(); } }, onClose: () => { if (target.isConnected) target.focus(); } }); break; }
       case 'merge-cancel': if (detail) { view.merge = 'idle'; await render(view, detail); view.root.querySelector<HTMLElement>('[data-pull-action="merge-start"]')?.focus(); } break;

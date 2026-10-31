@@ -650,20 +650,23 @@ function pullEntries(): { repoKey: string; link: TaskLink }[] {
   if (s?.pullRequest && !entries.some(entry => !entry.repoKey)) entries.unshift({ repoKey: '', link: s.pullRequest });
   return entries;
 }
-/** The project folder a repository's pull request is read through: its label, found by matching each folder's GitHub identity. */
-let pullFolderMap: { key: string; map: Map<string, string> } | undefined;
-async function folderForPull(repoKey: string): Promise<string | undefined> {
+/** The project folder a repository's pull request is read through: its label, found by
+ *  matching each folder's GitHub identity. Identities resolve against the session's own
+ *  folders, so a repository the project dropped (its checkout rides the task) still
+ *  answers; null marks a repository no folder can serve, never the primary. */
+let pullFolderMap: { key: string; map: Map<string, string | null> } | undefined;
+async function folderForPull(repoKey: string): Promise<string | null | undefined> {
   if (!repoKey || !state.projectId) return undefined;
   const key = workspaceKey();
   if (pullFolderMap?.key !== key) {
     const context = workspaceContext();
     const identities = await Promise.all(state.taskFolders.filter(folder => !folder.isPrimary).map(async folder => {
-      const status = await github.status(context.projectId, false, folder.label).catch(() => null);
+      const status = await github.status(context.projectId, false, folder.label, context.sessionId).catch(() => null);
       return [status?.repo?.nameWithOwner ?? '', folder.label] as const;
     }));
     pullFolderMap = { key, map: new Map(identities.filter(([name]) => name).map(([name, label]) => [name, label])) };
   }
-  return pullFolderMap.map.get(repoKey);
+  return pullFolderMap.map.get(repoKey) ?? null;
 }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
