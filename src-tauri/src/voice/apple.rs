@@ -45,12 +45,9 @@ pub fn start_recording(
     std::thread::Builder::new()
         .name("voice-apple".into())
         .spawn(move || {
-            match run_session(worker_app.clone(), locale, stop.clone(), cancel.clone()) {
-                // Capture ran (events already emitted); only startup errors surface.
-                started => {
-                    let _ = ready_tx.send(started);
-                }
-            }
+            // Capture ran (events already emitted); only startup errors surface.
+            let started = run_session(worker_app.clone(), locale, stop.clone(), cancel.clone());
+            let _ = ready_tx.send(started);
             clear_session(&worker_app);
         })
         .map_err(|e| e.to_string())?;
@@ -144,7 +141,7 @@ fn run_session(
             unsafe { tap_request.appendAudioPCMBuffer(buffer) };
             static SINCE_LEVEL: std::sync::atomic::AtomicUsize =
                 std::sync::atomic::AtomicUsize::new(0);
-            if SINCE_LEVEL.fetch_add(1, Ordering::Relaxed) % 4 == 0 {
+            if SINCE_LEVEL.fetch_add(1, Ordering::Relaxed).is_multiple_of(4) {
                 super::emit(&level_app, EVENT_LEVEL, buffer_level(buffer));
             }
         },
