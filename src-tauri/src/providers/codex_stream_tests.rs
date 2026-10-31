@@ -8,6 +8,7 @@ fn protocol() -> Protocol {
         reasoning_effort: None,
         mode: "ask".into(),
         cwd: PathBuf::from("/tmp"),
+        extra_dirs: Vec::new(),
         resume_id: None,
         prompt: "Explain this project".into(),
         instructions: String::new(),

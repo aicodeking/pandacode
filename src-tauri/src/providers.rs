@@ -158,6 +158,9 @@ pub struct RunConfig {
     pub reasoning_effort: Option<String>,
     pub mode: String,
     pub cwd: PathBuf,
+    /// A multi-folder task's other checkouts (effective paths, never the primary).
+    /// Empty for every single-folder task, whose spawns stay exactly as before.
+    pub extra_dirs: Vec<PathBuf>,
     pub resume_id: Option<String>,
     pub prompt: String,
     /// Fixed app instructions. Claude-family harnesses receive them as an appended system
@@ -2393,7 +2396,9 @@ impl Protocol {
                 "danger-full-access" => json!({"type":"dangerFullAccess"}),
                 "read-only" => json!({"type":"readOnly","networkAccess":false}),
                 _ => {
-                    json!({"type":"workspaceWrite","writableRoots":[self.config.cwd],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false})
+                    let mut roots = vec![self.config.cwd.clone()];
+                    roots.extend(self.config.extra_dirs.iter().cloned());
+                    json!({"type":"workspaceWrite","writableRoots":roots,"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false})
                 }
             };
         } else {
@@ -4445,6 +4450,9 @@ fn configure_command_with_agents(
             if !config.instructions.is_empty() {
                 command.args(["--append-system-prompt", &config.instructions]);
             }
+            for dir in &config.extra_dirs {
+                command.args(["--add-dir", &dir.to_string_lossy()]);
+            }
             command.env_remove("CLAUDECODE");
         }
     }
@@ -4579,6 +4587,7 @@ async fn run_inner(
             format!("{} CLI is not installed or is not on PATH", config.provider)
         })?;
     config.cwd = external_path(&config.cwd);
+    config.extra_dirs = config.extra_dirs.iter().map(|dir| external_path(dir)).collect();
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
     let mut command = provider_command(&config.provider, &path)?;
     let defer_antigravity_gemini_dir = config.provider == "antigravity" && connection.is_some();
@@ -5668,6 +5677,7 @@ mod tests {
             reasoning_effort: None,
             mode: "ask".into(),
             cwd: PathBuf::from("/tmp"),
+            extra_dirs: Vec::new(),
             resume_id: None,
             prompt: "Explain this project".into(),
             instructions: String::new(),
@@ -6626,6 +6636,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn extra_folders_widen_the_codex_sandbox_writable_roots() {
+        let mut cfg = config("codex");
+        cfg.extra_dirs = vec![PathBuf::from("/tmp/selected-project-sibling")];
+        let mut p = Protocol::new(cfg);
+        let start = p.receive(json!({"id":1,"result":{}})).unwrap();
+        assert_eq!(start.write[1]["method"], "thread/start");
+        let turn = p
+            .receive(json!({"id":2,"result":{"thread":{"id":"thread"}}}))
+            .unwrap();
+        assert_eq!(
+            turn.write[0]["params"]["sandboxPolicy"]["writableRoots"],
+            json!(["/tmp", "/tmp/selected-project-sibling"])
+        );
     }
 
     #[test]
@@ -8127,6 +8153,7 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
                 reasoning_effort: None,
                 mode: "ask".into(),
                 cwd: root.clone(),
+                extra_dirs: Vec::new(),
                 resume_id: resume.clone(),
                 prompt: prompt.into(),
                 instructions: String::new(),
