@@ -857,7 +857,7 @@ async fn open_pull(ctx: Ctx<'_>, this: PullCreate) -> Result<Value> {
     let store = ctx.state().store.clone();
     let session_id = this.session_id;
     let saved = link.clone();
-    crate::blocking(move || store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&saved)).map(|_| ())).await?;
+    crate::blocking(move || store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&saved)).map(|_| ())).await?;
     changed(&ctx);
     Ok(json!({"pull": link_json(&link), "note": null}))
 }
