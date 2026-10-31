@@ -3875,18 +3875,45 @@ mod tests {
             assert_eq!(columns, 2, "cron and timezone columns");
             let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND \"notnull\"<>0", [], |r| r.get(0)).unwrap();
             assert_eq!(notnull, 0, "both nullable: syntax is validated in Rust, like prompts");
-            // A database from before the feature (the previous schema, 36): drop the
-            // columns and reopen; the guarded migration restores them.
+            // A database from before the feature (the previous schema, 36): the v35 shape,
+            // kind CHECK without `cron`. Recreate it that way with one row; the migration
+            // adds the columns, keeps the row and rebuilds the CHECK to let the kind in.
             store
                 .db
-                .execute_batch("ALTER TABLE task_schedules DROP COLUMN cron; ALTER TABLE task_schedules DROP COLUMN timezone; PRAGMA user_version=36;")
+                .execute_batch("INSERT INTO projects(id,name,path) VALUES('p','Project','/tmp/p');
+                    INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at) VALUES('s','p','Task','test','m','build','completed',0,0);
+                    DROP TABLE task_schedules;
+                    CREATE TABLE task_schedules(id TEXT PRIMARY KEY,
+                      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                      title TEXT NOT NULL, prompt TEXT NOT NULL,
+                      kind TEXT NOT NULL CHECK(kind IN ('once','interval','daily','weekdays','weekly','after')),
+                      interval_minutes INTEGER, time_of_day TEXT, days TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(days)),
+                      watch_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+                      only_on_success INTEGER NOT NULL DEFAULT 0, next_run_at INTEGER, last_run_at INTEGER,
+                      enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL CHECK(created_by IN ('user','agent')),
+                      created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+                      run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                      trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT,
+                      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+                    INSERT INTO task_schedules(id,session_id,title,prompt,kind,days,only_on_success,enabled,created_by,run_count,consecutive_failures,created_at,updated_at)
+                      VALUES('kept','s','Kept','Hello','daily','[]',0,1,'user',0,0,0,0);
+                    PRAGMA user_version=36;")
                 .unwrap();
         }
         {
             let store = Store::open(&path).unwrap();
             assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
             let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone')", [], |r| r.get(0)).unwrap();
-            assert_eq!(columns, 2, "the guarded migration restores the dropped columns");
+            assert_eq!(columns, 2, "the migration adds the columns to the pre-feature table");
+            let kept: i64 = store.db.query_row("SELECT COUNT(*) FROM task_schedules WHERE id='kept' AND kind='daily'", [], |r| r.get(0)).unwrap();
+            assert_eq!(kept, 1, "the rebuilt table keeps the rows");
+            // The rebuilt kind CHECK accepts the new kind.
+            store
+                .db
+                .prepare("INSERT INTO task_schedules(id,session_id,title,prompt,kind,days,only_on_success,enabled,created_by,run_count,consecutive_failures,created_at,updated_at,cron,timezone) VALUES('crony','s','Cron','Hello','cron','[]',0,1,'user',0,0,0,0,'0 9 * * *',NULL)")
+                .unwrap()
+                .execute([])
+                .unwrap();
         }
         std::fs::remove_dir_all(dir).unwrap();
     }

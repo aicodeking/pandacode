@@ -27,7 +27,7 @@ const RUNS_PER_SESSION: i64 = 200;
 const AFTER_GAP: i64 = 30_000;
 const FAILURE_LIMIT: i64 = 3;
 const TICK_SECONDS: u64 = 15;
-const KINDS: &str = "Choose once, interval, daily, weekdays, weekly or after.";
+const KINDS: &str = "Choose once, interval, daily, weekdays, weekly, cron or after.";
 
 pub(crate) const TABLE: &str = "
 CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,

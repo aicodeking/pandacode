@@ -46,11 +46,13 @@ const dayOnly = (at: number) => when(at).replace(clockAt(at), '').trim() || when
 const workflowName = (schedule: TaskSchedule) => schedule.title.split(' · ')[0] || 'Workflow';
 const absolute = (at: number) => `${new Date(at).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} ${clockAt(at)}`;
 
-/** Next clock time for the editor's preview; the native scheduler computes the real one. */
+/** Next clock time for the editor's preview; the native scheduler computes the real one.
+ *  The browser only does local-zone date math, so a schedule in another time zone gets
+ *  no estimate (the cadence already names the zone). */
 function nextRun(input: ScheduleInput, now = Date.now()): number | null {
   if (input.kind === 'once') return input.runAt ?? null;
   if (input.kind === 'interval') return input.intervalMinutes ? now + input.intervalMinutes * 60_000 : null;
-  if (input.kind === 'cron' || input.kind === 'after' || !/^\d\d:\d\d$/.test(input.timeOfDay ?? '')) return null;
+  if (input.timezone || input.kind === 'cron' || input.kind === 'after' || !/^\d\d:\d\d$/.test(input.timeOfDay ?? '')) return null;
   const [h, m] = input.timeOfDay!.split(':').map(Number);
   const ok = (day: number) => input.kind === 'daily' || (input.kind === 'weekdays' ? day > 0 && day < 6 : (input.days ?? []).includes(day));
   for (let i = 0; i < 8; i++) {
@@ -307,7 +309,6 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     if (CLOCK_KINDS.includes(kind) && !input.timeOfDay) return { text: 'Pick a time of day.', field: time };
     if (kind === 'cron' && !input.cron) return { text: 'Write a cron expression.', field: cronInput };
     if (kind === 'cron' && (input.cron ?? '').trim().split(/\s+/).length !== 5) return { text: 'A cron expression is five fields (minute hour day-of-month month day-of-week).', field: cronInput };
-    if (input.timezone && !/^[A-Za-z0-9_+\-]+(\/[A-Za-z0-9_+\-]+)+$/.test(input.timezone.trim()) && !/^(UTC|GMT)$/.test(input.timezone.trim())) return { text: 'Use an IANA time zone name like Asia/Tokyo, or leave it empty for this computer\'s zone.', field: timezoneInput };
     if (kind === 'weekly' && !input.days?.length) return { text: 'Pick at least one day.', field: days.querySelector('button')! };
     if (kind === 'once' && !(input.runAt && input.runAt > Date.now() - 60_000)) return { text: 'Pick a time in the future.', field: runAt };
     if (kind === 'after' && !input.watchSessionId) return { text: 'Pick a thread to follow.', field: watch };
