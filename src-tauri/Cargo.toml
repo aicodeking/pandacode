@@ -69,8 +69,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 # These use the platform webview already required by Tauri; none enters the Mac build.
 [target.'cfg(target_os = "windows")'.dependencies]
 dunce = "1"
-webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Security"] }
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Security"] }
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
