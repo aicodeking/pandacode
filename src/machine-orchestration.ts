@@ -296,7 +296,7 @@ export function deviceRows(devices: RemoteDevice[], links: OrchestrationLink[]):
   return devices.filter(device => !device.current).map(device => ({
     ...device,
     access: links.find(link => link.deviceId === device.id)?.access ?? null,
-    why: !device.trusted ? 'Not trusted · trust it in Settings → Remote access' : !device.host ? 'Remote control off · turn it on on that computer' : '',
+    why: !device.host ? 'Remote control off · turn it on on that computer' : '',
   }));
 }
 function badges(row: Row): string {

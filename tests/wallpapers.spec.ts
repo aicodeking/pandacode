@@ -69,12 +69,12 @@ test('wallpapers load one scene shared by thread and board without remounting it
   await expect(images(page)).toHaveCount(1);
   await expectSceneCoversBars(page);
   await page.evaluate(() => { (window as any).__scene = document.querySelector('.workspace-wallpaper img'); });
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await expect(page.locator('#project-board')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expectSceneCoversBars(page);
   await page.setViewportSize({ width: 1100, height: 780 });
   await expectSceneCoversBars(page);
-  await page.getByRole('button', { name: 'Conversation view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Conversation', exact: true }).click();
   await expect(page.locator('.conversation-pane')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expectSceneCoversBars(page);
   await expect(images(page)).toHaveCount(1);
@@ -210,7 +210,7 @@ test('wallpapers match the sidebar frost in rounded board task details without a
     const style = getComputedStyle(el);
     return { background: style.backgroundColor, frost: style.backdropFilter };
   });
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();
   const details = page.getByRole('region', { name: 'Task details', exact: true });
   await expect(details).toBeVisible();

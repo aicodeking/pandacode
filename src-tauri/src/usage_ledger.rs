@@ -2,6 +2,11 @@
 //! project logs and Codex rollouts). Files are read only when Agent usage is
 //! opened; token counts are cached per file so later opens only read what was
 //! appended. Nothing leaves the machine except the public price-list request.
+//!
+//! The parsed cache is saved at most once a minute and dropped from memory after
+//! ten idle minutes (reloaded from its file on demand). It is derived from the logs
+//! alone: a change not yet saved at quit is simply read again from the saved
+//! offsets at the next scan, so no exit hook is needed.
 
 mod parse;
 mod pricing;
@@ -13,7 +18,7 @@ pub(crate) use parse::unix_seconds;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 use tauri::Manager;
@@ -21,6 +26,10 @@ use tauri::Manager;
 const HISTORY_DAYS: i64 = 366;
 const RESULT_TTL_MS: i64 = 60_000;
 const CACHE_VERSION: u32 = 1;
+/// Cache saves are coalesced to at most one per this interval.
+const SAVE_EVERY_MS: i64 = 60_000;
+/// An unused cache is dropped from memory after this long.
+const IDLE_DROP_MS: i64 = 600_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,6 +110,13 @@ pub(crate) fn claude_roots() -> Vec<PathBuf> {
     roots(Agent::Claude)
 }
 
+/// Log roots per agent, in scan order.
+type Roots = Vec<(Agent, Vec<PathBuf>)>;
+
+fn agent_roots() -> Roots {
+    [Agent::Claude, Agent::Codex].into_iter().map(|agent| (agent, roots(agent))).collect()
+}
+
 fn roots(agent: Agent) -> Vec<PathBuf> {
     let home = crate::agent_usage_providers::home();
     let mut roots: Vec<PathBuf> = match agent {
@@ -129,8 +145,9 @@ fn modified_ms(metadata: &std::fs::Metadata) -> i64 {
         .map_or(0, |elapsed| elapsed.as_millis() as i64)
 }
 
-/// `.jsonl` files changed within the history window, without following links.
-fn log_files(root: &Path, since_ms: i64, output: &mut Vec<(PathBuf, std::fs::Metadata)>) {
+/// `.jsonl` files changed within the history window whose path passes `keep`, without
+/// following links. Names are filtered before the stat, so a narrow `keep` stays cheap.
+fn log_files(root: &Path, since_ms: i64, keep: &dyn Fn(&Path) -> bool, output: &mut Vec<(PathBuf, std::fs::Metadata)>) {
     let mut pending = vec![(root.to_path_buf(), 0)];
     while let Some((dir, depth)) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -139,7 +156,7 @@ fn log_files(root: &Path, since_ms: i64, output: &mut Vec<(PathBuf, std::fs::Met
             let path = entry.path();
             if kind.is_dir() && depth < 8 {
                 pending.push((path, depth + 1));
-            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+            } else if kind.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") && keep(&path) {
                 if let Ok(metadata) = entry.metadata() {
                     if modified_ms(&metadata) >= since_ms {
                         output.push((path, metadata));
@@ -177,43 +194,62 @@ fn read_file(path: &Path, agent: Agent, entry: &mut FileEntry) -> std::io::Resul
     Ok(())
 }
 
-/// Brings the cache up to date with the logs on disk; returns whether it changed.
-fn refresh_cache(cache: &mut Cache, since_ms: i64) -> bool {
+/// Brings one log file's entry up to date; returns whether it changed.
+fn refresh_entry(cache: &mut Cache, key: String, path: &Path, metadata: &std::fs::Metadata, agent: Agent) -> bool {
+    let (length, modified) = (metadata.len(), modified_ms(metadata));
+    let entry = cache.files.entry(key).or_default();
+    if entry.agent == Some(agent) && entry.length == length && entry.modified == modified {
+        return false;
+    }
+    // Logs are append-only; anything else (truncated, replaced, first sight) is read from the start.
+    if entry.agent != Some(agent) || length < entry.offset {
+        *entry = FileEntry {
+            agent: Some(agent),
+            session: agent == Agent::Codex || !path.components().any(|part| part.as_os_str() == "subagents"),
+            ..FileEntry::default()
+        };
+    }
+    if read_file(path, agent, entry).is_err() {
+        *entry = FileEntry::default();
+        return false;
+    }
+    entry.length = length;
+    entry.modified = modified;
+    true
+}
+
+/// Brings the cache entries of every log file passing `keep` up to date with the
+/// logs on disk and forgets those whose files are gone; returns whether it changed.
+fn refresh_matching(cache: &mut Cache, roots: &Roots, since_ms: i64, keep: &dyn Fn(Agent, &Path) -> bool) -> bool {
     let mut changed = false;
     let mut seen = HashSet::new();
-    for agent in [Agent::Claude, Agent::Codex] {
+    for (agent, dirs) in roots {
         let mut files = Vec::new();
-        for root in roots(agent) {
-            log_files(&root, since_ms, &mut files);
+        for root in dirs {
+            log_files(root, since_ms, &|path| keep(*agent, path), &mut files);
         }
         for (path, metadata) in files {
             let key = path.to_string_lossy().into_owned();
-            let (length, modified) = (metadata.len(), modified_ms(&metadata));
-            let entry = cache.files.entry(key.clone()).or_default();
-            seen.insert(key);
-            if entry.agent == Some(agent) && entry.length == length && entry.modified == modified {
-                continue;
-            }
-            // Logs are append-only; anything else (truncated, replaced, first sight) is read from the start.
-            if entry.agent != Some(agent) || length < entry.offset {
-                *entry = FileEntry {
-                    agent: Some(agent),
-                    session: agent == Agent::Codex || !path.components().any(|part| part.as_os_str() == "subagents"),
-                    ..FileEntry::default()
-                };
-            }
-            if read_file(&path, agent, entry).is_err() {
-                *entry = FileEntry::default();
-                continue;
-            }
-            entry.length = length;
-            entry.modified = modified;
-            changed = true;
+            seen.insert(key.clone());
+            changed |= refresh_entry(cache, key, &path, &metadata, *agent);
         }
     }
     let before = cache.files.len();
-    cache.files.retain(|path, _| seen.contains(path));
+    cache.files.retain(|path, entry| seen.contains(path) || entry.agent.is_some_and(|agent| !keep(agent, Path::new(path))));
     changed || cache.files.len() != before
+}
+
+/// Brings the cache up to date with the logs on disk; returns whether it changed.
+fn refresh_cache(cache: &mut Cache, roots: &Roots, since_ms: i64) -> bool {
+    refresh_matching(cache, roots, since_ms, &|_, _| true)
+}
+
+/// Like `refresh_cache`, but reads and forgets only the log files of `links`, so a
+/// task's totals match a full scan without reading other logs. Every root is walked
+/// each time (only matching names are stat'ed), so a rollout moved to
+/// `archived_sessions` or a second log of the same session is never missed.
+fn refresh_linked(cache: &mut Cache, roots: &Roots, links: &[String], since_ms: i64) -> bool {
+    refresh_matching(cache, roots, since_ms, &|agent, path| links.iter().any(|link| file_belongs_to(link, agent, path)))
 }
 
 fn aggregate(cache: &Cache, book: &pricing::PriceBook, since_hour: i64, scanned_at: i64) -> Ledger {
@@ -235,7 +271,7 @@ fn aggregate(cache: &Cache, book: &pricing::PriceBook, since_hour: i64, scanned_
                 continue;
             }
             let index = *model_index.entry((agent, record.model.as_str())).or_insert_with(|| {
-                models.push(ModelInfo { provider: agent, name: record.model.clone(), priced: book.find(&record.model).is_some() });
+                models.push(ModelInfo { provider: agent, name: record.model.to_string(), priced: book.find(&record.model).is_some() });
                 models.len() - 1
             });
             let (cost, savings) = book.cost(record).unwrap_or((0.0, 0.0));
@@ -270,32 +306,130 @@ fn aggregate(cache: &Cache, book: &pricing::PriceBook, since_hour: i64, scanned_
 }
 
 fn load_cache(path: &Path) -> Cache {
-    std::fs::read(path)
+    File::open(path)
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Cache>(&bytes).ok())
+        .and_then(|file| serde_json::from_reader::<_, Cache>(BufReader::with_capacity(256 * 1024, file)).ok())
         .filter(|cache| cache.version == CACHE_VERSION)
         .unwrap_or(Cache { version: CACHE_VERSION, files: HashMap::new() })
 }
 
-fn save_cache(path: &Path, cache: &Cache) {
-    let Ok(bytes) = serde_json::to_vec(cache) else { return };
+/// Streams the cache to disk (no whole-file buffer); returns whether it was written.
+fn save_cache(path: &Path, cache: &Cache) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let temporary = path.with_extension("tmp");
-    if std::fs::write(&temporary, bytes).is_ok() {
-        let _ = std::fs::rename(&temporary, path);
+    let written = File::create(&temporary).and_then(|file| {
+        let mut writer = BufWriter::with_capacity(256 * 1024, file);
+        serde_json::to_writer(&mut writer, cache)?;
+        writer.flush()
+    });
+    match written.and_then(|_| std::fs::rename(&temporary, path)) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("usage ledger: could not save the log cache: {error}");
+            let _ = std::fs::remove_file(&temporary);
+            false
+        }
     }
 }
 
+#[derive(Default)]
 struct State {
     cache: Option<Cache>,
     last: Option<(i64, std::sync::Arc<Ledger>)>,
+    /// The cache has changes not yet saved.
+    dirty: bool,
+    saved_at: i64,
+    used_at: i64,
+    janitor: bool,
 }
 
 fn state() -> &'static tokio::sync::Mutex<State> {
     static STATE: std::sync::OnceLock<tokio::sync::Mutex<State>> = std::sync::OnceLock::new();
-    STATE.get_or_init(|| tokio::sync::Mutex::new(State { cache: None, last: None }))
+    STATE.get_or_init(Default::default)
+}
+
+fn cache_path(dir: &Path) -> PathBuf {
+    dir.join("usage-ledger-cache.json")
+}
+
+/// Runs `work` on the cache (loaded on demand) off the async runtime. `work` returns
+/// whether it changed the cache; changes are saved now only if the last save is a
+/// minute old, otherwise by the janitor.
+async fn with_cache<T: Send + 'static>(
+    state: &mut State,
+    dir: &Path,
+    work: impl FnOnce(&mut Cache) -> (bool, T) + Send + 'static,
+) -> crate::Result<T> {
+    let now = crate::storage::now();
+    let path = cache_path(dir);
+    let (cache, dirty) = (state.cache.take(), state.dirty);
+    let due = now - state.saved_at >= SAVE_EVERY_MS;
+    state.dirty = false;
+    state.used_at = now;
+    let (cache, output, dirty, saved) = tokio::time::timeout(
+        Duration::from_secs(300),
+        tauri::async_runtime::spawn_blocking(move || {
+            let mut cache = cache.unwrap_or_else(|| load_cache(&path));
+            let (changed, output) = work(&mut cache);
+            let dirty = dirty || changed;
+            let saved = dirty && due && save_cache(&path, &cache);
+            (cache, output, dirty && !saved, saved)
+        }),
+    )
+    .await
+    .map_err(|_| "Reading agent logs took too long. Try again later.".to_string())?
+    .map_err(|e| e.to_string())?;
+    state.cache = Some(cache);
+    state.dirty = dirty;
+    if saved {
+        state.saved_at = now;
+    }
+    start_janitor(state, dir.to_path_buf());
+    Ok(output)
+}
+
+/// Once a minute, saves unsaved changes; after `IDLE_DROP_MS` unused, saves and
+/// drops the cache and the last ledger, then stops until the next use.
+fn start_janitor(current: &mut State, dir: PathBuf) {
+    if current.janitor {
+        return;
+    }
+    current.janitor = true;
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(SAVE_EVERY_MS as u64)).await;
+            let mut state = state().lock().await;
+            let now = crate::storage::now();
+            let idle = now - state.used_at >= IDLE_DROP_MS;
+            if state.dirty {
+                if let Some(cache) = state.cache.take() {
+                    let path = cache_path(&dir);
+                    let result = tauri::async_runtime::spawn_blocking(move || {
+                        let saved = save_cache(&path, &cache);
+                        (cache, saved)
+                    })
+                    .await;
+                    if let Ok((cache, saved)) = result {
+                        state.cache = Some(cache);
+                        state.dirty = !saved;
+                        state.saved_at = now;
+                    }
+                }
+                state.dirty &= state.cache.is_some();
+            }
+            // A failed save is retried each minute while in use; idle, the cache goes regardless
+            // (it is rebuilt from the logs).
+            if idle {
+                state.dirty = false;
+                state.cache = None;
+                state.last = None;
+                state.janitor = false;
+                break;
+            }
+        }
+    });
 }
 
 async fn build(dir: PathBuf, refresh: bool) -> crate::Result<std::sync::Arc<Ledger>> {
@@ -306,25 +440,13 @@ async fn build(dir: PathBuf, refresh: bool) -> crate::Result<std::sync::Arc<Ledg
         return Ok(ledger.clone());
     }
     let book = pricing::load(&dir.join("usage-prices.json"), now).await;
-    let cache = state.cache.take();
-    let cache_path = dir.join("usage-ledger-cache.json");
     let since_ms = now - HISTORY_DAYS * 86_400_000;
-    let (cache, ledger) = tokio::time::timeout(
-        Duration::from_secs(300),
-        tauri::async_runtime::spawn_blocking(move || {
-            let mut cache = cache.unwrap_or_else(|| load_cache(&cache_path));
-            if refresh_cache(&mut cache, since_ms) {
-                save_cache(&cache_path, &cache);
-            }
-            let ledger = aggregate(&cache, &book, since_ms.div_euclid(3_600_000), now);
-            (cache, ledger)
-        }),
-    )
-    .await
-    .map_err(|_| "Reading agent logs took too long. Try again later.".to_string())?
-    .map_err(|e| e.to_string())?;
+    let ledger = with_cache(&mut state, &dir, move |cache| {
+        let changed = refresh_cache(cache, &agent_roots(), since_ms);
+        (changed, aggregate(cache, &book, since_ms.div_euclid(3_600_000), now))
+    })
+    .await?;
     let ledger = std::sync::Arc::new(ledger);
-    state.cache = Some(cache);
     state.last = Some((now, ledger.clone()));
     Ok(ledger)
 }
@@ -336,4 +458,72 @@ pub(crate) async fn usage_ledger(app: tauri::AppHandle, window: tauri::WebviewWi
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(Ledger::clone(&*build(dir, refresh.unwrap_or(false)).await?))
+}
+
+/// Token totals for the harness sessions one task has run under, summed from the
+/// cached log records.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskUsage {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+    pub first_used: Option<i64>,
+    pub last_used: Option<i64>,
+}
+
+/// Whether one cached log file belongs to the harness session: Claude names the file
+/// after the session, Codex ends the rollout file name with the session id.
+fn file_belongs_to(link: &str, agent: Agent, path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else { return false };
+    match agent {
+        Agent::Claude => stem == link,
+        Agent::Codex => stem.len() > link.len() && stem.ends_with(link),
+    }
+}
+
+/// Sums the cached records of every log file belonging to one of `links`, keeping
+/// only records from `since_hour` on. Pure so tests can build the cache by hand.
+fn task_usage_from_cache(cache: &Cache, links: &[String], since_hour: i64) -> TaskUsage {
+    let mut usage = TaskUsage::default();
+    let mut replies = HashSet::new();
+    for (path, entry) in &cache.files {
+        let Some(agent) = entry.agent else { continue };
+        if !links.iter().any(|link| file_belongs_to(link, agent, Path::new(path))) {
+            continue;
+        }
+        for record in &entry.records {
+            if record.hour < since_hour {
+                continue;
+            }
+            // Streaming rewrites a reply and resumed sessions copy earlier ones; count each reply once.
+            if let Some(key) = record.key {
+                if !replies.insert(key) {
+                    continue;
+                }
+            }
+            usage.input += record.input;
+            usage.cache_read += record.cache_read;
+            usage.cache_write += record.cache_write + record.cache_write_1h;
+            usage.output += record.output;
+            let started = record.hour * 3_600_000;
+            usage.first_used = Some(usage.first_used.map_or(started, |first| first.min(started)));
+            usage.last_used = Some(usage.last_used.map_or(started, |last| last.max(started)));
+        }
+    }
+    usage
+}
+
+/// Task totals sharing the ledger's log cache; `since_ms` trims older records.
+/// Only the task's own log files are refreshed, so a run end reads just what it appended.
+pub(crate) async fn task_usage(dir: PathBuf, links: Vec<String>, since_ms: Option<i64>) -> crate::Result<TaskUsage> {
+    let mut state = state().lock().await;
+    let since_scan = crate::storage::now() - HISTORY_DAYS * 86_400_000;
+    with_cache(&mut state, &dir, move |cache| {
+        let changed = refresh_linked(cache, &agent_roots(), &links, since_scan);
+        let since_hour = since_ms.map_or(0, |ms| ms.div_euclid(3_600_000));
+        (changed, task_usage_from_cache(cache, &links, since_hour))
+    })
+    .await
 }

@@ -311,7 +311,8 @@ test.describe('slash commands app integration', () => {
     await page.locator('.new-task-button').click();
     await expect(prompt).toBeEnabled();
     await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
-    await page.locator('.model-menu').getByRole('button', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+    await page.locator('.model-menu').getByRole('tab', { name: 'Codex', exact: true }).click();
+    await page.locator('.model-menu').getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('GPT-6-Astra');
     await prompt.fill('/review');
     await expect(menu(page).getByRole('option')).toContainText('codex');
@@ -339,7 +340,7 @@ test.describe('slash commands app integration', () => {
   });
 
   test('opens local controls from a board task without starting the agent', async ({ page }) => {
-    await page.getByRole('button', { name: 'Board view', exact: true }).click();
+    await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
     await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();
     const details = page.getByRole('region', { name: 'Task details', exact: true });
     const prompt = details.locator('#prompt');

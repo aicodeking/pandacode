@@ -5,31 +5,31 @@ dialog.sketch-dialog .dialog-heading{flex-shrink:0}
 .sketch-editor{display:flex;flex-direction:column;gap:8px;flex:1;min-height:0}
 .sketch-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .sketch-toolbar-secondary{padding-bottom:2px}
-.sketch-group{display:flex;align-items:center;gap:2px;padding:3px;border-radius:4px;background:var(--raised)}
+.sketch-group{display:flex;align-items:center;gap:2px;padding:3px;border-radius:var(--radius-sm);background:var(--raised)}
 .sketch-group-end{margin-left:auto}
-.sketch-group-label{display:inline-flex;align-items:center;gap:5px;padding:0 8px 0 6px;font-size:.72rem;color:var(--muted);font-weight:550}
+.sketch-group-label{display:inline-flex;align-items:center;gap:5px;padding:0 8px 0 6px;font-size:var(--text-2xs);color:var(--muted);font-weight:550}
 .sketch-group-label .icon{width:13px;height:13px}
-.sketch-tool,.sketch-group .icon-button{width:30px;height:28px;border-radius:3px;color:var(--muted);display:inline-flex;align-items:center;justify-content:center}
+.sketch-tool,.sketch-group .icon-button{width:30px;height:28px;border-radius:var(--radius-sm);color:var(--muted);display:inline-flex;align-items:center;justify-content:center}
 .sketch-tool .icon,.sketch-group .icon-button .icon{width:15px;height:15px}
 .sketch-tool:hover,.sketch-option:hover,.sketch-group .icon-button:hover:not(:disabled){color:var(--text);background:color-mix(in srgb,var(--panel) 70%,transparent)}
-.sketch-tool[aria-pressed=true],.sketch-option[aria-pressed=true],html[data-theme="dark"] :is(.sketch-tool,.sketch-option)[aria-pressed=true]{color:var(--on-accent);background:var(--accent);box-shadow:inset 0 1px 0 rgb(255 255 255 / .45)}
+.sketch-tool[aria-pressed=true],.sketch-option[aria-pressed=true],html[data-theme="dark"] :is(.sketch-tool,.sketch-option)[aria-pressed=true]{color:var(--on-accent);background:var(--accent)}
 .sketch-group .icon-button:disabled{opacity:.4}
-.sketch-option{height:28px;padding:0 9px;border-radius:3px;font-size:.72rem;font-weight:550;color:var(--muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.sketch-option{height:28px;padding:0 9px;border-radius:var(--radius-sm);font-size:var(--text-2xs);font-weight:550;color:var(--muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .sketch-option .icon{width:13px;height:13px}
-.sketch-swatch{width:22px;height:22px;margin:0 2px;border-radius:50%;background:var(--swatch);border:2px solid transparent;box-shadow:inset 0 0 0 1px rgb(0 0 0 / .12)}
-.sketch-swatch[aria-pressed=true]{border-color:var(--panel);box-shadow:0 0 0 2px var(--swatch)}
-.sketch-select{display:inline-flex;align-items:center;gap:6px;font-size:.72rem;color:var(--muted);font-weight:550;padding:0 4px 0 8px}
-.sketch-select select{height:24px;border-radius:2px;border:1px solid var(--border);background:var(--panel);color:var(--text);font-size:.72rem;padding:0 6px}
-.sketch-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;border-radius:5px;background:color-mix(in srgb,var(--raised) 60%,transparent);border:1px solid var(--border);overflow:hidden;padding:12px}
-.sketch-paper{position:relative;flex-shrink:0;box-shadow:0 1px 2px rgb(0 0 0 / .08),0 14px 40px -18px rgb(0 0 0 / .35);border-radius:2px;overflow:hidden;background:#fff}
+.sketch-swatch{width:22px;height:22px;margin:0 2px;border-radius:50%;background:var(--swatch)}
+.sketch-swatch[aria-pressed=true]{scale:1.25}
+.sketch-select{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-2xs);color:var(--muted);font-weight:550;padding:0 4px 0 8px}
+.sketch-select select{height:24px;border-radius:var(--radius-xs);border:0;background:var(--fill-hover);color:var(--text);font-size:var(--text-2xs);padding:0 6px}
+.sketch-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--raised) 60%,transparent);overflow:hidden;padding:12px}
+.sketch-paper{position:relative;flex-shrink:0;box-shadow:0 1px 2px rgb(0 0 0 / .08),0 14px 40px -18px rgb(0 0 0 / .35);border-radius:var(--radius-xs);overflow:hidden;background:#fff}
 .sketch-paper canvas{display:block;touch-action:none;outline:none}
 .sketch-paper canvas:focus-visible{box-shadow:inset 0 0 0 2px var(--focus)}
 .sketch-editor[data-tool=pen] canvas{cursor:crosshair}
 .sketch-editor[data-tool=rect] canvas,.sketch-editor[data-tool=ellipse] canvas,.sketch-editor[data-tool=line] canvas,.sketch-editor[data-tool=arrow] canvas{cursor:crosshair}
 .sketch-editor[data-tool=text] canvas{cursor:text}
-.sketch-text-editor{position:absolute;padding:2px 4px;margin:0;border:1px dashed #2f6fdd;border-radius:1px;background:rgb(255 255 255 / .96);color:#1d1d1b;font:500 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.3;resize:none;box-shadow:0 4px 14px rgb(0 0 0 / .12);outline:none;z-index:2}
+.sketch-text-editor{position:absolute;padding:2px 4px;margin:0;border:1px dashed #2f6fdd;border-radius:var(--radius-xs);background:rgb(255 255 255 / .96);color:#1d1d1b;font:500 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.3;resize:none;box-shadow:0 4px 14px rgb(0 0 0 / .12);outline:none;z-index:2}
 .sketch-footer{align-items:center;gap:10px;padding-top:2px;flex-shrink:0}
-.sketch-hint{margin-right:auto;font-size:.74rem;color:var(--muted);line-height:1.4}
+.sketch-hint{margin-right:auto;font-size:var(--text-xs);color:var(--muted);line-height:1.4}
 .sketch-busy .sketch-attach{opacity:.6;pointer-events:none}
 @media(max-width:900px){dialog.sketch-dialog{width:calc(100vw - 1rem);height:calc(100vh - 1rem);max-height:calc(100vh - 1rem);padding:.85rem}.sketch-group-end{margin-left:0}.sketch-hint{display:none}}
 @media(prefers-contrast:more){.sketch-group{border:1px solid var(--text)}.sketch-tool[aria-pressed=true],.sketch-option[aria-pressed=true]{outline:2px solid var(--text)}}

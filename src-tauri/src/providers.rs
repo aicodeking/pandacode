@@ -38,13 +38,17 @@ mod cline;
 mod commandcode;
 mod extra_models;
 mod github_copilot;
+mod devin;
+pub(crate) mod hermes;
 mod glm;
 mod mimo;
 mod muse;
 mod deepseek;
 mod kimi_models;
+mod kilo;
 mod launch;
 mod pi;
+mod zcode;
 mod diagnostics;
 pub(crate) mod claude_auth;
 pub(crate) use launch::{command, pty_command, external_path, executable_path, widen_process_path};
@@ -53,6 +57,7 @@ mod kimi_stream_tests;
 #[cfg(test)]
 mod slash_command_tests;
 mod limits;
+mod plan_reads;
 mod steering;
 mod subagents;
 mod text_stream;
@@ -61,13 +66,20 @@ pub(crate) mod windows_job;
 pub use subagents::SubagentActivity;
 
 const MAX_FRAME: usize = 4 * 1024 * 1024;
+/// Capacity the frame buffer keeps after a large message has been consumed.
+const FRAME_KEEP: usize = 64 * 1024;
 const MODEL_CATALOG_LIMIT: usize = 10_000;
 const STDERR_LIMIT: usize = 16 * 1024;
 const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
-const PROVIDERS: [(&str, &str); 15] = [
+
+/// A frame buffer grown past 1 MiB by one large message gives the memory back once drained.
+fn should_shrink(len: usize, capacity: usize) -> bool {
+    capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
+}
+pub(crate) const PROVIDERS: [(&str, &str); 19] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -80,13 +92,25 @@ const PROVIDERS: [(&str, &str); 15] = [
     ("deepseek", "DeepSeek"),
     ("commandcode", "Command Code"),
     ("cline", "Cline"),
+    ("kilo", "Kilo Code"),
     ("omp", "Oh My Pi"),
     ("github-copilot", "GitHub Copilot CLI"),
     ("muse", "Muse Code"),
+    ("devin", "Devin CLI"),
+    ("zcode", "ZCode"),
+    ("hermes", "Hermes Agent"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
+
+/// Never runs an agent-reviewed task under some other policy.
+fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
+    if mode == "review" && !matches!(provider, "claude" | "glm" | "mimo") {
+        return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
+    }
+    Ok(())
+}
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
 pub fn takes_system_instructions(provider: &str) -> bool {
@@ -421,6 +445,55 @@ pub enum RunInput {
 }
 pub type Sink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
 
+/// How long streamed text may wait before it reaches the window (about one frame at 30 Hz).
+pub const COALESCE_WINDOW: Duration = Duration::from_millis(33);
+const COALESCE_BYTES: usize = 8 * 1024;
+
+/// Merges consecutive plain `text`/`thinking` deltas into one event, so a long reply is a
+/// few dozen window events instead of thousands. Any other event flushes the buffer first,
+/// so ordering is preserved.
+#[derive(Default)]
+pub struct Coalescer {
+    pending: Option<(AgentEvent, std::time::Instant)>,
+}
+impl Coalescer {
+    /// Events to emit now, in order. A buffered delta waits until the window or size limit
+    /// passes, the next event of another kind, or `flush`.
+    pub fn push(&mut self, event: AgentEvent, now: std::time::Instant) -> Vec<AgentEvent> {
+        let plain = matches!(event.kind.as_str(), "text" | "thinking")
+            && event.request_id.is_none()
+            && event.data.is_none()
+            && event.tool.is_none();
+        let mut out = Vec::new();
+        match &mut self.pending {
+            Some((buffered, _)) if plain && buffered.kind == event.kind && buffered.session_id == event.session_id => {
+                buffered.text.push_str(&event.text);
+            }
+            _ => {
+                out.extend(self.flush());
+                if !plain {
+                    out.push(event);
+                    return out;
+                }
+                self.pending = Some((event, now));
+            }
+        }
+        if self.pending.as_ref().is_some_and(|(buffered, since)| {
+            buffered.text.len() >= COALESCE_BYTES || now.duration_since(*since) >= COALESCE_WINDOW
+        }) {
+            out.extend(self.flush());
+        }
+        out
+    }
+    pub fn flush(&mut self) -> Option<AgentEvent> {
+        self.pending.take().map(|(event, _)| event)
+    }
+    /// When the buffered delta arrived; a timer flushes it only if it is still that buffer.
+    pub fn started_at(&self) -> Option<std::time::Instant> {
+        self.pending.as_ref().map(|(_, since)| *since)
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInfo {
@@ -455,14 +528,15 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes",
             None,
         ) => true,
         ("claude" | "glm" | "mimo", Some(value)) => {
             ["low", "medium", "high", "xhigh", "max"].contains(&value)
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
-        ("codex" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline", Some(value)) => {
+        // Kimi's thinking option lists on/off or the model's levels (low/high/max).
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes", Some(value)) => {
             !value.is_empty()
                 && value.len() <= 64
                 && value
@@ -470,7 +544,6 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         }
         ("pi" | "omp", Some(value)) => ["off", "minimal", "low", "medium", "high", "xhigh"].contains(&value),
-        ("kimi", Some(value)) => ["on", "off"].contains(&value),
         ("muse", Some(value)) => muse::valid_effort(value),
         _ => false,
     };
@@ -513,6 +586,16 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
+        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else { None })
+}
+
+/// Starts a provider CLI with the provider's saved environment variables applied.
+/// Everything else a launch adds (credentials, endpoints, a named connection)
+/// is applied later and wins.
+pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, String> {
+    let mut command = command(path)?;
+    crate::provider_settings::apply_environment(provider, &mut command);
+    Ok(command)
 }
 
 fn executable_name(name: &str) -> &str {
@@ -523,6 +606,7 @@ fn executable_name(name: &str) -> &str {
         "deepseek" => "dsh",
         "commandcode" => "command-code",
         "github-copilot" => "copilot",
+        "hermes" => "hermes",
         other => other,
     }
 }
@@ -550,6 +634,13 @@ pub(crate) fn muse_sandbox_args(mode: &str) -> &'static [&'static str] {
 pub(crate) fn grok_permission_mode(mode: &str) -> &'static str {
     acp::grok_permission_mode(mode)
 }
+
+/// Devin's commands for a project, from a discovery session it deletes afterwards.
+pub(crate) async fn devin_commands(path: &Path, cwd: &Path) -> Result<Option<Value>, String> {
+    devin::commands(path, cwd).await
+}
+
+pub(crate) use devin::HIDDEN_COMMANDS as DEVIN_HIDDEN_COMMANDS;
 
 pub(crate) fn glm_arguments() -> Vec<String> {
     glm::arguments()
@@ -691,7 +782,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" | "muse"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -718,8 +809,12 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "deepseek" => deepseek::models(&path).await,
         "commandcode" => commandcode::models(&path).await,
         "cline" => cline::models(&path).await,
+        "kilo" => kilo::models(&path).await,
         "github-copilot" => github_copilot::models(&path).await,
         "muse" => muse::models(&path).await,
+        "devin" => devin::models(&path).await,
+        "zcode" => zcode::models(&path).await,
+        "hermes" => hermes::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -901,7 +996,7 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = command(path)?;
+    let mut command = provider_command("claude", path)?;
     claude_auth::configure(&mut command, "claude");
     command
         .args([
@@ -967,7 +1062,7 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn codex_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = command(path)?;
+    let mut command = provider_command("codex", path)?;
     command
         .arg("app-server")
         .current_dir(std::env::temp_dir())
@@ -1061,6 +1156,7 @@ struct Protocol {
     kimi_resume: bool,
     pi: pi::State,
     muse: muse::State,
+    zcode: zcode::State,
     // ACP may publish commands before session/new responds. Keep at most one
     // small frame until the response confirms which session owns it.
     early_kimi_commands: Option<Vec<u8>>,
@@ -1190,6 +1286,7 @@ impl Protocol {
             kimi_resume: false,
             pi: pi::State::default(),
             muse: muse::State::default(),
+            zcode: zcode::State::default(),
             early_kimi_commands: None,
             tools: HashMap::new(),
             file_write_tools: HashSet::new(),
@@ -1258,7 +1355,7 @@ impl Protocol {
                     .flatten()
                     .take(8)
                     .filter_map(|option| option["value"].as_str())
-                    .filter(|value| ["on", "off"].contains(value))
+                    .filter(|value| validate_reasoning_effort("kimi", Some(value)).is_ok())
                     .map(str::to_owned)
                     .collect();
             }
@@ -1269,8 +1366,8 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse") && self.config.mode == "plan" && !text.trim().is_empty() {
-            text = format!("{}\n\n{text}", acp::GROK_PLAN_PREFIX);
+        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") && self.config.mode == "plan" && !text.trim().is_empty() {
+            text = format!("{}\n\n{text}", acp::READ_ONLY_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
             content.push(if self.config.provider == "codex" {
@@ -1315,7 +1412,7 @@ impl Protocol {
         AgentEvent {
             session_id: self.config.session_id.clone(),
             kind: kind.into(),
-            text: if kind == "text" || kind == "session" {
+            text: if kind == "text" || kind == "thinking" || kind == "session" {
                 text
             } else {
                 short(&text)
@@ -1324,6 +1421,10 @@ impl Protocol {
             data: data.and_then(event_metadata),
             tool: None,
         }
+    }
+    /// Reasoning text the model streams; the window appends it to the turn's Thinking fold.
+    fn thinking(&self, text: &str, step: &mut Step) {
+        if !text.is_empty() { step.events.push(self.event("thinking", text, None)); }
     }
     fn tool_update(
         &mut self,
@@ -1638,6 +1739,7 @@ impl Protocol {
     fn initial(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"get_state","id":"pandacode-init"}),
+            "zcode" => self.zcode_initial(),
             "muse" => self.muse_initial(),
             "codex" => {
                 let mut request = json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"pandacode","title":"PandaCode","version":"0.1.0"}}});
@@ -1645,7 +1747,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
@@ -1675,6 +1777,7 @@ impl Protocol {
         let request = self.pending.remove(id)?;
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
+            "zcode" => zcode::permission_decision(&request, approved),
             "codex" => {
                 let method = string(&request, "method");
                 let result = if method == "item/permissions/requestApproval" {
@@ -1684,7 +1787,8 @@ impl Protocol {
                 };
                 json!({"id":request["id"],"result":result})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
+            "devin" => devin::decision(&request, approved),
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -1707,11 +1811,12 @@ impl Protocol {
     fn cancel(&self) -> Value {
         match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"abort"}),
+            "zcode" => zcode::stop(&self.remote_id),
             "muse" => self.muse_cancel(),
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -1740,8 +1845,9 @@ impl Protocol {
             "codex" => self.codex(value).map(|step| self.steered(step)),
             "kimi" => self.kimi_steered(value),
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
+            "zcode" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "github-copilot" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -1882,6 +1988,8 @@ impl Protocol {
             "item/agentMessage/delta" => {
                 self.text_delta(field(params,"itemId"),None,field(params,"delta"),&mut step);
             },
+            "item/reasoning/summaryTextDelta"|"item/reasoning/textDelta" => self.thinking(field(params,"delta"),&mut step),
+            "item/reasoning/summaryPartAdded" if params["summaryIndex"].as_u64().is_some_and(|index| index > 0) => self.thinking("\n\n",&mut step),
             "item/commandExecution/outputDelta" => {
                 let id=field(params,"itemId");
                 let mut output=self.tools.get(id).map(|tool|tool.output.clone()).unwrap_or_default();
@@ -2127,7 +2235,10 @@ impl Protocol {
                             }
                         }
                     },
-                    "agent_thought_chunk"=>self.kimi_message_id.clear(),
+                    "agent_thought_chunk"=>{
+                        self.kimi_message_id.clear();
+                        if update["content"]["type"]=="text" {self.thinking(field(&update["content"],"text"),&mut step);}
+                    },
                     "tool_call"|"tool_call_update"=>{
                         // Late snapshots of a known tool must not split a later
                         // assistant response. Only a new call closes the segment.
@@ -2360,6 +2471,11 @@ impl Protocol {
                         }
                     }
                 }
+                if event["type"] == "content_block_delta"
+                    && event["delta"]["type"] == "thinking_delta"
+                {
+                    self.thinking(field(&event["delta"], "thinking"), &mut step);
+                }
                 if event["type"] == "content_block_delta" && event["delta"]["type"] == "text_delta"
                 {
                     let id = self.claude_text_id(&Value::Null);
@@ -2427,14 +2543,19 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool))
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
                         // title or snapshot named paths. They cannot edit the checkout.
                         // Bot tools are registered only in a bot's own tasks and only
                         // touch that bot's memory, schedules and messages to its owner.
+                        // Schedule tools here only wake or list this thread's own schedules.
                         // Team tools only exist in team turns and only change team state.
+                        step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
+                    } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
+                        // Plan mode investigates: reads and web lookups anywhere run;
+                        // Claude's own deny rules were applied before it asked.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else {
                         self.approval(
@@ -2642,18 +2763,31 @@ pub async fn run(
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
 ) -> Result<(), String> {
-    run_with_tools(config, sink, input, None).await
+    run_with_tools(config, sink, input, None, Default::default()).await
 }
 
+tokio::task_local! {
+    static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+}
+
+/// Marks the run as having reached the harness: from here an error is the harness's (its CLI is
+/// missing, it could not start, or its process or session failed), so it counts for model health.
+/// PandaCode's own preflight (validation, attachments, connections, tools) fails before this.
+fn reached_harness() {
+    let _ = HARNESS.try_with(|reached| reached.store(true, std::sync::atomic::Ordering::SeqCst));
+}
+
+/// `harness` is set once the run reaches the harness (`reached_harness`).
 pub async fn run_with_tools(
     config: RunConfig,
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
+    harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
-    let result = run_inner(config, sink.clone(), input, host).await;
+    let result = HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await;
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
     }
@@ -2674,9 +2808,10 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             command.args(["app-server", "--enable", "goals"]);
         }
         "pi" | "omp" => pi::configure(command, config),
+        "zcode" => zcode::configure(command),
         "muse" => muse::configure(command, config),
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" => acp::configure(command, config),
-        "github-copilot" => acp::configure(command, config),
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
+        "github-copilot" | "devin" | "hermes" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -2699,6 +2834,8 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
             ]);
             let permission_mode = match config.mode.as_str() {
                 "auto" => "acceptEdits",
+                // Claude Code's auto mode: its safety reviewer approves routine actions.
+                "review" => "auto",
                 "plan" => "plan",
                 "full" => "bypassPermissions",
                 _ => "default",
@@ -2751,9 +2888,13 @@ async fn run_inner(
         "deepseek",
         "commandcode",
         "cline",
+        "kilo",
         "omp",
         "github-copilot",
         "muse",
+        "devin",
+        "zcode",
+        "hermes",
     ]
     .contains(&config.provider.as_str())
     {
@@ -2762,27 +2903,37 @@ async fn run_inner(
     if !crate::storage::valid_permission_mode(&config.mode) {
         return Err("Unknown permission mode".into());
     }
+    review_supported(&config.provider, &config.mode)?;
     validate_reasoning_effort(&config.provider, config.reasoning_effort.as_deref())?;
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
     if let Some(command) = crate::cloud_agents::transport::command(&config, |command| configure_command(command, &config)).await? {
         return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
     }
-    let connection = crate::connections::for_task(&config.session_id, &config.provider)
+    let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
         .transpose()?;
     let path = connection
         .as_ref()
         .and_then(|connection| connection.executable.clone())
         .or_else(|| executable(&config.provider))
-        .ok_or_else(|| format!("{} CLI is not installed or is not on PATH", config.provider))?;
+        .ok_or_else(|| {
+            reached_harness();
+            format!("{} CLI is not installed or is not on PATH", config.provider)
+        })?;
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
-    let mut command = command(&path)?;
+    let mut command = provider_command(&config.provider, &path)?;
     configure_command(&mut command, &config);
     // A named connection's arguments and environment win over the global setup.
     if let Some(connection) = &connection {
         connection.apply(&mut command);
+    }
+    if config.provider == "kilo" {
+        let inline = kilo::configure_environment(&mut command, &config);
+        if let Some(connection) = &mut connection {
+            connection.secrets.push(inline);
+        }
     }
     let key = if config.provider == "glm" {
         Some(glm::configure(&mut command)?)
@@ -2826,13 +2977,25 @@ async fn run_process(
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL
 }
-// Preview tools are an optional transport capability, but retain their normal
-// approval requirements and transcript activity. They are not metadata tools.
+// Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
+// transport capabilities, but retain their normal approval requirements and transcript
+// activity. They are not metadata tools.
 fn optional_transport_tool(name: &str) -> bool {
-    optional_metadata_tool(name) || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
+    optional_metadata_tool(name)
+        || matches!(
+            name,
+            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli"
+        )
+        || name.starts_with("pandacode_simulator_")
+        || name.starts_with("pandacode_vm_")
+        || name.starts_with("pandacode_design_")
+        || name.starts_with("pandacode_jev_")
+        || name.starts_with("pandacode_bot_")
 }
 fn per_run_mcp_tool(name: &str) -> bool {
-    name.starts_with("pandacode_jev_") || optional_transport_tool(name)
+    name.starts_with("pandacode_jev_")
+        || optional_metadata_tool(name)
+        || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
 }
 
 fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>) {
@@ -2917,7 +3080,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "omp" | "github-copilot" | "muse",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
             Some(host),
         ) => (
             None,
@@ -2929,12 +3092,16 @@ async fn run_process_with_tools(
             )
             .await?,
         ),
+        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
+        // started server would sit unconsumed; drop host tools until it does.
+        ("zcode", Some(_)) => (None, None),
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
+    reached_harness();
     let (mut child, mut group) = if let Some(spare) = spare {
         (spare.child, spare.group)
     } else {
@@ -3045,7 +3212,9 @@ async fn run_process_with_tools(
                     let previous_len=bytes.len();
                     bytes.extend_from_slice(&buf[..count]);
                     let mut consumed=0;
-                    for end in bytes.iter().enumerate().skip(previous_len).filter_map(|(i,b)|if *b==b'\n'{Some(i)}else{None}).collect::<Vec<_>>() {
+                    let mut scan=previous_len;
+                    while let Some(offset)=bytes[scan..].iter().position(|b|*b==b'\n') {
+                        let end=scan+offset;scan=end+1;
                         let line=&bytes[consumed..end];consumed=end+1;
                         if line.len()>MAX_FRAME{return Err("Provider sent an oversized JSON message".into());}
                         if line.iter().all(u8::is_ascii_whitespace){continue;}
@@ -3058,6 +3227,7 @@ async fn run_process_with_tools(
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
                     }
                     bytes.drain(..consumed);
+                    if should_shrink(bytes.len(),bytes.capacity()){bytes.shrink_to(FRAME_KEEP);}
                     if bytes.len()>MAX_FRAME{return Err("Provider output exceeded the message size limit".into());}
                 },
             }
@@ -3095,7 +3265,62 @@ async fn run_process_with_tools(
 }
 
 #[cfg(test)]
+mod coalesce_tests {
+    use super::*;
+    fn ev(kind: &str, text: &str) -> AgentEvent {
+        AgentEvent { session_id: "s".into(), kind: kind.into(), text: text.into(), request_id: None, data: None, tool: None }
+    }
+    #[test]
+    fn tiny_deltas_merge_and_flush_before_other_events() {
+        let start = std::time::Instant::now();
+        let mut c = Coalescer::default();
+        let mut out = Vec::new();
+        let mut sent = String::new();
+        for i in 0..2000 {
+            if i == 1000 {
+                let mut tool = ev("tool", "Bash");
+                tool.data = Some(json!({"id": "t1"}));
+                out.extend(c.push(tool, start));
+            }
+            let delta = format!("{}", i % 10);
+            sent.push_str(&delta);
+            // All within one 33 ms window.
+            out.extend(c.push(ev("text", &delta), start + Duration::from_micros(i)));
+        }
+        out.extend(c.flush());
+        eprintln!("coalesced 2000 text deltas into {} emits (was 2001)", out.len());
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].kind, "tool");
+        let text: String = out.iter().filter(|e| e.kind == "text").map(|e| e.text.as_str()).collect();
+        assert_eq!(text, sent);
+        assert_eq!(out[0].text, sent[..1000]);
+    }
+    #[test]
+    fn window_size_and_kind_changes_flush() {
+        let start = std::time::Instant::now();
+        let mut c = Coalescer::default();
+        assert!(c.push(ev("text", "a"), start).is_empty());
+        assert_eq!(c.started_at(), Some(start));
+        let late = c.push(ev("text", "b"), start + COALESCE_WINDOW);
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].text, "ab");
+        assert!(c.push(ev("thinking", "x"), start).is_empty());
+        let switched = c.push(ev("text", "y"), start);
+        assert_eq!((switched[0].kind.as_str(), switched[0].text.as_str()), ("thinking", "x"));
+        let big = c.push(ev("text", &"z".repeat(COALESCE_BYTES)), start);
+        assert_eq!(big[0].text.len(), COALESCE_BYTES + 1);
+        assert!(c.flush().is_none());
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    #[test]
+    fn frame_buffer_shrinks_only_when_large_and_drained() {
+        assert!(super::should_shrink(10, 2 * 1024 * 1024));
+        assert!(!super::should_shrink(10, 1024 * 1024));
+        assert!(!super::should_shrink(super::FRAME_KEEP, 2 * 1024 * 1024));
+    }
     #[test]
     fn opencode_choices_keep_only_saved_models_and_retain_unavailable_ids() {
         let model = super::ModelInfo {
@@ -3138,6 +3363,24 @@ mod tests {
         assert!(validate_reasoning_effort("github-copilot", Some("high")).is_err());
     }
 
+    #[test]
+    fn kilo_is_registered_with_its_cli_and_catalog_defined_efforts() {
+        assert!(PROVIDERS.contains(&("kilo", "Kilo Code")));
+        assert_eq!(executable_name("kilo"), "kilo");
+        assert!(validate_reasoning_effort("kilo", None).is_ok());
+        assert!(validate_reasoning_effort("kilo", Some("max")).is_ok());
+        assert!(validate_reasoning_effort("kilo", Some("bad\nflag")).is_err());
+    }
+
+    #[test]
+    fn hermes_is_registered_with_its_cli_and_catalog_defined_efforts() {
+        assert!(PROVIDERS.contains(&("hermes", "Hermes Agent")));
+        assert_eq!(executable_name("hermes"), "hermes");
+        assert!(validate_reasoning_effort("hermes", None).is_ok());
+        assert!(validate_reasoning_effort("hermes", Some("high")).is_ok());
+        assert!(validate_reasoning_effort("hermes", Some("bad\nflag")).is_err());
+    }
+
     pub(super) fn config(provider: &str) -> RunConfig {
         RunConfig {
             session_id: "local".into(),
@@ -3154,6 +3397,27 @@ mod tests {
             codex_settings: None,
             images: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn only_harness_failures_mark_the_run_as_reaching_the_harness() {
+        let sink: Sink = Arc::new(|_| {});
+        // PandaCode's own validation fails before the harness.
+        let reached: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut local = config("claude");
+        local.mode = "bogus".into();
+        assert!(run_with_tools(local, sink.clone(), rx, None, reached.clone()).await.is_err());
+        assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
+        // A harness that cannot start is the harness's failure.
+        let reached: Arc<std::sync::atomic::AtomicBool> = Default::default();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let missing = Command::new("/nonexistent/pandacode-harness");
+        let started = HARNESS
+            .scope(reached.clone(), run_process_with_tools(config("claude"), sink, rx, missing, Vec::new(), None))
+            .await;
+        assert!(started.unwrap_err().starts_with("Could not start"));
+        assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]
@@ -3255,7 +3519,7 @@ mod tests {
 
     #[test]
     fn preview_tools_do_not_block_normal_acp_turns_when_http_mcp_is_unavailable() {
-        for provider in ["kimi", "opencode", "antigravity", "grok"] {
+        for provider in ["kimi", "opencode", "antigravity", "grok", "cline"] {
             let mut p = Protocol::new(config(provider));
             p.mcp_server = Some(json!({"type":"http","name":"pandacode_architect"}));
             p.mcp_required = ["pandacode_run_project", "pandacode_preview_file"].iter().any(|name| !optional_transport_tool(name));
@@ -3266,6 +3530,75 @@ mod tests {
             }
             assert_eq!(step.write[0]["method"], "session/new", "{provider}");
             assert_eq!(step.write[0]["params"]["mcpServers"], json!([]), "{provider}");
+        }
+    }
+
+    #[test]
+    fn optional_host_tools_do_not_block_normal_acp_turns_when_http_mcp_is_unavailable() {
+        for name in [
+            crate::session_titles::TOOL,
+            crate::turn_changes::TRACK_TOOL,
+            "pandacode_run_project",
+            "pandacode_preview_file",
+            "pandacode_cloud_cli",
+            "pandacode_simulator_tap",
+            "pandacode_vm_exec",
+            "pandacode_design_artboard",
+            "pandacode_jev_test",
+            "pandacode_bot_recall",
+        ] {
+            assert!(optional_transport_tool(name), "{name} should be optional transport");
+        }
+        for name in [
+            "pandacode_delegate",
+            "pandacode_send_team_message",
+            "pandacode_team_status",
+            "pandacode_read_file",
+        ] {
+            assert!(!optional_transport_tool(name), "{name} must be required");
+        }
+    }
+
+    #[test]
+    fn approve_for_me_runs_only_where_the_harness_reviews_actions() {
+        for provider in ["claude", "glm", "mimo"] {
+            assert!(review_supported(provider, "review").is_ok());
+        }
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes"] {
+            assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
+            assert!(review_supported(provider, "ask").is_ok());
+        }
+    }
+
+    #[test]
+    fn claude_plan_mode_runs_reads_and_web_lookups_but_asks_for_the_rest() {
+        let permission = |mode: &str, name: &str, input: Value| {
+            let mut cfg = config("claude");
+            cfg.mode = mode.into();
+            let mut p = Protocol::new(cfg);
+            let step = p.receive(json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":name,"input":input}})).unwrap();
+            step.write.first().map(|w| w["response"]["response"]["behavior"].clone())
+        };
+        for (name, input) in [
+            ("Read", json!({"file_path":"/Users/me/other-repo/README.md"})),
+            ("Grep", json!({"pattern":"token","path":"/opt/lib"})),
+            ("Glob", json!({"pattern":"**/*.md","path":"/Users/me/docs"})),
+            ("WebFetch", json!({"url":"https://docs.example.com","prompt":"summary"})),
+            ("WebSearch", json!({"query":"tauri updater"})),
+        ] {
+            assert_eq!(permission("plan", name, input.clone()), Some(json!("allow")), "{name}");
+            assert_eq!(permission("ask", name, input), None, "{name} keeps Standard approvals");
+        }
+        // Credentials and anything that changes state still go to the user.
+        for (name, input) in [
+            ("Read", json!({"file_path":"/Users/me/.ssh/id_ed25519"})),
+            ("Read", json!({"file_path":"/Users/me/project/.env"})),
+            ("Glob", json!({"pattern":"/Users/me/.aws/*"})),
+            ("Write", json!({"file_path":"/tmp/a.txt","content":"x"})),
+            ("Edit", json!({"file_path":"/tmp/a.txt"})),
+            ("Bash", json!({"command":"cat README.md"})),
+        ] {
+            assert_eq!(permission("plan", name, input), None, "{name}");
         }
     }
 
@@ -3473,7 +3806,8 @@ mod tests {
         assert!(models[2].reasoning_efforts.is_empty());
         assert_eq!(models[3].context_window, None);
         assert!(validate_reasoning_effort("claude", Some("ultra")).is_err());
-        assert!(validate_reasoning_effort("kimi", Some("high")).is_err());
+        assert!(validate_reasoning_effort("kimi", Some("high")).is_ok());
+        assert!(validate_reasoning_effort("kimi", Some("high level")).is_err());
         assert!(validate_reasoning_effort("codex", Some("future_effort")).is_ok());
         assert!(validate_reasoning_effort("codex", Some("")).is_err());
     }
@@ -3566,6 +3900,22 @@ mod tests {
             &json!({"configOptions":[{"id":"thinking","options":[{"value":"on"}]}]}),
         );
         assert!(p.receive(json!({"id":4,"result":{}})).is_err());
+    }
+
+    /// Recorded from Kimi Code 2.3.1 `acp` after `session/set_config_option` model=kimi-code/k3.1-pro.
+    #[test]
+    fn kimi_sets_a_recorded_thinking_level() {
+        let mut cfg = config("kimi");
+        cfg.model = "kimi-code/k3.1-pro".into();
+        cfg.reasoning_effort = Some("low".into());
+        let mut p = Protocol::new(cfg);
+        p.remote_id = "remote".into();
+        p.receive(json!({"id":4,"result":{}})).unwrap();
+        p.receive(json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"config_option_update","configOptions":[
+            {"type":"select","id":"thinking","name":"Thinking","category":"thought_level","currentValue":"max","options":[{"value":"low","name":"Thinking Low"},{"value":"high","name":"Thinking High"},{"value":"max","name":"Thinking Max"}]}]}}})).unwrap();
+        let thinking = p.receive(json!({"id":5,"result":{}})).unwrap();
+        assert_eq!(thinking.write[0]["params"]["configId"], "thinking");
+        assert_eq!(thinking.write[0]["params"]["value"], "low");
     }
 
     #[test]
@@ -3681,6 +4031,7 @@ mod tests {
             for (mode, expected) in [
                 ("ask", "default"),
                 ("auto", "acceptEdits"),
+                ("review", "auto"),
                 ("plan", "plan"),
                 ("full", "bypassPermissions"),
             ] {

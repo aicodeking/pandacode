@@ -55,6 +55,18 @@ request, allows two concurrent evaluations, has a 12-second deadline, and never
 automatically retries. Reports retain at most 20 per task and 200 overall. No
 background evaluation or required startup network call is introduced.
 
+**OpenRouter (optional).** In **Set up Jev** you can send decisions to OpenRouter
+instead of TypeSafe, which stays the default. The adapter builds the same bounded
+state and typed questions, posts them to
+`https://openrouter.ai/api/v1/chat/completions` as a JSON-mode chat completion at
+temperature 0, and holds the model's answers to the same validation rules as
+TypeSafe's. The OpenRouter key is kept in the app secret store (never in the
+webview or `settings.json`). The model menu lists `jev-1.13.0` for TypeSafe; for
+OpenRouter it fetches the public `https://openrouter.ai/api/v1/models` catalog
+(no key sent) only when you open the menu or press Refresh, keeping models whose
+`supported_parameters` include `response_format` or `structured_outputs`.
+Nothing contacts OpenRouter until you pick it.
+
 Contract sources: [TypeSafe API](https://docs.typesafe.ai/api),
 [Choice](https://docs.typesafe.ai/primitives/choice),
 [Noul](https://docs.typesafe.ai/primitives/noul),

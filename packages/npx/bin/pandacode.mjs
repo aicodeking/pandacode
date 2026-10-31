@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs';
-import { install } from '../installer.mjs';
+import { install, supportedPlatforms } from '../installer.mjs';
 
 const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`Usage: npx pandacode [--dry-run] [--help] [--version]
 
 Downloads the latest PandaCode release from GitHub, verifies its signature and
-installs it (macOS Apple silicon, Windows x64, Linux x64).
+installs it (${supportedPlatforms().join(', ')}).
 
   --dry-run   download and verify only
   --version   print this installer's version`);

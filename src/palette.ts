@@ -93,11 +93,16 @@ export const palette = {
   refresh(): void { apply(); },
 };
 
-// Before the workspace paints: last session's colors, so nothing flashes yellow first.
-if (state.cache) {
-  if (state.vsix) { root.dataset.theme = state.vsix.kind; root.setAttribute('data-vsix', ''); }
+/** Re-read the saved palette and apply its cached colors without recomputing; the launcher calls this when the main window changes them. */
+export function restorePalette(): void {
+  state = read();
+  if (!state.cache) { write({}); root.toggleAttribute('data-vsix', Boolean(state.vsix)); return; }
+  if (state.vsix) { root.dataset.theme = state.vsix.kind; root.setAttribute('data-vsix', ''); } else root.removeAttribute('data-vsix');
   write(state.cache.tokens);
   terminalOverrides = state.cache.terminal ?? {};
   const prefix = state.cache.key.split(':')[0];
   if (!state.vsix && prefix.startsWith('#') && state.accent.mode === 'wallpaper') wallpaperColor = prefix;
 }
+
+// Before the workspace paints: last session's colors, so nothing flashes yellow first.
+restorePalette();

@@ -39,7 +39,6 @@ export class Subagents {
   private trigger: HTMLButtonElement;
   private rows = new Map<string, HTMLButtonElement>();
   private renderedTools = '';
-  private resize?: ResizeObserver;
 
   constructor(private host: HTMLElement, private panelId = 'subagents-panel', private fileContext?: (sessionId: string) => FileLinkContext | undefined) {
     host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="Subagents" aria-expanded="false" aria-controls="subagents-panel" title="View subagent work" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
@@ -63,7 +62,6 @@ export class Subagents {
       event.preventDefault(); event.stopImmediatePropagation(); this.close();
     }, true);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.schedule(); });
-    window.addEventListener('resize', () => this.fitPanel());
   }
 
   private task(id: string): Task {
@@ -73,7 +71,7 @@ export class Subagents {
   }
 
   setTask(id: string, visible: boolean): void {
-    this.visible = visible; this.host.hidden = !visible || !id;
+    this.visible = visible; this.host.hidden = !visible || !id; dispatchEvent(new Event('pandacode:agents'));
     if (!visible) this.close(false);
     if (id !== this.sessionId) {
       this.close(false); this.sessionId = id;
@@ -149,7 +147,11 @@ export class Subagents {
     this.panel?.querySelector<HTMLButtonElement>('.subagents-back')?.focus();
   }
 
-  private open(): void {
+  /** For the dock's Agents item: whether this task has subagents, how many run, and the panel. */
+  get present(): boolean { return this.visible && Boolean(this.sessionId) && !this.trigger.hidden; }
+  get running(): number { return [...this.tasks.get(this.sessionId)?.agents.values() ?? []].filter(entry => active(entry.value)).length; }
+  get isOpen(): boolean { return Boolean(this.panel); }
+  open(focus = true): void {
     if (this.panel || !this.sessionId) return;
     this.selected = ''; this.rows.clear();
     const panel = document.createElement('section');
@@ -162,25 +164,15 @@ export class Subagents {
     panel.querySelector('.subagents-back')!.addEventListener('click', () => { const id = this.selected; this.selected = ''; this.render(); this.rows.get(id)?.focus(); });
     panel.querySelector('.subagents-retry')!.addEventListener('click', () => { void this.load(this.sessionId); this.render(); });
     this.trigger.setAttribute('aria-expanded', 'true');
-    this.render(); this.fitPanel(); showPopover(panel, this.trigger);
-    this.resize = new ResizeObserver(() => this.fitPanel());
-    this.resize.observe(this.host.parentElement!);
-    const heading = this.host.previousElementSibling; if (heading) this.resize.observe(heading);
-    (panel.querySelector<HTMLButtonElement>('[data-subagent-id]') ?? panel.querySelector<HTMLButtonElement>('.subagents-close'))?.focus();
+    this.render(); showPopover(panel, this.trigger);
+    if (focus) (panel.querySelector<HTMLButtonElement>('[data-subagent-id]') ?? panel.querySelector<HTMLButtonElement>('.subagents-close'))?.focus();
   }
 
   close(focus = true): void {
     if (!this.panel) return;
-    this.resize?.disconnect(); this.resize = undefined;
     hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear();
     this.trigger.setAttribute('aria-expanded', 'false');
     if (focus) this.trigger.focus({ preventScroll: true });
-  }
-
-  private fitPanel(): void {
-    if (!this.panel) return;
-    const bottom = this.host.closest('.work-area')?.getBoundingClientRect().bottom ?? window.innerHeight;
-    this.panel.style.maxHeight = `${Math.max(80, Math.min(540, bottom - this.host.getBoundingClientRect().bottom - 16))}px`;
   }
 
   private render(): void {
@@ -191,6 +183,7 @@ export class Subagents {
     const label = running ? `${running} running` : agents.length ? `${agents.length} subagent${agents.length === 1 ? '' : 's'}` : 'Subagents';
     const text = this.trigger.querySelector('span')!; if (text.textContent !== label) text.textContent = label;
     this.trigger.classList.toggle('has-running', running > 0);
+    dispatchEvent(new Event('pandacode:agents'));
     this.trigger.title = running ? agents.filter(active).map(a => a.name).join('\n') : 'View subagent work';
     const panel = this.panel; if (!panel) return;
     const summary = panel.querySelector('.subagents-summary')!;

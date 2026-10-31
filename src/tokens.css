@@ -1,0 +1,28 @@
+/* Design tokens. Sizes are rem so --ui-scale (ui-size.css) scales them; colours derive from the palette tokens so themes and VS Code imports keep working. */
+:root{
+--text-2xs:.7143rem;--text-xs:.7857rem;--text-sm:.8571rem;--text-md:.9286rem;--text-lg:1.0714rem;--text-xl:1.4286rem;
+--mono-size:var(--text-sm);
+--weight-regular:400;--weight-medium:500;--weight-strong:600;
+--leading-tight:1.25;--leading-ui:1.4;--leading-body:1.6;--leading-code:1.55;
+--space-0-5:.1429rem;--space-1:.2857rem;--space-2:.5714rem;--space-3:.8571rem;--space-4:1.1429rem;--space-5:1.4286rem;--space-6:1.7143rem;--space-8:2.2857rem;
+--radius-xs:2px;--radius-sm:4px;--radius-md:6px;--radius-lg:10px;--radius-full:999px;
+--icon-xs:12px;--icon-sm:14px;--icon-md:16px;--icon-lg:20px;
+--icon-stroke-xs:2.1;--icon-stroke-sm:1.85;--icon-stroke-md:1.65;--icon-stroke-lg:1.35;
+--row-sm:24px;--row:28px;--row-lg:32px;
+--control-sm:24px;--control:28px;--control-lg:32px;
+--switch-w:30px;--switch-h:18px;
+--surface-1:var(--bg);--surface-2:var(--panel);--surface-3:var(--raised);
+--surface-sunken:color-mix(in srgb,var(--text) 3%,var(--bg));
+--line:var(--border);
+--line-soft:color-mix(in srgb,var(--text) 8%,transparent);
+--fill-hover:color-mix(in srgb,var(--text) 5%,transparent);
+--fill-active:color-mix(in srgb,var(--text) 9%,transparent);
+--fill-selected:rgb(var(--accent-rgb) / .16);
+--info:#2f6fc7;--warning:#a8700a;
+--tone-success-bg:color-mix(in srgb,var(--success) 12%,transparent);
+--tone-danger-bg:color-mix(in srgb,var(--danger) 12%,transparent);
+--tone-info-bg:color-mix(in srgb,var(--info) 12%,transparent);
+--tone-warning-bg:color-mix(in srgb,var(--warning) 12%,transparent);
+--diff-add-bg:var(--tone-success-bg);--diff-del-bg:var(--tone-danger-bg);
+}
+html[data-theme="dark"]{--info:#6aa2f0;--warning:#e3b24f}

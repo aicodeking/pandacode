@@ -10,7 +10,7 @@ The panel opens on **Overview**:
 
 Each agent has a tab with its limit windows, its cost for the period and a year activity calendar.
 
-The browser preview uses labeled sample limits and costs. The desktop reads the current account configured by each harness; this is not an all-account switcher. Limits may include usage from the same account in other applications.
+The browser preview uses labeled sample limits and costs. The desktop reads the account configured by each harness. Named connections (Settings → Providers → Connections) appear separately under their harness's tab, below its **Default setup**: each Claude Code and Codex connection is read through its own config folder and environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, its variables and secrets) with the same readers, and cached by connection and revision (`agent_usage` with `connection`). Connections of other harnesses say their limits are not read separately rather than showing the default account's. Checks still run only when the panel opens or on Refresh. Limits may include usage from the same account in other applications.
 
 ## Estimated API cost
 
@@ -67,7 +67,7 @@ OpenCode authentication content takes precedence over its saved file, and saved 
 - No credentials or raw provider responses cross into the webview, logs, analytics, or PandaCode servers. Only normalized limit fields are returned. The limit cache is in memory and creates no database migration or new credential store.
 - Agent logs are read only while the panel is open, one scan at a time, in a blocking worker with a 5-minute bound. Parsers keep token counts, the model name and the hour; prompt, reply and tool text is discarded as each line is parsed. Per-file counts are saved as `usage-ledger-cache.json` in the app data folder with each file's read offset, so a reopen only reads appended bytes. On the September 2026 test machine the first scan of 7.9 GB took about 6 s, a rescan 10 ms, and the UI payload was about 100 KB. Results are reused for 60 seconds unless Refresh is pressed.
 - The price-list download is the only network request the estimate makes. No usage data is sent.
-- Locked or inaccessible credentials produce an actionable state rather than a Keychain prompt. macOS Keychain reads run in a short-lived, bounded helper with user interaction disabled; this does not change the main app’s credential behavior. Users can sign in through their harness and refresh.
+- Locked or inaccessible credentials produce an actionable state rather than a Keychain prompt. macOS Keychain reads run in a short-lived, bounded helper with user interaction disabled; PandaCode's own saved keys are read from its secrets file first (see [secret storage](providers.md#secret-storage)). Users can sign in through their harness and refresh.
 
 ## Code and verification
 

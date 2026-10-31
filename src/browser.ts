@@ -7,6 +7,12 @@ import type { BrowserAttachment, BrowserBounds, BrowserElement, BrowserScreensho
 
 export interface BrowserPanel { close(): Promise<void>; refresh(): void; navigate(url: string): Promise<BrowserStatus>; watchJev(runId: string): Promise<void>; }
 type Options = { task(): string | undefined; session(): string | undefined; navigated?(url: string): void; attach(taskId: string, attachment: BrowserAttachment): void; close(): void; test?(url?: string, anchor?: HTMLElement): void; };
+// Tauri 2 packs a Linux child webview into the window's GtkBox below the app
+// instead of placing it at the given bounds (set_bounds is a no-op there), so
+// the guest lands in a bottom pane and window resizes fight over the split.
+// ponytail: system browser on Linux; embed again once the guest sits in a GtkOverlay.
+export const embedsGuest = (platform: string, sample: boolean): boolean => sample || !/Linux/i.test(platform);
+const LINUX_NOTICE = 'Opened in your system browser. Linux cannot show pages inside this pane yet.';
 const emptyStatus = (): BrowserStatus => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false });
 
 export function normalizeUrl(input: string): string {
@@ -106,6 +112,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   async function navigate(input: string): Promise<void> {
     const url = normalizeUrl(input);
+    if (!embedsGuest(navigator.platform, preview)) { await call('open_external_url', { url }); if (!disposed) { address.value = ''; tell(LINUX_NOTICE); } return; }
     options.navigated?.(url);
     live?.leave();
     busy = true; tell(''); updateControls();
@@ -212,7 +219,13 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   document.addEventListener('visibilitychange', restoreVisibility);
   updateControls(); void refreshServers(); if (!watching) address.focus();
   return {
-    async navigate(url) { if (disposed) throw new Error('Browser is closed.'); await navigate(url); return status; },
+    async navigate(url) {
+      if (disposed) throw new Error('Browser is closed.');
+      await navigate(url);
+      // Agents must not drive a page they cannot read; tell them where it went.
+      if (!embedsGuest(navigator.platform, preview)) throw new Error(LINUX_NOTICE);
+      return status;
+    },
     async watchJev(runId) { if (disposed) throw new Error('Browser is closed.'); await live?.watch(runId); },
     refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); } updateControls(); scheduleBounds(); },
     async close() {

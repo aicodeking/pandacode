@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- One iPhone Duo App Store page. render.mjs opens it as duo.html?inner&<n> at 2853x2007
+     (inner display, landscape) and duo.html?outer&<n> at 1398x2034 (outer display, portrait);
+     open it in a browser at that window size to preview. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="mockup.css">
+<style>
+  /* Same paper, bamboo and type as the iPhone set (mockup.css); only the sizes change. */
+  .device {
+    position: relative;
+    width: calc(var(--w) + 2 * var(--bezel));
+    padding: var(--bezel);
+    border-radius: var(--r);
+    background: #121212;
+    box-shadow:
+      inset 0 0 0 3px #3b3a38,
+      0 0 0 5px #c9c4b8,
+      0 0 0 6px #a9a397,
+      0 60px 120px -30px rgb(60 52 30 / .45),
+      0 24px 48px -12px rgb(60 52 30 / .25);
+  }
+  .screen { display: block; width: var(--w); border-radius: calc(var(--r) - var(--bezel)); }
+
+  /* Inner display: one-line headline above the open device. */
+  .inner body::before { inset: 640px 0 0 0; }
+  .inner .page { padding-top: 132px; }
+  .inner h1 { flex-direction: row; gap: .26em; height: auto; font-size: 100px; }
+  .inner .device { --w: 2140px; --bezel: 18px; --r: 104px; margin-top: 104px; }
+  .inner .screen { aspect-ratio: 2853 / 2007; }
+
+  /* Outer display: two-line headline above the folded device. */
+  .outer body::before { inset: 760px 0 0 0; }
+  .outer .page { padding-top: 112px; }
+  .outer h1 { font-size: 84px; height: 182px; }
+  .outer .device { --w: 1040px; --bezel: 18px; --r: 100px; margin-top: 84px; }
+  .outer .screen { aspect-ratio: 1398 / 2034; }
+</style>
+</head>
+<body>
+<main class="page">
+  <h1><span class="lead"></span><span class="key"></span></h1>
+  <div class="device"><img class="screen" alt=""></div>
+</main>
+<script>
+  const shots = {
+    inner: {
+      1: ['Your inbox and the agent,', 'side by side.', 'inner-task-dark'],
+      2: ['Approve tool calls', 'without losing your place.', 'inner-approval-light'],
+      3: ['Every task in view,', 'watch one work.', 'inner-working-dark'],
+      4: ['Pick a project,', 'start a task.', 'inner-new-light'],
+      5: ['Light, dark, wallpaper.', 'Make it yours.', 'inner-settings-dark'],
+    },
+    outer: {
+      1: ['Every agent,', 'one inbox.', 'outer-inbox-light'],
+      2: ['Talk to the agent,', 'not the laptop.', 'outer-task-dark'],
+      3: ['Approve tool calls', 'from anywhere.', 'outer-approval-light'],
+      4: ['Watch it work,', 'live.', 'outer-working-dark'],
+    },
+  };
+  const [display = 'inner', n = '1'] = location.search.slice(1).split('&');
+  const set = shots[display] || shots.inner;
+  const [lead, key, file] = set[n] || set[1];
+  document.documentElement.className = display;
+  document.querySelector('.lead').textContent = lead;
+  document.querySelector('.key').textContent = key;
+  document.querySelector('.screen').src = `captures/duo/${file}.png`;
+</script>
+</body>
+</html>

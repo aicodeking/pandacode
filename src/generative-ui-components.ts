@@ -461,7 +461,7 @@ function form(spec: Extract<View, { type: 'form' }>): HTMLElement {
   return element;
 }
 
-const CUSTOM_BASE = ':host{display:block;color:var(--text);font:inherit;overflow:auto}*{box-sizing:border-box;max-width:100%}img{height:auto}a{color:var(--accent-ink)}button{font:inherit;color:inherit;background:var(--raised);border:1px solid var(--border);border-radius:6px;padding:4px 10px;cursor:pointer}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}[hidden]{display:none!important}';
+const CUSTOM_BASE = ':host{display:block;color:var(--text);font:inherit;overflow:auto}*{box-sizing:border-box;max-width:100%}img{height:auto}a{color:var(--accent-ink)}button{font:inherit;color:inherit;background:var(--raised);border:0;border-radius:6px;padding:4px 10px;cursor:pointer}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}[hidden]{display:none!important}';
 
 /** Sanitizes a custom view's HTML: no scripts, handlers, frames, forms or remote resources. */
 async function cleanCustom(html: string): Promise<DocumentFragment> {

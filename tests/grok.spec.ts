@@ -1,3 +1,4 @@
+import { showHarness } from './model-picker-helper';
 import { expect, test, type Page } from '@playwright/test';
 
 // Grok Build (xAI) is an ACP harness: it lists its models with context and
@@ -23,8 +24,8 @@ async function newGrokTask(page: Page): Promise<void> {
   await page.locator('.new-task-button').click();
   await expect(prompt(page)).toBeEnabled();
   await modelTrigger(page).click();
-  const grok = modelPicker(page).locator('.model-menu-option').filter({ has: page.locator('[data-provider="grok"]') });
-  await grok.first().click();
+  await showHarness(page, 'grok');
+  await modelPicker(page).locator('.model-menu-option[data-provider="grok"]').first().click();
   await expect(modelTrigger(page)).toContainText('Default');
   await expect(modelTrigger(page).locator('[data-provider="grok"]')).toHaveCount(1);
 }
@@ -33,21 +34,18 @@ test('Grok Build lists its models with context windows and reasoning efforts, an
   await newGrokTask(page);
   await modelTrigger(page).click();
   const picker = modelPicker(page);
-  const group = picker.locator('.model-menu-group-heading', { hasText: 'Grok Build' });
-  await expect(group).toBeVisible();
+  await expect(picker.locator('.model-menu-group-heading', { hasText: 'Grok Build' })).toBeVisible();
   const flagship = picker.locator('.model-menu-option', { hasText: 'Grok 4.7' }).first();
-  await expect(flagship).toContainText('500K context');
+  await expect(flagship).toContainText('500K');
   await flagship.click();
   await expect(modelTrigger(page)).toContainText('Grok 4.7');
-  // Efforts advertised by the agent drive the slider: harness default, then Low → Extra High.
+  // Efforts advertised by the agent drive the segmented control: harness default, then Low → Extra High.
   await modelTrigger(page).click();
-  const slider = picker.getByRole('slider', { name: 'Reasoning effort', exact: true });
-  await expect(slider).toBeVisible();
-  await expect(picker.locator('.effort-label')).toHaveText('Default');
-  await slider.focus();
-  await page.keyboard.press('End');
-  await expect(slider).toHaveAttribute('aria-valuetext', 'Extra High');
-  await expect(picker.locator('.effort-label')).toHaveText('Extra High');
+  const efforts = picker.getByRole('radiogroup', { name: 'Effort', exact: true });
+  await expect(efforts).toBeVisible();
+  await expect(efforts.getByRole('radio', { name: 'Default', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await efforts.getByRole('radio', { name: 'Extra High', exact: true }).click();
+  await expect(efforts.getByRole('radio', { name: 'Extra High', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
   expect((await calls(page, 'configure_session')).pop()?.args).toMatchObject({ provider: 'grok', model: 'grok-4.7' });
   expect((await calls(page, 'set_reasoning_effort')).pop()?.args).toMatchObject({ reasoningEffort: 'xhigh' });
@@ -76,7 +74,7 @@ test('a Grok task takes documents and folders but explains that images are not a
   await newGrokTask(page);
   await page.getByRole('button', { name: 'Attach files for context' }).click();
   const menu = page.getByRole('dialog', { name: 'Attach', exact: true });
-  await expect(menu.getByRole('menuitem')).toHaveText([/Attach files…PDFs, documents/, /Attach a folder…/, /Project files/, /Workflow recipes…/]);
+  await expect(menu.getByRole('menuitem')).toHaveText([/Attach files…PDFs, documents/, /Attach a folder…/, /Project files/, /Workflow recipes…/, /Schedule a wake-up…/]);
   await menu.getByRole('menuitem', { name: /Attach a folder…/ }).click();
   await expect(page.locator('#attachments .prompt-chip')).toHaveCount(1);
   // A pasted image is refused with a reason instead of failing at send time.

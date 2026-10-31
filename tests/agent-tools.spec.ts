@@ -101,7 +101,7 @@ test('agent tools recheck the visible task after awaiting native approval state'
 });
 
 test('agent tools do not take over the board when the task panel is closed', async ({ page }) => {
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.evaluate(() => (window as any).__toolEmit({ requestId: 'board', sessionId: 'session-1', action: 'open_browser', args: { url: 'https://example.com' } }));
   await expect.poll(() => page.evaluate(() => (window as any).__toolReplies.length)).toBe(1);
   expect(await page.evaluate(() => (window as any).__toolReplies[0].error)).toContain('Open this task');

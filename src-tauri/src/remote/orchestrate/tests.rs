@@ -17,14 +17,22 @@ fn child(store: &Store, project: &str, parent: &str, status: &str) -> String {
     id
 }
 
+/// Every test device's public key.
+fn key() -> String {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| crypto::public_key(&crypto::generate())).clone()
+}
+
+/// A link given under the test devices' current key.
+fn linked(access: Access) -> Link {
+    Link { access, at: 1, key: key() }
+}
+
 fn inner() -> Inner {
-    let key = crypto::public_key(&crypto::generate());
+    let key = key();
     let mut inner = Inner { devices: vec![device("me", "This Mac", &key), device("studio", "ProMini", &key), device("laptop", "promini", &key), device("box", "Box", &key)], token: Some("t".into()), ..Default::default() };
     inner.settings.device_id = "me".into();
     inner.settings.orchestration = true;
-    for id in ["studio", "laptop"] {
-        inner.settings.trusted.insert(id.into(), key.clone());
-    }
     inner
 }
 
@@ -52,7 +60,7 @@ fn a_child_runs_in_full_access_only_when_link_and_parent_both_allow_it() {
 fn the_mode_is_decided_again_at_the_commit_point() {
     let (store, _, parent) = store();
     let mut inner = inner();
-    let link = |access| Link { access, at: 1 };
+    let link = linked;
     inner.settings.links.insert("studio".into(), link(Access::Full));
     assert_eq!(commit_mode(&inner, &store, &parent, "studio"), Ok("full"));
     // The parent left Full access during the launch's awaits: the thread asks.
@@ -94,12 +102,11 @@ fn team_tasks_never_get_the_machine_tools() {
 #[test]
 fn links_count_only_while_the_device_is_a_target() {
     let mut inner = inner();
-    let at = |access| Link { access, at: 1 };
-    inner.settings.links.insert("studio".into(), at(Access::Full));
-    inner.settings.links.insert("box".into(), at(Access::Ask));
+    inner.settings.links.insert("studio".into(), linked(Access::Full));
+    inner.settings.links.insert("box".into(), Link { key: crypto::public_key(&crypto::generate()), ..linked(Access::Ask) });
     let studio = inner.devices[1].clone();
     assert_eq!(links::access(&inner, &studio), Some(Access::Full));
-    assert_eq!(links::access(&inner, &inner.devices[3].clone()), None, "an untrusted device's link does not count");
+    assert_eq!(links::access(&inner, &inner.devices[3].clone()), None, "a link given to another key does not count");
     inner.devices[1].host = false;
     assert_eq!(links::access(&inner, &inner.devices[1].clone()), None, "nor one with remote control off");
     let status = links::status_of(&inner);
@@ -157,14 +164,21 @@ fn a_task_runs_at_most_eight_threads() {
 }
 
 #[test]
-fn version_28_adds_machine_threads() {
+fn version_36_adds_machine_threads() {
     let path = std::env::temp_dir().join(format!("pandacode-orchestrate-{}.sqlite3", uuid::Uuid::new_v4()));
     {
         let store = Store::open(&path).unwrap();
-        store.db.execute_batch("DROP TABLE machine_threads; PRAGMA user_version=27;").unwrap();
+        store.db.execute_batch("DROP TABLE machine_threads; ALTER TABLE sessions DROP COLUMN restart_interrupted; ALTER TABLE sessions DROP COLUMN stop_requested; PRAGMA user_version=35;").unwrap();
     }
     let store = Store::open(&path).unwrap();
-    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (30, 30));
+    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (36, 36));
+    let columns: i64 = store.db.query_row("SELECT (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('restart_interrupted','stop_requested'))+(SELECT COUNT(*) FROM pragma_table_info('machine_threads') WHERE name='reported_by')", [], |r| r.get(0)).unwrap();
+    assert_eq!(columns, 3);
+    // Running the step again (a half-applied upgrade) changes nothing.
+    store.db.execute_batch("PRAGMA user_version=35;").unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
     let indexed: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='machine_threads_parent')", [], |r| r.get(0)).unwrap();
     assert!(indexed);
     let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -642,7 +656,7 @@ fn a_read_only_link_refuses_launch_and_message_even_in_full_access() {
     let (store, project, parent) = store();
     assert_eq!(store.session(&parent).unwrap().mode, "full", "no approval prompt: the link is the cap");
     let mut inner = inner();
-    inner.settings.links.insert("studio".into(), Link { access: Access::Read, at: 1 });
+    inner.settings.links.insert("studio".into(), linked(Access::Read));
     assert!(commit_mode(&inner, &store, &parent, "studio").unwrap_err().contains("read only"));
     let thread = child(&store, &project, &parent, "idle");
     let child = threads::own(&store, &parent, &thread).unwrap();

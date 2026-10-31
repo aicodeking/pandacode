@@ -40,9 +40,9 @@ pub(super) fn ready(inner: &Inner) -> Result<()> {
     Ok(())
 }
 
-/// A link counts only while its device is a target: trusted with its current key, hosting.
+/// A link counts only while its device is a target (hosting) with the key it was linked under.
 pub(super) fn access(inner: &Inner, device: &Device) -> Option<Access> {
-    inner.settings.links.get(&device.id).filter(|_| super::super::is_target(inner, device)).map(|link| link.access)
+    inner.settings.links.get(&device.id).filter(|link| super::super::is_target(inner, device) && link.counts_for(&device.public_key)).map(|link| link.access)
 }
 
 /// Another computer on the account, by id or by name (case-insensitive).
@@ -114,11 +114,11 @@ fn set_link(app: &tauri::AppHandle, device_id: &str, access: Option<Access>) -> 
         let mut inner = state.lock();
         match access {
             Some(access) => {
-                let target = inner.devices.iter().any(|d| d.id == device_id && super::super::is_target(&inner, d));
-                if !target {
-                    return Err("Trust that computer and turn on its remote control before linking it.".into());
-                }
-                inner.settings.links.insert(device_id.to_owned(), Link { access, at: chrono::Utc::now().timestamp_millis() });
+                let key = inner.devices.iter().find(|d| d.id == device_id && super::super::is_target(&inner, d)).map(|d| d.public_key.clone()).filter(|key| !key.is_empty());
+                let Some(key) = key else {
+                    return Err("Turn on remote control on that computer before linking it.".into());
+                };
+                inner.settings.links.insert(device_id.to_owned(), Link { access, at: chrono::Utc::now().timestamp_millis(), key });
             }
             None => {
                 inner.settings.links.remove(device_id);

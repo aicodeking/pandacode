@@ -5,34 +5,34 @@
 .simulator-panel[hidden],.simulator-panel [hidden]{display:none!important}
 .sim-stage-wrap{position:relative;flex:1;min-height:240px;display:flex}
 .sim-stage{position:relative;flex:1;min-height:240px;outline:none;overflow:hidden;touch-action:none;
-  background:radial-gradient(ellipse 46% 30% at 50% 62%,rgb(0 0 0 / .14),transparent 72%)}
+  background:transparent}
 .sim-stage:focus-visible{box-shadow:inset 0 0 0 2px var(--focus)}
 .sim-canvas{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:grab}
 .sim-canvas:active{cursor:grabbing}
-.sim-reset{position:absolute;z-index:2;top:10px;right:10px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--muted);background:var(--sim-glass);border:1px solid var(--border);backdrop-filter:var(--sim-blur);-webkit-backdrop-filter:var(--sim-blur)}
+.sim-reset{position:absolute;z-index:2;top:10px;right:10px;width:30px;height:30px;border-radius:50%;display:grid;place-items:center;color:var(--muted);background:var(--sim-glass);backdrop-filter:var(--sim-blur);-webkit-backdrop-filter:var(--sim-blur)}
 .sim-reset:hover{color:var(--text)}
-.sim-reset .icon{width:14px;height:14px}
+.sim-reset .icon{width:var(--icon-sm);height:var(--icon-sm)}
 
 /* The dock: which device, then one pill of hardware and capture controls. */
 .sim-dock{display:flex;flex-direction:column;align-items:center;gap:6px;padding:4px 12px 14px;min-width:0}
-.sim-device{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px;border-radius:999px;font-size:.76rem;--press:1}
+.sim-device{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:26px;padding:2px 10px;border-radius:999px;font-size:var(--text-xs);--press:1}
 .sim-device:hover{background:var(--sim-glass)}
 .sim-device>.icon{width:13px;height:13px;flex-shrink:0;color:var(--muted)}
-.sim-device-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.sim-device-runtime{font-size:.7rem;color:var(--muted);white-space:nowrap}
+.sim-device-name{font-weight:var(--weight-strong);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.sim-device-runtime{font-size:var(--text-2xs);color:var(--muted);white-space:nowrap}
 .sim-device-runtime:not(:empty)::before{content:"· "}
 @container simulator (max-width:300px){.sim-device-runtime{display:none}}
-.sim-actions{display:flex;gap:2px;padding:4px;border-radius:14px;background:var(--sim-glass);border:1px solid var(--border);box-shadow:0 6px 20px rgb(0 0 0 / .12);backdrop-filter:var(--sim-blur);-webkit-backdrop-filter:var(--sim-blur)}
-.sim-actions .icon-button{width:32px;height:30px;border-radius:10px}
+.sim-actions{display:flex;gap:2px;padding:4px;border-radius:var(--radius-lg);background:var(--glass-tint);box-shadow:0 6px 20px var(--glass-shadow-near);backdrop-filter:var(--sim-blur);-webkit-backdrop-filter:var(--sim-blur)}
+.sim-actions .icon-button{width:32px;height:30px;border-radius:var(--radius-md)}
 .sim-actions .icon-button:disabled{opacity:.38}
-.sim-finish-dot{width:14px;height:14px;border-radius:50%;background:var(--finish,#888);box-shadow:inset 0 0 0 1px rgb(0 0 0 / .18),0 0 0 2px color-mix(in srgb,var(--text) 10%,transparent)}
+.sim-finish-dot{width:14px;height:14px;border-radius:50%;background:var(--finish,#888);}
 
 .sim-stage-flat{display:flex;align-items:center;justify-content:center;padding:16px}
-.sim-flat{max-width:100%;max-height:100%;border-radius:28px;background:#000;box-shadow:0 0 0 8px #111,0 12px 40px rgb(0 0 0 / .25);cursor:pointer}
-.sim-axe{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 12px 6px;padding:8px 10px;border-radius:12px;background:var(--accent-dim);color:var(--accent-ink);font-size:.74rem}
-.sim-axe code{font-family:var(--mono);font-size:.7rem;background:color-mix(in srgb,var(--bg) 60%,transparent);border-radius:5px;padding:2px 6px;overflow-wrap:anywhere}
-.sim-axe .secondary-button{min-height:26px;padding:2px 8px;font-size:.72rem;margin-left:auto}
-.sim-status{margin:0 12px 6px;font-size:.76rem;color:var(--muted);text-align:center;overflow-wrap:anywhere}
+.sim-flat{max-width:100%;max-height:100%;border-radius:28px;background:#000;box-shadow:0 12px 40px rgb(0 0 0 / .25);cursor:pointer}
+.sim-axe{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 12px 6px;padding:8px 10px;border-radius:var(--radius-md);background:var(--accent-dim);color:var(--accent-ink);font-size:var(--text-2xs)}
+.sim-axe code{font-family:var(--mono);font-size:var(--text-2xs);background:color-mix(in srgb,var(--bg) 60%,transparent);border-radius:var(--radius-sm);padding:2px 6px;overflow-wrap:anywhere}
+.sim-axe .secondary-button{min-height:26px;padding:2px 8px;font-size:var(--text-2xs);margin-left:auto}
+.sim-status{margin:0 12px 6px;font-size:var(--text-xs);color:var(--muted);text-align:center;overflow-wrap:anywhere}
 
 /* With a wallpaper, the inspector clears while the simulator shows: the device floats
  * on the wallpaper; the tabs and the dock keep their own frost. */

@@ -10,6 +10,11 @@ export function fallbackModel(provider: ProviderId, id = 'default'): ProviderMod
   return { id, name: alias || id, description: alias ? 'Version resolved by Claude Code.' : '' };
 }
 
+/** Harnesses that accept only the model IDs they advertise: no custom IDs. */
+export function advertisedModelsOnly(provider: ProviderId): boolean {
+  return provider === 'github-copilot' || provider === 'devin';
+}
+
 export function modelChoices(provider: ProviderId, catalog: ProviderModel[], current = ''): ProviderModel[] {
   const models = new Map<string, ProviderModel>([['default', fallbackModel(provider)]]);
   for (const model of catalog) if (model.id) models.set(model.id, model);

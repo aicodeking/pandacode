@@ -21,7 +21,7 @@ const probe = String.raw`
   if(command === 'get_messages' && args.sessionId==='session-2' && window.__assistChangeFixture) return {messages:[
     {id:701,sessionId:'session-2',role:'user',content:'Review this change',createdAt:100},
     {id:702,sessionId:'session-2',role:'assistant',content:'Saved changes are ready.',createdAt:200},
-    {id:703,sessionId:'session-2',role:'changes',content:'',createdAt:200,turnChanges:{id:'change-1',files:[{path:'src/app.ts',status:'modified',additions:1,deletions:1}],additions:1,deletions:1,truncated:false,concurrent:false}}
+    {id:703,sessionId:'session-2',role:'changes',content:'',createdAt:200,turnChanges:{id:'change-1',files:[{path:'src/app.ts',status:'modified',additions:1,deletions:1}],additions:1,deletions:1,truncated:false,concurrent:false,attributed:true}}
   ],hasOlder:false};
   if(command === 'turn_change_diff' && args.changeId==='change-1') return {path:args.path,patch:'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',binary:false,truncated:false};
   if(command === 'architect_get' && args.sessionId==='session-2' && window.__assistTeam) return structuredClone(window.__assistTeam);
@@ -117,14 +117,14 @@ test('team entry suggests configured workers and worker review uses the worker t
     (window as any).__assistTeam={sessionId:'session-2',config:{workers:[profile],maxParallel:1,maxRounds:4,maxAssignments:8,workspace:'shared',summaryLimit:1800},status:'ready',round:1,revision:1,updatedAt:200,workers:[{...profile,id:'worker-1',profileId:'fast',sessionId:'worker-1-session',status:'completed',assignment:'Check keyboard navigation',summary:'Checked the task',dependsOn:[],files:['src/app.ts'],attempt:1,createdAt:100,updatedAt:200}]};
   });
   await page.locator('.task-item[data-id="session-2"]').click();
-  await page.getByRole('button',{name:'Open workers',exact:true}).click();
+  await page.locator('#agents-toggle').click();
   await page.getByRole('button',{name:'Suggest worker',exact:true}).click();
   await expect(page.getByRole('tab',{name:'Choose worker',exact:true})).toHaveAttribute('aria-selected','true');
   await page.locator('#jev-assist-query').fill('Add meaningful keyboard tests');
   await page.locator('[data-assist-prepare]').click(); await prepared(page);
   expect((await calls(page,'jev_assist_prepare')).at(-1).args).toEqual({sessionId:'session-2',request:{kind:'route',query:'Add meaningful keyboard tests'}});
   await page.locator('[data-assist-close]').click();
-  await page.getByRole('button',{name:'Open workers',exact:true}).click();
+  await page.locator('#agents-toggle').click();
   await page.locator('.architect-worker-row[data-worker-id="worker-1"]').click();
   await page.getByRole('button',{name:'Review with Jev',exact:true}).click(); await prepared(page);
   expect((await calls(page,'jev_assist_prepare')).at(-1).args).toEqual({sessionId:'worker-1-session',request:{kind:'review'}});

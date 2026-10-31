@@ -46,9 +46,9 @@ impl Cache {
         }
     }
 
-    fn commit(&mut self, discovery: Discovery, metadata: &Value, now: Instant) {
+    fn commit(&mut self, discovery: Discovery, models: Vec<ModelInfo>, now: Instant) {
         if discovery.revision == self.1 {
-            self.store(discovery.key, metadata, now);
+            self.store(discovery.key, models, now);
         }
     }
 
@@ -57,23 +57,27 @@ impl Cache {
         self.0.retain(|key, _| key.provider != provider);
     }
 
-    fn get(&self, key: &Key, now: Instant) -> Option<Vec<ModelInfo>> {
+    /// Expired catalogs are never reused, so drop them whenever the cache is
+    /// read or written instead of keeping them for the life of the process.
+    fn purge(&mut self, now: Instant) {
         self.0
-            .get(key)
-            .filter(|(at, _)| now.saturating_duration_since(*at) < TTL)
-            .map(|(_, models)| models.clone())
+            .retain(|_, (at, _)| now.saturating_duration_since(*at) < TTL);
     }
 
-    fn store(&mut self, key: Key, metadata: &Value, now: Instant) {
-        let models = acp::parse_models(metadata);
+    fn get(&mut self, key: &Key, now: Instant) -> Option<Vec<ModelInfo>> {
+        self.purge(now);
+        self.0.get(key).map(|(_, models)| models.clone())
+    }
+
+    fn store(&mut self, key: Key, models: Vec<ModelInfo>, now: Instant) {
         // A default-only response is not a catalog and must not overwrite a
         // previously discovered usable list.
         if models.len() <= 1 {
             return;
         }
-        self.0.retain(|existing, (at, _)| {
-            now.saturating_duration_since(*at) < TTL
-                && !(existing.provider == key.provider && existing.path == key.path)
+        self.purge(now);
+        self.0.retain(|existing, _| {
+            !(existing.provider == key.provider && existing.path == key.path)
         });
         if self.0.len() >= LIMIT {
             if let Some(oldest) = self
@@ -111,11 +115,20 @@ pub(crate) fn store(discovery: Option<Discovery>, metadata: &Value) {
     let Some(discovery) = discovery else {
         return;
     };
+    let models = acp::parse_models_for(&discovery.key.provider, metadata);
+    store_models(Some(discovery), models);
+}
+
+/// For harnesses whose catalog takes more than one `session/new` result (Devin).
+pub(crate) fn store_models(discovery: Option<Discovery>, models: Vec<ModelInfo>) {
+    let Some(discovery) = discovery else {
+        return;
+    };
     if key(&discovery.key.provider, &discovery.key.path) != discovery.key {
         return;
     }
     if let Ok(mut cache) = cache().lock() {
-        cache.commit(discovery, metadata, Instant::now());
+        cache.commit(discovery, models, Instant::now());
     }
 }
 
@@ -152,6 +165,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    static GLOBAL_CACHE_TEST: Mutex<()> = Mutex::new(());
+
     #[test]
     fn positive_catalog_is_bounded_expires_and_follows_executable_identity() {
         let now = Instant::now();
@@ -159,9 +174,9 @@ mod tests {
         let metadata =
             json!({"models":{"availableModels":[{"modelId":"model-a","name":"Model A"}]}});
         let mut cache = Cache::default();
-        cache.store(identity.clone(), &metadata, now);
+        cache.store(identity.clone(), acp::parse_models(&metadata), now);
         assert_eq!(cache.get(&identity, now).unwrap()[1].id, "model-a");
-        cache.store(identity.clone(), &json!({}), now);
+        cache.store(identity.clone(), acp::parse_models(&json!({})), now);
         assert!(cache.get(&identity, now).is_some());
         assert!(cache.get(&identity, now + TTL).is_none());
         let mut replaced = identity.clone();
@@ -173,11 +188,73 @@ mod tests {
         for index in 0..30 {
             cache.store(
                 key("antigravity", Path::new(&format!("/fixture/{index}"))),
-                &metadata,
+                acp::parse_models(&metadata),
                 now,
             );
         }
         assert_eq!(cache.0.len(), LIMIT);
+    }
+
+    #[test]
+    fn deepseek_cached_efforts_cover_api_and_account_models_only() {
+        let _guard = GLOBAL_CACHE_TEST.lock().unwrap();
+        let path = std::env::temp_dir().join(format!("deepseek-catalog-{}", uuid::Uuid::new_v4()));
+        let api = "[\"deepseek-official\",\"deepseek-v4-flash\"]";
+        let account = "[\"deepseek-account\",\"DeepSeek-V4.1-Flash\"]";
+        let pro = "[\"deepseek-account\",\"DeepSeek-V4-Pro\"]";
+        let metadata = json!({"configOptions":[
+            {"id":"model","category":"model","type":"select","currentValue":api,"options":[
+                {"group":"deepseek-official","options":[{"value":api}]},
+                {"group":"deepseek-account","options":[{"value":account},{"value":pro}]}]},
+            {"id":"reasoning_effort","category":"thought_level","type":"select","currentValue":"high","options":[
+                {"value":"off"},{"value":"low"},{"value":"high"},{"value":"max"}]}]});
+        // Both model discovery and command discovery populate this cache.
+        for provider in ["deepseek", "kilo"] {
+            store(begin(provider, &path), &metadata);
+            let models = get(provider, &path).unwrap();
+            assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", api, account, pro]);
+            assert!(models[0].reasoning_efforts.is_empty());
+            for model in models.iter().skip(1) {
+                if provider == "deepseek" || model.id == api {
+                    assert_eq!(model.reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["off", "low", "high", "max"]);
+                    assert_eq!(model.default_reasoning_effort.as_deref(), Some("high"));
+                } else {
+                    assert!(model.reasoning_efforts.is_empty());
+                    assert!(model.default_reasoning_effort.is_none());
+                }
+            }
+        }
+        let mut without_effort = metadata;
+        without_effort["configOptions"].as_array_mut().unwrap().pop();
+        store(begin("deepseek", &path), &without_effort);
+        assert!(get("deepseek", &path).unwrap().iter().all(|m| m.reasoning_efforts.is_empty() && m.default_reasoning_effort.is_none()));
+        cache().lock().unwrap().0.retain(|key, _| key.path != path);
+    }
+
+    #[test]
+    fn expired_catalogs_are_purged_when_the_cache_is_touched() {
+        let now = Instant::now();
+        let metadata =
+            json!({"models":{"availableModels":[{"modelId":"model-a","name":"Model A"}]}});
+        let mut cache = Cache::default();
+        for index in 0..4 {
+            cache.store(
+                key("antigravity", Path::new(&format!("/fixture/idle-{index}"))),
+                acp::parse_models(&metadata),
+                now,
+            );
+        }
+        let fresh = key("antigravity", Path::new("/fixture/fresh"));
+        cache.store(fresh.clone(), acp::parse_models(&metadata), now + TTL / 2);
+        assert_eq!(cache.0.len(), 5);
+        // A lookup of any key, even a miss, drops every expired entry.
+        assert!(cache
+            .get(&key("grok", Path::new("/fixture/miss")), now + TTL)
+            .is_none());
+        assert_eq!(cache.0.len(), 1);
+        assert!(cache.get(&fresh, now + TTL).is_some());
+        assert!(cache.get(&fresh, now + TTL + TTL / 2).is_none());
+        assert!(cache.0.is_empty());
     }
 
     #[tokio::test]
@@ -203,6 +280,7 @@ mod tests {
 
     #[test]
     fn explicit_refresh_invalidates_only_the_requested_provider() {
+        let _guard = GLOBAL_CACHE_TEST.lock().unwrap();
         let provider = format!("fixture-{}", uuid::Uuid::new_v4());
         let other = format!("other-{}", uuid::Uuid::new_v4());
         let path = Path::new("/fixture/refresh");
@@ -226,10 +304,10 @@ mod tests {
         let mut cache = Cache::default();
         let in_flight = cache.begin(identity.clone());
         cache.invalidate("antigravity");
-        cache.commit(in_flight, &old, now);
+        cache.commit(in_flight, acp::parse_models(&old), now);
         assert!(cache.get(&identity, now).is_none());
         let refreshed = cache.begin(identity.clone());
-        cache.commit(refreshed, &new, now);
+        cache.commit(refreshed, acp::parse_models(&new), now);
         assert_eq!(cache.get(&identity, now).unwrap()[1].id, "new-model");
     }
 }

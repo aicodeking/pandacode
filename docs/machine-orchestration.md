@@ -5,15 +5,17 @@ computer can link one of the user's other computers (PandaCode Connect, `docs/re
 and then launch, message and wait on threads there. Each launched thread is an ordinary mirror
 task on this computer (sidebar, transcript, approvals), recorded as a *child* of the task that
 launched it. Nothing new crosses the network: launches, messages and events use the existing
-encrypted host RPC (`task.start`, `task.find`, `task.send`, `task.steer`, `task.stop`, `task.messages`).
+encrypted host RPC (`task.start`, `task.startStatus`, `task.cancelStart`, `task.send`, `task.steer`, `task.stop`, `task.messages`).
 
 ## Links
 
 A link is this computer's permission for its agents to use another computer. It is stored in
-`remote.json` (`Settings.links: { deviceId: { access, at } }`, `Settings.orchestration: bool`).
-A link counts only while that device is a target (`remote_targets`: trusted with its current
-key, hosting on). Untrusting, revoking or signing out removes links, and so does trusting a
-new or changed key: a link belongs to the computer behind the key it was given to.
+`remote.json` (`Settings.links: { deviceId: { access, at, key } }`, `Settings.orchestration: bool`).
+A link counts only while that device is on the account with remote control on and still has
+the public key it was linked under (`key`): a link belongs to the computer behind that key, so
+a changed key (or a link saved without one) counts for nothing until the user links it again.
+Revoking or signing out removes links. What the other computer lets this one do there is its
+own scoped pairing grant (docs/remote-access.md); launching needs `full` there.
 
 | Access | Agents here may |
 |---|---|
@@ -41,10 +43,10 @@ their team; every call re-checks both. Machine arguments take a device id or a n
 
 | Tool | Approval | Does |
 |---|---|---|
-| `pandacode_machine_list` | no | Machines: id, name, platform, online, hosting, trusted, `access` (or null). Plus guidance: spread independent work across linked machines. |
+| `pandacode_machine_list` | no | Machines: id, name, platform, online, hosting, `access` (or null). Plus guidance: spread independent work across linked machines. |
 | `pandacode_machine_link` `{ machine?, reason }` | no (the dialog is the approval) | Already linked → returns at once. Otherwise emits `machine-link-request` (once per task: a later call from the same task joins the same request, no second card) and waits ≤ 40 s. The request itself stays open for the user for 10 min, independent of the call; task stop cancels it. Unanswered → `{ linked: false, pending: true, requestId, hint }` (“Ask the user to answer the Link a machine card; call machine_link again or end your turn”). Answered → `{ linked, machine?, access?, reason? }`; every call joined to the request gets the same answer, including one that leaves while the answer is being saved (a call made then joins that request too). An answer no call is waiting for wakes an idle task once (see Waking); a call dropped without returning (its client closed) stops counting as waiting, and if it already held an unread answer the task is woken for it. Signing out cancels every request (`machine-link-settled`).
 | `pandacode_machine_capabilities` `{ machine }` | no | Linked (any access). The machine's installed harnesses and their models (the cached `providers.list`), bounded. |
-| `pandacode_machine_launch` `{ machine, prompt, provider, model, title?, effort?, worktree? }` | yes, unless Full access | `ask`/`full` link; not from a `plan` task. The provider's model list on that machine is fetched first (`providers.models`, cached), so an unavailable model is refused (`default` passes). Commits the mirror row and the child (with the commit-point re-check) and spawns `task.start` on the app runtime in the same step, so the tool deadline can't drop a launch between the two; returns at once with `{ thread, machine, mode, status: "starting" }` (`worktree` default true; title set; ≤ 8 running children per parent). `task.start` carries the thread id as `startId`, so it starts at most one task there; a lost reply or a quit is resolved with `task.find` (docs/remote-access.md): found → adopted, never received → `error` (“PandaCode quit while this thread was starting.”), host offline or still starting → retried at the next presence change. A start that fails keeps the child as `error`, with the reason as its final reply, and the normal wake reports it. Stopping a thread while it starts ends it here at once (`interrupted`, saved in the row) and stops it on the host when its task is adopted; if the start then fails or is not found there, the thread stays stopped (never an error, deleted or reset).
+| `pandacode_machine_launch` `{ machine, prompt, provider, model, title?, effort?, worktree? }` | yes, unless Full access | `ask`/`full` link; not from a `plan` task. The provider's model list on that machine is fetched first (`providers.models`, cached), so an unavailable model is refused (`default` passes). Commits the mirror row and the child (with the commit-point re-check) and spawns `task.start` on the app runtime in the same step, so the tool deadline can't drop a launch between the two; returns at once with `{ thread, machine, mode, status: "starting" }` (`worktree` default true; title set; ≤ 8 running children per parent). `task.start` carries the thread id as `startId`, so it starts at most one task there; a lost reply is followed up with `task.startStatus` (docs/remote-access.md): done → linked, failed or unknown there → `error` with the reason, host offline → asked again when it is back. A thread whose start a quit cut off is kept (startup turns other such mirrors back into drafts) and asked about again by its id after the next subscription pass (`mirror::load_starts`). A start that fails keeps the child as `error`, with the reason as its final reply, and the normal wake reports it. Stopping a thread while it starts ends it here at once (`interrupted`) and sends `task.cancelStart`; a host task made meanwhile is linked and stopped there; if the start then fails, the thread stays stopped (never an error, deleted or reset).
 | `pandacode_machine_wait` `{ threads?, timeoutSeconds? }` | no | Waits (event driven, no polling, woken only by its own task's children; default 30 s, max 40 s) until each listed child (default: all running children) is no longer running, or needs the user (waiting). Returns each thread's status and final reply (≤ 8 KB each and 96 KB shared across all of them, measured as escaped JSON; the whole serialized result stays ≤ 120 KiB, replies halved until it fits, under the 128 KiB result limit of both host tool paths); a thread that can't be read (unlinked meanwhile, say) gets `{ thread, error }` in its entry instead. |
 | `pandacode_machine_read` `{ thread, beforeId? }` | no | A bounded page of a child's messages. Content is untrusted data. |
 | `pandacode_machine_message` `{ thread, text, action: "send" \| "steer" }` | yes, unless Full access | `ask`/`full` link (`full` for a `full` thread); own children only. |
@@ -96,11 +98,7 @@ or one with queued prompts, is not woken; its children keep running.
 
 ## Storage
 
-Schema 28: `machine_threads(parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, reported INTEGER NOT NULL DEFAULT 0)` with an index on `(parent_session_id, reported)`.
-
-Schema 29: `machine_threads.reported_by INTEGER` (the wake message that reported the thread, indexed); `sessions.restart_interrupted INTEGER NOT NULL DEFAULT 0` (interrupted by a restart, not the user); and on the host `sessions.remote_caller TEXT` + `sessions.remote_start_id TEXT` with a unique index on the pair (where `remote_start_id` is set), the `startId` of the viewer that started the task, plus `sessions.remote_start_state TEXT` (`starting` | `started`).
-
-Schema 30: `sessions.stop_requested INTEGER NOT NULL DEFAULT 0` (the user pressed Stop; `Store::open` never marks such a task `restart_interrupted`). A mirror row whose start ended without a host task after the user stopped it gets `remote_start_state='ended'`.
+Schema 36 (one step, each part guarded so it can run again): `machine_threads(parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, reported INTEGER NOT NULL DEFAULT 0, reported_by INTEGER)` with indexes on `(parent_session_id, reported)` and `reported_by` (the wake message that reported the thread); `sessions.restart_interrupted INTEGER NOT NULL DEFAULT 0` (interrupted by a restart, not the user); `sessions.stop_requested INTEGER NOT NULL DEFAULT 0` (the user pressed Stop; `Store::open` never marks such a task `restart_interrupted`).
 
 ## Tauri commands (UI contract)
 
@@ -115,7 +113,7 @@ Schema 30: `sessions.stop_requested INTEGER NOT NULL DEFAULT 0` (the user presse
 | `orchestration_threads` | `{ sessionId, ids: string[] }` (≤ 64) | The `orchestration_children` row shape for only those `ids` that are this parent's own children, oldest first (others are skipped). For the transcript cards of older launches. `[]` while orchestration is off. |
 
 Window events: `orchestration://status` (status; also on presence changes such as online,
-offline or trust while orchestration is on and something is linked, coalesced to one per
+offline or hosting while orchestration is on and something is linked, coalesced to one per
 250 ms), `machine-link-request` (a pending entry),
 `machine-link-settled` (`{ requestId }`), plus the ordinary `sessions-changed` and `agent-event`.
 
@@ -124,8 +122,8 @@ offline or trust while orchestration is on and something is linked, coalesced to
 - **Link card** above the composer of the requesting task: “Link a machine to this
   environment”, the agent's reason, **Not now** and **Link…**.
 - **Link a machine** dialog, two steps. 1 *Machine*: every device on the account except this
-  one, with badges (Linked, Offline, Remote control off, Not trusted); untrusted or non-hosting
-  rows are disabled with the fix named. 2 *Access*: Read only / Ask first / Full access with the
+  one, with badges (Linked, Offline, Remote control off); non-hosting rows are disabled with
+  the fix named. 2 *Access*: Read only / Ask first / Full access with the
   description above. Cancel · Continue, Back · Link.
 - **Lineage strip** above the composer when the task has children: stacked harness initials,
   “N threads on ProMini”, running count; expands to one row per child (title, “on Machine ·

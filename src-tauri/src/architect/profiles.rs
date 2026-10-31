@@ -38,9 +38,12 @@ impl ModelSelection {
             "deepseek",
             "commandcode",
             "cline",
+            "kilo",
             "omp",
             "github-copilot",
             "muse",
+            "devin",
+            "hermes",
         ]
         .contains(&self.provider.as_str())
             || self.model.len() > 200

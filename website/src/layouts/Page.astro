@@ -1,5 +1,5 @@
 ---
-/* Shared shell for the site's reading pages (changelog, privacy, license): the landing
+/* Shared shell for the site's reading pages (changelog, privacy, license, support): the landing
  * page's navigation and footer, a calm header with drifting leaves, and pages.ts for
  * reveals, the scroll progress line and the contents rail. */
 import '../style.css';
@@ -8,9 +8,9 @@ import PreviewTag from '../components/PreviewTag.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import { project } from '../lib/distribution';
 
-interface Props { title: string; description: string; eyebrow: string; heading: string; lede?: string; current: 'changelog' | 'privacy' | 'license' }
+interface Props { title: string; description: string; eyebrow: string; heading: string; lede?: string; current: 'changelog' | 'privacy' | 'license' | 'support' }
 const { title, description, eyebrow, heading, lede, current } = Astro.props;
-const links = [['/changelog/', 'Changelog', 'changelog'], ['/privacy/', 'Privacy', 'privacy'], ['/license/', 'License', 'license']] as const;
+const links = [['/changelog/', 'Changelog', 'changelog'], ['/privacy/', 'Privacy', 'privacy'], ['/license/', 'License', 'license'], ['/support/', 'Support', 'support']] as const;
 ---
 <!doctype html>
 <html lang="en">

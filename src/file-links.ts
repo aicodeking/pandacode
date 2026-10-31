@@ -98,6 +98,13 @@ export function bindFileLinkContext(target: HTMLElement, context: FileLinkContex
 
 export function captureFileLinkContext(target: HTMLElement): object | undefined { return capture(target); }
 
+/** A document's relative image path from its folder (a leading / is the workspace root, as on GitHub). */
+export function workspaceImagePath(src: string, documentPath: string): string | undefined {
+  if (!src || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(src)) return undefined;
+  const folder = documentPath.slice(0, documentPath.lastIndexOf('/') + 1).split('/').map(encodeURIComponent).join('/');
+  try { return decodeURIComponent(new URL(src, `file:///${folder}`).pathname.slice(1)); } catch { return undefined; }
+}
+
 function capture(target: HTMLElement): Hub | undefined {
   let bound = targets.get(target);
   if (!bound) {

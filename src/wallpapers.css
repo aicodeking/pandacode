@@ -4,34 +4,35 @@
 .workspace-wallpaper{position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden;background:var(--bg)}
 .workspace:not([data-wallpaper])>.workspace-wallpaper{display:none}
 .workspace-wallpaper img{position:absolute;width:calc(100% + var(--wallpaper-bleed,0px) * 2);height:calc(100% + var(--wallpaper-bleed,0px) * 2);inset:calc(-1 * var(--wallpaper-bleed,0px));object-fit:cover;object-position:center;filter:var(--wallpaper-filter,none)}
-.workspace-wallpaper::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgb(255 255 255 / var(--wallpaper-scrim-edge,.8)),rgb(255 255 255 / var(--wallpaper-scrim-center,.856)) 48%,rgb(255 255 255 / var(--wallpaper-scrim-edge,.8)))}
+.workspace-wallpaper::after{content:"";position:absolute;inset:0;background:rgb(255 255 255 / var(--wallpaper-scrim-center,.856))}
 html .workspace[data-wallpaper] :is(.main-pane,.sidebar,.inspector){--muted:#50534b;--faint:#585b52}
 .workspace[data-wallpaper] :is(.project-board,.conversation-pane){background:transparent}
 .workspace[data-wallpaper] .project-board::before{display:none}
 /* Cards share the sidebar and thread material; their content stays sharp. */
-.workspace[data-wallpaper] .board-card{--muted:var(--text);background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);border-color:color-mix(in srgb,var(--text) 14%,transparent);box-shadow:none}
-.workspace[data-wallpaper] .board-card:hover{background:color-mix(in srgb,var(--workspace-frost-surface) 92%,var(--bg));border-color:color-mix(in srgb,var(--text) 28%,transparent)}
-.workspace[data-wallpaper] .board-card.selected{background:color-mix(in srgb,var(--workspace-frost-surface) 94%,var(--accent));border-color:color-mix(in srgb,var(--accent) 58%,transparent)}
+.workspace[data-wallpaper] .board-card{--muted:var(--text);background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);box-shadow:none}
+.workspace[data-wallpaper] .board-card:hover{background:color-mix(in srgb,var(--workspace-frost-surface) 92%,var(--bg))}
+.workspace[data-wallpaper] .board-card.selected{background:color-mix(in srgb,var(--workspace-frost-surface) 94%,var(--accent))}
 .workspace[data-wallpaper] .board-card-open:active{background:color-mix(in srgb,var(--accent) 6%,transparent)}
 .workspace[data-wallpaper] .board-card-start{background:color-mix(in srgb,var(--raised) 58%,transparent)}
 .workspace[data-wallpaper] .board-card-start:is(:hover,:active){background:color-mix(in srgb,var(--accent-dim) 66%,transparent)}
 html .workspace[data-wallpaper]>.main-pane>.workspace-header{background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none}
-html[data-theme="dark"] .workspace-wallpaper::after{background:linear-gradient(180deg,rgb(28 28 27 / var(--wallpaper-scrim-edge,.8)),rgb(28 28 27 / var(--wallpaper-scrim-center,.856)) 48%,rgb(28 28 27 / var(--wallpaper-scrim-edge,.8)))}
+/* Over a wallpaper the header glass is the sidebar's frost material, a little denser so the muted header text stays legible. */
+.workspace[data-wallpaper]>.main-pane{--header-glass:rgb(255 255 255 / .78);--header-blur:blur(14px) saturate(1.1);--header-band-blur:blur(14px)}
+html[data-theme="dark"] .workspace[data-wallpaper]>.main-pane{--header-glass:rgb(26 29 25 / .72)}
+html[data-theme="dark"] .workspace-wallpaper::after{background:rgb(28 28 27 / var(--wallpaper-scrim-center,.856))}
 html[data-theme="dark"] .workspace[data-wallpaper] :is(.main-pane,.sidebar,.inspector){--muted:#d0cfc5;--faint:#c4c3b8}
 
 /* Navigation, board cards, and threads share the same frosted material. */
-.workspace[data-wallpaper]{--workspace-frost-surface:rgb(255 255 255 / .22);--workspace-frost:blur(24px) saturate(1.1)}
-html[data-theme="dark"] .workspace[data-wallpaper]{--workspace-frost-surface:rgb(26 29 25 / .28)}
-.workspace[data-wallpaper] .view-switch{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost)}
+.workspace[data-wallpaper]{--workspace-frost-surface:rgb(255 255 255 / .5);--workspace-frost:blur(24px) saturate(1.1)}
+html[data-theme="dark"] .workspace[data-wallpaper]{--workspace-frost-surface:rgb(26 29 25 / .55)}
 html[data-theme] .workspace[data-wallpaper]>.main-pane{background:transparent}
 html[data-theme] .workspace[data-wallpaper]>:is(.sidebar,.inspector){
   --raised:rgb(255 255 255 / .3);
-  background:var(--workspace-frost-surface);border-color:rgb(70 70 52 / .14);box-shadow:none;
+  background:var(--workspace-frost-surface);box-shadow:none;
   backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);
 }
 html[data-theme="dark"] .workspace[data-wallpaper]>:is(.sidebar,.inspector){
   --raised:rgb(220 225 205 / .1);
-  border-color:rgb(230 230 207 / .12);
 }
 html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{background:rgb(var(--accent-rgb) / .2);box-shadow:none}
 .workspace[data-wallpaper] .brand-name{color:var(--muted)}
@@ -46,7 +47,7 @@ html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs button.se
 
 /* Tint the surfaces, never their text. Only floating UI needs a blur layer. */
 .workspace[data-wallpaper] .conversation-pane{
-  --thread-surface:rgb(255 255 255 / .36);
+  --thread-surface:rgb(255 255 255 / .68);
   --thread-floating:rgb(255 255 255 / .56);
   --thread-inset:rgb(246 246 239 / .4);
   --thread-hover:rgb(214 214 201 / .36);
@@ -56,7 +57,7 @@ html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs button.se
   --thread-frost:blur(18px) saturate(1.1);
 }
 html[data-theme="dark"] .workspace[data-wallpaper] .conversation-pane{
-  --thread-surface:rgb(32 33 30 / .36);
+  --thread-surface:rgb(32 33 30 / .72);
   --thread-floating:rgb(32 33 30 / .56);
   --thread-inset:rgb(57 59 51 / .32);
   --thread-hover:rgb(141 145 125 / .16);
@@ -64,23 +65,23 @@ html[data-theme="dark"] .workspace[data-wallpaper] .conversation-pane{
   --thread-error:rgb(99 44 38 / .4);
   --thread-border:rgb(230 230 207 / .18);
 }
-.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context,.subagents-trigger,.secondary-button){background:var(--thread-surface);border-color:var(--thread-border)}
+.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context,.secondary-button){background:var(--thread-surface)}
 /* The prompt box and the bar above it are borderless; increased contrast restores the edge. */
 .workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context),.workspace[data-wallpaper] .conversation-pane .composer:focus-within{border-color:transparent}
 .workspace[data-wallpaper] .conversation-pane .composer{backdrop-filter:var(--thread-frost);-webkit-backdrop-filter:var(--thread-frost)}
-/* Both agent panels are one solid surface with no border or blur, like the dropdowns. */
+/* Both agent panels sit inside the Agents flyout's glass (action-dock.css), with no fill of their own. */
 html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
-  background:var(--panel);
+  background:transparent;
   border-color:transparent;
   backdrop-filter:none;
   -webkit-backdrop-filter:none;
 }
-.workspace[data-wallpaper] .conversation-pane :is(.markdown pre,.tool-activity pre,.browser-context-chip,.board-completed-note){background:var(--thread-inset);border-color:var(--thread-border)}
+.workspace[data-wallpaper] .conversation-pane :is(.markdown pre,.tool-activity pre,.browser-context-chip,.board-completed-note){background:var(--thread-inset)}
 .workspace[data-wallpaper] .conversation-pane :is(.markdown :not(pre)>code,.user-avatar,.tool-extra){background:var(--thread-inset)}
-.workspace[data-wallpaper] .conversation-pane :is(.attachments>span,.preview-notice){background:var(--thread-accent);border-color:var(--thread-border)}
+.workspace[data-wallpaper] .conversation-pane :is(.attachments>span,.preview-notice){background:var(--thread-accent)}
 .workspace[data-wallpaper] .conversation-pane .message-error{background:var(--thread-error)}
-.workspace[data-wallpaper] .conversation-pane :is(.icon-button:hover,.secondary-button:hover,.subagent-row:hover,.subagents-trigger:hover,.subagents-trigger[aria-expanded=true]){background:var(--thread-hover)}
-.workspace[data-wallpaper] .conversation-pane :is(.model-picker,.mode-picker,.composer-project):is(:active,[aria-expanded=true]),
+.workspace[data-wallpaper] .conversation-pane :is(.icon-button:hover,.secondary-button:hover,.subagent-row:hover){background:var(--thread-hover)}
+.workspace[data-wallpaper] .conversation-pane :is(.model-picker,.mode-picker,#team-trigger,.composer-project):is(:active,[aria-expanded=true]),
 .workspace[data-wallpaper] .conversation-pane :is(.subagent-row:active,.icon-button.active,.welcome-project:hover,.welcome-project:active){background:var(--thread-accent)}
 .workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button){background:color-mix(in srgb,var(--accent) 92%,transparent)}
 .workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button):hover:not(:disabled){background:color-mix(in srgb,var(--accent) 98%,transparent)}
@@ -98,7 +99,6 @@ html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
   html[data-theme] .workspace[data-wallpaper]>.inspector{background:var(--panel);border-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none}
   html .workspace[data-wallpaper]>.main-pane>.workspace-header{background:var(--bg)}
   .workspace[data-wallpaper] :is(.project-board,.conversation-pane){background:var(--bg)}
-  html:root .workspace[data-wallpaper] .view-switch{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}
   html:root .workspace.side-thread[data-wallpaper] .conversation-pane{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
   .workspace.side-thread[data-wallpaper] .conversation-pane::before{content:none}
   html:root .workspace[data-wallpaper] .board-card{background:var(--bg);border-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none}

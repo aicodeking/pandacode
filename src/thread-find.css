@@ -1,11 +1,11 @@
 /* ⌘F find bar: one slim line centred over the top of the conversation. */
-.thread-find{position:fixed;top:var(--find-top,60px);left:var(--find-left,50%);z-index:30;translate:-50% 0;display:flex;align-items:center;gap:1px;height:32px;padding:0 4px 0 11px;border-radius:7px;background:var(--panel);box-shadow:0 10px 28px -10px rgb(0 0 0 / .32),0 2px 8px -3px rgb(0 0 0 / .16);color:var(--text)}
+.thread-find{position:fixed;top:var(--find-top,60px);left:var(--find-left,50%);z-index:30;translate:-50% 0;display:flex;align-items:center;gap:1px;height:32px;padding:0 4px 0 11px;border-radius:var(--radius-md);background:var(--panel);box-shadow:0 10px 28px -10px rgb(0 0 0 / .32),0 2px 8px -3px rgb(0 0 0 / .16);color:var(--text)}
 html[data-theme="dark"] .thread-find{box-shadow:0 12px 32px -10px rgb(0 0 0 / .65),0 2px 8px -3px rgb(0 0 0 / .4)}
 .thread-find>.icon{width:13px;height:13px;flex:none;color:var(--muted)}
-html[data-theme] .thread-find input{width:min(220px,40vw);height:28px;min-height:0;padding:0 8px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text);font-size:.82rem}
+html[data-theme] .thread-find input{width:min(220px,40vw);height:28px;min-height:0;padding:0 8px;border:0;border-radius:0;background:none;box-shadow:none;color:var(--text);font-size:var(--text-sm)}
 html[data-theme] .thread-find input:focus{border:0;box-shadow:none;outline:none}
 .thread-find input::-webkit-search-cancel-button{display:none}
-.thread-find-count{min-width:5.2em;padding-right:6px;text-align:right;color:var(--muted);font-size:.72rem;font-variant-numeric:tabular-nums;white-space:nowrap}
+.thread-find-count{min-width:5.2em;padding-right:6px;text-align:right;color:var(--muted);font-size:var(--text-2xs);font-variant-numeric:tabular-nums;white-space:nowrap}
 .thread-find .icon-button{width:24px;height:24px;flex:none;color:var(--muted)}
 .thread-find .icon-button:hover:not(:disabled){color:var(--text);background:var(--raised)}
 .thread-find .icon-button:disabled{opacity:.4}

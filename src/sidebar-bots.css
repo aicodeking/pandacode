@@ -1,47 +1,101 @@
 /* The bottom bar that switches the sidebar between tasks and bots. */
 .sidebar-bots{flex:none;padding:6px 8px 0}
-.sidebar-bots-bar{display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 10px;border-radius:4px;color:var(--text);font-size:.84rem;font-weight:550;text-align:left}
+.sidebar-bots-bar{display:flex;align-items:center;gap:9px;width:100%;height:34px;padding:0 10px;border-radius:var(--radius-sm);color:var(--text);font-size:var(--text-sm);font-weight:var(--weight-medium);text-align:left}
 .sidebar-bots-bar:hover{background:var(--raised)}
 .sidebar-bots-bar[aria-pressed="true"]{background:rgb(var(--accent-rgb) / .22)}
-.sidebar-bots-bar>.icon{width:16px;height:16px;flex:none}
-.sidebar-bots-bar>.icon:last-child{width:12px;height:12px;color:var(--muted);transform:rotate(-90deg)}
+.sidebar-bots-bar>.icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md);flex:none}
+.sidebar-bots-bar>.icon:last-child{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);transform:rotate(-90deg)}
 .sidebar-bots-bar[aria-pressed="true"]>.icon:last-child{transform:rotate(90deg)}
-.sidebar-bots-bar small{margin-left:auto;color:var(--muted);font-size:.74rem;font-weight:500;font-variant-numeric:tabular-nums}
+.sidebar-bots-bar small{margin-left:auto;color:var(--muted);font-size:var(--text-xs);font-weight:var(--weight-medium);font-variant-numeric:tabular-nums}
 .sidebar-bots-unread{width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+/* Rail (narrow windows): the icon alone, centered; the label stays as the button's accessible name. */
+@media(max-width:650px){
+  .sidebar-bots-bar{position:relative;justify-content:center;gap:0;padding:0}
+  .sidebar-bots-bar>span:not(.sidebar-bots-unread){position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .sidebar-bots-bar>:is(small,.icon:last-child){display:none}
+  .sidebar-bots-unread{position:absolute;top:7px;right:9px}
+}
 
 /* In the Bots view the task list, its actions and filters give way to the bots. */
-.sidebar.bots-view :is(.sidebar-actions,.sidebar-projects,.navigation,.sidebar-note){display:none}
-.bots-panel{display:none}
-.sidebar.bots-view .bots-panel{display:flex;flex-direction:column;flex:1;min-height:0}
+.sidebar.bots-view :is(.sidebar-actions,.sidebar-projects,.sidebar-search,.navigation){display:none}
+#sidebar-bots-panel{display:none}
+.sidebar.bots-view #sidebar-bots-panel{display:flex;flex-direction:column;flex:1;min-height:0}
 .bots-panel-head{display:flex;align-items:center;gap:6px;padding:6px 10px 10px 14px}
-.bots-panel-search{display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:0 4px;border-bottom:1px solid var(--border);color:var(--muted)}
-.bots-panel-search:focus-within{border-bottom-color:var(--focus)}
-.bots-panel-search>.icon{width:13px;height:13px;flex:none}
-.bots-panel-search input{flex:1;min-width:0;padding:6px 0;border:0;border-radius:0;background:none;box-shadow:none;font-size:.82rem;color:var(--text)}
+.bots-panel-search{display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:0 4px;color:var(--muted)}
+.bots-panel-search>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);flex:none}
+.bots-panel-search input{flex:1;min-width:0;padding:6px 0;border:0;border-radius:0;background:none;box-shadow:none;font-size:var(--text-sm);color:var(--text)}
 .bots-panel-search input:focus{border:0;box-shadow:none}
 .bots-panel-search input::-webkit-search-cancel-button{display:none}
 .bots-panel-head>.icon-button{width:28px;height:28px;flex:none;color:var(--muted)}
 .bots-panel-head>.icon-button:hover{color:var(--text)}
-.bots-panel-head>.icon-button .icon{width:15px;height:15px}
-.bots-panel-list{display:flex;flex-direction:column;gap:2px;flex:1;min-height:0;overflow-y:auto;padding:0 8px 12px}
-.bots-panel-empty{margin:12px 10px;color:var(--muted);font-size:.8rem}
+.bots-panel-head>.icon-button .icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md)}
+.bots-mark-read{flex:none;padding:4px 6px;border-radius:var(--radius-sm);color:var(--accent-ink);font-size:var(--text-2xs);white-space:nowrap}
+.bots-mark-read:hover{background:var(--raised)}
+.bots-panel-list{display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;overflow-y:auto;padding:0 8px 12px;container-type:inline-size}
+.bots-panel-empty{margin:12px 10px;color:var(--muted);font-size:var(--text-xs)}
 
-/* One row per bot: avatar, name and time, then the latest message. */
-.bot-card{position:relative;border-radius:5px}
+/* Groups: Needs you, Pinned, the rest, then paused bots folded under Hidden. */
+.bots-group>[role="list"]{display:flex;flex-direction:column;gap:1px}
+.bots-group-label{display:flex;align-items:center;gap:5px;margin:4px 8px 3px;color:var(--muted);font-size:var(--text-2xs);font-weight:var(--weight-strong);letter-spacing:.02em;text-transform:uppercase}
+.bots-group-toggle{display:flex;align-items:center;justify-content:flex-start;width:calc(100% - 16px);height:24px;padding:0;border-radius:var(--radius-sm);text-align:left}
+.bots-group-toggle:hover{color:var(--text)}
+.bots-group-toggle>.icon{--icon-size:var(--icon-xs);transform:none}
+.bots-group-toggle[aria-expanded="true"]>.icon{transform:rotate(90deg)}
+.bots-panel-start{display:flex;flex-direction:column;align-items:center;gap:10px;margin:28px 10px;color:var(--muted);font-size:var(--text-sm);text-align:center}
+.bots-panel-start p{margin:0}
+.bots-panel-start button{display:inline-flex;align-items:center;gap:6px}
+.bots-panel-start .icon{--icon-size:var(--icon-sm)}
+
+/* Loading: placeholder rows with a soft pulse (a status loop, so it runs with motion off). */
+.bots-skeleton{display:flex;flex-direction:column;gap:1px}
+.bot-row-skeleton{display:flex;align-items:center;gap:10px;height:54px;padding:0 8px;animation:bots-skeleton-pulse 1.4s ease-in-out infinite}
+.bot-row-skeleton i{display:block;border-radius:var(--radius-md);background:var(--raised)}
+.bot-row-skeleton>i{width:36px;height:36px;border-radius:50%;flex:none}
+.bot-row-skeleton>span{display:flex;flex-direction:column;gap:7px;flex:1}
+.bot-row-skeleton>span>i{height:9px;width:55%}
+.bot-row-skeleton>span>i+i{width:85%}
+@keyframes bots-skeleton-pulse{50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.bot-row-skeleton{animation:none}}
+
+/* One row per bot: avatar with a status badge, name and time, then the latest message. */
+.bot-card{position:relative;border-radius:var(--radius-md);--bot-wait:var(--warning,var(--accent))}
 .bot-row.bot-card:hover{background:var(--raised)}
 .bot-row.bot-card.selected{background:rgb(var(--accent-rgb) / .22)}
-.bot-row.bot-card .bot-row-open{display:flex;align-items:center;gap:11px;width:100%;height:auto;min-height:58px;padding:8px 34px 8px 8px;border-radius:5px;color:var(--text);text-align:left}
-.bot-card-avatar{position:relative;flex:none}
-.bot-card-face{display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:radial-gradient(circle at 32% 28%,rgb(255 255 255 / .28),transparent 55%),var(--bot-color);color:#fff;font-size:1.05rem;font-weight:650;line-height:1;text-shadow:0 1px 1px rgb(0 0 0 / .18)}
-.bot-card.paused .bot-card-face{filter:grayscale(.85);opacity:.6}
-.bot-card-working{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--sidebar)}
-.bot-card-text{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
-.bot-card-head{display:flex;align-items:baseline;gap:8px;min-width:0}
-.bot-card .bot-row-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.86rem;font-weight:600}
-.bot-card-head time{flex:none;color:var(--muted);font-size:.72rem;font-variant-numeric:tabular-nums}
-.bot-card-preview{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:.78rem}
+.bot-row.bot-card .bot-row-open{display:flex;align-items:center;gap:10px;width:100%;height:auto;min-height:54px;padding:7px 42px 7px 8px;border-radius:var(--radius-md);color:var(--text);text-align:left}
+.bot-card-avatar{position:relative;flex:none;width:36px;height:36px}
+.bot-avatar.bot-card-face{display:grid;place-items:center;width:36px;height:36px;border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--on-accent);font-size:var(--text-lg);font-weight:var(--weight-strong);line-height:1;overflow:hidden}
+.bot-card-face>svg,.bot-card-face>img{width:100%;height:100%;object-fit:cover}
+.bot-card.paused .bot-card-avatar,.bot-card.paused .bot-card-text{filter:grayscale(1);opacity:.5}
+.bot-card-text{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.bot-card-head{display:flex;align-items:center;gap:6px;min-width:0}
+.bot-card .bot-row-name{flex:0 1 auto;min-width:3.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm);font-weight:var(--weight-strong)}
+.bot-role-tag{flex:0 2 auto;min-width:0;overflow:hidden;padding:0 5px;border-radius:var(--radius-sm);background:var(--fill-active);color:var(--muted);font-size:var(--text-2xs);line-height:16px;text-overflow:ellipsis;white-space:nowrap}
+.bot-card-head time,.bot-chip{flex:none;margin-left:auto;font-size:var(--text-2xs);font-variant-numeric:tabular-nums}
+.bot-card-head time{color:var(--muted)}
+.bot-chip{padding:0 6px;border-radius:var(--radius-full);font-weight:var(--weight-strong);line-height:18px}
+.bot-chip.waiting{background:color-mix(in srgb,var(--bot-wait) 16%,transparent);color:var(--bot-wait)}
+.bot-chip.limited{display:inline-flex;align-items:center;gap:3px;background:var(--fill-active);color:var(--muted)}.bot-chip.limited .icon{--icon-size:var(--icon-xs)}
+.bot-card-preview{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--text-xs)}
 .bot-card.paused .bot-card-preview{font-style:italic}
-.bot-card-unread{position:absolute;right:14px;top:50%;width:8px;height:8px;margin-top:4px;border-radius:50%;background:var(--accent)}
+@container (max-width:200px){.bot-card-head time,.bot-role-tag{display:none}}
 .bot-card .bot-row-settings{top:50%;right:6px;transform:translateY(-50%)}
-.bot-card:hover .bot-card-unread,.bot-card:focus-within .bot-card-unread{opacity:0}
+.bot-card:is(:hover,:focus-within) .bot-card-head :is(time,.bot-chip,.bot-role-tag){visibility:hidden}
+.bot-card.drag-over{outline:1px solid var(--focus);outline-offset:1px}
+
+/* The badge on the avatar's corner, ringed in the sidebar color. */
+.bot-badge{position:absolute;right:-3px;bottom:-3px;display:grid;place-items:center;min-width:16px;height:16px;padding:0 3px;border-radius:999px;box-shadow:0 0 0 2px var(--sidebar);font-size:10px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.bot-badge .icon{width:10px;height:10px}
+.bot-badge.waiting{background:var(--bot-wait);color:#fff}
+.bot-badge.limited{background:var(--raised);color:var(--muted)}
+.bot-badge.unread{background:var(--accent);color:var(--on-accent)}
+.bot-badge.responded{background:var(--success);color:#fff}
+.bot-badge.failed{background:var(--danger);color:#fff}
+.bot-badge.responded .icon{stroke-width:3}
+.bot-badge.working{display:flex;gap:2px;padding:0 4px;background:var(--accent)}
+.bot-badge.working i{width:3px;height:3px;border-radius:50%;background:var(--on-accent);animation:bot-typing 1.2s ease-in-out infinite}
+.bot-badge.working i:nth-child(2){animation-delay:.15s}
+.bot-badge.working i:nth-child(3){animation-delay:.3s}
+@keyframes bot-typing{0%,60%,100%{opacity:.35}30%{opacity:1}}
+.bot-card.selected .bot-badge{box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 22%,var(--sidebar))}
+.bot-card[draggable="true"]{-webkit-user-drag:element}
 @media(prefers-contrast:more){.bot-card.selected,.sidebar-bots-bar[aria-pressed="true"]{outline:1px solid var(--focus);outline-offset:-1px}}

@@ -1,6 +1,6 @@
 /* Only vertical margins: the transcript centers its column with auto side margins. */
-.coordination-status{display:flex;align-items:center;gap:7px;margin-top:14px;margin-bottom:14px;padding-left:31px;color:var(--muted,var(--launcher-muted));font-size:.77rem;line-height:1.5;overflow-wrap:anywhere}
+.coordination-status{display:flex;align-items:center;gap:7px;margin-top:14px;margin-bottom:14px;padding-left:31px;color:var(--muted,var(--launcher-muted));font-size:var(--text-xs);line-height:1.5;overflow-wrap:anywhere}
 .coordination-status>.icon{width:14px;height:14px;flex-shrink:0}.coordination-status>strong{font-weight:500;flex-shrink:0}
 .side-thread .coordination-status{padding-left:28px}
-.architect-worker-history .coordination-status,.launcher-thread .coordination-status{padding-left:0;font-size:11px;margin:8px 0 12px}
+.architect-worker-history .coordination-status,.launcher-thread .coordination-status{padding-left:0;font-size:var(--text-xs);margin:8px 0 12px}
 @media(max-width:650px){.coordination-status{padding-left:0}}

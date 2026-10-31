@@ -1,3 +1,4 @@
+import { showHarness } from './model-picker-helper';
 import { expect, test, type Page } from '@playwright/test';
 
 // Settings is a full page (a region over the workspace) with a vertical list of groups.
@@ -5,7 +6,7 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', 'Tools & add-ons', 'Skills & rules', 'Cloud sandboxes', 'Remote access', 'GitHub', 'About & updates'];
+const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', 'Schedules', 'Tools & add-ons', 'Skills & rules', 'Cloud sandboxes', 'Remote access', 'GitHub', 'About & updates'];
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
 
@@ -49,6 +50,7 @@ test('settings organization selects the default provider and model without chang
   await expect(page.locator('#model-picker-trigger')).toContainText('Opus');
   await expect(page.locator('#model-picker-trigger .provider-logo[data-provider="claude"]')).toBeVisible();
   await page.locator('#model-picker-trigger').click();
+  await showHarness(page, 'codex');
   await page.locator('.model-menu-option[data-provider="codex"][data-model="default"]').click();
   await page.locator('.new-task-button').click();
   await expect(page.locator('#model-picker-trigger')).toContainText('Opus');
@@ -81,8 +83,9 @@ test('settings organization recovers a failed default model catalog and permits 
   await model.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByRole('status').filter({ hasText: 'Could not load models for Claude Code' })).toBeVisible();
-  await picker.getByRole('searchbox').fill('custom-default-model');
-  await picker.getByRole('button', { name: 'Use "custom-default-model" with Claude Code', exact: true }).click();
+  await expect(picker.locator('.model-menu-catalog-error')).toContainText('Catalog unavailable');
+  await picker.getByRole('combobox').fill('custom-default-model');
+  await picker.getByRole('option', { name: 'Use "custom-default-model" with Claude Code', exact: true }).click();
   await expect(model).toHaveText('custom-default-model');
   await page.evaluate(() => { (window as any).__allowDefaultModels = true; });
   await model.click();
@@ -219,7 +222,7 @@ for (const pending of [false, true]) {
     await trigger.click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     await expect.poll(calls).toBe(2);
-    await expect(picker.getByRole('button', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
+    await expect(picker.getByRole('option', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
     if (pending) {
       await page.evaluate(() => (window as any).__refreshModels.releaseFirst());
       await expect.poll(() => page.evaluate(() => (window as any).__refreshModels.firstFinished)).toBe(true);
@@ -228,8 +231,8 @@ for (const pending of [false, true]) {
     await expect(trigger).toContainText('Fresh model name');
     await page.keyboard.press('Escape');
     await trigger.click();
-    await expect(picker.getByRole('button', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
-    await expect(picker.getByRole('button', { name: 'Antigravity · Old model name', exact: true })).toHaveCount(0);
+    await expect(picker.getByRole('option', { name: 'Antigravity · Fresh model name', exact: true })).toBeVisible();
+    await expect(picker.getByRole('option', { name: 'Antigravity · Old model name', exact: true })).toHaveCount(0);
     expect(await calls()).toBe(2);
   });
 }
@@ -289,6 +292,9 @@ test('settings organization keeps agent diagnostics collapsed and retains the de
     await row.locator('summary').click();
     await expect(row.locator('code')).toBeHidden();
   }
+  // Key-based plans are set up under Providers, not listed as agents.
+  await expect(dialog(page).locator('.provider-diagnostic[data-provider="kilo"]')).toBeVisible();
+  await expect(dialog(page).locator('.provider-diagnostic[data-provider="glm"], .provider-diagnostic[data-provider="mimo"]')).toHaveCount(0);
   const defaultAgent = page.getByRole('button', { name: 'Default agent for new tasks', exact: true });
   await defaultAgent.click();
   await page.getByRole('dialog', { name: 'Default agent', exact: true }).getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();

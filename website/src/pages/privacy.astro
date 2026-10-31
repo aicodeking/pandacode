@@ -3,11 +3,12 @@
  * site actually do; change this page with them. */
 import Page from '../layouts/Page.astro';
 import { project } from '../lib/distribution';
-const updated = { iso: '2026-10-17', label: 'October 17, 2026' };
+const updated = { iso: '2026-10-26', label: 'October 26, 2026' };
 const sections = [
   ['overview', 'The short version'],
   ['app', 'The desktop app'],
   ['automatic', 'Automatic requests'],
+  ['connect', 'Connect and the mobile app'],
   ['providers', 'Services you choose'],
   ['website', 'This website'],
   ['children', 'Children'],
@@ -17,11 +18,11 @@ const sections = [
 ---
 <Page title="Privacy Policy" current="privacy" eyebrow="YOUR WORK. YOUR BUSINESS."
   heading="Privacy, plainly put."
-  description="PandaCode collects nothing: no account, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers. Your work stays on your computer."
-  lede="PandaCode is free, open-source software that runs on your computer. We don’t run servers for it, so there is nowhere for your data to go. Here is exactly what the app and this website do.">
+  description="PandaCode collects nothing: no license checks, no telemetry, no analytics and no crash reports. Your work stays on your computer. PandaCode Connect, which links the mobile app to your computers, is optional and keeps only what it needs to find your devices."
+  lede="PandaCode is free, open-source software that runs on your computer. The only server we run is the optional Connect relay, and it can’t read your work. Here is exactly what the apps, the relay and this website do.">
   <Fragment slot="hero">
     <div class="legal-summary page-rise">
-      <div><b>We collect nothing.</b><span>No account, no license checks and no PandaCode servers.</span></div>
+      <div><b>We collect nothing.</b><span>No license checks. Connect, if you use it, keeps only your device list.</span></div>
       <div><b>No telemetry.</b><span>No analytics, usage tracking or crash reports. None.</span></div>
       <div><b>Open to inspect.</b><span>Every line is on GitHub, so you can check all of this yourself.</span></div>
     </div>
@@ -34,7 +35,8 @@ const sections = [
       <section id="overview" aria-labelledby="overview-title">
         <h2 id="overview-title">The short version</h2>
         <ul>
-          <li><strong>PandaCode collects nothing.</strong> There are no accounts, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers.</li>
+          <li><strong>Without Connect, PandaCode collects nothing.</strong> Unless you sign in to PandaCode Connect, there are no accounts, no license checks, no telemetry, no analytics, no crash reports and no PandaCode servers.</li>
+          <li><strong>PandaCode Connect</strong> (optional, for the mobile app and for running tasks on another computer) keeps your GitHub account id and your devices’ names and public keys. Everything you send through it is <strong>end-to-end encrypted</strong>; we can’t read it. See <a href="#connect">Connect and the mobile app</a>.</li>
           <li>Your projects, conversations, tasks, bots, memories and settings are stored <strong>on your device</strong>. We never receive a copy.</li>
           <li>The app talks only to the services <strong>you choose</strong>, directly from your computer, plus a few automatic requests that carry no personal data.</li>
           <li>This website is static. It sets no cookies, runs no analytics and loads nothing from other companies.</li>
@@ -43,7 +45,7 @@ const sections = [
 
       <section id="app" aria-labelledby="app-title">
         <h2 id="app-title">The desktop app</h2>
-        <p>PandaCode keeps its data in your operating system’s application data folder: a local database with your projects, conversations, tasks, board, team settings, bots and their memories, and usage figures, plus cached files such as screenshots you attach. Passwords, API keys, bot tokens and cloud credentials you enter are kept in your operating system’s secure store (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux).</p>
+        <p>PandaCode keeps its data in your operating system’s application data folder: a local database with your projects, conversations, tasks, board, team settings, bots and their memories, and usage figures, plus cached files such as screenshots you attach. Passwords, API keys, bot tokens and cloud credentials you enter are kept in a private file readable only by your user on macOS, and in the operating system’s secure store elsewhere (Credential Manager on Windows, Secret Service on Linux).</p>
         <p>None of this leaves your computer unless a service you use needs it (see <a href="#providers">Services you choose</a>). Uninstalling the app and deleting its data folder removes it.</p>
       </section>
 
@@ -51,23 +53,40 @@ const sections = [
         <h2 id="automatic-title">Automatic requests</h2>
         <p>The app makes a few requests on its own. They carry no content from your work and no identifier for you, only what any internet request includes, such as your IP address:</p>
         <ul>
-          <li><strong>Agent version checks</strong>, about every 6 hours, so PandaCode can tell you when your coding agents have updates: Homebrew (formulae.brew.sh), Anthropic (downloads.claude.ai), GitHub (api.github.com) and Kimi (cdn.kimi.com).</li>
-          <li><strong>PandaCode’s own updates</strong>, at launch and about every 6 hours: the latest release’s update manifest on GitHub (github.com). Updates are signed and verified before they install. Turn this off in Settings → About.</li>
+          <li><strong>Agent version checks</strong>, about every 6 hours, so PandaCode can tell you when your coding agents have updates: Homebrew (formulae.brew.sh), Anthropic (downloads.claude.ai), GitHub (api.github.com), Kimi (cdn.kimi.com) and npm (registry.npmjs.org, for Cline).</li>
+          <li><strong>PandaCode’s own updates</strong>, at launch and about every 6 hours: the latest release’s update manifest on GitHub (github.com). Updates are signed and verified before they install. Choose Automatic, Notify me or Off in Settings → About.</li>
           <li><strong>A public model price list</strong> from GitHub (raw.githubusercontent.com), at most once a day, to estimate costs.</li>
+          <li><strong>The model routing profiler</strong> (about 35 MB) from GitHub (raw.githubusercontent.com), once, verified before use. It is fetched the first time you turn on a team (with model routing on), or when you click Download or Route in Settings, never at launch. Routing then runs on your computer.</li>
         </ul>
         <p>If you open the usage panel, the app asks your providers for your usage limits with the sign-in those tools already saved on your computer. These requests go straight to those companies. Links you click open in your browser or in the built-in browser, and those websites make their own connections.</p>
+      </section>
+
+      <section id="connect" aria-labelledby="connect-title">
+        <h2 id="connect-title">Connect and the mobile app</h2>
+        <p>PandaCode Connect is optional and off until you sign in, in the desktop app (Settings → Remote access) or in the PandaCode mobile app for iPhone and Android. It links your own devices so you can follow and answer tasks from your phone, or run a task on another of your computers. The mobile app never runs code; your computer does the work.</p>
+        <p>You sign in with GitHub. The sign-in asks GitHub for no permissions beyond who you are: no email, no repositories. Our relay, a Cloudflare Worker, then keeps:</p>
+        <ul>
+          <li>your <strong>GitHub numeric user id</strong>, which names your account. At sign-in the relay also reads your GitHub login and avatar URL and passes them to your device, which shows them in Settings;</li>
+          <li>for each device you sign in: a <strong>random device id</strong> the app makes, the <strong>device name</strong> and platform, its <strong>public key</strong>, whether it accepts remote control, and when it was last online.</li>
+        </ul>
+        <p>That is used only to make Connect work: to let your devices find each other. It is linked to your account, never used for tracking or advertising, never sold and never shared.</p>
+        <p><strong>Your work is end-to-end encrypted.</strong> Tasks, prompts, replies and approvals travel between your devices encrypted with keys that never leave them (X25519 and XChaCha20-Poly1305). The relay forwards the ciphertext and stores none of it. We can’t read it, and neither can Cloudflare.</p>
+        <p>Like any web service, the relay sees your IP address. It uses it to rate-limit sign-ins, and Cloudflare may keep standard request logs to run and secure the service. We don’t use them to identify or track you.</p>
+        <p>The mobile app has no analytics, advertising, tracking or crash reporting, and it contacts only GitHub (to sign in, and to load your avatar) and the relay. Messages you write offline, your snoozes and pins, and your sign-in stay on the phone in its secure storage.</p>
+        <p><strong>Push notifications</strong> are optional and off until you allow them in the mobile app. The app then gives the relay your phone’s push token, and the relay sends generic alerts (such as “A task finished”, with a link to the inbox) through Apple Push Notification service or Firebase Cloud Messaging. No task content is sent.</p>
+        <p><strong>Deleting your account.</strong> In the mobile app, open Settings → Delete account. This removes your account and every device on it from the relay at once, and signs your devices out. Removing a single device from the device list deletes that device’s row. Deleting the account doesn’t change your GitHub account; you can also revoke PandaCode’s access in GitHub under Settings → Applications → Authorized OAuth Apps.</p>
       </section>
 
       <section id="providers" aria-labelledby="providers-title">
         <h2 id="providers-title">Services you choose</h2>
         <p>PandaCode is a workspace for tools you bring. When you use one, the app sends it what the work needs, directly from your computer, under your own account with that service and its privacy policy.</p>
         <ul>
-          <li><strong>Coding agents and model providers</strong>, such as Claude Code, Codex, Kimi Code, OpenCode, Antigravity, Grok, GLM and MiMo, receive your prompts, the files and context they read, attachments and tool output.</li>
+          <li><strong>Coding agents and model providers</strong>, such as Claude Code, Codex, Kimi Code, OpenCode, Antigravity, Grok, Devin, Hermes, GLM and MiMo, receive your prompts, the files and context they read, attachments and tool output.</li>
           <li><strong>GitHub</strong>, through the <code>gh</code> command-line tool you sign in to, when you link pull requests or use GitHub features.</li>
           <li><strong>Bots</strong> run on your computer. Messages you exchange through Telegram, Slack, Discord or WhatsApp pass through those platforms. Web chat is served from your own computer.</li>
           <li><strong>Virtual machines and cloud sandboxes.</strong> Local VMs run on your Mac. Daytona, Cloudflare and AWS sandboxes run in your own accounts and receive the commands, files and screen interactions you or your agents send.</li>
-          <li><strong>Deploys</strong> to Vercel, Cloudflare or AWS run their command-line tools in your project with your credentials and upload what you deploy.</li>
-          <li><strong>Jev</strong> (optional, off by default): decision assistance sends selected task excerpts, rules and saved diffs to TypeSafe; browser testing sends test goals and visible page content to TypeSafe and your configured text model provider.</li>
+          <li><strong>Deploys</strong> to Vercel, Cloudflare, Netlify or AWS run their command-line tools in your project with your credentials and upload what you deploy. Saving a Netlify token checks it once with Netlify (api.netlify.com).</li>
+          <li><strong>Jev</strong> (optional, off by default): decision assistance sends selected task excerpts, rules and saved diffs to TypeSafe, or to OpenRouter (openrouter.ai) with your key if you choose it there (opening its model menu fetches the public model list, without a key); browser testing sends test goals and visible page content to TypeSafe and your configured text model provider.</li>
           <li><strong>Downloads you start</strong>, such as VS Code themes from Open VSX, or Tart and other tools from GitHub.</li>
         </ul>
         <p class="callout">Agents act with the permissions you give them and can send your data to other services as part of a task. Review what you allow, especially with full access.</p>
@@ -81,7 +100,7 @@ const sections = [
 
       <section id="children" aria-labelledby="children-title">
         <h2 id="children-title">Children</h2>
-        <p>PandaCode is a developer tool and isn’t directed to children. Since we collect nothing, we hold no information about anyone, children included.</p>
+        <p>PandaCode is a developer tool and isn’t directed to children. We hold nothing about anyone beyond the Connect details above, which are a GitHub account id and device names.</p>
       </section>
 
       <section id="changes" aria-labelledby="changes-title">
@@ -91,8 +110,8 @@ const sections = [
 
       <section id="contact" aria-labelledby="contact-title">
         <h2 id="contact-title">Contact</h2>
-        <p>Questions about privacy? Open an issue in <a href={project.issues} target="_blank" rel="noopener noreferrer">GitHub issues</a>. To report a security problem privately, follow our <a href={project.security} target="_blank" rel="noopener noreferrer">security policy</a> (SECURITY.md in the repository).</p>
-        <p>See also the <a href="/license/">PandaCode License</a>.</p>
+        <p>Questions about privacy, or help deleting Connect data? Open an issue in <a href={project.issues} target="_blank" rel="noopener noreferrer">GitHub issues</a>. To report a security problem privately, follow our <a href={project.security} target="_blank" rel="noopener noreferrer">security policy</a> (SECURITY.md in the repository).</p>
+        <p>See also the <a href="/license/">PandaCode License</a> and <a href="/support/">Support</a> for the mobile app.</p>
       </section>
     </article>
   </div>

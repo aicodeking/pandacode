@@ -14,7 +14,7 @@ pub(super) const AUTH_REQUIRED: &str =
 
 pub async fn discover(cwd: &Path) -> Result<Catalog, String> {
     let path = executable("kimi").ok_or("Install Kimi Code to discover its commands.")?;
-    let mut command = crate::providers::command(&path)?;
+    let mut command = crate::providers::provider_command("kimi", &path)?;
     command.arg("acp");
     discover_process(command, cwd, Duration::from_secs(20)).await
 }

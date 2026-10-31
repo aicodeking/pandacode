@@ -273,7 +273,7 @@ test('slash commands and file mentions transfer keyboard ownership as the caret 
 
 test('board descriptions save quoted file mentions and pass them to the agent when the task starts', async ({ page }) => {
   await installAppProbe(page);
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('region', { name: 'Project board', exact: true }).getByRole('button', { name: 'Add task', exact: true }).click();
   const dialog = page.locator('#dialog');
   await dialog.getByRole('textbox', { name: 'Task title', exact: true }).fill('Follow the design notes');
@@ -314,7 +314,7 @@ test('worktree conversation and board editing search by task instead of reusing 
   await expect(row(page, 'src/worktree-only.ts')).toBeVisible();
   expect((await calls(page, 'search_files')).at(-1).args).toMatchObject({ projectId: 'project-1', sessionId, query: 'src/' });
   await page.locator('#prompt').press('Escape');
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('region', { name: 'Project board', exact: true }).getByRole('button', { name: 'Open task: New conversation', exact: true }).click();
   const details = page.getByRole('region', { name: 'Task details', exact: true });
   await details.getByRole('button', { name: 'Edit task details', exact: true }).click();

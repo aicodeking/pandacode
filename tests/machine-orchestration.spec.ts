@@ -115,8 +115,7 @@ test('machine orchestration: the link dialog has two steps, explains disabled ma
   const dialog = page.getByRole('dialog', { name: 'Link a machine' });
   await expect(dialog.locator('.machine-steps [aria-current="step"]')).toContainText('Machine');
   await expect(dialog.getByRole('radio', { name: /Studio iMac/ })).toBeChecked();
-  await expect(dialog.getByRole('radio', { name: /Home NAS/ })).toBeDisabled();
-  await expect(dialog.locator('.machine-row', { hasText: 'Home NAS' })).toContainText('Not trusted');
+  await expect(dialog.getByRole('radio', { name: /Home NAS/ })).toBeEnabled();
   await expect(dialog.getByRole('radio', { name: /ProMini/ })).toBeDisabled();
   await expect(dialog.locator('.machine-row', { hasText: 'ProMini' })).toContainText('Remote control off');
   await expect(dialog.locator('.machine-row', { hasText: 'Old laptop' })).toContainText('Offline');

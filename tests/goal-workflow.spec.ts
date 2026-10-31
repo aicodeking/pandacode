@@ -69,7 +69,7 @@ test('goal workflow keeps live goal state scoped to its task across conversation
   await expect(banner(page)).toBeHidden();
   await page.locator('.task-item[data-id="session-2"]').click();
   await expect(banner(page)).toContainText('12,');
-  await page.getByRole('button', { name: 'Board view', exact: true }).click();
+  await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Refine the navigation', exact: true }).click();
   const details = page.getByRole('region', { name: 'Task details', exact: true });
   await expect(details.getByRole('region', { name: 'Task goal', exact: true })).toBeVisible();

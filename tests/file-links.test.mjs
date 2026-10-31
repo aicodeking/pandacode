@@ -1,6 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fileReference, findFileReferences, isPreviewableFile } from '../src/file-links.ts';
+import { fileReference, findFileReferences, isPreviewableFile, workspaceImagePath } from '../src/file-links.ts';
+
+test('document images resolve from the document folder and never from the network', () => {
+  assert.equal(workspaceImagePath('docs/banner.png', 'README.md'), 'docs/banner.png');
+  assert.equal(workspaceImagePath('./img/a b.png', 'docs/design notes.md'), 'docs/img/a b.png');
+  assert.equal(workspaceImagePath('img/a%20b.png?raw=true#x', 'docs/guide.md'), 'docs/img/a b.png');
+  assert.equal(workspaceImagePath('../logo.svg', 'docs/guide.md'), 'logo.svg');
+  assert.equal(workspaceImagePath('/assets/logo.svg', 'docs/guide.md'), 'assets/logo.svg');
+  assert.equal(workspaceImagePath('a.png', 'C# notes/what?/README.md'), 'C# notes/what?/a.png');
+  assert.equal(workspaceImagePath('100%.png', 'README.md'), undefined);
+  for (const remote of ['https://img.shields.io/badge/x', '//cdn.example.com/x.png', 'data:image/png;base64,AA', 'file:///etc/x.png', ''])
+    assert.equal(workspaceImagePath(remote, 'README.md'), undefined);
+});
 
 test('workspace filenames support line locations, spaces, absolute paths and Windows paths', () => {
   for (const [input, expected] of [

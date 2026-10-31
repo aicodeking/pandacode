@@ -43,7 +43,7 @@ test('queues messages during a run, edits and reorders them, and steers mid-turn
   await prompt(page).press('Enter');
   await expect(rows(page).locator('.queue-text')).toHaveText(['First follow-up', 'Second follow-up']);
   await expect(prompt(page)).toHaveValue('');
-  await expect(panel(page)).toContainText('Sends when the agent finishes');
+  await expect(panel(page)).toContainText(/Waiting – .+ is working/);
   await panel(page).getByRole('button', { name: 'Move queued message 2 up' }).click();
   await expect(rows(page).locator('.queue-text')).toHaveText(['Second follow-up', 'First follow-up']);
   await panel(page).getByRole('button', { name: 'Edit queued message 1' }).click();
@@ -131,7 +131,7 @@ test('Send now falls back to stopping the run when it cannot steer, and keeps th
   await expect.poll(async () => (await calls(page, 'send_message')).map(c => c.args.text)).toEqual(['Build the feature', 'Three']);
   await expect(rows(page).locator('.queue-text')).toHaveText(['One', 'Two']);
   // The stop was for Send now, so the rest are not paused: they follow when this run ends.
-  await expect(panel(page)).toContainText('Sends when the agent finishes');
+  await expect(panel(page)).toContainText(/Waiting – .+ is working/);
   await emit(page, { sessionId: 'session-1', kind: 'done', text: '' });
   await expect.poll(async () => (await calls(page, 'send_message')).map(c => c.args.text)).toEqual(['Build the feature', 'Three', 'One']);
   await expect(rows(page).locator('.queue-text')).toHaveText(['Two']);

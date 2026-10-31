@@ -114,7 +114,7 @@ function block({ kind, code }: Block, pending: Promise<void>[]): HTMLElement {
       for (const image of clean.querySelectorAll('img')) if (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(image.getAttribute('src') ?? '')) image.remove();
       const root = figure.attachShadow({ mode: 'open' });
       const base = document.createElement('style');
-      base.textContent = ':host{display:block;color:var(--text);font:inherit}*{box-sizing:border-box;max-width:100%}img{height:auto}table{border-collapse:collapse}td,th{padding:4px 8px;border:1px solid var(--border)}a{color:var(--accent-ink)}';
+      base.textContent = ':host{display:block;color:var(--text);font:inherit}*{box-sizing:border-box;max-width:100%}img{height:auto}table{border-collapse:collapse}td,th{padding:4px 8px}th{background:var(--fill-hover)}tr:nth-child(even) td{background:var(--fill-hover)}a{color:var(--accent-ink)}';
       root.append(base, clean);
     }
   }).catch(() => failed(figure, 'This view could not be shown.', code)));

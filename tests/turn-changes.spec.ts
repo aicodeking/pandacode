@@ -63,7 +63,7 @@ test.describe('turn changes', () => {
   for (const view of ['conversation', 'board']) test(`shows one compact completed-turn card after streaming in ${view}`, async ({ page }) => {
     await page.clock.install(); await install(page);
     if (view === 'board') {
-      await page.getByRole('button', { name: 'Board view', exact: true }).click();
+      await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
       await page.getByRole('region', { name: 'Project board', exact: true }).getByRole('button', { name: 'Add task', exact: true }).click();
       await page.getByRole('textbox', { name: 'Task title', exact: true }).fill('Sample change with a saved diff');
       await page.getByRole('button', { name: 'Add to pending', exact: true }).click();
@@ -252,20 +252,23 @@ test.describe('turn changes', () => {
   test('uses the same read-only viewer for current working-tree changes', async ({ page }) => {
     await install(page);
     await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
-    await page.locator('[data-action="open-diff"]').first().click();
-    const current = page.locator('.inspector-diff-host');
+    // The Changes tab shows each file's diff inline in the same read-only viewer, one load per file.
+    const files = page.locator('#inspector-content .changes-view .cv-file');
+    const current = files.first();
     await expect(current.locator('.diff-viewer')).toHaveAttribute('data-diff-state', 'ready');
-    await expect(current.getByRole('button', { name: 'Unified diff', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(current.locator('.diff-viewer')).toHaveAttribute('data-diff-layout', 'unified');
     await expect(current.getByText('createSearchIndex', { exact: true }).first()).toBeVisible();
-    expect(await page.evaluate(() => (window as any).__turnChangesTest.calls.filter((call: any) => call.command === 'git_diff').length)).toBe(1);
+    await expect(files.locator('.diff-viewer[data-diff-state="ready"]')).toHaveCount(await files.count());
+    expect(await page.evaluate(() => (window as any).__turnChangesTest.calls.filter((call: any) => call.command === 'git_diff').length)).toBe(await files.count());
   });
 
   test('completed worker conversations show their own changed files and request their snapshot', async ({ page }) => {
     await page.clock.install(); await install(page); await selectFixture(page);
-    await page.getByRole('button', { name: 'Team', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Team', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await page.locator('#team-trigger').click();
+    await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
+    await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
     await page.locator('#prompt').fill('Demonstrate the worker change review'); await page.locator('#prompt').press('Enter');
-    await page.getByRole('button', { name: 'Open workers', exact: true }).click();
+    await page.locator('#agents-toggle').click();
     await page.clock.runFor(8000);
     const workers = page.getByRole('dialog', { name: 'Workers', exact: true });
     await workers.locator('.architect-worker-row').first().click();

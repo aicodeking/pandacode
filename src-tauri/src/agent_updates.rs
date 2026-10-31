@@ -154,16 +154,11 @@ fn parse_version(input: &str) -> Option<Version> {
     })
 }
 
-const PROVIDERS: &[(&str, &str)] = &[
-    ("claude", "Claude Code"),
-    ("codex", "Codex"),
-    ("kimi", "Kimi Code"),
-    ("opencode", "OpenCode"),
-    ("glm", "GLM Coding Plan"),
-    ("antigravity", "Antigravity"),
-    ("grok", "Grok Build"),
-    ("mimo", "MiMo Token Plan"),
-];
+/// Every harness PandaCode can start, so a new one is checked without touching this file.
+use crate::providers::PROVIDERS;
+
+/// Families with a verified release feed and updater; every other agent is listed as manual.
+const UPDATABLE: [&str; 6] = ["claude", "codex", "kimi", "opencode", "grok", "cline"];
 
 fn family(provider: &str) -> &str {
     if matches!(provider, "glm" | "mimo") {
@@ -257,12 +252,29 @@ fn invalidate() {
     GENERATION.fetch_add(1, Ordering::SeqCst);
 }
 
-fn reusable(cache: &Cache, installations: &[Installation], force: bool, generation: u64) -> bool {
+/// Whether a cache entry can still be used. The age is given rather than
+/// measured, so the six-hour edge can be checked on any machine: an instant six
+/// hours old does not exist on one that has been up for less than that.
+fn reusable_at(
+    cache: &Cache,
+    installations: &[Installation],
+    force: bool,
+    generation: u64,
+    age: Option<Duration>,
+) -> bool {
     cache.generation == generation
         && cache.installations == installations
-        && cache.attempted.is_some_and(|at| {
-            at.elapsed() < Duration::from_secs(if force { 10 } else { 6 * 60 * 60 })
-        })
+        && age.is_some_and(|age| age < Duration::from_secs(if force { 10 } else { 6 * 60 * 60 }))
+}
+
+fn reusable(cache: &Cache, installations: &[Installation], force: bool, generation: u64) -> bool {
+    reusable_at(
+        cache,
+        installations,
+        force,
+        generation,
+        cache.attempted.map(|at| at.elapsed()),
+    )
 }
 
 fn metadata_endpoint(source: &str) -> Option<(&'static str, &'static str)> {
@@ -292,6 +304,7 @@ fn metadata_endpoint(source: &str) -> Option<(&'static str, &'static str)> {
             "tag_name",
         )),
         "npm:opencode" => Some(("https://registry.npmjs.org/opencode-ai/latest", "version")),
+        "npm:cline" => Some(("https://registry.npmjs.org/cline/latest", "version")),
         "kimi" => Some(("https://cdn.kimi.com/kimi-code/latest", "text")),
         "kimi-python" => Some(("https://pypi.org/pypi/kimi-cli/json", "info.version")),
         "grok" => Some((
@@ -399,7 +412,7 @@ fn base_row(install: &Installation) -> AgentUpdate {
         can_update: false,
         message: None,
         checked_at: crate::storage::now(),
-        docs_url: Some(install::docs(family(&install.provider)).into()),
+        docs_url: install::docs(family(&install.provider)).map(Into::into),
     }
 }
 
@@ -415,6 +428,24 @@ async fn inspect(installation: Installation) -> Checked {
     }
     if family(&installation.provider) == "antigravity" {
         row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        return Checked {
+            install: installation,
+            row,
+            source: None,
+        };
+    }
+    if !UPDATABLE.contains(&family(&installation.provider)) {
+        row.message = Some(
+            "PandaCode cannot update this agent. Use its own updater or package manager.".into(),
+        );
+        let local = installation.clone();
+        if let Ok(Ok(version)) = tokio::task::spawn_blocking(move || {
+            install::version(&local.path, family(&local.provider))
+        })
+        .await
+        {
+            row.installed_version = Some(version.text);
+        }
         return Checked {
             install: installation,
             row,
@@ -725,17 +756,37 @@ mod tests {
         assert!(reusable(&cache, &[], false, 2));
         assert!(reusable(&cache, &[], true, 2));
         assert!(!reusable(&cache, &[], false, 3));
-        let cache = Cache {
-            attempted: Some(Instant::now() - Duration::from_secs(11)),
-            ..cache
-        };
-        assert!(reusable(&cache, &[], false, 2));
-        assert!(!reusable(&cache, &[], true, 2));
-        let cache = Cache {
-            attempted: Some(Instant::now() - Duration::from_secs(6 * 3600 + 1)),
-            ..cache
-        };
-        assert!(!reusable(&cache, &[], false, 2));
+        // The ages are given, not measured: an instant that old cannot exist on a
+        // machine that has been up for less than that.
+        assert!(reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(11))
+        ));
+        assert!(!reusable_at(
+            &cache,
+            &[],
+            true,
+            2,
+            Some(Duration::from_secs(11))
+        ));
+        assert!(reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(6 * 3600 - 1))
+        ));
+        assert!(!reusable_at(
+            &cache,
+            &[],
+            false,
+            2,
+            Some(Duration::from_secs(6 * 3600))
+        ));
+        assert!(!reusable_at(&cache, &[], false, 2, None));
     }
 
     #[test]
@@ -765,6 +816,43 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].providers, ["claude", "glm"]);
         assert_eq!(groups[1].providers, ["mimo"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn every_harness_gets_an_update_row_and_unsupported_ones_stay_manual() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("pandacode-update-all-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let found = PROVIDERS
+            .iter()
+            .map(|(id, name)| {
+                let path = dir.join(id);
+                std::fs::write(&path, "#!/bin/sh\necho 'agent 1.2.3'\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                ((*id).into(), (*name).into(), path)
+            })
+            .collect();
+        let groups = group_installations(found);
+        let ids: Vec<_> = groups.iter().map(|group| group.provider.as_str()).collect();
+        assert_eq!(ids, PROVIDERS.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        for group in groups {
+            let family = family(&group.provider).to_owned();
+            if UPDATABLE.contains(&family.as_str()) || family == "antigravity" {
+                continue;
+            }
+            let row = inspect(group).await.row;
+            assert_eq!(row.status, "unsupported", "{}", row.provider);
+            assert_eq!(
+                row.installed_version.as_deref(),
+                Some("1.2.3"),
+                "{}",
+                row.provider
+            );
+            assert!(row.message.is_some() && !row.can_update);
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

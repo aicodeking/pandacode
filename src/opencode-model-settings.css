@@ -1,29 +1,30 @@
 .opencode-model-dialog{width:min(42rem,calc(100vw - 2rem))}
 .opencode-model-settings{display:grid;gap:.85rem;min-width:0}
-.opencode-model-settings>.dialog-description{margin:0;color:var(--muted);font-size:.88rem;line-height:1.5}
+.opencode-model-settings>.dialog-description{margin:0;color:var(--muted);font-size:var(--text-sm);line-height:1.5}
 .opencode-model-toolbar{display:flex;align-items:center;gap:.5rem}
-.opencode-model-search{display:flex;align-items:center;gap:.55rem;flex:1;min-width:0;padding:0 .8rem;border-radius:.32rem;background:color-mix(in srgb,var(--panel) 50%,transparent);border:1px solid var(--border)}
-.opencode-model-search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent)}
+.opencode-model-search{display:flex;align-items:center;gap:.55rem;flex:1;min-width:0;padding:0 .8rem;border-radius:var(--radius-md);background:color-mix(in srgb,var(--panel) 50%,transparent);}
+.opencode-model-search:focus-within{box-shadow:var(--accent) 12%,transparent)}
 .opencode-model-search>.icon{width:1rem;height:1rem;flex-shrink:0;color:var(--muted)}
-.opencode-model-search input{width:100%;min-width:0;padding:.75rem 0;border:0;background:transparent;box-shadow:none;outline:none;font-size:.85rem}
-.opencode-model-search input:focus{box-shadow:none;outline:none;border:0}
+.opencode-model-search input{width:100%;min-width:0;padding:.75rem 0;border:0;background:transparent;outline:none;font-size:var(--text-sm)}
+.opencode-model-search input:focus{outline:none;border:0}
 .opencode-model-toolbar button{padding:.7rem;flex-shrink:0}
 .opencode-model-list{max-height:min(47vh,25rem);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;display:flex;flex-direction:column;gap:.25rem}
-.opencode-model-row{display:flex;align-items:center;gap:.7rem;padding:.7rem .75rem;min-height:3.6rem;border-radius:.3rem;cursor:pointer;background:transparent;transition:background 130ms ease}
+.opencode-model-row{display:flex;align-items:center;gap:.7rem;padding:.7rem .75rem;min-height:3.6rem;border-radius:var(--radius-md);cursor:pointer;background:transparent;transition:background 130ms ease}
 .opencode-model-row:hover{background:color-mix(in srgb,var(--panel) 65%,transparent)}
 .opencode-model-row.selected{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .opencode-model-row:focus-within{outline:2px solid var(--accent);outline-offset:-2px}
 .opencode-model-row input{width:1rem;height:1rem;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
 .opencode-model-copy{display:grid;gap:.23rem;min-width:0;flex:1}
-.opencode-model-copy strong{font-size:.86rem;font-weight:550;line-height:1.3;overflow-wrap:anywhere}
-.opencode-model-copy small{font-size:.71rem;line-height:1.35;color:var(--muted);overflow-wrap:anywhere}
-.opencode-model-context{color:var(--muted);font-size:.7rem;white-space:nowrap}
-.opencode-model-status,.opencode-model-empty{margin:0;font-size:.8rem;line-height:1.5;color:var(--muted)}
+.opencode-model-copy strong{font-size:var(--text-sm);font-weight:var(--weight-medium);line-height:1.3;overflow-wrap:anywhere}
+.opencode-model-copy small{font-size:var(--text-xs);line-height:1.35;color:var(--muted);overflow-wrap:anywhere}
+.opencode-model-context{color:var(--muted);font-size:var(--text-xs);white-space:nowrap}
+.opencode-model-status,.opencode-model-empty{margin:0;font-size:var(--text-sm);line-height:1.5;color:var(--muted)}
 .opencode-model-status.error{color:var(--red,#ff908b)}
 .opencode-model-empty{padding:1.5rem .75rem;text-align:center}
 .opencode-model-footer{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-top:.3rem}
-.opencode-model-count,.opencode-model-note{color:var(--muted);font-size:.75rem;line-height:1.5}
-.opencode-model-note{font-size:.7rem}
+.opencode-model-count,.opencode-model-note{color:var(--muted);font-size:var(--text-xs);line-height:1.5}
+.opencode-model-note{font-size:var(--text-xs)}
 .opencode-model-row[hidden],.opencode-model-list[hidden]{display:none}
 @media(max-width:500px){.opencode-model-context{display:none}.opencode-model-row{padding:.65rem .4rem}}
 @media(prefers-reduced-motion:reduce){.opencode-model-row{transition:none}}
+.opencode-model-search{background:color-mix(in srgb,var(--text) 6%,transparent)}

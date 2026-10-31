@@ -11,6 +11,7 @@ async function open(page: Page): Promise<void> {
       update('claude', 'Claude Code', ['claude', 'glm', 'mimo']), update('codex', 'Codex'),
       { ...update('kimi', 'Kimi Code'), status: 'current', latestVersion: '1.0.0' },
       { ...update('opencode', 'OpenCode'), status: 'unsupported', canUpdate: false, latestVersion: null, method: null, message: 'Update this custom installation using its package manager.', docsUrl: 'https://opencode.ai/docs/cli/' },
+      { ...update('kilo', 'Kilo Code'), status: 'unsupported', canUpdate: false, latestVersion: null, method: null, message: 'PandaCode cannot update this agent. Use its own updater or package manager.' },
     ] };
   });
   await page.route('**/src/preview.ts*', async route => {
@@ -127,6 +128,10 @@ test.describe('Agent updates', () => {
     const custom = dialog(page).locator('.agent-update-row[data-provider="opencode"]');
     await expect(custom).toContainText('Update this custom installation');
     await expect(custom.getByRole('button', { name: 'Update OpenCode', exact: true })).toHaveCount(0);
+    // Harnesses without an update route (Kilo, omp, Pi…) still get a manual row.
+    const kilo = dialog(page).locator('.agent-update-row[data-provider="kilo"]');
+    await expect(kilo).toContainText('Manual update');
+    await expect(kilo).toContainText('Use its own updater');
     expect((await calls(page, 'check_agent_updates')).at(-1).args.force).toBe(true);
   });
 

@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- Launch banners. render-banners.mjs opens it as banners.html?<name> at each size; open it in a browser the same way to preview. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="banners.css">
+</head>
+<body>
+<main class="stage"><div class="safe">
+  <section class="copy">
+    <div class="brand"><img class="mark" src="../../../mobile/assets/images/icon.png" alt="">PandaCode</div>
+    <h1><span>PandaCode,</span> <span>now on <em>iPhone.</em></span></h1>
+    <p class="line">See and steer your coding agents from anywhere. End-to-end encrypted.</p>
+    <p class="store">Download on the App Store</p>
+  </section>
+  <section class="phones">
+    <div class="phone left"><img class="screen" src="captures/task-dark.png" alt=""><div class="island"></div></div>
+    <div class="phone right"><img class="screen" src="captures/approval-light.png" alt=""><div class="island"></div></div>
+    <div class="phone front"><img class="screen" src="captures/inbox-light.png" alt=""><div class="island"></div></div>
+  </section>
+</div></main>
+<script>
+  // name -> [layout, canvas width, height, zoom, safe area]: wide layouts are drawn at 1280 units across.
+  // App Store art keeps its copy and phones in the art safe area of Apple's templates (x, y, w, h).
+  const banners = {
+    'social-1600x900': ['wide', 1600, 900, 1.25],
+    'github-social-1280x640': ['wide', 1280, 640, 1],
+    'play-feature-1024x500': ['wide', 1024, 500, 0.8],
+    'website-hero-2400x1200': ['wide', 2400, 1200, 1.875],
+    'square-1080x1080': ['square', 1080, 1080, 1],
+    'app-store/header-3840x1646': ['appstore header', 3840, 1646, 1, [1097, 493, 1646, 661]],
+    'app-store/header-5244x2950': ['appstore universal', 5244, 2950, 1, [1921, 660, 1402, 962]],
+    'app-store/search-results-3840x2560': ['appstore search', 3840, 2560, 1, [836, 765, 2168, 1030]],
+    'app-store/search-results-1920x1280': ['appstore search', 1920, 1280, 1, [418, 383, 1084, 515]],
+  };
+  const [layout, width, height, zoom, safe] = banners[location.search.slice(1)] || banners['social-1600x900'];
+  document.body.className = layout;
+  if (safe) {
+    const [left, top, w, h] = safe.map(n => `${n}px`);
+    Object.assign(document.querySelector('.safe').style, { left, top, width: w, height: h });
+    document.querySelector('h1').innerHTML = '<span>Your agents,</span> <span>in your <em>pocket.</em></span>';
+    // #guides outlines the safe area while designing.
+    document.body.classList.toggle('guides', location.hash === '#guides');
+  }
+  Object.assign(document.documentElement.style, { width: `${width}px`, height: `${height}px` });
+  Object.assign(document.querySelector('.stage').style, { width: `${width / zoom}px`, height: `${height / zoom}px`, zoom });
+</script>
+</body>
+</html>

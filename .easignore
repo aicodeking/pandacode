@@ -1,0 +1,47 @@
+# What EAS Build uploads for the mobile app (mobile/). It replaces .gitignore for EAS, so the
+# usual ignores are repeated here. The app is self-contained in mobile/; the desktop app,
+# relay, website, docs and their large images stay out of the upload.
+
+# Everything outside mobile/
+/src/
+/src-tauri/
+/website/
+/relay/
+/docs/
+/tests/
+/scripts/
+/public/
+/packages/
+/releases/
+/release/
+/index.html
+/playwright*.ts
+/vite.config.ts
+/pandacode-run.sh
+
+# Usual ignores
+node_modules/
+dist/
+.expo/
+web-build/
+expo-env.d.ts
+test-results/
+playwright-report/
+.wrangler/
+.secrets/
+.DS_Store
+*.p12
+*.p8
+*.key
+*.pem
+*.jks
+*.mobileprovision
+.env
+.env*.local
+*.tsbuildinfo
+.metro-health-check*
+npm-debug.*
+
+# Generated native projects (EAS runs prebuild itself)
+/mobile/ios/
+/mobile/android/

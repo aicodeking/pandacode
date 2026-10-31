@@ -99,10 +99,23 @@ function verifyAdhocSignature(app) {
   if (result.status !== 0 || !/^Signature=adhoc\r?$/m.test(details) || /^Authority=/m.test(details)) throw new Error('Expected an ad-hoc macOS signature.');
 }
 
+// Tauri staples right after notarization, but Apple's ticket can take a while to
+// propagate, and then that staple fails without failing the build. Staple again until
+// the ticket is there. ponytail: the DMG and update archive keep the app as Tauri
+// packed it; an unstapled notarized app still passes Gatekeeper's online check.
+async function stapleTicket(app, attempts = 10) {
+  for (let attempt = 1; ; attempt += 1) {
+    if (spawnSync('xcrun', ['stapler', 'validate', app], { stdio: 'ignore' }).status === 0) return;
+    if (attempt >= attempts) throw new Error('Apple has no notarization ticket for the app yet; stapling failed.');
+    if (spawnSync('xcrun', ['stapler', 'staple', app], { stdio: 'inherit' }).status === 0) continue;
+    await new Promise((done) => setTimeout(done, 30_000));
+  }
+}
+
 async function verifyMacApp(app, mode) {
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
   if (mode === 'adhoc') return verifyAdhocSignature(app);
-  await run('xcrun', ['stapler', 'validate', app]);
+  await stapleTicket(app);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose', app]);
 }
 
@@ -145,7 +158,8 @@ async function main() {
     await verifyDmg(source, app, releaseVersion);
   }
   if (releaseTarget.startsWith('linux-')) {
-    // Drop the build host's Wayland libraries (see appimage.mjs) and sign the
+    // Drop the build host's Wayland libraries, let GDK_BACKEND be overridden (see
+    // appimage.mjs), and sign the
     // final bytes again, since Tauri signed the image before this rebuild.
     await repackAppImage(source, { log: message => console.log(message) });
     if (build.updater) await run(process.execPath, [tauriCli, 'signer', 'sign', source], { env: await signingEnvironment(build.env) });
