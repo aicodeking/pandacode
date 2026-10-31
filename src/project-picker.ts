@@ -5,6 +5,8 @@ import { showPopover, hidePopover } from './popover-motion';
 type ProjectPickerOptions = {
   anchor: HTMLElement;
   projects: Project[];
+  /** Folder counts per project id; projects with more than one show the count. */
+  folderCounts?: Map<string, number>;
   currentProjectId: string;
   onSelect: (projectId: string) => Promise<void>;
   onNewProject: () => void;
@@ -98,8 +100,10 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     const matches = projects.filter(project => `${project.name}\n${project.path}`.toLowerCase().includes(query));
     const visible = matches.slice(0, 100);
     list.innerHTML = visible.map(project => {
+      const folders = options.folderCounts?.get(project.id) ?? 0;
+      const count = folders > 1 ? `<span class="project-menu-folders">${folders} folders</span>` : '';
       const removable = Boolean(onRemove) && (canRemove ? canRemove(project) : true);
-      return `<div class="project-menu-row" role="none"><button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>${removable ? `<button type="button" class="project-menu-remove" data-remove-project-id="${escape(project.id)}" aria-label="${escape(`Remove ${project.name} from list`)}" title="Remove from list" ${pending ? 'disabled' : ''}>${icon('trash')}</button>` : ''}</div>`;
+      return `<div class="project-menu-row" role="none"><button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + (count ? ` — ${folders} folders` : '') + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span>${count}<span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>${removable ? `<button type="button" class="project-menu-remove" data-remove-project-id="${escape(project.id)}" aria-label="${escape(`Remove ${project.name} from list`)}" title="Remove from list" ${pending ? 'disabled' : ''}>${icon('trash')}</button>` : ''}</div>`;
     }).join('');
     empty.hidden = visible.length > 0;
     empty.textContent = projects.length ? 'No matching projects.' : 'No projects yet.';
