@@ -1,6 +1,7 @@
 import './coordination-message.css';
 import type { Message } from './types';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 
 const TEAM: Record<string, string> = {
   worker_review: 'Reviewing worker results', worker_update: 'Checking worker updates',
@@ -14,8 +15,8 @@ export function renderCoordination(message: Message): string {
   const kind = message.coordinationKind ?? '';
   // A kind added natively later still reads as words, under the group its name points to.
   const machine = kind in MACHINES || /^(machine|link)_/.test(kind);
-  const label = TEAM[kind] ?? MACHINES[kind] ?? (kind ? kind.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Coordinating team');
+  const label = t(TEAM[kind] ?? MACHINES[kind] ?? (kind ? kind.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) : 'Coordinating team'));
   return machine
     ? `<div class="coordination-status" role="note" aria-label="Machines status: ${escape(label)}">${icon('monitor')}<strong>Machines</strong><span>${escape(label)}</span></div>`
-    : `<div class="coordination-status" role="note" aria-label="Team status">${icon('worktree')}<strong>Team</strong><span>${escape(label)}</span></div>`;
+    : `<div class="coordination-status" role="note" aria-label="${t('Team status')}">${icon('worktree')}<strong>${t('Team')}</strong><span>${escape(label)}</span></div>`;
 }

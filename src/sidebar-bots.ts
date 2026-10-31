@@ -1,5 +1,6 @@
 import './sidebar-bots.css';
 import type { Bot } from './bots';
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import { resetLabel } from './usage-limit';
 import { botAvatarHtml } from './bot-avatars';
@@ -96,18 +97,18 @@ export function messageTime(at: number, now = Date.now()): string {
   const date = new Date(at), today = new Date(now);
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   if (at >= startOfToday) return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
-  if (at >= startOfToday - 86_400_000) return 'Yesterday';
+  if (at >= startOfToday - 86_400_000) return t('Yesterday');
   if (at >= startOfToday - 6 * 86_400_000) return date.toLocaleDateString(undefined, { weekday: 'long' });
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 export function botsBarHtml(view: SidebarView, count: number, unread: number): string {
   const open = view === 'bots';
-  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? 'Back to tasks' : 'Show bots'}">${icon('bot')}<span>Bots</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${unread} unread"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
+  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? t('Back to tasks') : t('Show bots')}">${icon('bot')}<span>${t('Bots')}</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${t`${unread} unread`}"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
 }
 
 export function botsPanelHeadHtml(): string {
-  return `<div class="bots-panel-head"><label class="bots-panel-search">${icon('search')}<input type="search" data-bots-search placeholder="Search" aria-label="Search bots and channels" autocomplete="off" spellcheck="false"></label><button type="button" class="bots-mark-read" data-action="mark-bots-read" hidden>Mark all read</button><button type="button" class="icon-button" data-action="new-bot-menu" aria-label="Add bot or channel" title="New bot or channel" aria-haspopup="menu" aria-expanded="false" aria-controls="bot-create-menu">${icon('plus')}</button><div id="bot-create-menu" class="bot-create-menu" role="menu" aria-label="Create" hidden><button type="button" role="menuitem" data-action="new-bot">${icon('bot')}New bot</button><button type="button" role="menuitem" data-action="new-channel">${icon('chat')}New channel</button></div></div><div class="bots-panel-list"></div><span class="sr-only" id="bots-reorder-live" aria-live="polite"></span>`;
+  return `<div class="bots-panel-head"><label class="bots-panel-search">${icon('search')}<input type="search" data-bots-search placeholder="t('Search')" aria-label="t('Search bots and channels')" autocomplete="off" spellcheck="false"></label><button type="button" class="bots-mark-read" data-action="mark-bots-read" hidden>t('Mark all read')</button><button type="button" class="icon-button" data-action="new-bot-menu" aria-label="t('Add bot or channel')" title="t('New bot or channel')" aria-haspopup="menu" aria-expanded="false" aria-controls="bot-create-menu">${icon('plus')}</button><div id="bot-create-menu" class="bot-create-menu" role="menu" aria-label="t('Create')" hidden><button type="button" role="menuitem" data-action="new-bot">${icon('bot')}t('New bot')</button><button type="button" role="menuitem" data-action="new-channel">${icon('chat')}t('New channel')</button></div></div><div class="bots-panel-list"></div><span class="sr-only" id="bots-reorder-live" aria-live="polite"></span>`;
 }
 
 const CLOCK = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>';
@@ -117,12 +118,12 @@ const SKELETON_ROWS = 3;
 
 function statusLabel(status: BotStatus): string {
   switch (status.kind) {
-    case 'waiting': return status.reason === 'question' ? 'Needs your answer' : 'Needs approval';
-    case 'failed': return 'Last turn failed';
-    case 'limited': return `Usage limit · ${resetLabel(status.until)}`;
-    case 'working': return 'Working';
-    case 'unread': return `${status.count} unread`;
-    case 'responded': return 'Responded';
+    case 'waiting': return status.reason === 'question' ? t('Needs your answer') : t('Needs approval');
+    case 'failed': return t('Last turn failed');
+    case 'limited': return t`Usage limit · ${resetLabel(status.until)}`;
+    case 'working': return t('Working');
+    case 'unread': return t`${status.count} unread`;
+    case 'responded': return t('Responded');
   }
 }
 
@@ -137,24 +138,24 @@ function badgeHtml(status: BotStatus | undefined): string {
 function metaHtml(bot: Bot, status: BotStatus | undefined): string {
   if (status?.kind === 'waiting') return `<span class="bot-chip waiting">${status.reason === 'question' ? 'Answer' : 'Review'}</span>`;
   // Only the time fits a narrow sidebar; the full label is the tooltip and the badge's name.
-  if (status?.kind === 'limited') return `<span class="bot-chip limited" title="${escape(`Usage limit · ${resetLabel(status.until)}`)}">${CLOCK}${escape(status.until ? resetLabel(status.until).replace(/^Resets /, '') : 'Limit')}</span>`;
+  if (status?.kind === 'limited') return `<span class="bot-chip limited" title="${escape(t`Usage limit · ${resetLabel(status.until)}`)}">${CLOCK}${escape(status.until ? resetLabel(status.until).replace(/^Resets /, '') : 'Limit')}</span>`;
   return bot.lastMessage ? `<time>${escape(messageTime(bot.lastMessage.at))}</time>` : '';
 }
 
 function rowHtml(bot: Bot, context: BotsListContext, pinned: boolean, group: 'needs-you' | 'pinned' | 'bots' | 'hidden'): string {
   const selected = context.selectedProject === bot.projectId, status = botStatus(context.signals(bot)), message = bot.lastMessage;
-  const preview = bot.paused ? `Paused since ${new Date(bot.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
-    : message ? `${message.role === 'user' ? 'You: ' : ''}${message.text}` : bot.role || 'No messages yet';
+  const preview = bot.paused ? t`Paused since ${new Date(bot.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+    : message ? `${message.role === 'user' ? t('You: ') : ''}${message.text}` : bot.role || t('No messages yet');
   // The tag only rides beside the name when no time or chip competes for the line.
   const meta = metaHtml(bot, status);
   const role = bot.role && bot.role !== preview && !meta && [...bot.role].length <= ROLE_TAG ? `<span class="bot-role-tag">${escape(bot.role)}</span>` : '';
   const state = [bot.paused ? 'paused' : '', status ? statusLabel(status) : ''].filter(Boolean).join(', ');
   return `<div class="bot-row bot-card${selected ? ' selected' : ''}${bot.paused ? ' paused' : ''}${pinned ? ' pinned' : ''}" role="listitem" draggable="${group === 'pinned' || group === 'bots'}" data-bot-group="${group}" data-bot-row="${escape(bot.id)}">
-      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Chat with ${escape(bot.name)}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
+      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="${t`Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}`}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="${t`Chat with ${escape(bot.name)}`}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
         <span class="bot-card-avatar">${botAvatarHtml(bot.avatar, bot.name, 'bot-card-face', bot.color)}${badgeHtml(status)}</span>
         <span class="bot-card-text"><span class="bot-card-head"><span class="bot-row-name">${escape(bot.name)}</span>${role}${meta}</span><span class="bot-card-preview">${escape(preview)}</span></span>
       </button>
-      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${escape(bot.name)} settings" title="Settings, memory, schedules and channels">${icon('settings')}</button>
+      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${t`${escape(bot.name)} settings`}" title="${t('Settings, memory, schedules and channels')}">${icon('settings')}</button>
     </div>`;
 }
 

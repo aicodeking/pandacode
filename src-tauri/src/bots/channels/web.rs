@@ -180,15 +180,371 @@ pub(crate) async fn api(app: &tauri::AppHandle, channel_id: &str, action: &str, 
     }
 }
 
-pub(crate) fn page(channel_id: &str) -> Response {
+pub(crate) fn page(channel_id: &str, accept_language: Option<&str>) -> Response {
     if !channel_id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') || channel_id.len() > 64 {
         return Response::text(404, "Not found.");
     }
-    Response::html(PAGE.replace("__CHANNEL__", channel_id))
+    let lang = ui_language(accept_language);
+    let strings = serde_json::to_string(&STRINGS.iter().find(|(id, _)| *id == lang).map(|(_, table)| table).unwrap_or(&ENGLISH).iter().cloned().collect::<std::collections::HashMap<&str, &str>>()).expect("string table is valid JSON");
+    Response::html(
+        PAGE.replace("__CHANNEL__", channel_id)
+            .replace("__LANG__", lang)
+            .replace("__STRINGS__", &strings),
+    )
 }
 
+/// Same resolution rules as the frontend's resolveSystemLocale; English needs no table.
+pub(crate) fn ui_language(accept_language: Option<&str>) -> &'static str {
+    for part in accept_language.unwrap_or_default().split(',') {
+        let tag = part.split(';').next().unwrap_or_default().trim().to_ascii_lowercase();
+        let has = |region: &str| tag.split(['-', '_', '.']).any(|piece| piece == region);
+        if tag.starts_with("zh") {
+            if tag.contains("hant") {
+                if has("tw") { return "zh-Hant-TW"; }
+                if has("hk") || has("mo") { return "zh-Hant-HK"; }
+                return "zh-Hant-TW";
+            }
+            if has("tw") { return "zh-Hant-TW"; }
+            if has("hk") || has("mo") { return "zh-Hant-HK"; }
+            return "zh-Hans";
+        }
+        if tag.starts_with("en") {
+            if ["gb", "au", "ie", "nz", "za", "sg", "in"].iter().any(|r| has(r)) { return "en-GB"; }
+            return "en-US";
+        }
+        if tag.starts_with("de") { return "de"; }
+        if tag.starts_with("es") { return "es"; }
+        if tag.starts_with("fr") { return "fr"; }
+        if tag.starts_with("it") { return "it"; }
+        if tag.starts_with("ja") { return "ja"; }
+        if tag.starts_with("ko") { return "ko"; }
+        if tag.starts_with("pl") { return "pl"; }
+        if tag.starts_with("pt") { return "pt-BR"; }
+        if tag.starts_with("ru") { return "ru"; }
+    }
+    "en-US"
+}
+
+type Table<'a> = &'a [(&'a str, &'a str)];
+const ENGLISH: Table<'static> = &[];
+/// Web-chat page strings per locale; missing keys fall back to the source English in the page.
+const STRINGS: &[(&str, Table<'static>)] = &[
+    ("zh-Hans", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "消息"),
+        ("Send", "发送"),
+        ("Connecting…", "连接中…"),
+        ("Something went wrong.", "出错了。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打个招呼吧"),
+        ("Your always-on assistant", "你的全天候助手"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。输入 /stop 停止工作，/new 重新开始。"),
+        ("What can you do for me?", "你能为我做什么？"),
+        ("Remember that I like short answers", "记住我喜欢简短的回答"),
+        ("What are you working on?", "你在做什么？"),
+        ("Allow once", "允许一次"),
+        ("Always allow", "总是允许"),
+        ("Deny", "拒绝"),
+        ("Working on it…", "正在处理…"),
+        ("On your computer", "在你的电脑上"),
+        ("Paused", "已暂停"),
+        ("Open this page from the link in PandaCode.", "请从 PandaCode 中的链接打开此页面。"),
+        ("Too many messages. Wait a minute and try again.", "消息太多。请等一分钟再试。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此链接已失效。请从 PandaCode 复制新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已关闭其他设备使用。请在 PandaCode 中开启（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支持。"),
+        ("Not found.", "未找到。"),
+    ]),
+    ("zh-Hant-TW", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "訊息"),
+        ("Send", "傳送"),
+        ("Connecting…", "連線中…"),
+        ("Something went wrong.", "發生錯誤。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打個招呼吧"),
+        ("Your always-on assistant", "你的全天候助理"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。輸入 /stop 停止工作，/new 重新開始。"),
+        ("What can you do for me?", "你能為我做什麼？"),
+        ("Remember that I like short answers", "記得我喜歡簡短的回答"),
+        ("What are you working on?", "你在做什麼？"),
+        ("Allow once", "允許一次"),
+        ("Always allow", "一律允許"),
+        ("Deny", "拒絕"),
+        ("Working on it…", "處理中…"),
+        ("On your computer", "在你的電腦上"),
+        ("Paused", "已暫停"),
+        ("Open this page from the link in PandaCode.", "請從 PandaCode 中的連結開啟此頁面。"),
+        ("Too many messages. Wait a minute and try again.", "訊息太多。請等一分鐘再試。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此連結已失效。請從 PandaCode 複製新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已關閉其他裝置使用。請在 PandaCode 中開啟（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支援。"),
+        ("Not found.", "找不到。"),
+    ]),
+    ("zh-Hant-HK", &[
+        ("Bot chat", "Bot 聊天"),
+        ("Message", "訊息"),
+        ("Send", "傳送"),
+        ("Connecting…", "連線中…"),
+        ("Something went wrong.", "發生錯誤。"),
+        ("is working…", "正在工作中…"),
+        ("Say hi to {0}", "跟 {0} 打個招呼吧"),
+        ("Your always-on assistant", "你的全天候助理"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。輸入 /stop 停止工作，/new 重新開始。"),
+        ("What can you do for me?", "你能為我做什麼？"),
+        ("Remember that I like short answers", "記得我喜歡簡短的回答"),
+        ("What are you working on?", "你在做什麼？"),
+        ("Allow once", "允許一次"),
+        ("Always allow", "一律允許"),
+        ("Deny", "拒絕"),
+        ("Working on it…", "處理中…"),
+        ("On your computer", "在你的電腦上"),
+        ("Paused", "已暫停"),
+        ("Open this page from the link in PandaCode.", "請從 PandaCode 中的連結開啟此頁面。"),
+        ("Too many messages. Wait a minute and try again.", "訊息太多。請等一分鐘再試。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "此連結已失效。請從 PandaCode 複製新的。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "此 Bot 已關閉其他裝置使用。請在 PandaCode 中開啟（Bots → Channels → Web chat）。"),
+        ("Not supported.", "不支援。"),
+        ("Not found.", "找不到。"),
+    ]),
+    ("de", &[
+        ("Bot chat", "Bot-Chat"),
+        ("Message", "Nachricht"),
+        ("Send", "Senden"),
+        ("Connecting…", "Verbindung wird hergestellt…"),
+        ("Something went wrong.", "Etwas ist schiefgelaufen."),
+        ("is working…", "arbeitet…"),
+        ("Say hi to {0}", "Grüßen Sie {0}"),
+        ("Your always-on assistant", "Ihr stets erreichbarer Assistent"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Geben Sie /stop ein, um die Arbeit zu stoppen, /new, um neu zu starten."),
+        ("What can you do for me?", "Was können Sie für mich tun?"),
+        ("Remember that I like short answers", "Denken Sie daran: Ich mag kurze Antworten"),
+        ("What are you working on?", "Woran arbeiten Sie?"),
+        ("Allow once", "Einmal erlauben"),
+        ("Always allow", "Immer erlauben"),
+        ("Deny", "Ablehnen"),
+        ("Working on it…", "Wird bearbeitet…"),
+        ("On your computer", "Auf Ihrem Computer"),
+        ("Paused", "Pausiert"),
+        ("Open this page from the link in PandaCode.", "Öffnen Sie diese Seite über den Link in PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Zu viele Nachrichten. Warten Sie eine Minute und versuchen Sie es erneut."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Dieser Link ist nicht mehr gültig. Kopieren Sie einen neuen aus PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "Die Nutzung von anderen Geräten ist für diesen Bot deaktiviert. Aktivieren Sie sie in PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Nicht unterstützt."),
+        ("Not found.", "Nicht gefunden."),
+    ]),
+    ("es", &[
+        ("Bot chat", "Chat del bot"),
+        ("Message", "Mensaje"),
+        ("Send", "Enviar"),
+        ("Connecting…", "Conectando…"),
+        ("Something went wrong.", "Algo salió mal."),
+        ("is working…", "está trabajando…"),
+        ("Say hi to {0}", "Salude a {0}"),
+        ("Your always-on assistant", "Su asistente siempre activo"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Escriba /stop para detener el trabajo, /new para empezar de nuevo."),
+        ("What can you do for me?", "¿Qué puede hacer por mí?"),
+        ("Remember that I like short answers", "Recuerde que me gustan las respuestas cortas"),
+        ("What are you working on?", "¿En qué está trabajando?"),
+        ("Allow once", "Permitir una vez"),
+        ("Always allow", "Permitir siempre"),
+        ("Deny", "Denegar"),
+        ("Working on it…", "Trabajando en ello…"),
+        ("On your computer", "En su equipo"),
+        ("Paused", "En pausa"),
+        ("Open this page from the link in PandaCode.", "Abra esta página desde el enlace de PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Demasiados mensajes. Espere un minuto e inténtelo de nuevo."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Este enlace ya no es válido. Copie uno nuevo desde PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "El uso desde otros dispositivos está desactivado para este bot. Active la opción en PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "No admitido."),
+        ("Not found.", "No encontrado."),
+    ]),
+    ("fr", &[
+        ("Bot chat", "Chat du bot"),
+        ("Message", "Message"),
+        ("Send", "Envoyer"),
+        ("Connecting…", "Connexion…"),
+        ("Something went wrong.", "Une erreur est survenue."),
+        ("is working…", "travaille…"),
+        ("Say hi to {0}", "Dites bonjour à {0}"),
+        ("Your always-on assistant", "Votre assistant toujours disponible"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Tapez /stop pour arrêter le travail, /new pour recommencer."),
+        ("What can you do for me?", "Que pouvez-vous faire pour moi ?"),
+        ("Remember that I like short answers", "N'oubliez pas que j'aime les réponses courtes"),
+        ("What are you working on?", "Sur quoi travaillez-vous ?"),
+        ("Allow once", "Autoriser une fois"),
+        ("Always allow", "Toujours autoriser"),
+        ("Deny", "Refuser"),
+        ("Working on it…", "Travail en cours…"),
+        ("On your computer", "Sur votre ordinateur"),
+        ("Paused", "En pause"),
+        ("Open this page from the link in PandaCode.", "Ouvrez cette page depuis le lien dans PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Trop de messages. Attendez une minute et réessayez."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Ce lien n'est plus valide. Copiez-en un nouveau depuis PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "L'utilisation depuis d'autres appareils est désactivée pour ce bot. Activez-la dans PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Non pris en charge."),
+        ("Not found.", "Introuvable."),
+    ]),
+    ("it", &[
+        ("Bot chat", "Chat del bot"),
+        ("Message", "Messaggio"),
+        ("Send", "Invia"),
+        ("Connecting…", "Connessione…"),
+        ("Something went wrong.", "Si è verificato un errore."),
+        ("is working…", "sta lavorando…"),
+        ("Say hi to {0}", "Saluta {0}"),
+        ("Your always-on assistant", "Il tuo assistente sempre attivo"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Digita /stop per interrompere il lavoro, /new per ricominciare."),
+        ("What can you do for me?", "Cosa puoi fare per me?"),
+        ("Remember that I like short answers", "Ricorda che preferisco risposte brevi"),
+        ("What are you working on?", "Su cosa stai lavorando?"),
+        ("Allow once", "Consenti una volta"),
+        ("Always allow", "Consenti sempre"),
+        ("Deny", "Nega"),
+        ("Working on it…", "Lavoro in corso…"),
+        ("On your computer", "Sul tuo computer"),
+        ("Paused", "In pausa"),
+        ("Open this page from the link in PandaCode.", "Apri questa pagina dal link in PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Troppi messaggi. Attendi un minuto e riprova."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Questo link non è più valido. Copiane uno nuovo da PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "L'utilizzo da altri dispositivi è disattivato per questo bot. Attivalo in PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Non supportato."),
+        ("Not found.", "Non trovato."),
+    ]),
+    ("pt-BR", &[
+        ("Bot chat", "Chat do bot"),
+        ("Message", "Mensagem"),
+        ("Send", "Enviar"),
+        ("Connecting…", "Conectando…"),
+        ("Something went wrong.", "Algo deu errado."),
+        ("is working…", "está trabalhando…"),
+        ("Say hi to {0}", "Diga oi para {0}"),
+        ("Your always-on assistant", "Seu assistente sempre ativo"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Digite /stop para parar o trabalho, /new para começar de novo."),
+        ("What can you do for me?", "O que você pode fazer por mim?"),
+        ("Remember that I like short answers", "Lembre-se de que gosto de respostas curtas"),
+        ("What are you working on?", "No que você está trabalhando?"),
+        ("Allow once", "Permitir uma vez"),
+        ("Always allow", "Permitir sempre"),
+        ("Deny", "Negar"),
+        ("Working on it…", "Trabalhando nisso…"),
+        ("On your computer", "No seu computador"),
+        ("Paused", "Pausado"),
+        ("Open this page from the link in PandaCode.", "Abra esta página pelo link no PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Mensagens demais. Aguarde um minuto e tente novamente."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Este link não é mais válido. Copie um novo no PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "O uso deste bot em outros dispositivos está desativado. Ative-o no PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Não suportado."),
+        ("Not found.", "Não encontrado."),
+    ]),
+    ("ja", &[
+        ("Bot chat", "Bot チャット"),
+        ("Message", "メッセージ"),
+        ("Send", "送信"),
+        ("Connecting…", "接続中…"),
+        ("Something went wrong.", "問題が発生しました。"),
+        ("is working…", "作業中…"),
+        ("Say hi to {0}", "{0} に挨拶する"),
+        ("Your always-on assistant", "あなたの常駐アシスタント"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}。/stop で作業を停止、/new で最初からやり直します。"),
+        ("What can you do for me?", "何をお願いできますか？"),
+        ("Remember that I like short answers", "短い回答を好むことを覚えておいてください"),
+        ("What are you working on?", "何をしていますか？"),
+        ("Allow once", "1回だけ許可"),
+        ("Always allow", "常に許可"),
+        ("Deny", "拒否"),
+        ("Working on it…", "対応中…"),
+        ("On your computer", "お使いのコンピューター上"),
+        ("Paused", "一時停止中"),
+        ("Open this page from the link in PandaCode.", "PandaCode 内のリンクからこのページを開いてください。"),
+        ("Too many messages. Wait a minute and try again.", "メッセージが多すぎます。1分待ってから再試行してください。"),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "このリンクは無効になりました。PandaCode から新しいリンクをコピーしてください。"),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "このボットの他のデバイスからの利用はオフになっています。PandaCode でオンにしてください（Bots → Channels → Web chat）。"),
+        ("Not supported.", "サポートされていません。"),
+        ("Not found.", "見つかりません。"),
+    ]),
+    ("ko", &[
+        ("Bot chat", "봇 채팅"),
+        ("Message", "메시지"),
+        ("Send", "보내기"),
+        ("Connecting…", "연결 중…"),
+        ("Something went wrong.", "문제가 발생했습니다."),
+        ("is working…", "작업 중…"),
+        ("Say hi to {0}", "{0}에게 인사하기"),
+        ("Your always-on assistant", "항상 활동 중인 어시스턴트"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. /stop으로 작업을 멈추고, /new으로 다시 시작하세요."),
+        ("What can you do for me?", "저를 위해 무엇을 할 수 있나요?"),
+        ("Remember that I like short answers", "짧은 답변을 좋아한다고 기억해 주세요"),
+        ("What are you working on?", "지금 무엇을 하고 있나요?"),
+        ("Allow once", "한 번만 허용"),
+        ("Always allow", "항상 허용"),
+        ("Deny", "거부"),
+        ("Working on it…", "처리 중…"),
+        ("On your computer", "컴퓨터에서"),
+        ("Paused", "일시 중지됨"),
+        ("Open this page from the link in PandaCode.", "PandaCode의 링크로 이 페이지를 열어 주세요."),
+        ("Too many messages. Wait a minute and try again.", "메시지가 너무 많습니다. 1분 후에 다시 시도해 주세요."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "이 링크는 더 이상 유효하지 않습니다. PandaCode에서 새 링크를 복사해 주세요."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "이 봇은 다른 기기에서의 사용이 꺼져 있습니다. PandaCode에서 켜 주세요(Bots → Channels → Web chat)."),
+        ("Not supported.", "지원되지 않습니다."),
+        ("Not found.", "찾을 수 없습니다."),
+    ]),
+    ("pl", &[
+        ("Bot chat", "Czat bota"),
+        ("Message", "Wiadomość"),
+        ("Send", "Wyślij"),
+        ("Connecting…", "Łączenie…"),
+        ("Something went wrong.", "Coś poszło nie tak."),
+        ("is working…", "pracuje…"),
+        ("Say hi to {0}", "Przywitaj się z {0}"),
+        ("Your always-on assistant", "Twój zawsze dostępny asystent"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Wpisz /stop, aby zatrzymać pracę, /new, aby zacząć od nowa."),
+        ("What can you do for me?", "Co możesz dla mnie zrobić?"),
+        ("Remember that I like short answers", "Zapamiętaj, że lubię krótkie odpowiedzi"),
+        ("What are you working on?", "Nad czym pracujesz?"),
+        ("Allow once", "Zezwól raz"),
+        ("Always allow", "Zezwól zawsze"),
+        ("Deny", "Odmów"),
+        ("Working on it…", "Praca w toku…"),
+        ("On your computer", "Na Twoim komputerze"),
+        ("Paused", "Wstrzymano"),
+        ("Open this page from the link in PandaCode.", "Otwórz tę stronę z linku w PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Zbyt wiele wiadomości. Poczekaj minutę i spróbuj ponownie."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Ten link nie jest już ważny. Skopiuj nowy z PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "Korzystanie z innych urządzeń jest wyłączone dla tego bota. Włącz je w PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Nieobsługiwane."),
+        ("Not found.", "Nie znaleziono."),
+    ]),
+    ("ru", &[
+        ("Bot chat", "Чат бота"),
+        ("Message", "Сообщение"),
+        ("Send", "Отправить"),
+        ("Connecting…", "Подключение…"),
+        ("Something went wrong.", "Что-то пошло не так."),
+        ("is working…", "работает…"),
+        ("Say hi to {0}", "Поздоровайтесь с {0}"),
+        ("Your always-on assistant", "Ваш всегда доступный помощник"),
+        ("{0}. Type /stop to stop work, /new to start over.", "{0}. Введите /stop, чтобы остановить работу, /new, чтобы начать заново."),
+        ("What can you do for me?", "Что вы можете для меня сделать?"),
+        ("Remember that I like short answers", "Запомните, что я люблю короткие ответы"),
+        ("What are you working on?", "Над чем вы работаете?"),
+        ("Allow once", "Разрешить один раз"),
+        ("Always allow", "Разрешать всегда"),
+        ("Deny", "Отклонить"),
+        ("Working on it…", "Работаю над этим…"),
+        ("On your computer", "На вашем компьютере"),
+        ("Paused", "Приостановлено"),
+        ("Open this page from the link in PandaCode.", "Откройте эту страницу по ссылке из PandaCode."),
+        ("Too many messages. Wait a minute and try again.", "Слишком много сообщений. Подождите минуту и попробуйте снова."),
+        ("This link is no longer valid. Copy a fresh one from PandaCode.", "Ссылка больше недействительна. Скопируйте новую из PandaCode."),
+        ("Use from other devices is off for this bot. Turn it on in PandaCode (Bots → Channels → Web chat).", "Использование с других устройств отключено для этого бота. Включите его в PandaCode (Bots → Channels → Web chat)."),
+        ("Not supported.", "Не поддерживается."),
+        ("Not found.", "Не найдено."),
+    ]),
+];
+
 const PAGE: &str = r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<html lang="__LANG__"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex"><meta name="color-scheme" content="light dark"><title>Bot chat</title>
 <style>
 :root{--bg:#f6f4ef;--panel:#fffdf8;--ink:#1d1b16;--muted:#77716a;--line:#e7e1d6;--bubble:#efebe2;--accent:#f5c842;--accent-ink:#3d3000;--ok:#2f8f5b;--danger:#b4432f}
@@ -239,11 +595,13 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
 .send:disabled{opacity:.4;cursor:default}
 @media (prefers-reduced-motion:no-preference){.msg,.actions{animation:in .24s cubic-bezier(.2,.8,.2,1)}@keyframes in{from{opacity:0;transform:translateY(6px)}}}
 @media (prefers-reduced-motion:reduce){body.busy .ring::before,.dots i{animation:none}}
-</style></head>
+</style>
+<script>const L = __STRINGS__; const t = k => L[k] || k; const tf = (k, ...v) => t(k).replace(/\{(\d+)\}/g, (_, i) => v[+i] ?? t(k));</script>
+</head>
 <body>
 <header><span class="ring"><span class="avatar" id="avatar">·</span></span><div class="who"><b id="name">Bot</b><small id="status">Connecting…</small></div></header>
 <main id="log" aria-live="polite"></main>
-<form id="form"><div class="box"><textarea id="input" rows="1" placeholder="Message" aria-label="Message" autocomplete="off"></textarea><button id="send" class="send" type="submit" aria-label="Send"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div></form>
+<form id="form"><div class="box"><textarea id="input" rows="1" autocomplete="off"></textarea><button id="send" class="send" type="submit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div></form>
 <script>
 (() => {
   const channel = "__CHANNEL__";
@@ -253,6 +611,10 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   if (location.hash) history.replaceState(null, "", location.pathname);
   const log = document.getElementById("log"), input = document.getElementById("input"), form = document.getElementById("form");
   const status = document.getElementById("status"), sendButton = document.getElementById("send");
+  document.title = t("Bot chat");
+  input.placeholder = t("Message"); input.setAttribute("aria-label", t("Message"));
+  sendButton.setAttribute("aria-label", t("Send"));
+  status.textContent = t("Connecting…");
   let cursor = 0, botName = "Bot", glyph = "·", image = "", role = "", typing = null;
   const api = (path, init = {}) => fetch("/api/chat/" + channel + "/" + path, { ...init, headers: { ...(init.headers || {}), Authorization: "Bearer " + token, "Content-Type": "application/json" } })
     .then(async r => { const body = await r.json().catch(() => ({})); if (!r.ok) throw Object.assign(new Error(body.error || "Something went wrong."), { revoked: r.status === 401 }); return body; });
@@ -331,7 +693,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     if (who === "user") body.textContent = text; else body.innerHTML = render(text);
     if (who !== "user" && text.startsWith("Approval needed:")) {
       const actions = document.createElement("div"); actions.className = "actions";
-      for (const [label, reply, cls] of [["Allow once", "yes", "yes"], ["Always allow", "always", ""], ["Deny", "no", ""]]) {
+      for (const [label, reply, cls] of [[t("Allow once"), "yes", "yes"], [t("Always allow"), "always", ""], [t("Deny"), "no", ""]]) {
         const b = document.createElement("button"); b.type = "button"; b.textContent = label; if (cls) b.className = cls;
         b.onclick = () => { actions.remove(); post(reply); };
         actions.append(b);
@@ -342,7 +704,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   }
   function setBusy(value) {
     document.body.classList.toggle("busy", Boolean(value));
-    if (value && !typing) { typing = document.createElement("div"); typing.className = "typing"; typing.setAttribute("role", "status"); typing.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'; typing.append(botName + " is working…"); log.append(typing); scroll(); }
+    if (value && !typing) { typing = document.createElement("div"); typing.className = "typing"; typing.setAttribute("role", "status"); typing.innerHTML = '<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>'; typing.append(botName + " " + t("is working…")); log.append(typing); scroll(); }
     if (!value && typing) { typing.remove(); typing = null; }
   }
   // Uploaded icons are data: URLs, set through .src so they are never parsed as markup.
@@ -353,9 +715,9 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   function hello() {
     const box = document.createElement("div"); box.className = "hello";
     box.innerHTML = '<span class="avatar"></span><b></b><span></span><div class="chips"></div>';
-    showAvatar(box.querySelector(".avatar")); box.querySelector("b").textContent = "Say hi to " + botName;
-    box.querySelector("span:not(.avatar)").textContent = (role || "Your always-on assistant") + ". Type /stop to stop work, /new to start over.";
-    for (const text of ["What can you do for me?", "Remember that I like short answers", "What are you working on?"]) {
+    showAvatar(box.querySelector(".avatar")); box.querySelector("b").textContent = tf("Say hi to {0}", botName);
+    box.querySelector("span:not(.avatar)").textContent = tf("{0}. Type /stop to stop work, /new to start over.", role || t("Your always-on assistant"));
+    for (const text of [t("What can you do for me?"), t("Remember that I like short answers"), t("What are you working on?")]) {
       const b = document.createElement("button"); b.type = "button"; b.textContent = text; b.onclick = () => post(text); box.querySelector(".chips").append(b);
     }
     log.append(box);
@@ -364,16 +726,16 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
   async function post(text) {
     add("user", text); setBusy(true);
     try { const r = await api("messages", { method: "POST", body: JSON.stringify({ text }) }); setBusy(r.busy); }
-    catch (e) { setBusy(false); error(e.message); if (e.revoked) { sendButton.disabled = true; input.disabled = true; } }
+    catch (e) { setBusy(false); error(t(e.message)); if (e.revoked) { sendButton.disabled = true; input.disabled = true; } }
   }
   async function poll() {
     for (;;) {
       try {
         const r = await api("events?after=" + cursor);
         for (const event of r.events) add("assistant", event.text);
-        cursor = r.cursor; setBusy(r.busy); status.textContent = r.busy ? "Working on it…" : (role || "On your computer");
+        cursor = r.cursor; setBusy(r.busy); status.textContent = r.busy ? t("Working on it…") : (role || t("On your computer"));
       } catch (e) {
-        status.textContent = e.message;
+        status.textContent = t(e.message);
         // A revoked link stays revoked; stop polling instead of retrying forever.
         if (e.revoked) { setBusy(false); sendButton.disabled = true; input.disabled = true; return; }
         await new Promise(r => setTimeout(r, 5000));
@@ -381,7 +743,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     }
   }
   async function start() {
-    if (!token) { status.textContent = "Open this page from the link in PandaCode."; sendButton.disabled = true; return; }
+    if (!token) { status.textContent = t("Open this page from the link in PandaCode."); sendButton.disabled = true; return; }
     try {
       // Give the parser a moment so history renders with it; replies never wait on it.
       await Promise.race([engine, new Promise(resolve => setTimeout(resolve, 1500))]);
@@ -389,7 +751,7 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
       if (r.bot) {
         botName = r.bot.name; role = r.bot.role || ""; image = /^data:image\/(png|jpeg|webp|gif);base64,/.test(r.bot.avatar || "") ? r.bot.avatar : ""; glyph = (r.bot.avatar && !image && !r.bot.avatar.startsWith("panda:")) ? r.bot.avatar : r.bot.name.slice(0, 1).toUpperCase();
         document.getElementById("name").textContent = r.bot.name; document.title = r.bot.name; showAvatar(document.getElementById("avatar"));
-        status.textContent = r.bot.paused ? "Paused" : (role || "On your computer");
+        status.textContent = r.bot.paused ? t("Paused") : (role || t("On your computer"));
       }
       if (!r.messages.length) hello();
       for (const m of r.messages) add(m.role, m.text);

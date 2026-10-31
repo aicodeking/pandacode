@@ -1,6 +1,7 @@
 import './subagents.css';
 import { call } from './bridge';
 import { icon } from './dom';
+import { t } from './i18n.ts';
 import { showPopover, hidePopover } from './popover-motion';
 import { streamMarkdown } from './streaming-markdown';
 import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './file-links';
@@ -11,7 +12,7 @@ import type { SubagentActivity } from './types';
 type Entry = { value: SubagentActivity; revision: number; number: number };
 type Task = { agents: Map<string, Entry>; loading: boolean; error: boolean; request: number; nextNumber: number };
 const active = (agent: SubagentActivity) => agent.status === 'running' || agent.status === 'waiting';
-const statusName = (agent: SubagentActivity) => ({ running: 'Working', waiting: 'Waiting', completed: 'Completed', failed: 'Failed', stopped: 'Stopped' })[agent.status];
+const statusName = (agent: SubagentActivity) => ({ running: t('Working'), waiting: t('Waiting'), completed: t('Completed'), failed: t('Failed'), stopped: t('Stopped') })[agent.status];
 function agentName(entry: Entry): string {
   const name = entry.value.name.trim();
   return name && !/[\\/]/.test(name) && !/^(?:subagent|agent)$/i.test(name) ? name : `#${entry.number}`;
@@ -24,7 +25,7 @@ function decode(value: unknown): SubagentActivity | undefined {
   return { id: a.id.slice(0, 512), parentId: typeof a.parentId === 'string' ? a.parentId.slice(0, 512) : null,
     name: a.name.slice(0, 256), prompt: String(a.prompt ?? '').slice(0, 4096), status: a.status, response: a.response.slice(0, 65536),
     startedAt: Number(a.startedAt) || 0, updatedAt: Number(a.updatedAt) || 0,
-    tools: (Array.isArray(a.tools) ? a.tools : []).slice(-16).filter(t => t && typeof t.id === 'string' && typeof t.name === 'string' && ['running', 'completed', 'failed'].includes(t.status)).map(t => ({ id: t.id.slice(0, 1024), name: t.name.slice(0, 256), status: t.status, input: String(t.input ?? '').slice(0, 4096), output: String(t.output ?? '').slice(0, 8192) })) };
+    tools: (Array.isArray(a.tools) ? a.tools : []).slice(-16).filter(tool => tool && typeof tool.id === 'string' && typeof tool.name === 'string' && ['running', 'completed', 'failed'].includes(tool.status)).map(tool => ({ id: tool.id.slice(0, 1024), name: tool.name.slice(0, 256), status: tool.status, input: String(tool.input ?? '').slice(0, 4096), output: String(tool.output ?? '').slice(0, 8192) })) };
 }
 
 /** Only the selected child's response is formatted. Background snapshots never touch the transcript. */
@@ -41,7 +42,7 @@ export class Subagents {
   private renderedTools = '';
 
   constructor(private host: HTMLElement, private panelId = 'subagents-panel', private fileContext?: (sessionId: string) => FileLinkContext | undefined) {
-    host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="Subagents" aria-expanded="false" aria-controls="subagents-panel" title="View subagent work" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
+    host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="${t('Subagents')}" aria-expanded="false" aria-controls="subagents-panel" title="${t('View subagent work')}" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
     this.trigger = host.querySelector('button')!;
     this.trigger.setAttribute('aria-controls', panelId);
     this.trigger.addEventListener('click', () => this.panel ? this.close() : this.open());
@@ -142,7 +143,7 @@ export class Subagents {
     if (!taskId || !this.visible) return;
     await this.load(taskId);
     if (taskId !== this.sessionId || !this.visible) return;
-    if (!this.task(taskId).agents.has(agentId)) throw new Error('This subagent is no longer available.');
+    if (!this.task(taskId).agents.has(agentId)) throw new Error(t('This subagent is no longer available.'));
     this.open(); this.selected = agentId; this.render();
     this.panel?.querySelector<HTMLButtonElement>('.subagents-back')?.focus();
   }
@@ -155,8 +156,8 @@ export class Subagents {
     if (this.panel || !this.sessionId) return;
     this.selected = ''; this.rows.clear();
     const panel = document.createElement('section');
-    panel.id = this.panelId; panel.className = 'subagents-panel'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Subagents');
-    panel.innerHTML = `<header class="subagents-heading"><button type="button" class="icon-button subagents-back" aria-label="Back to Subagents" hidden>${icon('back')}</button><strong>Subagents</strong><span class="subagents-summary"></span><button type="button" class="icon-button subagents-close" aria-label="Close subagents">${icon('close')}</button></header><div class="subagents-body"><div class="subagents-list"></div><p class="subagents-notice" role="status" hidden></p><button class="secondary-button subagents-retry" hidden>Retry loading subagents</button><div class="subagent-detail" hidden><div class="subagent-detail-meta"><span class="subagent-state"></span><h3 class="subagent-detail-name"></h3><span class="subagent-detail-status"></span></div><p class="subagent-parent" hidden></p><details class="subagent-assignment"><summary>Assignment</summary><p></p></details><div class="subagent-response"></div><p class="subagent-empty muted"></p><div class="subagent-tools"></div></div></div>`;
+    panel.id = this.panelId; panel.className = 'subagents-panel'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', t('Subagents'));
+    panel.innerHTML = `<header class="subagents-heading"><button type="button" class="icon-button subagents-back" aria-label="${t('Back to Subagents')}" hidden>${icon('back')}</button><strong>${t('Subagents')}</strong><span class="subagents-summary"></span><button type="button" class="icon-button subagents-close" aria-label="${t('Close subagents')}">${icon('close')}</button></header><div class="subagents-body"><div class="subagents-list"></div><p class="subagents-notice" role="status" hidden></p><button class="secondary-button subagents-retry" hidden>${t('Retry loading subagents')}</button><div class="subagent-detail" hidden><div class="subagent-detail-meta"><span class="subagent-state"></span><h3 class="subagent-detail-name"></h3><span class="subagent-detail-status"></span></div><p class="subagent-parent" hidden></p><details class="subagent-assignment"><summary>${t('Assignment')}</summary><p></p></details><div class="subagent-response"></div><p class="subagent-empty muted"></p><div class="subagent-tools"></div></div></div>`;
     this.host.append(panel); this.panel = panel;
     panel.querySelector('.subagent-assignment')!.insertAdjacentHTML('beforeend', '<div class="subagent-assignment-actions"></div>');
     panel.querySelector('.subagent-response')!.insertAdjacentHTML('afterend', '<div class="subagent-response-actions"></div><p class="subagent-action-notice" role="status" hidden></p>');
@@ -180,11 +181,11 @@ export class Subagents {
     const agents = [...task?.agents.values() ?? []].map(entry => ({ ...entry.value, name: agentName(entry) }));
     const running = agents.filter(active).length;
     this.trigger.hidden = !agents.length && !task?.error;
-    const label = running ? `${running} running` : agents.length ? `${agents.length} subagent${agents.length === 1 ? '' : 's'}` : 'Subagents';
+    const label = running ? t`${running} running` : agents.length === 1 ? t`1 subagent` : agents.length ? t`${agents.length} subagents` : t('Subagents');
     const text = this.trigger.querySelector('span')!; if (text.textContent !== label) text.textContent = label;
     this.trigger.classList.toggle('has-running', running > 0);
     dispatchEvent(new Event('pandacode:agents'));
-    this.trigger.title = running ? agents.filter(active).map(a => a.name).join('\n') : 'View subagent work';
+    this.trigger.title = running ? agents.filter(active).map(a => a.name).join('\n') : t('View subagent work');
     const panel = this.panel; if (!panel) return;
     const summary = panel.querySelector('.subagents-summary')!;
     if (summary.textContent !== label) summary.textContent = label;
@@ -194,7 +195,7 @@ export class Subagents {
     panel.querySelector<HTMLElement>('.subagents-back')!.hidden = !selected;
     const notice = panel.querySelector<HTMLElement>('.subagents-notice')!;
     notice.hidden = Boolean(selected) || (!task?.error && Boolean(agents.length));
-    const note = task?.error ? 'Couldn’t load saved subagents. Live work will still appear here.' : task?.loading ? 'Loading subagents…' : 'No subagents in this task yet.';
+    const note = task?.error ? t('Couldn’t load saved subagents. Live work will still appear here.') : task?.loading ? t('Loading subagents…') : t('No subagents in this task yet.');
     if (notice.textContent !== note) notice.textContent = note;
     panel.querySelector<HTMLElement>('.subagents-retry')!.hidden = !task?.error || Boolean(selected);
     if (!selected) {
@@ -218,7 +219,7 @@ export class Subagents {
         }
         row.dataset.status = agent.status;
         const parent = agents.find(a => a.id === agent.parentId);
-        const info = parent ? `From ${parent.name}` : '';
+        const info = parent ? t`From ${parent.name}` : '';
         const name = row.querySelector('strong')!, description = row.querySelector('small')!, status = row.querySelector('.subagent-row-status')!;
         if (name.textContent !== agent.name) name.textContent = agent.name;
         if (description.textContent !== info) description.textContent = info;
@@ -239,12 +240,12 @@ export class Subagents {
     setText('.subagent-assignment p', selected.prompt);
     detail.querySelector<HTMLElement>('.subagent-assignment')!.hidden = !selected.prompt;
     const parent = agents.find(a => a.id === selected.parentId);
-    setText('.subagent-parent', parent ? `From ${parent.name}` : ''); detail.querySelector<HTMLElement>('.subagent-parent')!.hidden = !parent;
+    setText('.subagent-parent', parent ? t`From ${parent.name}` : ''); detail.querySelector<HTMLElement>('.subagent-parent')!.hidden = !parent;
     const output = detail.querySelector<HTMLElement>('.subagent-response')!;
     if (this.fileContext) bindFileLinkContext(output, this.fileContext(this.sessionId));
     streamMarkdown(output, selected.response, panel.querySelector<HTMLElement>('.subagents-body')!);
     detail.querySelector<HTMLElement>('.subagent-response-actions')!.hidden = !selected.response;
-    setText('.subagent-empty', selected.response ? '' : active(selected) ? 'Waiting for the first update…' : 'This harness did not provide a response for this agent.');
+    setText('.subagent-empty', selected.response ? '' : active(selected) ? t('Waiting for the first update…') : t('This harness did not provide a response for this agent.'));
     const serializedTools = JSON.stringify(selected.tools);
     if (this.renderedTools !== serializedTools) {
       const target = detail.querySelector('.subagent-tools')!;

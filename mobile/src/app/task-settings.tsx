@@ -12,6 +12,7 @@ import { Icon } from '../ui/Icon.tsx';
 import { useModelOptions } from '../ui/models.ts';
 import { MODES } from '../ui/status.tsx';
 import { useColors } from '../ui/theme.ts';
+import { useT } from '../ui/language.ts';
 
 type Settings = Pick<TaskSummary, 'provider' | 'model' | 'effort' | 'mode'>;
 
@@ -19,12 +20,14 @@ export default function TaskSettings() {
   const { device = '', session = '' } = useLocalSearchParams<{ device: string; session: string }>();
   const task = useConnect(s => s.tasks[device]?.tasks.find(t => t.sessionId === session));
   const colors = useColors();
-  if (!task) return <Text style={[styles.empty, { color: colors.secondary }]}>This task is not loaded yet.</Text>;
+  const t = useT();
+  if (!task) return <Text style={[styles.empty, { color: colors.secondary }]}>{t('This task is not loaded yet.')}</Text>;
   return <Form deviceId={device} sessionId={session} task={task} />;
 }
 
 function Form({ deviceId, sessionId, task }: { deviceId: string; sessionId: string; task: TaskSummary }) {
   const colors = useColors();
+  const t = useT();
   const [settings, setSettings] = useState<Settings>({ provider: task.provider, model: task.model, effort: task.effort, mode: task.mode });
   const options = useModelOptions(deviceId, settings.provider);
   const configure = async (change: Partial<Settings>) => {
@@ -35,31 +38,31 @@ function Form({ deviceId, sessionId, task }: { deviceId: string; sessionId: stri
       await connect.configureTask(deviceId, { sessionId, ...change });
     } catch (error) {
       setSettings(before);
-      Alert.alert('Could not change settings', (error as Error).message);
+      Alert.alert(t('Could not change settings'), (error as Error).message);
     }
   };
   const efforts = options.efforts(settings.model);
   return (
     <ScrollView style={{ backgroundColor: colors.grouped }} contentContainerStyle={styles.page} contentInsetAdjustmentBehavior="automatic">
       <View style={[styles.group, { backgroundColor: colors.card }]}>
-        <Row icon={<HarnessLogo id={settings.provider} size={18} />} label="Harness">
+        <Row icon={<HarnessLogo id={settings.provider} size={18} />} label={t('Harness')}>
           {options.harnesses.length > 0 ? <Choice value={settings.provider} options={options.harnesses} onChange={provider => provider !== settings.provider && configure({ provider, model: 'default', effort: null })} />
             : <Text style={{ color: colors.secondary }}>{settings.provider}</Text>}
         </Row>
-        <Row icon={<Icon ios="cpu" android="memory" size={17} color={colors.tint} />} label="Model">
+        <Row icon={<Icon ios="cpu" android="memory" size={17} color={colors.tint} />} label={t('Model')}>
           {options.models.length > 0 ? <Choice value={settings.model} options={options.models} onChange={model => configure({ provider: settings.provider, model, effort: options.defaultEffort(model) })} />
             : <Text style={{ color: colors.secondary }}>{settings.model}</Text>}
         </Row>
         {efforts.length > 0 && (
-          <Row icon={<Icon ios="gauge.with.dots.needle.67percent" android="speed" size={17} color={colors.tint} />} label="Effort">
+          <Row icon={<Icon ios="gauge.with.dots.needle.67percent" android="speed" size={17} color={colors.tint} />} label={t('Effort')}>
             <Choice value={settings.effort ?? ''} options={efforts} onChange={effort => configure({ effort })} />
           </Row>
         )}
-        <Row icon={<Icon ios="lock.shield" android="shield" size={17} color={colors.tint} />} label="Permissions" last>
+        <Row icon={<Icon ios="lock.shield" android="shield" size={17} color={colors.tint} />} label={t('Permissions')} last>
           <Choice value={settings.mode} options={MODES.map(m => ({ value: m.id, label: m.label }))} onChange={mode => configure({ mode })} />
         </Row>
       </View>
-      <Text style={[styles.footer, { color: colors.secondary }]}>Changes apply from the next message.</Text>
+      <Text style={[styles.footer, { color: colors.secondary }]}>{t('Changes apply from the next message.')}</Text>
     </ScrollView>
   );
 }

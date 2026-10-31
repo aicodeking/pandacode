@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { currentTheme } from './theme';
 import { textScale } from './ui-size';
+import { t } from './i18n.ts';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalContext {
@@ -32,11 +33,11 @@ interface TerminalPreferences {
 }
 
 export async function mountTerminal(container: HTMLElement, context: TerminalContext, reportError: (error: unknown) => void): Promise<TerminalController> {
-  if (context.harness && !context.sessionId) throw new Error('Select a task before opening its harness console.');
+  if (context.harness && !context.sessionId) throw new Error(t('Select a task before opening its harness console.'));
   let command = context.harness?.command;
   let commandRevision = 0;
   const validateCommand = (value?: string) => {
-    if (value && (!/^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value))) throw new Error('Use a single slash command without control characters.');
+    if (value && (!/^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value))) throw new Error(t('Use a single slash command without control characters.'));
   };
   validateCommand(command);
   const frame = document.createElement('div');
@@ -51,15 +52,15 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     controls.style.cssText = 'display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:none';
     const hint = document.createElement('span');
     hint.textContent = context.harness.provider === 'kimi'
-      ? 'Uses Kimi’s saved permissions. Review them in the console before pressing Enter.'
-      : command ? 'When the console is ready, insert the command and press Enter.' : 'Native harness console. Type a command to continue.';
+      ? t('Uses Kimi’s saved permissions. Review them in the console before pressing Enter.')
+      : command ? t('When the console is ready, insert the command and press Enter.') : t('Native harness console. Type a command to continue.');
     hint.style.cssText = 'color:var(--muted);font-size:.78rem;flex:1';
     controls.append(hint);
     insertButton = document.createElement('button');
     insertButton.type = 'button'; insertButton.className = 'secondary-button';
     insertButton.hidden = !command;
-    insertButton.textContent = command ? `Insert ${command.split(/\s/, 1)[0]}` : '';
-    insertButton.setAttribute('aria-label', `Insert ${command ?? ''} in the harness console`);
+    insertButton.textContent = command ? t`Insert ${command.split(/\s/, 1)[0]}` : '';
+    insertButton.setAttribute('aria-label', t`Insert ${command ?? ''} in the harness console`);
     insertButton.disabled = true;
     controls.append(insertButton);
     frame.prepend(controls);
@@ -84,7 +85,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     }
     if (event.terminalId !== terminalId || disposed) return;
     terminal.write(event.data); hasOutput ||= event.data.length > 0;
-    if (event.exit) { exited = true; terminal.write('\r\n\x1b[90mProcess exited. Close and reopen the terminal to start again.\x1b[0m\r\n'); }
+    if (event.exit) { exited = true; terminal.write(`\r\n\x1b[90m${t('Process exited. Close and reopen the terminal to start again.')}\x1b[0m\r\n`); }
     if (insertButton) insertButton.disabled = !hasOutput || exited || inserted;
   };
   let unlisten: () => void;
@@ -103,7 +104,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     // Paste into the visible TUI composer only. Never send Enter automatically:
     // authentication, workspace trust or onboarding may still be on screen.
     void call('write_terminal', { terminalId, data: `\x1b[200~${text}\x1b[201~` }).then(() => {
-      if (!disposed && revision === commandRevision) { insertButton!.textContent = 'Inserted · press Enter'; focus(); }
+      if (!disposed && revision === commandRevision) { insertButton!.textContent = t('Inserted · press Enter'); focus(); }
     }).catch(error => {
       if (!disposed && revision === commandRevision) { inserted = false; insertButton!.disabled = exited || !hasOutput; }
       reportError(error);
@@ -127,8 +128,8 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     validateCommand(value);
     if (!insertButton || !value) return;
     ++commandRevision; command = value; inserted = false; insertButton.hidden = false;
-    insertButton.textContent = `Insert ${value.split(/\s/, 1)[0]}`;
-    insertButton.setAttribute('aria-label', `Insert ${value} in the harness console`);
+    insertButton.textContent = t`Insert ${value.split(/\s/, 1)[0]}`;
+    insertButton.setAttribute('aria-label', t`Insert ${value} in the harness console`);
     insertButton.disabled = exited || disposed || !hasOutput;
   }, activity: () => exited || disposed ? Promise.resolve({ running: false, processNames: [], uncertain: false }) : call<TerminalActivity>('get_terminal_activity', { terminalId }), dispose: async () => {
     if (disposed) return; disposed = true;

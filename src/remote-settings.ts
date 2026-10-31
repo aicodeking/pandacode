@@ -5,17 +5,18 @@ import './remote-settings.css';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import { mountOrchestrationSettings } from './machine-orchestration';
+import { t } from './i18n.ts';
 import { APPROVE_SCOPES, SCOPE_HELP, SCOPE_LABELS, groupFingerprint, type DeviceGrant, type GrantScope, type PairCode } from './remote-pairing-prompt';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';
 
-const FULL_TIP = 'When off, your other computers cannot start or switch a task here to Full access (no approvals); a remote task without a mode starts in Ask.';
-const ALLOW_TIP = 'Remote prompts follow this computer’s approval settings; they get no more power than prompts typed here.';
-const NOTIFY_TIP = 'The relay sends the phone a push that says only how many tasks need attention; approving still happens in the app over the end-to-end encrypted channel.';
-const KEY_TIP = 'Another computer shows this key when it asks you to approve this one. Approve only if the keys match.';
-const CODE_TIP = 'A one-time code skips the approval prompt for one new device. It works once, for 10 minutes, and gives the access you pick. Enter it on the other computer under Pair with a code.';
-const PAIR_TIP = 'Enter the 6-digit code that the other computer shows under Pairing code. It gives this computer the access that computer chose.';
+const FULL_TIP = t('When off, your other computers cannot start or switch a task here to Full access (no approvals); a remote task without a mode starts in Ask.');
+const ALLOW_TIP = t('Remote prompts follow this computer’s approval settings; they get no more power than prompts typed here.');
+const NOTIFY_TIP = t('The relay sends the phone a push that says only how many tasks need attention; approving still happens in the app over the end-to-end encrypted channel.');
+const KEY_TIP = t('Another computer shows this key when it asks you to approve this one. Approve only if the keys match.');
+const CODE_TIP = t('A one-time code skips the approval prompt for one new device. It works once, for 10 minutes, and gives the access you pick. Enter it on the other computer under Pair with a code.');
+const PAIR_TIP = t('Enter the 6-digit code that the other computer shows under Pairing code. It gives this computer the access that computer chose.');
 
-const scopeOptions = (selected: GrantScope, waiting: string) => [...(selected === 'pending' ? [{ id: 'pending', label: waiting }] : []), ...APPROVE_SCOPES, { id: 'blocked', label: 'Blocked' }]
+const scopeOptions = (selected: GrantScope, waiting: string) => [...(selected === 'pending' ? [{ id: 'pending', label: waiting }] : []), ...APPROVE_SCOPES, { id: 'blocked', label: t('Blocked') }]
   .map(scope => `<option value="${scope.id}"${scope.id === selected ? ' selected' : ''}>${scope.label}</option>`).join('');
 const pickOptions = (selected: string) => APPROVE_SCOPES.map(scope => `<option value="${scope.id}"${scope.id === selected ? ' selected' : ''}>${scope.label}</option>`).join('');
 const groupCode = (code: string) => code.length > 3 ? `${code.slice(0, 3)} ${code.slice(3)}` : code;
@@ -32,17 +33,17 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   function deviceRow(device: RemoteDevice): string {
     const grant = device.current ? undefined : grantOf(device.id);
     const waiting = grant?.scope === 'pending' && grant.requested;
-    const revoke = device.current ? '' : `<button type="button" class="secondary-button" data-revoke="${escape(device.id)}" aria-label="Revoke ${escape(device.name)}">Revoke</button>`;
+    const revoke = device.current ? '' : `<button type="button" class="secondary-button" data-revoke="${escape(device.id)}" aria-label="${t`Revoke ${escape(device.name)}`}">${t('Revoke')}</button>`;
     const access = !grant ? '' : waiting
-      ? `<select data-pick="${escape(device.id)}" aria-label="Approve ${escape(device.name)} as">${pickOptions(picks[device.id] ?? 'control')}</select><button type="button" class="primary-button" data-approve="${escape(device.id)}" aria-label="Approve ${escape(device.name)}">Approve</button><button type="button" class="secondary-button" data-block="${escape(device.id)}" aria-label="Block ${escape(device.name)}">Block</button>`
-      : `<select data-grant="${escape(device.id)}" aria-label="Access for ${escape(device.name)}">${scopeOptions(grant.scope, 'Not approved')}</select>`;
-    const detail = waiting ? `${escape(device.platform)} · asks for access · key <code>${escape(groupFingerprint(device.fingerprint))}</code>` : `${escape(device.platform)} · ${device.host ? 'remote control on' : 'remote control off'} · key <code>${escape(device.fingerprint)}</code>`;
-    return `<div class="setting-row remote-device${waiting ? ' remote-pending' : ''}" data-device="${escape(device.id)}"><div><strong><span class="remote-dot" data-online="${device.online}" role="img" aria-label="${device.online ? 'Online' : 'Offline'}"></span>${escape(device.name)}${device.current ? ' <span class="remote-badge">This computer</span>' : ''}</strong><small>${detail}</small></div><span class="remote-device-actions">${access}${revoke}</span></div>`;
+      ? `<select data-pick="${escape(device.id)}" aria-label="${t`Approve ${escape(device.name)} as`}">${pickOptions(picks[device.id] ?? 'control')}</select><button type="button" class="primary-button" data-approve="${escape(device.id)}" aria-label="${t`Approve ${escape(device.name)}`}">${t('Approve')}</button><button type="button" class="secondary-button" data-block="${escape(device.id)}" aria-label="${t`Block ${escape(device.name)}`}">${t('Block')}</button>`
+      : `<select data-grant="${escape(device.id)}" aria-label="${t`Access for ${escape(device.name)}`}">${scopeOptions(grant.scope, t('Not approved'))}</select>`;
+    const detail = waiting ? `${escape(device.platform)} · ${t('asks for access')} · ${t('key')} <code>${escape(groupFingerprint(device.fingerprint))}</code>` : `${escape(device.platform)} · ${device.host ? t('remote control on') : t('remote control off')} · ${t('key')} <code>${escape(device.fingerprint)}</code>`;
+    return `<div class="setting-row remote-device${waiting ? ' remote-pending' : ''}" data-device="${escape(device.id)}"><div><strong><span class="remote-dot" data-online="${device.online}" role="img" aria-label="${device.online ? t('Online') : t('Offline')}"></span>${escape(device.name)}${device.current ? ` <span class="remote-badge">${t('This computer')}</span>` : ''}</strong><small>${detail}</small></div><span class="remote-device-actions">${access}${revoke}</span></div>`;
   }
   function deviceList(): string {
-    if (devicesError) return failure('Couldn’t load devices.', devicesError);
-    if (!devicesLoaded) return '<p class="dialog-loading" role="status">Loading devices…</p>';
-    if (!devices.length) return '<p class="remote-note">No devices yet.</p>';
+    if (devicesError) return failure(t('Couldn’t load devices.'), devicesError);
+    if (!devicesLoaded) return `<p class="dialog-loading" role="status">${t('Loading devices…')}</p>`;
+    if (!devices.length) return `<p class="remote-note">${t('No devices yet.')}</p>`;
     const waiting = (device: RemoteDevice) => { const grant = grantOf(device.id); return !device.current && grant?.scope === 'pending' && grant.requested; };
     return [...devices.filter(waiting), ...devices.filter(device => !waiting(device))].map(deviceRow).join('');
   }
@@ -50,31 +51,31 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
   function pairRow(): string {
     const list = hosts();
     if (!pairTarget || !list.some(device => device.id === pairTarget)) pairTarget = list.find(device => device.online)?.id ?? list[0]?.id ?? '';
-    const select = `<select id="remote-pair-host" aria-label="Computer to pair with" ${list.length ? '' : 'disabled'}>${list.length ? list.map(device => `<option value="${escape(device.id)}"${device.id === pairTarget ? ' selected' : ''}>${escape(device.name)}</option>`).join('') : '<option>No computers with remote control on</option>'}</select>`;
-    return `<div class="setting-row"><div><strong>Pair with a code ${infoMark(PAIR_TIP, 'About pairing with a code')}</strong><small>Enter the code shown on the other computer.</small></div><span class="remote-device-actions">${select}<input type="text" id="remote-pair-input" class="remote-pair-input" inputmode="numeric" autocomplete="off" maxlength="7" placeholder="000 000" aria-label="Pairing code from the other computer" value="${escape(groupCode(pairInput))}"><button type="button" class="secondary-button" data-pair ${pairing || !list.length ? 'disabled' : ''}>Pair</button></span></div>`;
+    const select = `<select id="remote-pair-host" aria-label="${t('Computer to pair with')}" ${list.length ? '' : 'disabled'}>${list.length ? list.map(device => `<option value="${escape(device.id)}"${device.id === pairTarget ? ' selected' : ''}>${escape(device.name)}</option>`).join('') : `<option>${t('No computers with remote control on')}</option>`}</select>`;
+    return `<div class="setting-row"><div><strong>${t('Pair with a code')} ${infoMark(PAIR_TIP, t('About pairing with a code'))}</strong><small>${t('Enter the code shown on the other computer.')}</small></div><span class="remote-device-actions">${select}<input type="text" id="remote-pair-input" class="remote-pair-input" inputmode="numeric" autocomplete="off" maxlength="7" placeholder="000 000" aria-label="${t('Pairing code from the other computer')}" value="${escape(groupCode(pairInput))}"><button type="button" class="secondary-button" data-pair ${pairing || !list.length ? 'disabled' : ''}>${t('Pair')}</button></span></div>`;
   }
   function codeRow(): string {
-    const shown = pairCode ? `<div class="remote-code"><div class="remote-code-row"><output class="remote-user-code" aria-label="Pairing code">${escape(groupCode(pairCode.code))}</output><button type="button" class="secondary-button" data-code-cancel>Cancel</button></div><p class="remote-note" role="status">Gives ${SCOPE_LABELS[pairCode.scope].toLowerCase()} once. Expires at ${new Date(pairCode.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p></div>` : '';
-    return `<div class="setting-row"><div><strong>Pairing code ${infoMark(CODE_TIP, 'About pairing codes')}</strong><small>Add a device without the approval prompt.</small></div><span class="remote-device-actions"><select id="remote-code-scope" aria-label="Access the pairing code gives">${pickOptions(codeScope)}</select><button type="button" class="secondary-button" data-code-new>Show pairing code</button></span></div>${shown}`;
+    const shown = pairCode ? `<div class="remote-code"><div class="remote-code-row"><output class="remote-user-code" aria-label="${t('Pairing code')}">${escape(groupCode(pairCode.code))}</output><button type="button" class="secondary-button" data-code-cancel>${t('Cancel')}</button></div><p class="remote-note" role="status">${t`Gives ${SCOPE_LABELS[pairCode.scope].toLowerCase()} once. Expires at ${new Date(pairCode.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}</p></div>` : '';
+    return `<div class="setting-row"><div><strong>${t('Pairing code')} ${infoMark(CODE_TIP, t('About pairing codes'))}</strong><small>${t('Add a device without the approval prompt.')}</small></div><span class="remote-device-actions"><select id="remote-code-scope" aria-label="${t('Access the pairing code gives')}">${pickOptions(codeScope)}</select><button type="button" class="secondary-button" data-code-new>${t('Show pairing code')}</button></span></div>${shown}`;
   }
   function body(): string {
     if (!status) {
-      if (statusError) return failure('Couldn’t load remote access.', statusError);
-      if (loading) return '<p class="dialog-loading" role="status">Loading…</p>';
+      if (statusError) return failure(t('Couldn’t load remote access.'), statusError);
+      if (loading) return `<p class="dialog-loading" role="status">${t('Loading…')}</p>`;
     }
-    if (!status) return failure('Couldn’t load remote access.', 'Try again.');
-    if (!status.configured) return '<p class="remote-note" role="status">Remote access is not configured in this build.</p>';
+    if (!status) return failure(t('Couldn’t load remote access.'), t('Try again.'));
+    if (!status.configured) return `<p class="remote-note" role="status">${t('Remote access is not configured in this build.')}</p>`;
     if (!status.signedIn) {
-      const flow = code ? `<div class="remote-code"><p>Enter this code at <strong>${escape(code.verificationUri)}</strong>:</p><div class="remote-code-row"><output class="remote-user-code" aria-label="Device code">${escape(code.userCode)}</output><button type="button" class="secondary-button" data-copy>${icon('copy')}Copy code</button></div><p class="remote-note" role="status">Waiting for you to approve in the browser… The code expires at ${new Date(expires).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.</p><button type="button" class="secondary-button" data-cancel>Cancel</button></div>` : '';
-      return `<div class="setting-row"><div><strong>PandaCode Connect</strong><small>Sign in with GitHub to reach your other computers. Task content is end-to-end encrypted; the relay sees only ciphertext.</small></div><button type="button" class="secondary-button" data-sign-in ${signingIn ? 'disabled' : ''}>${icon('github')}Sign in with GitHub</button></div>${flow}`;
+      const flow = code ? `<div class="remote-code"><p>${t('Enter this code at')} <strong>${escape(code.verificationUri)}</strong>:</p><div class="remote-code-row"><output class="remote-user-code" aria-label="${t('Device code')}">${escape(code.userCode)}</output><button type="button" class="secondary-button" data-copy>${icon('copy')}${t('Copy code')}</button></div><p class="remote-note" role="status">${t`Waiting for you to approve in the browser… The code expires at ${new Date(expires).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`}</p><button type="button" class="secondary-button" data-cancel>${t('Cancel')}</button></div>` : '';
+      return `<div class="setting-row"><div><strong>${t('PandaCode Connect')}</strong><small>${t('Sign in with GitHub to reach your other computers. Task content is end-to-end encrypted; the relay sees only ciphertext.')}</small></div><button type="button" class="secondary-button" data-sign-in ${signingIn ? 'disabled' : ''}>${icon('github')}${t('Sign in with GitHub')}</button></div>${flow}`;
     }
-    return `<div class="setting-row"><div><strong>${escape(status.account?.login ?? 'Signed in')}</strong><small>Signed in with GitHub · ${status.connected ? 'connected' : 'connecting…'}</small></div><button type="button" class="secondary-button" data-sign-out>Sign out</button></div>
-      <div class="setting-row"><div><strong>Allow remote control of this computer ${infoMark(ALLOW_TIP, 'About remote control')}</strong><small>Your other signed-in computers can see and drive tasks here.</small></div><input type="checkbox" class="settings-switch" id="remote-host" aria-label="Allow remote control of this computer" ${status.hostEnabled ? 'checked' : ''}></div>
-      <div class="setting-row"><div><strong>Notify my phone ${infoMark(NOTIFY_TIP, 'About phone notifications')}</strong><small>Pushes a generic notice when a hosted task needs approval or finishes. The relay never sees task content.</small></div><input type="checkbox" class="settings-switch" id="remote-notify" aria-label="Notify my phone" ${status.notifyEnabled ? 'checked' : ''}></div>
-      <div class="setting-row"><div><strong>Full access for remote tasks ${infoMark(FULL_TIP, 'About full access for remote tasks')}</strong><small>Off: remote tasks always ask before acting.</small></div><input type="checkbox" class="settings-switch" id="remote-full-access" aria-label="Full access for remote tasks" ${status.remoteFullAccess ? 'checked' : ''}></div>
-      <div class="setting-row"><div><strong>This computer’s key ${infoMark(KEY_TIP, 'About this computer’s key')}</strong><small><code class="remote-key">${escape(groupFingerprint(status.device.fingerprint))}</code></small></div></div>
+    return `<div class="setting-row"><div><strong>${escape(status.account?.login ?? t('Signed in'))}</strong><small>${t('Signed in with GitHub')} · ${status.connected ? t('connected') : t('connecting…')}</small></div><button type="button" class="secondary-button" data-sign-out>${t('Sign out')}</button></div>
+      <div class="setting-row"><div><strong>${t('Allow remote control of this computer')} ${infoMark(ALLOW_TIP, t('About remote control'))}</strong><small>${t('Your other signed-in computers can see and drive tasks here.')}</small></div><input type="checkbox" class="settings-switch" id="remote-host" aria-label="t('Allow remote control of this computer')" ${status.hostEnabled ? 'checked' : ''}></div>
+      <div class="setting-row"><div><strong>${t('Notify my phone')} ${infoMark(NOTIFY_TIP, t('About phone notifications'))}</strong><small>${t('Pushes a generic notice when a hosted task needs approval or finishes. The relay never sees task content.')}</small></div><input type="checkbox" class="settings-switch" id="remote-notify" aria-label="t('Notify my phone')" ${status.notifyEnabled ? 'checked' : ''}></div>
+      <div class="setting-row"><div><strong>${t('Full access for remote tasks')} ${infoMark(FULL_TIP, t('About full access for remote tasks'))}</strong><small>${t('Off: remote tasks always ask before acting.')}</small></div><input type="checkbox" class="settings-switch" id="remote-full-access" aria-label="t('Full access for remote tasks')" ${status.remoteFullAccess ? 'checked' : ''}></div>
+      <div class="setting-row"><div><strong>${t('This computer’s key')} ${infoMark(KEY_TIP, t('About this computer’s key'))}</strong><small><code class="remote-key">${escape(groupFingerprint(status.device.fingerprint))}</code></small></div></div>
       ${status.hostEnabled ? codeRow() : ''}${pairRow()}
-      <h3 class="settings-heading">Devices ${infoMark(SCOPE_HELP, 'About device access')}</h3>${grantsError ? `<p class="remote-note" role="status">Access levels could not be loaded: ${escape(grantsError)}</p>` : ''}<div class="settings-group remote-devices">${deviceList()}</div>`;
+      <h3 class="settings-heading">${t('Devices')} ${infoMark(SCOPE_HELP, t('About device access'))}</h3>${grantsError ? `<p class="remote-note" role="status">${t`Access levels could not be loaded: ${escape(grantsError)}`}</p>` : ''}<div class="settings-group remote-devices">${deviceList()}</div>`;
   }
   function render(): void {
     if (disposed) return;
@@ -141,7 +142,7 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     if (target.hasAttribute('data-retry')) void load();
     else if (target.hasAttribute('data-sign-in')) void signIn();
     else if (target.hasAttribute('data-cancel')) cancelSignIn();
-    else if (target.hasAttribute('data-copy') && code) void navigator.clipboard.writeText(code.userCode).then(() => host.notify('Code copied'), () => host.notify('Couldn’t copy; select the code instead'));
+    else if (target.hasAttribute('data-copy') && code) void navigator.clipboard.writeText(code.userCode).then(() => host.notify(t('Code copied')), () => host.notify(t('Couldn’t copy; select the code instead')));
     else if (target.hasAttribute('data-sign-out')) void host.call<RemoteStatus>('remote_sign_out').then(next => { apply(next); devices = []; devicesLoaded = true; devicesError = ''; error = ''; render(); }, fail);
     else if (target.dataset.revoke) void host.call('remote_revoke_device', { deviceId: target.dataset.revoke }).then(() => { devices = devices.filter(d => d.id !== target.dataset.revoke); render(); }, fail);
     else if (target.dataset.approve) setGrant(target.dataset.approve, row?.querySelector<HTMLSelectElement>('select[data-pick]')?.value ?? 'control');

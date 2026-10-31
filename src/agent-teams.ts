@@ -6,6 +6,7 @@ import { escape, icon } from './dom';
 import { modelChoices } from './model-catalog';
 import { providerLogo } from './provider-logos';
 import { classicTeamSetup, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
+import { t } from './i18n.ts';
 import type { Provider, ProviderId, ProviderModel } from './types';
 
 export interface AgentTeamsOptions {
@@ -16,18 +17,18 @@ export interface AgentTeamsOptions {
 
 export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): () => void {
   host.innerHTML = `<div class="settings-group agent-teams">
-    <div class="setting-row"><div><strong>Classic team setup</strong><small>Team opens Architect & workers.</small></div><input type="checkbox" class="settings-switch" aria-label="Classic team setup" ${classicTeamSetup() ? 'checked' : ''}></div>
-    <div class="setting-row"><div><strong>Agent teams</strong><small>Pick one in the model picker.</small></div><button type="button" class="secondary-button agent-team-new">${icon('plus')}New team</button></div>
-    <div class="setting-row"><div><strong>Lead guidance</strong><small>Added to the architect's built-in rules for every team.</small></div><button type="button" class="secondary-button agent-guidance-save">Save</button></div>
-    <div class="agent-guidance-row"><textarea class="agent-guidance" aria-label="Lead guidance" rows="3" maxlength="2000" spellcheck="false" placeholder="Leave empty for the built-in rules. For example: you only lead; never edit files yourself."></textarea></div>
+    <div class="setting-row"><div><strong>${t('Classic team setup')}</strong><small>${t('Team opens Architect & workers.')}</small></div><input type="checkbox" class="settings-switch" aria-label="${t('Classic team setup')}" ${classicTeamSetup() ? 'checked' : ''}></div>
+    <div class="setting-row"><div><strong>${t('Agent teams')}</strong><small>${t('Pick one in the model picker.')}</small></div><button type="button" class="secondary-button agent-team-new">${icon('plus')}${t('New team')}</button></div>
+    <div class="setting-row"><div><strong>${t('Lead guidance')}</strong><small>${t("Added to the architect's built-in rules for every team.")}</small></div><button type="button" class="secondary-button agent-guidance-save">${t('Save')}</button></div>
+    <div class="agent-guidance-row"><textarea class="agent-guidance" aria-label="${t('Lead guidance')}" rows="3" maxlength="2000" spellcheck="false" placeholder="${t('Leave empty for the built-in rules. For example: you only lead; never edit files yourself.')}"></textarea></div>
     <p class="agent-guidance-status" role="status" hidden></p>
-    <ul class="agent-team-list" aria-label="Agent teams"></ul>
-    <form class="agent-team-editor" aria-label="Agent team" hidden>
-      <label class="agent-team-field"><span>Team name</span><input type="text" maxlength="80" autocomplete="off" spellcheck="false" aria-label="Team name" placeholder="Reviewers"></label>
-      <input type="search" class="agent-team-filter" aria-label="Filter models" placeholder="Filter models…" autocomplete="off" spellcheck="false">
-      <div class="agent-team-models" role="group" aria-label="Team models"><p class="agent-team-loading" role="status">Loading models…</p></div>
-      <label class="agent-team-field" hidden><span>Lead effort</span><select class="agent-team-lead-effort" aria-label="Lead effort"></select></label>
-      <div class="agent-team-actions"><span class="agent-team-count" aria-live="polite"></span><button type="button" class="secondary-button agent-team-cancel">Cancel</button><button type="submit" class="primary-button">Save team</button></div>
+    <ul class="agent-team-list" aria-label="${t('Agent teams')}"></ul>
+    <form class="agent-team-editor" aria-label="${t('Agent team')}" hidden>
+      <label class="agent-team-field"><span>${t('Team name')}</span><input type="text" maxlength="80" autocomplete="off" spellcheck="false" aria-label="${t('Team name')}" placeholder="${t('Reviewers')}"></label>
+      <input type="search" class="agent-team-filter" aria-label="${t('Filter models')}" placeholder="${t('Filter models…')}" autocomplete="off" spellcheck="false">
+      <div class="agent-team-models" role="group" aria-label="${t('Team models')}"><p class="agent-team-loading" role="status">${t('Loading models…')}</p></div>
+      <label class="agent-team-field" hidden><span>${t('Lead effort')}</span><select class="agent-team-lead-effort" aria-label="${t('Lead effort')}"></select></label>
+      <div class="agent-team-actions"><span class="agent-team-count" aria-live="polite"></span><button type="button" class="secondary-button agent-team-cancel">${t('Cancel')}</button><button type="submit" class="primary-button">${t('Save team')}</button></div>
     </form>
     <p class="agent-team-error" role="alert" hidden></p>
   </div>`;
@@ -52,7 +53,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   function renderList(): void {
     const teams = library ? namedTeams(library) : [];
     list.hidden = !teams.length;
-    list.innerHTML = teams.map(team => `<li class="agent-team-row" data-id="${escape(team.id)}"><span class="provider-small ${team.setup.architect.provider}">${providerLogo(team.setup.architect.provider)}</span><span class="agent-team-name"><strong>${escape(team.name)}</strong><small>${escape(teamDetail(team, harnessName))}</small></span><button type="button" class="secondary-button" data-team-edit aria-label="Edit ${escape(team.name)}">Edit</button><button type="button" class="icon-button" data-team-delete aria-label="Delete ${escape(team.name)}" title="Delete team">${icon('close')}</button></li>`).join('');
+    list.innerHTML = teams.map(team => `<li class="agent-team-row" data-id="${escape(team.id)}"><span class="provider-small ${team.setup.architect.provider}">${providerLogo(team.setup.architect.provider)}</span><span class="agent-team-name"><strong>${escape(team.name)}</strong><small>${escape(teamDetail(team, harnessName))}</small></span><button type="button" class="secondary-button" data-team-edit aria-label="${t`Edit ${escape(team.name)}`}">${t('Edit')}</button><button type="button" class="icon-button" data-team-delete aria-label="${t`Delete ${escape(team.name)}`}" title="${t('Delete team')}">${icon('close')}</button></li>`).join('');
   }
   async function refresh(): Promise<void> {
     try {
@@ -74,19 +75,19 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     });
   }
   /** Effort choices for a model that advertises them; empty means the harness default. */
-  const effortOptions = (model: TeamModel | undefined, current?: string | null) => `<option value="">Default effort</option>${(model?.efforts ?? []).map(effort => `<option value="${escape(effort.id)}" ${effort.id === current ? 'selected' : ''}>${escape(effort.name)}</option>`).join('')}`;
+  const effortOptions = (model: TeamModel | undefined, current?: string | null) => `<option value="">${t('Default effort')}</option>${(model?.efforts ?? []).map(effort => `<option value="${escape(effort.id)}" ${effort.id === current ? 'selected' : ''}>${escape(effort.name)}</option>`).join('')}`;
   const checked = () => [...models.querySelectorAll<HTMLInputElement>('input[type=checkbox]:checked')];
   function renderModels(chosen: ReadonlySet<string>, lead: string): void {
     const saved = editing?.setup.config.workers ?? [];
     const extra = saved.filter(worker => !catalog.some(model => modelKey(model) === modelKey(worker)))
       .map(worker => ({ provider: worker.provider, harness: harnessName(worker.provider), model: worker.model, name: worker.name.split(' · ')[0], reasoningEffort: worker.reasoningEffort }));
     const all: TeamModel[] = [...catalog, ...extra];
-    if (!all.length) { models.innerHTML = '<p class="agent-team-loading">No installed agents report models yet.</p>'; return; }
+    if (!all.length) { models.innerHTML = `<p class="agent-team-loading">${t('No installed agents report models yet.')}</p>`; return; }
     const groups = [...new Set(all.map(model => model.provider))];
     models.innerHTML = groups.map(provider => `<section aria-label="${escape(harnessName(provider))}"><h4>${providerLogo(provider)}${escape(harnessName(provider))}</h4>${all.filter(model => model.provider === provider).map(model => {
       const key = modelKey(model), label = `${model.name} · ${model.harness}`;
-      const effort = model.efforts?.length ? `<select class="agent-team-effort" aria-label="Worker effort for ${escape(label)}">${effortOptions(model, saved.find(worker => modelKey(worker) === key)?.reasoningEffort)}</select>` : '';
-      return `<div class="agent-team-model" data-key="${escape(key)}" data-search="${escape(`${label} ${model.model}`.toLowerCase())}"><label><input type="checkbox" value="${escape(key)}" aria-label="Include ${escape(label)}" ${chosen.has(key) ? 'checked' : ''}><span>${escape(model.name)}</span></label><label class="agent-team-lead"><input type="radio" name="agent-team-lead" value="${escape(key)}" aria-label="${escape(label)} leads" ${key === lead ? 'checked' : ''}><span>Lead</span></label>${effort}</div>`;
+      const effort = model.efforts?.length ? `<select class="agent-team-effort" aria-label="${t`Worker effort for ${escape(label)}`}">${effortOptions(model, saved.find(worker => modelKey(worker) === key)?.reasoningEffort)}</select>` : '';
+      return `<div class="agent-team-model" data-key="${escape(key)}" data-search="${escape(`${label} ${model.model}`.toLowerCase())}"><label><input type="checkbox" value="${escape(key)}" aria-label="${t`Include ${escape(label)}`}" ${chosen.has(key) ? 'checked' : ''}><span>${escape(model.name)}</span></label><label class="agent-team-lead"><input type="radio" name="agent-team-lead" value="${escape(key)}" aria-label="${t`${escape(label)} leads`}" ${key === lead ? 'checked' : ''}><span>${t('Lead')}</span></label>${effort}</div>`;
     }).join('')}</section>`).join('');
     shown = all;
     leadSelected = lead;
@@ -108,7 +109,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     const leadModel = shown.find(model => modelKey(model) === lead);
     if (lead !== leadSelected) { leadEffort.innerHTML = effortOptions(leadModel); leadSelected = lead; }
     leadEffort.parentElement!.hidden = !leadModel?.efforts?.length;
-    count.textContent = included.length ? `${included.length} model${included.length === 1 ? '' : 's'}` : 'Choose models';
+    count.textContent = included.length ? (included.length === 1 ? t`1 model` : t`${included.length} models`) : t('Choose models');
   }
   function applyFilter(): void {
     const query = filter.value.trim().toLowerCase();
@@ -142,8 +143,8 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     const leadModel = included.find(model => modelKey(model) === leadKey);
     const lead = leadModel && { ...leadModel, reasoningEffort: leadModel.efforts?.length ? leadEffort.value || null
       : editing && modelKey(editing.setup.architect) === leadKey ? editing.setup.architect.reasoningEffort ?? null : null };
-    if (!teamName) { showError(new Error('Give this team a name.')); name.focus(); return; }
-    if (!included.length || !lead) { showError(new Error('Choose at least one model for this team.')); return; }
+    if (!teamName) { showError(new Error(t('Give this team a name.'))); name.focus(); return; }
+    if (!included.length || !lead) { showError(new Error(t('Choose at least one model for this team.'))); return; }
     busy = true; error.hidden = true;
     try {
       const setup = namedTeamSetup(teamName, lead, included, editing?.setup.config ?? library?.lastSetup?.config);
@@ -184,13 +185,13 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     if (busy) return;
     busy = true; error.hidden = true; guidanceSave.disabled = true;
     const wanted = guidance.value.trim();
-    if (new TextEncoder().encode(wanted).length > 2000) { busy = false; guidanceSave.disabled = false; showError(new Error('Lead guidance must be under 2000 bytes.')); return; }
+    if (new TextEncoder().encode(wanted).length > 2000) { busy = false; guidanceSave.disabled = false; showError(new Error(t('Lead guidance must be under 2000 bytes.'))); return; }
     void (async () => {
       try {
         library = await options.call<TeamLibrary>('architect_set_lead_guidance', { guidance: wanted || null });
         if (disposed) return;
         guidanceEdited = false; guidance.value = library.leadGuidance ?? '';
-        guidanceStatus.textContent = wanted ? 'Lead guidance saved. Every team follows it from its next turn.' : 'Lead guidance cleared. Teams use the built-in rules.';
+        guidanceStatus.textContent = wanted ? t('Lead guidance saved. Every team follows it from its next turn.') : t('Lead guidance cleared. Teams use the built-in rules.');
         guidanceStatus.hidden = false;
       } catch (cause) { if (!disposed) showError(cause); }
       finally { busy = false; if (!disposed) guidanceSave.disabled = false; }

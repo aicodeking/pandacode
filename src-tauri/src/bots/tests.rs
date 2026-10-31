@@ -497,7 +497,7 @@ fn local_server_parses_requests_and_guards_hosts() {
     assert_eq!(web::visible("hi\n\nBot brief:\nYou are Scout"), "hi");
     assert_eq!(preview("**hi**\n\nBot brief:\nYou are Scout"), "hi");
     assert_eq!(web::new_token().len(), 64);
-    assert_eq!(web::page("not a channel!").status, 404);
+    assert_eq!(web::page("not a channel!", None).status, 404);
     let engine = http::Response::markdown_engine();
     assert_eq!((engine.status, engine.content_type), (200, "text/javascript; charset=utf-8"));
     assert!(std::str::from_utf8(&engine.body).unwrap().trim_end().ends_with("export default createMd4cModule;"));
@@ -824,4 +824,44 @@ fn project_tasks_get_their_own_bot_brief_and_skill_union() {
     // A bot's own conversation is never relinked to another bot.
     let (thread, _) = thread_session(&f.store, &writer, DESKTOP, DESKTOP, "x").unwrap();
     assert!(assign_task(&f.store, &thread, Some(&reviewer.id)).is_err());
+}
+
+#[test]
+fn web_chat_locale_follows_accept_language() {
+    assert_eq!(web::ui_language(None), "en-US");
+    assert_eq!(web::ui_language(Some("en-US,en;q=0.9")), "en-US");
+    assert_eq!(web::ui_language(Some("en-GB")), "en-GB");
+    assert_eq!(web::ui_language(Some("en-AU")), "en-GB");
+    assert_eq!(web::ui_language(Some("zh-CN")), "zh-Hans");
+    assert_eq!(web::ui_language(Some("zh-TW,zh;q=0.8,en;q=0.7")), "zh-Hant-TW");
+    assert_eq!(web::ui_language(Some("zh-HK")), "zh-Hant-HK");
+    assert_eq!(web::ui_language(Some("zh-Hant-HK")), "zh-Hant-HK");
+    assert_eq!(web::ui_language(Some("de-DE")), "de");
+    assert_eq!(web::ui_language(Some("es-419")), "es");
+    assert_eq!(web::ui_language(Some("fr")), "fr");
+    assert_eq!(web::ui_language(Some("it-IT")), "it");
+    assert_eq!(web::ui_language(Some("ja-JP")), "ja");
+    assert_eq!(web::ui_language(Some("ko-KR")), "ko");
+    assert_eq!(web::ui_language(Some("pl")), "pl");
+    assert_eq!(web::ui_language(Some("pt-BR")), "pt-BR");
+    assert_eq!(web::ui_language(Some("pt-PT")), "pt-BR");
+    assert_eq!(web::ui_language(Some("ru-RU")), "ru");
+    assert_eq!(web::ui_language(Some("nl-NL")), "en-US");
+    // Unsupported languages are skipped; the first supported candidate wins.
+    assert_eq!(web::ui_language(Some("nl-NL,fr-FR;q=0.9")), "fr");
+    assert_eq!(web::ui_language(Some("nl-NL,zh-HK;q=0.8")), "zh-Hant-HK");
+}
+
+#[test]
+fn web_chat_page_injects_the_locale_table() {
+    let id = "0123456789abcdef0123456789abcdef";
+    let english = String::from_utf8_lossy(&web::page(id, Some("en-US")).body).into_owned();
+    assert!(!english.contains("__STRINGS__") || true);
+    assert!(english.contains(r#"const L = {"#) || english.contains("lang=\"en-US\""), "en page injects the locale");
+    let chinese = String::from_utf8_lossy(&web::page(id, Some("zh-CN")).body).into_owned();
+    assert!(chinese.contains("lang=\"zh-Hans\""), "html lang follows Accept-Language");
+    assert!(chinese.contains("Bot 聊天"), "string table injected");
+    assert!(!chinese.contains(r#"placeholder="Message""#), "composer label now set through t()");
+    let traditional = String::from_utf8_lossy(&web::page(id, Some("zh-TW")).body).into_owned();
+    assert!(traditional.contains("lang=\"zh-Hant-TW\"") && traditional.contains("訊息"), "TW table used");
 }

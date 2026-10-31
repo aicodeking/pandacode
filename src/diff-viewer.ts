@@ -5,6 +5,7 @@ import type { WorkerPoolManager } from '@pierre/diffs/worker';
 import DiffWorker from '@pierre/diffs/worker/worker.js?worker';
 import { likelyFileNames, patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
 import './diff-viewer.css';
+import { t } from './i18n.ts';
 
 export interface DiffViewerInput {
   patch: string;
@@ -237,19 +238,19 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   const listeners = new AbortController();
 
   const root = element('section', 'diff-viewer');
-  root.setAttribute('aria-label', input.path ? `Changes to ${input.path}` : 'File changes');
+  root.setAttribute('aria-label', input.path ? t`Changes to ${input.path}` : t('File changes'));
   root.dataset.diffState = 'loading';
   const toolbar = element('div', 'diff-viewer-toolbar');
-  const title = element('span', 'diff-viewer-title', input.path ?? 'Changes');
-  title.title = input.path ?? 'Changes';
+  const title = element('span', 'diff-viewer-title', input.path ?? t('Changes'));
+  title.title = input.path ?? t('Changes');
   const controls = element('div', 'diff-viewer-controls');
   const layouts = element('div', 'diff-viewer-layout');
   layouts.setAttribute('role', 'group');
-  layouts.setAttribute('aria-label', 'Diff layout');
-  const unified = element('button', 'diff-viewer-button', 'Unified');
-  const split = element('button', 'diff-viewer-button', 'Split');
-  const wrapping = element('button', 'diff-viewer-button diff-viewer-wrap', 'Wrap');
-  for (const [button, label] of [[unified, 'Unified diff'], [split, 'Split diff'], [wrapping, 'Wrap lines']] as const) {
+  layouts.setAttribute('aria-label', t('Diff layout'));
+  const unified = element('button', 'diff-viewer-button', t('Unified'));
+  const split = element('button', 'diff-viewer-button', t('Split'));
+  const wrapping = element('button', 'diff-viewer-button diff-viewer-wrap', t('Wrap'));
+  for (const [button, label] of [[unified, t('Unified diff')], [split, t('Split diff')], [wrapping, t('Wrap lines')]] as const) {
     button.type = 'button';
     button.setAttribute('aria-label', label);
     button.title = label;
@@ -258,13 +259,13 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   layouts.append(unified, split);
   controls.append(layouts, wrapping);
   toolbar.append(title, controls);
-  const status = element('p', 'diff-viewer-status', 'Loading diff…');
+  const status = element('p', 'diff-viewer-status', t('Loading diff…'));
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const content = element('div', 'diff-viewer-content');
   content.tabIndex = 0;
   content.setAttribute('role', 'region');
-  content.setAttribute('aria-label', 'Read-only diff');
+  content.setAttribute('aria-label', t('Read-only diff'));
   content.setAttribute('aria-busy', 'true');
   root.append(toolbar, status, content);
   host.replaceChildren(root);
@@ -361,9 +362,9 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     if (showPatch && input.patch) {
       const preview = rawPreview(input.patch);
       const pre = element('pre', 'diff-viewer-raw', preview.text);
-      pre.setAttribute('aria-label', 'Plain text patch');
+      pre.setAttribute('aria-label', t('Plain text patch'));
       content.append(pre);
-      if (preview.clipped) content.append(element('p', 'diff-viewer-note', 'Preview shortened to keep the app responsive.'));
+      if (preview.clipped) content.append(element('p', 'diff-viewer-note', t('Preview shortened to keep the app responsive.')));
     }
   }
 
@@ -375,7 +376,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     root.dataset.diffLayout = layout;
     unified.disabled = false;
     split.disabled = narrow;
-    split.title = narrow ? 'Widen the panel to use a split diff' : 'Split diff';
+    split.title = narrow ? t('Widen the panel to use a split diff') : t('Split diff');
     wrapping.disabled = false;
     unified.setAttribute('aria-pressed', String(layout === 'unified'));
     split.setAttribute('aria-pressed', String(layout === 'split'));
@@ -430,19 +431,19 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   async function initialize(): Promise<void> {
     if (input.error) { showFallback(input.error); return; }
     if (input.binary || /^(?:GIT binary patch|Binary files .+ differ)$/m.test(input.patch)) {
-      showFallback('Binary file changed. A text diff is not available.', false); return;
+      showFallback(t('Binary file changed. A text diff is not available.'), false); return;
     }
-    if (!input.patch.trim()) { showFallback('No text changes to display.', false); return; }
+    if (!input.patch.trim()) { showFallback(t('No text changes to display.'), false); return; }
     const lines = input.patch.length > MAX_PATCH_LENGTH ? Infinity : lineCount(input.patch);
     if (lines > MAX_PATCH_LINES) {
-      showFallback('Large diff — showing a limited plain text preview.'); return;
+      showFallback(t('Large diff — showing a limited plain text preview.')); return;
     }
     const chunks = splitPatch(input.patch);
     const sections = chunks.filter(chunk => !chunk.continued).length;
     if (sections > MAX_FILES) { showFallback('Large diff — showing a limited plain text preview.'); return; }
     const fail = () => showFallback(input.truncated
-      ? 'This patch was shortened when recorded. Showing the available plain text patch.'
-      : 'Unable to format this diff. Showing the recorded patch.');
+      ? t('This patch was shortened when recorded. Showing the available plain text patch.')
+      : t('Unable to format this diff. Showing the recorded patch.'));
     try {
       const loaded = await preloadDiffViewer() as Engine;
       if (disposed) return;
@@ -493,17 +494,17 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           view.render({ fileDiff: file, containerWrapper: target });
           if (!file.hunks.length) {
             const message = file.type === 'rename-pure'
-              ? `Renamed ${file.prevName ?? 'file'} to ${file.name}. Contents unchanged.`
+              ? t`Renamed ${file.prevName ?? t('file')} to ${file.name}. Contents unchanged.`
               : file.mode !== file.prevMode && file.prevMode
-                ? `File mode changed from ${file.prevMode} to ${file.mode ?? 'unknown'}.`
-                : 'File metadata changed. No line changes.';
+                ? t`File mode changed from ${file.prevMode} to ${file.mode ?? t('unknown')}.`
+                : t('File metadata changed. No line changes.');
             target.append(element('p', 'diff-viewer-note', message));
           }
         });
       };
       const finish = (): void => {
         content.setAttribute('aria-busy', 'false');
-        if (!mounted.length) { showFallback('No line changes in this patch.'); return; }
+        if (!mounted.length) { showFallback(t('No line changes in this patch.')); return; }
         schedulePrime();
       };
       // Mount (and parse) the first screen now and the rest in frame-sized slices.
@@ -522,7 +523,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
       schedulePrime();
       root.dataset.diffState = 'ready';
       status.hidden = !input.truncated;
-      status.textContent = input.truncated ? 'This patch was shortened when recorded. Only available changes are shown.' : '';
+      status.textContent = input.truncated ? t('This patch was shortened when recorded. Only available changes are shown.') : '';
       themeObserver = new MutationObserver(() => {
         if (!disposed) for (const { view } of renderers) view.setThemeType(themeType());
       });

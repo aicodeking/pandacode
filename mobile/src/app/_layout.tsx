@@ -10,6 +10,7 @@ import { useStatus } from '../store/index.ts';
 import { useOutboxFlusher } from '../store/local.ts';
 import { usePushNotifications } from '../ui/push.ts';
 import { loadAppearance } from '../ui/appearance.ts';
+import { loadLanguage, useLanguage, useT } from '../ui/language.ts';
 import { useWallpaperShown, WallpaperLayer } from '../ui/Backdrop.tsx';
 import { hasGlass } from '../ui/Glass.tsx';
 import { MenuHost } from '../ui/Menu.tsx';
@@ -34,11 +35,14 @@ export default function RootLayout() {
   const colorScheme = useColorScheme();
   const { ready, signedIn } = useStatus();
   const colors = useColors();
+  const t = useT();
   const wallpaper = useWallpaperShown();
   // Screens keep clear of every inset themselves: on the iPhone Duo iOS moves the status bar, tab
   // bar and native header items into a rail on one side, which only reaches the edge when nothing
   // here pads the window.
   const collapsed = useSidebar(s => s.collapsed);
+  // The stored language lands before first paint, so no wrong-language flash.
+  const languageReady = useLanguage(s => s.hydrated);
   // iPhone Duo, open wide with the rail: the inbox is a sidebar beside the stack, which shows the
   // New thread pane, the open task or another tab (split.tsx). It stays on every route: if the
   // stack changes width in the same update as a tab switch or sheet, iOS drops the tabs from the rail.
@@ -46,11 +50,12 @@ export default function RootLayout() {
   const sidebar = split && !collapsed;
   useEffect(() => {
     void loadAppearance();
+    void loadLanguage();
     void connect.init(); // or demo mode (src/demo.ts)
   }, []);
   useOutboxFlusher();
   usePushNotifications(signedIn);
-  if (!ready) return null;
+  if (!ready || !languageReady) return null;
   return (
     <GestureHandlerRootView style={[styles.root, { backgroundColor: colors.background }]}>
       <WallpaperLayer />
@@ -63,14 +68,14 @@ export default function RootLayout() {
               <Stack.Protected guard={signedIn} redirectTo={SIGN_IN}>
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="task/[device]/[session]" />
-                <Stack.Screen name="new-task" options={{ ...sheet, sheetAllowedDetents: [0.75, 1], title: 'New task' }} />
-                <Stack.Screen name="task-settings" options={{ ...sheet, sheetAllowedDetents: [0.5, 0.9], title: 'Model & permissions' }} />
-                <Stack.Screen name="task-info" options={{ ...sheet, sheetAllowedDetents: [0.45, 0.8], title: 'Task info' }} />
-                <Stack.Screen name="pull" options={{ ...pushed, title: 'Pull request' }} />
-                <Stack.Screen name="changes" options={{ ...pushed, title: 'Changes' }} />
-                <Stack.Screen name="diff" options={{ ...pushed, title: 'Diff' }} />
-                <Stack.Screen name="agents" options={{ ...pushed, title: 'Agents' }} />
-                <Stack.Screen name="agent" options={{ ...pushed, title: 'Agent' }} />
+                <Stack.Screen name="new-task" options={{ ...sheet, sheetAllowedDetents: [0.75, 1], title: t('New task') }} />
+                <Stack.Screen name="task-settings" options={{ ...sheet, sheetAllowedDetents: [0.5, 0.9], title: t('Model & permissions') }} />
+                <Stack.Screen name="task-info" options={{ ...sheet, sheetAllowedDetents: [0.45, 0.8], title: t('Task info') }} />
+                <Stack.Screen name="pull" options={{ ...pushed, title: t('Pull request') }} />
+                <Stack.Screen name="changes" options={{ ...pushed, title: t('Changes') }} />
+                <Stack.Screen name="diff" options={{ ...pushed, title: t('Diff') }} />
+                <Stack.Screen name="agents" options={{ ...pushed, title: t('Agents') }} />
+                <Stack.Screen name="agent" options={{ ...pushed, title: t('Agent') }} />
               </Stack.Protected>
               <Stack.Protected guard={!signedIn} redirectTo={HOME}>
                 <Stack.Screen name="sign-in" />

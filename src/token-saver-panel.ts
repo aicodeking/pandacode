@@ -2,6 +2,7 @@ import './token-saver.css';
 import { escape, icon } from './dom';
 import { hidePopover, showPopover } from './popover-motion';
 import { tokenCount } from './model-catalog';
+import { t } from './i18n.ts';
 import { LEVELS, PACKS, contextFor, defaults, estimate, setDefaults, suggestion, threadSaver, updateThread, type PackId } from './token-saver';
 import type { TaskTokenUsage } from './types';
 
@@ -66,8 +67,8 @@ export function createTokenSaver(host: TokenSaverHost) {
   /** The composer control: a leaf that glows and counts packs while the thread saves. */
   function button(sessionId: string): string {
     const saver = threadSaver(sessionId), on = saver.packs.filter(id => id !== 'rtk' || tools.rtk);
-    const label = on.length ? `Token saver: ${on.length} on, about ${estimate(saver.packs, saver.level, available())}% fewer tokens` : 'Token saver: off';
-    return `<button type="button" class="composer-saver-button" data-action="token-saver" aria-haspopup="dialog" aria-expanded="${panel && panelSession === sessionId ? 'true' : 'false'}" aria-pressed="${on.length > 0}" aria-label="${escape(label)}" title="${escape(label)}">${icon('leaf')}<span>Saver</span>${on.length ? `<b>${on.length}</b>` : ''}</button>`;
+    const label = on.length ? t`Token saver: ${on.length} on, about ${estimate(saver.packs, saver.level, available())}% fewer tokens` : t('Token saver: off');
+    return `<button type="button" class="composer-saver-button" data-action="token-saver" aria-haspopup="dialog" aria-expanded="${panel && panelSession === sessionId ? 'true' : 'false'}" aria-pressed="${on.length > 0}" aria-label="${escape(label)}" title="${escape(label)}">${icon('leaf')}<span>${t('Saver')}</span>${on.length ? `<b>${on.length}</b>` : ''}</button>`;
   }
 
   /** One quiet list: name, an info mark with what it does, and a switch. */
@@ -84,15 +85,15 @@ export function createTokenSaver(host: TokenSaverHost) {
     const hint = tighten ? `<div class="saver-hint"><span>Context <b>${fill}%</b> full.</span><button type="button" class="saver-tighten" data-tighten aria-label="Tighten the saver: ${escape(tightenLabel)}">Tighten: ${escape(tightenLabel)}</button></div>` : '';
     const row = (id: PackId) => {
       const pack = PACKS.find(item => item.id === id)!, missing = pack.needs === 'rtk' && !tools.rtk, active = on.has(id) && !missing;
-      const about = `${pack.summary} Saves ${pack.saves}.${missing ? ` Not installed yet: turning it on installs it (${tools.rtkInstall}).` : id === 'rtk' && tools.rtkVersion ? ` rtk ${tools.rtkVersion} installed.` : ''}`;
-      const levels = id === 'caveman' && active ? `<div class="saver-levels" role="radiogroup" aria-label="Caveman intensity">${LEVELS.map(level => `<button type="button" role="radio" aria-checked="${saver.level === level.id}" data-level="${level.id}" title="${escape(level.hint)}">${level.label}</button>`).join('')}</div>` : '';
-      const install = missing && installing ? '<span class="saver-installing" role="status">Installing…</span>' : '';
+      const about = t`${pack.summary} Saves ${pack.saves}.${missing ? t` Not installed yet: turning it on installs it (${tools.rtkInstall}).` : id === 'rtk' && tools.rtkVersion ? t` rtk ${tools.rtkVersion} installed.` : ''}`;
+      const levels = id === 'caveman' && active ? `<div class="saver-levels" role="radiogroup" aria-label="${t('Caveman intensity')}">${LEVELS.map(level => `<button type="button" role="radio" aria-checked="${saver.level === level.id}" data-level="${level.id}" title="${escape(level.hint)}">${level.label}</button>`).join('')}</div>` : '';
+      const install = missing && installing ? `<span class="saver-installing" role="status">${t('Installing…')}</span>` : '';
       return `<li class="saver-row ${missing ? 'saver-missing' : ''}"><span class="saver-name" id="saver-${id}" data-tip="${escape(about)}">${pack.title}</span><span class="sr-only" id="saver-${id}-about">${escape(about)}</span>${install}<button type="button" role="switch" class="saver-switch" data-pack="${id}" aria-labelledby="saver-${id}" aria-describedby="saver-${id}-about" aria-checked="${active}" ${missing ? 'data-install="rtk"' : ''} ${missing && installing ? 'aria-busy="true" aria-disabled="true"' : ''}></button></li>${levels ? `<li class="saver-levels-row">${levels}</li>` : ''}`;
     };
-    panel.innerHTML = `<header class="saver-head"><strong id="saver-title" data-tip="Applies to this thread. Guidance rides along folded with your next message, then every few messages. Savings are estimates from each project's benchmarks.">Token saver</strong><span class="saver-total" aria-label="${saving ? `About ${saving}% fewer tokens` : 'Off'}">${saving ? `−${saving}%` : 'Off'}</span></header>
+    panel.innerHTML = `<header class="saver-head"><strong id="saver-title" data-tip="${t("Applies to this thread. Guidance rides along folded with your next message, then every few messages. Savings are estimates from each project's benchmarks.")}">t('Token saver')</strong><span class="saver-total" aria-label="${saving ? t`About ${saving}% fewer tokens` : t('Off')}">${saving ? `−${saving}%` : t('Off')}</span></header>
       ${saver.changedAt !== undefined && measured && saver.sentKey === sentKey ? `<div class="saver-measured">${escape(measuredText(saver.changedAt, measured))}</div>` : ''}
       <ul class="saver-list">${PACKS.map(pack => row(pack.id)).join('')}</ul>${hint}
-      <footer class="saver-foot"><label class="saver-default"><input type="checkbox" ${sameAsDefault ? 'checked' : ''} ${saver.packs.length ? '' : 'disabled'}><span>Start new threads like this</span></label><button type="button" class="saver-off" ${saver.packs.length ? '' : 'disabled'}>Turn all off</button></footer>`;
+      <footer class="saver-foot"><label class="saver-default"><input type="checkbox" ${sameAsDefault ? 'checked' : ''} ${saver.packs.length ? '' : 'disabled'}><span>t('Start new threads like this')</span></label><button type="button" class="saver-off" ${saver.packs.length ? '' : 'disabled'}>t('Turn all off')</button></footer>`;
   }
 
   function place(anchor: HTMLElement): void {
@@ -157,14 +158,14 @@ export function createTokenSaver(host: TokenSaverHost) {
     /** Turning on a pack whose tool is missing installs the tool, then turns the pack on. */
     const install = async (id: PackId) => {
       installing = true; render(sessionId);
-      host.notify('Installing RTK with Homebrew…');
+      host.notify(t('Installing RTK with Homebrew…'));
       try {
         tools = await host.call<Tools>('token_saver_install', { tool: 'rtk' });
         loading = Promise.resolve();
         installing = false;
         const packs = threadSaver(sessionId).packs;
         if (tools.rtk) update({ packs: packs.includes(id) ? packs : [...packs, id] });
-        host.notify(tools.rtk ? `RTK ${tools.rtkVersion} installed and on` : 'RTK is still not available');
+        host.notify(tools.rtk ? t`RTK ${tools.rtkVersion} installed and on` : t('RTK is still not available'));
       } catch (error) {
         installing = false;
         host.notify(error instanceof Error ? error.message : String(error));
@@ -176,7 +177,7 @@ export function createTokenSaver(host: TokenSaverHost) {
       if (!input.closest('.saver-default')) return;
       const saver = threadSaver(sessionId);
       setDefaults(input.checked ? saver : null);
-      host.notify(input.checked ? 'New threads start with these savers' : 'New threads start with savers off');
+      host.notify(input.checked ? t('New threads start with these savers') : t('New threads start with savers off'));
     };
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(); anchor.isConnected && anchor.focus(); } };
     const onOutside = (event: PointerEvent) => {

@@ -7,6 +7,7 @@ import { type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { ActionSheetIOS, Modal, Platform, Pressable, StyleSheet, Text, View, type ColorValue } from 'react-native';
 import { create } from 'zustand';
 import { Icon } from './Icon.tsx';
+import { tNow, useT } from './language.ts';
 import { useColors } from './theme.ts';
 
 type Android = ComponentProps<typeof Icon>['android'];
@@ -18,7 +19,8 @@ const useSheet = create<{ title?: string; items: MenuItem[] }>(() => ({ items: [
 /** A one-off list of actions (long press, a row's "more"). */
 export function showActions(title: string | undefined, items: MenuItem[]) {
   if (Platform.OS !== 'ios') return useSheet.setState({ title, items });
-  const labels = [...items.map(i => (i.checked ? `✓ ${i.label}` : i.label)), 'Cancel'];
+  const t = tNow();
+  const labels = [...items.map(i => (i.checked ? `✓ ${i.label}` : i.label)), t('Cancel')];
   const destructive = items.map((i, n) => (i.destructive ? n : -1)).filter(n => n >= 0);
   ActionSheetIOS.showActionSheetWithOptions(
     { title, options: labels, cancelButtonIndex: items.length, destructiveButtonIndex: destructive },
@@ -28,13 +30,14 @@ export function showActions(title: string | undefined, items: MenuItem[]) {
 
 /** Android's action sheet; renders nothing on iOS. */
 export function MenuHost() {
+  const t = useT();
   const colors = useColors();
   const { title, items } = useSheet();
   if (Platform.OS === 'ios') return null;
   const close = () => useSheet.setState({ title: undefined, items: [] });
   return (
     <Modal visible={items.length > 0} transparent animationType="fade" onRequestClose={close}>
-      <Pressable style={styles.scrim} onPress={close} accessibilityLabel="Close menu">
+      <Pressable style={styles.scrim} onPress={close} accessibilityLabel={t('Close menu')}>
         <View style={[styles.sheet, { backgroundColor: colors.card }]}>
           {!!title && <Text style={[styles.title, { color: colors.secondary }]} numberOfLines={2}>{title}</Text>}
           {items.map(item => (

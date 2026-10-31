@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import './moodboards.css';
 import { call, preview } from './bridge';
 import { escape, icon } from './dom';
@@ -13,10 +14,10 @@ const supported = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const captionWrites = new Map<string, Promise<void>>();
 function readData(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (file.size > MAX_FILE || !supported.has(file.type)) { reject(new Error('Choose PNG, JPEG or WebP images up to 12 MB each.')); return; }
+    if (file.size > MAX_FILE || !supported.has(file.type)) { reject(new Error(t('Choose PNG, JPEG or WebP images up to 12 MB each.'))); return; }
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.onerror = () => reject(new Error(t`Could not read ${file.name}.`));
     reader.readAsDataURL(file);
   });
 }
@@ -25,7 +26,7 @@ function readData(file: File): Promise<string> {
  * the view releases image data and listeners without affecting active agents. */
 export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): () => void {
   host.classList.add('moodboards');
-  host.innerHTML = `<div class="moodboard-workspace"><aside class="moodboard-library"><div class="moodboard-library-heading"><span>Boards</span><button type="button" class="icon-button" data-mood-action="new" aria-label="New moodboard" title="New moodboard">${icon('plus')}</button></div><form class="moodboard-create" hidden><input name="name" aria-label="Moodboard name" placeholder="Name your board" maxlength="120" required><button class="icon-button" title="Create moodboard" aria-label="Create moodboard">${icon('check')}</button></form><nav class="moodboard-list" aria-label="Moodboards"></nav></aside><section class="moodboard-content" aria-label="Visual references"><header class="moodboard-toolbar" hidden><input class="moodboard-title" aria-label="Board name" maxlength="120"><button type="button" class="secondary-button" data-mood-action="add">${icon('plus')} Add images</button><button type="button" class="icon-button" data-mood-action="delete" title="Delete moodboard" aria-label="Delete moodboard">${icon('archive')}</button></header><div class="moodboard-delete-confirm" hidden><span>Delete this board and its images?</span><button type="button" class="secondary-button" data-mood-action="cancel-delete">Keep board</button><button type="button" class="secondary-button" data-mood-action="confirm-delete">Delete</button></div><div class="moodboard-canvas" tabindex="0" aria-label="Moodboard images. Paste or drop images here."><div class="moodboard-empty">${icon('camera')}<h3>Your visual starting point.</h3><p>Collect screenshots, layouts and ideas for your agents to reference.</p><button type="button" class="secondary-button" data-mood-action="new">Create a moodboard</button></div></div><footer class="moodboard-footer" hidden><span>Drop images or paste a screenshot</span><button type="button" class="primary-button" data-mood-action="attach" ${options.onAttach ? '' : 'hidden'}>${icon('attach')} Attach to task</button></footer></section></div><p class="moodboard-status" role="status" aria-live="polite"></p><input class="moodboard-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>`;
+  host.innerHTML = `<div class="moodboard-workspace"><aside class="moodboard-library"><div class="moodboard-library-heading"><span>${t('Boards')}</span><button type="button" class="icon-button" data-mood-action="new" aria-label="${t('New moodboard')}" title="${t('New moodboard')}">${icon('plus')}</button></div><form class="moodboard-create" hidden><input name="name" aria-label="${t('Moodboard name')}" placeholder="${t('Name your board')}" maxlength="120" required><button class="icon-button" title="${t('Create moodboard')}" aria-label="${t('Create moodboard')}">${icon('check')}</button></form><nav class="moodboard-list" aria-label="${t('Moodboards')}"></nav></aside><section class="moodboard-content" aria-label="${t('Visual references')}"><header class="moodboard-toolbar" hidden><input class="moodboard-title" aria-label="${t('Board name')}" maxlength="120"><button type="button" class="secondary-button" data-mood-action="add">${icon('plus')} ${t('Add images')}</button><button type="button" class="icon-button" data-mood-action="delete" title="${t('Delete moodboard')}" aria-label="${t('Delete moodboard')}">${icon('archive')}</button></header><div class="moodboard-delete-confirm" hidden><span>${t('Delete this board and its images?')}</span><button type="button" class="secondary-button" data-mood-action="cancel-delete">${t('Keep board')}</button><button type="button" class="secondary-button" data-mood-action="confirm-delete">${t('Delete')}</button></div><div class="moodboard-canvas" tabindex="0" aria-label="${t('Moodboard images. Paste or drop images here.')}"><div class="moodboard-empty">${icon('camera')}<h3>${t('Your visual starting point.')}</h3><p>${t('Collect screenshots, layouts and ideas for your agents to reference.')}</p><button type="button" class="secondary-button" data-mood-action="new">${t('Create a moodboard')}</button></div></div><footer class="moodboard-footer" hidden><span>${t('Drop images or paste a screenshot')}</span><button type="button" class="primary-button" data-mood-action="attach" ${options.onAttach ? '' : 'hidden'}>${icon('attach')} ${t('Attach to task')}</button></footer></section></div><p class="moodboard-status" role="status" aria-live="polite"></p><input class="moodboard-file-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>`;
   const find = <T extends HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const list = find<HTMLElement>('.moodboard-list'), canvas = find<HTMLElement>('.moodboard-canvas');
   const toolbar = find<HTMLElement>('.moodboard-toolbar'), footer = find<HTMLElement>('.moodboard-footer');
@@ -61,7 +62,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     }
   }
   function renderList(): void {
-    list.innerHTML = boards.map(board => `<button type="button" class="moodboard-list-item" data-mood-board="${escape(board.id)}" aria-pressed="${board.id === selected?.id}">${icon('board')}<span class="moodboard-list-name">${escape(board.name)}</span> <small>${board.imageCount} ${board.imageCount === 1 ? 'image' : 'images'}</small></button>`).join('');
+    list.innerHTML = boards.map(board => `<button type="button" class="moodboard-list-item" data-mood-board="${escape(board.id)}" aria-pressed="${board.id === selected?.id}">${icon('board')}<span class="moodboard-list-name">${escape(board.name)}</span> <small>${board.imageCount} ${board.imageCount === 1 ? t('image') : t('images')}</small></button>`).join('');
   }
   function updateBoard(board: Moodboard): void {
     boards = [board, ...boards.filter(item => item.id !== board.id)]; renderList();
@@ -72,7 +73,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     if (!selected) return;
     const board = selected;
     toolbar.hidden = false; footer.hidden = false; confirmDelete.hidden = true; title.value = board.name;
-    canvas.innerHTML = board.images.length ? `<div class="moodboard-image-grid">${board.images.map(image => `<article class="moodboard-image-card" data-mood-image="${escape(image.id)}"><button type="button" class="moodboard-image-preview" data-mood-expand="${escape(image.id)}" aria-label="View ${escape(image.name)}"><img data-image-id="${escape(image.id)}" data-board-id="${escape(board.id)}" alt="${escape(image.name)}" decoding="async"></button><div class="moodboard-image-meta"><span title="${escape(image.name)}">${escape(image.name)}</span><button type="button" class="icon-button" data-mood-remove="${escape(image.id)}" aria-label="Remove ${escape(image.name)}" title="Remove image">${icon('close')}</button></div><textarea rows="2" maxlength="2000" data-mood-caption="${escape(image.id)}" aria-label="Caption for ${escape(image.name)}" placeholder="What should the agent notice?">${escape(image.caption)}</textarea></article>`).join('')}</div>` : `<div class="moodboard-empty">${icon('camera')}<h3>Give your agent a little inspiration.</h3><p>Drop images here, paste a screenshot, or choose files.</p><button type="button" class="secondary-button" data-mood-action="add">${icon('plus')} Add images</button><small>PNG, JPEG, WebP · up to 12 MB each</small></div>`;
+    canvas.innerHTML = board.images.length ? `<div class="moodboard-image-grid">${board.images.map(image => `<article class="moodboard-image-card" data-mood-image="${escape(image.id)}"><button type="button" class="moodboard-image-preview" data-mood-expand="${escape(image.id)}" aria-label="${t`View ${escape(image.name)}`}"><img data-image-id="${escape(image.id)}" data-board-id="${escape(board.id)}" alt="${escape(image.name)}" decoding="async"></button><div class="moodboard-image-meta"><span title="${escape(image.name)}">${escape(image.name)}</span><button type="button" class="icon-button" data-mood-remove="${escape(image.id)}" aria-label="${t`Remove ${escape(image.name)}`}" title="${t('Remove image')}">${icon('close')}</button></div><textarea rows="2" maxlength="2000" data-mood-caption="${escape(image.id)}" aria-label="${t`Caption for ${escape(image.name)}`}" placeholder="${t('What should the agent notice?')}">${escape(image.caption)}</textarea></article>`).join('')}</div>` : `<div class="moodboard-empty">${icon('camera')}<h3>${t('Give your agent a little inspiration.')}</h3><p>${t('Drop images here, paste a screenshot, or choose files.')}</p><button type="button" class="secondary-button" data-mood-action="add">${icon('plus')} ${t('Add images')}</button><small>${t('PNG, JPEG, WebP · up to 12 MB each')}</small></div>`;
     canvas.querySelectorAll<HTMLImageElement>('img').forEach(image => observer.observe(image));
     renderList();
   }
@@ -84,14 +85,14 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       activeThumbnails++;
       void call<{dataUrl: string}>('moodboard_image', { projectId: options.projectId, boardId: image.dataset.boardId, imageId: image.dataset.imageId, thumbnail: true })
         .then(result => { if (!disposed && host.contains(image)) image.src = result.dataUrl; })
-        .catch(() => { if (!disposed && host.contains(image)) image.alt = 'Preview unavailable'; })
+        .catch(() => { if (!disposed && host.contains(image)) image.alt = t('Preview unavailable'); })
         .finally(() => { activeThumbnails--; loadThumbnails(); });
     }
   }
   async function select(id: string): Promise<void> {
     if (disposed) return;
     const request = ++loading;
-    report('Loading moodboard…');
+    report(t('Loading moodboard…'));
     await Promise.all([...captionWrites.values()]);
     if (disposed || request !== loading) return;
     const detail = await call<MoodboardDetail>('read_moodboard', { projectId: options.projectId, boardId: id });
@@ -107,17 +108,17 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     else {
       selected = undefined; toolbar.hidden = true; footer.hidden = true; confirmDelete.hidden = true;
       observer.disconnect(); thumbnailQueue = [];
-      canvas.innerHTML = `<div class="moodboard-empty">${icon('camera')}<h3>Your visual starting point.</h3><p>Collect screenshots, layouts and ideas for your agents to reference.</p><button type="button" class="secondary-button" data-mood-action="new">Create a moodboard</button></div>`;
+      canvas.innerHTML = `<div class="moodboard-empty">${icon('camera')}<h3>${t('Your visual starting point.')}</h3><p>${t('Collect screenshots, layouts and ideas for your agents to reference.')}</p><button type="button" class="secondary-button" data-mood-action="new">${t('Create a moodboard')}</button></div>`;
     }
   }
   async function addFiles(files: File[]): Promise<void> {
-    if (!selected) { report('Create a moodboard first.'); return; }
+    if (!selected) { report(t('Create a moodboard first.')); return; }
     if (!files.length) return;
-    if (files.length > 8) { report('Add up to eight images at a time.', true); return; }
+    if (files.length > 8) { report(t('Add up to eight images at a time.'), true); return; }
     const boardId = selected.id;
     await perform(async () => {
       try { for (let i = 0; i < files.length; i++) {
-        report(`Adding image ${i + 1} of ${files.length}…`);
+        report(t`Adding image ${i + 1} of ${files.length}…`);
         const dataUrl = await readData(files[i]);
         const detail = await call<MoodboardDetail>('add_moodboard_image', { projectId: options.projectId, boardId, name: files[i].name || `Screenshot ${new Date().toLocaleTimeString()}`, dataUrl });
         if (disposed) return;
@@ -125,25 +126,25 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
         if (selected?.id === boardId) selected = detail;
       }
       } finally { if (!disposed && selected?.id === boardId) renderImages(); }
-      report(`${files.length} ${files.length === 1 ? 'image added' : 'images added'}.`);
+      report(files.length === 1 ? t`${files.length} image added.` : t`${files.length} images added.`);
     });
   }
   async function addPaths(paths: string[]): Promise<void> {
     if (!selected || !paths.length) return;
     const boardId = selected.id;
     await perform(async () => {
-      report('Adding images…');
+      report(t('Adding images…'));
       const detail = await call<MoodboardDetail>('import_moodboard_images', { projectId: options.projectId, boardId, paths });
       if (disposed) return;
       updateBoard(detail);
       if (selected?.id === boardId) { selected = detail; renderImages(); }
-      report(`${paths.length} ${paths.length === 1 ? 'image added' : 'images added'}.`);
+      report(paths.length === 1 ? t`${paths.length} image added.` : t`${paths.length} images added.`);
     });
   }
   function showCreate(): void { createForm.hidden = false; nameInput.focus(); }
   async function chooseImages(): Promise<void> {
     if (preview) { fileInput.click(); return; }
-    const result = await (await import('@tauri-apps/plugin-dialog')).open({ title: 'Add images to moodboard', multiple: true, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
+    const result = await (await import('@tauri-apps/plugin-dialog')).open({ title: t('Add images to moodboard'), multiple: true, filters: [{ name: t('Images'), extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (!disposed && result) await addPaths(Array.isArray(result) ? result : [result]);
   }
   async function expand(imageId: string): Promise<void> {
@@ -151,9 +152,9 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     const boardId = selected.id, image = selected.images.find(item => item.id === imageId); if (!image) return;
     host.querySelector('.moodboard-lightbox')?.remove();
     const box = document.createElement('div'); box.className = 'moodboard-lightbox'; box.tabIndex = -1;
-    box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'Image preview'); box.setAttribute('aria-modal', 'true');
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', t('Image preview')); box.setAttribute('aria-modal', 'true');
     find<HTMLElement>('.moodboard-workspace').inert = true;
-    box.innerHTML = `<button type="button" class="icon-button" data-mood-action="close-preview" aria-label="Close image preview">${icon('close')}</button><img alt="${escape(image.name)}"><p>${escape(image.caption || image.name)}</p>`;
+    box.innerHTML = `<button type="button" class="icon-button" data-mood-action="close-preview" aria-label="${t('Close image preview')}">${icon('close')}</button><img alt="${escape(image.name)}"><p>${escape(image.caption || image.name)}</p>`;
     host.append(box); box.querySelector<HTMLButtonElement>('button')!.focus();
     try {
       const result = await call<{dataUrl: string}>('moodboard_image', { projectId: options.projectId, boardId, imageId, thumbnail: false });
@@ -193,7 +194,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     if (!name) { title.value = selected.name; return; }
     try {
       const board = await call<Moodboard>('rename_moodboard', { projectId: options.projectId, boardId, name });
-      if (!disposed && selected?.id === boardId) { Object.assign(selected, board); updateBoard(board); report('Board renamed.'); }
+      if (!disposed && selected?.id === boardId) { Object.assign(selected, board); updateBoard(board); report(t('Board renamed.')); }
     } catch (error) { report(error, true); if (selected?.id === boardId) title.value = selected.name; }
   }
   function saveCaption(boardId: string, imageId: string, caption: string): void {
@@ -205,7 +206,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       if (disposed) return;
       const image = selected?.id === boardId ? selected.images.find(image => image.id === imageId) : undefined;
       if (image) image.caption = caption;
-      report('Caption saved.');
+      report(t('Caption saved.'));
     }).catch(error => report(error, true)).finally(() => { if (captionWrites.get(imageId) === next) captionWrites.delete(imageId); });
     captionWrites.set(imageId, next);
   }

@@ -1,6 +1,6 @@
 # Settings
 
-Settings opens on **General**, with grouped rows for text size, compact conversations, and wallpapers. Wallpaper customization includes separate live visibility and blur controls, the seven scene sets, and a fixed favorite. Preferences save automatically.
+Settings opens on **General**, with grouped rows for language, text size, compact conversations, and wallpapers. **General → Language** follows the system language until you pick one of the supported languages (English US/UK, German, Spanish, French, Italian, Japanese, Korean, Brazilian Portuguese, Polish, Russian, Simplified Chinese, Traditional Chinese HK/TW); the choice applies to every PandaCode window (workspace, quick launcher and menu bar popover) after an instant reload, and unsent composer text survives it. See [src/locales/GLOSSARY.md](../src/locales/GLOSSARY.md) for how the catalogs work. Wallpaper customization includes separate live visibility and blur controls, the seven scene sets, and a fixed favorite. Preferences save automatically.
 
 **Agents** contains the default agent, tools and integrations, and compact installation status rows. Expand a provider to see its version and executable path. Refresh checks installations without resetting the selected tab, default agent control, or expanded provider details.
 

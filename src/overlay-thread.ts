@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { overlayCall, overlayEvents, type OverlayTask, type OverlayThread } from './overlay-client';
@@ -10,7 +11,7 @@ import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { decodeHandoff, historicalProvider } from './provider-handoff';
 import type { Message, ProviderId, Session } from './types';
 
-const statusLabel = (value: string) => ({ running:'Working', waiting:'Needs attention', coordinating:'Coordinating', idle:'Ready', completed:'Completed', error:'Failed', failed:'Failed', stopped:'Stopped', interrupted:'Paused' }[value] || value);
+const statusLabel = (value: string) => ({ running:t('Working'), waiting:t('Needs attention'), coordinating:t('Coordinating'), idle:t('Ready'), completed:t('Completed'), error:t('Failed'), failed:t('Failed'), stopped:t('Stopped'), interrupted:t('Paused') }[value] || value);
 
 /** The selected transcript is loaded on demand; the launcher never mounts the workspace. */
 export class OverlayThreadView {
@@ -34,8 +35,8 @@ export class OverlayThreadView {
   private notice: HTMLElement;
   constructor(private host: HTMLElement, private back: () => void, private opened?: (task: OverlayTask) => void) {
     host.className = 'launcher-thread'; host.hidden = true;
-    host.setAttribute('aria-label', 'Agent conversation');
-    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="Back to active agents">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="Conversation"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">Loading conversation…</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>Retry loading conversation</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">Open in app ${icon('forward')}</button></footer>`;
+    host.setAttribute('aria-label', t('Agent conversation'));
+    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="${t('Back to active agents')}">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="${t('Conversation')}"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">${t('Loading conversation…')}</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>${t('Retry loading conversation')}</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">${t('Open in app')} ${icon('forward')}</button></footer>`;
     this.scroll = host.querySelector('.launcher-thread-scroll')!;
     this.history = host.querySelector('.launcher-thread-history')!;
     this.notice = host.querySelector('.launcher-thread-notice')!;
@@ -71,7 +72,7 @@ export class OverlayThreadView {
     this.close(); this.task = task; this.host.hidden = false; this.initial = true;
     this.opened?.(task);
     this.host.querySelector('h2')!.textContent = task.title;
-    this.host.querySelector('.launcher-thread-heading p')!.textContent = [task.kind === 'worker' ? 'Worker' : task.kind === 'subagent' ? 'Subagent' : '', task.projectName].filter(Boolean).join(' · ');
+    this.host.querySelector('.launcher-thread-heading p')!.textContent = [task.kind === 'worker' ? t('Worker') : task.kind === 'subagent' ? t('Subagent') : '', task.projectName].filter(Boolean).join(' · ');
     this.host.querySelector('.launcher-thread-provider')!.innerHTML = providerLogo(task.provider as ProviderId);
     this.host.querySelector('.launcher-thread-status')!.textContent = statusLabel(task.status);
     const generation = this.generation;
@@ -93,7 +94,7 @@ export class OverlayThreadView {
     this.latest = undefined;
     this.notice.hidden = true; this.host.querySelector<HTMLElement>('.launcher-thread-retry')!.hidden = true;
     this.host.querySelector<HTMLElement>('.launcher-thread-empty')!.hidden = false;
-    this.host.querySelector('.launcher-thread-empty')!.textContent = 'Loading conversation…';
+    this.host.querySelector('.launcher-thread-empty')!.textContent = t('Loading conversation…');
     this.lastLoad = 0;
   }
   setVisible(value: boolean): void {
@@ -199,7 +200,7 @@ export class OverlayThreadView {
     });
     for (const [key,node] of this.turns) if (!keys.has(key)) { node.remove(); this.turns.delete(key); }
     this.host.querySelector<HTMLElement>('.launcher-thread-empty')!.hidden = messages.length > 0;
-    this.host.querySelector('.launcher-thread-empty')!.textContent = 'The agent is getting started…';
+    this.host.querySelector('.launcher-thread-empty')!.textContent = t('The agent is getting started…');
     const status = this.host.querySelector<HTMLElement>('.launcher-thread-status')!;
     status.textContent = statusLabel(child?.status || thread.status); status.dataset.status = child?.status || thread.status;
     if (follow) this.scroll.scrollTop = this.scroll.scrollHeight; else restore?.();
@@ -210,11 +211,11 @@ export class OverlayThreadView {
     if (turn.handoff) {
       if (!node.childElementCount) {
         const handoff = decodeHandoff(turn.handoff);
-        if (handoff) node.innerHTML = `<details class="launcher-thread-handoff"><summary>${providerLogo(handoff.fromProvider)}${icon('forward')}${providerLogo(handoff.toProvider)}<span>Conversation carried forward</span>${icon('down')}</summary><p>${escape(handoff.summary)}</p></details>`;
+        if (handoff) node.innerHTML = `<details class="launcher-thread-handoff"><summary>${providerLogo(handoff.fromProvider)}${icon('forward')}${providerLogo(handoff.toProvider)}<span>${t('Conversation carried forward')}</span>${icon('down')}</summary><p>${escape(handoff.summary)}</p></details>`;
       }
       return;
     }
-    if (!node.childElementCount) node.innerHTML = `<article class="launcher-thread-message launcher-thread-user"><header>You</header><div></div></article><div class="launcher-thread-coordination" hidden></div><details class="launcher-thread-activity"><summary></summary><div></div></details><article class="launcher-thread-message launcher-thread-response"><header></header><div></div></article><div class="launcher-thread-errors"></div>`;
+    if (!node.childElementCount) node.innerHTML = `<article class="launcher-thread-message launcher-thread-user"><header>${t('You')}</header><div></div></article><div class="launcher-thread-coordination" hidden></div><details class="launcher-thread-activity"><summary></summary><div></div></details><article class="launcher-thread-message launcher-thread-response"><header></header><div></div></article><div class="launcher-thread-errors"></div>`;
     const user = node.querySelector<HTMLElement>('.launcher-thread-user')!; user.hidden = !turn.user;
     if (turn.user) { user.dataset.messageId = String(turn.user.id); streamMarkdown(user.querySelector('div')!,turn.user.content,this.scroll); this.paintActions(user, turn.user); }
     const coordination = node.querySelector<HTMLElement>('.launcher-thread-coordination')!;
@@ -229,7 +230,7 @@ export class OverlayThreadView {
       details.dataset.initialized = 'true';
     }
     const toolCount = turn.activity.filter(message => message.role === 'tool' && message.content !== 'Tool finished').length;
-    details.querySelector('summary')!.textContent = `${turnLabel(turn.durationMs,turn.estimated)}${toolCount ? ` · ${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}` : ''}`;
+    details.querySelector('summary')!.textContent = `${turnLabel(turn.durationMs,turn.estimated)}${toolCount ? ` · ${toolCount} ${toolCount === 1 ? t('tool') : t('tools')}` : ''}`;
     const activity = details.querySelector('div')!;
     const previous = this.activityMessages.get(activity);
     if (!previous || previous.length !== turn.activity.length || turn.activity.some((message,index) => message.id !== previous[index].id || message.content !== previous[index].content)) {

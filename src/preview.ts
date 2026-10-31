@@ -1322,6 +1322,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
     case 'tray_seen': result = null; break;
+    case 'set_ui_language': result = null; break; // the language preference itself lives in localStorage
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {

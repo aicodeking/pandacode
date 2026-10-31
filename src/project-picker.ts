@@ -1,4 +1,5 @@
 import type { Project } from './types';
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import { showPopover, hidePopover } from './popover-motion';
 
@@ -18,8 +19,8 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   const panel = document.createElement('section');
   panel.className = 'project-menu floating-menu';
   panel.setAttribute('role', 'dialog');
-  panel.setAttribute('aria-label', 'Choose project');
-  panel.innerHTML = `<div class="project-menu-search">${icon('search')}<input type="search" aria-label="Search projects" placeholder="Search projects…" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="project-menu-list" role="listbox" aria-label="Projects"></div><p class="project-menu-count" role="status" hidden></p><p class="project-menu-empty" role="status" hidden></p><p class="project-menu-error" role="alert" hidden></p><p class="project-menu-pending" role="status" hidden>Opening…</p><div class="project-menu-footer"><button type="button" class="project-menu-open">${icon('plus')}Open project…</button></div>`;
+  panel.setAttribute('aria-label', t('Choose project'));
+  panel.innerHTML = `<div class="project-menu-search">${icon('search')}<input type="search" aria-label="${t('Search projects')}" placeholder="${t('Search projects…')}" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="project-menu-list" role="listbox" aria-label="${t('Projects')}"></div><p class="project-menu-count" role="status" hidden></p><p class="project-menu-empty" role="status" hidden></p><p class="project-menu-error" role="alert" hidden></p><p class="project-menu-pending" role="status" hidden>${t('Opening…')}</p><div class="project-menu-footer"><button type="button" class="project-menu-open">${icon('plus')}${t('Open project…')}</button></div>`;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const list = panel.querySelector<HTMLElement>('.project-menu-list')!;
   const count = panel.querySelector<HTMLElement>('.project-menu-count')!;
@@ -97,9 +98,9 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     const visible = matches.slice(0, 100);
     list.innerHTML = visible.map(project => `<button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>`).join('');
     empty.hidden = visible.length > 0;
-    empty.textContent = projects.length ? 'No matching projects.' : 'No projects yet.';
+    empty.textContent = projects.length ? t('No matching projects.') : t('No projects yet.');
     count.hidden = matches.length <= visible.length;
-    count.textContent = count.hidden ? '' : `Showing ${visible.length} of ${matches.length} projects. Refine your search.`;
+    count.textContent = count.hidden ? '' : t`Showing ${visible.length} of ${matches.length} projects. Refine your search.`;
     pendingStatus.hidden = !pending;
     openButton.disabled = pending;
     list.setAttribute('aria-busy', String(pending));

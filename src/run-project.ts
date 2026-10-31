@@ -1,5 +1,6 @@
 import { call } from './bridge';
 import { icon } from './dom';
+import { t } from './i18n.ts';
 
 export interface RunContext { projectId: string; sessionId?: string }
 export interface RunScript { path: string; previewUrl?: string; previewPath?: string }
@@ -25,7 +26,7 @@ export class ProjectRunner {
       button.hidden = !available || Boolean(button.dataset.sessionId && button.dataset.sessionId !== context?.sessionId);
       button.disabled = busy;
       button.setAttribute('aria-busy', String(busy));
-      const label = busy ? 'Starting…' : 'Run';
+      const label = busy ? t('Starting…') : t('Run');
       if (button.dataset.label !== label) { button.innerHTML = `${icon('play')}<span>${label}</span>`; button.dataset.label = label; }
     });
   }
@@ -40,16 +41,16 @@ export class ProjectRunner {
   }
   async run(requestId?: string, active?: () => Promise<void>): Promise<{ started: boolean; previewPending: boolean }> {
     const context = this.options.context();
-    if (!context) throw new Error('Open a project to run it.');
+    if (!context) throw new Error(t('Open a project to run it.'));
     const id = key(context);
     if (this.starting.has(id)) return { started: false, previewPending: true };
     this.starting.add(id); this.paint();
     try {
       const script = await call<RunScript | null>('get_run_script', { ...context });
-      if (!script) throw new Error('Add pandacode-run.sh to this checkout to run the project.');
+      if (!script) throw new Error(t('Add pandacode-run.sh to this checkout to run the project.'));
       this.scripts.set(id, script);
       await active?.();
-      if (key(this.options.context() ?? { projectId: '' }) !== id) throw new Error('Task changed before the script could start.');
+      if (key(this.options.context() ?? { projectId: '' }) !== id) throw new Error(t('Task changed before the script could start.'));
       const exited = await this.options.start(requestId);
       const revision = (this.previewRevisions.get(id) ?? 0) + 1;
       this.previewRevisions.set(id, revision);
@@ -69,9 +70,9 @@ export class ProjectRunner {
       catch (error) { if (current()) this.options.notify(String(error)); return; }
       if (!current()) return;
       if (url) { try { await this.options.navigate(url, context); } catch (error) { if (current()) this.options.notify(String(error)); } return; }
-      if (exited()) { this.options.notify('The script exited before its preview was available. Check the Run terminal.'); return; }
+      if (exited()) { this.options.notify(t('The script exited before its preview was available. Check the Run terminal.')); return; }
       await new Promise(resolve => setTimeout(resolve, Math.min(250 + attempt * 100, 1000)));
     }
-    if (current()) this.options.notify('The script is running. Preview is not ready yet; click Run to check again.');
+    if (current()) this.options.notify(t('The script is running. Preview is not ready yet; click Run to check again.'));
   }
 }

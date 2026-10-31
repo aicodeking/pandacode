@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 
 /** One shared tooltip for `[data-tip]` elements: details live behind a small info
@@ -5,7 +6,7 @@ import { escape, icon } from './dom';
  * that contains the mark; hidden on any press, key, scroll, or when the mark leaves. */
 let bubble: HTMLElement | undefined, anchor: Element | undefined, frame = 0;
 
-export function infoMark(text: string, label = 'Details'): string {
+export function infoMark(text: string, label = t('Details')): string {
   return `<span class="info-mark" role="img" aria-label="${escape(label)}" data-tip="${escape(text)}">${icon('info')}</span>`;
 }
 
