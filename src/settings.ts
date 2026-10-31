@@ -154,6 +154,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'routing': return '<div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
+        ${settingRow('Android emulator flags', '<button type="button" class="secondary-button" data-action="emulator-flags">Set flags</button>', 'Extra launch flags for Android emulators: renderer, snapshots and networking.')}
         ${settingRow('Jev', '<button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button>', 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
       </div>
       ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
