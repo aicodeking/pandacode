@@ -60,3 +60,6 @@ dialog .worktree-cleanup-option{background:color-mix(in srgb,var(--panel) 72%,tr
 
 /* Micro-interactions: only without reduced motion. */
 @media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}}
+
+/* The extra repositories a multi-folder task spans, as a quiet count on the branch chip. */
+.branch-chip-repos{flex:0 0 auto;padding:1px 6px;border-radius:var(--ds-radius-chip);background:var(--ds-raised);color:var(--muted);font-size:var(--text-2xs);font-weight:var(--weight-medium);font-variant-numeric:tabular-nums}
