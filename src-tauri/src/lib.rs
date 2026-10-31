@@ -2772,10 +2772,29 @@ async fn launch_operation_admitted(
         ) {
             None
         } else {
-            Some(turn_changes::SharedTracker::start_background(
-                changes_root,
-                changes_cache,
-            ))
+            let changes_session = session_id.clone();
+            let changes_store = store.clone();
+            Some(turn_changes::SharedTracker::spawn(move || {
+                // A multi-folder task tracks every folder; a single-folder task's
+                // set is one primary entry over today's root, behavior unchanged.
+                let folders = changes_store
+                    .lock()
+                    .ok()
+                    .and_then(|store| {
+                        let project_id = store.session(&changes_session).ok()?.project_id;
+                        store.workspace_folders(&project_id, &changes_session).ok()
+                    })
+                    .unwrap_or_else(|| {
+                        vec![storage::RepoFolder {
+                            path: changes_root.clone(),
+                            label: String::new(),
+                            is_primary: true,
+                            worktree: None,
+                            branch: None,
+                        }]
+                    });
+                turn_changes::Tracker::start_in_folders(&folders, changes_cache)
+            }))
         };
         let tracker_sink = tracker.clone();
         let persistence_error = Arc::new(Mutex::new(None::<String>));
