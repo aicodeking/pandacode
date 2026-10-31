@@ -595,6 +595,7 @@ let previewVoiceModels: Array<{ id: string; label: string; kind: 'final' | 'live
   { id: 'moonshine-base', label: 'Moonshine Base', kind: 'final', languages: 'en', license: 'MIT', size: 287_000_000, installed: false, downloading: false, progress: 0 },
   { id: 'parakeet-v3', label: 'Parakeet TDT 0.6B v3', kind: 'final', languages: '25 European', license: 'CC-BY-4.0', size: 670_500_000, installed: false, downloading: false, progress: 0 },
   { id: 'whisper-small', label: 'Whisper Small', kind: 'final', languages: '99', license: 'MIT', size: 375_500_000, installed: false, downloading: false, progress: 0 },
+  { id: 'whisper-turbo', label: 'Whisper Turbo', kind: 'final', languages: '99', license: 'MIT', size: 1_036_600_000, installed: false, downloading: false, progress: 0 },
 ];
 let previewVoiceRecording = false, previewVoiceTimers: number[] = [];
 function previewVoiceStopTimers(): void {
