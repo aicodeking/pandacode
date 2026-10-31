@@ -177,6 +177,10 @@ fn finish(app: &tauri::AppHandle, local: &str, successful: bool, stopped: bool, 
     let done = AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: text.to_owned(), request_id: None, data: None, tool: None };
     let _ = app.emit("agent-event", done);
     let _ = app.emit("sessions-changed", ());
+    // `after` schedules watching a mirror fire like they do for a local run.
+    if !stopped {
+        crate::schedules::run_finished(app, local, successful);
+    }
 }
 
 /// Whether a failed call means the host can't be reached at all.
@@ -459,7 +463,7 @@ mod tests {
             store.db.execute_batch("DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device; ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id; PRAGMA user_version=25;").unwrap();
         }
         let store = Store::open(&path).unwrap();
-        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (27, 27));
+        assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (28, 28));
         let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('remote_device','remote_session','remote_synced_id')", [], |r| r.get(0)).unwrap();
         assert_eq!(columns, 3);
         let project = store.add_project(&std::env::temp_dir()).unwrap();

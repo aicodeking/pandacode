@@ -43,6 +43,7 @@ const paths: Record<string, string> = {
   leaf: '<path d="M19 3C5 3 2 9 5 15s14 4 14-12ZM5 20l9-11"/>',
   bamboo: '<path d="M9 3v18m-2-6h4M7 8h4m5 5v8m-2-4h4"/><path d="M10 9c1-4 4-6 9-6-1 4-4 6-9 6ZM8 15c-4 0-6-2-6-6 4 0 6 2 6 6Z" fill="currentColor" stroke="none"/>',
   moon: '<path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   alert: '<path d="m12 3 10 18H2Zm0 6v5m0 3v1"/>',

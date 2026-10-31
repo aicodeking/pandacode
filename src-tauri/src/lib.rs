@@ -49,6 +49,7 @@ mod providers;
 mod session_titles;
 mod slash_commands;
 mod recipes;
+mod schedules;
 mod storage;
 mod subagent_state;
 mod support;
@@ -454,7 +455,7 @@ fn app_instructions(chat: bool) -> String {
 }
 
 /// PandaCode closes the harness when a turn ends, so background waits never come back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and scheduled wakeups started in this turn never report back. Wait for long-running commands in the foreground (or poll them) before you reply.";
+const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Wait for long-running commands in the foreground (or poll them) before you reply.";
 
 /// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
 const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
@@ -1127,12 +1128,26 @@ async fn send_message(
     image_ids: Option<Vec<String>>,
     moodboard_ids: Option<Vec<String>>,
 ) -> Result<()> {
+    if let Some(ids) = moodboard_ids.as_deref().filter(|ids| !ids.is_empty()) {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let project_id = store.session(&session_id)?.project_id;
+        text.push_str(&moodboards::resolve_refs(&store, &project_id, ids)?);
+    }
+    send_prompt(app, state, session_id, text, image_ids).await
+}
+
+/// Sends a prompt the way the composer does: a team task starts its architect, a mirror
+/// goes to its host, anything else starts a turn here. Scheduled messages use it too.
+pub(crate) async fn send_prompt(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    image_ids: Option<Vec<String>>,
+) -> Result<()> {
     let (is_team, project_id) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        if let Some(ids) = moodboard_ids.as_deref().filter(|ids| !ids.is_empty()) {
-            text.push_str(&moodboards::resolve_refs(&store, &task.project_id, ids)?);
-        }
         (
             architect::load(&store, &session_id)?.is_some(),
             task.project_id,
@@ -1857,6 +1872,7 @@ async fn launch_operation_admitted(
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
         let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
         let host = simulator::tools::with_simulator(host, app.clone(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
         let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
@@ -2065,6 +2081,7 @@ async fn launch_operation_admitted(
         // Bot conversations reply on their channel and send their next queued message.
         if !was_stopped {
             bots::run_finished(&app, &session_id, successful);
+            schedules::run_finished(&app, &session_id, successful);
         }
         // Keep Start blocked until the old run's final event has been queued.
         // Otherwise its delayed `done` can finish a newly started UI stream.
@@ -3167,6 +3184,7 @@ pub fn run() {
             app.manage(architect::Runtime::default());
             architect::watchdog::watch(app.handle().clone());
             bots::start(app.handle());
+            schedules::start(app.handle().clone());
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -3301,6 +3319,16 @@ pub fn run() {
                 bots::schedule::bot_schedule_set_enabled,
                 bots::schedule::bot_schedule_delete,
                 bots::schedule::bot_run_schedule_now,
+                schedules::schedules_list,
+                schedules::schedule_create,
+                schedules::schedule_update,
+                schedules::schedule_set_enabled,
+                schedules::schedule_delete,
+                schedules::schedule_run_now,
+                schedules::schedule_snooze,
+                schedules::schedule_runs,
+                schedules::scheduler_settings,
+                schedules::scheduler_set_settings,
                 bots::channels::bot_channel_add,
                 bots::channels::bot_channel_test,
                 bots::channels::bot_channel_configure,

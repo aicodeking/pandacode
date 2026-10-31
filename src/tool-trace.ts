@@ -108,10 +108,30 @@ function mcpParts(name: string): { server: string; tool: string } {
   return { server: 'PandaCode', tool: local };
 }
 
+/** "in 30 min", "at 18:30", "every 2 h", "weekdays at 09:00", "after another thread" from a schedule tool's input. */
+function scheduleTiming(fields: Fields): string {
+  const minutes = (value: unknown) => { const n = Number(value); return n < 60 ? `${n} min` : `${Math.round(n / 6) / 10} h`.replace('.0 ', ' '); };
+  const time = field(fields, 'timeOfDay'), kind = field(fields, 'kind');
+  if (kind === 'interval' && Number(fields.intervalMinutes) > 0) return `every ${minutes(fields.intervalMinutes)}`;
+  if ((kind === 'daily' || kind === 'weekdays' || kind === 'weekly') && time) return `${kind} at ${time}`;
+  if (kind === 'after' || field(fields, 'afterTaskId')) return 'after another thread';
+  if (Number(fields.inMinutes) > 0) return `in ${minutes(fields.inMinutes)}`;
+  const at = field(fields, 'at');
+  if (/^\d{1,2}:\d{2}$/.test(at)) return `at ${at}`;
+  const date = at ? new Date(at) : null;
+  return date && !Number.isNaN(date.getTime()) ? `at ${date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '';
+}
+
 /** `Dispatched 2 workers`-style verbs for PandaCode's own tools; undefined keeps the generic `Used [server] tool`. */
 function pandacodeTrace(tool: string, fields: Fields, running: boolean): Partial<Trace> | undefined {
   const workers = Array.isArray(fields.workers) ? fields.workers.length : Array.isArray(fields.tasks) ? fields.tasks.length : 0;
   if (tool === 'dispatch_workers') return { verb: running ? 'Dispatching' : 'Dispatched', object: workers ? `${workers} ${workers === 1 ? 'worker' : 'workers'}` : 'workers' };
+  if (tool === 'schedule_wakeup' || tool === 'schedule_message') {
+    const label = clip(field(fields, 'title', 'note', 'text'), 60);
+    return { verb: running ? 'Scheduling' : 'Scheduled', object: [tool === 'schedule_wakeup' ? 'a wake-up' : 'a message', scheduleTiming(fields), label].filter(Boolean).join(' · ') };
+  }
+  if (tool === 'cancel_schedule') return { verb: running ? 'Cancelling' : 'Cancelled', object: 'a schedule' };
+  if (tool === 'list_schedules') return { verb: running ? 'Checking' : 'Checked', object: 'schedules' };
   if (tool === 'title') return { verb: running ? 'Naming' : 'Named', object: field(fields, 'title') ? `the task “${clip(field(fields, 'title'), 60)}”` : 'the task' };
   return;
 }

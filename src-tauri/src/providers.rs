@@ -2427,13 +2427,14 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool))
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
                         // title or snapshot named paths. They cannot edit the checkout.
                         // Bot tools are registered only in a bot's own tasks and only
                         // touch that bot's memory, schedules and messages to its owner.
+                        // Schedule tools here only wake or list this thread's own schedules.
                         // Team tools only exist in team turns and only change team state.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else {

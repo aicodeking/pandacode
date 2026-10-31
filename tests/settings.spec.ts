@@ -5,7 +5,7 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', 'Tools & add-ons', 'Skills & rules', 'Cloud sandboxes', 'Remote access', 'GitHub', 'About & updates'];
+const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', 'Schedules', 'Tools & add-ons', 'Skills & rules', 'Cloud sandboxes', 'Remote access', 'GitHub', 'About & updates'];
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
 

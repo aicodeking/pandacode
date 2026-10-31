@@ -22,8 +22,9 @@ const WRANGLER: &str = "wrangler@4.151.0";
 const RAILWAY: &str = "@railway/cli@5.71.0";
 const OUTPUT: usize = 128 * 1024;
 
-/// Approval tools that ask on every call, even in full-access mode.
-pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli"];
+/// Approval tools that ask on every call, even in full-access mode. Scheduled messages to
+/// other tasks are approval tools only while Settings asks first (`schedules::tools`).
+pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message"];
 
 /// AWS global options that take a value, so the value is not mistaken for the service.
 const AWS_VALUE_FLAGS: &[&str] = &["--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"];

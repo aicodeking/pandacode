@@ -635,6 +635,12 @@ const architect = createPreviewArchitect({
 });
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
+    sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),
+    projects: () => projects,
+    emit,
+    send: async (sessionId, text) => { await invoke('send_message', { sessionId, text }); },
+  });
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {

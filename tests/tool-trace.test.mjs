@@ -21,6 +21,10 @@ test('describes each kind as a verb, chip and object', () => {
     [tool('Skill', { skill: 'hyperframes' }), 'skill', 'Loaded skill', 'hyperframes', ''],
     [tool('mcp__github__list_issues', {}), 'mcp', 'Used', 'github', 'list issues'],
     [tool('pandacode_dispatch_workers', { workers: [{}, {}] }), 'mcp', 'Dispatched', 'PandaCode', '2 workers'],
+    [tool('pandacode_schedule_wakeup', { note: 'Check CI', inMinutes: 30 }), 'mcp', 'Scheduled', 'PandaCode', 'a wake-up · in 30 min · Check CI'],
+    [tool('pandacode_schedule_wakeup', { note: 'Poll CI', kind: 'interval', intervalMinutes: 120 }), 'mcp', 'Scheduled', 'PandaCode', 'a wake-up · every 2 h · Poll CI'],
+    [tool('pandacode_schedule_message', { taskId: 't', text: 'Rebase', kind: 'weekdays', timeOfDay: '09:00' }), 'mcp', 'Scheduled', 'PandaCode', 'a message · weekdays at 09:00 · Rebase'],
+    [tool('pandacode_schedule_wakeup', { title: 'Deploy check', note: 'x', at: '18:30' }), 'mcp', 'Scheduled', 'PandaCode', 'a wake-up · at 18:30 · Deploy check'],
     [tool('pandacode_architect_pandacode_title', { title: 'Traces' }), 'mcp', 'Named', 'PandaCode', 'the task “Traces”'],
     [tool('Frobnicate', { path: 'x/y' }), 'tool', 'Used', 'Frobnicate', 'x/y'],
   ];

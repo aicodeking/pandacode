@@ -10,11 +10,14 @@ import './motion.css';
 import './sidebar-tree.css';
 import './inspector-bar.css';
 import './message-queue.css';
+import './schedules.css';
 import './usage-limit.css';
 import './document-viewer.css';
 import './tool-trace.css';
 import { renderDocument, setDocumentView } from './document-viewer';
 import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
+import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
+import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
 import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast, trackSegment } from './motion';
@@ -411,7 +414,7 @@ const attachments = mountPromptAttachments({
   notify: message => notify(message),
   report: error => report(error),
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
-  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }], onSelect: id => { closeChoiceMenu(); run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
+  menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
   projectFiles: () => { state.inspector = true; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
 });
@@ -942,7 +945,7 @@ function renderNavigation(): void {
     const worktreeMark = (s.worktreePath ? `<span class="task-worktree" role="img" aria-label="Worktree" title="${escape(s.worktreePath)}">${icon('worktree')}</span>` : '')
       + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '');
     const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? `<span>${escape(s.worktreeBranch)}</span>` : ''}</span>` : '';
-    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : ''}${age ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}`;
+    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : ''}${age ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
     const button = `<button class="task-item${inFolder ? ' task-oneline' : ''} ${s.id === state.sessionId ? 'selected' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="true" data-pinned="${Boolean(s.pinned)}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" ${s.id === state.sessionId ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape(s.worktreeBranch ? `${s.title}\n${s.worktreeBranch}` : s.title)}">`;
     const pin = s.pinned ? `<span class="task-pin" role="img" aria-label="Pinned">${icon('pin')}</span>` : '';
     const projectName = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
@@ -1202,11 +1205,11 @@ function messageHtml(m: Message): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? userContent(m.content) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'))}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'))}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) folds
 // behind one summary so the transcript reads as what you said, with the payload a click away.
-const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
+const CONTEXT_BOUNDARY = new RegExp(String.raw`\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver|${TRACE_HEADER.replace(/[()]/g, '\\$&')})`);
 function userContent(content: string): string {
   const index = content.search(CONTEXT_BOUNDARY);
   if (index < 0) return escape(content);
@@ -1214,7 +1217,9 @@ function userContent(content: string): string {
   // you attached, so it stays out of the transcript (as in the bot's web chat).
   const blocks = content.slice(index + 2).split(CONTEXT_BOUNDARY).filter(block => !block.startsWith('Bot brief:\n'));
   if (!blocks.length) return escape(content.slice(0, index));
-  return `${escape(content.slice(0, index))}<details class="message-context"><summary>${icon('attach')}Attached context<span>${blocks.length}</span></summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
+  // A wake-up's trace is the scheduler's note, not an attachment: it gets its own label.
+  const wake = blocks.every(block => block.startsWith(TRACE_HEADER));
+  return `${escape(content.slice(0, index))}<details class="message-context"><summary>${wake ? `${icon('clock')}Wake-up details` : `${icon('attach')}Attached context<span>${blocks.length}</span>`}</summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
 }
 type ToolView = { open: boolean; rawOpen: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
 function captureTools(root: ParentNode): Map<string, ToolView> {
@@ -1432,7 +1437,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + (running ? '' : limitBanner(s)) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
+  $('#composer').insertAdjacentHTML('beforebegin', cloudStrip(s) + (running ? '' : limitBanner(s)) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team, sendable: !botProjects.has(s.projectId) && !s.archived, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued }));
   renderApprovalBar(); resizePrompt();
   void github.status(s.projectId);
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -1450,8 +1455,8 @@ function renderComposer(): void {
     slashPicker = mountSlashCommands(prompt, {
       contextKey: () => `${state.sessionId}:${session()?.provider}:${workspacePath()}`,
       provider: () => session()?.provider ?? s.provider,
-      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }),
-      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }),
+      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, cachedOnly: true }).then(withWake),
+      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }).then(withWake),
       select: () => state.drafts.set(s.id, prompt.value),
     });
     const enter = running ? `Enter to queue for when the agent finishes.${!team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
@@ -2040,6 +2045,7 @@ function clearComposer(s: Session): void {
 async function enqueueFromComposer(): Promise<void> {
   const s = session(); if (!s) return;
   const { text, items } = composerPayload(s);
+  if (await wakeFromComposer(s, text)) return;
   if (!text && !items.length) return;
   // Clear at once so the next message can be typed while this one is saved.
   const promptItems = attachments.list(s.id), paths = [...state.attachments];
@@ -2264,8 +2270,23 @@ async function fileContext(s: Session, path: string): Promise<string> {
   const content = await call<string>('read_file', { ...workspaceContext(s), path });
   return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
 }
+/** `/wake` is handled here for every harness, so it works whether or not the CLI knows it. */
+const WAKE_SLASH: SlashCommand = { id: 'pandacode:wake', name: '/wake', description: 'Wake this thread later', argumentHint: '[30m | 9:00 | tomorrow] [message]', kind: 'action', source: 'PandaCode' };
+function withWake(catalog: { commands: SlashCommand[]; warnings: string[] }): { commands: SlashCommand[]; warnings: string[] } {
+  return catalog.commands.some(command => command.name === '/wake') ? catalog : { ...catalog, commands: [WAKE_SLASH, ...catalog.commands] };
+}
+/** Runs a typed `/wake …` and clears the prompt; false when the text is something else. */
+async function wakeFromComposer(s: Session, text: string): Promise<boolean> {
+  const match = /^\/wake(?:\s+([\s\S]*))?$/i.exec(text.trim()); if (!match) return false;
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  await wakeCommand(s.id, match[1] ?? '', document.querySelector<HTMLElement>('#composer') ?? $('#composer-area'));
+  if (prompt?.isConnected && prompt.value.trim() === text.trim()) { prompt.value = ''; resizePrompt(); }
+  state.drafts.delete(s.id);
+  return true;
+}
 async function send(): Promise<void> {
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
+  if (s && await wakeFromComposer(s, text)) return;
   if (!text || !s || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   const target = !s.remoteDevice && newTaskView() ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
   if (target) return sendRemote(s, target, draft, text);
@@ -3160,9 +3181,11 @@ async function showSidebarTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'pin', label: task.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
     { id: 'up', label: 'Move up', icon: 'arrow', disabled: orderingBusy || index < 1 },
     { id: 'down', label: 'Move down', icon: 'down', disabled: orderingBusy || index === ids.length - 1 },
+    ...task.archived ? [] : [{ id: 'wake', label: 'Schedule a wake-up…', icon: 'clock' }],
   ], onSelect: choice => {
     closeChoiceMenu();
     if (choice === 'pin') { run(pinTask(id)); return; }
+    if (choice === 'wake') { openWakeComposer(anchor.isConnected ? anchor : $('#navigation'), id); return; }
     // Resolve the current list after an agent activity change or project filter.
     const row = $('#navigation').querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(id)}"]`);
     if (!row) return;
@@ -3266,11 +3289,13 @@ async function discoverSettingsProviders(): Promise<Provider[]> {
 let settingsView: import('./settings').SettingsView | undefined;
 let settingsOpening: Promise<void> | undefined;
 let settingsReturnFocus: HTMLElement | null = null;
-async function showSettings(section?: import('./settings').SettingsSection): Promise<void> {
+async function showSettings(section?: import('./settings').SettingsSection, intent?: { newForSession?: string; editScheduleId?: string }): Promise<void> {
   // "Back to settings" in a dialog returns here; the dialog closes first.
   if (document.querySelector<HTMLDialogElement>('#dialog')?.open) closeModal();
   closeMenus();
   const host = $('#settings-page');
+  // A schedules intent needs a fresh mount; the page reads it once.
+  if (settingsView && intent) closeSettings();
   if (settingsView) { if (section) settingsView.show(section); return; }
   if (settingsOpening) { await settingsOpening; if (section) (settingsView as import("./settings").SettingsView | undefined)?.show(section); return; }
   settingsReturnFocus = document.activeElement as HTMLElement | null;
@@ -3289,6 +3314,7 @@ async function showSettings(section?: import('./settings').SettingsSection): Pro
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })) },
       remote: remoteHost,
+      schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
       embed: {
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
@@ -3725,7 +3751,7 @@ function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
   const tasks = listedSessions().filter(s => s.title.toLowerCase().includes(query.toLowerCase())).slice(0, 12);
   $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}" data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
@@ -3747,6 +3773,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'board-view': setWorkspaceView('board'); break;
     case 'conversation-view': setWorkspaceView('conversation'); break;
     case 'github-view': setWorkspaceView('github'); break;
+    case 'wake-later': openWakeComposer(document.querySelector<HTMLElement>('#composer') ?? $('#composer-area')); break;
     case 'toggle-sidebar': toggleSidebar(); break;
     case 'board-add': showBoardTaskForm(); break;
     case 'board-open': await selectSession(element.dataset.id!); break;
@@ -3989,6 +4016,11 @@ async function boot(): Promise<void> {
   // Bots appear in the sidebar once loaded; startup does not wait for them.
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`); }).then(() => undefined));
+  // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
+  run(initWakeups({
+    sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
+    openSettings: intent => run(showSettings('schedules', intent)),
+  }));
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
   await subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
