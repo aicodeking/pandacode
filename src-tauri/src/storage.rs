@@ -3831,4 +3831,35 @@ mod tests {
             .is_err());
         assert_eq!(store.session(&session.id).unwrap().mode, "plan");
     }
+
+    /// Schema 37: task schedules gain nullable `cron` and `timezone` columns, and a
+    /// database from before the feature gets them through the guarded migration.
+    #[test]
+    fn version_37_adds_cron_and_timezone_to_task_schedules() {
+        let dir = std::env::temp_dir().join(format!("pandacode-schedule-cron-{}", id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("schedule-cron.db");
+        {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(SCHEMA_VERSION, 37);
+            assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+            let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone')", [], |r| r.get(0)).unwrap();
+            assert_eq!(columns, 2, "cron and timezone columns");
+            let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND notnull<>0", [], |r| r.get(0)).unwrap();
+            assert_eq!(notnull, 0, "both nullable: syntax is validated in Rust, like prompts");
+            // A database from before the feature (the previous schema, 36): drop the
+            // columns and reopen; the guarded migration restores them.
+            store
+                .db
+                .execute_batch("ALTER TABLE task_schedules DROP COLUMN cron; ALTER TABLE task_schedules DROP COLUMN timezone; PRAGMA user_version=36;")
+                .unwrap();
+        }
+        {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+            let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone')", [], |r| r.get(0)).unwrap();
+            assert_eq!(columns, 2, "the guarded migration restores the dropped columns");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -24,6 +24,10 @@ export interface TaskSchedule {
   timeOfDay: string | null;
   /** Weekly days, 0 = Sunday. Empty for other kinds. */
   days: number[];
+  /** For `cron`: the five-field expression (minute hour day-of-month month day-of-week). */
+  cron?: string | null;
+  /** IANA timezone for the clock kinds; null = this computer's local time. */
+  timezone?: string | null;
   /** For `after`: the task whose run end fires this one. */
   watchSessionId: string | null;
   watchSessionTitle: string | null;
@@ -71,6 +75,10 @@ export interface ScheduleInput {
   intervalMinutes?: number | null;
   timeOfDay?: string | null;
   days?: number[];
+  /** For `cron`: the five-field expression (minute hour day-of-month month day-of-week). */
+  cron?: string | null;
+  /** IANA timezone for the clock kinds; null/empty = this computer's local time. */
+  timezone?: string | null;
   /** For once: absolute time in ms. */
   runAt?: number | null;
   watchSessionId?: string | null;

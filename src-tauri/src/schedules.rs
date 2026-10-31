@@ -4,6 +4,7 @@
 //! after a restart fire once, not once per missed slot; a paused scheduler leaves
 //! due runs due.
 
+mod cron;
 mod firing;
 pub(crate) mod tools;
 #[cfg(test)]
@@ -67,6 +68,10 @@ pub struct TaskSchedule {
     pub interval_minutes: Option<i64>,
     pub time_of_day: Option<String>,
     pub days: Vec<i64>,
+    /// For `cron`: the five-field expression.
+    pub cron: Option<String>,
+    /// IANA timezone for the clock kinds; None = this computer's local zone.
+    pub timezone: Option<String>,
     pub watch_session_id: Option<String>,
     pub watch_session_title: Option<String>,
     pub only_on_success: bool,
@@ -115,6 +120,10 @@ pub struct ScheduleInput {
     pub interval_minutes: Option<i64>,
     pub time_of_day: Option<String>,
     pub days: Vec<i64>,
+    /// For `cron`: the five-field expression.
+    pub cron: Option<String>,
+    /// IANA timezone for the clock kinds; None/empty = this computer's local zone.
+    pub timezone: Option<String>,
     pub run_at: Option<i64>,
     pub watch_session_id: Option<String>,
     pub only_on_success: bool,
@@ -168,6 +177,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
         interval_minutes: r.get(8)?,
         time_of_day: r.get(9)?,
         days: serde_json::from_str(&r.get::<_, String>(10)?).unwrap_or_default(),
+        cron: None,
+        timezone: None,
         watch_session_id: r.get(11)?,
         watch_session_title: r.get(12)?,
         only_on_success: r.get(13)?,
