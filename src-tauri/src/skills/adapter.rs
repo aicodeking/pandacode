@@ -34,7 +34,9 @@ pub fn surface(harness: &str, kind: Kind, scope: Scope, base: &Path) -> Surface 
     match (harness, kind) {
         ("claude", Kind::Skill) => Surface::Folder(base.join(".claude/skills")),
         ("claude", Kind::Rule) => Surface::Block(if user { base.join(".claude/CLAUDE.md") } else { base.join("CLAUDE.md") }),
-        ("codex", Kind::Skill) => Surface::Folder(base.join(".codex/skills")),
+        // Codex reads repository skills from `.agents/skills` (the CWD up to the repo root), not
+        // `.codex/skills`; `capabilities::skill_roots` already lists that folder for a project.
+        ("codex", Kind::Skill) => Surface::Folder(if user { base.join(".codex/skills") } else { base.join(".agents/skills") }),
         ("codex", Kind::Rule) => Surface::Block(if user { base.join(".codex/AGENTS.md") } else { base.join("AGENTS.md") }),
         _ => Surface::Prompt,
     }

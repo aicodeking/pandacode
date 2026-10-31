@@ -474,7 +474,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
         <span class="bp-more"><button type="button" class="icon-button" data-bots-action="more" aria-label="More" title="More" aria-haspopup="menu" aria-expanded="${moreOpen}">${icon('more')}</button>
         ${moreOpen ? `<span class="bp-menu" role="menu"><button type="button" role="menuitem" data-bots-action="reset" aria-label="Reset bot">${icon('reset')}Reset…<small>Forget conversations, memories and schedules</small></button><button type="button" role="menuitem" class="danger" data-bots-action="delete" aria-label="Delete bot">${icon('trash')}Delete…<small>Remove the bot and its channels</small></button></span>` : ''}</span>
       </div></header>
-      ${bot.paused ? '<p class="bots-banner">Paused. Schedules, check-ins and channel messages wait until you resume.</p>' : ''}`;
+      ${bot.paused ? '<p class="bots-banner">Paused. Schedules and check-ins wait until you resume; new messages get a paused reply.</p>' : ''}`;
   }
 
   function badge(id: Nav): string {
