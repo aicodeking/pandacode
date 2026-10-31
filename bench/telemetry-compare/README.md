@@ -67,6 +67,46 @@ Other bundles: `PANDACODE_APP=/path/PandaCode.app`, `T3_APP=/path/T3.app`. `OWNE
 
 `run.mjs` writes `results/<date>.json` and `results/summary.md`, with the home directory written as `~`, the repository as `<repo>` and the user name as `<user>`. `FROM_JSON=results/<date>.json node bench/telemetry-compare/run.mjs` rebuilds the summary from a raw file without launching anything. It only signals processes it launched (SIGTERM to the app, then SIGKILL to anything left of its process tree after 10 s), and kills them on error or Ctrl-C.
 
+## Linux
+
+`run-linux.mjs` runs the same protocol on Linux (5 cold launches per app, alternating order, fresh empty `$HOME`, 60 s idle, SIGTERM then SIGKILL, medians with min–max) against the released AppImages extracted with `--appimage-extract`. Results: [results/linux/summary.md](results/linux/summary.md), raw per-run data in `results/linux/<date>.json`.
+
+What it measures differently, because the macOS tools do not exist there:
+
+| | macOS (`run.mjs`) | Linux (`run-linux.mjs`) |
+| --- | --- | --- |
+| Network | `nettop`, sampled once a second | The app runs in its own network namespace (veth + NAT); `tcpdump` records every packet into `results/linux/pcap/<app>-<run>.pcap`, so there are no sampling gaps and every packet belongs to the app |
+| Host names | Inferred: DNS match of bundle strings, certificate without SNI, reverse DNS | Exact: TLS/QUIC SNI and HTTP Host the app sent, plus the app's own DNS queries and answers (tshark) |
+| Flow → process | nettop | `ss -tunap` inside the namespace every 0.5 s (`?` when a flow opened and closed between samples) |
+| Processes | Probe + macOS responsibility | `/proc` every 150 ms: descendants of the launched pid, plus any process carrying a per-run marker environment variable |
+| Memory | Physical footprint (`footprint`) | PSS from `smaps_rollup`; RSS as on macOS |
+| First window | `CGWindowListCopyWindowInfo` | First visible X11 window ≥100 px tall owned by the tree (`xdotool`), on Xvfb without a window manager |
+| Disk | Fresh `$HOME` + bench-owned `~/Library` caches | Fresh `$HOME` only (both apps follow `$HOME` for their XDG directories) |
+
+```sh
+# Debian/Ubuntu: tools and the libraries the AppImages need
+sudo apt-get install -y tcpdump tshark xdotool x11-utils dbus-x11 xvfb libegl1 libgl1-mesa-dri \
+  libgtk-3-0t64 libnss3 libgbm1 libasound2t64
+./PandaCode-Linux-x86_64.AppImage --appimage-extract && mv squashfs-root pandacode
+./T3-Code-<version>-x86_64.AppImage --appimage-extract && mv squashfs-root t3
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+eval "$(dbus-launch --sh-syntax)"
+
+# Root for the namespace and tcpdump; the apps run as BENCH_USER (default: user)
+sudo -E env DISPLAY=:99 APP_DBUS="$DBUS_SESSION_BUS_ADDRESS" APP_PATH="$PATH" BENCH_USER=$USER \
+  PANDACODE_DIR=$PWD/pandacode PANDACODE_APPIMAGE=$PWD/PandaCode-Linux-x86_64.AppImage PANDACODE_VERSION=0.3.79 \
+  T3_DIR=$PWD/t3 T3_APPIMAGE=$PWD/T3-Code-<version>-x86_64.AppImage T3_VERSION=<version> \
+  node bench/telemetry-compare/run-linux.mjs           # RUNS=5 IDLE_S=60 by default
+```
+
+`ONLY=t3` (or `pandacode`) runs one app. `T3_ENV='K=V …'` / `PANDACODE_ENV` add environment variables to that app's launch, for example `T3_ENV='T3CODE_TELEMETRY_ENABLED=false'`. `NS_DNS` sets the namespace's resolver (default 1.1.1.1). `FROM_JSON=results/linux/<date>.json` rebuilds the summary without launching anything. The script refuses to run without root, and deletes and recreates its namespace (`tcns`) when it starts.
+
+Published Linux run (2026-10-30, cloud VM with 4 vCPU (AMD EPYC) and 8 GB, Debian 13, headless Xvfb; PandaCode 0.3.79, T3 Code 0.1.3-nightly.20261026.3717):
+
+- **Network** matches the macOS findings, now with exact names. PandaCode contacted only `downloads.claude.ai`, `releases.openai.com`, `storage.googleapis.com` (agent CLI version checks, about 9 s) and `github.com` + `release-assets.githubusercontent.com` (app update check, about 31 s). T3 Code contacted `ingest.t3.codes` (about 11.5 s) and `us-east-1.aws.edge.axiom.co` (about 18 KB sent) in 5/5 runs with no sign-in. The two Cloudflare addresses left unidentified on macOS (104.18.34.146, 172.64.153.110) carried SNI `clerk.t3.codes` here (about 284 KB received per launch), and the T3 flow on 104.21.3.218 carried SNI `ingest.t3.codes`; `relay.t3.codes` was not contacted. (Cloudflare addresses are shared, so this identifies what these runs talked to, not necessarily every macOS flow to the same address.) The `claude` CLI T3 Code starts sent about 168 KB to `api.anthropic.com`.
+- **Opt-out** ([results/linux/optout-off/](results/linux/optout-off/), [results/linux/optout-on/](results/linux/optout-on/), T3 Code only): with `T3_ENV='T3CODE_TELEMETRY_ENABLED=false'`, T3 Code neither looked up nor contacted `ingest.t3.codes` or the Axiom host in 3 of 3 runs; in 3 default runs it contacted both every time. `clerk.t3.codes`, the `*.gvt1.com` downloads (about 480 KB; an en-US spell-check dictionary appears in `~/.config/t3code-v2/Dictionaries/`), GitHub, npm and the `claude` CLI's traffic were present either way.
+- **Resources do not all carry over.** Idle CPU (0.17 s against 0.88 s), first window (188 ms against 2,296 ms), data written (2.2 MB against 23.2 MB) and bytes sent (9 KB against 227 KB) favour PandaCode as on macOS. Memory is mixed: PandaCode's RSS was lower (909 MB against 1,015 MB, 0.90) but its PSS was higher (732 MB against 568 MB, 1.29); most of it is the WebKitGTK web process. PSS is not the same metric as macOS physical footprint, so neither ratio is directly comparable to the macOS 0.66. CPU over the whole minute was equal (6.1 s each). The large "tools" CPU on macOS came from probing the many agent CLIs installed there; this VM had fewer installed (claude, codex, grok, opencode and pi were found).
+
 ## What the published run shows
 
 Medians of 5 launches, 60 s each (full table and every flow in [results/summary.md](results/summary.md)):
