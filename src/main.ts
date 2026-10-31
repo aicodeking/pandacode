@@ -77,6 +77,9 @@ import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
 import { isChatProject, NO_PROJECT } from './chats';
+import { CONTEXT_LIMIT, mainContext, parseBtw, readLinks, sideTitle, writeLink, type BtwLink } from './btw';
+import { BtwPanel } from './btw-panel';
+import './btw.css';
 
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
@@ -89,7 +92,7 @@ const state = {
   projectId: '', sessionId: '', messages: [] as Message[], messagesLoading: false, messagesError: '', streams: new Map<string, Stream>(),
   view: (({ board: 'board', github: 'github' } as Record<string, 'board' | 'github'>)[localStorage.getItem('pandacode.view') ?? ''] ?? 'conversation') as WorkspaceView, boardPanel: false,
   sidebarCollapsed: localStorage.getItem('pandacode.sidebarCollapsed') === 'true',
-  query: '', archived: false, inspector: false, inspectorTab: 'files' as 'changes' | 'files' | 'search' | 'browser' | 'pull' | 'simulator' | 'vm' | 'design',
+  query: '', archived: false, inspector: false, inspectorTab: 'files' as 'changes' | 'files' | 'search' | 'browser' | 'pull' | 'simulator' | 'vm' | 'design' | 'btw',
   projectFilter: localStorage.getItem('pandacode.projectFilter') ?? '', collapsedFolders: readCollapsed(localStorage, 'pandacode.collapsedFolders'), expandedFolders: new Set<string>(),
   /** Follow-ups typed while an agent works, per task, in delivery order; mirrored from native storage. */
   queues: new Map<string, QueuedMessage[]>(), queueHolds: new Map<string, HoldReason>(), queueEditing: '', queueBusy: new Set<string>(),
@@ -289,7 +292,7 @@ $app.innerHTML = `<div class="workspace">
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
-  <aside id="inspector" class="inspector" aria-label="Project inspector"><nav class="inspector-tabs" aria-label="Panel views"><button class="selected" data-action="tab-files" aria-label="Files" title="Files">${icon('file')}</button><button data-action="tab-search" aria-label="Search" title="Search">${icon('search')}</button><button data-action="tab-changes" aria-label="Changes" title="Changes">${icon('branch')}<span id="changes-count"></span></button><button data-action="browser" aria-label="Browser" title="Browser">${icon('globe')}</button><button data-action="tab-pull" hidden>${icon('pull')}</button><button data-action="tab-simulator" aria-label="Simulators" title="iOS & Android simulators" ${isMac || isWindows ? '' : 'hidden'}>${icon('phone')}</button><button data-action="tab-vm" aria-label="Virtual machines" title="Virtual machines" ${isMac ? '' : 'hidden'}>${icon('monitor')}</button><button data-action="tab-design" aria-label="Design" title="Design canvas">${icon('sketch')}</button></nav><header class="inspector-heading"><h2 id="inspector-title" class="inspector-title">Files</h2>${button('refresh-inspector', 'Refresh project', 'refresh')}</header><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section></aside>
+  <aside id="inspector" class="inspector" aria-label="Project inspector"><nav class="inspector-tabs" aria-label="Panel views"><button class="selected" data-action="tab-files" aria-label="Files" title="Files">${icon('file')}</button><button data-action="tab-search" aria-label="Search" title="Search">${icon('search')}</button><button data-action="tab-changes" aria-label="Changes" title="Changes">${icon('branch')}<span id="changes-count"></span></button><button data-action="browser" aria-label="Browser" title="Browser">${icon('globe')}</button><button data-action="tab-pull" hidden>${icon('pull')}</button><button data-action="tab-simulator" aria-label="Simulators" title="iOS & Android simulators" ${isMac || isWindows ? '' : 'hidden'}>${icon('phone')}</button><button data-action="tab-vm" aria-label="Virtual machines" title="Virtual machines" ${isMac ? '' : 'hidden'}>${icon('monitor')}</button><button data-action="tab-design" aria-label="Design" title="Design canvas">${icon('sketch')}</button><button data-action="tab-btw" aria-label="By the way" title="By the way: a side thread">${icon('chat')}</button></nav><header class="inspector-heading"><h2 id="inspector-title" class="inspector-title">Files</h2>${button('refresh-inspector', 'Refresh project', 'refresh')}</header><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section></aside>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
 publishSpringEasings();
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
@@ -1206,7 +1209,7 @@ function messageHtml(m: Message): string {
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) folds
 // behind one summary so the transcript reads as what you said, with the payload a click away.
-const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
+const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element|Main thread) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
 function userContent(content: string): string {
   const index = content.search(CONTEXT_BOUNDARY);
   if (index < 0) return escape(content);
@@ -1214,7 +1217,8 @@ function userContent(content: string): string {
   // you attached, so it stays out of the transcript (as in the bot's web chat).
   const blocks = content.slice(index + 2).split(CONTEXT_BOUNDARY).filter(block => !block.startsWith('Bot brief:\n'));
   if (!blocks.length) return escape(content.slice(0, index));
-  return `${escape(content.slice(0, index))}<details class="message-context"><summary>${icon('attach')}Attached context<span>${blocks.length}</span></summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
+  const summary = blocks.length === 1 && blocks[0].startsWith('Main thread context') ? 'Main thread context' : `Attached context<span>${blocks.length}</span>`;
+  return `${escape(content.slice(0, index))}<details class="message-context"><summary>${icon('attach')}${summary}</summary><pre>${escape(blocks.join('\n\n'))}</pre></details>`;
 }
 type ToolView = { open: boolean; rawOpen: boolean; controls: { selector: string; top: number; left: number; focused: boolean }[] };
 function captureTools(root: ParentNode): Map<string, ToolView> {
@@ -1904,7 +1908,7 @@ function removeDeletedSessions(ids: string[]): void {
   terminalPanel.forget(ids);
   const removed = new Set(ids);
   for (const id of removed) {
-    deletedSessions.add(id);
+    deletedSessions.add(id); writeLink(localStorage, id, null);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -2016,6 +2020,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       if (!answer) throw new Error('There is no agent response to copy yet.');
       await navigator.clipboard.writeText(answer.content); notify('Response copied'); break;
     }
+    case 'btw': { const refusal = btwRefusal(task); if (refusal) throw new Error(refusal); openBtw(); if (argumentsText) await sendBtw(argumentsText); else btwPanel.focus(); break; }
     case 'pwd': modal('Working directory', `<p class="dialog-description">${escape(workspacePath())}</p>`); break;
     default: throw new Error('This command is not available in PandaCode yet.');
   }
@@ -2038,6 +2043,7 @@ function clearComposer(s: Session): void {
 }
 /** Queues the composer's message to send when the agent finishes. */
 async function enqueueFromComposer(): Promise<void> {
+  if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   const { text, items } = composerPayload(s);
   if (!text && !items.length) return;
@@ -2101,6 +2107,7 @@ function steerStateHtml(m: Message): string {
 }
 /** Sends the composer's text into the running turn; anything that cannot steer is queued instead. */
 async function steerFromComposer(): Promise<void> {
+  if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   const { text, items } = composerPayload(s);
   if (!text) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
@@ -2265,6 +2272,7 @@ async function fileContext(s: Session, path: string): Promise<string> {
   return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}${content.length > 32768 ? '\n[Context truncated at 32 KiB]' : ''}\n\`\`\``;
 }
 async function send(): Promise<void> {
+  if (btwFromComposer()) return;
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!text || !s || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   const target = !s.remoteDevice && newTaskView() ? remoteTargets.find(item => item.deviceId === remoteChoice) : undefined;
@@ -2367,6 +2375,121 @@ async function send(): Promise<void> {
     throw error;
   } finally { pendingPromptActivity.delete(s.id); configuringSessions.delete(s.id); }
 }
+// /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
+const btwPanel = new BtwPanel({
+  call, report, userHtml: content => userContent(content),
+  side: () => { const link = btwLink(state.sessionId), side = link && state.sessions.find(task => task.id === link.sideId); return side && { session: side, hiddenThrough: link.hiddenThrough ?? 0 }; },
+  live: sideId => {
+    const live = state.streams.get(sideId), status = state.sessions.find(task => task.id === sideId)?.status;
+    return { text: live?.text ?? '', running: isRunning(sideId), waiting: Boolean(live?.approvals.size || live?.inputs.size) || status === 'waiting' || status === 'waiting_approval' };
+  },
+  mainRunning: () => isRunning(),
+  send: text => sendBtw(text),
+  openFull: sideId => run(selectSession(sideId, true)),
+  newThread: () => { writeLink(localStorage, state.sessionId, null); renderInspector(); btwPanel.focus(); },
+  close: () => { state.inspector = false; renderInspector(); },
+  insertMain: text => {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (!prompt) return;
+    prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${text}` : text; state.drafts.set(state.sessionId, prompt.value); resizePrompt();
+  },
+});
+/** The side thread linked to a main thread. An archived or unlisted one is not reused (the next /btw
+ *  starts fresh); the link is never erased here, since a session list can briefly lag a new side thread. */
+function btwLink(mainId: string): BtwLink | undefined {
+  const link = readLinks(localStorage)[mainId];
+  const side = link && state.sessions.find(task => task.id === link.sideId);
+  return side && !side.archived ? link : undefined;
+}
+function openBtw(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
+/** Why this task cannot open a side thread, if it cannot. */
+function btwRefusal(main: Session): string {
+  if (main.remoteDevice || main.cloud) return 'Side threads run on this computer, and this task runs elsewhere.';
+  if (botProjects.has(main.projectId)) return 'Bot conversations cannot open side threads. Ask in a project task instead.';
+  return '';
+}
+/** `/btw …` in the main prompt goes to the side thread, never to the main thread's queue or steer. */
+function btwFromComposer(): boolean {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), s = session();
+  const text = prompt && s ? parseBtw(prompt.value) : null;
+  if (text === null || !prompt || !s) return false;
+  const refusal = btwRefusal(s);
+  if (refusal) { notify(refusal); return true; }
+  if (text && (composerPayload(s).items.length || state.browserAttachments.get(s.id)?.length || state.moodboardAttachments.get(s.id)?.length)) {
+    notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
+  }
+  prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
+  if (!text) { btwPanel.focus(); return true; }
+  run(sendBtw(text).catch(error => {
+    const current = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (current?.dataset.sessionId === s.id && !current.value) { current.value = `/btw ${text}`; resizePrompt(); }
+    else if (!state.drafts.get(s.id)) state.drafts.set(s.id, `/btw ${text}`);
+    throw error;
+  }));
+  return true;
+}
+/** A new side thread in the main thread's project, harness, model and checkout. */
+async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
+  let side: Session, link: BtwLink;
+  if (main.worktreePath) {
+    // Only a fork keeps a worktree checkout; its copied transcript stays hidden in the panel.
+    const page = await call<MessagePage>('get_messages', { sessionId: main.id });
+    const last = [...page.messages].reverse().find(m => m.id > 0 && (m.role === 'user' || m.role === 'assistant'));
+    if (!last) throw new Error('Send a first message in this task before asking on the side.');
+    side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
+    const copied = await call<MessagePage>('get_messages', { sessionId: side.id });
+    link = { sideId: side.id, seenId: last.id, hiddenThrough: Math.max(0, ...copied.messages.map(m => m.id)) };
+  } else {
+    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode });
+    link = { sideId: side.id, seenId: 0 };
+  }
+  const title = sideTitle(prompt);
+  await call('update_session', { sessionId: side.id, title });
+  state.sessions = [{ ...side, title }, ...state.sessions.filter(task => task.id !== side.id)];
+  writeLink(localStorage, main.id, link); renderNavigation();
+  return link;
+}
+/** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
+const btwSending = new Map<string, Promise<void>>();
+function sendBtw(text: string): Promise<void> {
+  const main = session(); if (!main) return Promise.resolve();
+  const refusal = btwRefusal(main);
+  if (refusal) return Promise.reject(new Error(refusal));
+  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text));
+  btwSending.set(main.id, next);
+  void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); });
+  return next;
+}
+/** Sends to the side thread with the main thread's news since its last message. */
+async function deliverBtw(main: Session, text: string): Promise<void> {
+  const link = btwLink(main.id) ?? await createBtw(main, text);
+  const side = state.sessions.find(task => task.id === link.sideId)!;
+  if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
+  // Running from here on: no second send can pass the check above, and a failure below tears down only this run.
+  stream(side.id).status = 'Starting agent'; side.status = 'running';
+  const showing = () => state.sessionId === main.id && state.inspectorTab === 'btw';
+  if (showing()) renderInspector();
+  let sentLink: BtwLink | undefined;
+  try {
+    const page = await call<MessagePage>('get_messages', { sessionId: main.id });
+    const strip = (content: string) => { const index = content.search(CONTEXT_BOUNDARY); return index < 0 ? content : content.slice(0, index); };
+    // Only the newest page came back: older unseen history is reported as left out.
+    const gap = page.hasOlder && (page.messages[0]?.id ?? 0) > link.seenId;
+    const context = mainContext({ title: main.title, status: isRunning(main.id) ? 'running' : main.status },
+      page.messages.map(m => ({ ...m, content: m.role === 'user' ? strip(m.content) : m.content })), link.seenId, state.streams.get(main.id)?.text ?? '', CONTEXT_LIMIT, gap);
+    const content = text + context.text;
+    sentLink = { ...link, seenId: context.seenId };
+    writeLink(localStorage, main.id, sentLink);
+    if (showing()) btwPanel.sent(side.id, content);
+    await call('send_message', { sessionId: side.id, text: content, imageIds: [], moodboardIds: [] });
+  } catch (error) {
+    state.streams.delete(side.id); side.status = 'idle';
+    // Roll back only our own write; a New side thread chosen meanwhile stays.
+    const current = readLinks(localStorage)[main.id];
+    if (sentLink && current?.sideId === sentLink.sideId && current.seenId === sentLink.seenId) writeLink(localStorage, main.id, link);
+    if (showing()) { renderInspector(); void btwPanel.reload(); }
+    throw error;
+  }
+}
 async function finishResponse(sessionId: string, finishing: FinishingStream): Promise<void> {
   const current = () => finishingStreams.get(sessionId) === finishing && !state.streams.has(sessionId);
   finishing.error = undefined; finishing.stream.revision++;
@@ -2415,6 +2538,7 @@ function completeTurnChanges(event: AgentEvent): void {
   }
 }
 function onAgent(event: AgentEvent): void {
+  queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
   if (botsView) queueMicrotask(() => botsView?.agent(event.sessionId, event.kind));
   if ((event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
   if (deletedSessions.has(event.sessionId)) return;
@@ -2683,7 +2807,7 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   }
   throw new Error('Unknown app action.');
 }
-const INSPECTOR_TITLES: Record<typeof state.inspectorTab, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design' };
+const INSPECTOR_TITLES: Record<typeof state.inspectorTab, string> = { files: 'Files', search: 'Search', changes: 'Changes', browser: 'Browser', pull: 'Pull request', simulator: 'Simulators', vm: 'Virtual machines', design: 'Design', btw: 'By the way' };
 function renderInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
@@ -2715,6 +2839,8 @@ function renderInspector(): void {
   const target = $('#inspector-content');
   if (state.inspectorTab === 'pull' && pullTask && visible) { pullView.show(target, pullTask); return; }
   pullView.dispose();
+  if (state.inspectorTab === 'btw' && visible) { btwPanel.show(target); return; }
+  btwPanel.dispose();
   if (!project()) { target.innerHTML = '<div class="inspector-empty">Open a project to browse files and review changes.</div>'; return; }
   const remote = session()?.remoteDevice;
   if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
@@ -3822,6 +3948,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'terminal': await toggleTerminal(); break;
     case 'toggle-inspector': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;
     case 'tab-vm': openVm(); break;
+    case 'tab-btw': openBtw(); btwPanel.focus(); break;
     case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
@@ -3831,7 +3958,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
-    case 'refresh-inspector': if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
+    case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
     case 'open-folder': state.filePath = element.dataset.path!; await refreshInspector(); break;
     case 'parent-folder': state.filePath = state.filePath.split('/').slice(0, -1).join('/'); await refreshInspector(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;

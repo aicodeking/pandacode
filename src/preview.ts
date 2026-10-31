@@ -583,6 +583,7 @@ function slashCatalog(provider: ProviderId) {
     ['mcp', 'Show configured integrations', 'integrations'],
     ['resume', 'Choose a conversation to continue', provider === 'codex' ? 'conversations' : 'resume'],
     ['rename', 'Rename this task', 'rename'],
+    ['btw', 'Ask on the side while this task keeps working', 'btw'],
     ['copy', 'Copy the latest agent response', 'copy'],
     ['pwd', 'Show the working directory', 'pwd'],
     ['console', 'Open the harness console', 'console'],
@@ -591,7 +592,7 @@ function slashCatalog(provider: ProviderId) {
     ['goal', 'Manage the task goal and token budget', 'goal'], ['usage', 'Inspect Codex account usage', 'usage'],
     ['hooks', 'Inspect lifecycle hooks', 'hooks'], ['import', 'Choose setup to import', 'imports'],
     ['plugins', 'Inspect installed plugins', 'plugins'], ['fork', 'Continue in a separate task', 'fork'],
-    ['side', 'Continue in a separate task', 'fork'], ['btw', 'Continue in a separate task', 'fork'],
+    ['side', 'Continue in a separate task', 'fork'],
     ['archive', 'Archive this task', 'archive'], ['delete', 'Delete this task', 'delete'],
     ['export', 'Export this conversation', 'export'], ['worktree', 'Create a worktree task', 'worktree'],
     ['plan', 'Choose collaboration mode', 'plan'], ['fast', 'Choose service tier', 'fast'],
@@ -602,10 +603,10 @@ function slashCatalog(provider: ProviderId) {
     ['memories', 'Configure memory preferences', 'preferences'], ['ps', 'Inspect background jobs', 'jobs'],
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
-  const accepts = new Set(['rename', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
+  const accepts = new Set(['rename', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
   const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pandacode:${name}`, name: `/${name}`, description, kind: 'action', source: 'PandaCode', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
   const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
-  const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
+  const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {

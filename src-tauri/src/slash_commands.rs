@@ -518,6 +518,12 @@ const LOCAL_ACTIONS: &[(&str, &str, &str, Option<&str>)] = &[
     ("/mcp", "Show configured integrations", "integrations", None),
     ("/resume", "Search and switch tasks", "resume", None),
     ("/rename", "Rename this task", "rename", Some("<title>")),
+    (
+        "/btw",
+        "Ask on the side while this task keeps working",
+        "btw",
+        Some("<question>"),
+    ),
     ("/copy", "Copy the latest agent response", "copy", None),
     ("/pwd", "Show this task’s working directory", "pwd", None),
     (
@@ -551,6 +557,7 @@ fn is_local_control(name: &str) -> bool {
             | "/theme"
             | "/resume"
             | "/rename"
+            | "/btw"
             | "/copy"
             | "/pwd"
             | "/diff"
@@ -725,6 +732,7 @@ fn action_accepts_arguments(action: &str) -> bool {
         || matches!(
             action,
             "rename"
+                | "btw"
                 | "goal"
                 | "usage"
                 | "conversations"
@@ -793,6 +801,24 @@ mod tests {
         assert_eq!(split_command("/Users/me/src is the project"), None);
         assert_eq!(split_command("Read /file"), None);
         assert_eq!(split_command("/"), None);
+    }
+
+    #[test]
+    fn btw_is_the_app_side_thread_for_every_harness() {
+        for provider in ["claude", "codex", "kimi"] {
+            let mut value = native_catalog(&["/btw"]);
+            if provider == "kimi" {
+                apply_terminal_names(&mut value, &HashSet::from(["/btw".into()]));
+            }
+            normalize(&mut value, provider);
+            assert!(
+                matches!(&command(&value, "/btw").invocation, Invocation::Action(action) if action == "btw"),
+                "{provider}"
+            );
+            let result = resolve_from_catalog(provider, "/btw what changed?", &value).unwrap();
+            assert_eq!(result.action.as_deref(), Some("btw"));
+            assert_eq!(result.arguments, "what changed?");
+        }
     }
 
     #[test]
@@ -1147,13 +1173,14 @@ mod tests {
             "/new",
             "/theme",
             "/rename",
+            "/btw",
             "/compact",
             "/review",
             "/help",
             "/status",
         ]);
         normalize(&mut value, "claude");
-        for name in ["/model", "/permissions", "/new", "/theme", "/rename"] {
+        for name in ["/model", "/permissions", "/new", "/theme", "/rename", "/btw"] {
             assert!(matches!(
                 command(&value, name).invocation,
                 Invocation::Action(_)
@@ -1226,6 +1253,7 @@ mod tests {
     #[test]
     fn each_argument_aware_app_route_preserves_user_input() {
         for action in [
+            "btw",
             "goal",
             "usage",
             "conversations",
