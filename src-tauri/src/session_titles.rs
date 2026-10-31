@@ -389,7 +389,7 @@ mod tests {
         let run = start(&db, &sid, "Repair Windows startup paths");
         run.suggest(json!({"title":"Automatic replacement"}))
             .unwrap();
-        db.update(&sid, Some(run.original.clone()), None, None, None)
+        db.update(&sid, Some(run.original.clone()), None, None, None, None)
             .unwrap();
         assert!(!complete(&db, &run));
         assert_eq!(db.session(&sid).unwrap().title, run.original);
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn explicitly_named_board_and_placeholder_titles_are_protected() {
         let (db, sid) = task();
-        db.update(&sid, Some("New conversation".into()), None, None, None)
+        db.update(&sid, Some("New conversation".into()), None, None, None, None)
             .unwrap();
         let id = db.begin_task_turn(&sid, "A very different title").unwrap();
         assert_eq!(db.session(&sid).unwrap().title, "New conversation");
@@ -476,7 +476,7 @@ mod tests {
             let first = start(&db, &sid, "Repair Windows startup paths");
             complete(&db, &first);
             if manual {
-                db.update(&sid, Some("My investigation".into()), None, None, None)
+                db.update(&sid, Some("My investigation".into()), None, None, None, None)
                     .unwrap();
             }
             let fork = crate::conversation_fork::at_message(&db, &sid, first.turn).unwrap();
@@ -524,6 +524,7 @@ mod tests {
         db.update(
             &auto.id,
             Some("User chooses this title".into()),
+            None,
             None,
             None,
             None,
@@ -667,7 +668,7 @@ mod tests {
                 "command" => db.begin_task_turn(&sid, "/review all changes").unwrap(),
                 "maintenance" => 0,
                 _ => {
-                    db.update(&sid, Some("My rollout".into()), None, None, None).unwrap();
+                    db.update(&sid, Some("My rollout".into()), None, None, None, None).unwrap();
                     db.begin_task_turn(&sid, "Continue from where you left off.").unwrap()
                 }
             };

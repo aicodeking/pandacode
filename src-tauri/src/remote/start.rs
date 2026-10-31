@@ -76,6 +76,7 @@ pub(crate) struct Start {
     pub provider: String,
     pub model: String,
     pub mode: Option<String>,
+    pub auto_writes: Option<bool>,
     pub effort: Option<String>,
     /// Images the viewer sent with `image.put` for the first prompt.
     pub image_ids: Vec<String>,
@@ -109,6 +110,7 @@ pub(crate) fn parse(params: &Value) -> Result<Start> {
         provider: name_param(params, "provider")?.ok_or("Missing provider.")?,
         model: name_param(params, "model")?.ok_or("Missing model.")?,
         mode: name_param(params, "mode")?,
+        auto_writes: params["autoWrites"].as_bool(),
         effort: name_param(params, "effort")?,
         image_ids: super::images::ids_param(params)?,
     })
@@ -680,6 +682,9 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
             if start.effort.is_some() {
                 store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
             }
+            if start.auto_writes.is_some() {
+                store.update(&task.id, None, None, None, None, start.auto_writes)?;
+            }
             Ok(task)
         })
     };
@@ -775,6 +780,22 @@ mod tests {
             params[key] = bad;
             assert!(parse(&params).is_err(), "{key}");
         }
+    }
+
+    #[test]
+    fn a_start_can_ask_for_auto_approved_writes() {
+        let ok = json!({"repo": "orbit-labs/orbit", "prompt": "go", "provider": "claude", "model": "sonnet", "autoWrites": true});
+        assert_eq!(parse(&ok).unwrap().auto_writes, Some(true));
+        let plain = json!({"repo": "orbit-labs/orbit", "prompt": "go", "provider": "claude", "model": "sonnet"});
+        assert_eq!(parse(&plain).unwrap().auto_writes, None);
+        // The host stores the flag on the session it creates, the way effort is applied.
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = crate::architect::profiles::create_user_task(&store, &project.id, "claude", "sonnet", None, None).unwrap();
+        store.update(&task.id, None, None, None, None, Some(true)).unwrap();
+        assert!(store.session(&task.id).unwrap().auto_writes);
+        let quiet = crate::architect::profiles::create_user_task(&store, &project.id, "claude", "sonnet", None, None).unwrap();
+        assert!(!store.session(&quiet.id).unwrap().auto_writes, "absent keeps the default off");
     }
 
     #[test]

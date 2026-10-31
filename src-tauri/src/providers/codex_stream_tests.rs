@@ -7,6 +7,7 @@ fn protocol() -> Protocol {
         model: "default".into(),
         reasoning_effort: None,
         mode: "ask".into(),
+        auto_writes: false,
         cwd: PathBuf::from("/tmp"),
         resume_id: None,
         prompt: "Explain this project".into(),
@@ -230,4 +231,78 @@ fn reasoning_summary_deltas_surface_as_thinking_events() {
         }
     }
     assert_eq!(thinking, "Plan\n\nAct");
+}
+
+/// The per-task "Auto-approve writes" toggle answers command and file-change
+/// approvals itself in Standard mode: the accept response goes straight back
+/// and no approval event reaches the user.
+#[test]
+fn auto_writes_pre_accepts_command_and_file_change_approvals_in_ask_mode() {
+    for (id, method, mut params) in [
+        (
+            json!(41),
+            "item/commandExecution/requestApproval",
+            json!({"itemId":"c1","command":"npm test","callId":"call-1"}),
+        ),
+        (
+            json!(42),
+            "item/fileChange/requestApproval",
+            json!({"itemId":"f1","changes":[{"op":"write","path":"src/main.rs"}]}),
+        ),
+    ] {
+        let mut p = protocol();
+        p.config.auto_writes = true;
+        params["threadId"] = json!("main");
+        params["turnId"] = json!("turn-main");
+        let step = p
+            .receive(json!({"id":id,"method":method,"params":params}))
+            .unwrap();
+        assert_eq!(
+            step.write,
+            vec![json!({"id":id,"result":{"decision":"accept"}})],
+            "{method}"
+        );
+        assert!(
+            step.events.iter().all(|event| event.kind != "approval"),
+            "{method} must not ask"
+        );
+        assert!(p.pending.is_empty(), "{method} leaves nothing pending");
+    }
+}
+
+/// Escalations still ask, and "Approve for me" keeps its reviewer: only
+/// Standard mode pre-accepts.
+#[test]
+fn auto_writes_keeps_escalations_and_the_auto_reviewer_asking() {
+    let mut p = protocol();
+    p.config.auto_writes = true;
+    let permissions = json!({"fileSystem":{"write":["/tmp"]}});
+    let step = p
+        .receive(json!({"id":43,"method":"item/permissions/requestApproval","params":{"threadId":"main","turnId":"turn-main","itemId":"p1","reason":"Work outside the sandbox","permissions":permissions}}))
+        .unwrap();
+    assert!(step.write.is_empty(), "escalations wait for the user");
+    let approval = step
+        .events
+        .iter()
+        .find(|event| event.kind == "approval")
+        .expect("escalation reaches the user");
+    let request_id = approval.request_id.as_ref().unwrap();
+    assert_eq!(
+        p.approve(request_id, true).unwrap(),
+        json!({"id":43,"result":{"permissions":permissions,"scope":"turn"}})
+    );
+    let mut p = protocol();
+    p.config.mode = "auto".into();
+    p.config.auto_writes = true;
+    let step = p
+        .receive(json!({"id":44,"method":"item/commandExecution/requestApproval","params":{"threadId":"main","turnId":"turn-main","itemId":"c2","command":"rm -rf build","callId":"call-2"}}))
+        .unwrap();
+    assert!(
+        step.write.is_empty(),
+        "auto mode (Approve for me) never pre-accepts"
+    );
+    assert!(step
+        .events
+        .iter()
+        .any(|event| event.kind == "approval"));
 }

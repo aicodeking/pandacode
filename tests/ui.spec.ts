@@ -1171,8 +1171,8 @@ test('updates permissions after leaving and reselecting a task while the save is
 });
 
 for (const configuration of [
-  { provider: 'Claude Code', sessionId: 'session-1', labels: ['Standard', 'Accept edits', 'Approve for me', 'Plan mode', 'Full access'], selected: 'Plan mode', mode: 'plan' },
-  { provider: 'Codex', sessionId: 'session-2', labels: ['Standard', 'Approve for me', 'Read only', 'Full access'], selected: 'Approve for me', mode: 'auto' },
+  { provider: 'Claude Code', sessionId: 'session-1', labels: ['Standard', 'Accept edits', 'Approve for me', 'Plan mode', 'Full access', 'Auto-approve write requests'], selected: 'Plan mode', mode: 'plan' },
+  { provider: 'Codex', sessionId: 'session-2', labels: ['Standard', 'Approve for me', 'Read only', 'Full access', 'Auto-approve write requests'], selected: 'Approve for me', mode: 'auto' },
   { provider: 'Kimi Code', sessionId: 'session-3', labels: ['Standard', 'Ask when needed', 'Plan mode', 'Full access'], selected: 'Full access', mode: 'full' },
 ]) {
   test(`shows supported ${configuration.provider} approval behaviours and remembers the selection for its task`, async ({ page }) => {

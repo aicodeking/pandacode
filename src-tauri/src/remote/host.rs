@@ -145,7 +145,7 @@ pub(crate) enum Call {
     PutImage(images::Chunk),
     Stop { session_id: String },
     Steer { session_id: String, text: String },
-    Configure { session_id: String, model: Option<(String, String)>, effort: Option<Option<String>>, mode: Option<String> },
+    Configure { session_id: String, model: Option<(String, String)>, effort: Option<Option<String>>, mode: Option<String>, auto_writes: Option<bool> },
     Approve { session_id: String, request_id: String, approve: bool },
     Answer { session_id: String, request_id: String, response: Value },
     Pull { session_id: String },
@@ -408,7 +408,8 @@ fn configure(params: &Value) -> Result<Call> {
         _ => return Err("Send a provider with the model.".into()),
     };
     let effort = params.get("effort").map(|_| name_param(params, "effort")).transpose()?;
-    Ok(Call::Configure { session_id: id_param(params, "sessionId")?, model, effort, mode: name_param(params, "mode")? })
+    let auto_writes = params.get("autoWrites").map(|value| value.as_bool().ok_or_else(|| "Invalid autoWrites.".to_string())).transpose()?;
+    Ok(Call::Configure { session_id: id_param(params, "sessionId")?, model, effort, mode: name_param(params, "mode")?, auto_writes })
 }
 
 /// Validates a request. Everything is refused while hosting is off.
@@ -1495,13 +1496,16 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
             message_queue::steer_task(app.clone(), state, session_id, text).await
         }
-        Call::Configure { session_id, model, effort, mode } => {
+        Call::Configure { session_id, model, effort, mode, auto_writes } => {
             allow_task_mode(&local_task(&state, &session_id).await?.mode, mode.as_deref(), full_access)?;
             if let Some((provider, _)) = &model {
                 start::require_installed(provider).await?;
             }
             if let Some(mode) = mode {
-                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode)).await?;
+                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, Some(mode), None).await?;
+            }
+            if let Some(auto_writes) = auto_writes {
+                crate::update_session(app.clone(), state.clone(), session_id.clone(), None, None, None, None, Some(auto_writes)).await?;
             }
             if let Some((provider, model)) = model {
                 crate::configure_session(app.clone(), state.clone(), session_id.clone(), provider, model, None).await?;
@@ -3687,9 +3691,10 @@ mod tests {
         assert!(parse(true, "image.put", &json!({"uploadId": "u1", "index": 0, "size": 6 * 1024 * 1024, "data": "iVBO"})).is_err());
         assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": 7})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 7, limit: PAGE_ROWS }, budget: PAGE_BUDGET }));
         assert_eq!(parse(true, "task.messages", &json!({"sessionId": "s1", "afterId": -3})), Ok(Call::Messages { session_id: "s1".into(), page: MessagePaging::After { after_id: 0, limit: PAGE_ROWS }, budget: PAGE_BUDGET }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "effort": null})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: Some(None), mode: None }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "mode": "ask"})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: Some("ask".into()) }));
-        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "provider": "codex", "model": "gpt"})), Ok(Call::Configure { session_id: "s1".into(), model: Some(("codex".into(), "gpt".into())), effort: None, mode: None }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "effort": null})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: Some(None), mode: None, auto_writes: None }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "mode": "ask"})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: Some("ask".into()), auto_writes: None }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "provider": "codex", "model": "gpt"})), Ok(Call::Configure { session_id: "s1".into(), model: Some(("codex".into(), "gpt".into())), effort: None, mode: None, auto_writes: None }));
+        assert_eq!(parse(true, "task.configure", &json!({"sessionId": "s1", "autoWrites": true})), Ok(Call::Configure { session_id: "s1".into(), model: None, effort: None, mode: None, auto_writes: Some(true) }));
         assert!(parse(true, "task.configure", &json!({"sessionId": "s1", "model": "gpt"})).is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "x".repeat(MAX_TEXT + 1)})).is_err());
         assert!(parse(true, "task.send", &json!({"sessionId": "s1", "text": "  "})).is_err());

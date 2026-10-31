@@ -868,6 +868,7 @@ async fn set_reasoning_effort(
         .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -876,14 +877,18 @@ async fn update_session(
     archived: Option<bool>,
     model: Option<String>,
     mode: Option<String>,
+    auto_writes: Option<bool>,
 ) -> Result<()> {
     // A mirror's permissions are its host's; the local row follows below.
     if let Some(mode) = &mode {
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
     }
+    if let Some(auto_writes) = auto_writes {
+        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"autoWrites": auto_writes})).await?;
+    }
     if let Some(title) = title
         .as_deref()
-        .filter(|_| model.is_none() && mode.is_none() && archived.is_none())
+        .filter(|_| model.is_none() && mode.is_none() && archived.is_none() && auto_writes.is_none())
     {
         let task = state
             .store
@@ -895,7 +900,7 @@ async fn update_session(
         }
     }
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
-    if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
+    if (model.is_some() || mode.is_some() || auto_writes.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
     let restored = archived == Some(false);
@@ -903,7 +908,7 @@ async fn update_session(
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
+        .update(&session_id, title, archived, model, mode, auto_writes)?;
     drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
@@ -1629,6 +1634,7 @@ fn prepare_task_run_in_project(
         model: session.model,
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
+        auto_writes: session.auto_writes,
         cwd,
         resume_id: session.resume_id,
         prompt,
@@ -1685,6 +1691,7 @@ fn prepare_cloud_attach(
         model: session.model,
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
+        auto_writes: session.auto_writes,
         cwd,
         resume_id: session.resume_id,
         prompt: String::new(),

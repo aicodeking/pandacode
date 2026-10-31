@@ -157,7 +157,7 @@ fn goal_maintenance_adds_no_user_turn_and_preserves_the_previous_stage() {
     assert!(store.messages(&task.id, None).unwrap().is_empty());
     assert_eq!(store.session(&task.id).unwrap().task_stage, "pending");
     store
-        .update(&task.id, None, Some(true), None, None)
+        .update(&task.id, None, Some(true), None, None, None)
         .unwrap();
     assert!(store.begin_goal_operation(&task.id).is_err());
 }

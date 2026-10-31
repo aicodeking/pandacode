@@ -285,7 +285,7 @@ fn task_row(store: &Store, draft: Option<&str>, project_id: &str, harness: &str,
     if !created {
         store.configure(&id, harness, model, None)?;
         if let Some(mode) = mode {
-            store.update(&id, None, None, None, Some(mode.to_owned()))?;
+            store.update(&id, None, None, None, Some(mode.to_owned()), None)?;
         }
     }
     if effort.is_some() {

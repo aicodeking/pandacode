@@ -75,6 +75,10 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
+/// Write-class tools answered by the per-task auto-approve-writes toggle in Standard and
+/// Accept edits modes. Reads, questions and Plan mode still ask; the allowlist is explicit
+/// so a `!plan_read_only` shortcut can never wave through reads of credential paths.
+const AUTO_WRITE_TOOLS: &[&str] = &["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "TodoWrite"];
 
 /// A frame buffer grown past 1 MiB by one large message gives the memory back once drained.
 fn should_shrink(len: usize, capacity: usize) -> bool {
@@ -125,6 +129,7 @@ pub struct RunConfig {
     pub model: String,
     pub reasoning_effort: Option<String>,
     pub mode: String,
+    pub auto_writes: bool,
     pub cwd: PathBuf,
     pub resume_id: Option<String>,
     pub prompt: String,
@@ -2013,8 +2018,15 @@ impl Protocol {
                 }
             },
             "item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval" => {
-                let label=if params["command"].is_string() { string(params,"command") } else if params["reason"].is_string() {string(params,"reason")} else {"Allow this agent action?".into()};
-                self.approval(value,label,&mut step)?;
+                // The task's auto-approve-writes toggle accepts command and file-change
+                // approvals in Standard mode itself; escalations and the Approve-for-me
+                // reviewer (auto mode) still reach the user.
+                if self.config.auto_writes && self.config.mode == "ask" && method != "item/permissions/requestApproval" {
+                    step.write.push(json!({"id":value["id"],"result":{"decision":"accept"}}));
+                } else {
+                    let label=if params["command"].is_string() { string(params,"command") } else if params["reason"].is_string() {string(params,"reason")} else {"Allow this agent action?".into()};
+                    self.approval(value,label,&mut step)?;
+                }
             },
             "turn/completed" => {
                 self.goal_turn_completed(params, &mut step)?;
@@ -2218,7 +2230,15 @@ impl Protocol {
                 if update["sessionUpdate"] == "available_commands_update" { self.commands_changed(&value, &mut step); }
                 if update["sessionUpdate"] == "config_option_update" { self.kimi_config_options(update); }
                 // session/load can replay history before its response; UI already owns that history.
-                if self.phase==0{return Ok(step);}
+                // Keep replayed tool names cached without events: DeepSeek names its edits in the
+                // tool call's title, and the permission request that follows carries only a kind.
+                if self.phase==0{
+                    if matches!(string(update,"sessionUpdate").as_str(), "tool_call"|"tool_call_update") {
+                        let mut cached=Step::default();
+                        self.kimi_tool(update,&mut cached);
+                    }
+                    return Ok(step);
+                }
                 match string(update,"sessionUpdate").as_str() {
                     "usage_update"=>{if let Some(used)=update["used"].as_u64() {self.usage(used,update["size"].as_u64(),&mut step);}},
                     "agent_message_chunk"=>{
@@ -2557,6 +2577,10 @@ impl Protocol {
                     } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
                         // Plan mode investigates: reads and web lookups anywhere run;
                         // Claude's own deny rules were applied before it asked.
+                        step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
+                    } else if self.config.auto_writes && matches!(self.config.mode.as_str(), "ask" | "auto") && AUTO_WRITE_TOOLS.contains(&name.as_str()) {
+                        // The task's auto-approve-writes toggle answers write tools itself;
+                        // reads, questions and restricted modes fall through and keep asking.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else {
                         self.approval(
@@ -3389,6 +3413,7 @@ mod tests {
             model: "default".into(),
             reasoning_effort: None,
             mode: "ask".into(),
+            auto_writes: false,
             cwd: PathBuf::from("/tmp"),
             resume_id: None,
             prompt: "Explain this project".into(),
@@ -4756,6 +4781,7 @@ mod tests {
                 model: model.clone(),
                 reasoning_effort: None,
                 mode: "ask".into(),
+                auto_writes: false,
                 cwd: root.clone(),
                 resume_id: resume.clone(),
                 prompt: prompt.into(),

@@ -171,14 +171,14 @@ fn version_36_adds_machine_threads() {
         store.db.execute_batch("DROP TABLE machine_threads; ALTER TABLE sessions DROP COLUMN restart_interrupted; ALTER TABLE sessions DROP COLUMN stop_requested; PRAGMA user_version=35;").unwrap();
     }
     let store = Store::open(&path).unwrap();
-    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (36, 36));
+    assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (37, 37));
     let columns: i64 = store.db.query_row("SELECT (SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('restart_interrupted','stop_requested'))+(SELECT COUNT(*) FROM pragma_table_info('machine_threads') WHERE name='reported_by')", [], |r| r.get(0)).unwrap();
     assert_eq!(columns, 3);
     // Running the step again (a half-applied upgrade) changes nothing.
     store.db.execute_batch("PRAGMA user_version=35;").unwrap();
     drop(store);
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
     let indexed: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='machine_threads_parent')", [], |r| r.get(0)).unwrap();
     assert!(indexed);
     let project = store.add_project(&std::env::temp_dir()).unwrap();

@@ -606,11 +606,11 @@ fn mutate_task(
     }
     match name {
         "pandacode_rename_task" => {
-            store.update(id, Some(string(args, "title")), None, None, None)?;
+            store.update(id, Some(string(args, "title")), None, None, None, None)?;
             Ok(json!({"renamed":true}))
         }
         "pandacode_archive_task" => {
-            store.update(id, None, args["archived"].as_bool(), None, None)?;
+            store.update(id, None, args["archived"].as_bool(), None, None, None)?;
             Ok(json!({"updated":true}))
         }
         "pandacode_set_task_stage" => {

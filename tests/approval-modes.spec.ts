@@ -6,6 +6,11 @@ const savedPermission = (page: Page) => page.evaluate(async () => {
   const id = document.querySelector<HTMLElement>('.task-item.selected')?.dataset.id;
   return id ? (await invoke('get_task', { sessionId: id }))?.mode : undefined;
 });
+const savedAutoWrites = (page: Page) => page.evaluate(async () => {
+  const { invoke } = await import((window as any).__pandacodePreviewUrl);
+  const id = document.querySelector<HTMLElement>('.task-item.selected')?.dataset.id;
+  return id ? (await invoke('get_task', { sessionId: id }))?.autoWrites : undefined;
+});
 
 test.beforeEach(async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
@@ -20,7 +25,7 @@ test('offers Approve for me to Claude Code and keeps it with the task', async ({
   const trigger = page.locator('#mode-picker-trigger');
   const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
   await trigger.click();
-  await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(6);
   await menu.getByRole('menuitemradio', { name: 'Approve for me', exact: true }).click();
   await expect(trigger).toHaveText('Approve for me');
   await expect(trigger).toHaveAttribute('title', /auto mode/);
@@ -59,4 +64,21 @@ test('describes Plan mode investigation for Claude Code', async ({ page }) => {
   await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Plan mode', exact: true }).click();
   await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('title', /web lookups run, even outside this project/);
   await expect.poll(() => savedPermission(page)).toBe('plan');
+});
+
+test('toggles auto-approve writes on a Claude task and keeps it off the menu for Kimi', async ({ page }) => {
+  const trigger = page.locator('#mode-picker-trigger');
+  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  const row = menu.getByRole('menuitemradio', { name: 'Auto-approve write requests', exact: true });
+  await trigger.click();
+  await expect(row).toHaveAttribute('aria-checked', 'false');
+  await row.click();
+  await expect.poll(() => savedAutoWrites(page)).toBe(true);
+  await trigger.click();
+  await expect(row).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  // Kimi routes its own permission requests, so the toggle is not offered there.
+  await page.locator('.task-item[data-id="session-3"]').click();
+  await trigger.click();
+  await expect(menu.getByRole('menuitemradio', { name: 'Auto-approve write requests', exact: true })).toHaveCount(0);
 });

@@ -28,15 +28,15 @@ const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters resu
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
 let sessions: Session[] = [
-  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
-  { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
-  { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'kimi', model: '', mode: 'ask', status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
-  { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
+  { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
+  { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: 'session-3', projectId: 'project-1', title: 'Add keyboard shortcuts', provider: 'kimi', model: '', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 86400000, updatedAt: now - 86400000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: 'session-4', projectId: 'project-2', title: 'Explore the project', provider: 'codex', model: '', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 345600000, updatedAt: now - 172800000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 259200000 },
 ];
-if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions, { id: 'session-5', projectId: 'project-1', title: 'Polish the trace view', provider: 'claude', model: 'sonnet', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 60000, updatedAt: now + 1000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now }];
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions,
-  { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
-  { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
+  { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
+  { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -78,7 +78,7 @@ for (const s of sessions) {
 sessions[2].issue = { kind: 'issue', number: 131, url: 'https://github.com/orbit-labs/orbit/issues/131', title: 'Keyboard shortcut cheat sheet', state: 'open', checkedAt: now };
 // Sidebar sections showcase: opt in with ?sections so default session counts stay unchanged.
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('sections')) {
-  const sample = (id: string, projectId: string, title: string, extra: Partial<Session>): Session => ({ id, projectId, title, provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 7200000, updatedAt: now - 60000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, pinned: false, sidebarOrder: null, taskStage: 'review', taskDescription: '', completedAt: null, ...extra });
+  const sample = (id: string, projectId: string, title: string, extra: Partial<Session>): Session => ({ id, projectId, title, provider: 'claude', model: 'sonnet', mode: 'ask', autoWrites: false, status: 'idle', createdAt: now - 7200000, updatedAt: now - 60000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, pinned: false, sidebarOrder: null, taskStage: 'review', taskDescription: '', completedAt: null, ...extra });
   sessions.push(
     sample('sections-running', 'project-1', 'Speed up the search index', { status: 'running', taskStage: 'in_progress', lastPromptAt: now - 95000 }),
     sample('sections-approval', 'project-2', 'Migrate settings storage', { provider: 'codex', model: '', status: 'waiting_approval', taskStage: 'in_progress', lastPromptAt: now - 240000 }),
@@ -1263,7 +1263,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const boundary = history.findIndex(message => message.id === args.messageId);
       if (!Number.isSafeInteger(args.messageId) || args.messageId <= 0 || boundary < 0 || !['user', 'assistant'].includes(history[boundary].role)) throw new Error('Choose a saved user message or assistant response to fork.');
       const boundaryProvider = historicalProvider(history[boundary], history, source.provider);
-      const created: Session = { ...structuredClone(source), id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: [...source.title].slice(0, 193).join('') + ' (fork)', resumeId: null, status: 'idle', archived: false, goalState: null, contextUsage: null, taskStage: 'in_progress', completedAt: null, lastResponseAt: null, lastPromptAt: null, createdAt: Date.now(), updatedAt: Date.now() };
+      const created: Session = { ...structuredClone(source), id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: [...source.title].slice(0, 193).join('') + ' (fork)', resumeId: null, autoWrites: false, status: 'idle', archived: false, goalState: null, contextUsage: null, taskStage: 'in_progress', completedAt: null, lastResponseAt: null, lastPromptAt: null, createdAt: Date.now(), updatedAt: Date.now() };
       const copied: Message[] = history.slice(0, boundary + (args.exclusive ? 0 : 1)).filter(message => !['internal', 'changes'].includes(message.role)).map(message => {
         let content = message.content;
         if (message.role === 'tool') {
@@ -1289,7 +1289,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         if (previous) { result = previous; break; }
         if (args.remoteId !== 'preview-remote-conversation') throw new Error('That conversation is not available in this project.');
       } else if (!source.resumeId) throw new Error('Start the conversation before forking it.');
-      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: args.remoteId ? 'Review project architecture' : source.title + ' (fork)', resumeId: args.remoteId ?? crypto.randomUUID(), status: 'idle', archived: false, goalState: null, taskStage: 'in_progress', createdAt: Date.now(), updatedAt: Date.now() };
+      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, title: args.remoteId ? 'Review project architecture' : source.title + ' (fork)', resumeId: args.remoteId ?? crypto.randomUUID(), autoWrites: false, status: 'idle', archived: false, goalState: null, taskStage: 'in_progress', createdAt: Date.now(), updatedAt: Date.now() };
       sessions.unshift(created); messages[created.id] = args.remoteId ? [{ id: ++id, sessionId: created.id, role: 'assistant', content: 'This is a sample imported conversation. No remote data was read.', createdAt: Date.now() }] : (messages[source.id] ?? []).map(message => ({ ...message, id: ++id, sessionId: created.id })); result = created; break;
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
@@ -1473,7 +1473,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', autoWrites: false, title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode }); break;
@@ -1619,7 +1619,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_worktree': {
       const source = session(args.sessionId);
       const worktree = previewWorktree(source, args);
-      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
+      const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', autoWrites: false, status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
       sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id); result = created; break;
     }
     case 'attach_worktree': {
