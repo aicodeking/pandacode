@@ -47,6 +47,24 @@ test('schedules editor creates a weekly schedule with a live preview', async ({ 
   await expect(row(page, 'Weekly review')).toHaveText(/Weekly on Mon, Wed at/);
 });
 
+test('schedules editor creates a cron schedule with a time zone', async ({ page }) => {
+  await open(page);
+  await panel(page).getByRole('button', { name: 'New schedule', exact: true }).click();
+  await editor(page).getByRole('textbox', { name: 'Title', exact: true }).fill('Poll CI');
+  await editor(page).getByRole('textbox', { name: 'Message', exact: true }).fill('Check CI and report anything red.');
+  await editor(page).getByRole('button', { name: 'Cron', exact: true }).click();
+  await expect(editor(page).locator('.schedules-preview')).toHaveText('Write a cron expression.');
+  await editor(page).getByRole('textbox', { name: 'Cron expression', exact: true }).fill('*/15 9-17 * * 1-5');
+  await expect(editor(page).locator('.schedules-preview')).toContainText('on the cron */15 9-17 * * 1-5');
+  await editor(page).getByRole('textbox', { name: 'Time zone', exact: true }).fill('Mars/Olympus');
+  await editor(page).getByRole('button', { name: 'Save schedule', exact: true }).click();
+  await expect(editor(page).getByRole('alert')).toHaveText('Unknown timezone: Mars/Olympus.');
+  await editor(page).getByRole('textbox', { name: 'Time zone', exact: true }).fill('Asia/Tokyo');
+  await editor(page).getByRole('button', { name: 'Save schedule', exact: true }).click();
+  await expect(editor(page)).toBeHidden();
+  await expect(row(page, 'Poll CI')).toContainText('*/15 9-17 * * 1-5 · Asia/Tokyo');
+});
+
 test('schedules editor shows the interval hint, refuses two minutes and an empty message, and Escape closes it', async ({ page }) => {
   await open(page);
   await panel(page).getByRole('button', { name: 'New schedule', exact: true }).click();

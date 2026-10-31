@@ -806,7 +806,7 @@ fn newer_schema_without_sidebar_order_skips_the_sidebar_trigger() {
             assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
             let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone')", [], |r| r.get(0)).unwrap();
             assert_eq!(columns, 2, "cron and timezone columns");
-            let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND notnull<>0", [], |r| r.get(0)).unwrap();
+            let notnull: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('cron','timezone') AND \"notnull\"<>0", [], |r| r.get(0)).unwrap();
             assert_eq!(notnull, 0, "both nullable: syntax is validated in Rust, like prompts");
             // A database from before the feature (the previous schema, 37): drop the
             // columns and reopen; the guarded migration restores them.

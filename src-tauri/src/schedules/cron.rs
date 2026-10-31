@@ -4,9 +4,10 @@
 //! existing minute, an ambiguous one takes the earlier offset, and a match is
 //! searched for at most five years out.
 
-// Test seam: signatures only, so the crate compiles and the tests below fail
-// on todo!() until the implementation lands.
-#![allow(dead_code)]
+use chrono::{Datelike, Duration, Timelike};
+
+/// Minutes of wall time a next-fire scan covers (five years, leap days included).
+const SCAN_MINUTES: usize = 5 * 366 * 24 * 60;
 
 /// A parsed five-field cron expression. Each field holds its sorted,
 /// deduplicated values; an EMPTY field is `*` (unrestricted, matches any
@@ -20,22 +21,180 @@ pub(crate) struct CronExpr {
     pub(crate) days_of_week: Vec<u32>,
 }
 
-/// Parses a five-field cron expression. Only `*`, `,`, `-` and `/` are
+const FIELDS: [(&str, u32, u32); 5] =
+    [("minute", 0, 59), ("hour", 0, 23), ("day-of-month", 1, 31), ("month", 1, 12), ("day-of-week", 0, 7)];
+
+/// Parses a five-field cron expression. Only `*`, `,` `-` and `/` are
 /// supported (no names, no macros); errors name the first bad field, e.g.
 /// "cron minute field: 60 is out of 0-59", and an expression that never fires
 /// within five years is refused with "does not fire within 5 years".
 pub(crate) fn parse_cron(expr: &str) -> Result<CronExpr, String> {
-    let _ = expr;
-    todo!("five-field cron parser")
+    let parsed = parse_fields(expr)?;
+    if cron_next_fire(&parsed, "UTC", chrono::Utc::now().timestamp_millis()).is_none() {
+        return Err("This cron expression does not fire within 5 years.".into());
+    }
+    Ok(parsed)
+}
+
+/// Parses a stored expression, trusting its shape to the validation that saved it;
+/// `None` when it no longer parses.
+pub(crate) fn parse(expr: &str) -> Option<CronExpr> {
+    parse_fields(expr).ok()
+}
+
+fn parse_fields(expr: &str) -> Result<CronExpr, String> {
+    let fields: Vec<&str> = expr.split_whitespace().collect();
+    if fields.len() != 5 {
+        return Err(format!(
+            "A cron expression is five fields (minute hour day-of-month month day-of-week); this one has {}.",
+            fields.len()
+        ));
+    }
+    let mut parsed = fields.iter().zip(FIELDS).map(|(text, (name, min, max))| field_values(name, min, max, text));
+    let (minutes, hours) = (parsed.next().unwrap()?, parsed.next().unwrap()?);
+    let (days_of_month, months) = (parsed.next().unwrap()?, parsed.next().unwrap()?);
+    let days_of_week = parsed.next().unwrap()?.into_iter().map(|day| day % 7).collect::<Vec<_>>();
+    Ok(CronExpr { minutes, hours, days_of_month, months, days_of_week })
+}
+
+/// One field's sorted values; a bare `*` stays empty (unrestricted).
+fn field_values(name: &str, min: u32, max: u32, text: &str) -> Result<Vec<u32>, String> {
+    if text == "*" {
+        return Ok(Vec::new());
+    }
+    let mut values = Vec::new();
+    for item in text.split(',') {
+        let (range, step) = match item.split_once('/') {
+            Some((range, step)) => {
+                let step: u32 = step.parse().map_err(|_| format!("cron {name} field: {step} is not a number"))?;
+                if step == 0 {
+                    return Err(format!("cron {name} field: step must be 1 or more"));
+                }
+                (range, step)
+            }
+            None => (item, 1),
+        };
+        let (start, end) = if range == "*" {
+            (min, max)
+        } else if let Some((first, last)) = range.split_once('-') {
+            let (first, last) = (value(name, min, max, first)?, value(name, min, max, last)?);
+            if first > last {
+                return Err(format!("cron {name} field: {range} starts after it ends"));
+            }
+            (first, last)
+        } else {
+            let at = value(name, min, max, range)?;
+            // "N/step" runs from N to the field's top, like Vixie cron.
+            (at, if step > 1 { max } else { at })
+        };
+        let mut at = start;
+        while at <= end {
+            values.push(at);
+            at = at.saturating_add(step);
+        }
+    }
+    values.sort_unstable();
+    values.dedup();
+    Ok(values)
+}
+
+fn value(name: &str, min: u32, max: u32, text: &str) -> Result<u32, String> {
+    let parsed: u32 = text.parse().map_err(|_| format!("cron {name} field: {text} is not a number"))?;
+    if (min..=max).contains(&parsed) {
+        Ok(parsed)
+    } else {
+        Err(format!("cron {name} field: {parsed} is out of {min}-{max}"))
+    }
+}
+
+/// Whether a local wall-clock minute matches. When both day fields are restricted,
+/// either one fires (Vixie OR); when either is `*`, both must match.
+fn matches(expr: &CronExpr, at: chrono::NaiveDateTime) -> bool {
+    let weekday = at.weekday().num_days_from_sunday();
+    let dom = expr.days_of_month.contains(&at.day());
+    let dow = expr.days_of_week.contains(&weekday);
+    let day = if expr.days_of_month.is_empty() || expr.days_of_week.is_empty() {
+        (expr.days_of_month.is_empty() || dom) && (expr.days_of_week.is_empty() || dow)
+    } else {
+        dom || dow
+    };
+    let in_field = |values: &[u32], unit: u32| values.is_empty() || values.contains(&unit);
+    day && in_field(&expr.months, at.month()) && in_field(&expr.hours, at.hour()) && in_field(&expr.minutes, at.minute())
 }
 
 /// The next fire strictly after `after` (epoch ms), computed in `timezone`
-/// (an IANA name); `None` when the expression does not fire within five years.
-/// When both day-of-month and day-of-week are restricted, either match fires
-/// (Vixie OR); when either is `*`, both must match.
+/// (an IANA name; empty = this computer's zone); `None` when the expression
+/// does not fire within five years. When both day-of-month and day-of-week are
+/// restricted, either match fires (Vixie OR); when either is `*`, both must match.
 pub(crate) fn cron_next_fire(expr: &CronExpr, timezone: &str, after: i64) -> Option<i64> {
-    let _ = (expr, timezone, after);
-    todo!("zoned next-fire scan")
+    let zone = Zone::named(timezone)?;
+    let mut minute = zone.wall(after)?.checked_add_signed(Duration::minutes(1))?;
+    for _ in 0..SCAN_MINUTES {
+        if matches(expr, minute) {
+            return zone.fire(minute);
+        }
+        minute += Duration::minutes(1);
+    }
+    None
+}
+
+/// A schedule's zone: an IANA name, or the computer's own when none is set.
+enum Zone {
+    Local,
+    Named(chrono_tz::Tz),
+}
+
+impl Zone {
+    fn named(timezone: &str) -> Option<Self> {
+        let name = timezone.trim();
+        if name.is_empty() {
+            return Some(Self::Local);
+        }
+        name.parse().ok().map(Self::Named)
+    }
+
+    /// The local wall time at epoch-ms `at`, truncated to the minute.
+    fn wall(&self, at: i64) -> Option<chrono::NaiveDateTime> {
+        match self {
+            Self::Local => wall_of(&chrono::Local, at),
+            Self::Named(tz) => wall_of(tz, at),
+        }
+    }
+
+    /// The epoch ms at local wall time `at`: the earlier offset when the minute
+    /// happens twice, `None` when it does not exist.
+    fn instant(&self, at: chrono::NaiveDateTime) -> Option<i64> {
+        match self {
+            Self::Local => earliest(&chrono::Local, at),
+            Self::Named(tz) => earliest(tz, at),
+        }
+    }
+
+    /// When a matching minute sits in a spring-forward gap, the next existing
+    /// minute fires instead.
+    fn fire(&self, mut at: chrono::NaiveDateTime) -> Option<i64> {
+        for _ in 0..2 * 24 * 60 {
+            if let Some(at) = self.instant(at) {
+                return Some(at);
+            }
+            at += Duration::minutes(1);
+        }
+        None
+    }
+}
+
+fn wall_of<T: chrono::TimeZone>(tz: &T, at: i64) -> Option<chrono::NaiveDateTime> {
+    let local = tz.timestamp_millis_opt(at).single()?;
+    local.date_naive().and_hms_opt(local.hour(), local.minute(), 0)
+}
+
+/// The earlier of the offsets when `at` happens twice, `None` when it never does.
+fn earliest<T: chrono::TimeZone>(tz: &T, at: chrono::NaiveDateTime) -> Option<i64> {
+    match tz.from_local_datetime(&at) {
+        chrono::LocalResult::Single(time) => Some(time.timestamp_millis()),
+        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.timestamp_millis()),
+        chrono::LocalResult::None => None,
+    }
 }
 
 #[cfg(test)]
@@ -139,10 +298,10 @@ mod tests {
         assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 1, 12, 7)), Some(utc(2026, 1, 1, 12, 15)));
         // A slot is exclusive: firing at 12:15 means the next ask starts at 12:30.
         assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 1, 12, 15)), Some(utc(2026, 1, 1, 12, 30)));
-        // Past the window's last slot (17:15) the next day opens at 09:00.
-        assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 1, 17, 15)), Some(utc(2026, 1, 2, 9, 0)));
+        // Past the window's last slot (17:45) the next day opens at 09:00.
+        assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 1, 17, 45)), Some(utc(2026, 1, 2, 9, 0)));
         // Friday's close steps over the weekend to Monday 2026-01-05.
-        assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 2, 17, 15)), Some(utc(2026, 1, 5, 9, 0)));
+        assert_eq!(cron_next_fire(&expr, "UTC", utc(2026, 1, 2, 17, 45)), Some(utc(2026, 1, 5, 9, 0)));
     }
 
     #[test]

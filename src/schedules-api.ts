@@ -3,8 +3,9 @@
 import { call } from './bridge';
 
 /** once: at runAt · interval: every intervalMinutes · daily/weekdays: at timeOfDay ·
- *  weekly: at timeOfDay on `days` (0 = Sunday) · after: when watchSessionId's run ends. */
-export type ScheduleKind = 'once' | 'interval' | 'daily' | 'weekdays' | 'weekly' | 'after';
+ *  weekly: at timeOfDay on `days` (0 = Sunday) · cron: the `cron` expression ·
+ *  after: when watchSessionId's run ends. */
+export type ScheduleKind = 'once' | 'interval' | 'daily' | 'weekdays' | 'weekly' | 'cron' | 'after';
 export type ScheduleOrigin = 'user' | 'agent';
 export type RunOutcome = 'started' | 'queued' | 'skipped' | 'failed';
 
@@ -140,9 +141,11 @@ export function clockTime(hhmm: string): string {
 }
 
 /** "Once", "Every 30 min", "Daily at 9:00 AM", "Weekdays at 9:00 AM", "Weekly on Mon, Wed at 6:30 PM",
- *  "After “Build” finishes". Only the first letter is capital, so callers may lowercase it mid-sentence. */
-export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' | 'timeOfDay' | 'days' | 'watchSessionTitle' | 'onlyOnSuccess'>): string {
+ *  the cron expression, or "After “Build” finishes" — clock kinds carry " · <timezone>" when one is set.
+ *  Only the first letter is capital, so callers may lowercase it mid-sentence. */
+export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' | 'timeOfDay' | 'days' | 'cron' | 'timezone' | 'watchSessionTitle' | 'onlyOnSuccess'>): string {
   const time = clockTime(schedule.timeOfDay ?? '');
+  const zone = schedule.timezone?.trim() ? ` · ${schedule.timezone.trim()}` : '';
   switch (schedule.kind) {
     case 'once': return 'Once';
     case 'interval': {
@@ -150,9 +153,10 @@ export function cadence(schedule: Pick<TaskSchedule, 'kind' | 'intervalMinutes' 
       return minutes % 1440 === 0 ? `Every ${minutes / 1440 === 1 ? 'day' : `${minutes / 1440} days`}`
         : minutes % 60 === 0 ? `Every ${minutes / 60 === 1 ? 'hour' : `${minutes / 60} hours`}` : `Every ${minutes} min`;
     }
-    case 'daily': return `Daily at ${time}`;
-    case 'weekdays': return `Weekdays at ${time}`;
-    case 'weekly': return `Weekly on ${[...schedule.days].sort().map(day => DAY_NAMES[day]).join(', ')} at ${time}`;
+    case 'daily': return `Daily at ${time}${zone}`;
+    case 'weekdays': return `Weekdays at ${time}${zone}`;
+    case 'weekly': return `Weekly on ${[...schedule.days].sort().map(day => DAY_NAMES[day]).join(', ')} at ${time}${zone}`;
+    case 'cron': return `${schedule.cron?.trim() || ''}${zone}`;
     case 'after': return `After “${schedule.watchSessionTitle ?? 'a thread'}” ${schedule.onlyOnSuccess ? 'succeeds' : 'finishes'}`;
   }
 }
