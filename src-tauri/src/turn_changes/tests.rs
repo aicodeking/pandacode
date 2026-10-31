@@ -827,3 +827,207 @@ fn case_aliases_are_conservatively_treated_as_shared_file_claims() {
         assert!(got.summary.truncated);
     }
 }
+
+// REGRESSION PIN: this test exercises today's single-root Tracker::start and must
+// pass before any multi-root work lands. A one-folder task keeps bare change
+// paths and one root, whichever spelling the provider reports.
+#[test]
+fn single_root_tracker_reports_bare_paths_for_relative_and_absolute_inputs() {
+    let f = Fixture::new(false);
+    f.write("abs.txt", "before\n");
+    f.write("rel.txt", "before\n");
+    let mut tracker = Tracker::start(f.root.clone(), f.cache.clone());
+    write_tool(
+        &mut tracker,
+        "a",
+        "running",
+        &[f.root.join("abs.txt").to_str().unwrap()],
+    );
+    write_tool(&mut tracker, "b", "running", &["rel.txt"]);
+    f.write("abs.txt", "before\nabsolute input\n");
+    f.write("rel.txt", "before\nrelative input\n");
+    write_tool(
+        &mut tracker,
+        "a",
+        "completed",
+        &[f.root.join("abs.txt").to_str().unwrap()],
+    );
+    write_tool(&mut tracker, "b", "completed", &["rel.txt"]);
+    let got = tracker.finish().unwrap();
+    assert_eq!(
+        got.summary
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["abs.txt", "rel.txt"]
+    );
+    assert!(got
+        .details
+        .iter()
+        .any(|d| d.patch.contains("+absolute input")));
+    assert!(got
+        .details
+        .iter()
+        .any(|d| d.patch.contains("+relative input")));
+}
+
+// Multi-root tracking: a task with a folder set (storage::RepoFolder, as
+// Store::workspace_folders builds it) tracks every folder's effective path,
+// stores bare paths for the primary and label-qualified paths for the rest, and
+// leases the whole set.
+fn secondary_folder(base: &Path, name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = base.join(name);
+    fs::create_dir_all(&root).unwrap();
+    for (path, text) in files {
+        let target = root.join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, text).unwrap();
+    }
+    fs::canonicalize(&root).unwrap()
+}
+
+fn folder_set(entries: &[(PathBuf, &str)]) -> Vec<storage::RepoFolder> {
+    entries
+        .iter()
+        .enumerate()
+        .map(|(index, (path, label))| storage::RepoFolder {
+            path: path.clone(),
+            label: (*label).into(),
+            is_primary: index == 0,
+            worktree: None,
+            branch: None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_folder_set_tracker_captures_every_folder_and_stores_label_qualified_paths() {
+    let f = Fixture::new(false);
+    f.write("src/app.txt", "primary before\n");
+    let docs = secondary_folder(&f.base, "docs-repo", &[("guide.md", "docs before\n")]);
+    let primary = fs::canonicalize(&f.root).unwrap();
+    let folders = folder_set(&[(primary.clone(), "app"), (docs.clone(), "docs")]);
+    let mut tracker = Tracker::start_in_folders(&folders, f.cache.clone());
+    let app = primary.join("src/app.txt").to_str().unwrap().to_owned();
+    let guide = docs.join("guide.md").to_str().unwrap().to_owned();
+    write_tool(&mut tracker, "w", "running", &[app.as_str(), guide.as_str()]);
+    f.write("src/app.txt", "primary before\nprimary edit\n");
+    fs::write(&guide, "docs before\ndocs edit\n").unwrap();
+    write_tool(&mut tracker, "w", "completed", &[app.as_str(), guide.as_str()]);
+    let got = tracker.finish().unwrap();
+    assert!(!got.summary.truncated, "{:?}", got.summary.error);
+    // One added line per file pins that each before-snapshot was read from its
+    // own folder's root.
+    assert_eq!((got.summary.additions, got.summary.deletions), (2, 0));
+    // The primary folder keeps bare project-relative paths; every other folder
+    // is qualified with its RepoFolder label.
+    assert_eq!(
+        got.summary
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["docs/guide.md", "src/app.txt"]
+    );
+    assert!(got
+        .details
+        .iter()
+        .any(|d| d.path == "docs/guide.md" && d.patch.contains("+docs edit")));
+    assert!(got
+        .details
+        .iter()
+        .any(|d| d.path == "src/app.txt" && d.patch.contains("+primary edit")));
+    // The persisted change rows and the detail read keep the same spellings.
+    let change_id = got.summary.id.clone();
+    let store = Store::open(&f.base.join("state.sqlite")).unwrap();
+    let project = store.add_project(&f.root).unwrap();
+    let task = store
+        .create_session(&project.id, "claude", "default", "ask")
+        .unwrap();
+    persist(&store, &task.id, got).unwrap();
+    let mut stmt = store
+        .db
+        .prepare("SELECT path FROM turn_change_files ORDER BY path")
+        .unwrap();
+    let stored: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(stored, vec!["docs/guide.md", "src/app.txt"]);
+    assert!(detail(&store, &task.id, &change_id, "docs/guide.md")
+        .unwrap()
+        .patch
+        .contains("+docs edit"));
+}
+
+#[test]
+fn relative_write_paths_keep_meaning_the_primary_folder_inside_a_folder_set() {
+    let f = Fixture::new(false);
+    f.write("primary-only.txt", "before\n");
+    let docs = secondary_folder(&f.base, "docs-repo", &[("primary-only.txt", "other repo\n")]);
+    let primary = fs::canonicalize(&f.root).unwrap();
+    let folders = folder_set(&[(primary, "app"), (docs, "docs")]);
+    let mut tracker = Tracker::start_in_folders(&folders, f.cache.clone());
+    write_tool(&mut tracker, "w", "running", &["primary-only.txt"]);
+    f.write("primary-only.txt", "before\nedit\n");
+    write_tool(&mut tracker, "w", "completed", &["primary-only.txt"]);
+    let got = tracker.finish().unwrap();
+    assert_eq!(
+        got.summary
+            .files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["primary-only.txt"]
+    );
+    // Exactly one added line, and never the other repo's copy of the same name.
+    assert_eq!((got.summary.additions, got.summary.deletions), (1, 0));
+    assert!(got.details[0].patch.contains("+edit"));
+    assert!(!got.details[0].patch.contains("other repo"));
+}
+
+#[test]
+fn folder_set_leases_conflict_on_any_shared_folder_and_coexist_when_disjoint() {
+    let f = Fixture::new(false);
+    let a = fs::canonicalize(&f.root).unwrap();
+    let b = secondary_folder(&f.base, "repo-b", &[]);
+    let c = secondary_folder(&f.base, "repo-c", &[]);
+    let d = secondary_folder(&f.base, "repo-d", &[]);
+    // Two trackers sharing any one folder mark each other concurrent.
+    let mut first = Tracker::start_in_folders(
+        &folder_set(&[(a.clone(), "a"), (b.clone(), "b")]),
+        f.cache.clone(),
+    );
+    let mut second = Tracker::start_in_folders(
+        &folder_set(&[(b.clone(), "b2"), (c.clone(), "c")]),
+        f.cache.clone(),
+    );
+    let mut disjoint =
+        Tracker::start_in_folders(&folder_set(&[(d.clone(), "d")]), f.cache.clone());
+    assert!(first.finish().unwrap().summary.concurrent);
+    assert!(second.finish().unwrap().summary.concurrent);
+    assert!(!disjoint.finish().unwrap().summary.concurrent);
+    // A folder-set tracker and a legacy single-root tracker conflict over one
+    // shared folder.
+    let mut solo = Tracker::start(b.clone(), f.cache.clone());
+    let mut multi = Tracker::start_in_folders(
+        &folder_set(&[(a.clone(), "a"), (b.clone(), "b")]),
+        f.cache.clone(),
+    );
+    assert!(solo.finish().unwrap().summary.concurrent);
+    assert!(multi.finish().unwrap().summary.concurrent);
+    // Re-acquiring the lease after a boundary still covers the whole set.
+    let mut again = Tracker::start_in_folders(
+        &folder_set(&[(a.clone(), "a"), (b.clone(), "b")]),
+        f.cache.clone(),
+    );
+    again.finish().unwrap();
+    let mut later = Tracker::start_in_folders(
+        &folder_set(&[(b.clone(), "b3"), (c.clone(), "c2")]),
+        f.cache.clone(),
+    );
+    again.started();
+    assert!(later.finish().unwrap().summary.concurrent);
+}

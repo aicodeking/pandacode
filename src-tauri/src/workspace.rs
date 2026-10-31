@@ -104,6 +104,76 @@ fn resolve_scoped_path(root: &Path, value: &str) -> Result<PathBuf, PathError> {
     Ok(candidate)
 }
 
+/// Resolve an agent- or user-supplied path onto one of a task's folders
+/// (storage::RepoFolder as Store::workspace_folders builds it). Relative input
+/// means the primary folder, resolved exactly as scoped_path does for a
+/// single-folder task. Absolute input joins the one folder that contains it —
+/// the longest matching path wins for nested folders — and must stay inside it
+/// after symlinks resolve, judged against that folder alone.
+pub fn resolve_in_folders(
+    folders: &[crate::storage::RepoFolder],
+    input: &str,
+) -> Result<(usize, PathBuf), String> {
+    if !Path::new(input).is_absolute() {
+        let primary = folders
+            .iter()
+            .position(|folder| folder.is_primary)
+            .or_else(|| (!folders.is_empty()).then_some(0))
+            .ok_or_else(|| "This task has no folders.".to_string())?;
+        return scoped_path(&folders[primary].path, input).map(|path| (primary, path));
+    }
+    let candidate = Path::new(input);
+    let mut best: Option<(usize, &PathBuf)> = None;
+    for (index, folder) in folders.iter().enumerate() {
+        let Ok(relative) = candidate.strip_prefix(&folder.path) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        if best.map_or(true, |(_, path)| {
+            folder.path.as_os_str().len() > path.as_os_str().len()
+        }) {
+            best = Some((index, &folder.path));
+        }
+    }
+    let Some((index, root)) = best else {
+        let named = folders
+            .iter()
+            .map(|folder| folder.path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!("Path is outside this task's folders: {named}"));
+    };
+    for part in candidate.components() {
+        match part {
+            Component::Normal(name) if name != ".git" => {}
+            Component::CurDir => {}
+            Component::RootDir | Component::Prefix(_) => {}
+            _ => return Err("Path must stay inside the project".into()),
+        }
+    }
+    let mut ancestor = candidate;
+    loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                let resolved = fs::canonicalize(ancestor).map_err(|e| e.to_string())?;
+                if !resolved.starts_with(root) {
+                    return Err("Symlink points outside the folder".into());
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .ok_or_else(|| "Invalid project path".to_string())?;
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok((index, candidate.to_path_buf()))
+}
+
 pub(crate) struct Capture {
     pub(crate) bytes: Vec<u8>,
     pub(crate) truncated: bool,
@@ -2473,5 +2543,164 @@ mod tests {
             unrelated.to_str().unwrap(),
         ]);
         assert!(legacy_worktree_parent(&unrelated, std::slice::from_ref(&fixture.root)).is_none());
+    }
+
+    // Multi-folder resolution: resolve_in_folders maps an agent- or user-supplied
+    // path onto one folder of a task's folder set (storage::RepoFolder as
+    // Store::workspace_folders builds it: path is the effective root, worktree
+    // records the checkout when one exists).
+    use crate::storage::RepoFolder;
+
+    fn repo_folder(path: &Path, label: &str, is_primary: bool) -> RepoFolder {
+        RepoFolder {
+            path: fs::canonicalize(path).unwrap(),
+            label: label.into(),
+            is_primary,
+            worktree: None,
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn resolve_in_folders_routes_relative_input_to_primary_and_absolute_to_its_folder() {
+        let f = Fixture::new(false);
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        let docs = fs::canonicalize(&docs).unwrap();
+        fs::write(f.root.join("app.txt"), "one\n").unwrap();
+        fs::write(docs.join("guide.md"), "two\n").unwrap();
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            repo_folder(&docs, "docs", false),
+        ];
+        // Relative input means the primary folder, exactly as a single-root task
+        // resolves it today.
+        assert_eq!(
+            resolve_in_folders(&folders, "app.txt").unwrap(),
+            (0, f.root.join("app.txt"))
+        );
+        // A relative path never reaches an additional folder, even when only that
+        // folder holds the file.
+        assert_eq!(
+            resolve_in_folders(&folders, "guide.md").unwrap(),
+            (0, f.root.join("guide.md"))
+        );
+        // Absolute input resolves inside the one folder that contains it.
+        assert_eq!(
+            resolve_in_folders(&folders, docs.join("guide.md").to_str().unwrap()).unwrap(),
+            (1, docs.join("guide.md"))
+        );
+        assert_eq!(
+            resolve_in_folders(&folders, f.root.join("app.txt").to_str().unwrap()).unwrap(),
+            (0, f.root.join("app.txt"))
+        );
+    }
+
+    #[test]
+    fn resolve_in_folders_with_one_folder_behaves_as_scoped_path_does_today() {
+        let f = Fixture::new(false);
+        fs::write(f.root.join("real.txt"), "x\n").unwrap();
+        let folders = vec![repo_folder(&f.root, "app", true)];
+        for input in ["real.txt", "./real.txt", "made/up/missing.txt"] {
+            assert_eq!(
+                resolve_in_folders(&folders, input).unwrap(),
+                (0, scoped_path(&f.root, input).unwrap()),
+                "single-folder resolution matches today: {input}"
+            );
+        }
+        for input in ["../escape.txt", ".git/config", "", "nul\0byte"] {
+            assert_eq!(
+                resolve_in_folders(&folders, input).is_err(),
+                scoped_path(&f.root, input).is_err(),
+                "single-folder refusals match today: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_in_folders_names_the_task_folders_when_an_absolute_path_matches_none() {
+        let f = Fixture::new(false);
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(f.base.join("elsewhere.txt"), "outside every folder\n").unwrap();
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            repo_folder(&docs, "docs", false),
+        ];
+        let error = resolve_in_folders(&folders, f.base.join("elsewhere.txt").to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            error.to_lowercase().contains("outside")
+                && error.to_lowercase().contains("folder"),
+            "the error names that the path is outside the task's folders: {error}"
+        );
+    }
+
+    #[test]
+    fn resolve_in_folders_refuses_git_directory_paths_in_any_folder() {
+        let f = Fixture::new(false);
+        let docs = f.base.join("docs");
+        fs::create_dir_all(docs.join(".git")).unwrap();
+        fs::write(docs.join(".git/config"), "[core]\n").unwrap();
+        fs::write(f.root.join(".gitignore"), "ignored names\n").unwrap();
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            repo_folder(&docs, "docs", false),
+        ];
+        assert!(resolve_in_folders(&folders, ".git/config").is_err());
+        assert!(resolve_in_folders(&folders, docs.join(".git/config").to_str().unwrap()).is_err());
+        // .gitignore is an ordinary file, not the .git directory.
+        assert_eq!(
+            resolve_in_folders(&folders, ".gitignore").unwrap(),
+            (0, f.root.join(".gitignore"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_in_folders_refuses_symlinks_that_escape_their_folder() {
+        let f = Fixture::new(false);
+        let docs = f.base.join("docs");
+        fs::create_dir_all(&docs).unwrap();
+        fs::write(f.base.join("secret.txt"), "private\n").unwrap();
+        std::os::unix::fs::symlink(f.base.join("secret.txt"), docs.join("leak.txt")).unwrap();
+        fs::write(docs.join("local.txt"), "safe\n").unwrap();
+        std::os::unix::fs::symlink("local.txt", docs.join("stay.txt")).unwrap();
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            repo_folder(&docs, "docs", false),
+        ];
+        assert!(
+            resolve_in_folders(&folders, docs.join("leak.txt").to_str().unwrap()).is_err(),
+            "a symlink escaping its folder is refused even though the input is absolute"
+        );
+        let (index, path): (usize, PathBuf) =
+            resolve_in_folders(&folders, docs.join("stay.txt").to_str().unwrap())
+                .expect("a symlink that stays inside its folder resolves");
+        assert_eq!(index, 1);
+        assert!(path.starts_with(&docs));
+    }
+
+    #[test]
+    fn resolve_in_folders_resolves_inside_a_folders_worktree_checkout() {
+        let f = Fixture::new(false);
+        let checkout = f.base.join("worktrees/docs-task");
+        fs::create_dir_all(&checkout).unwrap();
+        fs::write(checkout.join("guide.md"), "checked out\n").unwrap();
+        let checkout = fs::canonicalize(&checkout).unwrap();
+        let folders = vec![
+            repo_folder(&f.root, "app", true),
+            RepoFolder {
+                path: checkout.clone(),
+                label: "docs".into(),
+                is_primary: false,
+                worktree: Some(checkout.clone()),
+                branch: Some("task-branch".into()),
+            },
+        ];
+        assert_eq!(
+            resolve_in_folders(&folders, checkout.join("guide.md").to_str().unwrap()).unwrap(),
+            (1, checkout.join("guide.md"))
+        );
     }
 }
