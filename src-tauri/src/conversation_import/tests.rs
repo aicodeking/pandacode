@@ -188,7 +188,7 @@ fn zcode_db(dir: &Path) -> PathBuf {
 fn zcode_lists_top_level_conversations_newest_first_and_skips_deleted_and_subagent_ones() {
     let dir = temp();
     let db = zcode_db(&dir);
-    let rows = zcode::conversations(&db);
+    let rows = zcode::conversations(&db).unwrap();
     assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), [ZNEW, ZOLD], "newest first; deleted and subagent sessions stay out");
     assert_eq!(rows[0].title, "Fix the flaky widget test");
     assert_eq!(rows[0].directory, dir.to_string_lossy());
@@ -197,9 +197,19 @@ fn zcode_lists_top_level_conversations_newest_first_and_skips_deleted_and_subage
     assert_eq!(rows[1].messages, 0);
     assert!(matches(&Some("flaky".into()), &[rows[0].title.as_str(), rows[0].directory.as_str()]));
     assert!(!matches(&Some("flaky".into()), &[rows[1].title.as_str(), rows[1].directory.as_str()]));
-    assert!(zcode::available(&db));
-    assert!(!zcode::available(&dir.join("missing.sqlite")));
-    assert!(zcode::conversations(&dir.join("missing.sqlite")).is_empty());
+    assert!(zcode::conversations(&db).is_ok());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_unreadable_store_is_an_error_not_an_empty_list() {
+    let dir = temp();
+    let db = dir.join("old-schema.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::conversations(&db).is_err(), "a store without the import columns is an error, not an empty page");
+    assert!(zcode::conversations(&dir.join("missing.sqlite")).is_err(), "a missing store cannot be listed either");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -229,7 +239,9 @@ fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes
     let dir = temp();
     let db = zcode_db(&dir);
     let store = Store::open(Path::new(":memory:")).unwrap();
-    let task = import_zcode_row(&store, &db, ZNEW, "fallback-model").unwrap();
+    // The reads gather outside the store lock; the helper holds only the import.
+    let import = |store: &Store, id: &str| import_zcode_row(store, id, "fallback-model", zcode::read(&db, id).unwrap());
+    let task = import(&store, ZNEW).unwrap();
     assert_eq!(task.resume_id.as_deref(), Some(ZNEW));
     assert_eq!(task.provider, "zcode");
     assert_eq!(task.title, "Fix the flaky widget test");
@@ -243,19 +255,19 @@ fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes
     let roles: Vec<_> = saved.iter().map(|message| message.role.as_str()).collect();
     assert_eq!(roles, ["user", "assistant", "tool"], "entries keep their conversation order");
     assert_eq!(store.imported_task("zcode", ZNEW).unwrap().as_deref(), Some(task.id.as_str()));
-    assert_eq!(import_zcode_row(&store, &db, ZNEW, "fallback-model").unwrap().id, task.id, "a second import returns the existing task");
-    assert!(import_zcode_row(&store, &db, "sess_00000000-0000-4000-8000-000000000000", "fallback-model").is_err());
+    assert_eq!(import(&store, ZNEW).unwrap().id, task.id, "a second import returns the existing task");
+    assert!(zcode::read(&db, "sess_00000000-0000-4000-8000-000000000000").is_none(), "a conversation gone from the store cannot be read");
 
     let conn = rusqlite::Connection::open(&db).unwrap();
     // A folder that vanishes after the first import must not fail a re-import.
     conn.execute("UPDATE session SET directory = '/definitely/gone/folder' WHERE id = ?1", rusqlite::params![ZNEW]).unwrap();
-    assert_eq!(import_zcode_row(&store, &db, ZNEW, "fallback-model").unwrap().id, task.id, "the existing task wins over the missing folder");
+    assert_eq!(import(&store, ZNEW).unwrap().id, task.id, "the existing task wins over the missing folder");
     let (long, untitled) = ("sess_bb1b1b1b-2c3d-4e4f-8a5b-6c7d8e9f0a1b", "sess_cc2c2c2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
     session_row(&conn, long, None, &dir, &"x".repeat(300), ZT - 100_000, ZT - 100_000, None);
     session_row(&conn, untitled, None, &dir, "", ZT - 90_000, ZT - 90_000, None);
-    assert_eq!(import_zcode_row(&store, &db, long, "fallback-model").unwrap().title.len(), 160, "long titles are capped like the Codex path");
-    assert_eq!(import_zcode_row(&store, &db, untitled, "fallback-model").unwrap().title, "Imported ZCode conversation");
-    let rows = zcode::conversations(&db);
+    assert_eq!(import(&store, long).unwrap().title.len(), 160, "long titles are capped like the Codex path");
+    assert_eq!(import(&store, untitled).unwrap().title, "Imported ZCode conversation");
+    let rows = zcode::conversations(&db).unwrap();
     assert_eq!(rows.iter().find(|row| row.id == long).unwrap().title.len(), 160, "the picker caps long titles too");
     assert_eq!(rows.iter().find(|row| row.id == untitled).unwrap().title, "Untitled conversation");
     std::fs::remove_dir_all(dir).unwrap();

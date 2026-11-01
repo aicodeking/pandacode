@@ -124,9 +124,11 @@ fn codex_home() -> PathBuf {
 }
 
 fn zcode_items(state: &AppState, search: &Option<String>) -> Result<Vec<Importable>> {
+    // The CLI's store is read before the app's store locks, like the Claude importer.
+    let rows = zcode::conversations(&zcode::db_path())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let mut items = Vec::new();
-    for row in zcode::conversations(&zcode::db_path()) {
+    for row in rows {
         if !matches(search, &[row.title.as_str(), row.directory.as_str()]) {
             continue;
         }
@@ -197,10 +199,16 @@ pub async fn list_importable_conversations(app: tauri::AppHandle, window: tauri:
         "zcode" => {
             let app = app.clone();
             crate::blocking(move || {
-                let items = zcode_items(&app.state::<AppState>(), &search)?;
-                let note = (!zcode::available(&zcode::db_path()))
-                    .then(|| "ZCode is not available. Check that ZCode is installed on this computer.".to_owned())
-                    .or_else(|| items.is_empty().then(|| "No ZCode conversations were found on this computer.".to_owned()));
+                let db = zcode::db_path();
+                if !db.exists() {
+                    return Ok(ImportPage { items: Vec::new(), cursor: None, note: Some("ZCode is not available. Check that ZCode is installed on this computer.".into()) });
+                }
+                let items = match zcode_items(&app.state::<AppState>(), &search) {
+                    Ok(items) => items,
+                    // Present but unreadable: a note, not a dead dialog.
+                    Err(_) => return Ok(ImportPage { items: Vec::new(), cursor: None, note: Some("ZCode's conversations could not be read on this computer.".into()) }),
+                };
+                let note = items.is_empty().then(|| "No ZCode conversations were found on this computer.".to_owned());
                 Ok(ImportPage { items, cursor: None, note })
             })
             .await
@@ -269,21 +277,22 @@ async fn import_codex(state: &AppState, id: &str, fallback_model: &str) -> Resul
 }
 
 fn import_zcode(state: &AppState, id: &str, fallback_model: &str) -> Result<Session> {
+    // The CLI's store is read before the app's store locks, like the Claude importer.
+    let read = zcode::read(&zcode::db_path(), id).ok_or("This ZCode conversation was not found. Refresh the list.")?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    import_zcode_row(&store, &zcode::db_path(), id, fallback_model)
+    import_zcode_row(&store, id, fallback_model, read)
 }
 
-/// The import against an already-locked store, so tests can drive it directly.
-fn import_zcode_row(store: &crate::storage::Store, db: &Path, id: &str, fallback_model: &str) -> Result<Session> {
-    let session = zcode::conversation(db, id).ok_or("This ZCode conversation was not found. Refresh the list.")?;
-    let entries = zcode::history(db, id);
+/// Dedupe, folder and task insert against an already-locked store, with the
+/// CLI store reads already gathered, so tests can drive it directly.
+fn import_zcode_row(store: &crate::storage::Store, id: &str, fallback_model: &str, read: zcode::Read) -> Result<Session> {
     if let Some(existing) = store.imported_task("zcode", id)? {
         return store.session(&existing);
     }
-    let project = project_for(store, &session.directory)?;
-    let title = zcode::bounded_title(session.title, "Imported ZCode conversation");
-    let model = zcode::model(db, id).unwrap_or_else(|| fallback_model.to_owned());
-    store.import_task(&project, "zcode", &model, &title, id, None, session.created_at, &entries)
+    let project = project_for(store, &read.conversation.directory)?;
+    let title = zcode::bounded_title(read.conversation.title, "Imported ZCode conversation");
+    let model = read.model.unwrap_or_else(|| fallback_model.to_owned());
+    store.import_task(&project, "zcode", &model, &title, id, None, read.conversation.created_at, &read.entries)
 }
 
 #[tauri::command]
