@@ -4,7 +4,7 @@ import { trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import type { ProviderId, Session } from './types';
 
-export type ImportSource = 'claude' | 'codex';
+export type ImportSource = 'claude' | 'codex' | 'zcode';
 export interface Importable {
   id: string;
   title: string;
@@ -26,7 +26,7 @@ export interface ImportOptions {
   openTask(id: string): void;
 }
 
-const SOURCES: { id: ImportSource; label: string }[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }];
+const SOURCES: { id: ImportSource; label: string }[] = [{ id: 'claude', label: 'Claude Code' }, { id: 'codex', label: 'Codex' }, { id: 'zcode', label: 'ZCode' }];
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' });
 const MAX_SELECTION = 50;
 
@@ -47,7 +47,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
   let loading = false, importing = false, disposed = false, request = 0, searchTimer = 0;
   const selected = new Set<string>();
   host.classList.add('conversation-import');
-  host.innerHTML = `<p class="dialog-description">Bring conversations you started in Claude Code or Codex into PandaCode. Each continues its own session, in the project for its folder.</p>
+  host.innerHTML = `<p class="dialog-description">Bring conversations you started in Claude Code, Codex or ZCode into PandaCode. Each continues its own session, in the project for its folder.</p>
     <div class="import-controls"><div class="import-sources" role="group" aria-label="Import from">${SOURCES.map(item => `<button type="button" data-source="${item.id}" aria-pressed="${item.id === source}">${providerLogo(item.id)}<span>${item.label}</span></button>`).join('')}</div>
       <label class="import-search">${icon('search')}<input type="search" placeholder="Search conversations" aria-label="Search conversations" autocomplete="off"></label></div>
     <div class="import-bar"><label class="import-all"><input type="checkbox" aria-label="Select all shown conversations"><span>Select all</span></label><span class="import-count" role="status"></span></div>
