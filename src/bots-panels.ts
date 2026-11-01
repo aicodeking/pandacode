@@ -97,7 +97,9 @@ function webhooksPanel(detail: BotDetail): string {
     </form>
     ${hooks.length ? `<ul class="bots-items bots-webhooks">${hooks.map(hook => {
       const id = escape(hook.id), title = escape(hook.title);
-      const url = `http://127.0.0.1:${detail.serverPort}/hook/${hook.id}`;
+      // The listener may not be running (every webhook disabled since boot), so the
+      // shown URL falls back to the preferred port like the web chat guide does.
+      const url = `http://127.0.0.1:${detail.serverPort || 47321}/hook/${hook.id}`;
       return `<li class="bots-channel ${hook.enabled ? '' : 'off'}" data-webhook="${id}">
         <div class="bots-channel-row"><span class="bots-item-main"><b>${title}</b><small>${escape(hook.prompt)}</small></span>
           <input type="checkbox" class="bots-switch" data-webhook-toggle="${id}" ${hook.enabled ? 'checked' : ''} aria-label="${title} webhook on">
