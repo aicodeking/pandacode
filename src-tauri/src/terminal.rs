@@ -1322,7 +1322,7 @@ mod tests {
     fn project_relocation_requires_closing_only_terminals_in_its_roots() {
         let shell = shell("printf ready; read line");
         let root = std::env::temp_dir();
-        assert!(has_open_roots(&shell.terms, &[root.clone()]).unwrap());
+        assert!(has_open_roots(&shell.terms, std::slice::from_ref(&root)).unwrap());
         assert!(!has_open_roots(&shell.terms, &[root.join("another-project")]).unwrap());
         close(&shell.terms, &shell.id).unwrap();
         shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
