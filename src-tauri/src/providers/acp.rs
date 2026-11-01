@@ -256,9 +256,17 @@ impl Protocol {
                             "This harness does not advertise image input. Remove the images or update the harness.".into()
                         });
                     }
-                    if self.mcp_server.is_some() && capabilities["mcpCapabilities"]["http"] != true
+                    let bridged = self.config.provider == "cline"
+                        && capabilities["mcpCapabilities"]["http"] != true
+                        && (self.cline_mcp_bridge || crate::provider_settings::cline_mcp_bridge());
+                    if bridged {
+                        self.mcp_server = self.mcp_server.as_ref().and_then(super::cline::stdio_bridge);
+                    } else if self.mcp_server.is_some() && capabilities["mcpCapabilities"]["http"] != true
                     {
                         if self.mcp_required {
+                            if self.config.provider == "cline" {
+                                return Err("Cline does not advertise HTTP MCP support required for PandaCode tools. Turn on “Bridge PandaCode tools through mcp-remote” in Settings → Cline, or update Cline.".into());
+                            }
                             return Err("This harness does not advertise HTTP MCP support required for PandaCode tools. Update its ACP server.".into());
                         }
                         // Title suggestions and host tools are optional capabilities.

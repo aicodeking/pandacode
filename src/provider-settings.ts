@@ -27,6 +27,7 @@ interface Configuration {
   mimoKeySaved: boolean;
   mimoKeyFromEnvironment: boolean;
   mimoEndpoint: string | null;
+  clineMcpBridge?: boolean;
   mimoEndpoints: { id: string; url: string; label: string }[];
   secureStorageAvailable: boolean;
   credentialStorageError?: string | null;
@@ -105,7 +106,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     <section class="connection-card"><h3>${providerLogo('commandcode')}Command Code<small>via ACP</small></h3><p>Install with <code>npm i -g command-code</code>, then sign in once with <code>command-code login</code>. A key is optional: either one authenticates the same account.</p>
       ${keyForm('commandcode', 'Command Code API key')}
       <a href="https://commandcode.ai/docs/acp" target="_blank" rel="noopener noreferrer">Command Code docs ${icon('forward')}</a>${pathForm('commandcode', 'Command Code executable', '/path/to/command-code')}${envDetails('commandcode')}</section>
-    <section class="connection-card"><h3>${providerLogo('cline')}Cline<small>via ACP</small></h3><p>Install with <code>npm i -g cline</code>, then sign in once with <code>cline auth</code> (or set <code>CLINE_API_KEY</code>). PandaCode talks to <code>cline --acp</code> and uses the provider and models chosen in Cline.</p><div class="connection-model-actions"><a href="https://docs.cline.bot/usage/cli-overview" target="_blank" rel="noopener noreferrer">Cline CLI docs ${icon('forward')}</a><a href="https://docs.cline.bot/usage/acp" target="_blank" rel="noopener noreferrer">ACP details ${icon('forward')}</a><a href="https://docs.cline.bot/usage/tui" target="_blank" rel="noopener noreferrer">TUI docs ${icon('forward')}</a></div>${pathForm('cline', 'Cline executable', '/path/to/cline')}${envDetails('cline')}</section>
+    <section class="connection-card"><h3>${providerLogo('cline')}Cline<small>via ACP</small></h3><p>Install with <code>npm i -g cline</code>, then sign in once with <code>cline auth</code> (or set <code>CLINE_API_KEY</code>). PandaCode talks to <code>cline --acp</code> and uses the provider and models chosen in Cline.</p><div class="connection-model-actions"><a href="https://docs.cline.bot/usage/cli-overview" target="_blank" rel="noopener noreferrer">Cline CLI docs ${icon('forward')}</a><a href="https://docs.cline.bot/usage/acp" target="_blank" rel="noopener noreferrer">ACP details ${icon('forward')}</a><a href="https://docs.cline.bot/usage/tui" target="_blank" rel="noopener noreferrer">TUI docs ${icon('forward')}</a></div><label class="connection-env-global"><input type="checkbox" data-cline-mcp-bridge> Bridge PandaCode tools through mcp-remote</label><small>Cline’s ACP server does not support HTTP MCP yet. When on, PandaCode tools reach Cline through <code>npx mcp-remote</code> (needs Node.js; downloads the package on first use).</small>${pathForm('cline', 'Cline executable', '/path/to/cline')}${envDetails('cline')}</section>
     <section class="connection-card"><h3>${providerLogo('github-copilot')}GitHub Copilot CLI<small>GitHub Copilot, via ACP</small></h3><p>Install with <code>npm install -g @github/copilot</code>, then run <code>copilot login</code> in a terminal. PandaCode uses the CLI sign-in; GitHub credentials stay with Copilot CLI.</p><div class="connection-model-actions"><a href="https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli" target="_blank" rel="noopener noreferrer">Install and sign in ${icon('forward')}</a><a href="https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server" target="_blank" rel="noopener noreferrer">ACP support details ${icon('forward')}</a></div>${pathForm('github-copilot', 'GitHub Copilot CLI executable', '/path/to/copilot')}${envDetails('github-copilot')}</section>
     <section class="connection-card"><h3>${providerLogo('devin')}Devin CLI<small>Cognition, via ACP</small></h3><p>Install with <code>curl -fsSL https://cli.devin.ai/install.sh | bash</code> (or <code>brew install --cask devin-cli</code>), then run <code>devin auth login</code> once in a terminal. PandaCode talks to <code>devin acp</code> with that sign-in; the CLI bundled with Devin Desktop works too.</p><div class="connection-model-actions"><a href="https://docs.devin.ai/cli" target="_blank" rel="noopener noreferrer">Install and sign in ${icon('forward')}</a><a href="https://docs.devin.ai/cli/reference/commands" target="_blank" rel="noopener noreferrer">ACP details ${icon('forward')}</a></div>${pathForm('devin', 'Devin executable', '/path/to/devin')}${envDetails('devin')}</section>
     <section class="connection-card"><h3>${providerLogo('kilo')}Kilo Code<small>via ACP</small></h3><p>Install with <code>npm i -g @kilocode/cli</code>, then sign in with <code>kilo auth login</code>. PandaCode talks to <code>kilo acp</code> and uses the accounts and models configured in Kilo.</p><a href="https://kilo.ai/docs/code-with-ai/platforms/cli" target="_blank" rel="noopener noreferrer">Kilo CLI docs ${icon('forward')}</a>${pathForm('kilo', 'Kilo executable', '/path/to/kilo')}${envDetails('kilo')}</section>
@@ -161,6 +162,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
         return row;
       }));
     }
+    for (const toggle of host.querySelectorAll<HTMLInputElement>('[data-cline-mcp-bridge]')) toggle.checked = config.clineMcpBridge ?? false;
     for (const toggle of host.querySelectorAll<HTMLInputElement>('[data-use-global]')) {
       toggle.checked = config.useGlobalEnvironment?.[toggle.dataset.useGlobal!] ?? true;
     }
@@ -189,7 +191,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     pending = true; host.setAttribute('aria-busy', 'true');
     claudeMode.disabled = true;
     host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = true);
-    host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = true);
+    host.querySelectorAll<HTMLInputElement>('[data-use-global],[data-cline-mcp-bridge]').forEach(toggle => toggle.disabled = true);
     try {
       const configuration = await operation();
       if (disposed) return false;
@@ -204,7 +206,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     } catch (error) { if (!disposed) { message(String(error), true); onFailure?.(); } return false; }
     finally {
       pending = false;
-      if (!disposed) { claudeMode.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
+      if (!disposed) { claudeMode.disabled = false; host.removeAttribute('aria-busy'); host.querySelectorAll<HTMLButtonElement>('button').forEach(button => button.disabled = false); host.querySelectorAll<HTMLInputElement>('[data-use-global],[data-cline-mcp-bridge]').forEach(toggle => toggle.disabled = false); for (const input of keyInputs) host.querySelector<HTMLButtonElement>(`#${input.id}-form button`)!.disabled = input.disabled; }
     }
   }
   const submit = (event: Event) => {
@@ -271,6 +273,17 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   };
   const change = (event: Event) => {
     const target = event.target as HTMLElement;
+    if (target instanceof HTMLInputElement && target.matches('[data-cline-mcp-bridge]')) {
+      if (pending) { target.checked = !target.checked; return; }
+      const enabled = target.checked;
+      void perform(
+        () => call<Configuration>('provider_set_cline_mcp_bridge', { enabled }),
+        enabled ? 'PandaCode tools reach new Cline sessions through mcp-remote.' : 'The Cline mcp-remote bridge is off.',
+        undefined,
+        () => { target.checked = !enabled; },
+      );
+      return;
+    }
     if (target instanceof HTMLInputElement && target.matches('[data-use-global]')) {
       if (pending) { target.checked = !target.checked; return; }
       const provider = target.dataset.useGlobal!;

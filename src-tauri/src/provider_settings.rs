@@ -33,6 +33,11 @@ struct Settings {
     mimo_endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "crate::providers::claude_auth::Mode::is_inherit")]
     claude_connection_mode: crate::providers::claude_auth::Mode,
+    /// Cline → Bridge PandaCode tools through mcp-remote. Cline's ACP server
+    /// does not advertise HTTP MCP, so the HTTP tools server is handed to it as
+    /// a stdio `npx mcp-remote` server instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    cline_mcp_bridge: bool,
     /// Settings → Agents → Turn off agent telemetry (`providers/privacy.rs`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     telemetry_off: bool,
@@ -416,12 +421,13 @@ pub struct Configuration {
     /// The clusters the app knows; the UI offers exactly these.
     mimo_endpoints: Vec<MimoEndpoint>,
     claude_connection_mode: crate::providers::claude_auth::Mode,
+    cline_mcp_bridge: bool,
     secure_storage_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_storage_error: Option<String>,
 }
 fn configuration() -> Result<Configuration> {
-    let (paths, mimo_endpoint, claude_connection_mode, environment, global_environment, global_environment_disabled) = {
+    let (paths, mimo_endpoint, claude_connection_mode, cline_mcp_bridge, environment, global_environment, global_environment_disabled) = {
         let runtime = CONFIG
             .get()
             .ok_or("Provider settings are not initialized.")?
@@ -431,6 +437,7 @@ fn configuration() -> Result<Configuration> {
             runtime.settings.executable_paths.clone(),
             runtime.settings.mimo_endpoint.clone(),
             runtime.settings.claude_connection_mode,
+            runtime.settings.cline_mcp_bridge,
             runtime.settings.environment.clone(),
             runtime.settings.global_environment.keys().cloned().collect(),
             runtime.settings.global_environment_disabled.clone(),
@@ -477,6 +484,7 @@ fn configuration() -> Result<Configuration> {
         mimo_endpoint,
         mimo_endpoints: mimo_endpoints(),
         claude_connection_mode,
+        cline_mcp_bridge,
         secure_storage_available: cfg!(any(
             target_os = "macos",
             target_os = "linux",
@@ -1005,6 +1013,23 @@ pub(crate) fn claude_connection_mode() -> crate::providers::claude_auth::Mode {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.claude_connection_mode)).unwrap_or_default()
 }
 
+pub(crate) fn cline_mcp_bridge() -> bool {
+    CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.cline_mcp_bridge)).unwrap_or(false)
+}
+
+/// Turn the Cline mcp-remote bridge on or off for new Cline sessions.
+#[tauri::command]
+pub async fn provider_set_cline_mcp_bridge(enabled: bool) -> Result<Configuration> {
+    crate::blocking(move || {
+        let mut runtime = CONFIG.get().ok_or("Provider settings are not initialized.")?
+            .lock().map_err(|e| e.to_string())?;
+        let next = Settings { cline_mcp_bridge: enabled, ..runtime.settings.clone() };
+        persist(&mut runtime, next)?;
+        drop(runtime);
+        configuration()
+    }).await
+}
+
 pub(crate) fn telemetry_off() -> bool {
     CONFIG.get().and_then(|runtime| runtime.lock().ok().map(|runtime| runtime.settings.telemetry_off)).unwrap_or(false)
 }
@@ -1095,6 +1120,7 @@ mod tests {
             mimo_endpoint: None,
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            cline_mcp_bridge: false,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1121,6 +1147,7 @@ mod tests {
             mimo_endpoint: Some("token-plan-sgp".into()),
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            cline_mcp_bridge: false,
             secure_storage_available: true,
             credential_storage_error,
         };
@@ -1433,6 +1460,7 @@ mod tests {
             mimo_endpoint: None,
             mimo_endpoints: mimo_endpoints(),
             claude_connection_mode: Default::default(),
+            cline_mcp_bridge: false,
             secure_storage_available: true,
             credential_storage_error: None,
         };

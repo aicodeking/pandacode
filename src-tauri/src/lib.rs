@@ -4006,6 +4006,7 @@ pub fn run() {
                 provider_settings::provider_save_commandcode_key,
                 provider_settings::provider_remove_commandcode_key,
                 provider_settings::provider_set_mimo_endpoint,
+                provider_settings::provider_set_cline_mcp_bridge,
                 architect::profiles::architect_profiles,
                 architect::profiles::architect_set_lead_guidance,
                 architect::profiles::architect_save_profile,

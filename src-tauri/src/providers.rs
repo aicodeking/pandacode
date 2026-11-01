@@ -1148,6 +1148,8 @@ struct Protocol {
     host: Option<host_tools::HostTools>,
     mcp_server: Option<Value>,
     mcp_required: bool,
+    /// Test override for the Cline mcp-remote bridge setting.
+    cline_mcp_bridge: bool,
     codex_mcp_servers: Option<Value>,
     mcp_tool_names: HashSet<String>,
     text_streams: text_stream::TextStreams,
@@ -1279,6 +1281,7 @@ impl Protocol {
             mcp_server: None,
             codex_mcp_servers: None,
             mcp_required: true,
+            cline_mcp_bridge: false,
             mcp_tool_names: HashSet::new(),
             text_streams: text_stream::TextStreams::default(),
             text_sequence: 0,

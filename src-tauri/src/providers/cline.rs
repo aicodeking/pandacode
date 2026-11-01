@@ -24,6 +24,21 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     command.args(["--auto-approve", if config.mode == "full" { "true" } else { "false" }]);
 }
 
+/// Cline's ACP server does not advertise HTTP MCP. With the bridge setting on,
+/// PandaCode's HTTP tools server is handed over as a stdio server that runs
+/// `npx -y mcp-remote <url>`, which Cline launches itself.
+pub(super) fn stdio_bridge(server: &Value) -> Option<Value> {
+    let url = server["url"].as_str()?;
+    let transport = if server["type"] == "sse" { "sse-only" } else { "http-only" };
+    let mut args = vec!["-y".to_string(), "mcp-remote".into(), url.into(), "--transport".into(), transport.into()];
+    for header in server["headers"].as_array().into_iter().flatten() {
+        let (Some(name), Some(value)) = (header["name"].as_str(), header["value"].as_str()) else { continue };
+        args.push("--header".into());
+        args.push(format!("{name}:{value}"));
+    }
+    Some(json!({"name":server["name"],"command":"npx","args":args,"env":[]}))
+}
+
 /// Cline's ACP prompt keeps only text blocks, but its `read_files` tool opens
 /// images, so a screenshot is passed by path. Images precede the prompt text.
 pub(super) fn image_reference(path: &Path) -> String {
@@ -382,6 +397,20 @@ mod tests {
                 assert!(p.mcp_server.is_none());
             }
         }
+    }
+
+    #[test]
+    fn bridge_setting_hands_tools_to_cline_through_mcp_remote() {
+        let mut p = Protocol::new(super::super::tests::config("cline"));
+        p.mcp_server = Some(json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp","headers":[{"name":"Authorization","value":"Bearer t"}]}));
+        p.mcp_required = true;
+        p.cline_mcp_bridge = true;
+        let step = p.receive(serde_json::from_str(INITIALIZE).unwrap()).unwrap();
+        assert_eq!(step.write[0]["method"], "session/new");
+        assert_eq!(
+            step.write[0]["params"]["mcpServers"],
+            json!([{"name":"pandacode_architect","command":"npx","args":["-y","mcp-remote","http://127.0.0.1:9/mcp","--transport","http-only","--header","Authorization:Bearer t"],"env":[]}])
+        );
     }
 
     #[test]
