@@ -799,7 +799,7 @@ const previewImportables: Record<'claude' | 'codex' | 'zcode', { id: string; tit
     { id: '4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f', title: 'Speed up the search index', folder: '/Users/you/Projects/pandacode', updatedAt: now - 5 * 3600000, messages: null, model: 'gpt-6-astra' },
   ],
   zcode: [
-    { id: 'sess_6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e', title: 'Trace a slow build', folder: '/Users/you/Projects/demo-app', updatedAt: now - 7 * 3600000, messages: 9, model: 'glm-5.3' },
+    { id: 'sess_6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e', title: 'Trace a slow build', folder: '/Users/you/Projects/demo-app', updatedAt: now - 7 * 3600000, messages: 9, model: null },
   ],
 };
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */

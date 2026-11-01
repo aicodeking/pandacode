@@ -20,13 +20,8 @@ pub(crate) fn db_path() -> PathBuf {
 }
 
 /// Read-only: an import never writes into ZCode's store.
-fn open(db: &Path) -> Option<rusqlite::Connection> {
-    rusqlite::Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()
-}
-
-/// Whether the store is present and readable.
-pub(crate) fn available(db: &Path) -> bool {
-    open(db).is_some()
+fn open(db: &Path) -> rusqlite::Result<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
 
 #[derive(Debug, PartialEq)]
@@ -46,13 +41,13 @@ pub(crate) fn bounded_title(raw: String, fallback: &str) -> String {
 }
 
 /// Top-level, undeleted conversations, newest first, with their message counts.
-pub(crate) fn conversations(db: &Path) -> Vec<Conversation> {
-    let Some(conn) = open(db) else { return Vec::new() };
-    let Ok(mut sessions) = conn.prepare("SELECT id, directory, title, time_created, time_updated FROM session WHERE time_deleted IS NULL AND parent_id IS NULL AND id NOT LIKE 'sess_subagent_%' ORDER BY time_updated DESC LIMIT 200") else {
-        return Vec::new();
-    };
-    let Ok(mut counts) = conn.prepare("SELECT COUNT(*) FROM message WHERE session_id = ?1") else { return Vec::new() };
-    let Ok(rows) = sessions.query_map([], |row| {
+/// A store that opens but cannot be read (old schema, corruption, lock) is an
+/// error, not an empty list.
+pub(crate) fn conversations(db: &Path) -> crate::Result<Vec<Conversation>> {
+    let conn = open(db).map_err(|e| e.to_string())?;
+    let mut sessions = conn.prepare("SELECT id, directory, title, time_created, time_updated FROM session WHERE time_deleted IS NULL AND parent_id IS NULL AND id NOT LIKE 'sess_subagent_%' ORDER BY time_updated DESC LIMIT 200").map_err(|e| e.to_string())?;
+    let mut counts = conn.prepare("SELECT COUNT(*) FROM message WHERE session_id = ?1").map_err(|e| e.to_string())?;
+    let rows = sessions.query_map([], |row| {
         Ok(Conversation {
             id: row.get(0)?,
             directory: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -61,20 +56,19 @@ pub(crate) fn conversations(db: &Path) -> Vec<Conversation> {
             updated_at: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
             messages: 0,
         })
-    }) else {
-        return Vec::new();
-    };
-    rows.filter_map(Result::ok)
+    }).map_err(|e| e.to_string())?;
+    Ok(rows
+        .filter_map(Result::ok)
         .map(|mut conversation| {
             conversation.messages = u32::try_from(counts.query_row(rusqlite::params![conversation.id], |count| count.get::<_, i64>(0)).unwrap_or(0)).unwrap_or(0);
             conversation
         })
-        .collect()
+        .collect())
 }
 
 /// The conversation to import, still present, not deleted and not a subagent.
 pub(crate) fn conversation(db: &Path, id: &str) -> Option<Conversation> {
-    let conn = open(db)?;
+    let Ok(conn) = open(db) else { return None };
     conn.query_row(
         "SELECT id, directory, title, time_created FROM session WHERE id = ?1 AND time_deleted IS NULL AND parent_id IS NULL AND id NOT LIKE 'sess_subagent_%'",
         rusqlite::params![id],
@@ -94,9 +88,10 @@ pub(crate) fn conversation(db: &Path, id: &str) -> Option<Conversation> {
 
 /// The model of the newest assistant message that names one.
 pub(crate) fn model(db: &Path, id: &str) -> Option<String> {
-    let conn = open(db)?;
+    let Ok(conn) = open(db) else { return None };
+    // NULL sequences sort last so pre-trigger rows cannot masquerade as the newest.
     let mut messages = conn
-        .prepare("SELECT data FROM message WHERE session_id = ?1 ORDER BY sequence DESC, time_created DESC")
+        .prepare("SELECT data FROM message WHERE session_id = ?1 ORDER BY sequence IS NULL, sequence DESC, time_created DESC")
         .ok()?;
     let rows = messages.query_map(rusqlite::params![id], |row| row.get::<_, String>(0)).ok()?;
     for data in rows.filter_map(Result::ok) {
@@ -115,8 +110,9 @@ pub(crate) fn model(db: &Path, id: &str) -> Option<String> {
 /// user and assistant text plus tool names only. Synthetic `runtimeMessage`
 /// injections, reasoning, step markers and tool payloads stay out.
 pub(crate) fn history(db: &Path, id: &str) -> Vec<Entry> {
-    let Some(conn) = open(db) else { return Vec::new() };
-    let Ok(mut messages) = conn.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY sequence, time_created") else { return Vec::new() };
+    let Ok(conn) = open(db) else { return Vec::new() };
+    // NULL sequences sort last so pre-trigger rows follow their sequenced neighbours.
+    let Ok(mut messages) = conn.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY sequence IS NULL, sequence, time_created") else { return Vec::new() };
     let Ok(rows) = messages.query_map(rusqlite::params![id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?))) else {
         return Vec::new();
     };
@@ -169,4 +165,16 @@ pub(crate) fn history(db: &Path, id: &str) -> Vec<Entry> {
         }
     }
     entries.into()
+}
+
+/// Everything an import needs from the store, read up front so the app's
+/// store lock stays short.
+pub(crate) struct Read {
+    pub conversation: Conversation,
+    pub entries: Vec<Entry>,
+    pub model: Option<String>,
+}
+
+pub(crate) fn read(db: &Path, id: &str) -> Option<Read> {
+    Some(Read { conversation: conversation(db, id)?, entries: history(db, id), model: model(db, id) })
 }

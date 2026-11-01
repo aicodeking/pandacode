@@ -65,7 +65,7 @@ test('searches, switches to Codex, and selects all importable conversations', as
   await expect(page.locator('#navigation .task-item', { hasText: 'Speed up the search index' })).toHaveAttribute('title', /\npandacode(\n|$)/);
 });
 
-test('switches to ZCode and imports a conversation by its session id', async ({ page }) => {
+test('switches to ZCode and imports conversations by session id', async ({ page }) => {
   await page.getByRole('button', { name: 'Import conversations', exact: true }).click();
   await dialog(page).getByRole('button', { name: 'ZCode' }).click();
   await expect(dialog(page).locator('.import-row')).toHaveCount(1);
