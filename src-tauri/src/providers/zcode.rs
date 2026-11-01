@@ -308,17 +308,20 @@ impl Protocol {
     /// Opens the run's session. Deferred persistence keeps captures and failed
     /// starts out of the user's ZCode history; resume attaches by saved id.
     pub(super) fn zcode_initial(&self) -> Value {
-        let workspace = workspace_of(&self.config.cwd);
         match &self.config.resume_id {
             Some(id) => json!({"id": ID_CREATE, "method": "session/resume",
-                "params": {"sessionId": id, "workspace": workspace}}),
-            None => json!({"id": ID_CREATE, "method": "session/create", "params": {
-                "workspace": workspace,
-                "mode": mode(&self.config.mode),
-                "persistence": "deferred",
-                "titleGenerationEnabled": false,
-            }}),
+                "params": {"sessionId": id, "workspace": workspace_of(&self.config.cwd)}}),
+            None => self.zcode_create(),
         }
+    }
+
+    fn zcode_create(&self) -> Value {
+        json!({"id": ID_CREATE, "method": "session/create", "params": {
+            "workspace": workspace_of(&self.config.cwd),
+            "mode": mode(&self.config.mode),
+            "persistence": "deferred",
+            "titleGenerationEnabled": false,
+        }})
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -328,6 +331,22 @@ impl Protocol {
             return Ok(step);
         }
         if let Some(error) = value.get("error") {
+            // Deferred persistence promotes a session on its first send, so a
+            // start that failed before it left nothing on disk and this
+            // per-run server cannot resume it. Start fresh instead of failing
+            // the thread for good; a create's own error is never swallowed.
+            if value["id"] == ID_CREATE
+                && self.config.resume_id.is_some()
+                && (error["code"] == -32004
+                    || field(error, "message")
+                        .to_lowercase()
+                        .starts_with("session not found"))
+            {
+                self.config.resume_id = None;
+                self.remote_id.clear();
+                step.write.push(self.zcode_create());
+                return Ok(step);
+            }
             let message = short(field(error, "message"));
             let auth = field(error, "data").to_lowercase().contains("auth")
                 || message.to_lowercase().contains("account")
@@ -536,11 +555,25 @@ impl Protocol {
                 .into_iter()
                 .flatten()
                 .find(|entry| field(entry, "label") == *wanted);
-            let reference = match entry {
+            let mut reference = match entry {
                 Some(entry) => entry["ref"].clone(),
                 // A custom model id rides the session's current provider.
                 None => json!({"providerId": current["providerId"], "modelId": wanted}),
             };
+            // The selection itself must carry the reasoning level: the server
+            // validates `options.reasoningLevel` inside setModel and rejects the
+            // frame without it, so the later setThoughtLevel cannot repair it.
+            let level = self.config.reasoning_effort.clone().or_else(|| {
+                let entry = entry?;
+                let levels = entry["reasoning"]["levels"].as_array()?;
+                if levels.is_empty() {
+                    return None;
+                }
+                entry["reasoning"]["defaultLevel"].as_str().map(str::to_owned)
+            });
+            if let Some(level) = level {
+                reference["options"] = json!({"reasoningLevel": level});
+            }
             self.zcode.requested_model = Some((
                 string(&reference, "providerId"),
                 string(&reference, "modelId"),
@@ -686,6 +719,7 @@ mod tests {
         assert_eq!(step.write.len(), 3);
         assert_eq!(step.write[0]["method"], "session/setModel");
         assert_eq!(step.write[0]["params"]["model"]["modelId"], "zcproxy/GLM-5.3");
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "high");
         assert_eq!(step.write[1]["method"], "session/setThoughtLevel");
         assert_eq!(step.write[1]["params"]["thoughtLevel"], "high");
         assert_eq!(step.write[2]["method"], "session/subscribe");
@@ -701,6 +735,25 @@ mod tests {
         assert_eq!(prompt.write[0]["method"], "session/send");
         assert_eq!(prompt.write[0]["params"]["inputId"], "pandacode-1");
         assert_eq!(p.phase, 1);
+    }
+
+    #[test]
+    fn set_model_without_an_effort_sends_the_catalog_default_level() {
+        let (mut p, _) = created();
+        p.config.model = "zcproxy/GLM-5.3".into();
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+
+        // A custom id has no catalog entry to default from; the bare
+        // reference stands and the server validates it.
+        let mut custom = super::super::tests::config("zcode");
+        custom.cwd = PathBuf::from("/tmp");
+        custom.model = "pandacode/custom-model".into();
+        let mut p = Protocol::new(custom);
+        assert_eq!(p.initial()["method"], "session/create");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["method"], "session/setModel");
+        assert!(step.write[0]["params"]["model"].get("options").is_none());
     }
 
     #[test]
@@ -731,6 +784,35 @@ mod tests {
         // Protocol::new pre-seeds the resume id, so a stop before the snapshot
         // already names the saved session.
         assert_eq!(p.cancel()["params"]["sessionId"], "sess_saved");
+    }
+
+    #[test]
+    fn a_dead_resume_id_falls_back_to_a_fresh_create() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        assert_eq!(p.initial()["method"], "session/resume");
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert!(p.config.resume_id.is_none(), "the dead id is dropped");
+
+        // The fresh create answers like any other and runs the chain.
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert_eq!(step.write[0]["method"], "session/subscribe");
+
+        // A create's own error is never swallowed into another create.
+        let Err(message) = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a"}}))
+        else {
+            panic!("a fresh create's error must fail the run");
+        };
+        assert_eq!(message, "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a");
     }
 
     #[test]
