@@ -15,7 +15,8 @@ type Deps = {
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
   /** One search target per project folder, the primary first; a single-folder project has one with an empty label. */
   scopes(): Scope[];
-  open(path: string): void;
+  /** Opens a result; `folder` is the searched group's label, so the host never re-derives it from the qualified path. */
+  open(path: string, folder?: string): void;
 };
 type Toggle = 'matchCase' | 'wholeWord' | 'regex';
 
@@ -68,7 +69,7 @@ export function createSearchPanel(deps: Deps) {
     });
     target.querySelector('.search-results')!.addEventListener('click', event => {
       const element = (event.target as HTMLElement).closest<HTMLElement>('[data-search-open],[data-search-group]'); if (!element) return;
-      if (element.dataset.searchOpen) { deps.open(element.dataset.searchOpen); return; }
+      if (element.dataset.searchOpen) { deps.open(element.dataset.searchOpen, element.dataset.searchFolder || undefined); return; }
       const path = element.dataset.searchGroup!;
       if (!state.collapsed.delete(path)) state.collapsed.add(path);
       paint();
@@ -103,12 +104,12 @@ export function createSearchPanel(deps: Deps) {
 
   /** One group's file rows and text rows; single-folder groups render exactly as they always have. */
   function groupPaint(group: Group): { fileRows: string; textRows: string; total: number; truncated: boolean } {
-    const fileRows = group.files.map(file => { const { name, folder } = split(file.path); return `<button type="button" class="search-row search-file" data-search-open="${escape(qualified(group, file.path))}" title="${escape(qualified(group, file.path))}">${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small></button>`; }).join('');
+    const fileRows = group.files.map(file => { const { name, folder } = split(file.path); return `<button type="button" class="search-row search-file" data-search-open="${escape(qualified(group, file.path))}" data-search-folder="${escape(group.label)}" title="${escape(qualified(group, file.path))}">${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small></button>`; }).join('');
     const groups = group.text?.files ?? [];
     const total = groups.reduce((sum, group) => sum + group.matches.reduce((n, match) => n + Math.max(1, match.ranges.length), 0), 0);
     const textRows = groups.map(result => {
       const key = qualified(group, result.path), { name, folder } = split(result.path), open = !state.collapsed.has(key);
-      return `<div class="search-group"><button type="button" class="search-row search-group-title" data-search-group="${escape(key)}" aria-expanded="${open}" title="${escape(key)}">${icon('chevron')}${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small><span class="search-count">${result.matches.length}</span></button>${open ? result.matches.map(match => `<button type="button" class="search-row search-line" data-search-open="${escape(key)}" title="${escape(key)}:${match.line}"><span class="search-text">${highlight(match.text, match.ranges)}</span><small>${match.line}</small></button>`).join('') : ''}</div>`;
+      return `<div class="search-group"><button type="button" class="search-row search-group-title" data-search-group="${escape(key)}" data-search-folder="${escape(group.label)}" aria-expanded="${open}" title="${escape(key)}">${icon('chevron')}${fileIcon(name, false)}<span class="search-name">${escape(name)}</span><small>${escape(folder)}</small><span class="search-count">${result.matches.length}</span></button>${open ? result.matches.map(match => `<button type="button" class="search-row search-line" data-search-open="${escape(key)}" data-search-folder="${escape(group.label)}" title="${escape(key)}:${match.line}"><span class="search-text">${highlight(match.text, match.ranges)}</span><small>${match.line}</small></button>`).join('') : ''}</div>`;
     }).join('');
     return { fileRows, textRows, total, truncated: group.text?.truncated ?? false };
   }

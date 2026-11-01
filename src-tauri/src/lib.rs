@@ -3133,6 +3133,9 @@ async fn git_commit(
     let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::git_commit(&root, message)).await
 }
+// The plain wrappers stay for the frozen tests that pin their Session signature;
+// the agent tool and the commands read the per-repo outcomes themselves.
+#[cfg_attr(not(test), allow(dead_code))]
 fn create_worktree_task(
     store: &Arc<Mutex<Store>>,
     session_id: &str,
@@ -3140,6 +3143,7 @@ fn create_worktree_task(
 ) -> Result<Session> {
     create_worktree_task_with_defaults(store, session_id, branch, None, false, false)
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn create_worktree_task_with_defaults(
     store: &Arc<Mutex<Store>>,
     session_id: &str,

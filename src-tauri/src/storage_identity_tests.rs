@@ -77,19 +77,50 @@ fn a_worktree_task_keeps_the_primary_it_was_created_with() {
         }
     );
 
-    // A task with a checkout but no pin row (created before pinning) keeps
-    // today's behavior: the current primary's label.
-    let legacy_checkout = folder_dir(&root, "worktrees/legacy");
-    let legacy = store
+    // Attaching pins the primary as it is at attach time, so a later primary
+    // change cannot relabel the attached task either.
+    let attached_checkout = folder_dir(&root, "worktrees/attached");
+    let attached = store
         .create_session(&project.id, "claude", "sonnet", "full")
         .unwrap();
     store
-        .attach_worktree(&legacy.id, &legacy_checkout, "legacy-branch")
+        .attach_worktree(&attached.id, &attached_checkout, "attached-branch")
         .unwrap();
-    let folders = store.workspace_folders(&project.id, &legacy.id).unwrap();
-    assert_eq!(folders[0].label, "beta/app", "legacy tasks follow the current primary");
+    let folders = store.workspace_folders(&project.id, &attached.id).unwrap();
+    assert_eq!(folders[0].label, "beta/app", "attach pins the primary as it is");
     assert_eq!(folders.len(), 2);
+    store.set_primary_folder(&project.id, &app).unwrap();
+    assert_eq!(
+        store.workspace_folders(&project.id, &attached.id).unwrap()[0].label,
+        "beta/app",
+        "a later primary change cannot relabel an attached task"
+    );
     std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// The label helper grows parent levels only while spellings still collide:
+/// parents sharing a basename settle at two levels, and only a second shared
+/// parent level needs three.
+#[test]
+fn folder_labels_grow_levels_until_shared_parents_are_disambiguated() {
+    assert_eq!(
+        folder_labels(&[PathBuf::from("/w/a/app"), PathBuf::from("/v/a/app")]),
+        vec!["w/a/app".to_string(), "v/a/app".to_string()],
+        "parents sharing a basename settle at two levels"
+    );
+    assert_eq!(
+        folder_labels(&[
+            PathBuf::from("/r/w/a/app"),
+            PathBuf::from("/v/w/a/app"),
+            PathBuf::from("/r/v/b/app"),
+        ]),
+        vec![
+            "r/w/a/app".to_string(),
+            "v/w/a/app".to_string(),
+            "b/app".to_string(),
+        ],
+        "two shared parent levels settle at three; the distinct folder stays short"
+    );
 }
 
 /// Moving the primary (directly, or by removing it) is refused while any task

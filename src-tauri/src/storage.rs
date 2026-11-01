@@ -1440,17 +1440,32 @@ impl Store {
         Ok(())
     }
     /// Give an unstarted task its own checkout, keeping the draft and settings.
+    /// The project's primary folder is pinned (a session_repos row for the
+    /// checkout) in the same transaction, so a later primary change cannot
+    /// relabel the attached task.
     pub fn attach_worktree(&self, sid: &str, path: &Path, branch: &str) -> Result<Session> {
         let path = path
             .canonicalize()
             .map_err(|e| format!("Worktree folder is unavailable: {e}"))?;
-        let changed = self.db.execute(
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute(
             "UPDATE sessions SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE id=?1 AND worktree_path IS NULL AND resume_id IS NULL AND status NOT IN ('running','waiting') AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id=?1)",
             params![sid, path.to_string_lossy(), branch, now()],
         ).map_err(|e| e.to_string())?;
         if changed == 0 {
             return Err("This conversation already started. Create a new task in a worktree instead.".into());
         }
+        let project_id: String = transaction
+            .query_row("SELECT project_id FROM sessions WHERE id=?1", [sid], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if let Some(primary) = self
+            .project_folders(&project_id)?
+            .into_iter()
+            .find(|folder| folder.is_primary)
+        {
+            self.set_session_repo(sid, Path::new(&primary.path), Some(&path), Some(branch))?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
         self.session(sid)
     }
     /// Point one task's copy of a project folder at its own checkout; NULLs clear it.

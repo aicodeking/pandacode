@@ -7,7 +7,8 @@ export interface ChangesViewDeps {
   loadDiff(path: string, staged: boolean, folder?: string): Promise<string>;
   stage(paths: string[], staged: boolean, folder?: string): Promise<void>;
   commit(message: string, folder?: string): Promise<void>;
-  openFile(path: string): void;
+  /** Opens a changed file; `folder` is the entry's repository qualifier, so the host never re-derives it from the qualified path. */
+  openFile(path: string, folder?: string): void;
   refresh(): void;
   notify(message: string): void;
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
@@ -445,7 +446,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     ];
     deps.choose(anchor, path, items, id => {
       if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage', folder || undefined), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
-      else if (id === 'open') deps.openFile(folder ? `${folder}/${path}` : path);
+      else if (id === 'open') deps.openFile(folder ? `${folder}/${path}` : path, folder || undefined);
       else if (id === 'copy') copy(path, folder);
     });
   }
