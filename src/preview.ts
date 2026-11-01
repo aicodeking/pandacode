@@ -141,6 +141,14 @@ let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
 let previewChatgptSignedIn = false;
 let previewChatgptLogin: { id: string; cancel: () => void } | undefined;
 const previewChatgptStatus = () => ({ installed: true, state: previewChatgptSignedIn ? 'chatgpt' : 'signedOut', email: previewChatgptSignedIn ? 'preview@example.test' : null, plan: previewChatgptSignedIn ? 'plus' : null });
+let previewTelemetryOff = false;
+/** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
+const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
+  { provider: 'claude', name: 'Claude Code', status: 'off', detail: 'Usage telemetry, error reports and surveys. Remote feature flags and remotely started sessions stop.' },
+  { provider: 'codex', name: 'Codex', status: 'off', detail: 'Analytics and feedback uploads.' },
+  { provider: 'cline', name: 'Cline', status: 'manual', detail: 'No per-launch switch. Opt out in Cline’s settings.' },
+  { provider: 'antigravity', name: 'Antigravity', status: 'unknown', detail: 'No verified switch.' },
+] });
 // Provider environment in the preview lives in memory so the Settings UI can be tested in a browser.
 const previewEnvState = { global: [] as [string, string][], providers: {} as Record<string, [string, string][]>, useGlobal: {} as Record<string, boolean> };
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
@@ -817,6 +825,7 @@ function slashCatalog(provider: ProviderId) {
     ['mcp', 'Show configured integrations', 'integrations'],
     ['resume', 'Choose a conversation to continue', provider === 'codex' ? 'conversations' : 'resume'],
     ['rename', 'Rename this task', 'rename'],
+    ['btw', 'Ask on the side while this task keeps working', 'btw'],
     ['copy', 'Copy the latest agent response', 'copy'],
     ['pwd', 'Show the working directory', 'pwd'],
     ['console', 'Open the harness console', 'console'],
@@ -825,7 +834,7 @@ function slashCatalog(provider: ProviderId) {
     ['goal', 'Manage the task goal and token budget', 'goal'], ['usage', 'Inspect Codex account usage', 'usage'],
     ['hooks', 'Inspect lifecycle hooks', 'hooks'], ['import', 'Choose setup to import', 'imports'],
     ['plugins', 'Inspect installed plugins', 'plugins'], ['fork', 'Continue in a separate task', 'fork'],
-    ['side', 'Continue in a separate task', 'fork'], ['btw', 'Continue in a separate task', 'fork'],
+    ['side', 'Continue in a separate task', 'fork'],
     ['archive', 'Archive this task', 'archive'], ['delete', 'Delete this task', 'delete'],
     ['export', 'Export this conversation', 'export'], ['worktree', 'Create a worktree task', 'worktree'],
     ['plan', 'Choose collaboration mode', 'plan'], ['fast', 'Choose service tier', 'fast'],
@@ -836,7 +845,7 @@ function slashCatalog(provider: ProviderId) {
     ['memories', 'Configure memory preferences', 'preferences'], ['ps', 'Inspect background jobs', 'jobs'],
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
-  const accepts = new Set(['rename', 'skills', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
+  const accepts = new Set(['rename', 'skills', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
   const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pandacode:${name}`, name: `/${name}`, description, kind: 'action', source: 'PandaCode', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
   if (provider === 'openai-compatible') {
     const skills = (previewSkills.call('skills_list', {}) as import('./skills-library').SkillItem[])
@@ -844,7 +853,7 @@ function slashCatalog(provider: ProviderId) {
     return { commands: [...commands, ...skills.flatMap(item => [item.id, `skills:${item.id}`].map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: item.description, kind: 'prompt', skill: true, source: 'Skills library', action: undefined, argumentHint: '[request]' })))], warnings: [] };
   }
   const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
-  const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "btw", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
+  const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
   return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', skill: provider === 'codex' && name === 'project-guide', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {
@@ -881,6 +890,43 @@ const architect = createPreviewArchitect({
   agent,
 });
 
+/* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
+ * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+/** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
+const SETTLED_SHOWN = 24;
+function machineRows(parentId: string) {
+  return [...machineParents].filter(([, parent]) => parent === parentId).map(([id]) => session(id)).map(child => ({
+    sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
+    status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
+    machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+  }));
+}
+function machineChildren(parentId: string) {
+  const all = machineRows(parentId);
+  const live = (status: string) => status === 'running' || status === 'waiting';
+  const settled = all.filter(child => !live(child.status)).sort((a, b) => b.createdAt - a.createdAt).slice(0, SETTLED_SHOWN);
+  return [...all.filter(child => live(child.status)), ...settled].sort((a, b) => a.createdAt - b.createdAt);
+}
+function installMachineChildren(): void {
+  const w = window as any;
+  // `launch` also records the parent's pandacode_machine_launch call, as the native tool does.
+  w.__machineChild ??= (parentId: string, child: { title: string; provider?: ProviderId; status?: string; machine?: { id: string; name: string }; launch?: boolean }) => {
+    const parent = session(parentId), at = Date.now() + machineParents.size;
+    const created = { ...parent, id: crypto.randomUUID(), title: child.title, provider: child.provider ?? 'claude', model: '', status: child.status ?? 'running', remoteDevice: child.machine ?? { id: 'dev-studio', name: 'Studio iMac' }, pinned: false, sidebarOrder: null, resumeId: null, createdAt: at, updatedAt: at, lastResponseAt: null } as Session;
+    sessions.unshift(created); messages[created.id] = []; machineParents.set(created.id, parentId);
+    if (child.launch) (messages[parentId] ??= []).push({ id: ++id, sessionId: parentId, role: 'tool', createdAt: at, content: encodeTool({ id: `launch-${created.id}`, name: 'pandacode_machine_launch', status: 'completed', input: JSON.stringify({ machine: created.remoteDevice!.name, prompt: child.title, provider: created.provider, model: 'default', title: child.title }), output: JSON.stringify({ thread: created.id, machine: created.remoteDevice, mode: 'ask', status: 'starting' }) }) });
+    emit('sessions-changed', {});
+    return created.id;
+  };
+  // A saved tool call or app-origin turn on a task, for transcript labels.
+  w.__machineToolMessage ??= (sessionId: string, name: string, input: unknown, output: unknown) => { (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'tool', createdAt: Date.now(), content: encodeTool({ id: `tool-${id}`, name, status: 'completed', input: JSON.stringify(input), output: JSON.stringify(output) }) }); };
+  w.__machineWake ??= (sessionId: string) => {
+    const at = Date.now();
+    (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
+  };
+  w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
+}
 /** Menu bar popover data; `window.__trayCalls` records what it asked for. */
 function trayCommand(command: string, args: Record<string, any>): unknown {
   ((window as any).__trayCalls ??= []).push({ command, args });
@@ -941,6 +987,12 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
 }
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
+    sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),
+    projects: () => projects,
+    emit,
+    send: async (sessionId, text) => { await invoke('send_message', { sessionId, text }); },
+  });
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
@@ -1016,6 +1068,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return (w.__remoteStartBusy ? { sessionId: s.id, note: w.__remoteStartBusy } : { sessionId: s.id }) as T;
   }
   if (command.startsWith('remote_') && command !== 'remote_team' && command !== 'remote_worker_messages') return invokeRemote<T>(command, args, emit);
+  if (command.startsWith('orchestration_')) installMachineChildren();
+  if (command === 'orchestration_threads') {
+    // The named threads of this task only, whatever their age (at most 64 per call).
+    const ids: unknown = args.ids;
+    if (!Array.isArray(ids) || ids.length > 64 || ids.some(item => typeof item !== 'string')) throw new Error('Pass at most 64 thread ids.');
+    ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
+    return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
+  }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
+  if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
   if (command === 'cloud_agent_set_claude_token') { if (!String(args.token ?? '').trim()) throw new Error('Paste the token from claude setup-token.'); return null as T; }
   if (command === 'cloud_agent_start') {
@@ -1079,6 +1142,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'jev_assist_run': case 'jev_assist_save_rules': throw new Error('Jev assistance is an optional desktop add-on. This preview does not call model APIs.');
     case 'jev_save_configuration': case 'jev_install_runtime': case 'jev_start': case 'jev_cancel': case 'jev_read_run': throw new Error('Jev browser testing is available in the desktop app.');
+    case 'harness_privacy': result = previewPrivacy(); break;
+    case 'harness_privacy_set': {
+      if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
+      previewTelemetryOff = args.off; result = previewPrivacy(); break;
+    }
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});

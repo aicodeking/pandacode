@@ -237,7 +237,26 @@ const promptCard = (key: string) => (f: Fields, o: Out): string => label('Messag
 /** Mutations whose row says everything: no card unless they fail. */
 const rowOnly = (): string => COMPLETE;
 
+/** "in 30 min", "at 18:30", "every 2 h", "weekdays at 09:00", "after another thread" from a schedule tool's input. */
+function scheduleTiming(f: Fields): string {
+  const minutes = (value: unknown) => { const n = Number(value); return n < 60 ? `${n} min` : `${Math.round(n / 6) / 10} h`.replace('.0 ', ' '); };
+  const time = field(f, 'timeOfDay'), kind = field(f, 'kind');
+  if (kind === 'interval' && Number(f.intervalMinutes) > 0) return `every ${minutes(f.intervalMinutes)}`;
+  if ((kind === 'daily' || kind === 'weekdays' || kind === 'weekly') && time) return `${kind} at ${time}`;
+  if (kind === 'after' || field(f, 'afterTaskId')) return 'after another thread';
+  if (Number(f.inMinutes) > 0) return `in ${minutes(f.inMinutes)}`;
+  const at = field(f, 'at');
+  if (/^\d{1,2}:\d{2}$/.test(at)) return `at ${at}`;
+  const date = at ? new Date(at) : null;
+  return date && !Number.isNaN(date.getTime()) ? `at ${date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : '';
+}
+const scheduleRow = (what: string) => (f: Fields): Row => ({ object: [what, scheduleTiming(f), clip(field(f, 'title', 'note', 'text'), 60)].filter(Boolean).join(' · ') });
+
 const CATALOG: Record<string, Spec> = {
+  schedule_wakeup: { family: 'task', icon: 'clock', verbs: ['Scheduling', 'Scheduled'], row: scheduleRow('a wake-up'), card: promptCard('note') },
+  schedule_message: { family: 'task', icon: 'clock', verbs: ['Scheduling', 'Scheduled'], row: scheduleRow('a message'), card: promptCard('text') },
+  cancel_schedule: { family: 'task', icon: 'clock', verbs: ['Cancelling', 'Cancelled'], row: () => ({ object: 'a schedule' }), card: rowOnly },
+  list_schedules: { family: 'task', icon: 'clock', verbs: ['Checking', 'Checked'], row: () => ({ object: 'schedules' }), card: rowOnly },
   dispatch_workers: { family: 'team', icon: 'bot', verbs: ['Dispatching', 'Dispatched'], row: f => ({ object: assignments(f).length ? count(assignments(f).length, 'worker') : 'workers' }), card: dispatchCard },
   list_workers: { family: 'team', icon: 'bot', verbs: ['Checking', 'Checked'], row: (_, o) => ({ object: objects(o.obj.workers).length ? count(objects(o.obj.workers).length, 'worker') : 'workers' }), card: (_, o) => (typeof o.obj.round === 'number' ? note(`Round ${o.obj.round}${typeof o.obj.maxRounds === 'number' ? ` of ${o.obj.maxRounds}` : ''}`) : '') + roster(objects(o.obj.workers)) },
   read_worker: { family: 'team', icon: 'bot', verbs: ['Reading', 'Read'], row: f => ({ chip: worker(f), object: 'report' }), card: (_, o) => `<div class="tool-trace-card-head">${badge(field(o.obj, 'status'))}${o.obj.readOnly === true ? '<span class="tool-trace-badge is-quiet">read-only</span>' : ''}</div>` + label('Summary', prose(field(o.obj, 'summary'), 400)) + label('Response', prose(field(o.obj, 'response'), 500)) + files(o.obj.files) },
@@ -342,8 +361,49 @@ export function pandacodeFamily(name: string): PandaFamily | undefined {
   return tool ? CATALOG[tool]?.family : undefined;
 }
 
+// --- Machine orchestration (docs/machine-orchestration.md) -------------------
+
+export type MachineResult = { thread?: string; machine?: string; status?: string; linked?: boolean; pending?: boolean };
+/** What a PandaCode machine tool returned (`{ thread, machine: { name }, status }`, or `{ linked, pending }` for a link). */
+export function machineResult(output: string): MachineResult {
+  const start = output.indexOf('{'), end = output.lastIndexOf('}');
+  if (start < 0 || end <= start) return {};
+  try {
+    const value: unknown = JSON.parse(output.slice(start, end + 1));
+    if (!isObj(value)) return {};
+    const { thread, machine, status, linked, pending } = value;
+    const name = typeof machine === 'string' ? machine : isObj(machine) && typeof machine.name === 'string' ? machine.name : undefined;
+    const str = (item: unknown) => typeof item === 'string' ? item : undefined;
+    return { thread: str(thread), machine: name, status: str(status), linked: linked === true, pending: pending === true };
+  } catch { return {}; }
+}
+
+/** `Starting a thread on ProMini`-style rows for the `machine_*` tools. */
+function machineTrace(tool: string, fields: Fields, output: string, running: boolean): { verb: string; object: string } | undefined {
+  const tense = (now: string, done: string) => running ? now : done;
+  const result = machineResult(output), name = result.machine ?? field(fields, 'machine'), threads = Array.isArray(fields.threads) ? fields.threads.length : 0;
+  const on = name ? clip(name, 40) : '';
+  switch (tool) {
+    case 'list': return { verb: tense('Listing', 'Listed'), object: 'machines' };
+    case 'link':
+      // The tool returns after ~40 s with `pending` while the card still waits for the user.
+      if (!running && result.pending) return { verb: 'Waiting for you', object: 'to link a machine' };
+      if (!running && result.linked) return { verb: 'Linked', object: on || 'a machine' };
+      return { verb: tense('Asking', 'Asked'), object: `to link ${on || 'a machine'}` };
+    case 'capabilities': return { verb: tense('Checking', 'Checked'), object: `orchestration capabilities${on ? ` on ${on}` : ''}` };
+    case 'launch': return { verb: running ? 'Launching' : result.status === 'starting' ? 'Starting' : 'Launched', object: `a thread on ${on || 'another machine'}${field(fields, 'title') ? ` · ${clip(field(fields, 'title'), 60)}` : ''}` };
+    case 'wait': return { verb: tense('Waiting on', 'Waited on'), object: threads ? count(threads, 'thread') : 'threads' };
+    case 'read': return { verb: tense('Reading', 'Read'), object: 'a thread' };
+    case 'stop': return { verb: tense('Stopping', 'Stopped'), object: `a thread${on ? ` on ${on}` : ''}` };
+    case 'message': return field(fields, 'action') === 'steer' ? { verb: tense('Steering', 'Steered'), object: 'a thread' } : { verb: tense('Messaging', 'Messaged'), object: 'a thread' };
+    default: return;
+  }
+}
+
 /** Row parts for a known PandaCode tool; undefined lets the caller use the generic `Used [PandaCode] tool` row. */
 export function pandacodeTrace(tool: string, fields: Fields, output: string, running: boolean): Omit<Trace, 'kind'> | undefined {
+  const machine = tool.startsWith('machine_') ? machineTrace(tool.slice(8), fields, output, running) : undefined;
+  if (machine) return { ...machine, chip: { icon: 'server', label: 'PandaCode', title: tool }, family: 'cloud', icon: 'server' };
   const spec = CATALOG[tool];
   if (!spec) return;
   const row = spec.row?.(fields, out(output)) ?? {};

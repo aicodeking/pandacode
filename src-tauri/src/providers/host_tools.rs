@@ -23,6 +23,8 @@ pub(super) struct HostTools {
     catalog: HashSet<(Option<String>, String)>,
     active: HashMap<String, Value>,
     active_calls: HashMap<String, String>,
+    /// When a pending approval with a bounded wait (machine tools) is declined.
+    expires: HashMap<String, tokio::time::Instant>,
 }
 const MAX_CALLS: usize = 64;
 fn rpc_key(id: &Value) -> Result<String, String> {
@@ -91,6 +93,7 @@ impl HostTools {
             catalog,
             active: HashMap::new(),
             active_calls: HashMap::new(),
+            expires: HashMap::new(),
         })
     }
     fn parse(&self, request: &Value) -> Result<Call, String> {
@@ -260,17 +263,50 @@ impl Protocol {
                 preview_json(&call.arguments, TOOL_INPUT_LIMIT)
             );
             let pending = json!({"id":call.id,"method":"item/tool/call","params":{"namespace":request["params"]["namespace"],"tool":call.tool,"arguments":call.arguments,"callId":request["params"]["callId"]}});
+            let wait = crate::remote::orchestrate::approval_wait(&call.tool);
             if let Err(error) = self.approval(pending, label, step) {
                 if let Some(host) = &mut self.host {
                     host.finish(&call.id);
                 }
                 step.write.push(reply(call.id, Err(error)));
+            } else if let (Some(wait), Some(id), Some(host)) = (wait, step.events.last().and_then(|e| e.request_id.clone()), &mut self.host) {
+                host.expires.insert(id, tokio::time::Instant::now() + wait);
             }
         } else {
             step.calls.push(call);
         }
     }
+    /// The next bounded approval to expire.
+    pub(super) fn approval_deadline(&self) -> Option<tokio::time::Instant> {
+        self.host.as_ref()?.expires.values().min().copied()
+    }
+    /// Declines approvals whose wait ran out (machine tools, `APPROVAL_WAIT`); a late Approve
+    /// then finds nothing to run.
+    pub(super) fn expire_approvals(&mut self, now: tokio::time::Instant) -> Step {
+        let mut step = Step::default();
+        let Some(host) = &mut self.host else { return step };
+        let due: Vec<String> = host.expires.iter().filter(|(_, at)| **at <= now).map(|(id, _)| id.clone()).collect();
+        host.expires.retain(|_, at| *at > now);
+        for id in due {
+            let Some(request) = self.pending.remove(&id) else { continue };
+            if let Some(host) = &mut self.host {
+                host.finish(&request["id"]);
+            }
+            step.write.push(reply(request["id"].clone(), Err("App approval expired or was cancelled".into())));
+            let mut event = self.event("approval_cancelled", "", None);
+            event.request_id = Some(id);
+            step.events.push(event);
+        }
+        step
+    }
     pub(super) fn approval_step(&mut self, id: &str, approved: bool) -> Step {
+        let now = tokio::time::Instant::now();
+        if self.host.as_ref().and_then(|host| host.expires.get(id)).is_some_and(|at| *at <= now) {
+            return self.expire_approvals(now);
+        }
+        if let Some(host) = &mut self.host {
+            host.expires.remove(id);
+        }
         let mut step = Step::default();
         if self
             .pending
@@ -659,6 +695,35 @@ mod protocol_tests {
             assert!(step.calls.is_empty());
             assert_eq!(step.write.len(), 1);
         }
+    }
+    #[test]
+    fn an_expired_machine_approval_is_declined_and_a_late_approve_runs_nothing() {
+        let mut p = protocol("ask", true);
+        let mut machine = host(false);
+        machine.tools[0]["name"] = json!("pandacode_machine_launch");
+        machine.approval_tools.insert("pandacode_machine_launch".into());
+        p.host = Some(HostTools::new(machine).unwrap());
+        let mut req = request();
+        req["params"]["tool"] = json!("pandacode_machine_launch");
+        let step = p.receive(req).unwrap();
+        let id = step.events.iter().find(|e| e.kind == "approval").unwrap().request_id.clone().unwrap();
+        let deadline = p.approval_deadline().unwrap();
+        let left = deadline - tokio::time::Instant::now();
+        assert!(left <= crate::remote::orchestrate::APPROVAL_WAIT && left > crate::remote::orchestrate::APPROVAL_WAIT - Duration::from_secs(5));
+        assert!(p.expire_approvals(tokio::time::Instant::now()).write.is_empty(), "not yet");
+        // The wait ran out.
+        p.host.as_mut().unwrap().expires.insert(id.clone(), tokio::time::Instant::now());
+        // An Approve that arrives after the wait (before the timer fires) is declined too.
+        let late = p.approval_step(&id, true);
+        assert!(late.calls.is_empty());
+        assert_eq!(late.write[0]["result"]["success"], false);
+        assert_eq!(late.events[0].kind, "approval_cancelled");
+        assert!(p.approval_step(&id, true).calls.is_empty() && p.pending.is_empty());
+        assert_eq!(p.approval_deadline(), None);
+        // Other tools keep waiting for the user.
+        let mut p = protocol("ask", true);
+        p.receive(request()).unwrap();
+        assert_eq!(p.approval_deadline(), None);
     }
     #[test]
     fn rejected_and_cancelled_approvals_never_dispatch() {

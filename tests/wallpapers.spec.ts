@@ -206,9 +206,13 @@ test('wallpapers match the sidebar frost in rounded board task details without a
   await page.setViewportSize({ width: 1100, height: 940 });
   await open(page);
   await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
-  const sidebarMaterial = await page.locator('.sidebar').evaluate(el => {
-    const style = getComputedStyle(el);
-    return { background: style.backgroundColor, frost: style.backdropFilter };
+  // The sidebar has no fill of its own: it sits on the window frame (.workspace::after), the one
+  // blur layer, tinted a step toward the text. The drawer is that frost material without the step.
+  const sidebarMaterial = await page.locator('.workspace').evaluate(el => {
+    const style = getComputedStyle(el, '::after');
+    const probe = document.createElement('div'); probe.style.background = 'var(--workspace-frost-surface)'; el.append(probe);
+    const surface = getComputedStyle(probe).backgroundColor; probe.remove();
+    return { background: surface, frost: style.backdropFilter };
   });
   await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();

@@ -14,7 +14,7 @@ test('menu rows keep label and detail on one line and never wrap', async ({ page
   await open(page);
   await page.getByRole('button', { name: 'Attach files for context' }).click();
   const rows = page.getByRole('dialog', { name: 'Attach', exact: true }).getByRole('menuitem');
-  await expect(rows).toHaveCount(5);
+  await expect(rows).toHaveCount(6);
   const heights = await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   for (const height of heights) expect(height).toBeLessThanOrEqual(36);
   const first = rows.first();

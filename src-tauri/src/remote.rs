@@ -12,6 +12,7 @@ pub(crate) mod grants;
 mod host;
 mod images;
 pub(crate) mod mirror;
+pub(crate) mod orchestrate;
 pub(crate) mod routes;
 mod secrets;
 mod socket;
@@ -150,6 +151,7 @@ impl Inner {
         self.fail_pending(None, "Signed out of PandaCode Connect.");
         self.token = None;
         self.settings.account = None;
+        self.settings.links.clear();
         self.devices.clear();
         self.presence = false;
         self.subscribers.clear();
@@ -165,6 +167,8 @@ pub(crate) struct Remote {
     inner: Mutex<Inner>,
     /// The device key, separate from `inner` so reading or creating it blocks nothing else.
     key: Mutex<Option<StaticSecret>>,
+    /// Held while `remote.json` is written.
+    saving: Mutex<()>,
 }
 
 impl Remote {
@@ -176,8 +180,12 @@ impl Remote {
         self.key.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn save(&self, settings: &config::Settings) {
-        if let Err(error) = config::save(&self.dir, settings) {
+    /// Writes the current settings. Saves take turns and each reads the state when its turn
+    /// comes, so an older snapshot never overwrites a newer one.
+    fn save(&self) {
+        let _turn = self.saving.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let settings = self.lock().settings.clone();
+        if let Err(error) = config::save(&self.dir, &settings) {
             eprintln!("{error}");
         }
     }
@@ -244,6 +252,7 @@ fn emit_status(app: &tauri::AppHandle) {
 
 fn emit_presence(app: &tauri::AppHandle) {
     let _ = app.emit("remote://presence", remote(app).devices_view());
+    orchestrate::presence_changed(app);
 }
 
 /// Loads settings and starts the socket when already signed in. No network otherwise.
@@ -253,7 +262,8 @@ pub(crate) fn setup(app: &tauri::AppHandle, dir: &std::path::Path) {
     let now = chrono::Utc::now().timestamp();
     let token = if settings.account.is_some() { secrets::read(dir).token.filter(|token| config::token_valid(token, now)) } else { None };
     let signed_in = token.is_some();
-    app.manage(Remote { dir: dir.to_owned(), inner: Mutex::new(Inner { settings, token, ..Default::default() }), key: Mutex::new(None) });
+    orchestrate::remember_enabled(settings.orchestration);
+    app.manage(Remote { dir: dir.to_owned(), inner: Mutex::new(Inner { settings, token, ..Default::default() }), key: Mutex::new(None), saving: Mutex::new(()) });
     if signed_in && config::build().is_some() {
         socket::start(app);
     }
@@ -263,17 +273,14 @@ pub(crate) fn setup(app: &tauri::AppHandle, dir: &std::path::Path) {
 /// With `used`, only if that request's token is still the current one.
 fn sign_out_local(app: &tauri::AppHandle, used: Option<&str>) {
     let remote = remote(app);
-    let settings = {
-        let mut inner = remote.lock();
-        if !inner.clear_sign_in(used) {
-            return;
-        }
-        inner.settings.clone()
-    };
+    if !remote.lock().clear_sign_in(used) {
+        return;
+    }
     if let Err(error) = secrets::remove_token(&remote.dir) {
         eprintln!("{error}");
     }
-    remote.save(&settings);
+    remote.save();
+    orchestrate::links::signed_out(app);
     emit_status(app);
     emit_presence(app);
 }
@@ -365,13 +372,10 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
     let (token, account) = match auth::register(&build, &github_token, device(state.device_id())).await {
         // This id is registered with another key (the key file was lost, say): become a new device once.
         Err(error) if error == auth::KEY_CHANGED => {
-            let settings = {
-                let mut inner = state.lock();
-                inner.settings.device_id = uuid::Uuid::new_v4().to_string();
-                inner.settings.clone()
-            };
-            state.save(&settings);
-            auth::register(&build, &github_token, device(settings.device_id)).await?
+            let device_id = uuid::Uuid::new_v4().to_string();
+            state.lock().settings.device_id = device_id.clone();
+            state.save();
+            auth::register(&build, &github_token, device(device_id)).await?
         }
         other => other?,
     };
@@ -379,13 +383,12 @@ pub async fn remote_sign_in_finish(app: tauri::AppHandle) -> Result<Value> {
         return Err("The relay returned an unexpected sign-in token.".into());
     }
     secrets::set_token(&state.dir, &token)?;
-    let settings = {
+    {
         let mut inner = state.lock();
         inner.token = Some(token);
         inner.settings.account = Some(account);
-        inner.settings.clone()
-    };
-    state.save(&settings);
+    }
+    state.save();
     socket::start(&app);
     emit_status(&app);
     Ok(state.status())
@@ -403,6 +406,7 @@ pub async fn remote_sign_out(app: tauri::AppHandle) -> Result<Value> {
         let _ = auth::relay(&build, &token, reqwest::Method::DELETE, &format!("/v1/devices/{me}")).await;
     }
     sign_out_local(&app, None);
+    orchestrate::emit_status(&app);
     Ok(remote(&app).status())
 }
 
@@ -410,7 +414,7 @@ pub async fn remote_sign_out(app: tauri::AppHandle) -> Result<Value> {
 #[tauri::command]
 pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: Option<bool>, full_access: Option<bool>) -> Result<Value> {
     let state = remote(&app);
-    let settings = {
+    {
         let mut inner = state.lock();
         if let Some(full_access) = full_access {
             inner.settings.remote_full_access = full_access;
@@ -425,9 +429,8 @@ pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: Option<bool
                 let _ = outbox.try_send(json!({"kind": "host", "enabled": enabled}).to_string());
             }
         }
-        inner.settings.clone()
-    };
-    state.save(&settings);
+    }
+    state.save();
     emit_status(&app);
     Ok(state.status())
 }
@@ -435,12 +438,8 @@ pub async fn remote_set_host_enabled(app: tauri::AppHandle, enabled: Option<bool
 #[tauri::command]
 pub async fn remote_set_notify_enabled(app: tauri::AppHandle, enabled: bool) -> Result<Value> {
     let state = remote(&app);
-    let settings = {
-        let mut inner = state.lock();
-        inner.settings.notify_enabled = enabled;
-        inner.settings.clone()
-    };
-    state.save(&settings);
+    state.lock().settings.notify_enabled = enabled;
+    state.save();
     emit_status(&app);
     Ok(state.status())
 }
@@ -478,11 +477,12 @@ pub async fn remote_revoke_device(app: tauri::AppHandle, device_id: String) -> R
             inner.subscribers.remove(&device_id);
             inner.keys.remove(&device_id);
             inner.catalog.forget(&device_id);
-            let settings = inner.settings.clone();
+            inner.settings.links.remove(&device_id);
             drop(inner);
-            state.save(&settings);
+            state.save();
         }
         emit_presence(&app);
+        orchestrate::emit_status(&app);
     }
     Ok(json!({}))
 }
@@ -502,6 +502,10 @@ fn targets(inner: &Inner) -> Vec<Value> {
         .filter(|d| d.id != inner.settings.device_id && d.host && d.online)
         .map(|d| json!({"deviceId": d.id, "name": d.name, "platform": d.platform, "online": d.online}))
         .collect()
+}
+
+fn is_target(inner: &Inner, device: &Device) -> bool {
+    device.id != inner.settings.device_id && device.host
 }
 
 // Headless host support (`pandacode serve`, docs/headless.md): the sign-in, settings and
@@ -663,7 +667,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn device(id: &str, name: &str, key: &str) -> Device {
+    pub(super) fn device(id: &str, name: &str, key: &str) -> Device {
         Device { id: id.into(), name: name.into(), platform: String::new(), public_key: key.into(), host: true, online: true, last_seen: Value::Null }
     }
 
@@ -713,13 +717,37 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_saves_never_leave_an_older_snapshot() {
+        let dir = std::env::temp_dir().join(format!("pandacode-remote-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let remote = std::sync::Arc::new(Remote { dir: dir.clone(), inner: Mutex::new(Inner::default()), key: Mutex::new(None), saving: Mutex::new(()) });
+        let writers: Vec<_> = (0..16)
+            .map(|n| {
+                let remote = remote.clone();
+                std::thread::spawn(move || {
+                    remote.lock().settings.links.insert(format!("d{n}"), config::Link { access: config::Access::Read, at: n as i64, key: "k".into() });
+                    remote.save();
+                })
+            })
+            .collect();
+        writers.into_iter().for_each(|w| w.join().unwrap());
+        let saved: config::Settings = serde_json::from_str(&std::fs::read_to_string(dir.join("remote.json")).unwrap()).unwrap();
+        assert_eq!(saved.links.len(), 16, "the last save wrote the newest state");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temp files left");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_stale_token_never_signs_out_a_newer_sign_in() {
         let mut inner = Inner { token: Some("new".into()), generation: 3, ..Default::default() };
         inner.settings.account = Some(config::Account::default());
+        inner.settings.links.insert("studio".into(), config::Link { access: config::Access::Full, at: 1, key: "k".into() });
         assert!(!inner.clear_sign_in(Some("old")));
+        assert_eq!(inner.settings.links.len(), 1);
         assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (Some("new"), 3, true));
         assert!(inner.clear_sign_in(Some("new")));
         assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (None, 4, false));
+        assert!(inner.settings.links.is_empty(), "signing out removes links");
         inner.token = Some("again".into());
         assert!(inner.clear_sign_in(None));
         assert!(inner.token.is_none());

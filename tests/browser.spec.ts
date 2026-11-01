@@ -309,14 +309,14 @@ test.describe('browser workspace', () => {
     const lifecycle = await Promise.all(['browser_open', 'browser_close'].map(command => commandCalls(page, command)));
     await separator.focus();
     await page.keyboard.press('Home');
-    await expect.poll(() => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().width)).toBe(270);
+    await expect.poll(() => page.locator('#inspector').evaluate(node => (node as HTMLElement).offsetWidth + 16)).toBe(270); // the inset panel sits 8px inside each side of its track;
     await checkNativeBounds();
     const small = (await browserPanel(page).locator('.browser-viewport').boundingBox())!;
     const handle = (await separator.boundingBox())!;
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
     await page.mouse.down();
     await page.mouse.move(handle.x + handle.width / 2 - 210, handle.y + handle.height / 2, { steps: 6 });
-    await expect.poll(() => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().width)).toBe(480);
+    await expect.poll(() => page.locator('#inspector').evaluate(node => (node as HTMLElement).offsetWidth + 16)).toBe(480);
     await checkNativeBounds();
     const large = (await browserPanel(page).locator('.browser-viewport').boundingBox())!;
     expect(large.width - small.width).toBeCloseTo(210, 0);

@@ -25,12 +25,8 @@ html[data-theme="dark"] .workspace[data-wallpaper] :is(.main-pane,.sidebar,.insp
 /* Navigation, board cards, and threads share the same frosted material. */
 .workspace[data-wallpaper]{--workspace-frost-surface:rgb(255 255 255 / .5);--workspace-frost:blur(24px) saturate(1.1)}
 html[data-theme="dark"] .workspace[data-wallpaper]{--workspace-frost-surface:rgb(26 29 25 / .55)}
-html[data-theme] .workspace[data-wallpaper]>.main-pane{background:transparent}
-html[data-theme] .workspace[data-wallpaper]>:is(.sidebar,.inspector){
-  --raised:rgb(255 255 255 / .3);
-  background:var(--workspace-frost-surface);box-shadow:none;
-  backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);
-}
+/* The frost itself is the window frame (.workspace::after) and the panels' tint (src/inset-shell.css). */
+html[data-theme] .workspace[data-wallpaper]>:is(.sidebar,.inspector){--raised:rgb(255 255 255 / .3)}
 html[data-theme="dark"] .workspace[data-wallpaper]>:is(.sidebar,.inspector){
   --raised:rgb(220 225 205 / .1);
 }
@@ -94,9 +90,7 @@ html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
 @media(prefers-contrast:more),(prefers-reduced-transparency:reduce){
   html .workspace :is(.architect-panel,.subagents-panel).floating-menu{background:var(--panel);border-color:var(--text);backdrop-filter:none;-webkit-backdrop-filter:none}
   .workspace-wallpaper{display:none}
-  html[data-theme] .workspace[data-wallpaper]>.main-pane{background:var(--bg)}
-  html[data-theme] .workspace[data-wallpaper]>.sidebar{background:var(--sidebar);border-right-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none}
-  html[data-theme] .workspace[data-wallpaper]>.inspector{background:var(--panel);border-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none}
+  html[data-theme] .workspace[data-wallpaper]>:is(.sidebar,.inspector){border-color:var(--border)}
   html .workspace[data-wallpaper]>.main-pane>.workspace-header{background:var(--bg)}
   .workspace[data-wallpaper] :is(.project-board,.conversation-pane){background:var(--bg)}
   html:root .workspace.side-thread[data-wallpaper] .conversation-pane{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}

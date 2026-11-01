@@ -386,7 +386,11 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
             let (Some(id), Some(kind)) = (event["sessionId"].as_str(), event["kind"].as_str()) else { continue };
             let current: String = store.db.query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0)).unwrap_or_default();
             if let Some(next) = status_after(&current, kind) {
-                changed |= store.status(id, next).is_ok();
+                if store.status(id, next).is_ok() {
+                    changed = true;
+                    // A thread that now needs the user ends its parent's `pandacode_machine_wait`.
+                    super::orchestrate::child_changed(&store, id);
+                }
             }
         }
         (events, changed)
@@ -585,6 +589,11 @@ fn finish(app: &tauri::AppHandle, local: &str, successful: bool, stopped: bool, 
     let done = AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: text.to_owned(), request_id: None, data: None, tool: None };
     let _ = app.emit("agent-event", done);
     let _ = app.emit("sessions-changed", ());
+    super::orchestrate::child_settled(app, local);
+    // `after` schedules watching a mirror fire like they do for a local run.
+    if !stopped {
+        crate::schedules::run_finished(app, local, successful);
+    }
 }
 
 /// Whether a failed call means the host can't be reached at all.
@@ -789,7 +798,7 @@ fn insert_copy(store: &Store, local: &str, id: Option<i64>, message: &Value) -> 
 
 fn store_title(store: &Store, local: &str, page: &Value) -> Result<()> {
     if let Some(title) = page["title"].as_str().map(str::trim).filter(|title| !title.is_empty() && title.chars().count() <= 200) {
-        store.db.execute("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2", params![local, title]).map_err(|e| e.to_string())?;
+        store.db.execute("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2 AND title_origin<>'manual'", params![local, title]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -1022,6 +1031,7 @@ async fn subscribe_all(app: &tauri::AppHandle, reconnected: bool) -> bool {
         }
     }
     load_cursors(app);
+    load_starts(app);
     let online: HashSet<String> = remote(app).lock().devices.iter().filter(|d| d.online).map(|d| d.id.clone()).collect();
     resume_starts(app, &online);
     let followed: HashSet<String> = hosts.keys().filter(|device| online.contains(*device)).cloned().collect();
@@ -1220,7 +1230,15 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
                 pending.push((local, Some((successful, stopped))));
                 continue;
             }
-            Reconcile::Set(status) => changed |= lock(&app.state::<AppState>()).and_then(|store| store.status(&local, &status)).is_ok(),
+            Reconcile::Set(status) => {
+                changed |= lock(&app.state::<AppState>())
+                    .and_then(|store| {
+                        store.status(&local, &status)?;
+                        super::orchestrate::child_changed(&store, &local);
+                        Ok(())
+                    })
+                    .is_ok()
+            }
             Reconcile::Same => {}
         }
         // Approvals and questions still waiting come back after a restart or a lost frame.
@@ -1412,7 +1430,7 @@ async fn resume_start(app: tauri::AppHandle, local: String) {
             }
             StartState::Failed(error) => {
                 remote(&app).lock().viewer.starts.remove(&local);
-                abandon(&state, &local, created);
+                not_started(&app, &state, &local, created, &error);
                 super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
                 let _ = app.emit("remote://start-progress", json!({"deviceId": device, "startId": start_id, "repo": null, "stage": "error", "percent": null, "detail": error}));
             }
@@ -1480,8 +1498,9 @@ fn settle_cancel(app: &tauri::AppHandle, state: &AppState, local: &str, outcome:
     match outcome {
         Cancel::Started(session) => {
             remote(app).lock().viewer.starts.remove(local);
-            attach(state, local, &session)?;
-            subscribe_soon(app);
+            // A machine thread already ended here: it is stopped there too.
+            let thread = lock(state).is_ok_and(|store| machine_thread(&store, local));
+            linked(app, state, local, &session, thread)?;
             let _ = app.emit("sessions-changed", ());
             Ok(json!({"cancelled": false}))
         }
@@ -1489,7 +1508,7 @@ fn settle_cancel(app: &tauri::AppHandle, state: &AppState, local: &str, outcome:
             let start = remote(app).lock().viewer.starts.remove(local);
             if let Some(start) = start {
                 start.cancel.notify_one();
-                abandon(state, local, start.created);
+                not_started(app, state, local, start.created, super::start::CANCELLED);
             }
             let _ = app.emit("sessions-changed", ());
             Ok(json!({"cancelled": true}))
@@ -1591,34 +1610,108 @@ pub async fn remote_start_task(
     start_id: Option<String>,
     image_ids: Option<Vec<String>>,
 ) -> Result<Value> {
+    let request = Launch { device: device_id, project_id, prompt, provider, model, mode, effort, worktree: worktree.unwrap_or(false), branch, draft: session_id, start_id, image_ids: image_ids.unwrap_or_default(), ..Default::default() };
+    let (local, note) = commit(&app, request).await?.start.await.map_err(|e| e.to_string())??;
+    let mut session = serde_json::to_value(lock(&state)?.session(&local)?).map_err(|e| e.to_string())?;
+    session["sessionId"] = json!(local);
+    if let Some(note) = note {
+        session["note"] = json!(note);
+    }
+    Ok(session)
+}
+
+/// A task to start on another computer. With `parent`, it is that task's machine thread
+/// (docs/machine-orchestration.md), titled `title`.
+#[derive(Debug, Default)]
+pub(crate) struct Launch {
+    pub device: String,
+    pub project_id: String,
+    pub prompt: String,
+    pub provider: String,
+    pub model: String,
+    pub mode: Option<String>,
+    pub effort: Option<String>,
+    pub worktree: bool,
+    pub branch: Option<String>,
+    /// An empty New task draft to become the mirror.
+    pub draft: Option<String>,
+    /// The viewer's start id (a machine thread uses its own mirror id).
+    pub start_id: Option<String>,
+    pub image_ids: Vec<String>,
+    pub parent: Option<String>,
+    pub title: Option<String>,
+}
+
+/// A mirror row made and running locally, its start on the host already under way.
+pub(crate) struct Committed {
+    pub local: String,
+    pub mode: Option<String>,
+    /// `start`, spawned with the row, so dropping the caller (a tool deadline, say) never
+    /// leaves a row nothing starts. The local id and the host's worktree note.
+    pub start: tauri::async_runtime::JoinHandle<Result<(String, Option<String>)>>,
+}
+
+/// Checks a launch, makes its mirror row and spawns its start in the same step.
+pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Result<Committed> {
+    let state = app.state::<AppState>();
+    let device_id = request.device.clone();
     super::valid_device_id(&device_id)?;
     {
-        let state = remote(&app);
+        let state = remote(app);
         let inner = state.lock();
         inner.callable(&device_id)?;
         if !inner.devices.iter().any(|d| d.id == device_id && d.host) {
             return Err(format!("{} does not allow remote control.", super::device_label(&device_id)));
         }
     }
-    super::catalog::check(&app, &device_id, &provider, &model)?;
-    let prompt = prompt.trim().to_owned();
-    if prompt.is_empty() || prompt.len() > host::MAX_TEXT {
+    // An agent never saw the model picker: a cold cache is filled first, so an unavailable
+    // model is refused here, not there.
+    if request.parent.is_some() && request.model != "default" {
+        super::catalog::models(app, Some(device_id.clone()), &request.provider, false).await?;
+    }
+    super::catalog::check(app, &device_id, &request.provider, &request.model)?;
+    request.prompt = request.prompt.trim().to_owned();
+    if request.prompt.is_empty() || request.prompt.len() > host::MAX_TEXT {
         return Err("Send between 1 byte and 100 KB of text.".into());
     }
-    let check = project_status(&state, &project_id).await?;
+    let check = project_status(&state, &request.project_id).await?;
     let repo = check["repo"].as_str().ok_or(NO_REPO)?.to_owned();
-    let branch = branch.filter(|b| !b.trim().is_empty()).or_else(|| check["branch"].as_str().filter(|b| !b.is_empty()).map(str::to_owned));
+    let branch = request.branch.clone().filter(|b| !b.trim().is_empty()).or_else(|| check["branch"].as_str().filter(|b| !b.is_empty()).map(str::to_owned));
     // Images go first, before any row exists: a failed upload leaves the New task as it was.
-    let image_ids = super::images::send(&app, &device_id, image_ids.as_deref().unwrap_or_default()).await?;
-    let (local, created) = mirror_row(&*lock(&state)?, &device_id, &project_id, &provider, &model, mode.as_deref(), effort.as_deref(), session_id.as_deref())?;
-    // The host echoes `startId` in its `task.progress` events (remote/start.rs), runs a
-    // repeated start once, and reports or cancels it by this id.
-    let start_id = start_id.filter(|id| host::valid_id(id).is_ok());
+    let image_ids = super::images::send(app, &device_id, &request.image_ids).await?;
     let cancel = Arc::new(Notify::new());
-    if let Some(start_id) = &start_id {
-        remote(&app).lock().viewer.starts.insert(local.clone(), PendingStart { device: device_id.clone(), start_id: start_id.clone(), created, cancel: cancel.clone(), busy: true, cancelling: false });
-    }
-    let request = json!({"repo": repo, "branch": branch, "worktree": worktree.unwrap_or(false), "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids});
+    // No await from here on: the row and its start are made together.
+    let (local, created, start_id) = {
+        // A machine thread's link and its parent's mode are read again at the commit point,
+        // under the remote lock: either may have changed during the awaits above.
+        let remote_state = remote(app);
+        let mut inner = remote_state.lock();
+        let store = lock(&state)?;
+        if let Some(parent) = request.parent.as_deref() {
+            request.mode = Some(super::orchestrate::commit_mode(&inner, &store, parent, &device_id)?.to_owned());
+        }
+        let (local, created) = mirror_row(&store, &request)?;
+        // The host echoes `startId` in its `task.progress` events (remote/start.rs), runs a
+        // repeated start once, and reports or cancels it by this id. A machine thread's is its
+        // own id, so a start a quit cut off is followed up again (`load_starts`).
+        let start_id = if request.parent.is_some() { Some(local.clone()) } else { request.start_id.clone().filter(|id| host::valid_id(id).is_ok()) };
+        if let Some(start_id) = &start_id {
+            inner.viewer.starts.insert(local.clone(), PendingStart { device: device_id.clone(), start_id: start_id.clone(), created, cancel: cancel.clone(), busy: true, cancelling: false });
+        }
+        (local, created, start_id)
+    };
+    let _ = app.emit("sessions-changed", ());
+    let Launch { prompt, provider, model, mode, effort, worktree, .. } = request;
+    let body = json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids});
+    let (start_app, start_local) = (app.clone(), local.clone());
+    let start = tauri::async_runtime::spawn(async move { start(start_app, start_local, created, device_id, repo, start_id, cancel, body).await });
+    Ok(Committed { local, mode, start })
+}
+
+/// Sends `task.start` for a committed mirror row and links it to the host task.
+#[allow(clippy::too_many_arguments)]
+async fn start(app: tauri::AppHandle, local: String, created: bool, device_id: String, repo: String, start_id: Option<String>, cancel: Arc<Notify>, request: Value) -> Result<(String, Option<String>)> {
+    let state = app.state::<AppState>();
     let started = tokio::select! {
         reply = client::call_within(&app, &device_id, "task.start", request, START_TIMEOUT) => reply,
         _ = cancel.notified() => Err(super::start::CANCELLED.into()),
@@ -1647,28 +1740,84 @@ pub async fn remote_start_task(
         }
         started => {
             let stop_now = remote(&app).lock().viewer.starts.remove(&local).is_some_and(|start| start.cancelling);
-            match started.and_then(|session| linked(&app, &state, &local, &session, stop_now)) {
-                Ok(()) => {}
-                Err(error) => {
-                    // Leave nothing behind: a new row goes, a reused draft is a local draft again.
-                    abandon(&state, &local, created);
-                    if error != super::start::CANCELLED {
-                        super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
-                    }
-                    let _ = app.emit("sessions-changed", ());
-                    return Err(error);
+            if let Err(error) = started.and_then(|session| linked(&app, &state, &local, &session, stop_now)) {
+                not_started(&app, &state, &local, created, &error);
+                if error != super::start::CANCELLED {
+                    super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
                 }
+                let _ = app.emit("sessions-changed", ());
+                return Err(error);
             }
         }
     }
     subscribe_soon(&app);
     let _ = app.emit("sessions-changed", ());
-    let mut session = serde_json::to_value(lock(&state)?.session(&local)?).map_err(|e| e.to_string())?;
-    session["sessionId"] = json!(local);
-    if let Some(note) = note {
-        session["note"] = json!(note);
+    Ok((local, note))
+}
+
+/// Whether a mirror is a machine thread (docs/machine-orchestration.md).
+fn machine_thread(store: &Store, local: &str) -> bool {
+    store.db.query_row("SELECT EXISTS(SELECT 1 FROM machine_threads WHERE session_id=?1)", [local], |r| r.get(0)).unwrap_or(false)
+}
+
+/// A start that did not happen. A machine thread stays: stopped if the user stopped it,
+/// else an error with the reason as its reply, which its parent's wake reports. Any other
+/// row is put back (`abandon`).
+fn not_started(app: &tauri::AppHandle, state: &AppState, local: &str, created: bool, error: &str) {
+    if !lock(state).is_ok_and(|store| machine_thread(&store, local)) {
+        abandon(state, local, created);
+        return;
     }
-    Ok(session)
+    let failed = lock(state).and_then(|store| {
+        let waiting: bool = store.db.query_row("SELECT status IN ('running','waiting') AND remote_session IS NULL FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if !waiting || error == super::start::CANCELLED {
+            return Ok(waiting);
+        }
+        super::orchestrate::fail_start(&store, local, error)?;
+        Ok(false)
+    });
+    match failed {
+        // Stopped while it started: ends as stopped.
+        Ok(true) => finish(app, local, false, true, "Turn stopped"),
+        Ok(false) if error != super::start::CANCELLED => {
+            eprintln!("Machine orchestration: a thread did not start: {error}");
+            let _ = app.emit("agent-event", AgentEvent { session_id: local.to_owned(), kind: "done".into(), text: "Turn failed".into(), request_id: None, data: None, tool: None });
+            let _ = app.emit("sessions-changed", ());
+            super::orchestrate::child_settled(app, local);
+        }
+        Ok(false) => {}
+        Err(store_error) => eprintln!("PandaCode Connect: could not record a failed start: {store_error}"),
+    }
+}
+
+/// Machine threads whose start a quit cut off are followed up again by their start id (the
+/// thread's own id): `resume_start` links one the host made and fails one it lost. Once per run.
+fn load_starts(app: &tauri::AppHandle) {
+    static LOADED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if LOADED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let rows = lock(&app.state::<AppState>()).and_then(|store| pending_threads(&store));
+    match rows {
+        Ok(rows) => {
+            let state = remote(app);
+            let mut inner = state.lock();
+            for (local, device) in rows {
+                inner.viewer.starts.entry(local.clone()).or_insert_with(|| PendingStart { device, start_id: local, created: true, cancel: Arc::new(Notify::new()), busy: false, cancelling: false });
+            }
+        }
+        Err(error) => eprintln!("Machine orchestration: could not read starting threads: {error}"),
+    }
+}
+
+/// Machine threads still starting: (local id, device).
+fn pending_threads(store: &Store) -> Result<Vec<(String, String)>> {
+    let mut statement = store
+        .db
+        .prepare("SELECT s.id,s.remote_device FROM sessions s JOIN machine_threads m ON m.session_id=s.id WHERE s.remote_device IS NOT NULL AND s.remote_session IS NULL AND s.status IN ('running','waiting')")
+        .map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
+    rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
 }
 
 /// Cancels a start that has not made its host task yet (`sessionId` is the local row),
@@ -1688,6 +1837,11 @@ async fn cancel_start(app: &tauri::AppHandle, state: &AppState, local: &str) -> 
         (start.device.clone(), start.start_id.clone())
     });
     let Some((device, start_id)) = start else { return Err("That task is not starting.".into()) };
+    // A machine thread's turn ends here at once (kept in the row); whoever links its host
+    // task later stops it there, and a start that then fails leaves it stopped.
+    if lock(state).is_ok_and(|store| machine_thread(&store, local)) {
+        finish(app, local, false, true, "Turn stopped");
+    }
     let reply = client::call(app, &device, "task.cancelStart", json!({"startId": start_id})).await;
     let outcome = cancel_outcome(&reply);
     if let Err(error) = &reply {
@@ -1700,14 +1854,17 @@ async fn cancel_start(app: &tauri::AppHandle, state: &AppState, local: &str) -> 
 }
 
 /// Makes (or converts an empty draft into) the local mirror row, published and running.
-#[allow(clippy::too_many_arguments)]
-fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, model: &str, mode: Option<&str>, effort: Option<&str>, draft: Option<&str>) -> Result<(String, bool)> {
+fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
+    let Launch { device, project_id, provider, model, mode, effort, draft, parent, title, .. } = request;
+    if let Some(parent) = parent {
+        super::orchestrate::check_capacity(store, parent)?;
+    }
     // A draft with its own local worktree keeps it; the mirror gets a fresh row.
-    let reuse = draft.filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none()));
+    let reuse = draft.as_deref().filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| &task.project_id == project_id && task.worktree_path.is_none()));
     // `create_user_task` commits its own transaction, so a new row is made before this one.
     let (id, created) = match reuse {
         Some(id) => (id.to_owned(), false),
-        None => (crate::architect::profiles::create_user_task(store, project_id, provider, model, mode, None)?.id, true),
+        None => (crate::architect::profiles::create_user_task(store, project_id, provider, model, mode.as_deref(), None)?.id, true),
     };
     let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
     if !created {
@@ -1717,9 +1874,15 @@ fn mirror_row(store: &Store, device: &str, project_id: &str, provider: &str, mod
         }
     }
     if effort.is_some() {
-        store.set_reasoning_effort(&id, effort)?;
+        store.set_reasoning_effort(&id, effort.as_deref())?;
     }
     store.db.execute("UPDATE sessions SET remote_device=?2,remote_session=NULL,remote_synced_id=0,draft=0 WHERE id=?1", params![id, device]).map_err(|e| e.to_string())?;
+    if let Some(title) = title {
+        store.db.execute("UPDATE sessions SET title=?2,title_origin='manual' WHERE id=?1", params![id, title]).map_err(|e| e.to_string())?;
+    }
+    if let Some(parent) = parent {
+        super::orchestrate::record_child(store, parent, &id)?;
+    }
     // A default team was saved on the new task (or the draft); its agents would need this
     // computer's checkout, so the mirror is a single agent on the host.
     store.db.execute("DELETE FROM architect_teams WHERE session_id=?1", [&id]).map_err(|e| e.to_string())?;
@@ -1872,7 +2035,7 @@ mod tests {
         store.mark_draft(&draft.id).unwrap();
         let team = |id: &str| json!({"sessionId": id, "config": {"auto": true, "workers": [], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}, "status": "idle", "round": 0, "revision": 1, "workers": [], "error": null, "summary": null, "updatedAt": 0}).to_string();
         store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES (?1,?2)", params![draft.id, team(&draft.id)]).unwrap();
-        let (local, _) = mirror_row(&store, "host", &project.id, "claude", "sonnet", None, None, Some(&draft.id)).unwrap();
+        let (local, _) = mirror_row(&store, &Launch { device: "host".into(), project_id: project.id.clone(), provider: "claude".into(), model: "sonnet".into(), draft: Some(draft.id.clone()), ..Default::default() }).unwrap();
         let teams: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_teams WHERE session_id=?1", [&local], |r| r.get(0)).unwrap();
         assert_eq!(teams, 0, "the mirror is a single agent on the host");
         store.db.execute("UPDATE sessions SET remote_session='h1' WHERE id=?1", [&local]).unwrap();
@@ -1907,16 +2070,44 @@ mod tests {
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let draft = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         store.mark_draft(&draft.id).unwrap();
-        let (id, created) = mirror_row(&store, "host", &project.id, "codex", "gpt", None, None, Some(&draft.id)).unwrap();
+        let launch = |provider: &str, draft: &str| Launch { device: "host".into(), project_id: project.id.clone(), provider: provider.into(), model: "gpt".into(), draft: Some(draft.into()), ..Default::default() };
+        let (id, created) = mirror_row(&store, &launch("codex", &draft.id)).unwrap();
         assert_eq!((id.as_str(), created), (draft.id.as_str(), false));
         let mirror = store.session(&id).unwrap();
         assert_eq!((mirror.provider.as_str(), mirror.status.as_str(), mirror.draft), ("codex", "running", false));
         let other = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         store.mark_draft(&other.id).unwrap();
         store.attach_worktree(&other.id, &std::env::temp_dir(), "pandacode/x").unwrap();
-        let (fresh, created) = mirror_row(&store, "host", &project.id, "claude", "sonnet", None, None, Some(&other.id)).unwrap();
+        let (fresh, created) = mirror_row(&store, &launch("claude", &other.id)).unwrap();
         assert!(created && fresh != other.id);
         assert_eq!(store.session(&other.id).unwrap().remote_device, None, "the worktree draft stays local");
+    }
+
+    #[test]
+    fn a_machine_thread_still_starting_survives_a_restart_and_is_asked_about_again() {
+        let path = std::env::temp_dir().join(format!("pandacode-mirror-thread-{}.sqlite3", uuid::Uuid::new_v4()));
+        let (thread, stopped) = {
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let parent = store.create_session(&project.id, "claude", "sonnet", "full").unwrap().id;
+            let launch = Launch { device: "host".into(), project_id: project.id.clone(), provider: "claude".into(), model: "sonnet".into(), parent: Some(parent.clone()), title: Some("Review".into()), ..Default::default() };
+            let (thread, created) = mirror_row(&store, &launch).unwrap();
+            let (stopped, _) = mirror_row(&store, &launch).unwrap();
+            assert!(created && machine_thread(&store, &thread));
+            assert_eq!(store.session(&thread).unwrap().title, "Review");
+            assert!(finish_once(&store, &stopped, false, true).unwrap());
+            assert_eq!(pending_threads(&store).unwrap(), vec![(thread.clone(), "host".to_string())], "a stopped one is not asked about");
+            (thread, stopped)
+        };
+        let store = Store::open(&path).unwrap();
+        let task = store.session(&thread).unwrap();
+        assert_eq!((task.remote_device.map(|d| d.id), task.status.as_str(), task.draft), (Some("host".to_string()), "running", false), "never a draft again");
+        assert_eq!(store.session(&stopped).unwrap().status, "interrupted", "stays stopped");
+        assert_eq!(pending_threads(&store).unwrap(), vec![(thread, "host".to_string())]);
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
     }
 
     #[test]

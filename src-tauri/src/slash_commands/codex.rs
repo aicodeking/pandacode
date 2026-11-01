@@ -396,12 +396,6 @@ fn builtins_for_platform(platform: &str) -> Vec<SlashCommand> {
             Some("[instructions]"),
         ),
         (
-            "btw",
-            "Continue this context in a separate task",
-            "fork",
-            Some("[instructions]"),
-        ),
-        (
             "export",
             "Export this conversation",
             "export",

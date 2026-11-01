@@ -1,0 +1,85 @@
+/* Machine orchestration above the prompt (link card, lineage strip, waiting line) and the
+ * Link a machine dialog. Always loaded: main.ts imports the module statically. */
+#machine-orchestration:empty{display:none}
+#machine-orchestration{display:grid;gap:4px;margin:0 0 6px;min-width:0}
+.machine-link-card,.lineage,.lineage-wait{min-width:0;border-radius:6px;background:var(--panel);color:var(--text);font-size:.82rem}
+.machine-link-card{display:flex;align-items:center;gap:9px;min-height:40px;padding:3px 4px 3px 10px;box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .28),0 6px 18px -10px rgb(0 0 0 / .35)}
+.machine-link-mark{width:15px;height:15px;flex:none;color:var(--accent-ink)}
+html[data-theme="dark"] .machine-link-mark{color:var(--accent)}
+.machine-link-text{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden;white-space:nowrap}
+.machine-link-text strong{flex:none;font-weight:600}
+.machine-link-text span{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.machine-actions{display:flex;flex:none;align-items:center;gap:4px}
+:is(.machine-quiet,.machine-primary){height:24px;padding:0 10px;border-radius:4px;font-size:.76rem;font-weight:550;--press:1}
+.machine-quiet{color:var(--muted);background:none}
+.machine-quiet:hover:not(:disabled){color:var(--text);background:var(--raised)}
+.machine-primary{background:var(--accent);color:var(--on-accent)}
+.machine-primary:hover:not(:disabled){background:var(--accent-hover,var(--accent))}
+
+/* Lineage: one line that expands to a line per launched thread. */
+.lineage{padding:2px 4px 2px 8px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--border) 80%,transparent)}
+.lineage-line,.lineage-row,.lineage-wait{display:flex;align-items:center;gap:8px;min-width:0}
+.lineage-line{min-height:32px}
+.lineage-faces{display:flex;flex:none}
+.lineage-faces span,.lineage-face{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--raised);box-shadow:0 0 0 1.5px var(--panel);color:var(--muted);font-family:var(--mono);font-size:.56rem;font-weight:650;letter-spacing:.02em}
+.lineage-faces span+span{margin-left:-5px}
+.lineage-summary{justify-content:flex-start;flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;padding:0;background:none;color:var(--text);text-align:left;white-space:nowrap;cursor:pointer;--press:1}
+.lineage-summary strong{flex:none;font-weight:600}
+.lineage-summary span{color:var(--accent-ink);font-size:.76rem}
+html[data-theme="dark"] .lineage-summary span{color:var(--accent)}
+.lineage-chevron{width:12px;height:12px;flex:none;align-self:center;margin-left:auto;color:var(--muted)}
+.lineage.is-open .lineage-chevron{rotate:90deg}
+.lineage-rows{list-style:none;margin:0 0 2px;padding:3px 0 0;border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent);display:grid;grid-template-columns:minmax(0,1fr)}
+.lineage-row{min-height:30px}
+.lineage-face{width:18px;height:18px;flex:none}
+.lineage-open{display:block;flex:1;min-width:0;padding:0;overflow:hidden;background:none;color:var(--text);text-align:left;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}
+.lineage-open:hover{text-decoration:underline}
+.lineage-where{flex:none;color:var(--muted);font-size:.76rem;white-space:nowrap}
+.lineage-wait{min-height:30px;padding:0 4px 0 10px;background:none;color:var(--muted)}
+.lineage-wait strong{flex:none;color:var(--text);font-weight:550}
+.lineage-titles{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:.76rem}
+.lineage-wait .machine-quiet{margin-left:auto;flex:none}
+.lineage-spinner{width:11px;height:11px;flex:none;border-radius:50%;border:1.5px solid color-mix(in srgb,var(--muted) 40%,transparent);border-top-color:var(--accent)}
+@media(prefers-reduced-motion:no-preference){.lineage-spinner{animation:lineage-spin .9s linear infinite}@keyframes lineage-spin{to{rotate:360deg}}}
+
+/* Link a machine dialog. */
+.machine-link-dialog{width:min(520px,calc(100vw - 32px))}
+.machine-reason{margin:0 0 10px;color:var(--muted);font-size:.8rem;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.machine-steps{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:4px;margin:0 0 14px;padding:3px;border-radius:6px;background:var(--glass-fill)}
+.machine-steps li{display:flex;align-items:center;gap:8px;min-width:0;padding:6px 10px;border-radius:4px;color:var(--muted);font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.machine-steps li[aria-current="step"]{background:var(--glass-fill-hover);color:var(--text)}
+.machine-steps li>span{display:inline-grid;place-items:center;width:18px;height:18px;flex:none;border-radius:50%;background:var(--raised);font-size:.7rem}
+.machine-steps li>span .icon{width:11px;height:11px}
+.machine-steps li:first-child:not([aria-current]) > span{background:var(--accent);color:var(--on-accent)}
+.machine-list{min-width:0;margin:0;padding:0;border:1px solid var(--glass-line);border-radius:6px;background:var(--glass-fill);overflow:hidden}
+.machine-row{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;font-size:.84rem;white-space:nowrap;cursor:pointer}
+.machine-row+.machine-row{border-top:1px solid var(--glass-line)}
+.machine-row:hover:not(.is-disabled){background:var(--glass-fill-hover)}
+.machine-row.is-disabled{cursor:default;color:var(--muted)}
+.machine-row input{width:auto;margin:0;padding:0;flex:none;border:0;background:none;accent-color:var(--accent)}
+.machine-row input:focus-visible{outline:2px solid var(--focus);outline-offset:2px;box-shadow:none}
+.machine-row .remote-dot{margin:0}
+.machine-name{flex:none;font-weight:550}
+.machine-platform{flex:none;color:var(--muted);font-size:.76rem}
+.machine-badge{flex:none;padding:1px 6px;border-radius:4px;background:var(--raised);color:var(--muted);font-size:.7rem}
+.machine-why{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:.74rem}
+.machine-access-help{margin:8px 0 0;color:var(--muted);font-size:.78rem;line-height:1.45}
+.machine-link-form select{width:100%}
+.machine-linked select{flex:none;width:auto}
+@media (prefers-contrast:more){.machine-link-card,.lineage{box-shadow:inset 0 0 0 1px var(--text)}}
+.settings-page-root .setting-row.machine-linked{grid-template-columns:minmax(0,1fr) auto auto}
+
+/* Transcript card for a turn's launched threads (like a subagents card). */
+.machine-threads{margin:6px 0 10px;min-width:0;max-width:100%;font-size:.82rem}
+.machine-threads-summary{display:flex;align-items:center;gap:9px;width:100%;min-height:34px;padding:2px 4px;justify-content:flex-start;background:none;color:var(--text);text-align:left;cursor:pointer;--press:1}
+.machine-threads-copy{display:grid;min-width:0;line-height:1.2}
+.machine-threads-copy strong{font-weight:600;font-size:.8rem}
+.machine-threads-copy small{color:var(--accent-ink);font-size:.7rem}
+html[data-theme="dark"] .machine-threads-copy small{color:var(--accent)}
+.machine-threads-time{margin-left:auto;color:var(--muted);font-size:.74rem}
+.machine-threads.is-open .lineage-chevron{rotate:90deg}
+.machine-threads .lineage-rows{margin-left:4px}
+/* An action on a notice, e.g. opening a task that asks to link a machine. */
+.toast-action{flex:none;margin-left:4px;padding:3px 9px;border-radius:4px;background:var(--accent);color:var(--on-accent);font-size:.8rem;font-weight:550;--press:1}
+.toast-action:hover{background:var(--accent-hover,var(--accent))}
+.machine-threads-time+.lineage-chevron{margin-left:0}

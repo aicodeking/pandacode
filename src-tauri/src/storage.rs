@@ -161,7 +161,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 36;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -509,6 +509,28 @@ impl Store {
                 // under, so its token totals can be summed from the agents' own logs.
                 migration.execute_batch("CREATE TABLE IF NOT EXISTS task_usage_links(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,harness_id TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(session_id,harness_id)); PRAGMA user_version=34;").map_err(|e| e.to_string())?;
             }
+            if version < 35 {
+                // Task schedules: wake-ups and timed messages for any thread (docs/schedules.md).
+                migration.execute_batch(crate::schedules::SCHEMA).map_err(|e| e.to_string())?;
+                migration.execute_batch("PRAGMA user_version=35;").map_err(|e| e.to_string())?;
+            }
+            if version < 36 {
+                // Machine orchestration (docs/machine-orchestration.md): threads a task launched on
+                // another computer, the wake message that reported each, whether the restart (not
+                // the user) interrupted a task, and the user's Stop saved before the run is
+                // signalled, so a quit right after it never counts as a restart interruption.
+                migration.execute_batch("CREATE TABLE IF NOT EXISTS machine_threads(parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
+                  CREATE INDEX IF NOT EXISTS machine_threads_parent ON machine_threads(parent_session_id,reported);").map_err(|e| e.to_string())?;
+                for (table, name, definition) in [("sessions", "restart_interrupted", "INTEGER NOT NULL DEFAULT 0"), ("sessions", "stop_requested", "INTEGER NOT NULL DEFAULT 0"), ("machine_threads", "reported_by", "INTEGER")] {
+                    let exists: bool = migration.query_row(&format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1)"), [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
+                  PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+            }
             migration.commit().map_err(|e| e.to_string())?;
         }
         let recovery = db.transaction().map_err(|e| e.to_string())?;
@@ -523,15 +545,21 @@ impl Store {
         settle_unfinished_subagents(&recovery, None, "stopped")?;
         recovery
             .execute(
-                "UPDATE sessions SET status='interrupted',task_stage='in_progress',completed_at=NULL WHERE status IN ('running','waiting')",
+                // Marked `restart_interrupted`: the restart, not the user, stopped them, so a
+                // machine-thread wake may still start their next turn. A task the user stopped
+                // (`stop_requested`) was not interrupted by the restart. A machine thread keeps
+                // its status: its host runs it, and the subscription catches up, so its parent
+                // is never told it settled.
+                "UPDATE sessions SET status='interrupted',task_stage='in_progress',completed_at=NULL,restart_interrupted=1-stop_requested WHERE status IN ('running','waiting') AND (remote_device IS NULL OR id NOT IN (SELECT session_id FROM machine_threads))",
                 [],
             )
             .map_err(|e| e.to_string())?;
         // A remote start PandaCode quit during never got its host task: the row is a local
-        // draft again (an empty one is discarded with the other drafts).
+        // draft again (an empty one is discarded with the other drafts). A machine thread
+        // stays: its start is asked about again by its id (`mirror::load_starts`).
         recovery
             .execute(
-                "UPDATE sessions SET remote_device=NULL,status='idle',draft=NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id) WHERE remote_device IS NOT NULL AND remote_session IS NULL",
+                "UPDATE sessions SET remote_device=NULL,status='idle',draft=NOT EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id) WHERE remote_device IS NOT NULL AND remote_session IS NULL AND id NOT IN (SELECT session_id FROM machine_threads)",
                 [],
             )
             .map_err(|e| e.to_string())?;
@@ -1113,7 +1141,7 @@ impl Store {
         if task.archived || task.task_stage == "completed" {
             return Err("Reopen this task first.".into());
         }
-        self.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,updated_at=?2 WHERE id=?1", params![sid,now()]).map_err(|e|e.to_string())?;
+        self.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,updated_at=?2,stop_requested=0 WHERE id=?1", params![sid,now()]).map_err(|e|e.to_string())?;
         Ok(())
     }
 
@@ -1476,6 +1504,12 @@ impl Store {
         }
         Ok(())
     }
+    /// Saves the user's Stop before the run is signalled (see `Store::open`). Only a
+    /// running local task takes it; the next turn start clears it.
+    pub fn request_stop(&self, sid: &str) -> Result<()> {
+        self.db.execute("UPDATE sessions SET stop_requested=1 WHERE id=?1 AND status IN ('running','waiting') AND remote_device IS NULL", [sid]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
     pub fn status(&self, sid: &str, status: &str) -> Result<()> {
         self.db
             .execute(
@@ -1548,6 +1582,18 @@ impl Store {
         content: &str,
         kind: Option<crate::architect::internal_turns::CoordinationKind>,
     ) -> Result<i64> {
+        self.begin_task_turn_reporting(sid, content, kind, &[])
+    }
+
+    /// As `begin_task_turn_with_kind`, also marking the machine threads `reported` reports
+    /// in the same transaction, so a wake is never lost or repeated.
+    pub fn begin_task_turn_reporting(
+        &self,
+        sid: &str,
+        content: &str,
+        kind: Option<crate::architect::internal_turns::CoordinationKind>,
+        reported: &[String],
+    ) -> Result<i64> {
         if content.trim().is_empty() || content.len() > 128 * 1024 {
             return Err("Write a message under 128 KiB first.".into());
         }
@@ -1569,7 +1615,7 @@ impl Store {
             .db
             .execute(
                 "UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,
-                title=?2,updated_at=?3 WHERE id=?1 AND archived=0 AND task_stage<>'completed'
+                title=?2,updated_at=?3,restart_interrupted=0,stop_requested=0 WHERE id=?1 AND archived=0 AND task_stage<>'completed'
                 AND status NOT IN ('running','waiting')",
                 params![sid, title, now()],
             )
@@ -1583,6 +1629,9 @@ impl Store {
         } else {
             self.start_turn_message(sid, content)?
         };
+        for child in reported {
+            self.db.execute("UPDATE machine_threads SET reported=1,reported_by=?3 WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
+        }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(message_id)
     }
@@ -1611,7 +1660,7 @@ impl Store {
         };
         self.db
             .execute(
-                "UPDATE sessions SET status=?2,
+                "UPDATE sessions SET status=?2,restart_interrupted=0,
                task_stage=CASE WHEN json_valid(goal_state) AND json_extract(goal_state,'$.status')<>'complete' THEN 'in_progress' ELSE COALESCE(?5, CASE WHEN ?3 THEN 'review' ELSE 'in_progress' END) END,
                completed_at=NULL,updated_at=?4 WHERE id=?1",
                 params![sid, status, successful && !stopped, now(), restore_stage],

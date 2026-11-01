@@ -11,6 +11,7 @@ export async function subscribe(name: 'jev-frame', callback: (event: import('./j
 export async function subscribe(name: 'jev-install', callback: (event: { status: string; message: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'sessions-changed', callback: () => void): Promise<() => void>;
 export async function subscribe(name: 'queue-changed', callback: (event: { sessionId: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'schedules-changed', callback: (event: { sessionId: string | null }) => void): Promise<() => void>;
 export async function subscribe(name: 'bots-changed', callback: () => void): Promise<() => void>;
 export async function subscribe(name: 'bot-shared-channel-changed', callback: (event: { channelId: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'bot-messages-changed', callback: (event: { sessionId?: string }) => void): Promise<() => void>;

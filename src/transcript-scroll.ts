@@ -50,9 +50,17 @@ export function captureTranscriptAnchor(transcript: HTMLElement): () => void {
   };
 }
 
+/** A transcript whose owner keeps it pinned to the bottom after layout (a ResizeObserver),
+ *  with a layout-free test of whether it is following now. */
+const followers = new WeakMap<HTMLElement, () => boolean>();
+export function followTranscriptBottom(transcript: HTMLElement, following: () => boolean): void { followers.set(transcript, following); }
+
 /** Capture immediately before an async Markdown paint, respecting new user scrolls. */
 export function preserveTranscriptPosition(transcript: HTMLElement, changed?: HTMLElement): () => void {
-  const follow = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140
+  // Following: the owner pins after layout, before paint, so measuring here would only force layout.
+  const following = followers.get(transcript);
+  if (following?.()) return () => {};
+  const follow = !following && transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140
     && !document.activeElement?.closest('details');
   if (follow) return () => { transcript.scrollTop = transcript.scrollHeight; };
   // Streaming at the bottom cannot move content above it. Avoid scanning loaded

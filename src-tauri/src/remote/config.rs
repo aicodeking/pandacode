@@ -64,6 +64,51 @@ pub(crate) struct Settings {
     /// Set once scoped pairing (`grants.rs`) has been set up for this install.
     #[serde(default)]
     pub grants_scoped: bool,
+    /// Agents here may use linked computers (docs/machine-orchestration.md).
+    #[serde(default)]
+    pub orchestration: bool,
+    /// Device id → what agents here may do there. Counts only while the device is a target
+    /// with the key it was linked under.
+    #[serde(default)]
+    pub links: std::collections::BTreeMap<String, Link>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum Access {
+    Read,
+    Ask,
+    Full,
+}
+
+impl Access {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        match text {
+            "read" => Some(Self::Read),
+            "ask" => Some(Self::Ask),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Link {
+    pub access: Access,
+    /// When the user linked it, in milliseconds.
+    #[serde(default)]
+    pub at: i64,
+    /// The device's public key when it was linked: a link belongs to the computer behind that
+    /// key, so a changed (or missing) key makes it count for nothing.
+    #[serde(default)]
+    pub key: String,
+}
+
+impl Link {
+    pub(crate) fn counts_for(&self, current_key: &str) -> bool {
+        !self.key.is_empty() && self.key == current_key
+    }
 }
 
 /// Reads the settings, creating the device id once. The first load after scoped pairing
@@ -248,7 +293,16 @@ mod tests {
         let parsed: Settings = serde_json::from_str(r#"{"deviceId":"x","hostEnabled":true,"account":{"id":"gh:1","login":"a","avatarUrl":"u"},"trusted":{"old-device":"old-key"}}"#).unwrap();
         assert!(parsed.host_enabled);
         assert_eq!(parsed.account.as_ref().unwrap().avatar_url, "u");
-        assert!(serde_json::to_value(parsed).unwrap().get("trusted").is_none());
+        assert!(serde_json::to_value(&parsed).unwrap().get("trusted").is_none());
+        assert!(!parsed.orchestration && parsed.links.is_empty(), "orchestration is off by default");
+        let linked: Settings = serde_json::from_str(r#"{"orchestration":true,"links":{"d1":{"access":"full","at":5,"key":"k1"}}}"#).unwrap();
+        assert_eq!(linked.links["d1"], Link { access: Access::Full, at: 5, key: "k1".into() });
+        assert!(serde_json::to_string(&linked).unwrap().contains(r#""links":{"d1":{"access":"full","at":5,"key":"k1"}}"#));
+        assert!(serde_json::from_str::<Settings>(r#"{"links":{"d1":{"access":"root"}}}"#).is_err());
+        assert_eq!((Access::parse("ask"), Access::parse("admin")), (Some(Access::Ask), None));
+        assert!(linked.links["d1"].counts_for("k1") && !linked.links["d1"].counts_for("k2"), "a changed key drops the link");
+        let keyless: Settings = serde_json::from_str(r#"{"links":{"d1":{"access":"ask"}}}"#).unwrap();
+        assert!(!keyless.links["d1"].counts_for(""), "a link saved without a key counts for nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
 

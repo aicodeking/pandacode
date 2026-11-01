@@ -52,6 +52,7 @@ mod pi;
 mod zcode;
 mod diagnostics;
 pub(crate) mod claude_auth;
+pub(crate) mod privacy;
 pub(crate) use launch::{command, pty_command, external_path, executable_path, widen_process_path};
 #[cfg(test)]
 mod kimi_stream_tests;
@@ -2554,13 +2555,14 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool))
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
                         // title or snapshot named paths. They cannot edit the checkout.
                         // Bot tools are registered only in a bot's own tasks and only
                         // touch that bot's memory, schedules and messages to its owner.
+                        // Schedule tools here only wake or list this thread's own schedules.
                         // Team tools only exist in team turns and only change team state.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
@@ -3210,6 +3212,10 @@ async fn run_process_with_tools(
                 },
                 _=tokio::time::sleep_until(deadline),if stopped || protocol.phase==0=>{
                     if stopped{break Ok(());}break Err("Agent initialization timed out. Check the CLI's login and configuration in a terminal.".into());
+                },
+                _=tokio::time::sleep_until(protocol.approval_deadline().unwrap_or_else(||tokio::time::Instant::now()+Duration::from_secs(86400))),if !stopped && protocol.approval_deadline().is_some()=>{
+                    let step=protocol.expire_approvals(tokio::time::Instant::now());
+                    apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;
                 },
                 _=tokio::time::sleep_until(protocol.goals.deadline().unwrap_or_else(||tokio::time::Instant::now()+Duration::from_secs(86400))),if protocol.goals.deadline().is_some()=>{
                     let step=protocol.goal_tick();

@@ -80,7 +80,9 @@ export function installTooltips(): void {
   document.addEventListener('focusin', event => { const mark = markFor(event.target); if (mark && keyboard) show(mark); else hide(); });
   document.addEventListener('focusout', event => { if (anchor && event.target instanceof Node && anchor.contains(event.target)) hide(); });
   for (const type of ['pointerdown', 'keydown', 'wheel'] as const) document.addEventListener(type, hide, true);
-  document.addEventListener('scroll', hide, true);
+  // A scroll (often programmatic: a list revealing its row) moves the bubble with its anchor; wheel and
+  // keys already hide it, and a pointer left off the anchor hides it through the next pointerover.
+  document.addEventListener('scroll', place, true);
   window.addEventListener('resize', hide);
   window.addEventListener('blur', hide);
 }

@@ -1,11 +1,11 @@
 /** The inspector's open views as a tab strip: which tabs are open, in what
  * order, and which one is selected. Pure helpers plus a localStorage round trip. */
 
-export type InspectorView = 'changes' | 'files' | 'search' | 'browser' | 'pull' | 'simulator' | 'vm' | 'design';
+export type InspectorView = 'changes' | 'files' | 'search' | 'browser' | 'pull' | 'simulator' | 'vm' | 'design' | 'btw';
 export type InspectorTabs = { open: InspectorView[]; selected: InspectorView };
 
 /** Every view in the order the "+" menu lists them. */
-export const INSPECTOR_VIEWS: readonly InspectorView[] = ['files', 'search', 'changes', 'browser', 'pull', 'simulator', 'vm', 'design'];
+export const INSPECTOR_VIEWS: readonly InspectorView[] = ['files', 'search', 'changes', 'browser', 'pull', 'simulator', 'vm', 'design', 'btw'];
 export const INSPECTOR_TABS_KEY = 'pandacode.inspector.tabs';
 export const DEFAULT_INSPECTOR_TABS: InspectorTabs = { open: ['changes'], selected: 'changes' };
 

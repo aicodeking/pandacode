@@ -1,6 +1,7 @@
 /* The inspector's open views as one slim tab strip across the panel's top, level with the workspace header. */
 .inspector{padding-left:0}
-.inspector-strip{display:flex;align-items:center;gap:4px;flex:none;height:var(--titlebar-height);padding:0 4px 0 6px}
+/* The strip centres on the traffic lights: the title bar's height less the panels' top inset above and below (the full bar while the sidebar is hidden and the panels run full height). */
+.inspector-strip{display:flex;align-items:center;gap:4px;flex:none;height:calc(var(--titlebar-height) - 2 * var(--pane-top,0px));padding:0 8px}
 html[data-theme] .workspace>.inspector .inspector-strip>.inspector-tabs{display:flex;flex:0 1 auto;flex-wrap:nowrap;align-items:center;gap:2px;min-width:0;height:100%;min-height:0;padding:0;border-radius:0;background:transparent;box-shadow:none;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}
 .inspector-strip>.inspector-tabs::-webkit-scrollbar{display:none}
 /* One surface with the panel below: the wallpaper rules' tinted fill for the old segmented tabs would cover only the tabs' width. */

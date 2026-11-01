@@ -60,6 +60,7 @@ mod providers;
 mod session_titles;
 mod slash_commands;
 mod recipes;
+mod schedules;
 mod storage;
 mod subagent_state;
 mod support;
@@ -549,7 +550,7 @@ fn app_instructions(chat: bool, worker: bool) -> String {
 }
 
 /// PandaCode closes the harness when a turn ends, so background waits never come back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and scheduled wakeups started in this turn never report back. Wait for long-running commands in the foreground (or poll them) before you reply.";
+const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Wait for long-running commands in the foreground (or poll them) before you reply.";
 
 /// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
 const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run. When you need the user to choose an answer, prefer request_user_input with explicit options (Yes/No for binary questions) instead of asking them to type. If that tool is unavailable, include a generative UI form with select or checkbox fields and a prompt containing their selected answers; wait for the user to submit. Never treat an unchecked or default value as an answer.";
@@ -809,19 +810,25 @@ async fn update_task_details(
 }
 #[tauri::command]
 async fn set_task_stage(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
     stage: String,
 ) -> Result<Session> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
-    if agents.contains_key(&session_id) {
-        return Err("Stop the agent before changing its task stage.".into());
-    }
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_task_stage(&session_id, &stage)
+    let task = {
+        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        if agents.contains_key(&session_id) {
+            return Err("Stop the agent before changing its task stage.".into());
+        }
+        state
+            .store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .set_task_stage(&session_id, &stage)?
+    };
+    // Reopened: machine threads that settled meanwhile are reported now.
+    remote::orchestrate::retry(&app, &session_id);
+    Ok(task)
 }
 #[tauri::command]
 async fn configure_session(
@@ -898,11 +905,17 @@ async fn update_session(
     if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
+    let restored = archived == Some(false);
     state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)
+        .update(&session_id, title, archived, model, mode)?;
+    drop(agents);
+    if restored {
+        remote::orchestrate::retry(&app, &session_id);
+    }
+    Ok(())
 }
 #[tauri::command]
 async fn get_messages(
@@ -1330,12 +1343,25 @@ async fn send_message(
     image_ids: Option<Vec<String>>,
     moodboard_ids: Option<Vec<String>>,
 ) -> Result<()> {
+    if let Some(ids) = moodboard_ids.as_deref().filter(|ids| !ids.is_empty()) {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let project_id = store.session(&session_id)?.project_id;
+        text.push_str(&moodboards::resolve_refs(&store, &project_id, ids)?);
+    }
+    send_prompt(app, state, session_id, text, image_ids).await
+}
+
+/// Sends a prompt the way the composer does (see `send_target`). Scheduled messages use it too.
+pub(crate) async fn send_prompt(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    text: String,
+    image_ids: Option<Vec<String>>,
+) -> Result<()> {
     let (target, project_id) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        if let Some(ids) = moodboard_ids.as_deref().filter(|ids| !ids.is_empty()) {
-            text.push_str(&moodboards::resolve_refs(&store, &task.project_id, ids)?);
-        }
         (send_target(&store, &session_id)?, task.project_id)
     };
     if target == SendTarget::Team {
@@ -1400,6 +1426,8 @@ struct RunAdmission<'a> {
     team: Option<architect::Admission>,
     /// Re-attach to a cloud task's remote run (`cloud_agents::resume`): no new turn.
     cloud_attach: bool,
+    /// An app-origin turn PandaCode itself starts (`launch_app_turn`).
+    kind: Option<architect::internal_turns::CoordinationKind>,
 }
 
 struct PreparedRun {
@@ -1472,6 +1500,20 @@ fn prepare_task_run_in_project(
     {
         return Err("Task moved to a different project. Read its details again.".into());
     }
+    // A wake turn reports the task's settled machine threads, claimed under this lock and
+    // marked reported in the transaction that saves the turn.
+    // A link answer stays unread until its turn is saved.
+    let (text, reported, link_answer) = match admission.kind {
+        Some(architect::internal_turns::CoordinationKind::MachineThreads) => {
+            let (message, ids) = remote::orchestrate::claim(&store, &session_id)?.ok_or("No machine threads to report.")?;
+            (Some(message), ids, None)
+        }
+        Some(architect::internal_turns::CoordinationKind::MachineLink) => {
+            let (message, id) = remote::orchestrate::claim_link(&session_id).ok_or("No machine link answer to report.")?;
+            (Some(message), Vec::new(), Some(id))
+        }
+        _ => (text, Vec::new(), None),
+    };
     // Resolve the saved task details under the same lock as the execution
     // claim, so Start cannot race a details edit or completion action.
     let text = text
@@ -1515,6 +1557,7 @@ fn prepare_task_run_in_project(
         }
         None if admission.goal.is_none()
             && admission.team.is_none()
+            && admission.kind.is_none()
             && slash_commands::split_command(&text).is_some() =>
         {
             return Err("The task command changed. Try again to load its commands.".into());
@@ -1553,13 +1596,20 @@ fn prepare_task_run_in_project(
             0
         }
     } else {
-        let kind = architect::internal_turns::pending_kind(
-            &store,
-            &session_id,
-            &text,
-            admission.team.as_ref(),
-        )?;
-        store.begin_task_turn_with_kind(&session_id, &text, kind)?
+        let kind = match admission.kind {
+            Some(kind) => Some(kind),
+            None => architect::internal_turns::pending_kind(
+                &store,
+                &session_id,
+                &text,
+                admission.team.as_ref(),
+            )?,
+        };
+        let id = store.begin_task_turn_reporting(&session_id, &text, kind, &reported)?;
+        if let Some(answer) = &link_answer {
+            remote::orchestrate::link_claimed(&session_id, answer);
+        }
+        id
     };
     let maintenance = maintenance
         || matches!(
@@ -1570,7 +1620,16 @@ fn prepare_task_run_in_project(
                     | goal_state::GoalRequest::Clear
             )
         );
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref())?;
+    // A wake turn that cannot start after it was saved gives its claim back.
+    let restore = |error: String| {
+        if matches!(admission.kind, Some(architect::internal_turns::CoordinationKind::MachineThreads | architect::internal_turns::CoordinationKind::MachineLink)) {
+            if let Err(cleanup) = remote::orchestrate::abandon_wake(&store, &session_id, turn_message_id) {
+                eprintln!("Machine orchestration: could not give a wake back: {cleanup}");
+            }
+        }
+        error
+    };
+    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1586,7 +1645,7 @@ fn prepare_task_run_in_project(
         goal: admission.goal,
         codex_settings: session.codex_settings,
     };
-    architect::mark_started(&store, &session_id, admission.team.as_ref())?;
+    architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
     let agent = RunningAgent::new(tx, stopped.clone());
     let run_id = agent.run_id.clone();
     let pending_approvals = agent.approvals.clone();
@@ -1675,6 +1734,33 @@ pub(crate) async fn attach_cloud_run(app: tauri::AppHandle, session_id: String) 
             goal: None,
             team: None,
             cloud_attach: true,
+            kind: None,
+        },
+    )
+    .await
+}
+
+/// Starts a turn PandaCode writes itself, saved as a typed app-origin message
+/// (`architect::internal_turns`) so the transcript shows its label, not the prompt. The
+/// prompt is made under the run's admission lock (`MachineThreads`: the settled threads).
+pub(crate) async fn launch_app_turn(
+    app: tauri::AppHandle,
+    session_id: String,
+    kind: architect::internal_turns::CoordinationKind,
+) -> Result<()> {
+    let state = app.state::<AppState>();
+    launch_operation_admitted(
+        app.clone(),
+        state,
+        session_id,
+        None,
+        None,
+        OperationAdmission {
+            expected_project: None,
+            goal: None,
+            team: None,
+            cloud_attach: false,
+            kind: Some(kind),
         },
     )
     .await
@@ -1730,6 +1816,7 @@ async fn launch_operation(
             goal,
             team: None,
             cloud_attach: false,
+            kind: None,
         },
     )
     .await
@@ -1754,6 +1841,7 @@ pub(crate) fn launch_team_task<'a>(
             goal: None,
             team: Some(admission),
             cloud_attach: false,
+            kind: None,
         },
     ))
 }
@@ -1763,6 +1851,7 @@ struct OperationAdmission {
     goal: Option<task_controls::GoalLaunch>,
     team: Option<architect::Admission>,
     cloud_attach: bool,
+    kind: Option<architect::internal_turns::CoordinationKind>,
 }
 
 async fn launch_operation_admitted(
@@ -1778,11 +1867,12 @@ async fn launch_operation_admitted(
         goal,
         team: team_admission,
         cloud_attach,
+        kind,
     } = admission;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach {
+    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
         prepare_command(&state, &session_id, text.as_deref()).await?
     } else {
         None
@@ -1845,6 +1935,7 @@ async fn launch_operation_admitted(
             goal: goal_request,
             team: team_admission,
             cloud_attach,
+            kind,
         },
     )?;
     if !cloud_attach && turn_message_id > 0 && (!attachment_ids.is_empty() || attachment_text.contains("(moodboard ID: ")) {
@@ -2084,8 +2175,10 @@ async fn launch_operation_admitted(
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
         let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
         let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
         let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
         // A cloud agent's checkout is on its machine, where screenshots cannot be read.
         let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
@@ -2320,9 +2413,14 @@ async fn launch_operation_admitted(
         tray::finished(&app, &session_id, was_stopped, successful);
         let _ = app.emit("agent-event", event(&session_id, "done", done));
         remote::run_finished(&app, &session_id, successful, was_stopped, done);
+        // A wake turn that never reached the agent gives its claim back (at-least-once).
+        let restored = kind.is_some() && turn_message_id != 0 && store.lock().ok().is_some_and(|db| remote::orchestrate::restore_wake(&db, &session_id, turn_message_id).unwrap_or(false));
+        // Settled machine threads wake this task now that it is idle.
+        remote::orchestrate::parent_finished(&app, &session_id, was_stopped, restored);
         // Bot conversations reply on their channel and send their next queued message.
         if !was_stopped {
             bots::run_finished(&app, &session_id, successful);
+            schedules::run_finished(&app, &session_id, successful);
         }
         // Serve has no window: link pull requests and send the next queued message natively.
         if headless::active() {
@@ -2391,8 +2489,12 @@ async fn stop_session(
     if remote::mirror::stop(&app, &state, &session_id).await?.is_some() {
         return Ok(());
     }
+    remote::orchestrate::task_stopped(&app, &session_id);
     let is_team = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
+        // Saved before the run hears of it: a quit right after Stop must not leave the
+        // task looking interrupted by the restart (which a machine-thread wake resumes).
+        store.request_stop(&session_id)?;
         architect::load(&store, &session_id)?.is_some()
     };
     if is_team {
@@ -3597,6 +3699,9 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(architect::Runtime::default());
     architect::watchdog::watch(app.handle().clone());
     bots::start(app.handle());
+    // Machine threads that settled while PandaCode was closed wake their idle tasks.
+    remote::orchestrate::reconcile(app.handle());
+    schedules::start(app.handle().clone());
     Ok(dir)
 }
 
@@ -3802,6 +3907,13 @@ pub fn run() {
                 remote::remote_revoke_device,
                 remote::remote_targets,
                 remote::mirror::remote_start_task,
+                remote::orchestrate::links::orchestration_status,
+                remote::orchestrate::links::orchestration_set_enabled,
+                remote::orchestrate::links::orchestration_set_link,
+                remote::orchestrate::links::orchestration_pending,
+                remote::orchestrate::links::orchestration_link_respond,
+                remote::orchestrate::orchestration_children,
+                remote::orchestrate::orchestration_threads,
                 remote::mirror::remote_team,
                 remote::mirror::remote_worker_messages,
                 remote::mirror::remote_cancel_start,
@@ -3881,6 +3993,16 @@ pub fn run() {
                 bots::schedule::bot_schedule_set_enabled,
                 bots::schedule::bot_schedule_delete,
                 bots::schedule::bot_run_schedule_now,
+                schedules::schedules_list,
+                schedules::schedule_create,
+                schedules::schedule_update,
+                schedules::schedule_set_enabled,
+                schedules::schedule_delete,
+                schedules::schedule_run_now,
+                schedules::schedule_snooze,
+                schedules::schedule_runs,
+                schedules::scheduler_settings,
+                schedules::scheduler_set_settings,
                 bots::channels::bot_channel_add,
                 bots::channels::bot_channel_test,
                 bots::channels::bot_channel_configure,
@@ -3894,6 +4016,8 @@ pub fn run() {
                 conversation_import::list_importable_conversations,
                 conversation_import::import_conversations,
                 provider_settings::provider_set_claude_connection_mode,
+                providers::privacy::harness_privacy,
+                providers::privacy::harness_privacy_set,
                 providers::claude_auth::provider_claude_status,
                 provider_settings::list_opencode_models,
                 provider_settings::save_opencode_models,

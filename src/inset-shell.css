@@ -1,0 +1,72 @@
+/* Inset shell. One frame tone (--frame) fills the window; the sidebar and the Settings nav have no
+ * fill of their own and sit on it. The conversation (.main-pane), the inspector and the Settings
+ * content are inset panels (--panel-surface, 12px radius, 8px from the window edges) told apart by
+ * tone only (Flat); Increase Contrast restores an outline. The frame gaps are a window drag region
+ * (`data-tauri-drag-region` on .workspace). Base rules (styles.css, settings.css, inspector-bar.css)
+ * paint with these tokens; this file holds the tokens and the inset geometry.
+ *
+ * Top row: the main pane's header and the inspector strip are the title bar's height less the
+ * panel's top and bottom inset (--header-height), so their items centre on the traffic lights and
+ * the sidebar's brand row. With the sidebar hidden (collapsed, board, GitHub) the main pane is fully
+ * full-bleed (no margin, no radius), so the traffic lights sit on its header; an open inspector is
+ * then a flat full-height pane past an 8px frame gutter. */
+.workspace{
+  --inset:8px;--inset-radius:12px;--pane-top:var(--inset);
+  --header-height:calc(var(--titlebar-height) - 2 * var(--pane-top));
+  /* A step from the sidebar tone toward the text, so the frame reads apart from the panels in both themes. */
+  --frame:color-mix(in srgb,var(--sidebar),var(--text) 4%);
+  --panel-surface:var(--bg);
+  background:var(--frame);
+}
+.workspace:is(.sidebar-collapsed,.board-view,.github-view){--pane-top:0px}
+html[data-vsix] .workspace{--frame:var(--sidebar)}
+
+.workspace>.main-pane{margin:var(--inset) var(--inset) var(--inset) 0;border-radius:var(--inset-radius);overflow:hidden}
+.workspace:not(.inspector-closed)>.main-pane{margin-right:0}
+.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.main-pane{margin:0;border-radius:0}
+/* The inspector keeps its own grid column; the panel sits inside it with the gap on its left. */
+.workspace>.inspector{margin:var(--inset);border-radius:var(--inset-radius);overflow:hidden}
+.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{margin:0 0 0 var(--inset);border-radius:0}
+/* A closing inspector keeps its column for its ~130 ms fade (hidePanel in src/motion.ts); it takes no input. */
+.workspace>.inspector[data-leaving]{pointer-events:none}
+
+/* Over a wallpaper the frame is the frost (one blur layer for the whole window) with the same step
+ * toward the text; panels are a denser tint of the page colour with no second blur. */
+.workspace[data-wallpaper]{
+  --frame-tint:color-mix(in srgb,var(--workspace-frost-surface),var(--text) 6%);
+  --panel-surface:color-mix(in srgb,var(--bg) 78%,transparent);
+}
+.workspace[data-wallpaper]::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:var(--frame-tint);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost)}
+
+/* Inspector diffs keep an 8px gutter at the panel's end instead of running into its edge. */
+.workspace>.inspector :is(.cv-body,.diff-viewer-content){margin-inline-end:var(--inset)}
+
+/* The macOS wordmark never ellipsizes: past the traffic-light gutter, if the sidebar is too narrow
+ * for toggle + name + view menu, the name steps aside (the sidebar is a size container). */
+.workspace>.sidebar{container:sidebar / inline-size}
+@container sidebar (max-width:279px){html[data-native-platform=macos] .sidebar>.brand>.brand-name{display:none}}
+
+/* AppKit material (not under an imported VS Code theme, whose colours stay solid): the frame is the
+ * material with a light tint; panels stay solid. */
+html:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--bg) 8%,transparent)}
+html[data-theme="dark"]:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--sidebar) 50%,transparent)}
+
+/* Overlay inspector (651–920px): a floating inset over the conversation's right side. */
+@media(max-width:920px){
+  .workspace>.main-pane,.workspace:not(.inspector-closed)>.main-pane{margin-right:var(--inset)}
+  .workspace>.inspector,.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{margin:0 var(--inset) 0 0;border-radius:var(--inset-radius)}
+  .workspace:is(.sidebar-collapsed,.board-view,.github-view)>.main-pane{margin:0}
+}
+/* The narrow rail spends no space on insets. */
+@media(max-width:650px){
+  .workspace{--inset:0px;--inset-radius:0px}
+  .workspace>.inspector,.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{border-radius:12px 0 0 12px}
+}
+
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+  .workspace[data-wallpaper]::after{content:none}
+  .workspace[data-wallpaper]{--panel-surface:var(--bg)}
+  html:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace,
+  html[data-theme]:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--sidebar),var(--text) 4%)}
+}
+@media(prefers-contrast:more){.workspace>:is(.main-pane,.inspector),.settings-content{outline:1px solid var(--border);outline-offset:-1px}}

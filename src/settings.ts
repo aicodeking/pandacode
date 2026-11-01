@@ -17,13 +17,14 @@ import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
 import { call, subscribe } from './bridge';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountRemoteSettings } from './remote-settings';
+import { mountSchedulesSettings } from './schedules-settings';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
 
-export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
+export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'schedules' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
 
 interface SettingsOptions {
   providers: Provider[];
@@ -44,13 +45,15 @@ interface SettingsOptions {
   projects?: { list(): Project[]; remove(id: string): Promise<void> };
   /** Named agent teams and the classic Team setup switch. */
   teams?: Omit<AgentTeamsOptions, 'providers'>;
+  /** Settings → Schedules: an optional editor intent, and how a row opens its thread. */
+  schedules?: { intent?: { newForSession?: string; editScheduleId?: string }; openThread(sessionId: string): void };
   /** Cloud sandbox connections (Daytona, Cloudflare, AWS). */
   cloud?: CloudSettingsHost;
   /** Skills library and rules registry. */
   skills?: SkillsLibraryHost;
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
-  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed };
+  embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
   /** Leaves Settings for the workspace. */
   close(): void;
 }
@@ -63,6 +66,7 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
   { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent and the agent harnesses installed on this computer.' },
   { id: 'providers', label: 'Providers', icon: 'lock', description: 'Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
+  { id: 'schedules', label: 'Schedules', icon: 'clock', description: 'Wake-ups and timed messages from you and your agents.' },
   { id: 'tools', label: 'Tools & add-ons', icon: 'terminal', description: 'App tools, MCP servers, skills and Jev.' },
   { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
   { id: 'cloud', label: 'Cloud sandboxes', icon: 'server', description: 'Daytona, Cloudflare and AWS machines for your agents.' },
@@ -148,6 +152,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
+      <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
       <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div><div id="model-routing-settings"></div>';
@@ -156,6 +161,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
         <div class="setting-row"><div><strong>Jev · Optional add-on</strong><small>Browser tests and decision assistance. Your agents work without it.</small></div><button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button></div>
       </div>
       <div id="capabilities-settings"></div>`;
+    case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
     case 'remote': return '<div id="remote-settings"></div>';
@@ -269,6 +275,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
     if (id === 'teams' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
     if (id === 'tools') cleanups.push(mountCapabilities(panel.querySelector<HTMLElement>('#capabilities-settings')!, call));
     if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));

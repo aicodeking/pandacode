@@ -9,6 +9,8 @@ async function openThread(page: Page, width = 1200): Promise<void> {
   await page.goto('/');
   await page.locator('.task-item[data-id="session-1"]').evaluate(node => (node as HTMLElement).click());
   await expect(page.locator('#transcript .message').first()).toBeVisible();
+  // Geometry is read once the thread has settled in (its short cross-fade and rise).
+  await page.locator('#transcript').evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => undefined))));
 }
 
 test.describe('thread header overlay', () => {
@@ -26,17 +28,26 @@ test.describe('thread header overlay', () => {
 
       const transcript = page.locator('#transcript');
       const top = (await box(page, '#transcript')).top;
-      // The transcript starts at the window's top edge, under the header, and its first message
-      // sits just below the mask's fade (fully opaque at rest): flush with the top unless the
-      // collapsed sidebar's buttons sit over the pane.
-      expect(top).toBeLessThanOrEqual(1);
-      const fade = await transcript.evaluate(node => parseFloat(getComputedStyle(node).getPropertyValue('--header-fade-under')) || 0);
+      // The transcript starts at the conversation panel's top edge, under the header, clipped to the
+      // panel's radius. The panel is inset 8px from the window's top while the sidebar shows (full
+      // bleed when it is hidden, and in the narrow rail), and the header is the title bar less that
+      // inset above and below, so its items centre on the traffic lights.
+      const main = await box(page, '.main-pane');
       const collapsed = await page.locator('.workspace').evaluate(node => node.classList.contains('sidebar-collapsed'));
-      expect(fade).toBeGreaterThan(0);
+      const inset = width > 650 && !collapsed ? 8 : 0;
+      expect(main.top).toBe(inset);
+      expect(Math.abs(top - main.top)).toBeLessThanOrEqual(1);
+      const headerBox = await box(page, '.workspace-header');
+      expect(headerBox.top + headerBox.height / 2).toBeCloseTo(55 / 2, 0);
+      // At rest the first row sits just below the header, so nothing clickable lies under its drag band.
+      const padding = await transcript.evaluate(node => ({ top: parseFloat(getComputedStyle(node).paddingTop), scroll: parseFloat(getComputedStyle(node).scrollPaddingTop) }));
+      expect(padding.top).toBeCloseTo(headerBox.height, 0);
+      // scrollIntoView and focus land rows below the header band too.
+      expect(padding.scroll).toBeGreaterThanOrEqual(headerBox.height);
       await transcript.evaluate(node => { node.scrollTop = 0; });
       const first = (await box(page, '#transcript .message')).top - top;
-      expect(first).toBeGreaterThanOrEqual(fade);
-      expect(first).toBeLessThanOrEqual(collapsed ? 64 : 20);
+      expect(first).toBeGreaterThanOrEqual(headerBox.height - 0.5);
+      expect(first).toBeLessThanOrEqual(headerBox.height + 4);
 
       await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
       await transcript.evaluate(node => { node.scrollTop = 90; });
@@ -80,7 +91,7 @@ test.describe('thread header overlay', () => {
     const transcript = page.locator('#transcript');
     // Room to scroll, then put the first "search" match just under the header, inside the fade.
     await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
-    const fadeBottom = (await box(page, '#transcript')).top + await transcript.evaluate(node => parseFloat(getComputedStyle(node).getPropertyValue('--header-fade-under')) || 0);
+    const fadeBottom = (await box(page, '#transcript')).top + await transcript.evaluate(node => parseFloat(getComputedStyle(node).paddingTop)); // the header band (--header-fade-under = --transcript-top)
     // Retry until the position holds: the taller stream region can still pull the transcript to
     // the bottom for a frame or two after the first scroll.
     await expect.poll(async () => {

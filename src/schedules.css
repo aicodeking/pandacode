@@ -1,0 +1,83 @@
+/* A thread's wake-ups: one quiet glass line above the composer that opens to its schedules. */
+.wake-strip{margin:0 0 8px;border-radius:6px;border:1px solid var(--glass-edge);background:linear-gradient(145deg,var(--glass-warm),var(--glass-tint) 70%);backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);box-shadow:0 0 0 1px var(--glass-line),inset 0 1px 0 var(--glass-highlight);font-size:.8rem;color:var(--muted)}
+.wake-strip[hidden]{display:none}
+.wake-line{display:flex;align-items:center;gap:2px;padding:2px}
+.wake-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:7px;min-height:28px;padding:0 8px;border-radius:4px;text-align:left;color:inherit;--press:1}
+.wake-toggle:hover{background:var(--glass-fill-hover)}
+.wake-toggle .icon{flex:none;width:14px;height:14px;color:var(--accent-ink)}
+.wake-summary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wake-summary strong{font-weight:600;color:var(--text)}
+.wake-count{flex:none;min-width:18px;height:18px;padding:0 5px;border-radius:9px;display:inline-grid;place-items:center;font-size:.7rem;font-variant-numeric:tabular-nums;background:rgb(var(--accent-rgb) / .16);color:var(--accent-ink)}
+.wake-toggle .wake-chevron{color:var(--faint)}
+/* Pause all: the line says so, with a dimmed clock. */
+.wake-strip.is-paused .wake-toggle>.icon:first-child{color:var(--faint);opacity:.6}
+.wake-resume,.wake-settings{flex:none;color:var(--accent-ink)}
+.wake-resume{font-weight:600}
+.wake-toggle[aria-expanded="true"] .wake-chevron{rotate:180deg}
+.wake-add{width:26px;height:26px;flex:none}
+.wake-add .icon{width:14px;height:14px}
+.wake-body{padding:0 6px 6px;display:grid;gap:6px;border-top:1px solid var(--glass-line)}
+.wake-list{list-style:none;margin:4px 0 0;padding:0;display:grid;gap:1px;max-height:180px;overflow:auto;overscroll-behavior:contain}
+.wake-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:30px;padding:1px 2px 1px 6px;border-radius:4px}
+.wake-row:hover{background:var(--glass-fill)}
+.wake-row[data-enabled="false"] .wake-title{color:var(--muted)}
+.wake-title{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:.84rem}
+.wake-meta{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.74rem;font-variant-numeric:tabular-nums}
+.wake-origin{flex:none;padding:0 6px;border-radius:9px;font-size:.68rem;line-height:16px;background:var(--glass-fill-hover);border:1px solid var(--glass-line)}
+.wake-origin[data-origin="agent"]{color:var(--accent-ink);background:rgb(var(--accent-rgb) / .12)}
+.wake-actions{display:flex;align-items:center;flex:none;gap:1px}
+.wake-actions .icon-button{width:24px;height:24px}
+.wake-actions .icon{width:13px;height:13px}
+.wake-text-button{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;border-radius:3px;font-size:.74rem;color:var(--text)}
+.wake-text-button:hover{background:var(--glass-fill-hover)}
+.wake-text-button .icon{width:12px;height:12px}
+.wake-text-button.danger{color:var(--danger,#b4442c)}
+.wake-confirm{font-size:.74rem;color:var(--text)}
+.wake-history h4{margin:2px 4px 3px;font-size:.68rem;font-weight:600;letter-spacing:.02em;text-transform:uppercase;color:var(--faint)}
+.wake-history ol{list-style:none;margin:0;padding:0;display:grid;gap:1px}
+.wake-run{display:flex;align-items:center;gap:7px;min-width:0;padding:1px 6px;font-size:.74rem}
+.wake-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--faint)}
+.wake-dot[data-outcome="started"]{background:var(--accent)}
+.wake-dot[data-outcome="queued"]{background:transparent;box-shadow:inset 0 0 0 1.5px var(--accent)}
+.wake-dot[data-outcome="failed"]{background:var(--danger,#b4442c)}
+.wake-run-title{flex:none;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.wake-run-detail{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wake-run time{flex:none;font-variant-numeric:tabular-nums;color:var(--faint)}
+
+/* Quick add: a compact glass popover above its trigger (it borrows .floating-menu's glass). */
+.wake-popover.floating-menu{width:340px;padding:12px;z-index:85}
+.wake-form{display:grid;gap:9px}
+.wake-form-title{display:flex;align-items:center;gap:7px;font-size:.86rem;font-weight:600}
+.wake-form-title .icon{width:15px;height:15px;color:var(--accent-ink)}
+.wake-field{display:grid;gap:3px;min-width:0;font-size:.74rem;color:var(--muted)}
+.wake-field textarea,.wake-field input,.wake-field select{width:100%;box-sizing:border-box;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--panel);color:var(--text);font:inherit;font-size:.84rem}
+.wake-field textarea{resize:vertical;min-height:48px}
+.wake-field :focus-visible{outline:none;border-color:var(--focus);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14)}
+.wake-presets{display:flex;flex-wrap:wrap;gap:5px}
+.wake-chip{padding:3px 9px;border-radius:12px;border:1px solid var(--glass-line);background:var(--glass-fill);font-size:.76rem;color:var(--text);--press:1}
+.wake-chip:hover{background:var(--glass-fill-hover)}
+.wake-chip[aria-pressed="true"]{background:rgb(var(--accent-rgb) / .2);border-color:rgb(var(--accent-rgb) / .5);color:var(--accent-ink)}
+.wake-row-fields{display:grid;grid-template-columns:1.4fr 1fr;gap:8px}
+.wake-error{margin:0;font-size:.76rem;color:var(--danger,#b4442c)}
+.wake-form-footer{display:flex;align-items:center;gap:6px}
+.wake-form-footer>span{flex:1}
+.wake-form-footer .primary-button,.wake-form-footer .secondary-button{min-height:30px;padding:5px 12px;font-size:.8rem}
+
+/* A message a schedule sent: a gentle line over it so it reads apart from typed messages.
+   It is a button: it opens the thread's wake-ups on that schedule. */
+.scheduled-mark{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;margin:0 0 6px;padding:2px 8px 2px 6px;border-radius:12px;border:1px solid rgb(var(--accent-rgb) / .22);background:rgb(var(--accent-rgb) / .07);font:inherit;font-size:.74rem;color:var(--muted);white-space:nowrap;text-align:left;--press:1}
+.scheduled-mark:hover{background:rgb(var(--accent-rgb) / .13)}
+.scheduled-mark:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.scheduled-mark .icon{flex:none;width:13px;height:13px;color:var(--accent-ink)}
+.scheduled-mark strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:600;color:var(--text)}
+.scheduled-mark>span:not(.scheduled-tag)::before{content:"·";margin-right:6px;color:var(--faint)}
+.scheduled-tag{flex:none;padding:0 6px;border-radius:9px;font-size:.68rem;line-height:16px;background:rgb(var(--accent-rgb) / .2);color:var(--accent-ink)}
+
+/* The sidebar clock for a thread with an upcoming wake-up: after the age, tinted, so the age never reads as a countdown. */
+.task-wake{display:inline-grid;place-items:center;flex:none;width:12px;height:12px;margin-left:auto;color:var(--accent-ink)}
+.task-age~.task-wake{margin-left:4px}
+.task-wake .icon{width:12px;height:12px}
+.task-wake.is-paused{color:var(--faint);opacity:.6}
+
+@media(prefers-reduced-transparency:reduce){.wake-strip{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(prefers-contrast:more){.wake-strip,.wake-chip,.wake-origin{border-color:var(--border)}}

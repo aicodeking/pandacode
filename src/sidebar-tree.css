@@ -270,12 +270,14 @@ html[data-theme=dark] .toast-undo{color:var(--accent)}
 
 /* Feel: hover and selection ease (never layout), row actions fade in, and the selected
    task carries a slim accent bar at its leading edge. */
-.sidebar .task-item,.folder-more,.sidebar .sidebar-actions>button,.bot-row,.bot-row-add{transition:background-color 140ms ease-out,color 140ms ease-out,box-shadow 160ms ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
+/* Colours ease in quickly (120ms) and out softly (180ms); press scale keeps its own spring. */
+.sidebar .task-item,.folder-more,.sidebar .sidebar-actions>button,.bot-row,.bot-row-add{transition:background-color 180ms ease-out,color 180ms ease-out,box-shadow 180ms ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
+.sidebar .task-row:is(:hover,:focus-within)>.task-item,.sidebar .task-item.selected,.folder-more:hover,.sidebar .sidebar-actions>button:hover,.bot-row:hover,.bot-row-add:hover{transition-duration:120ms,120ms,120ms,var(--spring-fast-duration,200ms)}
 .sidebar .task-title,.sidebar .task-provider,.sidebar .task-age,.sidebar .task-indicator{transition:color 140ms ease-out,opacity 140ms ease-out,background-color 200ms}
 .sidebar .task-actions,.bot-row-settings{transition:opacity 140ms ease-out}
 .sidebar .task-action{transition:background-color 120ms,color 120ms,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
 .sidebar .task-item:focus-visible,.folder-more:focus-visible,.bot-row-open:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
-.sidebar .task-row::before{content:"";position:absolute;z-index:1;left:-5px;top:9px;bottom:9px;width:2px;border-radius:1px;background:var(--accent);opacity:0;scale:1 .4;pointer-events:none;transition:opacity 160ms ease-out,scale var(--spring-duration,240ms) var(--spring,ease-out)}
+.sidebar .task-row::before{content:"";position:absolute;z-index:1;left:0;top:9px;bottom:9px;width:2px;border-radius:1px;background:var(--accent);opacity:0;scale:1 .4;pointer-events:none;transition:opacity 180ms ease-out,scale 180ms var(--spring-fast,ease-out)}
 .sidebar .task-row-oneline::before{top:6px;bottom:6px}
 .sidebar .task-row:has(>.task-item.selected)::before{opacity:1;scale:1}
 .sidebar .task-item.task-dragging{transition:opacity 120ms ease-out}

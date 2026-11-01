@@ -1,8 +1,8 @@
 /* Settings is a full page over the workspace: the sidebar's place lists the groups, and the
    chosen group fills the rest. Sections read like grouped lists, the way system settings do. */
 .settings-page-root{display:grid;grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(0,1fr)}
-.settings-nav{display:flex;flex-direction:column;min-height:0;padding:10px 8px 12px;background:var(--panel)}
-.workspace[data-wallpaper] .settings-nav{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);border-color:transparent}
+/* Same shell as the workspace: the nav sits on the window frame like the sidebar, the content is an inset panel. */
+.settings-nav{display:flex;flex-direction:column;min-height:0;padding:10px 8px 12px;background:transparent}
 .settings-nav-head{display:flex;align-items:center;min-height:32px;padding:0 2px}
 html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-back{display:inline-flex;align-items:center;gap:var(--space-1);min-height:var(--control);padding:0 8px 0 4px;border-radius:var(--radius-sm);color:var(--muted);font-size:var(--text-sm);font-weight:var(--weight-medium)}
@@ -19,8 +19,7 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-nav-list>button[aria-selected="true"] .icon{color:var(--accent-ink)}
 .settings-nav-list>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .settings-nav-list>button:focus:not(:focus-visible){outline:0}
-.settings-content{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;background:var(--bg)}
-.workspace[data-wallpaper] .settings-content{background:transparent}
+.settings-content{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;margin:var(--inset,0px) var(--inset,0px) var(--inset,0px) 0;border-radius:var(--inset-radius,0px);background:var(--panel-surface,var(--bg))}
 .settings-panel{width:min(760px,calc(100% - 64px));margin:0 auto;padding:44px 0 72px}
 .settings-panel-head{margin:0 0 22px}
 .settings-panel-head h2{margin:0;font-size:var(--text-xl);font-weight:var(--weight-strong);letter-spacing:-.01em;line-height:var(--leading-tight)}
@@ -33,7 +32,7 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-embed-error{font-size:var(--text-sm);color:var(--danger)}
 .workspace[data-wallpaper] .settings-page-root .settings-group{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);}
 @media (max-width:760px){.settings-page-root{grid-template-columns:180px minmax(0,1fr)}.settings-panel{width:calc(100% - 32px);padding-top:24px}}
-@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .settings-nav,.workspace[data-wallpaper] .settings-page-root .settings-group{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}.workspace[data-wallpaper] .settings-content{background:var(--bg)}}
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .settings-page-root .settings-group{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}.workspace[data-wallpaper] .settings-content{background:var(--bg)}}
 .settings-group{border-radius:var(--radius-md);overflow:hidden;background:var(--panel)}
 .settings-page-root .setting-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1rem;align-items:center;padding:.7rem 1rem;margin:0;border:0;min-height:3rem}
 .settings-page-root .setting-row+.setting-row{}
@@ -106,6 +105,19 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-page-root .vsix-choice{flex:1;justify-content:flex-start;text-align:left}
 .settings-page-root .project-path{overflow-wrap:anywhere}
 .settings-page-root .project-row-actions{display:flex;gap:.5rem}
+/* Settings → Agents → Privacy: one row per harness with what the telemetry switch does there. */
+.harness-privacy-list{list-style:none;margin:8px 0 0;padding:0}
+.harness-privacy-list .setting-row>div{display:flex;align-items:center;gap:.7rem}
+.harness-privacy-list .setting-row>div>span{display:flex;flex-direction:column;min-width:0}
+.harness-privacy-list .setting-row svg,.harness-privacy-list .setting-row img{flex:none;width:18px;height:18px}
+.harness-privacy-list em{font-style:normal;font-size:.8rem;color:var(--muted);white-space:nowrap}
+.harness-privacy-list [data-active=true] em{color:var(--text);font-weight:520}
+.harness-privacy-list small{white-space:normal}
+/* The live region stays rendered (empty = no height) so screen readers announce new text. */
+.harness-privacy-feedback{display:flex;align-items:center;gap:.6rem;padding:0 1rem}
+.harness-privacy-status{margin:8px 0 0;font-size:.82rem;color:var(--muted)}
+.harness-privacy-status:empty{margin:0}
+.harness-privacy-feedback button{margin-top:8px}
 
 /* Narrow windows: the nav narrows, rows wrap their control under the label, the shortcut field fills its row. */
 @media(max-width:700px){

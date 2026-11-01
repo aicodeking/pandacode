@@ -4,6 +4,7 @@
 import './remote-settings.css';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
+import { mountOrchestrationSettings } from './machine-orchestration';
 import { APPROVE_SCOPES, SCOPE_HELP, SCOPE_LABELS, groupFingerprint, type DeviceGrant, type GrantScope, type PairCode } from './remote-pairing-prompt';
 import type { RemoteDevice, RemoteHost, RemoteSignIn, RemoteStatus } from './remote-types';
 
@@ -81,6 +82,8 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     const keep = active?.id, caret = active instanceof HTMLInputElement ? active.selectionStart : null;
     main.innerHTML = `<div class="settings-group remote-settings">${body()}</div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
     if (keep) { const again = main.querySelector<HTMLElement>(`#${CSS.escape(keep)}`); again?.focus(); if (again instanceof HTMLInputElement && caret !== null) again.setSelectionRange(caret, caret); }
+    if (status?.signedIn && !unmountOrchestration) unmountOrchestration = mountOrchestrationSettings(orchestration, host);
+    else if (!status?.signedIn && unmountOrchestration) { unmountOrchestration(); unmountOrchestration = undefined; orchestration.innerHTML = ''; }
   }
   const apply = (next: RemoteStatus) => { status = next; if (next.signedIn) { code = undefined; signingIn = false; } else { pairCode = undefined; grants = []; } };
   async function loadGrants(): Promise<void> {
@@ -173,8 +176,10 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     host.listen('remote://device-grants', next => { if (Array.isArray(next)) { grants = next; grantsError = ''; render(); } }),
     host.listen('remote://pair-code-used', () => { if (pairCode) { host.notify('Pairing code used'); showCode(undefined); } }),
   ];
-  root.innerHTML = '<div class="remote-main"></div><section class="remote-diagnostics-section" hidden><h3 class="settings-heading">Diagnostics</h3><div class="settings-group remote-diagnostics-body"></div></section>';
-  const main = root.querySelector<HTMLElement>('.remote-main')!;
+  // The orchestration section keeps its own state, so it lives beside the redrawn body.
+  root.innerHTML = '<div class="remote-main"></div><div class="remote-orchestration"></div><section class="remote-diagnostics-section" hidden><h3 class="settings-heading">Diagnostics</h3><div class="settings-group remote-diagnostics-body"></div></section>';
+  const main = root.querySelector<HTMLElement>('.remote-main')!, orchestration = root.querySelector<HTMLElement>('.remote-orchestration')!;
+  let unmountOrchestration: (() => void) | undefined;
   const section = root.querySelector<HTMLElement>('.remote-diagnostics-section')!;
   void import('./remote-diagnostics').then(module => {
     const mount = (module as { mountRemoteDiagnostics?: (container: HTMLElement) => void }).mountRemoteDiagnostics;
@@ -183,5 +188,5 @@ export function mountRemoteSettings(root: HTMLElement, host: RemoteHost): () => 
     section.hidden = false;
   }).catch(() => undefined);
   void load();
-  return () => { disposed = true; window.clearTimeout(expiry); for (const u of unlisten) void u.then(fn => fn(), () => undefined); };
+  return () => { disposed = true; window.clearTimeout(expiry); unmountOrchestration?.(); for (const u of unlisten) void u.then(fn => fn(), () => undefined); };
 }

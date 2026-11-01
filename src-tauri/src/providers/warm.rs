@@ -53,6 +53,8 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
+        // So do the telemetry opt-outs (`privacy.rs`).
+        "telemetryOff": super::privacy::telemetry_off(),
     })
     .to_string()
 }
@@ -207,6 +209,10 @@ mod tests {
         ] {
             assert_ne!(different, original);
         }
+        // A spare started before the telemetry switch changed is never adopted.
+        super::super::privacy::FORCE.with(|force| force.set(Some(true)));
+        assert_ne!(key(&base, &tools), original);
+        super::super::privacy::FORCE.with(|force| force.set(None));
         // A different named connection, or a saved change to the same one, starts cold.
         for different in [key_with(&base, &tools, "personal#1"), key_with(&base, &tools, "work#2")] {
             assert_ne!(different, key_with(&base, &tools, "work#1"));

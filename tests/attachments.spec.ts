@@ -40,7 +40,7 @@ async function pasteImage(page: Page, name = 'shot.png'): Promise<void> {
 test('the attach menu offers files, a folder, project files and a sketch, and attaches picker results as chips', async ({ page }) => {
   await probe(page);
   await attachButton(page).click();
-  await expect(attachMenu(page).getByRole('menuitem')).toHaveText([/Attach files…/, /Attach a folder…/, /Project files/, /Sketch a mockup…/, /Workflow recipes…/]);
+  await expect(attachMenu(page).getByRole('menuitem')).toHaveText([/Attach files…/, /Attach a folder…/, /Project files/, /Sketch a mockup…/, /Workflow recipes…/, /Schedule a wake-up…/]);
   await attachMenu(page).getByRole('menuitem', { name: /Attach files…/ }).click();
   await expect(chips(page)).toHaveCount(2);
   await expect(chips(page).nth(0)).toHaveClass(/prompt-chip-image/);

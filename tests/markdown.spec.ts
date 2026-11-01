@@ -126,3 +126,81 @@ test.describe('enriched markdown', () => {
     expect(await probeCsp("script-src 'self' 'wasm-unsafe-eval'")).toBe('Strong');
   });
 });
+
+// A reply with a table, lists, math and a long code fence: the fence is one giant block, which the
+// painter renders line by line instead of re-parsing it every frame.
+const FENCE = Array.from({ length: 300 }, (_, i) => `export const value${i} = compute(${i}) < limit && flag; // line ${i}`).join('\n');
+const REPLY = `## Result\n\n| File | Change |\n| --- | ---: |\n| alpha | 1 |\n| beta | $x^2$ |\n\n- first item\n- second **bold**\n  - nested\n\n1. one\n2. two\n\nEnergy is $E=mc^2$, which costs $5.\n\n$$\n\\int_0^1 x\\,dx = \\tfrac{1}{2}\n$$\n\n\`\`\`ts\n${FENCE}\n\`\`\`\n\nDone. End of reply.\n`;
+
+test.describe('streamed markdown', () => {
+  test('an open code fence paints line by line and every frame equals a cold render', async ({ page }) => {
+    const result = await page.evaluate(async reply => {
+      const { markdownHtml } = await import('/src/dom.ts');
+      const { streamMarkdown } = await import('/src/streaming-markdown.ts');
+      const cold = async (value: string) => { const t = document.createElement('template'); t.innerHTML = await markdownHtml(value, false); return t.innerHTML; };
+      const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+      const host = document.createElement('div'); document.body.append(host);
+      const open = reply.indexOf('```ts\n') + 6, close = reply.lastIndexOf('```');
+      const mismatches: number[] = [];
+      let lineByLine = 0, checked = 0;
+      const ends = [...Array.from({ length: Math.ceil((close - open) / 397) }, (_, i) => open + i * 397), reply.length];
+      for (const end of ends) {
+        const value = reply.slice(0, end), expected = await cold(value);
+        streamMarkdown(host, value);
+        for (let i = 0; i < 40 && host.innerHTML !== expected; i++) await frame();
+        if (host.innerHTML !== expected) mismatches.push(end);
+        if (host.querySelector('pre code')?.childNodes.length === 2) lineByLine++;
+        checked++;
+      }
+      return { mismatches, lineByLine, checked };
+    }, REPLY);
+    expect(result.mismatches).toEqual([]);
+    // The fence's complete lines and the streaming line are painted apart while it is open.
+    expect(result.lineByLine).toBeGreaterThan(result.checked / 2);
+  });
+
+  test('a reply streamed through agent events ends equal to a cold render and redraws from the cache', async ({ page }) => {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const patches: [string, string][] = [
+        ['const output = "This is the browser preview.', 'const output = window.__markdownReply ?? "This is the browser preview.'],
+        ['cursor + 13)', 'cursor + 61)'], ['cursor += 13', 'cursor += 61'], ['setTimeout(tick, 24)', 'setTimeout(tick, 4)'],
+      ];
+      for (const [from] of patches) expect(source).toContain(from);
+      await route.fulfill({ response, body: patches.reduce((body, [from, to]) => body.replace(from, to), source) });
+    });
+    await page.reload();
+    await page.evaluate(reply => { (window as any).__markdownReply = reply; }, REPLY);
+    await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+    await prompt.fill('Stream the Markdown reply');
+    await prompt.press('Enter');
+    const transcript = page.getByRole('log', { name: 'Conversation', exact: true });
+    const reply = transcript.locator('.agent-message .message-content').filter({ hasText: 'End of reply.' });
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden({ timeout: 15_000 });
+    await expect(reply).toHaveCount(1);
+    const cold = () => page.evaluate(async value => {
+      const { markdownHtml } = await import('/src/dom.ts');
+      const template = document.createElement('template'); template.innerHTML = await markdownHtml(value, false);
+      return template.innerHTML;
+    }, REPLY);
+    const expected = await cold();
+    expect(expected).toContain('<table>');
+    expect(expected).toContain('class="katex');
+    await expect.poll(() => reply.evaluate(node => node.innerHTML)).toBe(expected);
+    // The finished reply is cached; mark the entry so a redraw from it is told apart from a parse.
+    const cached = await page.evaluate(async value => {
+      const { markdownCache } = await import('/src/dom.ts');
+      const html = markdownCache.get(value);
+      if (html !== undefined) markdownCache.set(value, `${html}<!--from-cache-->`);
+      return html;
+    }, REPLY);
+    expect(cached).toBe(expected);
+    const task = await page.locator('.task-item.selected').getAttribute('data-id');
+    await page.locator('.task-item:not(.selected)').first().click();
+    await expect(reply).toHaveCount(0);
+    await page.locator(`.task-item[data-id="${task}"]`).click();
+    await expect.poll(() => reply.evaluate(node => node.innerHTML)).toBe(`${expected}<!--from-cache-->`);
+  });
+});

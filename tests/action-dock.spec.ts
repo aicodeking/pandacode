@@ -38,8 +38,11 @@ test.describe('action dock', () => {
     const header = await rect(page, '.workspace-header');
     const inspector = await rect(page, '#inspector');
     expect(box.top).toBeGreaterThanOrEqual(header.bottom);
-    expect(box.right).toBeLessThanOrEqual(inspector.left);
-    expect(inspector.left - box.right).toBeLessThan(16);
+    // The dock floats at the inset main pane's right edge, which stops short of the inspector panel.
+    const main = await rect(page, '.main-pane');
+    expect(box.right).toBeLessThanOrEqual(main.right);
+    expect(main.right).toBeLessThan(inspector.left);
+    expect(main.right - box.right).toBeLessThan(16);
     // It stays clear of the composer and of every message in the transcript.
     expect(overlaps(box, await rect(page, '#composer'))).toBe(false);
     for (const message of await page.locator('#transcript .message').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON() as DOMRect))) expect(overlaps(box, message)).toBe(false);
@@ -49,7 +52,7 @@ test.describe('action dock', () => {
     await toolbar.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
     await expect(page.locator('#inspector')).toBeHidden();
     const closed = await rect(page, '#action-dock');
-    expect(page.viewportSize()!.width - closed.right).toBeLessThan(16);
+    expect(page.viewportSize()!.width - closed.right).toBeLessThan(16 + 8);
     expect(overlaps(closed, await rect(page, '#composer'))).toBe(false);
   });
 
@@ -244,6 +247,8 @@ test.describe('action dock', () => {
     await page.getByRole('region', { name: 'Bots', exact: true }).getByRole('group', { name: 'Channels' }).locator('button').first().click();
     const settings = page.locator('.bc-settings');
     await expect(settings).toBeVisible();
+    // A channel closes the inspector: its column snaps shut after the fade, moving the header row.
+    await expect(page.locator('#inspector')).toBeHidden();
     const button = await rect(page, '.bc-settings');
     expect(button.top).toBeGreaterThanOrEqual((await rect(page, '.workspace-header')).bottom);
     expect(overlaps(button, await rect(page, '#action-dock'))).toBe(false);

@@ -33,7 +33,8 @@ button .icon{pointer-events:none}
 .muted{color:var(--muted)}
 .workspace{--sidebar-default-width:235px;--conversation-min-width:420px;display:grid;grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(var(--conversation-min-width),1fr) var(--inspector-width,302px);height:100%;width:100%;transition:none}
 .workspace.inspector-closed{grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(var(--conversation-min-width),1fr)}
-.sidebar{position:relative;isolation:isolate;display:flex;flex-direction:column;background:var(--sidebar);min-height:0;overflow:hidden}
+/* The sidebar has no fill: it sits on the window frame (--frame, src/inset-shell.css). */
+.sidebar{position:relative;isolation:isolate;display:flex;flex-direction:column;background:transparent;min-height:0;overflow:hidden}
 .brand{height:var(--titlebar-height);display:flex;align-items:center;gap:9px;padding:0 20px;user-select:none;font-size:inherit;font-weight:var(--weight-strong);letter-spacing:0;justify-content:flex-end}
 .brand-name{font-size:var(--text-sm);font-weight:var(--weight-medium);letter-spacing:-.015em;color:var(--muted)}
 /* The workspace view menu (Conversation, Board, GitHub) sits beside the name, or in the header while the sidebar is hidden. */
@@ -95,8 +96,8 @@ button .icon{pointer-events:none}
 .sidebar-bottom>button .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 .sidebar-bottom>button kbd{margin-left:auto}
 .status-dot{width:5px;height:5px;background:var(--success);border-radius:50%;display:inline-block;flex-shrink:0}
-.main-pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg)}
-.workspace-header{container-type:inline-size;container-name:workspace-header;height:var(--titlebar-height);display:flex;align-items:center;justify-content:space-between;padding:0 19px 0 26px;gap:20px;flex-shrink:0;position:relative;z-index:6;background:transparent}
+.main-pane{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--panel-surface,var(--bg))}
+.workspace-header{container-type:inline-size;container-name:workspace-header;height:var(--header-height,var(--titlebar-height));display:flex;align-items:center;justify-content:space-between;padding:0 19px 0 26px;gap:20px;flex-shrink:0;position:relative;z-index:6;background:transparent}
 /* The header is glass the thread scrolls under: a translucent --bg fill over a blur, running a
    short band past the bar's edge where a mask fades it out, so content dissolves instead of
    being cut. The band is a pseudo-element so the header's own box (and drag region) is unchanged. */
@@ -114,8 +115,7 @@ button .icon{pointer-events:none}
    own header row would otherwise sit under the workspace header. scroll-padding keeps focus and
    scrollIntoView below the fade. */
 .workspace:not(.board-view,.github-view)>.main-pane>.work-area{overflow:visible}
-.workspace:not(.board-view,.github-view) .conversation-pane:not(.new-task-page,.channel-thread):not(:has(>:is(.task-details-heading,.jev-activity):not([hidden]))){--header-under:var(--titlebar-height);--header-fade-under:var(--header-fade);--transcript-top:var(--header-fade)}
-.workspace.sidebar-collapsed:not(.board-view,.github-view) .conversation-pane:not(.new-task-page,.channel-thread):not(:has(>:is(.task-details-heading,.jev-activity):not([hidden]))){--header-fade-under:var(--titlebar-height);--transcript-top:var(--titlebar-height)}
+.workspace:not(.board-view,.github-view) .conversation-pane:not(.new-task-page,.channel-thread):not(:has(>:is(.task-details-heading,.jev-activity):not([hidden]))){--header-under:var(--header-height,var(--titlebar-height));--header-fade-under:var(--header-height,var(--titlebar-height));--transcript-top:var(--header-height,var(--titlebar-height))}
 .conversation-pane>.transcript{margin-top:calc(-1 * var(--header-under,0px));padding-top:var(--transcript-top,28px);scroll-padding-top:calc(var(--header-fade-under,0px) + 12px)}
 :root{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .08),0 6px 20px rgb(0 0 0 / .12)}
 html[data-theme="dark"]{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .4),0 8px 24px rgb(0 0 0 / .35)}
@@ -320,8 +320,8 @@ html .composer:has(#prompt:placeholder-shown):not(:has(#attachments>*)) .send-bu
 .attachments>span{display:flex;align-items:center;gap:var(--space-1);background:var(--fill-selected);padding:3px 5px 3px 7px;font-size:var(--text-xs);border-radius:var(--radius-sm);color:var(--accent-ink)}
 .attachments .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .attachments button{padding:2px}
-.inspector{position:relative;padding-left:8px;min-width:0;background:var(--sidebar);display:flex;flex-direction:column;min-height:0;overflow:hidden}
-.inspector-heading{height:auto;min-height:var(--titlebar-height);display:flex;align-items:center;justify-content:space-between;padding:10px 13px 10px 19px;flex-shrink:0;background:var(--sidebar)}
+.inspector{position:relative;padding-left:0;min-width:0;background:var(--panel-surface,var(--bg));display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.inspector-heading{height:auto;min-height:var(--titlebar-height);display:flex;align-items:center;justify-content:space-between;padding:10px 13px 10px 19px;flex-shrink:0;background:transparent}
 .inspector-heading>.icon-button{width:24px;height:24px}
 .inspector-heading>.icon-button .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 .inspector-tabs{display:flex;flex-wrap:wrap;min-width:0;min-height:32px;align-items:center;gap:5px;padding:3px;background:var(--fill-hover);border-radius:var(--radius-sm)}
@@ -442,6 +442,12 @@ html .composer:has(#prompt:placeholder-shown):not(:has(#attachments>*)) .send-bu
 .prompt-suggestions button{padding:12px 0;text-align:left;font-size:var(--text-sm);justify-content:space-between;color:var(--muted)}
 .prompt-suggestions .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .history-notice{font-size:var(--text-2xs);padding:10px;color:var(--muted);width:100%;margin-bottom:15px}
+/* The loading line waits 150 ms, so a fast load never shows it, and rests at 0.7: the tone the
+   arriving thread settles in from (settleIn), so there is no full-opacity flash before the dip. */
+.history-notice.history-loading{opacity:.7;animation:history-loading-in 120ms ease-out 150ms backwards}
+@keyframes history-loading-in{from{opacity:0}}
+/* After the previous thread's rows were held for those 150 ms (main.ts), it fades in at once. */
+.history-notice.history-loading.after-hold{animation-delay:0s}
 .streaming-label{font-size:0.642857rem;color:var(--muted)}
 .working-indicator{display:flex;align-items:center;gap:9px;font-size:var(--text-2xs);color:var(--muted);margin-bottom:22px;padding-left:32px}
 .thinking-dots{display:flex;gap:3px}
@@ -546,7 +552,7 @@ dialog input::placeholder{color:var(--muted)}
 @media(max-width:920px){
 .workspace{--sidebar-default-width:195px;--conversation-min-width:330px;grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(var(--conversation-min-width),1fr);transition:none}
 .workspace.inspector-closed{grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(var(--conversation-min-width),1fr)}
-.inspector{position:absolute;right:0;top:55px;bottom:28px;width:var(--inspector-width,300px);z-index:8;box-shadow:-20px 0 40px rgb(0 0 0 / .07);animation:none;background:var(--sidebar)}
+.inspector{position:absolute;right:0;top:55px;bottom:28px;width:var(--inspector-width,300px);z-index:8;box-shadow:-20px 0 40px rgb(0 0 0 / .07);animation:none;background:var(--panel-surface,var(--bg))}
 .workspace-header{gap:8px}
 .breadcrumb>span:last-child{max-width:180px}
 .welcome h1{font-size:var(--text-xl);color:var(--text);font-weight:var(--weight-strong);line-height:1.25;letter-spacing:-.025em;margin:0}}
@@ -584,11 +590,14 @@ dialog input::placeholder{color:var(--muted)}
 .welcome p{font-size:var(--text-xs)}
 .composer-footnote{font-size:var(--text-2xs)}
 .composer-footnote>span:last-child{max-width:165px;text-align:right}
-.inspector{width:var(--inspector-width,min(320px,calc(100vw - 59px)));background:var(--sidebar)}
+.inspector{width:var(--inspector-width,min(320px,calc(100vw - 59px)))}
 .command-footer{gap:9px;font-size:var(--text-2xs)}
 }
 @media(prefers-reduced-motion:reduce){
 *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
+/* The loading line keeps its 150 ms wait (a short fade, opacity only), so a fast load never flashes it. */
+.history-notice.history-loading{animation:history-loading-in 120ms ease-out 150ms backwards!important}
+.history-notice.history-loading.after-hold{animation-delay:0s!important}
 button:not(:disabled):active{transform:none!important}}
 .file-preview-actions{display:flex;align-items:center;gap:9px}
 .file-preview-actions .icon-button{width:21px;height:21px}
@@ -707,13 +716,11 @@ html[data-theme="dark"] .choice-menu-option:focus-visible{background:color-mix(i
 @media(prefers-reduced-transparency:reduce){.floating-menu{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}.project-menu-search,.choice-menu-search{background:transparent}}
 @media(prefers-contrast:more){.floating-menu{background:var(--bg);border:1px solid var(--border);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:0 6px 20px rgb(0 0 0 / .18)}.project-menu-search,.choice-menu-search{border-bottom:1px solid #97978e}.project-menu-footer{border-top:1px solid #97978e}.project-menu-option[aria-selected="true"],.choice-menu-option[aria-checked="true"]{outline:1px solid var(--focus);outline-offset:-1px}.project-menu-path,.choice-menu-description{color:var(--text)}}
 
-/* AppKit supplies the material. Only the sidebar reveals it through the webview. */
+/* AppKit supplies the material. Only the window frame (--frame on .workspace, src/inset-shell.css) reveals it; panels stay solid. */
 html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]),
-html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) :is(body,#app,.workspace){background:transparent}
-html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .main-pane{background:var(--bg)}
+html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) :is(body,#app){background:transparent}
 html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{
   --raised:rgb(255 255 255 / .3);--muted:#535248;--faint:#646257;
-  background:rgb(255 255 255 / .08);
   box-shadow:none;
 }
 html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar .task-item.selected{
@@ -726,13 +733,13 @@ html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) 
 
 /* Apply immediately, including while the native accessibility response is pending. */
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
-  html,body,#app,.workspace,
+  html,body,#app,
   html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]),
-  html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) :is(body,#app,.workspace){background:var(--bg)}
+  html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) :is(body,#app){background:var(--bg)}
   .sidebar,
   html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{
     --raised:#e9e9e5;--muted:#454540;--faint:#50504a;
-    background:var(--sidebar);border-right-color:var(--border);box-shadow:none;
+    border-right-color:var(--border);box-shadow:none;
   }
   html:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar .task-item.selected{background:var(--accent-dim);box-shadow:none}
 }
@@ -746,7 +753,6 @@ html[data-theme="dark"]{
   --accent:#ffd43b;--accent-dim:#48401e;--accent-ink:#f3d778;--focus:#e4be37;--on-accent:#29230e;--accent-tint:#29271f;--accent-tint-strong:#27261e;
   --success:#83cf9c;--danger:#ff9e96;--bamboo:#adbf86;--bamboo-art-opacity:.075;
 }
-html[data-theme="dark"] .inspector-heading{background:var(--sidebar)}
 html[data-theme="dark"] :is(.new-task-button,.primary-button,.send-button,.commit-button:not(:disabled)),
 html[data-theme="dark"] :is(.new-task-button,.primary-button,.send-button,.commit-button:not(:disabled)):hover{color:var(--on-accent)}
 html[data-theme="dark"] .new-task-button kbd{color:color-mix(in srgb,var(--on-accent) 72%,var(--accent))}
@@ -776,10 +782,9 @@ html[data-theme="dark"] .project-menu-path{color:var(--muted)}
 html[data-theme="dark"] :is(.project-filter,.model-picker,.mode-picker,#team-trigger,.composer-project,.settings-select)[aria-expanded="true"]{background:var(--accent-dim);box-shadow:none}
 html[data-theme="dark"] :is(.project-filter,.model-picker,.mode-picker,#team-trigger,.composer-project,.settings-select):not(:disabled):active{background:color-mix(in srgb,var(--accent) 35%,var(--bg))}
 
-html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .main-pane{background:var(--bg)}
 html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{
   --raised:rgb(255 255 255 / .08);--muted:#c4c2b8;--faint:#b3b1a7;
-  background:rgb(30 30 27 / .5);box-shadow:none;
+  box-shadow:none;
 }
 html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar .task-item.selected{background:rgb(var(--accent-rgb) / .24);box-shadow:none}
 
@@ -788,7 +793,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
   html[data-theme="dark"] :is(.workspace-header,.dialog-plate,.toast,.floating-menu){background:#272724;backdrop-filter:none;-webkit-backdrop-filter:none}
   html[data-theme="dark"] .dialog-scrim{background:rgb(0 0 0 / .5);backdrop-filter:none;-webkit-backdrop-filter:none}
   html[data-theme="dark"] .sidebar,
-  html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{--raised:#31312e;--muted:#c4c2b8;--faint:#b3b1a7;background:var(--sidebar);border-right-color:var(--border);box-shadow:none}
+  html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{--raised:#31312e;--muted:#c4c2b8;--faint:#b3b1a7;border-right-color:var(--border);box-shadow:none}
   html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar .task-item.selected{background:var(--accent-dim);box-shadow:none}
 }
 @media(prefers-contrast:more){

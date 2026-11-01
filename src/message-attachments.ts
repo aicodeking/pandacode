@@ -56,6 +56,7 @@ function parseBlock(block: string): MessageAttachment[] {
     });
     if (items.length) return items;
   }
+  if (head.startsWith('Main thread context:')) return [{ kind: 'raw', name: 'Main thread context', detail: 'Sent with /btw', raw: block }];
   if (head.startsWith('Browser element context')) {
     let name = 'Page element', detail = 'Browser element';
     try {

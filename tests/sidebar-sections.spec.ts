@@ -265,7 +265,7 @@ test.describe('sidebar sections', () => {
     // Finished follows the sidebar sort, so its rows can move.
     await expect(menu(page).getByRole('menuitem', { name: 'Move up', exact: true })).toBeVisible();
     await expect(menu(page).getByRole('menuitem', { name: 'Copy task ID', exact: true })).toBeVisible();
-    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Rename…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
+    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Rename…', 'Schedule a wake-up…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
     await page.keyboard.press('Escape');
     // A worktree task offers its branch.
     await showAllFinished(page);

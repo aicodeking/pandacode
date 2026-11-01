@@ -74,7 +74,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     // A modal's scrim covers the whole app. Other menus only obscure the guest
     // when they overlap it; composer completions normally sit beside the browser.
     // So does the full-page Settings.
-    if (document.querySelector('dialog[open], #settings-page:not([hidden])')) return true;
+    // So does a closing inspector: the native view leaves at once instead of hanging over the fading panel.
+    if (document.querySelector('dialog[open], #settings-page:not([hidden]), #inspector[data-leaving]')) return true;
     return [...document.querySelectorAll<HTMLElement>('.floating-menu:not([aria-hidden="true"])')].some(menu => {
       const box = menu.getBoundingClientRect();
       return box.width > 0 && box.height > 0 && getComputedStyle(menu).visibility !== 'hidden'
@@ -203,14 +204,14 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   const overlays = new MutationObserver(records => {
     // Dismissal becomes effective before the menu's exit animation finishes.
     // Do not wait for WebKit's animation/timer callbacks to reveal the guest.
-    const selector = '.floating-menu,dialog,#settings-page';
+    const selector = '.floating-menu,dialog,#settings-page,#inspector';
     if (records.some(record => record.type === 'attributes'
       ? record.target === document.documentElement || record.target instanceof Element && record.target.matches(selector)
       : [...record.addedNodes, ...record.removedNodes].some(node => node instanceof Element && (node.matches(selector) || node.querySelector(selector))))) {
       observeMenus(); syncBounds();
     }
   });
-  overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-hidden', 'open', 'style', 'hidden', 'data-popover-state'] });
+  overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-hidden', 'open', 'style', 'hidden', 'data-popover-state', 'data-leaving'] });
   overlays.observe(document.documentElement, { attributes: true, attributeFilter: ['data-native-material', 'data-theme'] });
   observeMenus();
   window.addEventListener('resize', scheduleBounds);

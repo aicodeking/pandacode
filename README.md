@@ -137,6 +137,14 @@ Discord, WhatsApp or a browser too.
   login password; keys saved in the Keychain by older versions move there on
   first use. Linux keeps them in the Secret Service and Windows in Credential
   Manager.
+- **Agent telemetry can be turned off in one place.** Settings → Agents →
+  Privacy → **Turn off agent telemetry** starts every agent with its vendor's
+  own opt-outs (Claude Code, Codex, Kimi, Grok, DeepSeek, Command Code, Pi,
+  Muse, and OpenCode sharing) plus `DO_NOT_TRACK=1`. Your agent config files
+  are not changed. Each agent's row shows what the switch covers. Cline has no
+  per-launch switch, so turn it off in Cline's own settings. With the switch on,
+  Claude Code also stops fetching remote feature flags (it uses its defaults)
+  and can't take sessions started remotely on this computer.
 
 A few automatic checks send no personal data — just plain requests for public
 information:

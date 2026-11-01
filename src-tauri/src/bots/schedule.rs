@@ -56,9 +56,14 @@ fn parse_time(text: &str) -> Option<i64> {
 
 /// Next run strictly after `after`, given a fixed local offset.
 pub(crate) fn next_run(kind: &str, interval_minutes: Option<i64>, time_of_day: Option<&str>, after: i64, offset: i64) -> Option<i64> {
+    next_run_on(kind, interval_minutes, time_of_day, &[], after, offset)
+}
+
+/// Like `next_run`, plus `weekly`: at `time_of_day` on `days` (0 = Sunday).
+pub(crate) fn next_run_on(kind: &str, interval_minutes: Option<i64>, time_of_day: Option<&str>, days: &[i64], after: i64, offset: i64) -> Option<i64> {
     match kind {
         "interval" => interval_minutes.filter(|m| (5..=7 * 24 * 60).contains(m)).map(|m| after + m * MINUTE),
-        "daily" | "weekdays" => {
+        "daily" | "weekdays" | "weekly" => {
             let at = parse_time(time_of_day?)?;
             let local = after + offset;
             let mut day_start = local.div_euclid(DAY) * DAY;
@@ -67,7 +72,12 @@ pub(crate) fn next_run(kind: &str, interval_minutes: Option<i64>, time_of_day: O
                 // 1970-01-01 was a Thursday, so (days + 4) % 7 counts from Sunday.
                 let weekday = (candidate.div_euclid(DAY) + 4).rem_euclid(7); // 0 = Sunday
                 let weekend = weekday == 0 || weekday == 6;
-                if candidate > local && (kind == "daily" || !weekend) {
+                let allowed = match kind {
+                    "daily" => true,
+                    "weekdays" => !weekend,
+                    _ => days.contains(&weekday),
+                };
+                if candidate > local && allowed {
                     return Some(candidate - offset);
                 }
                 day_start += DAY;
@@ -76,6 +86,18 @@ pub(crate) fn next_run(kind: &str, interval_minutes: Option<i64>, time_of_day: O
         }
         _ => None,
     }
+}
+
+/// Like `next_run_on`, but reads the offset again at the chosen slot, so a slot past a
+/// daylight-saving change still lands on its wall-clock time. Bots keep `next_run`.
+pub(crate) fn next_run_zoned(kind: &str, interval_minutes: Option<i64>, time_of_day: Option<&str>, days: &[i64], after: i64, offset_at: impl Fn(i64) -> i64) -> Option<i64> {
+    let offset = offset_at(after);
+    let first = next_run_on(kind, interval_minutes, time_of_day, days, after, offset)?;
+    if kind == "interval" {
+        return Some(first);
+    }
+    let adjusted = first + offset - offset_at(first);
+    Some(if adjusted > after { adjusted } else { first })
 }
 
 pub(crate) fn heartbeat_after(minutes: i64, now: i64) -> Option<i64> {

@@ -329,6 +329,11 @@ stays (running, no `remote_session`) and, once the host is online again, the vie
 (the row is put back and `remote://start-progress` reports `error`). `remote_cancel_start`
 sends `task.cancelStart` and puts the row back; a start cancelled after its task was made is
 stopped on the host. Older hosts refuse both methods (`Unknown method.`): the row is put back.
+The viewer makes the mirror row and spawns its start in one step (no await between them), so a
+caller that gives up (a machine tool's deadline) never leaves a row nothing starts. A machine
+thread (docs/machine-orchestration.md) is never put back: its `startId` is its own id, a start
+PandaCode quit during is asked about again after restart, a failed or lost start keeps it as an
+error, and one the user stopped stays stopped.
 
 ### Model lists for another computer
 

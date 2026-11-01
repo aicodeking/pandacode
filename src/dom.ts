@@ -43,6 +43,7 @@ const paths: Record<string, string> = {
   leaf: '<path d="M19 3C5 3 2 9 5 15s14 4 14-12ZM5 20l9-11"/>',
   bamboo: '<path d="M9 3v18m-2-6h4M7 8h4m5 5v8m-2-4h4"/><path d="M10 9c1-4 4-6 9-6-1 4-4 6-9 6ZM8 15c-4 0-6-2-6-6 4 0 6 2 6 6Z" fill="currentColor" stroke="none"/>',
   moon: '<path d="M20.5 13A8.5 8.5 0 0 1 11 3.5 8.5 8.5 0 1 0 20.5 13Z"/>',
+  clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/>',
   copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/>',
   alert: '<path d="m12 3 10 18H2Zm0 6v5m0 3v1"/>',
@@ -125,33 +126,75 @@ function remember(value: string, html: string): void {
   rendered.set(value, html); renderedSize += size;
   for (const oldest of rendered.keys()) { if (renderedSize <= RENDERED_LIMIT) break; forget(oldest); }
 }
-/** The formatted-Markdown cache, for the streaming painter (which keeps only its stream's latest
- * value, so a finished reply draws at once) and tests. */
-export const markdownCache = { get: (value: string) => rendered.get(value), set: remember, delete: forget, size: () => renderedSize, limit: RENDERED_LIMIT };
-let sanitizer: Promise<(html: string) => string> | undefined;
+// A stream registers its latest value here instead: the HTML (what the stream already settled plus
+// one render of the rest) is built only when the finished reply is drawn again, never per frame.
+const DEFERRED_LIMIT = 16;
+const deferred = new Map<string, () => Promise<string>>();
+function defer(value: string, build: () => Promise<string>): void {
+  deferred.delete(value); deferred.set(value, build);
+  for (const oldest of deferred.keys()) { if (deferred.size <= DEFERRED_LIMIT) break; deferred.delete(oldest); }
+}
+/** Builds and remembers `value`'s deferred entry; undefined when there is none or it fails. */
+function settle(value: string): Promise<string | undefined> | undefined {
+  const build = deferred.get(value);
+  if (!build) return undefined;
+  deferred.delete(value);
+  return build().then(html => { remember(value, html); return html; }, () => undefined);
+}
+/** The formatted-Markdown cache, for the streaming painter (which registers its stream's latest
+ * value, so a finished reply draws without parsing it whole) and tests. */
+export const markdownCache = {
+  get: (value: string) => rendered.get(value), set: remember, defer, settle, forgo: (value: string) => deferred.delete(value), size: () => renderedSize, limit: RENDERED_LIMIT,
+  delete: (value: string) => { deferred.delete(value); forget(value); },
+};
+const PURIFY = { ADD_TAGS: ['pandacode-ui', 'pandacode-code'], ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] };
+type Modules = { purify: typeof import('dompurify').default; enriched: typeof import('./enriched-markdown') };
+// Resolved once: after that a render awaits only the parser's own (already settled) promise, so a
+// paint started in an animation frame lands in that frame, not in a later task.
+let modules: Modules | undefined;
+let loading: Promise<Modules> | undefined;
+function loadModules(): Promise<Modules> {
+  // generative-ui defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
+  loading ??= Promise.all([import('dompurify'), import('./enriched-markdown'), import('./generative-ui')])
+    .then(([purify, enriched]) => (modules = { purify: purify.default, enriched }), error => { loading = undefined; throw error; });
+  return loading;
+}
 let fallback: Promise<(value: string) => string | Promise<string>> | undefined;
-/** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a
- * fallback if its WebAssembly cannot start. Math is typeset after sanitizing, from KaTeX.
- * Pass `cache = false` for text that is still changing, so passing prefixes never fill the cache. */
-export async function markdownHtml(value: string, cache = true): Promise<string> {
-  sanitizer ??= import('dompurify').then(d => (html: string) => d.default.sanitize(html, { ADD_TAGS: ['pandacode-ui', 'pandacode-code'], ALLOW_DATA_ATTR: false, FORBID_TAGS: ['style', 'img', 'iframe', 'form', 'input', 'button', 'textarea', 'select', 'option', 'video', 'audio'], FORBID_ATTR: ['style', 'id', 'name'] }));
-  const engine = import('./enriched-markdown');
-  // Defines <pandacode-ui> (generative UI views) before any HTML that holds one is used.
-  const [sanitize, enriched] = await Promise.all([sanitizer, engine, import('./generative-ui')]);
-  let html: string;
+async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise<string> {
   try {
-    html = enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
+    return enriched.renderMarkdown(await enriched.parseMarkdown(value), { link: workspaceHref });
   } catch {
     fallback ??= import('marked').then(m => {
       const links = new m.Renderer(); const renderLink = links.link;
       links.link = function (token) { return renderLink.call(this, { ...token, href: workspaceHref(token.href) }); };
       return (text: string) => m.marked.parse(text, { renderer: links });
     });
-    html = await (await fallback)(value);
+    return (await fallback)(value);
   }
-  const result = pendingView(value, await enriched.typesetMath(sanitize(html)));
+}
+/** Markdown to safe HTML through the Enriched Markdown engine (md4c), with `marked` as a
+ * fallback if its WebAssembly cannot start. Math is typeset after sanitizing, from KaTeX.
+ * Pass `cache = false` for text that is still changing, so passing prefixes never fill the cache. */
+export async function markdownHtml(value: string, cache = true): Promise<string> {
+  const { purify, enriched } = modules ?? await loadModules();
+  const result = pendingView(value, await enriched.typesetMath(purify.sanitize(await unsafeHtml(enriched, value), PURIFY)));
   if (cache) remember(value, result);
   return result;
+}
+/** markdownHtml's output as a template's inert content; its `innerHTML` is the HTML, serialized
+ * only if read. Without math or an open view, the sanitizer's own nodes are kept instead of
+ * serializing and parsing them again. */
+export async function markdownNodes(value: string): Promise<HTMLTemplateElement> {
+  const { purify, enriched } = modules ?? await loadModules();
+  const unsafe = await unsafeHtml(enriched, value), template = document.createElement('template');
+  if (unsafe.includes('md-math') || openViewFence(value)) {
+    template.innerHTML = pendingView(value, await enriched.typesetMath(purify.sanitize(unsafe, PURIFY)));
+    return template;
+  }
+  template.content.append(purify.sanitize(unsafe, { ...PURIFY, RETURN_DOM_FRAGMENT: true }));
+  // Removed tags leave their text beside its neighbours; parsing the HTML would have joined them.
+  template.content.normalize();
+  return template;
 }
 const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})[ \t]*([^\s`]*)/;
 /** Whether the text ends inside an open generative-UI fence (a reply still streaming). */
@@ -175,8 +218,10 @@ export async function markdown(target: HTMLElement, value: string, scroll?: HTML
   captureFileLinkContext(target);
   const known = rendered.get(value);
   if (known !== undefined) { remember(value, known); target.innerHTML = known; decorateFileLinks(target, target); return; }
+  // A reply that just streamed is built from its stream's settled HTML, not parsed whole again.
+  const settling = settle(value);
   target.textContent = value;
-  const html = await markdownHtml(value);
+  const html = (settling && await settling) ?? await markdownHtml(value);
   if (target.isConnected && target.textContent === value) {
     const restore = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
     target.innerHTML = html;

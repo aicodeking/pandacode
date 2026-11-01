@@ -220,6 +220,85 @@ export function enterView(element: HTMLElement, distance = 6, spring: Spring = {
   play(element, keyframes, duration);
 }
 
+/** New content settles where it is drawn: opacity rises from 0.7 (never from blank) with a few
+ *  pixels of rise. A call while one is running continues from what is on screen, so a burst of
+ *  thread switches never dims the transcript again; a nearly opaque start skips the rise. */
+export function settleIn(element: HTMLElement, distance = 4, spring: Spring = { response: 0.22 }, start = SETTLE_FROM): void {
+  if (!canAnimate(element) || element.hidden) return;
+  const live = running.has(element) ? presentation(element) : undefined;
+  running.get(element)?.cancel();
+  const from = live?.opacity ?? start;
+  if (from >= 0.99) return;
+  if (reducedMotion()) { play(element, [{ opacity: from }, { opacity: 1 }], 120, 'ease-out'); return; }
+  const rise = !distance ? 0 : live ? live.y : from > 0.85 ? 0 : distance;
+  const moving = Math.abs(rise) >= 0.5;
+  const { keyframes, duration } = springKeyframes(spring, progress => {
+    const y = rise * (1 - progress);
+    // Opacity follows the spring itself (no lead): the cross-fade is the soothing part, ~200 ms.
+    // The tail ends on an explicit translateY(0) (never `none`), and the finished animation clears it.
+    return { opacity: from + (1 - from) * Math.min(1, progress), ...(moving ? { transform: `translateY(${px(Math.abs(y) < 0.5 ? 0 : y)})` } : {}) };
+  });
+  play(element, keyframes, duration);
+}
+const SETTLE_FROM = 0.7;
+
+/** The previous thread's rows, held while a first-visit page loads: inert, dimmed to 0.7 from what is
+ *  on screen (~120 ms), so a fast load never blinks through an empty pane. False when motion is off
+ *  (the caller then clears the pane as before). */
+export function holdDim(element: HTMLElement): boolean {
+  if (!canAnimate(element)) return false;
+  const from = Number(getComputedStyle(element).opacity);
+  element.inert = true; element.style.opacity = String(SETTLE_FROM);
+  play(element, [{ opacity: from }, { opacity: SETTLE_FROM }], 120, 'ease-out');
+  return true;
+}
+/** Ends a hold: the new content settles in from the live opacity, or the dim simply ends. */
+export function releaseHold(element: HTMLElement, settle: boolean): void {
+  element.inert = false;
+  if (settle) settleIn(element); else running.get(element)?.cancel();
+  element.style.removeProperty('opacity');
+}
+
+/* Panels with their own grid column (the inspector). Opening: the column appears at once and the
+ * panel slides 6px in from the right with opacity only (no scale), dropping its transform once less
+ * than half a pixel remains (ending on translateX(0), which the finished animation clears) so text is never left resampled. Closing: the panel keeps its column,
+ * inert, while it fades (~130 ms); `done` runs when it is hidden, so the caller snaps the column
+ * after the fade and the conversation never rewraps under it. Showing it mid-exit turns back from
+ * what is on screen. */
+const leaving = new WeakMap<HTMLElement, () => void>();
+function land(element: HTMLElement): void {
+  leaving.delete(element);
+  delete element.dataset.leaving; element.inert = false;
+}
+export function showPanel(element: HTMLElement, animate: boolean, still = false): void {
+  const wasHidden = element.hidden || leaving.has(element);
+  if (leaving.has(element)) land(element);
+  element.hidden = false;
+  if (!wasHidden || !animate || !canAnimate(element)) return;
+  const live = running.has(element) ? presentation(element) : undefined;
+  running.get(element)?.cancel();
+  const from = { opacity: live?.opacity ?? 0, x: still ? 0 : live?.x ?? 6 };
+  if (reducedMotion() || Math.abs(from.x) < 0.5) { play(element, [{ opacity: from.opacity }, { opacity: 1 }], reducedMotion() ? 120 : 160, 'ease-out'); return; }
+  const { keyframes, duration } = springKeyframes({ response: 0.2 }, progress => {
+    const x = from.x * (1 - progress);
+    return { opacity: from.opacity + (1 - from.opacity) * opacityLead(progress), transform: `translateX(${px(Math.abs(x) < 0.5 ? 0 : x)})` };
+  });
+  play(element, keyframes, duration);
+}
+export function hidePanel(element: HTMLElement, animate: boolean, done: () => void, returnFocus?: HTMLElement | null): void {
+  if (leaving.has(element)) return;
+  // Focus inside a closing panel would fall to <body> (inert or hidden); hand it to the panel's toggle.
+  if (returnFocus !== undefined && element.contains(document.activeElement)) {
+    // A toggle that is not on screen (narrow rail, hidden header) cannot take focus; the prompt does.
+    (returnFocus?.offsetParent ? returnFocus : document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
+  }
+  if (element.hidden || !animate || !canAnimate(element)) { element.hidden = true; done(); return; }
+  element.dataset.leaving = ''; element.inert = true;
+  const finish = (): void => { if (leaving.get(element) !== finish) return; land(element); element.hidden = true; done(); };
+  leaving.set(element, finish);
+  void materializeOut(element, { scale: 1, x: 4, y: 0 }).then(finish);
+}
+
 /** Lists arrive as lists: a short cascade, capped so nobody waits for it. */
 export function cascade(elements: Iterable<HTMLElement>, stepMs = 16, maxDelayMs = 120): void {
   if (!MOTION || document.hidden || reducedMotion()) return;

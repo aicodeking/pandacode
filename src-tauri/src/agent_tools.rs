@@ -424,6 +424,11 @@ pub(crate) fn validate_spec(tools: &[Value], name: &str, args: &Value) -> Result
                 .is_some_and(|s| s.len() <= 8192 && !s.contains('\0')),
             Some("boolean") => value.is_boolean(),
             Some("integer") => value.as_i64().is_some_and(|n| n >= 0),
+            // Arrays of short strings only (ids), at most `maxItems` (default 20).
+            Some("array") => value.as_array().is_some_and(|items| {
+                items.len() <= field["maxItems"].as_u64().unwrap_or(20) as usize
+                    && items.iter().all(|item| item.as_str().is_some_and(|s| s.len() <= 200 && !s.contains('\0')))
+            }),
             _ => false,
         };
         if !valid

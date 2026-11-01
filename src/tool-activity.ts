@@ -1,6 +1,6 @@
 import type { ToolActivity } from './types';
 import { escape, icon } from './dom.ts';
-import { pandacodeTool } from './tool-trace-pandacode.ts';
+import { machineResult, pandacodeTool } from './tool-trace-pandacode.ts';
 import { PARTIAL, describeTool, toolFailed, summarizeGroup, summaryIcons, toolPreview, traceIcon, traceRowHtml, parseFields, field } from './tool-trace.ts';
 
 const MAX_CONTENT = 100_000;
@@ -71,9 +71,11 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   // The card and its raw `</>` toggle share a frame so the toggle can sit in the card's corner.
   const body = visible ? `<div class="tool-trace-frame">${visible}${rawRecord(tool, preview)}</div>${toolNote(tool)}` : toolNote(tool) + rawRecord(tool, preview);
   const attrs = `data-tool-key="${escape(key)}" data-tool-status="${escape(tool.status)}" data-tool-kind="${trace.kind}"${trace.family ? ` data-tool-family="${escape(trace.family)}"` : ''} data-tool-name="${escape(named.name)}"${failed ? ' data-tool-failed' : ''}`;
+  // A launched machine thread is named on the row, so the transcript can group launches into one card.
+  const thread = tool.status === 'completed' && tool.name.endsWith('machine_launch') ? machineResult(tool.output).thread : undefined;
   // Nothing beyond the row: a plain line, not an empty disclosure.
   if (!body) return `<div class="tool-activity tool-trace" ${attrs} data-static><div class="tool-trace-summary" title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}</div></div>`;
-  return `<details class="tool-activity tool-trace" ${attrs}><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div></details>`;
+  return `<details class="tool-activity tool-trace" ${attrs}${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div></details>`;
 }
 
 function renderLegacyTool(content: string, key: string): string {

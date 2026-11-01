@@ -57,6 +57,28 @@ export function createThreadFind(host: Host) {
   const highlights = typeof CSS !== 'undefined' && 'highlights' in CSS ? (CSS as unknown as { highlights: Map<string, unknown> }).highlights : undefined;
   const Highlight = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
   const observer = new MutationObserver(() => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; search(false); }); });
+  const FIND_BAR_HEIGHT = 32, FIND_BAR_WIDTH = 300; // .thread-find in thread-find.css (the width is a fallback before it lays out)
+  const shown = (element: Element | null | undefined): element is HTMLElement => Boolean(element && element.getClientRects().length && element.getBoundingClientRect().width > 0);
+  /** In the conversation view the bar rides in the empty header row (the transcript's first row rests
+   *  just below the header), so it never covers a match, clamped 8px clear of the header's leading
+   *  items and its widgets. A side thread (board, GitHub), the narrow layout (the dock is a row in the
+   *  header) and a bot conversation (its crumb shows) keep it at the pane's top. */
+  const headerSlot = (pane: HTMLElement, width: number): { center: number; top: number } | undefined => {
+    if (!pane.closest('.workspace:not(.side-thread)')) return undefined;
+    const header = document.querySelector<HTMLElement>('.main-pane>.workspace-header');
+    if (!header || !shown(header)) return undefined;
+    const dock = header.querySelector<HTMLElement>('#action-dock');
+    if ((dock && getComputedStyle(dock).position !== 'absolute') || shown(header.querySelector('#breadcrumb'))) return undefined;
+    const box = header.getBoundingClientRect(), half = width / 2, gap = 8;
+    // The leading box stretches across the row; only its visible items count.
+    const leading = [...header.querySelectorAll<HTMLElement>('.header-leading>*')].filter(shown).map(item => item.getBoundingClientRect().right);
+    const min = (leading.length ? Math.max(...leading) : box.left) + gap + half;
+    const widgets = [...header.querySelectorAll<HTMLElement>('.header-actions>*')].filter(shown).map(widget => widget.getBoundingClientRect().left);
+    const max = (widgets.length ? Math.min(...widgets) : box.right) - gap - half;
+    if (min > max) return undefined;
+    const pane_ = pane.getBoundingClientRect();
+    return { center: Math.min(max, Math.max(min, pane_.left + pane_.width / 2)), top: box.top + (box.height - FIND_BAR_HEIGHT) / 2 };
+  };
   // Fixed over the pane's top centre, so it never changes how the pane lays out its panels.
   const place = (): void => {
     const pane = host.pane();
@@ -64,8 +86,9 @@ export function createThreadFind(host: Host) {
     const rect = pane.getBoundingClientRect();
     // The pane can leave the screen (GitHub view, settings); the bar goes with it.
     bar.hidden = rect.width === 0;
-    bar.style.setProperty('--find-left', `${Math.round(rect.left + rect.width / 2)}px`);
-    bar.style.setProperty('--find-top', `${Math.round(rect.top + 10)}px`);
+    const slot = headerSlot(pane, bar.offsetWidth || FIND_BAR_WIDTH);
+    bar.style.setProperty('--find-left', `${slot ? Math.floor(slot.center) : Math.round(rect.left + rect.width / 2)}px`); // floor: the 8px clearance never rounds away
+    bar.style.setProperty('--find-top', `${Math.round(slot?.top ?? rect.top + 10)}px`);
   };
   const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : undefined;
 
