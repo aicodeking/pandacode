@@ -1,5 +1,5 @@
 /** Browser preview for bots: in-memory sample data, no network, no channels. Native builds use src-tauri/src/bots. */
-import type { Activity, Bot, BotDetail, BotInput, Channel, FailoverAsk, Memory, Pairing, Rule, Schedule, Thread } from './bots';
+import type { Activity, Bot, BotDetail, BotInput, Channel, FailoverAsk, Memory, Pairing, Rule, Schedule, Thread, Webhook } from './bots';
 import type { Project, Session } from './types';
 import type { SharedChannelDetail, SharedChannelMessage, SharedChannelSummary } from './bot-shared-channels';
 
@@ -10,6 +10,9 @@ export interface PreviewBotsHost {
 }
 interface Store { bot: Bot; memories: Memory[]; schedules: Schedule[]; channels: Channel[]; pairings: Pairing[]; threads: Thread[]; rules: Rule[]; activity: Activity[] }
 const bots = new Map<string, Store>();
+const webhooks = new Map<string, Webhook>();
+const webhookSecrets = new Map<string, string>();
+const newWebhookSecret = () => [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('');
 const failoverAsks = new Map<string, FailoverAsk>();
 const sharedChannels = new Map<string, SharedChannelDetail>();
 let activityId = 1;
@@ -237,7 +240,10 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
     }
     case 'bot_set_paused': { const entry = store(args.botId); entry.bot = { ...entry.bot, paused: Boolean(args.paused), updatedAt: Date.now() }; log(entry, 'updated', args.paused ? 'Paused' : 'Resumed'); result = structuredClone(entry.bot); changed(); break; }
     case 'bot_reset': { const entry = store(args.botId); entry.memories = []; entry.schedules = []; entry.threads = []; entry.activity = []; log(entry, 'reset', 'Reset: conversations, memories and schedules cleared'); result = structuredClone(entry.bot); changed(); break; }
-    case 'bot_delete': store(args.botId); bots.delete(args.botId); changed(); break;
+    case 'bot_delete':
+      store(args.botId);
+      for (const hook of webhooks.values()) if (hook.botId === args.botId) { webhooks.delete(hook.id); webhookSecrets.delete(hook.id); }
+      bots.delete(args.botId); changed(); break;
     case 'bot_remember': {
       const entry = store(args.botId); const content = String(args.content ?? '').trim().slice(0, 2000);
       if (!content) throw new Error('A memory needs some text.');
@@ -291,6 +297,27 @@ export async function invokeBots<T>(command: string, args: Record<string, any>, 
       result = `\n\nBot brief:\nYou are ${bot.name}. ${bot.instructions}${bot.skills.length ? `\n\nSkills (from the PandaCode library):\n${bot.skills.map(id => `### ${id}`).join('\n')}` : ''}${bot.mcp.length ? `\n\nMCP servers chosen for this bot: ${bot.mcp.join(', ')}.` : ''}`;
       // Tests read the briefs sent, since the transcript hides them.
       ((globalThis as any).__botTaskBriefs ??= []).push({ sessionId: args.sessionId, brief: result });
+      break;
+    }
+    case 'bot_webhook_list': store(args.botId); result = { webhooks: structuredClone([...webhooks.values()].filter(hook => hook.botId === args.botId)), serverPort: 47321 }; break;
+    case 'bot_webhook_create': {
+      store(args.botId);
+      const prompt = String(args.prompt ?? '').trim().slice(0, 8000);
+      if (!prompt) throw new Error('A webhook needs a prompt: what should the bot do?');
+      if ([...webhooks.values()].filter(hook => hook.botId === args.botId).length >= 50) throw new Error('A bot can have up to 50 webhooks.');
+      const hook: Webhook = { id: crypto.randomUUID(), botId: args.botId, title: String(args.title ?? '').trim().slice(0, 120) || prompt.slice(0, 60), prompt, enabled: true, lastTimestamp: 0, createdAt: new Date().toISOString() };
+      webhooks.set(hook.id, hook); webhookSecrets.set(hook.id, newWebhookSecret()); result = structuredClone(hook); changed(); break;
+    }
+    case 'bot_webhook_set_enabled':
+    case 'bot_webhook_delete':
+    case 'bot_webhook_rotate_secret':
+    case 'bot_webhook_test': {
+      const hook = webhooks.get(String(args.id));
+      if (!hook) throw new Error('This webhook no longer exists.');
+      if (command === 'bot_webhook_set_enabled') { hook.enabled = Boolean(args.enabled); result = structuredClone(hook); changed(); }
+      else if (command === 'bot_webhook_delete') { webhooks.delete(hook.id); webhookSecrets.delete(hook.id); changed(); }
+      else if (command === 'bot_webhook_rotate_secret') { result = newWebhookSecret(); webhookSecrets.set(hook.id, result as string); }
+      else result = hook.enabled ? { status: 202 } : { status: 403, error: 'This webhook is disabled.' };
       break;
     }
     case 'bot_schedule_create': {

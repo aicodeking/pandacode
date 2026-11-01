@@ -59,6 +59,18 @@ A bot can run commands on the user's computer and can be messaged from outside i
 5. **Kill switch.** `/stop` in a paired channel or Pause in the app stops the bot's running work and its schedules.
 6. **Audit.** Every decision is logged in `bot_activity`.
 
+## Webhook triggers
+
+A webhook starts work when a local service sends an event. In the bot's Schedules settings, add a webhook with a name and a prompt describing what to do with the event. Each webhook keeps its own conversation. Events queue when that conversation is busy, and replies appear as bot notifications rather than HTTP responses. Paused bots do not start work. HTTP 202 with `{"ok":true}` means the event was accepted, not that the task succeeded; launch failures appear in the bot's Activity log.
+
+Copy the URL and signing secret when creating the webhook. The secret is shown once, stays in the secure store, and never enters the bot's prompt or webhook listings. Rotate it to replace a lost or compromised secret; callers using the old one stop working. Disable a webhook to refuse new events, or delete it to remove its secret too. Send test event signs and posts a sample through the same local endpoint.
+
+Send a UTF-8 body with POST to `http://127.0.0.1:<port>/hook/<id>`. A JSON string field `text` supplies the event text; otherwise the trimmed body is used. Empty text is refused. Set `X-PandaCode-Timestamp` to decimal Unix seconds and `X-PandaCode-Signature` to `sha256=<lowercase hex HMAC-SHA256>`. Sign the exact UTF-8 bytes of `<timestamp>.<raw body>`, using the secret hex string's bytes as the HMAC key, not decoded hex bytes.
+
+Timestamps must be within 300 seconds of the computer's current time, including the boundary. Every accepted timestamp must be strictly newer than the webhook's last accepted timestamp, so use increasing seconds for successive events. Repeated or older timestamps are refused even if the body differs. Invalid, stale or replayed signatures return 401; unknown webhooks return 404, disabled ones 403, and empty event text 400.
+
+Webhook triggers are loopback-only in this version. They require a loopback Host header and do not support remote services or tunnels.
+
 ## Connections
 
 All connections are outbound or local, so nothing is exposed unless you choose to. Third-party tokens (Telegram, Slack, Discord, WhatsApp) are saved in PandaCode's secrets store (`app.pandacode.bots`, one account per channel and secret: a 0600 `secrets.json` on macOS, the Secret Service on Linux, Credential Manager on Windows; see [secret storage](providers.md#secret-storage)) and are never sent to the webview or the agent; the channel row records only which names were saved, so listing channels never reads a secret. The web chat link's token is PandaCode's own and guards a page on this computer only, so it lives in the database next to the conversations it protects: a keychain access prompt after an update (ad-hoc builds change signature) would otherwise break every open link. **New link** replaces it and revokes old links.
