@@ -51,10 +51,12 @@ if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
 
-# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links: none exists for
-# Intel macOS, and the x86_64 Linux one needs glibc 2.38 (releases build on Ubuntu 22.04). Keep this
+# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links and runs on
+# baseline hardware: none exists for Intel macOS, the x86_64 Linux one needs glibc 2.38 (releases build
+# on Ubuntu 22.04), and the x86_64 Windows one is built with /arch:AVX2 (its .CRT$XCU static initializers
+# execute BMI2 instructions before main(), crashing with 0xc000001d on pre-AVX2 CPUs). Keep this
 # predicate in step with `panda_onnx` in build.rs; other targets route with the keyword heuristic.
-[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), target_os = "windows"))'.dependencies]
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
