@@ -7,14 +7,14 @@ use std::{
     time::Duration,
 };
 
-const UPLOAD_CHUNK: usize = 46 * 1024;
-
 /// Writes the login files `harness` needs and returns environment variables for the agent
-/// process. Called before every run. Never logs secret values.
+/// process. `program` is the harness executable installed on the machine. Called before
+/// every run. Never logs secret values.
 pub(crate) fn push(
     sandbox: &dyn Sandbox,
     native: &str,
     harness: &str,
+    program: &str,
 ) -> Result<Vec<(String, String)>> {
     if !["claude", "glm", "mimo", "codex", "opencode"].contains(&harness) {
         return Err(format!("Unsupported cloud agent harness '{harness}'."));
@@ -26,13 +26,7 @@ pub(crate) fn push(
         "claude" => push_claude(sandbox, native, &remote_home, &mut env)?,
         "glm" | "mimo" => push_relay_key(harness, &mut env)?,
         "codex" => push_codex(sandbox, native, &home, &remote_home, &mut env)?,
-        "opencode" => push_file_login(
-            sandbox,
-            native,
-            &home.join(".local/share/opencode/auth.json"),
-            &format!("{remote_home}/.local/share/opencode/auth.json"),
-            "Sign in to OpenCode on this computer first (run `opencode auth login`).",
-        )?,
+        "opencode" => push_opencode(sandbox, native, &home, &remote_home, program, &export_host_opencode)?,
         _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
     }
     if let Some(token) = local_gh_token() {
@@ -227,19 +221,78 @@ fn push_codex(
     Err("Sign in to Codex on this computer first (or set OPENAI_API_KEY).".into())
 }
 
-fn push_file_login(
+/// OpenCode's login: the `auth.json` file for v1, and from v2 the provider credentials live
+/// in OpenCode's own database (that file is ignored there), so they also move as an
+/// `opencode auth export` payload imported on the machine (issue #206: without it a 2.x
+/// sandbox saw only the free `opencode/*` models). `export` returns the host's exported
+/// credential JSON, if any.
+fn push_opencode(
     sandbox: &dyn Sandbox,
     native: &str,
-    local: &Path,
-    remote: &str,
-    missing: &str,
+    home: &Path,
+    remote_home: &str,
+    program: &str,
+    export: &dyn Fn() -> Option<String>,
 ) -> Result<()> {
-    match std::fs::read(local) {
-        Ok(bytes) => upload_file(sandbox, native, remote, &bytes, true)
-            .map_err(|_| "Could not copy the OpenCode login to the cloud machine.".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(missing.into()),
-        Err(_) => Err("Could not read the local OpenCode login file. Check its permissions and sign in again if needed.".into()),
+    let mut signed_in = false;
+    match std::fs::read(home.join(".local/share/opencode/auth.json")) {
+        Ok(bytes) => {
+            upload_file(
+                sandbox,
+                native,
+                &format!("{remote_home}/.local/share/opencode/auth.json"),
+                &bytes,
+                true,
+            )
+            .map_err(|_| "Could not copy the OpenCode login to the cloud machine.")?;
+            signed_in = true;
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err("Could not read the local OpenCode login file. Check its permissions and sign in again if needed.".into());
+        }
+        Err(_) => {}
     }
+    if !program.is_empty() {
+        if let Some(credentials) = export() {
+            let trimmed = credentials.trim();
+            let stored = serde_json::from_str::<serde_json::Value>(trimmed)
+                .ok()
+                .and_then(|value| value.as_array().map(|items| items.len()))
+                .unwrap_or(0);
+            if stored > 0 {
+                // One fixed name: a run killed mid-import leaves at most one staging file,
+                // and the next run replaces it instead of accumulating leftovers.
+                let file = format!("{remote_home}/.pandacode/opencode-auth.json");
+                upload_file(sandbox, native, &file, trimmed.as_bytes(), true)
+                    .map_err(|_| "Could not copy the OpenCode logins to the cloud machine.")?;
+                let import = format!(
+                    "set -eu\nfile={file}\ntrap 'rm -f \"$file\"' EXIT\n{program} auth import --standalone \"$file\"",
+                    program = crate::cloud::shell_quote(program),
+                    file = crate::cloud::shell_quote(&file),
+                );
+                let (code, output) = sandbox.exec(native, &import, Duration::from_secs(300))?;
+                crate::cloud::sandbox::checked((code, output)).map_err(|error| {
+                    format!("The cloud machine could not import the OpenCode logins: {error}")
+                })?;
+                signed_in = true;
+            }
+        }
+    }
+    if signed_in {
+        return Ok(());
+    }
+    Err("Sign in to OpenCode on this computer first (run `opencode auth login`).".into())
+}
+
+/// The host's `opencode auth export --standalone` payload: a JSON array of every stored
+/// credential. OpenCode 2.x stores credentials in its database; older versions have no
+/// export and report a command error, which lands as None.
+fn export_host_opencode() -> Option<String> {
+    crate::providers::run_provider(
+        "opencode",
+        &["auth", "export", "--standalone"],
+        Duration::from_secs(120),
+    )
 }
 
 fn local_gh_token() -> Option<String> {
@@ -291,6 +344,175 @@ fn global_git_config(key: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::cloud::{sandbox::Info, Machine};
+    use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command, time::Duration};
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("pandacode-credentials-{label}-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A machine that runs commands for real in `root`, like the cloud one would.
+    struct FakeSandbox {
+        root: PathBuf,
+    }
+    impl Sandbox for FakeSandbox {
+        fn info(&self) -> Info {
+            Info {
+                persistent: true,
+                max_unattended_minutes: 60,
+            }
+        }
+        fn list(&self) -> Result<Vec<Machine>> {
+            Ok(Vec::new())
+        }
+        fn create(&self, _name: &str) -> Result<Machine> {
+            Err("unused".into())
+        }
+        fn power(&self, _native: &str, _action: &str) -> Result<()> {
+            Ok(())
+        }
+        fn exec(
+            &self,
+            _native: &str,
+            command: &str,
+            _timeout: Duration,
+        ) -> Result<(Option<i32>, String)> {
+            assert!(command.len() < 64 * 1024);
+            let output = Command::new("sh")
+                .args(["-c", command])
+                .current_dir(&self.root)
+                .env("HOME", self.root.join("home"))
+                .output()
+                .map_err(|e| e.to_string())?;
+            let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            Ok((output.status.code(), text))
+        }
+        fn keep_alive(&self, _native: &str, _minutes: u32) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn machine(label: &str) -> (TempDir, FakeSandbox, String) {
+        let temp = TempDir::new(label);
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home")).unwrap();
+        let program = root.join("bin/opencode");
+        fs::create_dir_all(program.parent().unwrap()).unwrap();
+        // `auth import --standalone <file>`: copies the payload where the test reads it.
+        fs::write(
+            &program,
+            "#!/bin/sh\n[ \"$1\" = auth ] && [ \"$2\" = import ] || exit 9\ncat \"$4\" > \"$HOME/imported.json\"\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&program).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&program, permissions).unwrap();
+        let remote_home = root.join("home").to_string_lossy().into_owned();
+        (temp, FakeSandbox { root }, remote_home)
+    }
+
+    const EXPORT: &str =
+        r#"[{"id":"deepseek","integrationID":"deepseek","value":{"type":"api","key":"sk-1"},"active":true}]"#;
+
+    /// Issue #206: OpenCode 2.x keeps provider credentials in its database, so the host's
+    /// `auth export` payload is imported on the machine and the staging file is gone after.
+    #[test]
+    fn opencode_login_imports_the_host_credential_export() {
+        let (temp, sandbox, remote_home) = machine("import");
+        let program = temp.0.join("machine/bin/opencode");
+        let host = temp.0.join("host-home");
+        fs::create_dir_all(&host).unwrap();
+        let export = || Some(EXPORT.to_owned());
+
+        push_opencode(
+            &sandbox,
+            "fake",
+            &host,
+            &remote_home,
+            &program.to_string_lossy(),
+            &export,
+        )
+        .unwrap();
+        let imported = fs::read_to_string(sandbox.root.join("home/imported.json")).unwrap();
+        assert_eq!(imported.trim(), EXPORT);
+        let staging = fs::read_dir(sandbox.root.join("home/.pandacode")).unwrap().count();
+        assert_eq!(staging, 0, "the exported credentials file must not stay behind");
+    }
+
+    /// The `auth.json` path keeps working for v1 hosts; the export rides along on 2.x.
+    #[test]
+    fn opencode_login_still_copies_auth_json_alongside_the_export() {
+        let (temp, sandbox, remote_home) = machine("auth-json");
+        let program = temp.0.join("machine/bin/opencode");
+        let host = temp.0.join("host-home");
+        fs::create_dir_all(host.join(".local/share/opencode")).unwrap();
+        fs::write(host.join(".local/share/opencode/auth.json"), r#"{"opencode":""}"#).unwrap();
+        let export = || Some(EXPORT.to_owned());
+
+        push_opencode(
+            &sandbox,
+            "fake",
+            &host,
+            &remote_home,
+            &program.to_string_lossy(),
+            &export,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(sandbox.root.join("home/.local/share/opencode/auth.json")).unwrap(),
+            r#"{"opencode":""}"#
+        );
+        assert!(sandbox.root.join("home/imported.json").exists());
+    }
+
+    #[test]
+    fn opencode_login_without_any_credential_is_an_error_and_a_failed_import_says_why() {
+        let (temp, sandbox, remote_home) = machine("errors");
+        let program = temp.0.join("machine/bin/opencode").to_string_lossy().into_owned();
+        let host = temp.0.join("host-home");
+        fs::create_dir_all(&host).unwrap();
+
+        let none = || None;
+        let result = push_opencode(&sandbox, "fake", &host, &remote_home, &program, &none);
+        assert_eq!(
+            result.unwrap_err(),
+            "Sign in to OpenCode on this computer first (run `opencode auth login`)."
+        );
+
+        // An empty export is also not a login.
+        let empty = || Some("[]".to_owned());
+        let result = push_opencode(&sandbox, "fake", &host, &remote_home, &program, &empty);
+        assert_eq!(
+            result.unwrap_err(),
+            "Sign in to OpenCode on this computer first (run `opencode auth login`)."
+        );
+
+        // A failing import surfaces the machine's own message.
+        fs::write(temp.0.join("machine/bin/opencode"), "#!/bin/sh\nexit 3\n").unwrap();
+        let export = || Some(EXPORT.to_owned());
+        let result = push_opencode(&sandbox, "fake", &host, &remote_home, &program, &export);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("could not import the OpenCode logins"), "{error}");
+    }
+}
+
+/// Hands the whole login file to the sandbox in one call; the chunked trait default still
+/// covers providers without a whole-file API.
 fn upload_file(
     sandbox: &dyn Sandbox,
     native: &str,
@@ -298,30 +520,7 @@ fn upload_file(
     bytes: &[u8],
     private: bool,
 ) -> Result<()> {
-    if bytes.len() <= UPLOAD_CHUNK {
-        return sandbox
-            .upload(native, destination, bytes, private)
-            .map_err(|_| "Could not upload a login file to the cloud machine.".into());
-    }
-    let directory = format!("{destination}.parts-{}", uuid::Uuid::new_v4());
-    for (index, chunk) in bytes.chunks(UPLOAD_CHUNK).enumerate() {
-        let part = format!("{directory}/chunk-{index:08}");
-        if sandbox.upload(native, &part, chunk, private).is_err() {
-            let cleanup = format!("rm -rf {}", crate::cloud::shell_quote(&directory));
-            let _ = sandbox.exec(native, &cleanup, Duration::from_secs(30));
-            return Err("Could not upload a login file to the cloud machine.".into());
-        }
-    }
-    let command = format!(
-        "set -eu; umask {}; dir={}; trap 'rm -rf \"$dir\"' EXIT; cat \"$dir\"/chunk-* > {}",
-        if private { "077" } else { "022" },
-        crate::cloud::shell_quote(&directory),
-        crate::cloud::shell_quote(destination),
-    );
-    if command.len() >= 64 * 1024 {
-        return Err("Cloud credential copy command exceeded the sandbox limit.".into());
-    }
-    let (code, output) = sandbox.exec(native, &command, Duration::from_secs(120))?;
-    crate::cloud::sandbox::checked((code, output))
+    sandbox
+        .upload(native, destination, bytes, private)
         .map_err(|_| "Could not upload a login file to the cloud machine.".into())
 }

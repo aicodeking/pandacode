@@ -7,11 +7,15 @@ use std::time::Duration;
 pub(crate) const HARNESSES: [&str; 5] = ["claude", "glm", "mimo", "codex", "opencode"];
 
 /// Makes sure `harness` can run on the machine; returns the absolute path of the program
-/// to execute there (for `glm`/`mimo`, Claude Code). Idempotent and quick when installed.
+/// to execute there (for `glm`/`mimo`, Claude Code). `version` is the harness's own
+/// `--version` line on this computer, when known: the machine then runs exactly that
+/// version instead of the npm latest, whose model catalog can differ (issue #206).
+/// Idempotent and quick when installed.
 pub(crate) fn ensure_runtime(
     sandbox: &dyn Sandbox,
     native: &str,
     harness: &str,
+    version: Option<&str>,
     progress: &dyn Fn(&str),
 ) -> Result<String> {
     if !HARNESSES.contains(&harness) {
@@ -34,25 +38,20 @@ pub(crate) fn ensure_runtime(
     } else {
         ""
     };
-    let cached = execute(
-        sandbox,
-        native,
-        &format!(
-            r#"set -eu
-marker="$HOME/.pandacode/runtime/{harness}"
-if [ -s "$marker" ]; then
-  program=$(sed -n '1p' "$marker")
-  if [ "${{program#/}}" != "$program" ] && [ -x "$program" ] && "$program" --version >/dev/null 2>&1; then
-{onboarding}
-    printf '%s\n' "$program"
-  fi
-fi
-"#,
-            onboarding = onboarding,
-        ),
-    )?;
-    if let Some(path) = cached.lines().last().filter(|line| line.starts_with('/')) {
-        return Ok(path.to_owned());
+    // OpenCode's marker is keyed by the host's generation, so a machine provisioned
+    // for one never reuses another's runtime (issue #209); the rest keep their name.
+    let runtime = if harness == "opencode" {
+        opencode_runtime(version)
+    } else {
+        harness.to_owned()
+    };
+    // The cache gate compares the machine's own `--version` line, so it asks for the
+    // parsed pin, not the raw host output: a bare `2` or a prefixed line like
+    // "OpenCode 2.1.2" would otherwise never match a freshly installed CLI and
+    // reinstall on every run.
+    let pin = version.and_then(parse_version);
+    if let Some(path) = cached_program(sandbox, native, &runtime, pin.as_deref(), onboarding)? {
+        return Ok(path);
     }
 
     let (arch, libc) = detect_linux(sandbox, native)?;
@@ -88,11 +87,16 @@ npm install -g --prefix "$home/.pandacode/npm" @anthropic-ai/claude-code
         "codex" | "opencode" => {
             ensure_node(sandbox, native, &arch, &libc, progress)?;
             let (label, package) = if harness == "codex" {
-                ("Installing Codex CLI…", "@openai/codex")
+                ("Installing Codex CLI…".to_owned(), "@openai/codex".to_owned())
             } else {
-                ("Installing OpenCode…", "opencode-ai")
+                let package = opencode_package(version);
+                let label = match version.and_then(parse_version) {
+                    Some(pin) => format!("Installing OpenCode {pin}…"),
+                    None => "Installing OpenCode…".to_owned(),
+                };
+                (label, package)
             };
-            progress(label);
+            progress(&label);
             execute(
                 sandbox,
                 native,
@@ -103,17 +107,144 @@ export PATH="$home/.pandacode/node/bin:$home/.pandacode/npm/bin:$home/.local/bin
 mkdir -p "$home/.pandacode/npm"
 npm install -g --prefix "$home/.pandacode/npm" {}
 "#,
-                    crate::cloud::shell_quote(package)
+                    crate::cloud::shell_quote(&package)
                 ),
             )?;
         }
         _ => unreachable!(),
     }
-    let path = mark_runtime(sandbox, native, harness, cli)?;
+    let path = mark_runtime(sandbox, native, &runtime, cli)?;
     if matches!(harness, "claude" | "glm" | "mimo") {
         ensure_onboarding_file(sandbox, native)?;
     }
     Ok(path)
+}
+
+/// The harness installed by a previous run, when its program still runs and — for a pinned
+/// version — reports exactly that version. The comparison asks the program itself (stdout
+/// only, both sides) rather than the marker's stored line, whose capture merges stderr on
+/// the machine: an asymmetric channel would reinstall on every run (review finding).
+fn cached_program(
+    sandbox: &dyn Sandbox,
+    native: &str,
+    runtime: &str,
+    version: Option<&str>,
+    onboarding: &str,
+) -> Result<Option<String>> {
+    let version_clause = match version {
+        Some(version) => format!(
+            " && [ \"$(\"$program\" --version 2>/dev/null | sed -n '1p')\" = {} ]",
+            crate::cloud::shell_quote(version)
+        ),
+        None => String::new(),
+    };
+    let cached = execute(
+        sandbox,
+        native,
+        &format!(
+            r#"set -eu
+marker="$HOME/.pandacode/runtime/{runtime}"
+if [ -s "$marker" ]; then
+  program=$(sed -n '1p' "$marker")
+  if [ "${{program#/}}" != "$program" ] && [ -x "$program" ] && "$program" --version >/dev/null 2>&1{version_clause}; then
+{onboarding}
+    printf '%s\n' "$program"
+  fi
+fi
+"#,
+            onboarding = onboarding,
+            version_clause = version_clause,
+        ),
+    )?;
+    Ok(cached
+        .lines()
+        .last()
+        .filter(|line| line.starts_with('/'))
+        .map(str::to_owned))
+}
+
+/// The npm pin from a harness's `--version` output: the first `vMAJOR.MINOR.PATCH` token
+/// on any line (a pre-release or build suffix rides along). None for anything else, which
+/// installs the latest release as before.
+pub(crate) fn parse_version(raw: &str) -> Option<String> {
+    raw.lines()
+        .find_map(|line| line.split_whitespace().find(|token| is_version(token)))
+        .map(|token| token.trim_start_matches('v').to_owned())
+}
+
+fn is_version(token: &str) -> bool {
+    let core = token.trim_start_matches('v');
+    // A pre-release (-beta.3) or build (+build) suffix may hold dots, so it splits off
+    // before the numeric core is checked.
+    let (numbers, suffix) = match core.split_once(['-', '+']) {
+        Some((numbers, suffix)) => (numbers, Some(suffix)),
+        None => (core, None),
+    };
+    let mut parts = numbers.split('.');
+    let numeric = |part: &str| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit());
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(major), Some(minor), Some(patch), None) => {
+            let suffix_ok = suffix.is_none_or(|suffix| {
+                !suffix.is_empty()
+                    && suffix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+            });
+            numeric(major) && numeric(minor) && numeric(patch) && suffix_ok
+        }
+        _ => false,
+    }
+}
+
+/// The host's OpenCode generation (its `--version` major), looser than
+/// `parse_version` so a bare `2`, `v2` or `2.x` still selects the right package.
+fn parse_generation(raw: &str) -> Option<u32> {
+    raw.lines().find_map(|line| {
+        line.split_whitespace().find_map(|token| {
+            let digits: String = token
+                .trim_start_matches('v')
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().ok()
+        })
+    })
+}
+
+/// The host's OpenCode generation (its `--version` major): the pin's major when
+/// one parses, else a looser token read so a bare `2`, `v2` or `2.x` still
+/// selects the right package and marker.
+fn host_generation(version: Option<&str>) -> Option<u32> {
+    version
+        .and_then(parse_version)
+        .and_then(|pin| pin.split('.').next().and_then(|major| major.parse().ok()))
+        .or_else(|| version.and_then(parse_generation))
+}
+
+/// The npm package for the machine's OpenCode: v2 hosts run `@opencode/cli`
+/// because `opencode-ai` publishes only 1.x and npm has no `opencode-ai@2.x`
+/// (issue #209), pinned to the host's version when one parses.
+fn opencode_package(version: Option<&str>) -> String {
+    let pin = version.and_then(parse_version);
+    let package = if host_generation(version).unwrap_or(1) >= 2 {
+        "@opencode/cli"
+    } else {
+        "opencode-ai"
+    };
+    match pin {
+        Some(pin) => format!("{package}@{pin}"),
+        None => package.to_owned(),
+    }
+}
+
+/// The runtime marker id for the opencode harness, keyed by the host's
+/// generation so a machine provisioned for one generation never reuses
+/// another's marker, including the plain `opencode` marker of older builds.
+fn opencode_runtime(version: Option<&str>) -> String {
+    match host_generation(version) {
+        Some(major) => format!("opencode-{major}"),
+        None => "opencode".to_owned(),
+    }
 }
 
 fn execute(sandbox: &dyn Sandbox, native: &str, command: &str) -> Result<String> {
@@ -252,7 +383,7 @@ rm -f "$tmp"
     Ok(())
 }
 
-fn mark_runtime(sandbox: &dyn Sandbox, native: &str, harness: &str, cli: &str) -> Result<String> {
+fn mark_runtime(sandbox: &dyn Sandbox, native: &str, runtime: &str, cli: &str) -> Result<String> {
     let command = format!(
         r#"set -eu
 home=$(cd "$HOME" && pwd -P)
@@ -270,10 +401,10 @@ program=$(resolve {}) || {{ echo 'The harness installer completed, but its execu
 version=$("$program" --version 2>&1 | sed -n '1p')
 [ -n "$version" ] || {{ echo 'The harness executable did not return a version.' >&2; exit 1; }}
 mkdir -p "$home/.pandacode/runtime"
-tmp="$home/.pandacode/runtime/.{harness}.$$"
+tmp="$home/.pandacode/runtime/.{runtime}.$$"
 printf '%s\n%s\n' "$program" "$version" > "$tmp"
 chmod 600 "$tmp"
-mv "$tmp" "$home/.pandacode/runtime/{harness}"
+mv "$tmp" "$home/.pandacode/runtime/{runtime}"
 printf '%s\n' "$program"
 "#,
         crate::cloud::shell_quote(cli)
@@ -404,7 +535,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let progress = RefCell::new(Vec::new());
-        let path = ensure_runtime(&sandbox, "fake", "claude", &|label| {
+        let path = ensure_runtime(&sandbox, "fake", "claude", None, &|label| {
             progress.borrow_mut().push(label.to_owned())
         })
         .unwrap();
@@ -412,5 +543,213 @@ mod tests {
         assert_eq!(path, executable.to_string_lossy());
         assert_eq!(sandbox.calls.load(Ordering::Relaxed), 1);
         assert!(progress.borrow().is_empty());
+    }
+
+    /// Issue #206: the marker only satisfies a run when the machine's harness reports
+    /// exactly the version this computer runs — asked of the program itself, so a marker
+    /// without a stored version still compares — and a host upgrade reinstalls instead of
+    /// reusing a machine whose model catalog has since drifted.
+    #[test]
+    fn opencode_runtime_marker_only_matches_the_pinned_version() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.pandacode/runtime")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let executable = root.join("bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let sandbox = FakeSandbox {
+            root,
+            calls: AtomicUsize::new(0),
+        };
+        let path = executable.to_string_lossy().into_owned();
+        let cached = |version: Option<&str>, marker: &str| {
+            fs::write(
+                temp.0.join("machine/home/.pandacode/runtime/opencode"),
+                marker,
+            )
+            .unwrap();
+            cached_program(&sandbox, "fake", "opencode", version, "").unwrap()
+        };
+
+        assert_eq!(cached(Some("2.1.2"), &format!("{path}\n2.1.2\n")).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(None, &format!("{path}\n2.1.2\n")).as_deref(), Some(path.as_str()));
+        // A marker from an older build without a stored version still compares, because
+        // the running program is asked directly.
+        assert_eq!(cached(Some("2.1.2"), &path).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(None, &path).as_deref(), Some(path.as_str()));
+        assert_eq!(cached(Some("2.2.0"), &format!("{path}\n2.1.2\n")), None);
+    }
+
+    #[test]
+    fn version_output_parses_into_an_npm_pin() {
+        assert_eq!(parse_version("2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("v2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("2.2.0-beta.3").as_deref(), Some("2.2.0-beta.3"));
+        assert_eq!(parse_version("2.1.2+build").as_deref(), Some("2.1.2+build"));
+        assert_eq!(parse_version("opencode 2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version("npm warn deprecated foo\n2.1.2").as_deref(), Some("2.1.2"));
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("latest"), None);
+        assert_eq!(parse_version("2"), None);
+        assert_eq!(parse_version("2.x").as_deref(), None);
+    }
+
+    /// Issue #209: OpenCode v2 is a separate npm package (`@opencode/cli`); `opencode-ai`
+    /// publishes only 1.x. The machine must install the package of the host's own
+    /// generation, pinned to the host's version when one was parsed.
+    #[test]
+    fn opencode_package_follows_the_host_generation_and_pins_its_version() {
+        assert_eq!(opencode_package(Some("2.1.2")), "@opencode/cli@2.1.2");
+        assert_eq!(opencode_package(Some("v2.1.2")), "@opencode/cli@2.1.2");
+        assert_eq!(opencode_package(Some("OpenCode 2.1.2")), "@opencode/cli@2.1.2");
+        assert_eq!(opencode_package(Some("opencode 2.1.2")), "@opencode/cli@2.1.2");
+        assert_eq!(opencode_package(Some("2.2.0-beta.3")), "@opencode/cli@2.2.0-beta.3");
+        assert_eq!(opencode_package(Some("1.19.5")), "opencode-ai@1.19.5");
+        assert_eq!(opencode_package(None), "opencode-ai");
+        assert_eq!(opencode_package(Some("junk")), "opencode-ai");
+        assert_eq!(opencode_package(Some("latest")), "opencode-ai");
+        assert_eq!(opencode_package(Some("")), "opencode-ai");
+    }
+
+    /// A bare major still selects its generation's package without a pin: npm has no
+    /// `opencode-ai@2.x` and no `@opencode/cli@1.x`, so the package must never cross
+    /// generations or invent a pin `parse_version` never found.
+    #[test]
+    fn opencode_package_selects_a_bare_major_without_inventing_a_pin() {
+        assert_eq!(opencode_package(Some("2")), "@opencode/cli");
+        assert_eq!(opencode_package(Some("v2")), "@opencode/cli");
+        assert_eq!(opencode_package(Some("2.x")), "@opencode/cli");
+        assert!(!opencode_package(Some("2.x")).starts_with("opencode-ai@"));
+        assert!(!opencode_package(Some("2.1.2")).starts_with("opencode-ai@"));
+        assert!(!opencode_package(Some("1.19.5")).starts_with("@opencode/cli"));
+    }
+
+    /// The runtime marker id carries the generation: a machine provisioned for one
+    /// generation must never read another's marker, including the legacy plain
+    /// `opencode` marker written by older builds.
+    #[test]
+    fn opencode_runtime_id_carries_the_host_generation() {
+        assert_eq!(opencode_runtime(Some("2.1.2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("v2.1.2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("OpenCode 2.1.2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("opencode 2.1.2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("2.2.0-beta.3")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("v2")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("2.x")), "opencode-2");
+        assert_eq!(opencode_runtime(Some("1.19.5")), "opencode-1");
+        assert_eq!(opencode_runtime(None), "opencode");
+        assert_eq!(opencode_runtime(Some("junk")), "opencode");
+        assert_eq!(opencode_runtime(Some("latest")), "opencode");
+        assert_eq!(opencode_runtime(Some("")), "opencode");
+    }
+
+    /// `cached_program` and `mark_runtime` stay parametric in the runtime id: a
+    /// generation-scoped id reads and writes `~/.pandacode/runtime/<id>` only, so a
+    /// legacy plain `opencode` marker never satisfies a v2 lookup.
+    #[test]
+    fn runtime_markers_are_scoped_to_the_generation_id() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.local/bin")).unwrap();
+        fs::create_dir_all(root.join("home/.pandacode/runtime")).unwrap();
+        // resolve() checks $HOME/.local/bin before PATH and the system dirs, so the
+        // fake harness there is what mark_runtime finds on any host.
+        let executable = root.join("home/.local/bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let sandbox = FakeSandbox {
+            root: root.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        // mark_runtime reports `pwd -P` paths, which on macOS resolve /var through
+        // /private/var, so the expected path is canonicalized the same way.
+        let path = fs::canonicalize(&executable)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        // A legacy plain marker never satisfies a v2-scoped lookup.
+        fs::write(
+            root.join("home/.pandacode/runtime/opencode"),
+            format!("{path}\n2.1.2\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            cached_program(&sandbox, "fake", "opencode-2", Some("2.1.2"), "").unwrap(),
+            None
+        );
+
+        // mark_runtime stores the program and its version under the generation id.
+        let marked = mark_runtime(&sandbox, "fake", "opencode-2", "opencode").unwrap();
+        assert_eq!(marked, path);
+        let marker = fs::read_to_string(root.join("home/.pandacode/runtime/opencode-2")).unwrap();
+        assert_eq!(marker, format!("{path}\n2.1.2\n"));
+
+        // That marker satisfies a pinned v2 lookup under the same id.
+        assert_eq!(
+            cached_program(&sandbox, "fake", "opencode-2", Some("2.1.2"), "")
+                .unwrap()
+                .as_deref(),
+            Some(path.as_str())
+        );
+    }
+
+    /// The cache gate is fed the parsed pin, not the raw host output: a prefixed
+    /// line like "OpenCode 2.1.2" or a bare `2` must still recognize the machine's
+    /// CLI, whose own `--version` prints only "2.1.2" (review finding: the raw
+    /// comparison reinstalled on every run).
+    #[test]
+    fn opencode_cache_gate_matches_the_parsed_pin_not_the_raw_host_line() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.local/bin")).unwrap();
+        fs::create_dir_all(root.join("home/.pandacode/runtime")).unwrap();
+        let executable = root.join("home/.local/bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let path = fs::canonicalize(&executable)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        fs::write(
+            root.join("home/.pandacode/runtime/opencode-2"),
+            format!("{path}\n2.1.2\n"),
+        )
+        .unwrap();
+
+        // The unfixed seam asked cached_program for the raw host line; the miss it
+        // produced is what sent every run back through the installer.
+        let sandbox = FakeSandbox {
+            root: root.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            cached_program(&sandbox, "fake", "opencode-2", Some("OpenCode 2.1.2"), "").unwrap(),
+            None
+        );
+
+        for host in [Some("OpenCode 2.1.2"), Some("2"), Some("v2.1.2")] {
+            let sandbox = FakeSandbox {
+                root: root.clone(),
+                calls: AtomicUsize::new(0),
+            };
+            let progress = RefCell::new(Vec::new());
+            let cached = ensure_runtime(&sandbox, "fake", "opencode", host, &|label| {
+                progress.borrow_mut().push(label.to_owned())
+            })
+            .unwrap();
+            assert_eq!(cached, path, "host {host:?}");
+            // One exec: the marker check only — no tool, node or npm install ran.
+            assert_eq!(sandbox.calls.load(Ordering::Relaxed), 1, "host {host:?}");
+            assert!(progress.borrow().is_empty(), "host {host:?}");
+        }
     }
 }

@@ -158,8 +158,30 @@ pub(super) fn choices(option: &Value) -> Vec<&Value> {
         .collect()
 }
 fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result<Value, String> {
-    if !choices(option).iter().any(|entry| entry["value"] == value) {
-        return Err("The harness does not advertise the selected setting. Refresh its models or choose the harness default.".into());
+    let offered = choices(option);
+    if !offered.iter().any(|entry| entry["value"] == value) {
+        // Name the setting, the rejected value and what the harness actually offers
+        // (issue #209): the generic sentence left no way to see which side disagreed.
+        let setting = ["id", "category"]
+            .into_iter()
+            .find_map(|field| option[field].as_str().filter(|name| !name.is_empty()))
+            .unwrap_or("setting");
+        let names: Vec<&str> = offered
+            .iter()
+            .filter_map(|entry| entry["value"].as_str())
+            .collect();
+        let take = names.len().min(12);
+        let shown = names[..take].join(", ");
+        let offers = if names.len() > take {
+            format!("{shown}, …")
+        } else if names.is_empty() {
+            "nothing".to_owned()
+        } else {
+            shown
+        };
+        return Err(format!(
+            "The harness does not advertise the selected {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
+        ));
     }
     Ok(
         json!({"jsonrpc":"2.0","id":id,"method":"session/set_config_option","params":{"sessionId":session,"configId":option["id"],"value":value}}),
@@ -1574,6 +1596,80 @@ mod tests {
         assert_eq!(selected.last().unwrap()["value"], last);
         assert!(choice_request("remote", 5, &option, &last).is_ok());
         assert!(choice_request("remote", 5, &option, "vendor/model-10000").is_err());
+    }
+    /// Issue #209: a value the harness does not offer fails with an error that names
+    /// what was rejected and what is actually available, instead of the generic
+    /// "selected setting" line that names nothing.
+    #[test]
+    fn choice_request_names_the_rejected_setting_value_and_offered_choices() {
+        let option = &metadata()["configOptions"][0];
+        let error = choice_request("remote", 5, option, "vendor/missing")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("does not advertise the selected model \"vendor/missing\""),
+            "{error}"
+        );
+        assert!(error.contains("It offers:"), "{error}");
+        assert!(error.contains("vendor/a"), "{error}");
+        assert!(error.contains("vendor/b"), "{error}");
+        assert!(!error.contains("…"), "{error}");
+        assert!(
+            error.contains("Refresh its models or choose the harness default."),
+            "{error}"
+        );
+    }
+    #[test]
+    fn choice_request_caps_the_offered_list_at_twelve_values() {
+        let options: Vec<Value> = (0..20)
+            .map(|index| json!({"value": format!("vendor/model-{index:02}")}))
+            .collect();
+        let option = json!({"id":"model","category":"model","type":"select","options":options});
+        let error = choice_request("remote", 5, &option, "vendor/missing")
+            .err()
+            .unwrap();
+        for listed in 0..12 {
+            assert!(
+                error.contains(&format!("vendor/model-{listed:02}")),
+                "{error}"
+            );
+        }
+        for cut in 12..20 {
+            assert!(
+                !error.contains(&format!("vendor/model-{cut:02}")),
+                "{error}"
+            );
+        }
+        assert!(error.contains("…"), "{error}");
+        assert!(
+            error.contains("Refresh its models or choose the harness default."),
+            "{error}"
+        );
+    }
+    /// The named setting falls back from a missing or empty option id to its category,
+    /// then to the word "setting".
+    #[test]
+    fn choice_request_names_the_category_then_setting_when_the_option_has_no_id() {
+        for option in [
+            json!({"id":"","category":"thought_level","type":"select","options":[{"value":"low"},{"value":"high"}]}),
+            json!({"category":"thought_level","type":"select","options":[{"value":"low"},{"value":"high"}]}),
+        ] {
+            let error = choice_request("remote", 5, &option, "turbo").err().unwrap();
+            assert!(
+                error.contains("does not advertise the selected thought_level \"turbo\""),
+                "{error}"
+            );
+            assert!(error.contains("low"), "{error}");
+        }
+        let anonymous = json!({"type":"select","options":[{"value":"low"},{"value":"high"}]});
+        let error = choice_request("remote", 5, &anonymous, "turbo")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("does not advertise the selected setting \"turbo\""),
+            "{error}"
+        );
+        assert!(error.contains("high"), "{error}");
     }
     #[test]
     fn legacy_acp_catalog_keeps_later_models() {
