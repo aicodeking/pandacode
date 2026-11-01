@@ -1490,6 +1490,22 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!name || [...name].length > 120 || /[\u0000-\u001f\u007f-\u009f]/.test(name)) throw new Error('Use a project name of 1–120 characters without control characters.');
       project.name = name; result = { ...project }; break;
     }
+    case 'relocate_project': {
+      const project = projects.find(project => project.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      const path = String(args.path).trim().replace(/\\/g, '/').replace(/\/$/, '');
+      if (!path || (!path.startsWith('/') && !/^[A-Za-z]:\//.test(path))) throw new Error('Choose an existing folder using its full path.');
+      if (projects.some(other => other.id !== project.id && other.path === path)) throw new Error('That folder already belongs to another project.');
+      const tasks = sessions.filter(task => task.projectId === project.id);
+      for (const task of tasks) { assertIdle(task); if (architect.isActive(task.id)) throw new Error('Stop this project’s teams first.'); }
+      const oldPath = project.path;
+      project.path = path;
+      for (const task of tasks) {
+        if (task.worktreePath?.startsWith(oldPath + '/')) task.worktreePath = path + task.worktreePath.slice(oldPath.length);
+        if (!task.remoteDevice && !task.cloud) task.resumeId = null;
+      }
+      result = { ...project }; break;
+    }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
     case 'delete_session': {
       const task = session(args.sessionId); assertIdle(task);

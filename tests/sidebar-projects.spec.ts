@@ -8,9 +8,11 @@ async function open(page: Page, url = '/', seed = ''): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const source = (await response.text()).replace(/const providers\s*=/, `${seed}\nconst providers =`).replace(/switch\s*\(command\)\s*\{/, `
-      if (['create_session','rename_project','remove_project'].includes(command)) (window.__projectTreeCalls ??= []).push({command,args:structuredClone(args)});
+      if (['create_session','rename_project','relocate_project','remove_project'].includes(command)) (window.__projectTreeCalls ??= []).push({command,args:structuredClone(args)});
+      if (command === 'relocate_project' && window.__refuseRelocate) throw new Error('The folder is unavailable. Connect the drive and try again.');
       switch (command) {`);
     await route.fulfill({ response, body: source + `
+      window.__projectTreeSnapshot = () => structuredClone({projects, sessions, messages});
       window.__projectTreeChange = (id, status, taskStage) => { Object.assign(session(id), {status,taskStage}); emit('sessions-changed', undefined); };
     ` });
   });
@@ -148,4 +150,92 @@ test('project sidebar reorders chats within their project without changing selec
   await expect(row(page, 'session-1')).toHaveAttribute('aria-current', 'page');
   await page.reload();
   await expect(group(page, 'project-1').locator(':scope > .folder-tasks > .task-row > .task-item').first()).toHaveAttribute('data-id', 'session-2');
+});
+
+
+async function openFolderLocation(page: Page): Promise<void> {
+  await group(page, 'project-1').getByRole('button', { name: 'Project actions: orbit', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Project actions', exact: true }).getByRole('menuitem', { name: 'Change folder location…', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Change folder location', exact: true })).toBeVisible();
+}
+
+test('project sidebar: changing a project folder can be cancelled without changing the project or its chats', async ({ page }) => {
+  await open(page);
+  const before = await page.evaluate(() => (window as any).__projectTreeSnapshot());
+  await openFolderLocation(page);
+  const dialog = page.getByRole('dialog', { name: 'Change folder location', exact: true });
+  await expect(dialog).toContainText('/Users/you/Projects/orbit');
+  await expect(dialog.getByRole('button', { name: 'Choose folder…', exact: true })).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'New folder', exact: true }).fill('/Volumes/External Drive/orbit');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  expect(await page.evaluate(() => (window as any).__projectTreeSnapshot())).toEqual(before);
+  expect(await page.evaluate(() => (window as any).__projectTreeCalls?.filter((call: any) => call.command === 'relocate_project') ?? [])).toEqual([]);
+  await expect(row(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+});
+
+for (const theme of ['light', 'dark'] as const) {
+  test(`project sidebar: changing a project folder preserves chats and uses the new location (${theme})`, async ({ page }, testInfo) => {
+    await page.addInitScript(theme => {
+      localStorage.setItem('pandacode.theme', theme);
+      localStorage.setItem('pandacode.wallpapers', 'false');
+    }, theme);
+    await open(page);
+    const before = await page.evaluate(() => (window as any).__projectTreeSnapshot());
+    await openFolderLocation(page);
+    const dialog = page.getByRole('dialog', { name: 'Change folder location', exact: true });
+    const path = '/Volumes/External Drive/Projects/orbit';
+    await dialog.getByRole('textbox', { name: 'New folder', exact: true }).fill(path);
+    await dialog.screenshot({ path: testInfo.outputPath(`change-folder-${theme}.png`) });
+    await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    const after = await page.evaluate(() => (window as any).__projectTreeSnapshot());
+    expect(after.projects).toEqual(before.projects.map((project: any) => project.id === 'project-1' ? { ...project, path } : project));
+    expect(after.sessions.map((task: any) => ({ id: task.id, projectId: task.projectId, title: task.title, model: task.model, mode: task.mode })))
+      .toEqual(before.sessions.map((task: any) => ({ id: task.id, projectId: task.projectId, title: task.title, model: task.model, mode: task.mode })));
+    expect(after.messages).toEqual(before.messages);
+    await expect(row(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+    await expect(group(page, 'project-1').locator('.task-item')).toHaveCount(3);
+    await expect(page.locator('#transcript')).toContainText('Search feels a little slow.');
+    await openFolderLocation(page);
+    await expect(dialog).toContainText(path);
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await group(page, 'project-1').getByRole('button', { name: 'New chat in orbit', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__projectTreeCalls?.findLast((call: any) => call.command === 'create_session')?.args.projectId)).toBe('project-1');
+  });
+}
+
+test('project sidebar: changing a project folder keeps the entered path and all chats when saving fails', async ({ page }) => {
+  await open(page);
+  const before = await page.evaluate(() => (window as any).__projectTreeSnapshot());
+  await page.evaluate(() => { (window as any).__refuseRelocate = true; });
+  await openFolderLocation(page);
+  const dialog = page.getByRole('dialog', { name: 'Change folder location', exact: true });
+  const field = dialog.getByRole('textbox', { name: 'New folder', exact: true });
+  await field.fill('/Volumes/Disconnected Drive/orbit');
+  await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await expect(field).toHaveValue('/Volumes/Disconnected Drive/orbit');
+  await expect(dialog.getByRole('alert')).toContainText('The folder is unavailable.');
+  expect(await page.evaluate(() => (window as any).__projectTreeSnapshot())).toEqual(before);
+  await page.evaluate(() => { (window as any).__refuseRelocate = false; });
+  await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(group(page, 'project-1').locator('.task-item')).toHaveCount(3);
+});
+
+
+test('project sidebar: choosing a new folder stages it until Save location', async ({ page }) => {
+  await open(page);
+  const before = await page.evaluate(() => (window as any).__projectTreeSnapshot());
+  await openFolderLocation(page);
+  const dialog = page.getByRole('dialog', { name: 'Change folder location', exact: true });
+  await dialog.getByRole('button', { name: 'Choose folder…', exact: true }).click();
+  await expect(dialog.getByRole('textbox', { name: 'New folder', exact: true })).toHaveValue('/Users/you/Projects/new-project');
+  expect(await page.evaluate(() => (window as any).__projectTreeSnapshot())).toEqual(before);
+  expect(await page.evaluate(() => (window as any).__projectTreeCalls?.filter((call: any) => call.command === 'relocate_project') ?? [])).toEqual([]);
+  await dialog.getByRole('button', { name: 'Save location', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (window as any).__projectTreeCalls?.findLast((call: any) => call.command === 'relocate_project')?.args))
+    .toEqual({ projectId: 'project-1', path: '/Users/you/Projects/new-project' });
 });

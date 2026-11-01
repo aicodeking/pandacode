@@ -99,6 +99,38 @@ async function release(page: Page, provider?: string): Promise<void> {
   }, provider);
 }
 
+test('Settings has a dedicated Agent usage section with lazy loading and provider navigation', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.theme', 'light'));
+  await openApp(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  const usage = settings.getByRole('tabpanel', { name: 'Agent usage', exact: true });
+  expect(await calls(page)).toEqual([]);
+  await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
+  await expect(usage.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(async () => (await calls(page)).length).toBe(installed.length);
+  await expect(usage.locator('.usage-cost-hero')).toContainText('$5.75');
+  await page.screenshot({ path: testInfo.outputPath('settings-agent-usage-light.png'), animations: 'disabled' });
+  await usage.getByRole('tab', { name: 'Codex', exact: true }).click();
+  await expect(usage.locator('#usage-panel-codex')).toContainText('68% used');
+  await usage.getByRole('tab', { name: 'Codex', exact: true }).press('Home');
+  await expect(usage.getByRole('tab', { name: 'Overview', exact: true })).toBeFocused();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
+  expect((await calls(page)).length).toBe(installed.length);
+  await usage.getByRole('button', { name: 'Refresh usage', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).length).toBe(installed.length * 2);
+  await page.evaluate(() => document.documentElement.dataset.theme = 'dark');
+  await page.setViewportSize({ width: 900, height: 720 });
+  await expect(usage).toBeVisible();
+  expect(await usage.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('settings-agent-usage-dark-narrow.png'), animations: 'disabled' });
+  await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
+  await expect.poll(async () => (await calls(page)).length).toBe(installed.length * 3);
+});
+
 test('Agent usage opens ChatGPT weekly limits directly from its provider card without background polling', async ({ page }, testInfo) => {
   await page.clock.install();
   await openApp(page);

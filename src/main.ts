@@ -90,7 +90,7 @@ import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFile
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
-import { projectIconHtml } from './project-icons';
+import { forgetProjectIcon, projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
@@ -845,7 +845,7 @@ window.addEventListener('pagehide', () => { disposeSidebarResizing(); disposeIns
 
 function project(): Project | undefined { return state.projects.find(p => p.id === state.projectId); }
 function workspaceContext(s = session()): { projectId: string; sessionId?: string } { return { projectId: s?.projectId ?? state.projectId, ...(s ? { sessionId: s.id } : {}) }; }
-function workspaceKey(): string { return `${state.projectId}:${session()?.worktreePath ?? ''}`; }
+function workspaceKey(): string { return `${state.projectId}:${project()?.path ?? ''}:${session()?.worktreePath ?? ''}`; }
 /** PDFs and images open in a file tab like other documents; the tab still offers the browser preview. */
 const OPENS_IN_TAB = /\.(?:pdf|png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i;
 function workspacePath(): string { return session()?.worktreePath ?? project()?.path ?? ''; }
@@ -1723,7 +1723,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = op
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
-  const answer = !isUser && m.role === 'assistant' && state.messages.at(-1)?.id === m.id && !isRunning() ? quickAnswerHtml(m.content, m.id) : '';
+  const answer = !isUser && m.role === 'assistant' && m.sessionId === state.sessionId && thread.messages.at(-1)?.id === m.id && !isRunning() ? quickAnswerHtml(m.content, m.id) : '';
   return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${answer}${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
@@ -1960,7 +1960,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     if (!liveTurnStaysOpen(node)) (node as HTMLDetailsElement).open = false;
   });
   for (const entry of commentary) { bindFileLinkContext(entry.node, context); streamMarkdown(entry.node, entry.content, transcript); }
-  const sid = state.sessionId;
+  const sid = context.sessionId ?? state.sessionId;
   hydrateToolImages(host, sid, toolId => call<string>('tool_image', { sessionId:sid, toolId }));
 }
 /** One changed call redraws its own row; the summary redraws only when a member's name or status changed. */
@@ -4782,6 +4782,7 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
     { id: 'reveal', label: isMac ? 'Reveal in Finder' : isWindows ? 'Show in Explorer' : 'Open folder', icon: 'folder', separator: true },
     { id: 'rename', label: 'Rename project…', icon: 'edit', separator: true },
+    { id: 'relocate', label: 'Change folder location…', icon: 'folder' },
     { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
   ], onSelect: async choice => {
     closeChoiceMenu();
@@ -4789,6 +4790,7 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
     if (choice === 'reveal') { await call('reveal_path', { path: project.path }); return; }
     if (choice === 'remove') { showRemoveProject(project); return; }
     if (choice === 'rename') { showRenameProject(project); return; }
+    if (choice === 'relocate') { showRelocateProject(project); return; }
     for (const other of userProjects()) if (other.id !== id) state.collapsedFolders.add(other.id);
     state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
   } });
@@ -4799,6 +4801,49 @@ function showRemoveProject(project: Project): void {
 function showRenameProject(project: Project): void {
   const dialog = modal('Rename project', `<form id="rename-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">The folder name stays the same.</p><label class="field-label" for="project-name">Project name</label><input id="project-name" name="name" value="${escape(project.name)}" maxlength="120" required autocomplete="off"><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save name</button></div></form>`, 'compact-dialog');
   dialog.querySelector<HTMLInputElement>('#project-name')!.select();
+}
+/** Relink the existing project after its folder has moved; never recreate its chats. */
+function showRelocateProject(project: Project): void {
+  const dialog = modal('Change folder location', `<form id="relocate-project-form"><p class="dialog-description">Moved ${escape(project.name)}? Choose its new folder, including on an external drive. Your chats and project settings stay here. This updates the link; it does not move files.</p><label class="field-label">Current folder</label><p class="project-location-current">${escape(project.path)}</p><label class="field-label" for="project-location">New folder</label><input id="project-location" name="path" value="${escape(project.path)}" required autocomplete="off" spellcheck="false"><button type="button" class="secondary-button" id="choose-project-location">${icon('folder')} Choose folder…</button><p class="dialog-description">This updates the folder link without moving files. Chats stay here; agents reconnect using saved conversation context. Stop this project’s agents and close its terminals before saving.</p><p class="settings-embed-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="primary-button">Save location</button></div></form>`, 'compact-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('form')!;
+  const input = form.querySelector<HTMLInputElement>('#project-location')!;
+  const error = form.querySelector<HTMLElement>('[role="alert"]')!;
+  let saving = false;
+  form.querySelector<HTMLButtonElement>('#choose-project-location')!.addEventListener('click', () => {
+    run((async () => {
+      const path = await chooseFolder(`Choose the new folder for ${project.name}`);
+      if (path && dialog.open && form.isConnected) { input.value = path; input.focus(); error.hidden = true; }
+    })());
+  });
+  form.addEventListener('submit', event => {
+    event.preventDefault(); event.stopPropagation();
+    if (saving || !input.value.trim()) return;
+    saving = true; error.hidden = true;
+    const controls = [...form.querySelectorAll<HTMLButtonElement | HTMLInputElement>('button, input')];
+    controls.forEach(control => { control.disabled = true; });
+    run((async () => {
+      try {
+        const updated = await call<Project>('relocate_project', { projectId: project.id, path: input.value.trim() });
+        forgetProjectIcon(updated.id);
+        state.projects = state.projects.map(item => item.id === updated.id ? updated : item);
+        for (const task of state.sessions.filter(task => task.projectId === updated.id)) {
+          threadPanels.delete(task.id); fileTabs.forget(task.id);
+        }
+        if (state.projectId === updated.id) { clearWorkspaceInspector(false); disposeChangesView(); }
+        if (dialog.open && form.isConnected) closeModal();
+        render();
+        notify('Folder location updated. Your chats are still here.');
+        await reloadSessions();
+        if (state.projectId === updated.id) await refreshInspector();
+      } catch (cause) {
+        if (dialog.open && form.isConnected) { error.textContent = errorText(cause); error.hidden = false; }
+        else report(cause);
+      } finally {
+        saving = false; controls.forEach(control => { control.disabled = false; });
+      }
+    })());
+  });
+  input.focus(); input.select();
 }
 /** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
 function reorderFolders(ids: string[], focus: string): void {
@@ -4879,6 +4924,7 @@ async function showProjectFilter(anchor: HTMLElement): Promise<void> {
     { id: '', label: 'All projects', icon: 'folder', selected: !state.projectFilter },
     ...userProjects().map(p => ({ id: p.id, label: p.name, description: p.path, leading: projectAppIcon(p.id, p.name), selected: p.id === state.projectFilter, rowActions: [
       { id: 'rename', label: `Rename ${p.name}`, icon: 'edit' },
+      { id: 'relocate', label: `Change folder location for ${p.name}`, icon: 'folder' },
       { id: 'remove', label: `Remove ${p.name} from PandaCode`, icon: 'trash', danger: true },
     ] })),
   ], onSelect: async id => {
@@ -4889,6 +4935,7 @@ async function showProjectFilter(anchor: HTMLElement): Promise<void> {
     if (!project) return;
     closeChoiceMenu();
     if (action === 'rename') showRenameProject(project);
+    else if (action === 'relocate') showRelocateProject(project);
     else if (action === 'remove') showRemoveProject(project);
   } });
 }

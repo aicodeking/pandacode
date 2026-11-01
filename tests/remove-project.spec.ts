@@ -42,15 +42,19 @@ test('project dropdown removes a project without selecting it and keeps cancella
   expect(await page.evaluate(() => (window as any).__removed)).toEqual([]);
   await trigger.click();
   await expect(projects).toHaveCount(before);
-  // Keyboard users step through Rename and Remove with →, then return with ←.
+  // Keyboard users step through Rename, Change folder and Remove with →, then return with ←.
   await target.focus();
   await page.keyboard.press('ArrowRight');
   await expect(menu.getByRole('menuitem', { name: `Rename ${name}`, exact: true })).toBeFocused();
   await page.keyboard.press('ArrowRight');
+  await expect(menu.getByRole('menuitem', { name: `Change folder location for ${name}`, exact: true })).toBeFocused();
+  await page.keyboard.press('ArrowRight');
   await expect(remove).toBeFocused();
   await page.keyboard.press('ArrowLeft');
   await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
   await expect(target).toBeFocused();
+  await page.keyboard.press('ArrowRight');
   await page.keyboard.press('ArrowRight');
   await page.keyboard.press('ArrowRight');
   await page.keyboard.press('Enter');

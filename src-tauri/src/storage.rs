@@ -732,6 +732,51 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    /// Relink a moved folder without replacing the project or its conversations.
+    /// Callers hold the agent admission lock while validating and committing.
+    pub fn relocate_project(&self, project_id: &str, destination: &Path) -> Result<Project> {
+        let project = self.project(project_id)?;
+        if !destination.is_absolute() { return Err("Choose an absolute folder location.".into()); }
+        let destination = destination.canonicalize().map_err(|e| format!("Cannot open the new folder: {e}"))?;
+        if !destination.is_dir() { return Err("Choose a folder.".into()); }
+        let destination_text = destination.to_str().ok_or("The folder path must be valid Unicode.")?;
+        if destination_text == project.path { return Ok(project); }
+        if self.projects()?.iter().any(|other| other.id != project_id && Path::new(&other.path).canonicalize().unwrap_or_else(|_| PathBuf::from(&other.path)) == destination) {
+            return Err("That folder already belongs to another project. Choose a different folder; neither project's chats were changed.".into());
+        }
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let busy: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1 AND (status IN ('running','waiting') OR resume_at_reset=1 OR (goal_state IS NOT NULL AND json_extract(goal_state,'$.status')<>'complete'))) OR EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if busy { return Err("Stop this project's agents and teams, clear unfinished task goals, and turn off automatic limit resumes before changing its folder.".into()); }
+        let mut query = self.db.prepare("SELECT id,worktree_path,cloud FROM sessions WHERE project_id=?1 AND remote_device IS NULL").map_err(|e| e.to_string())?;
+        let local = query.query_map([project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).map_err(|e| e.to_string())?.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        drop(query);
+        // Only rebase path components, never a textual prefix ("repo" != "repo-other").
+        // Git links may still point to the old main checkout after a Finder move.
+        // Validate them rather than modifying Git metadata outside our transaction.
+        let common = |root: &Path| -> Result<PathBuf> {
+            let output = crate::workspace::checked(crate::workspace::run_git_bounded(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"], 8192, false, std::time::Duration::from_secs(5))?)?;
+            if output.truncated { return Err("Git metadata path was too long.".into()); }
+            Path::new(std::str::from_utf8(&output.bytes).map_err(|e| e.to_string())?.trim()).canonicalize().map_err(|e| e.to_string())
+        };
+        for (sid, worktree, cloud) in local {
+            if let Some(worktree) = worktree {
+                let old = Path::new(&worktree);
+                let moved = old.strip_prefix(&project.path).map(|suffix| destination.join(suffix)).unwrap_or_else(|_| old.to_path_buf());
+                let valid = moved.join(".git").is_file() && common(&moved).ok().zip(common(&destination).ok()).is_some_and(|(a, b)| a == b);
+                if !valid { return Err(format!("Repair Git worktrees for the new project folder first, including {}. No project or chats were changed.", moved.display())); }
+                self.db.execute("UPDATE sessions SET worktree_path=?2 WHERE id=?1", params![sid, moved.to_string_lossy()]).map_err(|e| e.to_string())?;
+            }
+            // Remote/cloud harnesses keep their own working directory and native context.
+            if cloud.is_none() {
+                crate::context_recovery::queue(self, &sid)?;
+                self.db.execute("INSERT OR IGNORE INTO task_usage_links(session_id,harness_id,created_at) SELECT id,resume_id,?2 FROM sessions WHERE id=?1 AND resume_id IS NOT NULL AND trim(resume_id)<>''", params![sid, now()]).map_err(|e| e.to_string())?;
+                self.db.execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL,goal_state=NULL WHERE id=?1", [&sid]).map_err(|e| e.to_string())?;
+            }
+        }
+        self.db.execute("UPDATE projects SET path=?2 WHERE id=?1", params![project_id, destination_text]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        self.project(project_id)
+    }
     fn session_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         let used_tokens: Option<i64> = r.get(14)?;
         let context_window: Option<i64> = r.get(15)?;
@@ -1949,6 +1994,10 @@ fn handoff_from_provider(content: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "storage_sidebar_tests.rs"]
 mod sidebar_tests;
+
+#[cfg(test)]
+#[path = "storage_relocation_tests.rs"]
+mod relocation_tests;
 
 #[cfg(test)]
 mod tests {

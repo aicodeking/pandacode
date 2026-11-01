@@ -90,6 +90,7 @@ impl Write for LinuxPtyWriter {
 }
 
 pub struct Terminal {
+    root: PathBuf,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     #[cfg(not(unix))]
@@ -494,6 +495,13 @@ pub fn harness_running(terms: &Terminals, session_id: &str) -> Result<bool, Stri
     }))
 }
 
+/// A shell retains its original cwd even when the project's saved path changes.
+pub fn has_open_roots(terms: &Terminals, roots: &[PathBuf]) -> Result<bool, String> {
+    let terms = terms.lock().map_err(|_| "Terminal registry is unavailable")?;
+    Ok(terms.values().any(|terminal| !terminal.closed.load(Ordering::SeqCst)
+        && roots.iter().any(|root| terminal.root.starts_with(root))))
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalActivity {
@@ -790,6 +798,7 @@ fn start_command(
     registry.insert(
         id.clone(),
         Terminal {
+            root: root.to_path_buf(),
             master: pty.master,
             writer,
             #[cfg(not(unix))]
@@ -1288,6 +1297,7 @@ mod tests {
         let terms = Arc::new(Mutex::new(HashMap::from([(
             id.clone(),
             Terminal {
+                root: std::env::temp_dir(),
                 master: pty.master,
                 writer,
                 shell_pid: Some(pid),
@@ -1306,6 +1316,17 @@ mod tests {
             pid,
             exited,
         }
+    }
+
+    #[test]
+    fn project_relocation_requires_closing_only_terminals_in_its_roots() {
+        let shell = shell("printf ready; read line");
+        let root = std::env::temp_dir();
+        assert!(has_open_roots(&shell.terms, &[root.clone()]).unwrap());
+        assert!(!has_open_roots(&shell.terms, &[root.join("another-project")]).unwrap());
+        close(&shell.terms, &shell.id).unwrap();
+        shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!has_open_roots(&shell.terms, &[root]).unwrap());
     }
 
     #[test]

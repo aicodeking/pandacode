@@ -1032,3 +1032,7 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 .tool-image-open img[hidden] { display:none; }
 .tool-image-status { display:block; padding:16px; color:var(--muted); }
 .tool-image-status[hidden] { display:none; }
+
+/* Full paths stay readable when relinking a project on another drive. */
+.project-location-current { overflow-wrap: anywhere; color: var(--muted); margin: 8px 0 20px; }
+#relocate-project-form #choose-project-location { margin-top: 12px; }

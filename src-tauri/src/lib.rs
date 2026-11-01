@@ -651,6 +651,34 @@ async fn rename_project(window: tauri::WebviewWindow, state: State<'_, AppState>
     state.store.lock().map_err(|e| e.to_string())?.rename_project(&project_id, &name)
 }
 #[tauri::command]
+async fn relocate_project(window: tauri::WebviewWindow, state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
+    if window.label() != "main" { return Err("Change project folders in the main window.".into()); }
+    let store = state.store.clone();
+    let agents = state.agents.clone();
+    let terminals = state.terminals.clone();
+    blocking(move || {
+        let agents = agents.lock().map_err(|e| e.to_string())?;
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let project = store.project(&project_id)?;
+        let mut roots = vec![PathBuf::from(&project.path)];
+        let mut query = store.db.prepare("SELECT id,worktree_path FROM sessions WHERE project_id=?1").map_err(|e| e.to_string())?;
+        let sessions = query.query_map([&project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))).map_err(|e| e.to_string())?.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        drop(query);
+        for (sid, worktree) in &sessions {
+            if agents.contains_key(sid) || terminal::harness_running(&terminals, sid)? {
+                return Err("Stop this project's agents and harness consoles before changing its folder.".into());
+            }
+            if let Some(path) = worktree { roots.push(PathBuf::from(path)); }
+        }
+        if terminal::has_open_roots(&terminals, &roots)? {
+            return Err("Close this project's terminals before changing its folder.".into());
+        }
+        let updated = store.relocate_project(&project_id, std::path::Path::new(&path))?;
+        for (sid, _) in sessions { providers::discard_warm_agent(&sid); }
+        Ok(updated)
+    }).await
+}
+#[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
     let agents = state.agents.lock().map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -3518,11 +3546,11 @@ async fn start_run_script_terminal(
     rows: u16,
 ) -> Result<String> {
     if state.shutdown.load(Ordering::SeqCst) != 0 { return Err("PandaCode is shutting down.".into()); }
-    let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
         let _admission = state.agents.lock().map_err(|_| "Agent state is unavailable.")?;
+        let root = state.root(&project_id, session_id.as_deref())?;
         agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
@@ -3542,7 +3570,6 @@ async fn start_terminal(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
@@ -3550,6 +3577,7 @@ async fn start_terminal(
             .agents
             .lock()
             .map_err(|_| "Agent state is unavailable.")?;
+        let root = state.root(&project_id, session_id.as_deref())?;
         agent_updates::ensure_not_installing()?;
         terminal::start(app.clone(), terms, &root, cols, rows)
     })
@@ -4061,6 +4089,7 @@ pub fn run() {
                 add_project,
                 remove_project,
                 rename_project,
+                relocate_project,
                 list_sessions,
                 pin_session,
                 reorder_sessions,

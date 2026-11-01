@@ -24,7 +24,7 @@ import type { AgentsDockPreferences } from './agents-dock';
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
 
-export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'schedules' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
+export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'usage' | 'teams' | 'schedules' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
 
 interface SettingsOptions {
   providers: Provider[];
@@ -65,6 +65,7 @@ export const SECTIONS: { id: SettingsSection; label: string; icon: string; descr
   { id: 'appearance', label: 'Appearance', icon: 'sun', description: 'Theme, accent colors and wallpapers.' },
   { id: 'agents', label: 'Agents', icon: 'bot', description: 'Your default agent and the agent harnesses installed on this computer.' },
   { id: 'providers', label: 'Providers', icon: 'lock', description: 'Sign-ins, API keys and plans such as GLM Coding Plan and MiMo Token Plan, each for the agent it belongs to.' },
+  { id: 'usage', label: 'Agent usage', icon: 'activity', description: 'Plan limits, estimated API costs and activity across your installed agents.' },
   { id: 'teams', label: 'Agent teams', icon: 'grid', description: 'Named teams of models, and the classic team setup.' },
   { id: 'schedules', label: 'Schedules', icon: 'clock', description: 'Wake-ups and timed messages from you and your agents.' },
   { id: 'tools', label: 'Tools & add-ons', icon: 'terminal', description: 'App tools, MCP servers, skills and Jev.' },
@@ -155,6 +156,7 @@ function sectionHtml(id: SettingsSection, options: SettingsOptions): string {
       <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
       <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
+    case 'usage': return '<div class="settings-usage"><p role="status">Loading usage panel…</p></div>';
     case 'teams': return '<div id="agent-teams-settings"></div><div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong><small>App tools, MCP servers, and skills.</small></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
@@ -266,6 +268,14 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (mounted.has(id)) return;
     mounted.add(id);
     const panel = panels.get(id)!;
+    if (id === 'usage') {
+      const slot = panel.querySelector<HTMLElement>('.settings-usage')!;
+      void import('./agent-usage').then(({ mountAgentUsage }) => {
+        if (!disposed) cleanups.push(mountAgentUsage(slot, options.providers));
+      }).catch(() => {
+        if (!disposed) slot.innerHTML = '<p class="settings-embed-error" role="alert">Usage couldn’t load. Close Settings and try again.</p>';
+      });
+    }
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
