@@ -82,6 +82,18 @@ fn imports_activates_for_claude_and_codex_and_reports_drift() {
 }
 
 #[test]
+fn codex_project_skills_go_where_codex_reads_them() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    fx.import(Kind::Skill, &fx.folder("release", &[("SKILL.md", SKILL)]));
+    fx.library.activate("release-notes", "codex", Scope::Project, Some(&root), false).unwrap();
+    assert!(root.join(".agents/skills/release-notes/SKILL.md").is_file());
+    assert!(!root.join(".codex/skills").exists());
+    fx.library.deactivate("release-notes", "codex", Scope::Project, Some(&root)).unwrap();
+    assert!(!root.join(".agents/skills/release-notes").exists());
+}
+
+#[test]
 fn rules_become_managed_blocks_and_project_files_are_excluded() {
     let fx = Fixture::new();
     let root = fx.repo();
