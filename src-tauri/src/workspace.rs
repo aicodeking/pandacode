@@ -131,9 +131,7 @@ pub fn resolve_in_folders(
         if relative.as_os_str().is_empty() {
             continue;
         }
-        if best.map_or(true, |(_, path)| {
-            folder.path.as_os_str().len() > path.as_os_str().len()
-        }) {
+        if best.is_none_or(|(_, path)| folder.path.as_os_str().len() > path.as_os_str().len()) {
             best = Some((index, &folder.path));
         }
     }
@@ -2968,7 +2966,6 @@ mod tests {
             fs::canonicalize(f.base.join("project-worktrees/pandacode-multi")).unwrap();
         let lib_worktree =
             fs::canonicalize(f.base.join("lib-worktrees/pandacode-multi")).unwrap();
-        let lib = fs::canonicalize(f.base.join("lib")).unwrap();
         let docs = fs::canonicalize(f.base.join("docs")).unwrap();
 
         assert_eq!(

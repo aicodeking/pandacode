@@ -4221,6 +4221,7 @@ async fn search_files(
     blocking(move || workspace::search_files(&root, query, limit)).await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn search_text(
     state: State<'_, AppState>,
     project_id: String,
