@@ -150,7 +150,37 @@ mod mac {
     }
 
     pub(crate) fn read_claude(service: &str) -> Result<Option<Vec<u8>>, ()> {
-        read(service)
+        match read(service) {
+            Err(()) if valid_target(service) && service != "glm" => read_with_security_tool(service),
+            result => result,
+        }
+    }
+
+    /// Claude Code writes its login with Apple's `security` tool, so the
+    /// item's access list trusts `/usr/bin/security` and not PandaCode. The
+    /// direct read above is then refused without a prompt; asking the trusted
+    /// tool for the same exact item succeeds without one.
+    fn read_with_security_tool(service: &str) -> Result<Option<Vec<u8>>, ()> {
+        let account = account_name().ok_or(())?;
+        let mut command = Command::new("/usr/bin/security");
+        command.args(["find-generic-password", "-s", service, "-a", &account, "-w"]);
+        let mut output = crate::workspace::run_process(command, "Usage credential reader", LIMIT, Duration::from_secs(3))
+            .map_err(|_| ())?;
+        output.stderr.bytes.fill(0);
+        if output.stdout.truncated {
+            output.stdout.bytes.fill(0);
+            return Err(());
+        }
+        if !output.status.success() {
+            output.stdout.bytes.fill(0);
+            // 44: the item does not exist.
+            return if output.status.code() == Some(44) { Ok(None) } else { Err(()) };
+        }
+        let mut bytes = std::mem::take(&mut output.stdout.bytes);
+        while bytes.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+            bytes.pop();
+        }
+        Ok((!bytes.is_empty()).then_some(bytes))
     }
     pub(crate) fn read_glm() -> Result<Option<Vec<u8>>, ()> {
         read("glm")

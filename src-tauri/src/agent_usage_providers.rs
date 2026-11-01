@@ -479,6 +479,11 @@ async fn fetch_opencode() -> Usage {
         .map(|p| p.join("opencode/auth.json"));
     let content = std::env::var("OPENCODE_AUTH_CONTENT").ok();
     let saved = match opencode_auth_bytes(path.as_deref(), content.as_deref()).await {
+        // OpenCode 2.x keeps credentials in opencode.db instead of auth.json.
+        Ok(None) => match path.as_deref().and_then(Path::parent).map(|dir| dir.join("opencode.db")) {
+            Some(db) => tokio::task::spawn_blocking(move || opencode_db_auth(&db)).await.ok().flatten(),
+            None => None,
+        },
         Ok(bytes) => bytes,
         Err(()) => {
             return Usage::empty(
@@ -530,6 +535,36 @@ async fn opencode_auth_bytes(
         }
     }
     credential_bytes(path.ok_or(())?).await
+}
+
+/// Rebuilds auth.json's shape from OpenCode 2.x's `credential` table, so
+/// the same Go-before-Zen rules apply. Only active `opencode-go` and
+/// `opencode` rows are read; `{"type":"key"}` there means an API key.
+fn opencode_db_auth(db: &Path) -> Option<Vec<u8>> {
+    use rusqlite::{Connection, OpenFlags};
+    if !db.is_file() {
+        return None;
+    }
+    let connection = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    connection.busy_timeout(std::time::Duration::from_millis(500)).ok()?;
+    let mut statement = connection
+        .prepare("SELECT integration_id, value FROM credential WHERE active = 1 AND integration_id IN ('opencode-go', 'opencode') ORDER BY time_updated DESC")
+        .ok()?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .ok()?;
+    let mut auth = serde_json::Map::new();
+    for (integration, value) in rows.flatten() {
+        if auth.contains_key(&integration) || value.len() as u64 > CREDENTIAL_LIMIT {
+            continue;
+        }
+        let Ok(mut entry) = serde_json::from_str::<Value>(&value) else { continue };
+        if entry["type"] == "key" {
+            entry["type"] = "api".into();
+        }
+        auth.insert(integration, entry);
+    }
+    (!auth.is_empty()).then(|| serde_json::to_vec(&auth).ok()).flatten()
 }
 
 fn opencode_usage_key(
@@ -1540,4 +1575,26 @@ key = "oauth/kimi-code"
         }
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[test]
+    fn opencode_2_database_credentials_supply_the_go_key() {
+        let directory = std::env::temp_dir().join(format!("pandacode-opencode-db-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db = directory.join("opencode.db");
+        let _ = std::fs::remove_file(&db);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection.execute_batch(r#"
+            CREATE TABLE credential (id TEXT, integration_id TEXT, label TEXT, value TEXT, active INTEGER, time_updated INTEGER);
+            INSERT INTO credential VALUES ('a', 'opencode', 'Default', '{"type":"oauth","access":"PRIVATE"}', 1, 1);
+            INSERT INTO credential VALUES ('b', 'opencode-go', 'OpenCode Go', '{"type":"key","key":"go-db-key"}', 1, 2);
+            INSERT INTO credential VALUES ('c', 'openai', 'Other', '{"type":"key","key":"unrelated"}', 1, 3);
+        "#).unwrap();
+        drop(connection);
+        let auth = opencode_db_auth(&db).unwrap();
+        assert_eq!(opencode_usage_key(Some(&auth), None).unwrap().as_deref(), Some("go-db-key"));
+        assert!(!String::from_utf8(auth).unwrap().contains("unrelated"));
+        assert!(opencode_db_auth(&directory.join("missing.db")).is_none());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
 }
