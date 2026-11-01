@@ -45,7 +45,12 @@ pub(crate) fn ensure_runtime(
     } else {
         harness.to_owned()
     };
-    if let Some(path) = cached_program(sandbox, native, &runtime, version, onboarding)? {
+    // The cache gate compares the machine's own `--version` line, so it asks for the
+    // parsed pin, not the raw host output: a bare `2` or a prefixed line like
+    // "OpenCode 2.1.2" would otherwise never match a freshly installed CLI and
+    // reinstall on every run.
+    let pin = version.and_then(parse_version);
+    if let Some(path) = cached_program(sandbox, native, &runtime, pin.as_deref(), onboarding)? {
         return Ok(path);
     }
 
@@ -693,5 +698,58 @@ mod tests {
                 .as_deref(),
             Some(path.as_str())
         );
+    }
+
+    /// The cache gate is fed the parsed pin, not the raw host output: a prefixed
+    /// line like "OpenCode 2.1.2" or a bare `2` must still recognize the machine's
+    /// CLI, whose own `--version` prints only "2.1.2" (review finding: the raw
+    /// comparison reinstalled on every run).
+    #[test]
+    fn opencode_cache_gate_matches_the_parsed_pin_not_the_raw_host_line() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.local/bin")).unwrap();
+        fs::create_dir_all(root.join("home/.pandacode/runtime")).unwrap();
+        let executable = root.join("home/.local/bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+        let path = fs::canonicalize(&executable)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        fs::write(
+            root.join("home/.pandacode/runtime/opencode-2"),
+            format!("{path}\n2.1.2\n"),
+        )
+        .unwrap();
+
+        // The unfixed seam asked cached_program for the raw host line; the miss it
+        // produced is what sent every run back through the installer.
+        let sandbox = FakeSandbox {
+            root: root.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        assert_eq!(
+            cached_program(&sandbox, "fake", "opencode-2", Some("OpenCode 2.1.2"), "").unwrap(),
+            None
+        );
+
+        for host in [Some("OpenCode 2.1.2"), Some("2"), Some("v2.1.2")] {
+            let sandbox = FakeSandbox {
+                root: root.clone(),
+                calls: AtomicUsize::new(0),
+            };
+            let progress = RefCell::new(Vec::new());
+            let cached = ensure_runtime(&sandbox, "fake", "opencode", host, &|label| {
+                progress.borrow_mut().push(label.to_owned())
+            })
+            .unwrap();
+            assert_eq!(cached, path, "host {host:?}");
+            // One exec: the marker check only — no tool, node or npm install ran.
+            assert_eq!(sandbox.calls.load(Ordering::Relaxed), 1, "host {host:?}");
+            assert!(progress.borrow().is_empty(), "host {host:?}");
+        }
     }
 }
