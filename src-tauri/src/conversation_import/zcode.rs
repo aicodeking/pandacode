@@ -39,6 +39,12 @@ pub(crate) struct Conversation {
     pub messages: u32,
 }
 
+/// A bounded, never blank title; each caller supplies its own fallback.
+pub(crate) fn bounded_title(raw: String, fallback: &str) -> String {
+    let title = crate::command_operations::clean(&Value::String(raw), 160);
+    if title.is_empty() { fallback.to_owned() } else { title }
+}
+
 /// Top-level, undeleted conversations, newest first, with their message counts.
 pub(crate) fn conversations(db: &Path) -> Vec<Conversation> {
     let Some(conn) = open(db) else { return Vec::new() };
@@ -50,7 +56,7 @@ pub(crate) fn conversations(db: &Path) -> Vec<Conversation> {
         Ok(Conversation {
             id: row.get(0)?,
             directory: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-            title: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            title: bounded_title(row.get::<_, Option<String>>(2)?.unwrap_or_default(), "Untitled conversation"),
             created_at: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
             updated_at: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
             messages: 0,

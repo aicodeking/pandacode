@@ -42,7 +42,7 @@ function folderName(path: string): string { return path.split(/[\\/]/).filter(Bo
 
 /** The Import conversations window: pick a source, search, check conversations, import. */
 export function mountConversationImport(host: HTMLElement, options: ImportOptions): () => void {
-  let source: ImportSource = options.installed.includes('claude') || !options.installed.includes('codex') ? 'claude' : 'codex';
+  let source: ImportSource = SOURCES.find(item => options.installed.includes(item.id))?.id ?? 'claude';
   let items: Importable[] = [], cursor: string | null = null, note: string | null = null;
   let loading = false, importing = false, disposed = false, request = 0, searchTimer = 0;
   const selected = new Set<string>();

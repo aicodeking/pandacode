@@ -247,10 +247,16 @@ fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes
     assert!(import_zcode_row(&store, &db, "sess_00000000-0000-4000-8000-000000000000", "fallback-model").is_err());
 
     let conn = rusqlite::Connection::open(&db).unwrap();
+    // A folder that vanishes after the first import must not fail a re-import.
+    conn.execute("UPDATE session SET directory = '/definitely/gone/folder' WHERE id = ?1", rusqlite::params![ZNEW]).unwrap();
+    assert_eq!(import_zcode_row(&store, &db, ZNEW, "fallback-model").unwrap().id, task.id, "the existing task wins over the missing folder");
     let (long, untitled) = ("sess_bb1b1b1b-2c3d-4e4f-8a5b-6c7d8e9f0a1b", "sess_cc2c2c2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
     session_row(&conn, long, None, &dir, &"x".repeat(300), ZT - 100_000, ZT - 100_000, None);
     session_row(&conn, untitled, None, &dir, "", ZT - 90_000, ZT - 90_000, None);
     assert_eq!(import_zcode_row(&store, &db, long, "fallback-model").unwrap().title.len(), 160, "long titles are capped like the Codex path");
     assert_eq!(import_zcode_row(&store, &db, untitled, "fallback-model").unwrap().title, "Imported ZCode conversation");
+    let rows = zcode::conversations(&db);
+    assert_eq!(rows.iter().find(|row| row.id == long).unwrap().title.len(), 160, "the picker caps long titles too");
+    assert_eq!(rows.iter().find(|row| row.id == untitled).unwrap().title, "Untitled conversation");
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -10,7 +10,7 @@ mod zcode;
 
 use crate::{command_operations, integrations::ControlClient, storage::Session, AppState, Result};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -277,12 +277,11 @@ fn import_zcode(state: &AppState, id: &str, fallback_model: &str) -> Result<Sess
 fn import_zcode_row(store: &crate::storage::Store, db: &Path, id: &str, fallback_model: &str) -> Result<Session> {
     let session = zcode::conversation(db, id).ok_or("This ZCode conversation was not found. Refresh the list.")?;
     let entries = zcode::history(db, id);
-    let project = project_for(store, &session.directory)?;
     if let Some(existing) = store.imported_task("zcode", id)? {
         return store.session(&existing);
     }
-    let title = crate::command_operations::clean(&Value::String(session.title), 160);
-    let title = if title.is_empty() { "Imported ZCode conversation".to_owned() } else { title };
+    let project = project_for(store, &session.directory)?;
+    let title = zcode::bounded_title(session.title, "Imported ZCode conversation");
     let model = zcode::model(db, id).unwrap_or_else(|| fallback_model.to_owned());
     store.import_task(&project, "zcode", &model, &title, id, None, session.created_at, &entries)
 }
