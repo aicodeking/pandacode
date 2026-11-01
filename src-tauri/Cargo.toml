@@ -92,6 +92,11 @@ opt-level = "s"
 strip = true
 panic = "abort"
 
+# Unit tests only: tauri's "test" feature exposes tauri::test::mock_app() so code that
+# takes an AppHandle can run under a mock runtime. No effect on shipped builds.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 # Local/test builds (`--profile fast-release`); shipped builds use release.
 [profile.fast-release]
 inherits = "release"

@@ -1,9 +1,9 @@
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
-import type { Activity, BotDetail, Channel, Schedule } from './bots';
+import type { Activity, BotDetail, Channel, Schedule, Webhook, WebhookTestResult } from './bots';
 import { channelGuide, connectChange, connectClick, connectSection, connectSubmit, kindLabel } from './bots-connect';
 
-export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
+export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'webhooks' | 'channels' | 'rules' | 'activity';
 export interface PanelContext {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
@@ -81,6 +81,35 @@ function schedulesPanel(detail: BotDetail): string {
       <input type="checkbox" class="bots-switch" data-schedule-toggle="${escape(schedule.id)}" ${schedule.enabled ? 'checked' : ''} aria-label="${escape(schedule.title)} on">
       <button type="button" class="icon-button" data-run-schedule="${escape(schedule.id)}" aria-label="Run ${escape(schedule.title)} now" title="Run now">${icon('play')}</button>
       <button type="button" class="icon-button" data-delete-schedule="${escape(schedule.id)}" aria-label="Delete ${escape(schedule.title)}" title="Delete">${icon('trash')}</button></li>`).join('')}</ul>` : '<p class="bots-empty-note">No schedules yet. The bot can also schedule work for itself.</p>'}`;
+}
+
+let webhookReveal: { id: string; secret: string } | null = null;
+export function clearWebhookSecret(): void { webhookReveal = null; }
+
+function webhooksPanel(detail: BotDetail): string {
+  const hooks = detail.webhooks ?? [];
+  return `<h4>Webhooks ${infoMark('Signed events from services on this computer start work in a conversation per webhook. Busy conversations queue events. Loopback only.', 'About webhooks')}</h4>
+    <form class="bots-webhook">
+      <label class="bots-field"><span>Webhook name</span><input name="title" maxlength="120" autocomplete="off"></label>
+      <label class="bots-field"><span>What should it do with an event?</span><textarea name="prompt" rows="2" maxlength="8000" required></textarea></label>
+      <div class="dialog-footer"><button type="submit" class="secondary-button">${icon('plus')}Add webhook</button></div>
+    </form>
+    ${hooks.length ? `<ul class="bots-items bots-webhooks">${hooks.map(hook => {
+      const id = escape(hook.id), title = escape(hook.title);
+      const url = `http://127.0.0.1:${detail.serverPort}/hook/${hook.id}`;
+      return `<li class="bots-channel ${hook.enabled ? '' : 'off'}" data-webhook="${id}">
+        <div class="bots-channel-row"><span class="bots-item-main"><b>${title}</b><small>${escape(hook.prompt)}</small></span>
+          <input type="checkbox" class="bots-switch" data-webhook-toggle="${id}" ${hook.enabled ? 'checked' : ''} aria-label="${title} webhook on">
+          <button type="button" class="icon-button" data-delete-webhook="${id}" aria-label="Delete ${title} webhook" title="Delete">${icon('trash')}</button></div>
+        <label class="bots-field"><span>Webhook URL</span><input readonly value="${escape(url)}"></label>
+        <div class="dialog-footer"><button type="button" class="secondary-button" data-copy="${escape(url)}">Copy URL</button>
+          <button type="button" class="secondary-button" data-rotate-webhook="${id}">Rotate secret</button>
+          <button type="button" class="secondary-button" data-test-webhook="${id}">Send test event</button></div>
+        ${webhookReveal?.id === hook.id ? `<div class="bots-webhook-secret"><label class="bots-field"><span>Signing secret</span><input readonly value="${escape(webhookReveal.secret)}"></label>
+          <p class="bots-empty-note">Shown once. Copy it now; it cannot be revealed again.</p>
+          <div class="dialog-footer"><button type="button" class="secondary-button" data-copy-webhook-secret="${id}">Copy secret</button><button type="button" class="secondary-button" data-dismiss-webhook-secret="${id}">Done</button></div></div>` : ''}
+      </li>`;
+    }).join('')}</ul>` : '<p class="bots-empty-note">No webhooks yet.</p>'}`;
 }
 
 function channelCard(detail: BotDetail, channel: Channel): string {
@@ -188,6 +217,7 @@ export function renderPanel(tab: Tab, detail: BotDetail, context: PanelContext):
     case 'conversations': return conversationsPanel(detail, context);
     case 'memory': return memoryPanel(detail);
     case 'schedules': return schedulesPanel(detail);
+    case 'webhooks': return webhooksPanel(detail);
     case 'channels': return channelsPanel(detail);
     case 'rules': return rulesPanel(detail);
     case 'activity': return activityPanel(detail, context);
@@ -205,7 +235,19 @@ export function panelClick(target: HTMLElement, _tab: Tab, context: PanelContext
   const data = target.dataset;
   const done = async (text: string) => { invalidateActivity(); context.notify(text); await context.reload(); };
   if (connectClick(target, context)) return;
-  if (data.openTask) context.openTask(data.openTask);
+  if (data.copyWebhookSecret && webhookReveal?.id === data.copyWebhookSecret) void context.work(async () => { await navigator.clipboard.writeText(webhookReveal!.secret); context.notify('Copied'); });
+  else if (data.dismissWebhookSecret) { clearWebhookSecret(); context.rerender(); }
+  else if (data.deleteWebhook) void context.work(async () => { await context.call('bot_webhook_delete', { id: data.deleteWebhook }); if (webhookReveal?.id === data.deleteWebhook) clearWebhookSecret(); await done('Webhook deleted'); });
+  else if (data.rotateWebhook) context.confirm('Rotate signing secret?', 'Callers using the current secret stop working right away. Copy the new secret when it is shown.', 'Rotate secret', async () => {
+    const secret = await context.call<string>('bot_webhook_rotate_secret', { id: data.rotateWebhook });
+    webhookReveal = { id: data.rotateWebhook!, secret }; await done('Signing secret rotated');
+  });
+  else if (data.testWebhook) void context.work(async () => {
+    const result = await context.call<WebhookTestResult>('bot_webhook_test', { id: data.testWebhook });
+    context.notify(result.status === 202 ? 'Test event accepted (HTTP 202)' : `Test event failed (HTTP ${result.status}): ${result.error || 'Request refused'}`);
+    await context.reload();
+  });
+  else if (data.openTask) context.openTask(data.openTask);
   else if (data.forget) void context.work(async () => { await context.call('bot_forget', { botId: bot.id, memoryId: data.forget }); await done('Forgotten'); });
   else if (data.runSchedule) void context.work(async () => { await context.call('bot_run_schedule_now', { scheduleId: data.runSchedule }); await done('Started'); });
   else if (data.deleteSchedule) void context.work(async () => { await context.call('bot_schedule_delete', { botId: bot.id, scheduleId: data.deleteSchedule }); await done('Schedule deleted'); });
@@ -227,6 +269,7 @@ export function panelChange(target: HTMLElement, _tab: Tab, context: PanelContex
     scheduleKind = (target as HTMLSelectElement).value as Schedule['kind'];
     target.closest('form')?.querySelectorAll<HTMLElement>('.bots-when').forEach(element => { element.hidden = !element.dataset.kinds!.split(' ').includes(scheduleKind); });
   } else if (input.dataset.scheduleToggle) void context.work(async () => { await context.call('bot_schedule_set_enabled', { scheduleId: input.dataset.scheduleToggle, enabled: input.checked }); invalidateActivity(); await context.reload(); });
+  else if (input.dataset.webhookToggle) void context.work(async () => { await context.call('bot_webhook_set_enabled', { id: input.dataset.webhookToggle, enabled: input.checked }); await context.reload(); });
   else if (input.dataset.channelToggle) void context.work(async () => { await context.call('bot_channel_set_enabled', { channelId: input.dataset.channelToggle, enabled: input.checked }); invalidateActivity(); await context.reload(); });
 }
 
@@ -248,5 +291,12 @@ export function panelSubmit(form: HTMLFormElement, _tab: Tab, context: PanelCont
     if (kind === 'once' && !Number.isFinite(runAt)) { context.notify('Choose when it should run.'); return; }
     const input = { title: text('title'), prompt: text('prompt'), kind, intervalMinutes: kind === 'interval' ? Number(text('intervalMinutes')) : null, timeOfDay: kind === 'daily' || kind === 'weekdays' ? text('timeOfDay') : null, runAt };
     void context.work(async () => { await context.call('bot_schedule_create', { botId: bot.id, input }); await done('Schedule added'); });
+  } else if (form.matches('.bots-webhook')) {
+    void context.work(async () => {
+      const hook = await context.call<Webhook>('bot_webhook_create', { botId: bot.id, title: text('title'), prompt: text('prompt') });
+      const secret = await context.call<string>('bot_webhook_rotate_secret', { id: hook.id });
+      webhookReveal = { id: hook.id, secret };
+      await done('Webhook added');
+    });
   } else connectSubmit(form, context);
 }

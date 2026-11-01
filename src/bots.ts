@@ -7,7 +7,7 @@ import type { Provider, ProviderId, ProviderModel, ReasoningEffort } from './typ
 import { advertisedModelsOnly, modelChoices } from './model-catalog';
 import { connectInput, guideToggled } from './bots-connect';
 import { avatarPicker, botAvatarHtml, colorPicker, handleAvatarPicker } from './bot-avatars';
-import { age, renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, invalidateCapabilities, type PanelContext, type Tab } from './bots-panels';
+import { age, renderPanel, panelClick, panelSubmit, panelChange, invalidateActivity, invalidateCapabilities, clearWebhookSecret, type PanelContext, type Tab } from './bots-panels';
 
 export { age };
 
@@ -38,7 +38,10 @@ export interface Pairing { channelId: string; senderId: string; senderName: stri
 export interface Thread { channelId: string; externalId: string; sessionId: string; updatedAt: number; }
 export interface Rule { id: string; pattern: string; decision: 'allow' | 'ask' | 'deny'; createdAt: number; }
 export interface Activity { id: number; kind: string; summary: string; detail: Record<string, unknown>; at: number; }
-export interface BotDetail { bot: Bot; memories: Memory[]; schedules: Schedule[]; channels: Channel[]; pairings: Pairing[]; threads: Thread[]; rules: Rule[]; serverPort: number; }
+export interface Webhook { id: string; botId: string; title: string; prompt: string; enabled: boolean; lastTimestamp: number; createdAt: string; }
+export interface WebhookList { webhooks: Webhook[]; serverPort: number; }
+export interface WebhookTestResult { status: number; error?: string; }
+export interface BotDetail { webhooks?: Webhook[]; bot: Bot; memories: Memory[]; schedules: Schedule[]; channels: Channel[]; pairings: Pairing[]; threads: Thread[]; rules: Rule[]; serverPort: number; }
 
 /** A message held by `ask` failover (`bot-failover` event, `bot_failover_pending`); answer with `bot_failover_decide`. */
 export interface FailoverAsk { botId: string; sessionId: string; cause: 'limit' | 'provider-error'; provider: ProviderId; model: string; target: BackupModel; resetsAt: number | null; }
@@ -98,11 +101,12 @@ export interface BotsView { dispose(): void; refresh(): void; agent(sessionId: s
 export type Section = Tab | 'profile';
 
 /** The settings nav, like the app's own Settings. Activity also holds conversations and rules. */
-type Nav = 'profile' | 'skills' | 'channels' | 'schedules' | 'memory' | 'activity';
+type Nav = 'profile' | 'skills' | 'channels' | 'schedules' | 'webhooks' | 'memory' | 'activity';
 const SECTIONS: { id: Nav; label: string; icon: string; text: string }[] = [
   { id: 'profile', label: 'Profile', icon: 'bot', text: 'Who the bot is, how it works and what runs it.' },
   { id: 'channels', label: 'Connections', icon: 'globe', text: 'Talk to it from a browser, Telegram, Slack, Discord or WhatsApp.' },
   { id: 'schedules', label: 'Schedules', icon: 'refresh', text: 'Recurring or one-off work the bot starts on its own.' },
+  { id: 'webhooks', label: 'Webhooks', icon: 'download', text: 'Signed events from services on this computer start the bot.' },
   { id: 'memory', label: 'Memory', icon: 'leaf', text: 'Kept across conversations. The bot adds its own as it learns.' },
   { id: 'skills', label: 'Skills', icon: 'widget', text: 'Library skills and MCP servers this bot uses, by reference. Nothing is copied.' },
   { id: 'activity', label: 'Activity', icon: 'activity', text: 'Conversations, approval rules and everything the bot did.' },
@@ -194,8 +198,10 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       if (disposed || id !== request) return;
       bots = next;
       if (!bots.some(bot => bot.id === selected)) selected = single ? '' : bots[0]?.id ?? '';
-      detail = selected ? await options.call<BotDetail>('bot_detail', { botId: selected }) : null;
+      const nextDetail = selected ? await options.call<BotDetail>('bot_detail', { botId: selected }) : null;
+      const hooks = selected ? await options.call<WebhookList>('bot_webhook_list', { botId: selected }) : null;
       if (disposed || id !== request) return;
+      detail = nextDetail && hooks ? { ...nextDetail, webhooks: hooks.webhooks, serverPort: hooks.serverPort } : nextDetail;
       if (!bots.length && !single) editing ??= 'new';
       // A background refresh keeps a message the user has not acted on yet; the next action clears it.
     } catch (cause) {
@@ -474,7 +480,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
   function badge(id: Nav): string {
     const pending = id === 'channels' ? detail?.pairings.filter(item => item.status === 'pending').length ?? 0 : 0;
     if (pending) return `<span class="bots-badge" aria-label="${pending} waiting">${pending}</span>`;
-    const counts: Partial<Record<Nav, number>> = detail ? { memory: detail.memories.length, schedules: detail.schedules.filter(item => item.enabled).length, channels: detail.channels.filter(item => item.enabled).length } : {};
+    const counts: Partial<Record<Nav, number>> = detail ? { memory: detail.memories.length, schedules: detail.schedules.filter(item => item.enabled).length, webhooks: detail.webhooks?.filter(item => item.enabled).length ?? 0, channels: detail.channels.filter(item => item.enabled).length } : {};
     return counts[id] ? `<span class="bots-count">${counts[id]}</span>` : '';
   }
 
@@ -575,7 +581,7 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button,[data-bot]') : null;
     if (!target || !host.contains(target) || (target as HTMLButtonElement).disabled) return;
     if (target.dataset.bot) { selected = target.dataset.bot; editing = null; confirming = null; if (detail?.bot.id !== selected) { detail = null; render(); } void load(); return; }
-    if (target.dataset.section) { section = target.dataset.section as Nav; confirming = null; avatarOpen = false; render(); return; }
+    if (target.dataset.section) { clearWebhookSecret(); section = target.dataset.section as Nav; confirming = null; avatarOpen = false; render(); return; }
     if (target.dataset.suggestion) {
       const picked = SUGGESTIONS.find(item => item.id === target.dataset.suggestion)!;
       const form = pane.querySelector<HTMLFormElement>('.bc-form');
@@ -751,6 +757,6 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       if (kind === 'done') { void load(); return; }
       if (kind === 'turn_start' || kind === 'status') renderList();
     },
-    dispose: () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); for (const type of ['pointerdown', 'keydown']) host.removeEventListener(type, arm, { capture: true }); },
+    dispose: () => { clearWebhookSecret(); disposed = true; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); for (const type of ['pointerdown', 'keydown']) host.removeEventListener(type, arm, { capture: true }); },
   };
 }
