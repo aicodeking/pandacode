@@ -36,6 +36,7 @@ let activity: { botId: string; items: Activity[]; done: boolean; loading: boolea
 function threadLabel(detail: BotDetail, channelId: string, externalId: string): string {
   if (channelId === 'desktop') return 'This app';
   if (channelId === 'schedule') return 'Scheduled work';
+  if (channelId.startsWith('webhook-')) return detail.webhooks?.find(hook => channelId === `webhook-${hook.id}`)?.title ?? 'Removed webhook';
   const channel = detail.channels.find(item => item.id === channelId);
   const kind = channel ? kindLabel(channel.kind) : 'Removed channel';
   return channel?.kind === 'web' ? kind : `${kind} · ${externalId.length > 14 ? `…${externalId.slice(-8)}` : externalId}`;

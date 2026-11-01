@@ -61,7 +61,7 @@ A bot can run commands on the user's computer and can be messaged from outside i
 
 ## Webhook triggers
 
-A webhook starts work when a local service sends an event. In the bot's Schedules settings, add a webhook with a name and a prompt describing what to do with the event. Each webhook keeps its own conversation. Events queue when that conversation is busy, and replies appear as bot notifications rather than HTTP responses. Paused bots do not start work. HTTP 202 with `{"ok":true}` means the event was accepted, not that the task succeeded; launch failures appear in the bot's Activity log.
+A webhook starts work when a local service sends an event. In the bot's Webhooks settings, add a webhook with a name and a prompt describing what to do with the event. Each webhook keeps its own conversation. Events queue when that conversation is busy, and replies appear as bot notifications rather than HTTP responses. Paused bots do not start work. HTTP 202 with `{"ok":true}` means the event was accepted, not that the task succeeded; launch failures appear in the bot's Activity log. The local listener runs only while an enabled webhook or web chat exists.
 
 Copy the URL and signing secret when creating the webhook. The secret is shown once, stays in the secure store, and never enters the bot's prompt or webhook listings. Rotate it to replace a lost or compromised secret; callers using the old one stop working. Disable a webhook to refuse new events, or delete it to remove its secret too. Send test event signs and posts a sample through the same local endpoint.
 
