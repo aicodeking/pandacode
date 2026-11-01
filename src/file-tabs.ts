@@ -28,7 +28,8 @@ type Deps = {
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
   /** Attaching only applies to the task shown, so the host decides. */
   canAttach(context: Context): boolean;
-  attach(path: string): void;
+  /** The tab key (`label/relative` in another folder) with its folder, so the host never re-derives the qualifier. */
+  attach(path: string, folder?: string): void;
   preview(path: string, context: Context): Promise<void>;
   notify(text: string): void;
   report(error: unknown): void;
@@ -293,7 +294,7 @@ export function createFileTabs(deps: Deps) {
     if (action === 'cancel-question') view.querySelector<HTMLFormElement>('.file-selection-form')!.hidden = true;
     if (action === 'external' && !webMode) void deps.call('open_workspace_file', { ...tab.context, path: tab.path }).catch(deps.report);
     // Attaching is the first step of writing about the file, so focus goes to the prompt beside it.
-    if (action === 'attach') { deps.attach(tab.path); deps.focusConversation(); }
+    if (action === 'attach') { deps.attach(tab.path, tab.context.folder); deps.focusConversation(); }
     if (action === 'preview') void deps.preview(tab.path, tab.context).catch(deps.report);
     if (action === 'copy' && typeof tab.content === 'string') void navigator.clipboard.writeText(tab.draft ?? tab.content).then(() => deps.notify('File copied'), deps.report);
   });
