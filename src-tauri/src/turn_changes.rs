@@ -144,6 +144,7 @@ fn live() -> &'static Mutex<HashMap<String, Live>> {
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 impl Lease {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn start(root: &Path) -> Self {
         Self::start_roots(&[root.to_path_buf()])
     }
@@ -341,6 +342,7 @@ impl SharedTracker {
 }
 
 impl Tracker {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start(root: PathBuf, cache: PathBuf) -> Self {
         Self::start_in_folders(
             &[storage::RepoFolder {
@@ -406,6 +408,7 @@ impl Tracker {
             self.lease = Some(Lease::start_roots(&roots));
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))]
     fn relative_path(&self, path: &str) -> Option<String> {
         self.resolve_path(path).map(|(key, _, _)| key)
     }
@@ -451,7 +454,7 @@ impl Tracker {
                     if candidate.as_os_str().is_empty() {
                         continue;
                     }
-                    if best.map_or(true, |(_, length, _)| root.as_os_str().len() > length) {
+                    if best.is_none_or(|(_, length, _)| root.as_os_str().len() > length) {
                         best = Some((index, root.as_os_str().len(), candidate));
                     }
                 }
@@ -520,7 +523,7 @@ impl Tracker {
             }
             let prefix = format!("{}/", folder.label);
             if let Some(rest) = key.strip_prefix(&prefix) {
-                if named.map_or(true, |(_, best)| folder.label.len() > best.len()) {
+                if named.is_none_or(|(_, best)| folder.label.len() > best.len()) {
                     named = Some((index, rest));
                 }
             }
@@ -537,7 +540,7 @@ impl Tracker {
                 .is_some_and(|folder| folder.canonical.join(&relative).exists());
             if !in_primary {
                 let origin = (index, rest.to_owned());
-                let resolved = self.roots.get(index)?.canonical.join(&rest);
+                let resolved = self.roots.get(index)?.canonical.join(rest);
                 return self
                     .remember(key.clone(), origin)
                     .map(|key| (key, resolved));
