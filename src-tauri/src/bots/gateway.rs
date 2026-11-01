@@ -28,7 +28,7 @@ pub(crate) struct Inbound {
 }
 
 pub(crate) const NOTHING: &str = "NOTHING_TO_REPORT";
-const MAX_INBOUND: usize = 32 * 1024;
+pub(crate) const MAX_INBOUND: usize = 32 * 1024;
 
 /// Approvals waiting on a reply, per task: (request ID, action) in arrival order.
 type Pending = Mutex<HashMap<String, Vec<(String, String)>>>;

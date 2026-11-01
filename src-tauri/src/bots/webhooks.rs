@@ -115,6 +115,9 @@ pub(crate) fn route(
     let Some(text) = parse_event(body) else { return error(400, "Send some event text.") };
     match store.db.execute("UPDATE bot_webhooks SET last_timestamp=?2 WHERE id=?1 AND enabled=1 AND last_timestamp<?2", params![id, at]) {
         Ok(1) => {}
+        // The 0-row arm also covers a webhook disabled between the checks above and
+        // this update: give it the disabled answer rather than the replay one.
+        Ok(_) if !get(store, id).is_some_and(|hook| hook.enabled) => return error(403, "This webhook is disabled."),
         Ok(_) => return error(401, "Replayed timestamp."),
         Err(_) => return error(500, "Could not accept this event."),
     }
@@ -128,6 +131,7 @@ pub(crate) fn route(
 fn deliver(app: &tauri::AppHandle<impl tauri::Runtime>, store: &Store, webhook: &Webhook, text: &str) -> Result<()> {
     // Agent launching uses the desktop runtime. A mock handle has no launch services.
     let app = (app as &dyn std::any::Any).downcast_ref::<tauri::AppHandle>().ok_or("Agent runtime is unavailable.")?;
+    let text = text.trim().chars().take(super::gateway::MAX_INBOUND).collect::<String>();
     app.try_state::<AppState>().ok_or("App state is unavailable.")?;
     let bot = super::get(store, &webhook.bot_id)?;
     if bot.paused { return Err("This bot is paused.".into()); }
@@ -169,7 +173,9 @@ pub async fn bot_webhook_create(app: tauri::AppHandle, state: State<'_, AppState
 #[tauri::command]
 pub async fn bot_webhook_list(app: tauri::AppHandle, state: State<'_, AppState>, bot_id: String) -> Result<WebhookList> {
     let webhooks = list(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id)?;
-    let server_port = http::ensure_server(app);
+    // Read-only: report the shared server's port without starting it. Only create,
+    // enable and boot start the listener, so a fresh install with no webhooks has none.
+    let server_port = if webhooks.iter().any(|hook| hook.enabled) { http::ensure_server(app) } else { http::port() };
     Ok(WebhookList { webhooks, server_port })
 }
 
@@ -209,7 +215,13 @@ pub async fn bot_webhook_test(app: tauri::AppHandle, state: State<'_, AppState>,
     let client = reqwest::Client::builder().no_proxy().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(40)).user_agent(concat!("PandaCode/", env!("CARGO_PKG_VERSION"))).build().map_err(|e| e.to_string())?;
     let response = client.post(format!("http://127.0.0.1:{port}/hook/{id}")).header("X-PandaCode-Timestamp", timestamp).header("X-PandaCode-Signature", signature).header("Content-Type", "application/json").body(body).send().await.map_err(|e| e.to_string())?;
     let status = response.status().as_u16();
-    let error = if status == 202 { None } else { Some(response.text().await.map_err(|e| e.to_string())?) };
+    let error = if status == 202 {
+        None
+    } else {
+        let raw = response.text().await.map_err(|e| e.to_string())?;
+        // The route answers with {"error": "..."}: surface the message, not the JSON.
+        Some(serde_json::from_str::<serde_json::Value>(&raw).ok().and_then(|body| body["error"].as_str().map(str::to_owned)).unwrap_or(raw))
+    };
     Ok(TestResult { status, error })
 }
 
