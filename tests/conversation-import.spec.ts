@@ -65,6 +65,19 @@ test('searches, switches to Codex, and selects all importable conversations', as
   await expect(page.locator('#navigation .task-item', { hasText: 'Speed up the search index' })).toHaveAttribute('title', /\npandacode(\n|$)/);
 });
 
+test('switches to ZCode and imports a conversation by its session id', async ({ page }) => {
+  await page.getByRole('button', { name: 'Import conversations', exact: true }).click();
+  await dialog(page).getByRole('button', { name: 'ZCode' }).click();
+  await expect(dialog(page).locator('.import-row')).toHaveCount(1);
+  await expect(row(page, 'Trace a slow build')).toContainText('demo-app · 9 messages');
+  await dialog(page).getByRole('checkbox', { name: 'Select all shown conversations' }).check();
+  await dialog(page).locator('.import-commit').click();
+  await expect(dialog(page)).toBeHidden();
+  expect((await calls(page, 'import_conversations')).at(-1).args).toMatchObject({ provider: 'zcode', ids: ['sess_6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e'] });
+  await expect(page.locator('#navigation .task-item', { hasText: 'Trace a slow build' })).toHaveAttribute('title', /\ndemo-app(\n|$)/);
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Trace a slow build');
+});
+
 test('is reachable from Go to anything', async ({ page }) => {
   await page.locator('.search-trigger').click();
   await page.getByRole('textbox', { name: 'Search tasks and commands', exact: true }).fill('import');
