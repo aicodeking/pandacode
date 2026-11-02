@@ -1524,7 +1524,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let store = state.store.clone();
             let cache_session_id = session_id.clone();
             crate::blocking(move || {
-                let link = crate::github_pull::merge(&root, number, &method)?;
+                let link = crate::github_pull::merge(&root, None, number, &method)?;
                 store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link)).map(|_| ())
             })
             .await?;
@@ -2025,7 +2025,7 @@ async fn pull_detail_cached(session_id: &str, root: PathBuf, number: i64) -> Res
     if let Some(value) = with_pull_cache(|cache| cached_pull_entry(&mut cache.details, &key)) {
         return Ok(value);
     }
-    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail(&root, number)).await?)
+    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail(&root, None, number)).await?)
         .map_err(|error| error.to_string())?;
     fit_pull_detail(&mut value);
     with_pull_cache(|cache| store_pull_entry(&mut cache.details, key, value.clone()));
@@ -2043,7 +2043,7 @@ async fn pull_diff_cached(session_id: &str, root: PathBuf, number: i64, path: St
         return Ok(value);
     }
     let value = crate::blocking(move || {
-        let diff = crate::github_pull::diff(&root, number)?;
+        let diff = crate::github_pull::diff(&root, None, number)?;
         let (patch, truncated) = pull_file_patch(&diff.patch, &path, diff.truncated);
         let (patch, truncated) = bounded_diff(patch, truncated);
         Ok(json!({"patch": patch, "truncated": truncated}))
@@ -2109,13 +2109,13 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str)
     }
     let detect_root = root.clone();
     let detection = crate::blocking(move || {
-        let repo = match crate::github::repository(&detect_root) {
+        let repo = match crate::github::repository(&detect_root, None) {
             Ok(repo) => repo,
             Err(error) if error.is_empty() => return Ok(None),
             Err(error) => return Err(error),
         };
         let branch = crate::workspace::git_status(&detect_root).map(|status| status.branch).unwrap_or_default();
-        crate::github_pull::detect(&detect_root, &repo, &turn, &branch, started)
+        crate::github_pull::detect(&detect_root, None, &repo, &turn, &branch, started)
     })
     .await?;
     let Some(link) = detection else {

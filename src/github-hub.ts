@@ -10,7 +10,7 @@ import { cascade, trackSegment } from './motion';
 import { providerLogo } from './provider-logos';
 import { taskStage } from './task-board';
 import { age, connectAdvice, isRecent, issuePrompt, PULL_ACTIONS, pullPrompt, runPrompt, runTitle, threadTitle, WORKFLOW_CHECK_TITLE, workflowCheckPrompt, type IssueAction, type PullAction } from './github-hub-prompts';
-import type { Project, Session, TaskLink } from './types';
+import type { GithubAccount, Project, Session, TaskLink } from './types';
 
 export interface HubRepo { nameWithOwner: string; description: string; private: boolean; fork: boolean; archived: boolean; pushedAt: string; url: string; defaultBranch: string; openIssues: number; language: string }
 export interface HubPull { number: number; title: string; author: string; state: string; head: string; base: string; updatedAt: string; url: string; review: string; checks: string; additions: number; deletions: number; labels: string[] }
@@ -28,7 +28,11 @@ export interface HubHost {
   openTask(sessionId: string): void;
   /** Creates a task in the project, linked when given, and opens it; `send` starts it with the prompt. */
   startTask(input: { projectId: string; prompt: string; title?: string; link?: TaskLink; send: boolean }): Promise<void>;
-  showChoices(anchor: HTMLElement, options: { title: string; items: { id: string; label: string; icon?: string }[]; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
+  showChoices(anchor: HTMLElement, options: { title: string; items: { id: string; label: string; icon?: string; description?: string; selected?: boolean }[]; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
+  /** The project's pinned GitHub account and every signed-in one. */
+  fetchAccounts(projectId: string): Promise<{ accounts: GithubAccount[]; pinned: string | null }>;
+  /** Pin the account a project's GitHub calls run as; null goes back to gh's active account. */
+  setAccount(projectId: string, login: string | null): Promise<void>;
   chooseFolder(title: string): Promise<string | null>;
   projectsChanged(): Promise<void>;
   notify(text: string): void;
@@ -58,6 +62,9 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   let repoFilter = '', query = '', cloning = '', disposed = false;
   let mapping = new Map<string, string>();
   let runFilter: RunFilter = { event: '', pull: 0, latest: false };
+  // The GitHub accounts of the selected repository's project; empty until fetched, and the
+  // chip stays hidden while fewer than two are signed in.
+  let accounts: GithubAccount[] = [], pinned: string | null = null, accountsProject: string | null = null;
   const expanded = new Set<number>(), details = new Map<string, DetailsLoad>();
   const detailsKey = (run: HubRun) => `${selected}#${run.id}#${run.attempt}#${run.state}`;
   const pulls = new Map<string, Load<HubPull>>(), issues = new Map<string, Load<HubIssue>>(), runs = new Map<string, Load<HubRun>>();
@@ -92,6 +99,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     } else { repos = repos ?? []; reposError = list.reason instanceof Error ? list.reason.message : String(list.reason); }
     render();
     void loadItems(force);
+    void loadAccounts(force);
   }
   async function loadItems(force = false): Promise<void> {
     const name = selected; if (!name) return;
@@ -133,8 +141,29 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     const where = project
       ? `<span class="gh-where" title="${escape(project.path)}">${icon('folder')}${escape(project.path.split('/').slice(-2).join('/'))}</span>`
       : `<button type="button" class="gh-clone" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning === item.nameWithOwner ? 'Cloning…' : 'Clone to this computer'}</button>`;
+    // One chip per signed-in pair: it names the account this project's GitHub calls run as.
+    const active = accounts.find(account => account.active) ?? accounts[0];
+    const chip = project && accounts.length >= 2
+      ? (() => {
+          const chosen = pinned ?? active?.login ?? '';
+          return `<button type="button" class="gh-account" data-gh="account" aria-haspopup="menu" aria-label="GitHub account: ${escape(chosen)}" title="GitHub account: ${escape(chosen)}">${escape(chosen)}${icon('chevron')}</button>`;
+        })()
+      : '';
     head.innerHTML = `<div class="gh-title"><h2>${escape(item.nameWithOwner)}</h2><a class="icon-button" data-gh-open="${escape(item.url)}" href="${escape(item.url)}" aria-label="Open on GitHub" title="Open on GitHub">${icon('external')}</a></div>
-      <p class="gh-meta">${facts}</p>${item.description ? `<p class="gh-desc">${escape(item.description)}</p>` : ''}<div class="gh-where-row">${where}</div>`;
+      <p class="gh-meta">${facts}</p>${item.description ? `<p class="gh-desc">${escape(item.description)}</p>` : ''}<div class="gh-where-row">${where}${chip}</div>`;
+  }
+
+  /** Who this project's GitHub calls run as; refetched when the repository changes. */
+  async function loadAccounts(force = false): Promise<void> {
+    const project = projectFor(selected);
+    if (!project || (accountsProject === project.id && !force)) return;
+    accountsProject = project.id;
+    try {
+      const view = await host.fetchAccounts(project.id);
+      if (disposed || accountsProject !== project.id) return;
+      accounts = view.accounts; pinned = view.pinned;
+    } catch { if (!disposed) { accounts = []; pinned = null; } }
+    renderHead();
   }
 
   function renderTabs(): void {
@@ -221,6 +250,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
   function render(): void {
     if (disposed) return;
     renderRepos(); renderHead(); renderTabs(); renderBody();
+    void loadAccounts();
   }
 
   /** A local checkout for the repository: the matched project, or a fresh clone. */
@@ -239,6 +269,24 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     finally { cloning = ''; render(); }
   }
   const linkFor = (kind: 'pull' | 'issue', item: { number: number; url: string; title: string }, state: string): TaskLink => ({ kind, number: item.number, url: item.url, title: item.title, state, checkedAt: Date.now() });
+  /** Pin the account this project's GitHub calls run as, or go back to gh's active one. */
+  async function showAccountMenu(anchor: HTMLElement): Promise<void> {
+    const project = projectFor(selected);
+    if (!project) return;
+    const active = accounts.find(account => account.active) ?? accounts[0];
+    await host.showChoices(anchor, {
+      title: 'GitHub account',
+      items: [
+        { id: '', label: 'Default', description: active ? `${active.login} on ${active.host}` : 'gh’s active account', selected: !pinned },
+        ...accounts.map(account => ({ id: account.login, label: account.login, description: account.host, selected: pinned === account.login })),
+      ],
+      onSelect: async id => {
+        await host.setAccount(project.id, id || null);
+        accountsProject = null;
+        await loadAccounts(true);
+      },
+    });
+  }
   async function pullAction(action: PullAction, pull: HubPull): Promise<void> {
     const project = await ensureLocal(); if (!project) return;
     await host.startTask({ projectId: project.id, prompt: pullPrompt(action, pull), title: threadTitle('pull', action, pull), link: linkFor('pull', pull, pull.state), send: action !== 'thread' });
@@ -298,6 +346,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     if (data.gh === 'refresh') { void loadRepos(true); return; }
     if (data.gh === 'other') { otherOpen = target.getAttribute('aria-expanded') !== 'true'; store('pandacode.githubOther', otherOpen ? 'open' : 'closed'); renderRepos(); root.querySelector<HTMLElement>('[data-gh="other"]')?.focus(); return; }
     if (data.gh === 'clone') { void ensureLocal(); return; }
+    if (data.gh === 'account') { void showAccountMenu(target); return; }
     const pull = pulls.get(selected)?.items?.find(item => item.number === number);
     const issue = issues.get(selected)?.items?.find(item => item.number === number);
     if (data.ghPull && pull) { void pullAction(data.ghPull as PullAction, pull); return; }

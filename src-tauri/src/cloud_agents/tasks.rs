@@ -157,7 +157,11 @@ pub(crate) fn before_run(app: &tauri::AppHandle, sid: &str, harness: &str, attac
         }
         let ready = prepare_machine(app, sid)?;
         stage(app, sid, "credentials", Some("Signing in…"));
-        let env = credentials::push(&*ready.sandbox, &ready.native, harness, &ready.program)?;
+        // A project pinned to one GitHub account signs the run in as that account.
+        let github_login = with_store(app, |store| Ok(store.session(sid)?.project_id))
+            .ok()
+            .and_then(|project| crate::github_accounts::pinned_login(&project));
+        let env = credentials::push(&*ready.sandbox, &ready.native, harness, &ready.program, github_login.as_deref())?;
         ready.sandbox.keep_alive(&ready.native, ready.sandbox.info().max_unattended_minutes)?;
         let run_id = uuid::Uuid::new_v4().to_string();
         let turn = with_store(app, |store| {

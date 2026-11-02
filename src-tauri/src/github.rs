@@ -12,14 +12,14 @@ const IMPORT_BODY_LIMIT: usize = 16 * 1024;
 pub const MAX_REFERENCES: usize = 5;
 pub(crate) const TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Repository {
     pub name_with_owner: String,
     pub default_branch: String,
     pub url: String,
 }
-#[derive(Debug, Serialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct GithubStatus {
     pub installed: bool,
@@ -28,6 +28,9 @@ pub struct GithubStatus {
     pub login: Option<String>,
     pub repo: Option<Repository>,
     pub error: Option<String>,
+    /// Every account signed in to the user's gh, so a project can pin one.
+    #[serde(default)]
+    pub accounts: Vec<crate::github_accounts::Account>,
 }
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -104,7 +107,7 @@ fn gh_base(root: &Path) -> Command {
     }
     command
 }
-fn gh_command(root: &Path, args: &[&str]) -> Command {
+fn gh_command(root: &Path, args: &[&str], token: Option<&str>) -> Command {
     let mut command = gh_base(root);
     command
         .args(args)
@@ -113,10 +116,18 @@ fn gh_command(root: &Path, args: &[&str]) -> Command {
         .env("GH_PAGER", "cat")
         .env("NO_COLOR", "1")
         .env("CLICOLOR", "0");
+    // A pinned project's token rides as GH_TOKEN, so gh acts as that account; without
+    // one gh stays on its own active account.
+    if let Some(token) = token {
+        command.env("GH_TOKEN", token);
+    }
     command
 }
 pub(crate) fn run_gh(root: &Path, args: &[&str], timeout: Duration) -> Result<Capture, String> {
-    checked(run_process(gh_command(root, args), "GitHub CLI", OUTPUT_LIMIT, timeout)?)
+    run_gh_token(root, None, args, timeout)
+}
+pub(crate) fn run_gh_token(root: &Path, token: Option<&str>, args: &[&str], timeout: Duration) -> Result<Capture, String> {
+    checked(run_process(gh_command(root, args, token), "GitHub CLI", OUTPUT_LIMIT, timeout)?)
 }
 pub(crate) fn json(capture: &Capture) -> Result<serde_json::Value, String> {
     if capture.truncated {
@@ -173,8 +184,31 @@ fn start_failure(error: &str) -> String {
     }
 }
 
+/// `gh auth status`'s report, merged from both streams (gh writes it to stderr).
+/// Ok even when gh exits non-zero, so the accounts it listed still parse.
+pub fn auth_report(root: &Path) -> Result<String, String> {
+    Ok(auth_probe(root)?.0)
+}
+fn auth_probe(root: &Path) -> Result<(String, bool), String> {
+    let mut command = gh_base(root);
+    command
+        .args(["auth", "status"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("NO_COLOR", "1");
+    let output = run_process(command, "GitHub CLI", 64 * 1024, Duration::from_secs(20))?;
+    let report = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout.bytes),
+        String::from_utf8_lossy(&output.stderr.bytes)
+    );
+    Ok((report, output.status.success()))
+}
+
 /// Whether `gh` exists, who is signed in, and which repository this checkout uses.
-pub fn status(root: &Path) -> GithubStatus {
+/// `token` pins the account the repository check runs as; the identity probe stays
+/// token-free, since listing accounts works the same for every one of them.
+pub fn status(root: &Path, token: Option<&str>) -> GithubStatus {
     let mut status = GithubStatus::default();
     let version = match run_gh(root, &["--version"], Duration::from_secs(10)) {
         Ok(output) => output,
@@ -194,35 +228,32 @@ pub fn status(root: &Path) -> GithubStatus {
         .next()
         .unwrap_or_default()
         .to_string();
-    let mut command = gh_base(root);
-    command
-        .args(["auth", "status"])
-        .env("GH_PROMPT_DISABLED", "1")
-        .env("GH_NO_UPDATE_NOTIFIER", "1")
-        .env("NO_COLOR", "1");
-    match run_process(command, "GitHub CLI", 64 * 1024, Duration::from_secs(20)) {
-        Ok(output) => {
-            let report = format!(
-                "{}\n{}",
-                String::from_utf8_lossy(&output.stdout.bytes),
-                String::from_utf8_lossy(&output.stderr.bytes)
-            );
-            status.authenticated = output.status.success();
-            status.login = report.lines().find_map(|line| {
-                let (_, rest) = line.split_once(" account ")?;
-                rest.split_whitespace().next().map(str::to_string)
-            });
-            if !status.authenticated {
-                status.error = Some("Sign in with `gh auth login` to connect GitHub.".into());
-                return status;
-            }
-        }
+    let (report, success) = match auth_probe(root) {
+        Ok(probe) => probe,
         Err(error) => {
             status.error = Some(error);
             return status;
         }
+    };
+    status.authenticated = success;
+    status.accounts = crate::github_accounts::parse_status(&report);
+    status.login = status
+        .accounts
+        .iter()
+        .find(|account| account.active)
+        .or_else(|| status.accounts.first())
+        .map(|account| account.login.clone())
+        .or_else(|| {
+            report.lines().find_map(|line| {
+                let (_, rest) = line.split_once(" account ")?;
+                rest.split_whitespace().next().map(str::to_string)
+            })
+        });
+    if !status.authenticated {
+        status.error = Some("Sign in with `gh auth login` to connect GitHub.".into());
+        return status;
     }
-    match repository(root) {
+    match repository(root, token) {
         Ok(repo) => status.repo = Some(repo),
         Err(error) if error.is_empty() => {}
         Err(error) => status.error = Some(error),
@@ -231,9 +262,10 @@ pub fn status(root: &Path) -> GithubStatus {
 }
 
 /// The GitHub repository behind this checkout's remote; `Err("")` means none.
-pub fn repository(root: &Path) -> Result<Repository, String> {
-    let output = run_gh(
+pub fn repository(root: &Path, token: Option<&str>) -> Result<Repository, String> {
+    let output = run_gh_token(
         root,
+        token,
         &["repo", "view", "--json", "nameWithOwner,defaultBranchRef,url"],
         TIMEOUT,
     )
@@ -274,9 +306,9 @@ fn item(kind: &str, value: &serde_json::Value) -> Option<Item> {
         author: value.get("author").map(|a| text(a, "login")).unwrap_or_default(),
     })
 }
-pub(crate) fn view(root: &Path, kind: &str, number: i64, fields: &str) -> Result<serde_json::Value, String> {
+pub(crate) fn view(root: &Path, token: Option<&str>, kind: &str, number: i64, fields: &str) -> Result<serde_json::Value, String> {
     let command = if kind == "pull" { "pr" } else { "issue" };
-    let value = json(&run_gh(root, &[command, "view", &number.to_string(), "--json", fields], TIMEOUT)?)?;
+    let value = json(&run_gh_token(root, token, &[command, "view", &number.to_string(), "--json", fields], TIMEOUT)?)?;
     // The REST-style issue lookup can answer for a pull request; keep the kinds honest.
     if kind == "issue" && text(&value, "url").contains("/pull/") {
         return Err("This number is a pull request.".into());
@@ -285,14 +317,14 @@ pub(crate) fn view(root: &Path, kind: &str, number: i64, fields: &str) -> Result
 }
 
 /// Open issues and pull requests matching the picker's query.
-pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Item>, String> {
+pub fn search(root: &Path, token: Option<&str>, query: &str, limit: usize) -> Result<Vec<Item>, String> {
     let query = valid_query(query)?;
     let limit = limit.clamp(1, 20).to_string();
     let mut items = Vec::new();
     if let Ok(number) = query.trim_start_matches('#').parse::<i64>() {
         if number > 0 {
             for kind in ["issue", "pull"] {
-                if let Ok(value) = view(root, kind, number, "number,title,state,url,author,isDraft") {
+                if let Ok(value) = view(root, token, kind, number, "number,title,state,url,author,isDraft") {
                     items.extend(item(kind, &value));
                 }
             }
@@ -307,14 +339,14 @@ pub fn search(root: &Path, query: &str, limit: usize) -> Result<Vec<Item>, Strin
         if !query.is_empty() {
             args.push(&search);
         }
-        let value = json(&run_gh(root, &args, TIMEOUT)?)?;
+        let value = json(&run_gh_token(root, token, &args, TIMEOUT)?)?;
         items.extend(value.as_array().into_iter().flatten().filter_map(|v| item(kind, v)));
     }
     Ok(items)
 }
 
 /// Open issues for the board import dialog.
-pub fn issues(root: &Path, filter: &IssueFilter) -> Result<Vec<Issue>, String> {
+pub fn issues(root: &Path, token: Option<&str>, filter: &IssueFilter) -> Result<Vec<Issue>, String> {
     let mut args: Vec<String> = ["issue", "list", "--state", "open", "--limit", "50", "--json", "number,title,body,state,url,labels,assignees,updatedAt"]
         .into_iter()
         .map(str::to_string)
@@ -332,7 +364,7 @@ pub fn issues(root: &Path, filter: &IssueFilter) -> Result<Vec<Issue>, String> {
         args.push(flag("search", &valid_query(query)?));
     }
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let value = json(&run_gh(root, &borrowed, TIMEOUT)?)?;
+    let value = json(&run_gh_token(root, token, &borrowed, TIMEOUT)?)?;
     Ok(value
         .as_array()
         .into_iter()
@@ -354,7 +386,7 @@ pub fn issues(root: &Path, filter: &IssueFilter) -> Result<Vec<Issue>, String> {
 }
 
 /// Full references for `#123` mentions, resolved in parallel and bounded.
-pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
+pub fn resolve(root: &Path, token: Option<&str>, numbers: &[i64]) -> Result<Vec<Reference>, String> {
     let mut wanted: Vec<i64> = Vec::new();
     for number in numbers {
         if *number > 0 && !wanted.contains(number) {
@@ -371,7 +403,7 @@ pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
                 let number = *number;
                 scope.spawn(move || {
                     for kind in ["issue", "pull"] {
-                        if let Ok(value) = view(root, kind, number, "number,title,state,url,author,body,labels,isDraft") {
+                        if let Ok(value) = view(root, token, kind, number, "number,title,state,url,author,body,labels,isDraft") {
                             let (body, truncated) = excerpt(&text(&value, "body"), BODY_LIMIT);
                             return Some(Reference {
                                 kind: kind.into(),
@@ -396,7 +428,7 @@ pub fn resolve(root: &Path, numbers: &[i64]) -> Result<Vec<Reference>, String> {
 }
 
 /// One GraphQL round trip for every linked number in a project.
-pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> Result<Vec<LinkState>, String> {
+pub fn link_states(root: &Path, token: Option<&str>, repo: &Repository, links: &[(String, i64)]) -> Result<Vec<LinkState>, String> {
     let (owner, name) = repo
         .name_with_owner
         .split_once('/')
@@ -419,7 +451,7 @@ pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> R
     let query_flag = flag("raw-field", &format!("query={query}"));
     // One deleted or transferred number makes gh exit 1 while still returning every
     // other node, so the data is read before the exit status is judged.
-    let output = run_process(gh_command(root, &["api", "graphql", &owner_flag, &name_flag, &query_flag]), "GitHub CLI", OUTPUT_LIMIT, TIMEOUT)?;
+    let output = run_process(gh_command(root, &["api", "graphql", &owner_flag, &name_flag, &query_flag], token), "GitHub CLI", OUTPUT_LIMIT, TIMEOUT)?;
     let value = match json(&output.stdout) {
         Ok(value) if value.pointer("/data/repository").is_some() => value,
         _ => return checked(output).and_then(|capture| json(&capture)).map(|_| vec![]),
@@ -446,7 +478,7 @@ pub fn link_states(root: &Path, repo: &Repository, links: &[(String, i64)]) -> R
 }
 
 /// Open a pull request for an already pushed branch.
-pub fn create_pull_request(root: &Path, title: &str, body: &str, base: &str, head: &str) -> Result<PullRequest, String> {
+pub fn create_pull_request(root: &Path, token: Option<&str>, title: &str, body: &str, base: &str, head: &str) -> Result<PullRequest, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 256 {
         return Err("Give the pull request a title of up to 256 characters.".into());
@@ -459,8 +491,9 @@ pub fn create_pull_request(root: &Path, title: &str, body: &str, base: &str, hea
             return Err("Choose valid base and head branches.".into());
         }
     }
-    let output = run_gh(
+    let output = run_gh_token(
         root,
+        token,
         &["pr", "create", &flag("title", title), &flag("body", body), &flag("base", base), &flag("head", head)],
         Duration::from_secs(60),
     )?;
@@ -490,12 +523,49 @@ mod tests {
     #[test]
     fn gh_runs_with_the_tool_search_path_even_from_a_minimal_gui_path() {
         // Finder and the Dock start apps with PATH=/usr/bin:/bin; gh must still find Homebrew.
-        let command = super::gh_command(std::path::Path::new("/"), &["--version"]);
+        let command = super::gh_command(std::path::Path::new("/"), &["--version"], None);
         let path = command.get_envs().find(|(key, _)| *key == "PATH").and_then(|(_, value)| value).expect("gh gets a PATH");
         let dirs: Vec<_> = std::env::split_paths(path).collect();
         for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
             assert!(dirs.contains(&std::path::PathBuf::from(dir)), "{dir} is searched");
         }
+    }
+
+    #[test]
+    fn gh_command_passes_a_pinned_token_as_gh_token_only_when_given() {
+        let with = gh_command(std::path::Path::new("/"), &["--version"], Some("gho_pinned"));
+        let value = with.get_envs().find(|(key, _)| *key == "GH_TOKEN").and_then(|(_, value)| value).expect("a pinned account's token rides as GH_TOKEN");
+        assert_eq!(value, std::ffi::OsStr::new("gho_pinned"));
+        let without = gh_command(std::path::Path::new("/"), &["--version"], None);
+        assert!(without.get_envs().find(|(key, _)| *key == "GH_TOKEN").is_none(), "no token leaves gh on its own active account");
+    }
+
+    #[test]
+    fn github_status_keeps_old_payloads_valid_and_serializes_accounts_camel_case() {
+        let status = GithubStatus {
+            installed: true,
+            version: "2.40.0".into(),
+            authenticated: true,
+            login: Some("alice".into()),
+            repo: None,
+            error: None,
+            accounts: vec![
+                crate::github_accounts::Account { login: "alice".into(), host: "github.com".into(), active: true },
+                crate::github_accounts::Account { login: "corp-user".into(), host: "ghe.acme.dev".into(), active: false },
+            ],
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["accounts"][0]["login"], "alice");
+        assert_eq!(value["accounts"][0]["host"], "github.com");
+        assert_eq!(value["accounts"][0]["active"], true);
+        assert_eq!(value["accounts"][1]["active"], false);
+        let back: GithubStatus = serde_json::from_value(value).unwrap();
+        assert_eq!(back.accounts, status.accounts);
+        let old: GithubStatus = serde_json::from_str(
+            r#"{"installed":true,"version":"2.39.1","authenticated":true,"login":"alice","repo":null,"error":null}"#,
+        )
+        .unwrap();
+        assert!(old.accounts.is_empty(), "payloads saved before accounts exist still parse");
     }
 
     use super::*;
@@ -534,12 +604,12 @@ mod tests {
     #[test]
     #[ignore]
     fn live_cli_shapes_match_the_parsers() {
-        let root = std::env::current_dir().unwrap();
-        let status = status(&root);
-        assert!(status.installed && status.authenticated, "{status:?}");
-        let repo = status.repo.expect("this checkout has a GitHub remote");
-        assert!(!repo.default_branch.is_empty());
-        let states = link_states(&root, &Repository { name_with_owner: "cli/cli".into(), default_branch: "trunk".into(), url: String::new() }, &[("issue".into(), 1), ("pull".into(), 999_999_999)]).unwrap();
+    let root = std::env::current_dir().unwrap();
+    let status = status(&root, None);
+    assert!(status.installed && status.authenticated, "{status:?}");
+    let repo = status.repo.expect("this checkout has a GitHub remote");
+    assert!(!repo.default_branch.is_empty());
+    let states = link_states(&root, None, &Repository { name_with_owner: "cli/cli".into(), default_branch: "trunk".into(), url: String::new() }, &[("issue".into(), 1), ("pull".into(), 999_999_999)]).unwrap();
         assert_eq!(states.len(), 1, "a missing number is skipped, not fatal: {states:?}");
         assert_eq!(states[0].number, 1);
         assert!(["issue", "pull"].contains(&states[0].kind.as_str()));

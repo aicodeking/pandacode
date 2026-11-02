@@ -4,7 +4,7 @@
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 
-use crate::github::{excerpt, json, names, run_gh, state_of, text, view, Repository, TIMEOUT};
+use crate::github::{excerpt, json, names, run_gh_token, state_of, text, view, Repository, TIMEOUT};
 use crate::storage::TaskLink;
 
 const DETAIL_FIELDS: &str = "number,title,body,state,isDraft,url,author,baseRefName,headRefName,additions,deletions,changedFiles,createdAt,updatedAt,mergedAt,mergeable,reviewDecision,labels,statusCheckRollup,files,commits,comments,reviews";
@@ -192,13 +192,13 @@ pub fn parse_detail(value: &serde_json::Value) -> Result<PullDetail, String> {
     })
 }
 
-pub fn detail(root: &Path, number: i64) -> Result<PullDetail, String> {
-    parse_detail(&view(root, "pull", number, DETAIL_FIELDS)?)
+pub fn detail(root: &Path, token: Option<&str>, number: i64) -> Result<PullDetail, String> {
+    parse_detail(&view(root, token, "pull", number, DETAIL_FIELDS)?)
 }
 
 /// The PR's unified diff; a very large one is cut and flagged rather than refused.
-pub fn diff(root: &Path, number: i64) -> Result<PullDiff, String> {
-    let output = run_gh(root, &["pr", "diff", &number.to_string(), "--color=never"], Duration::from_secs(60))?;
+pub fn diff(root: &Path, token: Option<&str>, number: i64) -> Result<PullDiff, String> {
+    let output = run_gh_token(root, token, &["pr", "diff", &number.to_string(), "--color=never"], Duration::from_secs(60))?;
     Ok(PullDiff { patch: String::from_utf8_lossy(&output.bytes).into_owned(), truncated: output.truncated })
 }
 
@@ -262,7 +262,7 @@ fn belongs_to_turn(value: &serde_json::Value, branch: &str, turn_started: i64) -
 
 /// The PR a turn opened: mentioned in its output (newest first), and either on the
 /// checkout's branch or created after the turn began.
-pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
+pub fn detect(root: &Path, token: Option<&str>, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
     let mut candidates: Vec<i64> = Vec::new();
     for message in turn {
         for number in pull_numbers(message, &repo.name_with_owner).into_iter().rev() {
@@ -272,7 +272,7 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
         }
     }
     for number in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view(root, "pull", number, LINK_FIELDS) else { continue };
+        let Ok(value) = view(root, token, "pull", number, LINK_FIELDS) else { continue };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -281,8 +281,8 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
 }
 
 /// Look a pull request up so a manual link carries its real title and state.
-pub fn lookup(root: &Path, number: i64) -> Result<TaskLink, String> {
-    let value = run_gh(root, &["pr", "view", &number.to_string(), "--json", LINK_FIELDS], TIMEOUT)
+pub fn lookup(root: &Path, token: Option<&str>, number: i64) -> Result<TaskLink, String> {
+    let value = run_gh_token(root, token, &["pr", "view", &number.to_string(), "--json", LINK_FIELDS], TIMEOUT)
         .map_err(|error| if error.to_ascii_lowercase().contains("could not resolve") { format!("Pull request #{number} was not found.") } else { error })?;
     link_from(&json(&value)?).ok_or_else(|| "GitHub returned an unexpected pull request.".into())
 }
@@ -299,10 +299,10 @@ pub fn merge_flag(method: &str) -> Result<&'static str, String> {
 
 /// Merge the pull request on GitHub, then read it back so the task's link shows it merged.
 /// Local branches and worktrees are left alone; GitHub's branch settings decide the rest.
-pub fn merge(root: &Path, number: i64, method: &str) -> Result<TaskLink, String> {
+pub fn merge(root: &Path, token: Option<&str>, number: i64, method: &str) -> Result<TaskLink, String> {
     let flag = merge_flag(method)?;
-    run_gh(root, &["pr", "merge", &number.to_string(), flag], Duration::from_secs(60))?;
-    lookup(root, number)
+    run_gh_token(root, token, &["pr", "merge", &number.to_string(), flag], Duration::from_secs(60))?;
+    lookup(root, token, number)
 }
 
 #[cfg(test)]
