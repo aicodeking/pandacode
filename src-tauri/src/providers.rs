@@ -1323,6 +1323,9 @@ struct Protocol {
     acp_pending_session: Option<Value>,
     grok_context_used: u64,
     grok_reasoning: bool,
+    /// A plan task whose harness advertises no plan mode: PandaCode keeps it
+    /// read-only itself (prompt prefix, permission declines).
+    plan_fallback: bool,
     claude_input_tokens: Option<u64>,
     claude_output_tokens: u64,
     subagents: Option<subagents::Subagents>,
@@ -1449,6 +1452,7 @@ impl Protocol {
             acp_pending_session: None,
             grok_context_used: 0,
             grok_reasoning: false,
+            plan_fallback: false,
             claude_input_tokens: None,
             claude_output_tokens: 0,
             subagents: Some(subagents::Subagents::default()),
@@ -1517,7 +1521,7 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") && self.config.mode == "plan" && !text.trim().is_empty() {
+        if (matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") || self.plan_fallback) && self.config.mode == "plan" && !text.trim().is_empty() {
             text = format!("{}\n\n{text}", acp::READ_ONLY_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
