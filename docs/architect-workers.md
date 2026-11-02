@@ -66,6 +66,14 @@ your saved setup and profiles. Teams that already have worker history retain the
 team controls so those transcripts remain accessible. Profile changes never grant new permissions;
 the task's existing approval behavior is preserved.
 
+A named team profile can carry its own environment variables, edited in
+Settings → Agent teams. Every harness the team starts receives them after the
+provider's saved variables, so a team value wins over a shared name, and the
+shared global set is included unless the team or its provider card opts out.
+Values are write-only: once saved they are never shown again and never leave
+this computer except to runs on this machine (cloud machines receive them only
+when that cloud is set to inherit provider environment variables).
+
 ### Switching during work
 
 Open **Team**, or the composer's model label while a team is enabled, choose a
