@@ -2157,6 +2157,7 @@ function renderComposer(): void {
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
     if (fresh) {
+      // Every attribute the template varies across renders; extend this list when the template gains one.
       for (const name of ['placeholder', 'aria-description', 'rows']) {
         const value = fresh.getAttribute(name);
         if (value === null) oldPrompt.removeAttribute(name); else oldPrompt.setAttribute(name, value);

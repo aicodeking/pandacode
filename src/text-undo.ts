@@ -17,14 +17,30 @@ export function isEditableField(target: EventTarget | null): boolean {
   return Boolean(el?.isContentEditable);
 }
 
-/** One document-level capture listener covers the composer and every other text field. */
-export function mountTextUndo(): void {
-  if (!/Linux/i.test(navigator.platform)) return;
-  document.addEventListener('keydown', event => {
+/** The pieces of document and KeyboardEvent the handler needs, so tests can stub both. */
+export interface TextUndoEvent {
+  key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey: boolean; isComposing: boolean; defaultPrevented: boolean; preventDefault(): void;
+}
+export interface TextUndoHost {
+  activeElement: EventTarget | null;
+  execCommand(command: string): boolean;
+  addEventListener(type: string, listener: (event: TextUndoEvent) => void, capture?: boolean): void;
+}
+
+/** One document-level capture listener covers the composer and every other text field.
+  The terminal is excluded: xterm feeds the shell through a hidden textarea, where Ctrl+Z suspends the foreground job and Ctrl+Y yanks, they are PTY input, not text edits. */
+export function attachTextUndo(doc: TextUndoHost, platform: string): void {
+  if (!/Linux/i.test(platform)) return;
+  doc.addEventListener('keydown', (event: TextUndoEvent) => {
     if (!event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.defaultPrevented) return;
     const direction = undoDirection(event.key, event.shiftKey);
-    if (!direction || !isEditableField(document.activeElement)) return;
+    const el = doc.activeElement as Element | null;
+    if (!direction || !isEditableField(el) || el?.closest?.('.xterm')) return;
     event.preventDefault();
-    document.execCommand(direction);
+    doc.execCommand(direction);
   }, true);
+}
+
+export function mountTextUndo(): void {
+  attachTextUndo(document, navigator.platform);
 }
