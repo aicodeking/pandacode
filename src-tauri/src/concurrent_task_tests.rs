@@ -1066,6 +1066,40 @@ fn lead_maintenance_commands_leave_the_team_and_board_stage_alone() {
     }
 }
 
+/// Stop during `/compact` on a settled team: the desktop sends it through the team's control.
+#[test]
+fn team_stop_during_lead_maintenance_stops_only_that_run() {
+    let (state, sid) = settled_team_lead("claude", "review", "completed");
+    advertise_claude_commands(&state, &sid);
+    let before = team_record(&state, &sid);
+    let architect::LeadSend::Maintenance(command) = send_to_lead(&state, &sid, "/compact").unwrap() else {
+        panic!("/compact must not start a team turn");
+    };
+    let (tx, mut rx) = unbounded_channel();
+    prepare_task_run_in_project(
+        &state,
+        sid.clone(),
+        Some("/compact".into()),
+        vec![],
+        tx,
+        Arc::new(AtomicBool::new(false)),
+        RunAdmission { command: Some(command), ..Default::default() },
+    )
+    .unwrap();
+
+    let team = architect::control_state(&state, &sid, "stop").unwrap();
+
+    assert!(matches!(rx.try_recv(), Ok(RunInput::Stop)), "the agent never got the stop");
+    assert_eq!((team.generation, team.status.as_str()), (4, "completed"));
+    assert_eq!(team.workers[0].status, "parked");
+    assert_eq!(team_record(&state, &sid), before);
+
+    // Discriminates: once the run is gone, the same action is the team's own stop.
+    state.agents.lock().unwrap().remove(&sid);
+    let team = architect::control_state(&state, &sid, "stop").unwrap();
+    assert_eq!((team.generation, team.status.as_str()), (5, "paused"));
+}
+
 #[test]
 fn other_lead_messages_still_start_a_team_turn() {
     for text in [

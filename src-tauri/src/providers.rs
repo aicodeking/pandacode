@@ -82,6 +82,7 @@ const FINISH_GRACE: Duration = Duration::from_millis(1000);
 const ANTIGRAVITY_GRACE: Duration = Duration::from_secs(120);
 /// Under the app data dir: per-run `TEMP` folders of Antigravity on Windows.
 const AGENT_TEMP_DIR: &str = "agent-temp";
+const AGENT_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
@@ -847,15 +848,28 @@ async fn opencode_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn opencode_v2_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    #[cfg(test)]
+    let app_data = std::env::temp_dir().join("pandacode-test-app-data");
+    #[cfg(test)]
+    let app_data = Some(app_data.as_path());
+    #[cfg(not(test))]
+    let app_data = crate::secret_store::dir();
+    opencode_v2_catalog_in(path, app_data).await
+}
+
+async fn opencode_v2_catalog_in(path: &Path, app_data: Option<&Path>) -> Result<Vec<ModelInfo>, String> {
     const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
     let mut command = launch::std_command(path)?;
     crate::provider_settings::apply_environment("opencode", &mut command);
-    let directory = std::env::temp_dir();
+    // OpenCode reads config from its directory, and anyone can plant one in a shared temp folder.
+    let folder = app_data
+        .and_then(|dir| AgentTemp::create_in(&dir.join(AGENT_TEMP_DIR)))
+        .ok_or("Could not create a private folder for OpenCode discovery")?;
     // A private server, so listing models leaves no background service behind.
     command
         .args(["--standalone", "api", "model.list", "--param"])
-        .arg(format!("directory={}", directory.display()))
-        .current_dir(&directory);
+        .arg(format!("directory={}", folder.0.display()))
+        .current_dir(&folder.0);
     let mut output = tokio::task::spawn_blocking(move || {
         crate::workspace::run_process(command, "OpenCode", OUTPUT_LIMIT, Duration::from_secs(15))
     })
@@ -2902,18 +2916,30 @@ impl AgentTemp {
             return None;
         }
         let root = crate::secret_store::dir()?.join(AGENT_TEMP_DIR);
-        // Folders left by a crash or a quit: nothing in this process uses them yet.
         static SWEPT: std::sync::Once = std::sync::Once::new();
-        SWEPT.call_once(|| {
-            let _ = std::fs::remove_dir_all(&root);
-        });
+        SWEPT.call_once(|| Self::sweep(&root));
         let temp = Self::create_in(&root)?;
         command.env("TEMP", &temp.0).env("TMP", &temp.0);
         Some(temp)
     }
+    /// Folders left by a crash or a quit. Only old ones: `pandacode serve` has no single-instance
+    /// guard, so another process's agent can be using a recent one.
+    fn sweep(root: &Path) {
+        for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+            if age.is_some_and(|age| age > AGENT_TEMP_MAX_AGE) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    /// Private to this user: discovery runs in one, where a planted file must not be readable as config.
     fn create_in(root: &Path) -> Option<Self> {
         let dir = root.join(uuid::Uuid::new_v4().to_string());
-        std::fs::create_dir_all(&dir).ok()?;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir).ok()?;
         Some(Self(dir))
     }
 }
@@ -2932,17 +2958,25 @@ impl Drop for AgentTemp {
     }
 }
 
+struct Lingering {
+    /// Canonical, for `end_lingering_in`.
+    cwd: PathBuf,
+    agent: tokio::task::JoinHandle<()>,
+}
+
 /// Agents past their turn, still finishing background work, by task.
-fn lingering() -> &'static Mutex<HashMap<String, tokio::task::JoinHandle<()>>> {
-    static AGENTS: OnceLock<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = OnceLock::new();
+fn lingering() -> &'static Mutex<HashMap<String, Lingering>> {
+    static AGENTS: OnceLock<Mutex<HashMap<String, Lingering>>> = OnceLock::new();
     AGENTS.get_or_init(Default::default)
 }
 
 /// Gives a finished agent `ANTIGRAVITY_GRACE` to exit by itself, without holding the turn open.
 /// Its group stays in the process registry, so app quit still kills it, and its pipes stay read,
 /// because an agent that writes to a closed pipe would die on the spot.
+#[allow(clippy::too_many_arguments)]
 fn linger_agent(
     session_id: String,
+    cwd: &Path,
     mut child: Child,
     stdin: ChildStdin,
     mut stdout: tokio::process::ChildStdout,
@@ -2952,24 +2986,46 @@ fn linger_agent(
 ) {
     let agent = tokio::spawn(async move {
         let (_stderr, _temp) = (stderr, temp);
-        let drain = tokio::spawn(async move {
+        // In this task, so an abort stops the drain too. It never ends the select: an agent can
+        // close stdout and keep working.
+        let drain = async move {
             let _ = tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await;
-        });
-        finish_child(&mut child, stdin, &mut group, ANTIGRAVITY_GRACE).await;
-        drain.abort();
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = finish_child(&mut child, stdin, &mut group, ANTIGRAVITY_GRACE) => {}
+            () = drain => {}
+        }
     });
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
     let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
-    agents.retain(|_, agent| !agent.is_finished());
-    agents.insert(session_id, agent);
+    agents.retain(|_, lingering| !lingering.agent.is_finished());
+    agents.insert(session_id, Lingering { cwd, agent });
 }
 
 /// Ends the task's lingering agent. Its next turn must not share the conversation store with it.
 /// Dropping the aborted task kills the group and removes its temp folder.
-async fn end_lingering(session_id: &str) {
-    let agent = lingering().lock().unwrap_or_else(|p| p.into_inner()).remove(session_id);
-    if let Some(agent) = agent {
+pub(crate) async fn end_lingering(session_id: &str) {
+    let lingering = lingering().lock().unwrap_or_else(|p| p.into_inner()).remove(session_id);
+    if let Some(Lingering { agent, .. }) = lingering {
         agent.abort();
         let _ = agent.await;
+    }
+}
+
+/// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
+/// is removed: on Windows a process's working directory cannot be deleted.
+pub(crate) async fn end_lingering_in(folder: &Path) {
+    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_owned());
+    let tasks: Vec<String> = lingering()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(_, lingering)| lingering.cwd.starts_with(&folder))
+        .map(|(task, _)| task.clone())
+        .collect();
+    for task in tasks {
+        end_lingering(&task).await;
     }
 }
 
@@ -3501,7 +3557,7 @@ async fn run_process_with_tools(
         sink(event);
     }
     if lingers && result.is_ok() && !stopped {
-        linger_agent(protocol.config.session_id.clone(), child, stdin, stdout, stderr_task, group, agent_temp);
+        linger_agent(protocol.config.session_id.clone(), &protocol.config.cwd, child, stdin, stdout, stderr_task, group, agent_temp);
         return Ok(());
     }
     finish_child(&mut child, stdin, &mut group, FINISH_GRACE).await;
@@ -5126,15 +5182,35 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         let next_turn = marker_path();
         assert_eq!(run_script("antigravity", "linger-next", &script, &next_turn).await, Ok(()));
         end_lingering("linger-next").await;
+        // Past the marker's 2 s, with nothing else in the way: `shutdown_all` would hide a failure.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let survived = next_turn.exists();
+        let _ = std::fs::remove_file(&next_turn);
+        assert!(!survived, "the next turn left the old agent running");
 
         let quit = marker_path();
         assert_eq!(run_script("antigravity", "linger-quit", &script, &quit).await, Ok(()));
         shutdown_all();
-
         tokio::time::sleep(Duration::from_secs(3)).await;
-        assert!(!next_turn.exists(), "the next turn left the old agent running");
         assert!(!quit.exists(), "app quit left the agent running");
         end_lingering("linger-quit").await;
+    }
+
+    #[tokio::test]
+    async fn removing_a_folder_ends_only_the_agents_working_in_it() {
+        let root = std::env::temp_dir().join(format!("pandacode-linger-in-{}", uuid::Uuid::new_v4()));
+        let (inside, other) = (root.join("gone/deep"), root.join("kept"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        for (task, cwd) in [("linger-in-gone", &inside), ("linger-in-kept", &other)] {
+            let lingering_agent = Lingering { cwd: cwd.canonicalize().unwrap(), agent: tokio::spawn(std::future::pending()) };
+            lingering().lock().unwrap().insert(task.into(), lingering_agent);
+        }
+        end_lingering_in(&root.join("gone")).await;
+        assert!(!lingering().lock().unwrap().contains_key("linger-in-gone"));
+        assert!(lingering().lock().unwrap().contains_key("linger-in-kept"));
+        end_lingering("linger-in-kept").await;
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]
@@ -5164,6 +5240,62 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         }
         assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_leaves_recent_agent_temp_folders_alone() {
+        let root = std::env::temp_dir().join(format!("pandacode-agent-sweep-{}", uuid::Uuid::new_v4()));
+        let (old, live) = (root.join("old"), root.join("live"));
+        std::fs::create_dir_all(old.join("_MEI123")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let past = std::time::SystemTime::now() - AGENT_TEMP_MAX_AGE - Duration::from_secs(60);
+        std::fs::File::open(&old).unwrap().set_modified(past).unwrap();
+        AgentTemp::sweep(&root);
+        assert!(!old.exists());
+        assert!(live.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_discovery_runs_in_a_private_folder_it_then_removes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-private-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (script, seen, models) = (root.join("opencode"), root.join("seen"), root.join("models.json"));
+        std::fs::write(&models, OPENCODE_V2_MODELS).unwrap();
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$(pwd -P)\" \"$(ls -ld . | cut -c1-10)\" \"$*\" > '{}'\ncat '{}'\n",
+            seen.display(), models.display(),
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app_data = root.join("app-data");
+
+        opencode_v2_catalog_in(&script, Some(&app_data)).await.unwrap();
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
+        let folder = Path::new(lines[0]);
+        assert!(folder.starts_with(app_data.canonicalize().unwrap().join(AGENT_TEMP_DIR)), "{seen}");
+        assert_eq!(lines[1], "drwx------", "{seen}");
+        assert!(lines[2].contains(folder.file_name().unwrap().to_str().unwrap()), "{seen}");
+        for _ in 0..100 {
+            if !folder.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!folder.exists(), "the private folder stayed behind");
+
+        // Without a private folder it never runs, and the error takes the bare-ID path.
+        let _ = std::fs::remove_file(root.join("seen"));
+        for app_data in [None, Some(script.as_path())] {
+            let error = opencode_v2_catalog_in(&script, app_data).await.unwrap_err();
+            assert!(!error.contains("timed out"), "{error}");
+        }
+        assert!(!root.join("seen").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

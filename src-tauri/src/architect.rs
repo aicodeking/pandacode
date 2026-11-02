@@ -950,6 +950,13 @@ pub async fn architect_control(
     session_id: String,
     action: String,
 ) -> Result<TeamSnapshot> {
+    // What `stop_session` does for this run besides signalling it; `control_state` signals it.
+    if action == "stop" && crate::runs_team_maintenance(&state, &session_id)? {
+        crate::remote::orchestrate::task_stopped(&app, &session_id);
+        if crate::cloud_agents::transport::is_cloud(&session_id) {
+            crate::cloud_agents::tasks::stop_run(&app, &session_id);
+        }
+    }
     // Right after Pause or Stop the old agents can still be exiting; give them a moment
     // instead of refusing the Resume the user just clicked.
     let mut attempts = 0;
@@ -966,11 +973,17 @@ pub async fn architect_control(
     wake(app);
     Ok(team)
 }
-fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<TeamSnapshot> {
+pub(crate) fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<TeamSnapshot> {
     let team = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
         refuse_mirror(&store, session_id)?;
+        // A maintenance command on the lead: Stop ends that run alone, and the team stays as it is.
+        if let Some(agent) = agents.get(session_id).filter(|agent| action == "stop" && agent.team_maintenance) {
+            store.request_stop(session_id)?;
+            let _ = agent.send(RunInput::Stop);
+            return Ok(load(&store, session_id)?.ok_or("Team is unavailable.")?);
+        }
         let mut team = load(&store, session_id)?.ok_or("Team is unavailable.")?;
         match action {
             "pause" | "stop" => {

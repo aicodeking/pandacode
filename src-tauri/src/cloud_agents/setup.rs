@@ -262,9 +262,9 @@ fn npm_install(package: &str) -> String {
 }
 
 /// Both OpenCode packages own `bin/opencode`, so the other generation's goes first or npm
-/// fails with EEXIST. A pin npm does not publish falls back to the latest release and is
-/// recorded beside the marker, so `cached_program` keeps that install instead of
-/// reinstalling on every run.
+/// fails with EEXIST. A failed pin falls back to the latest release. Only a version npm says
+/// does not exist is recorded beside the marker, so `cached_program` keeps that install instead
+/// of reinstalling on every run; any other failure, such as the network, retries the pin next run.
 fn opencode_install_steps(version: Option<&str>, runtime: &str) -> String {
     let (package, other) = opencode_packages(version);
     let uninstall = format!(
@@ -275,7 +275,7 @@ fn opencode_install_steps(version: Option<&str>, runtime: &str) -> String {
     let latest = npm_install(package);
     match opencode_pin(version) {
         Some(pin) => format!(
-            "{uninstall}\nif {pinned}; then\n  rm -f {unpublished}\nelse\n  {latest}\n  printf '%s\\n' {quoted} > {unpublished}\nfi",
+            "{uninstall}\nif pin_output=$({pinned} 2>&1); then\n  printf '%s\\n' \"$pin_output\"\n  rm -f {unpublished}\nelse\n  printf '%s\\n' \"$pin_output\"\n  {latest}\n  case \"$pin_output\" in\n    *E404*|*ETARGET*) printf '%s\\n' {quoted} > {unpublished} ;;\n    *) rm -f {unpublished} ;;\n  esac\nfi",
             pinned = npm_install(&opencode_package(version)),
             quoted = crate::cloud::shell_quote(&pin),
         ),
@@ -691,10 +691,10 @@ mod tests {
     #[test]
     fn opencode_install_falls_back_to_the_unpinned_package() {
         let steps = opencode_install_steps(Some("2.1.2"), "opencode-2");
-        let pinned = r#"if npm install -g --prefix "$home/.pandacode/npm" '@opencode/cli@2.1.2'; then"#;
+        let pinned = r#"if pin_output=$(npm install -g --prefix "$home/.pandacode/npm" '@opencode/cli@2.1.2' 2>&1); then"#;
         let latest = r#"npm install -g --prefix "$home/.pandacode/npm" '@opencode/cli'"#;
         assert!(steps.contains(pinned), "{steps}");
-        assert!(steps.contains(&format!("else\n  {latest}\n")), "{steps}");
+        assert!(steps.contains(&format!("\n  {latest}\n")), "{steps}");
 
         let beta = Some("0.0.0-beta-19507");
         assert_eq!(opencode_pin(beta), None);
@@ -716,7 +716,7 @@ mod tests {
         let npm = root.join("bin/npm");
         fs::write(
             &npm,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/npm.log\"\ncase \"$*\" in *@9.9.9*) echo 'npm error 404' >&2; exit 1 ;; esac\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/npm.log\"\ncase \"$*\" in *@9.9.9*) echo 'npm error code E404' >&2; exit 1 ;; *@9.9.8*) echo 'npm error code ETARGET' >&2; exit 1 ;; *@9.9.7*) echo 'npm error code ECONNRESET' >&2; exit 1 ;; esac\n",
         )
         .unwrap();
         let executable = root.join("home/.local/bin/opencode");
@@ -760,6 +760,15 @@ mod tests {
         install("9.9.10");
         assert!(!flag.exists());
         assert_eq!(cached_program(&sandbox, "fake", runtime, Some("9.9.9"), "").unwrap(), None);
+
+        // npm's other word for a version it does not have is recorded too.
+        install("9.9.8");
+        assert_eq!(fs::read_to_string(&flag).unwrap(), "9.9.8\n");
+        // A network failure installs latest but leaves no record, so the next run retries the pin.
+        install("9.9.7");
+        assert!(!flag.exists());
+        assert!(fs::read_to_string(root.join("home/npm.log")).unwrap().lines().last().unwrap().ends_with("@opencode/cli"));
+        assert_eq!(cached_program(&sandbox, "fake", runtime, Some("9.9.7"), "").unwrap(), None);
     }
 
     /// The runtime marker id carries the generation: a machine provisioned for one

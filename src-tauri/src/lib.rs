@@ -3014,12 +3014,10 @@ async fn remove_worktree(
     if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
-    let store = state.store.clone();
-    blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))
-    })
-    .await
+    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
+    // A lingering agent's working directory would block the removal on Windows.
+    providers::end_lingering_in(&path).await;
+    blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await
 }
 
 #[tauri::command]
