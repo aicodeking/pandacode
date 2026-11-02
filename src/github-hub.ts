@@ -287,7 +287,9 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       onSelect: async id => {
         await host.setAccount(project.id, id || null);
         accountsProject = null;
-        await loadAccounts(true);
+        // The listings came from the previous account; fetch them again as the new one.
+        pulls.clear(); issues.clear(); runs.clear(); details.clear();
+        await Promise.all([loadAccounts(true), loadItems(true)]);
       },
     });
   }
