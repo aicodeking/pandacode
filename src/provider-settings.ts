@@ -1,3 +1,4 @@
+import { mountProviderTest } from './provider-test';
 import './provider-settings.css';
 import { call, nativeDesktop, preview } from './bridge';
 import { escape, icon } from './dom';
@@ -78,6 +79,8 @@ function keyForm(provider: KeyedProvider, label: string): string {
 export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>, named?: { harnesses: { id: ProviderId; name: string; installed?: boolean }[]; saved: (snapshot: ConnectionSnapshot) => void }): () => void {
   let disposed = false, pending = false, unmountNamed: (() => void) | undefined;
   let configurationRevision = 0, generatedMounted = false;
+  const testCleanups: (() => void)[] = [];
+  const testedCards = new Set<Element>();
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
   host.innerHTML = `<div class="settings-heading"><h3>Sign-ins and keys</h3>${infoMark(howProvidersWork, 'How providers relate to agents')}<span class="sr-only">${escape(howProvidersWork)}</span></div>${named ? '<section id="named-connections"></section>' : ''}
@@ -188,6 +191,17 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       generatedMounted = true;
       const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
       feedback.insertAdjacentHTML('beforebegin', cards);
+    }
+    // Both hand-written and generated harness cards expose the same quick test.
+    for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
+      const card = input.closest('.connection-card')!;
+      if (testedCards.has(card)) continue;
+      testedCards.add(card);
+      const id = input.dataset.executable!;
+      const slot = document.createElement('div'); slot.className = 'provider-test';
+      card.append(slot);
+      const name = (config.providers ?? []).find(([provider]) => provider === id)?.[1] ?? id;
+      testCleanups.push(mountProviderTest(slot, id, name));
     }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     claudeRefresh.checked = config.claudeCliRefresh ?? true;
@@ -374,7 +388,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(errorText(error), true); });
   void checkClaude();
   if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
-  return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
+  return () => { disposed = true; unmountNamed?.(); for (const cleanup of testCleanups) cleanup(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
 }
 
 function pathForm(provider: string, label: string, placeholder: string): string {

@@ -7,7 +7,7 @@ import { escape, icon, isImeKey } from './dom';
 import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 
-export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | 'colab' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
+export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | 'colab' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean; installed?: boolean | null };
 /** `colab-sign-in` events while Google Colab signs in from Settings. */
 export type ColabSignInUpdate = { id: number; state: 'installing' | 'waiting' | 'exchanging' | 'done' | 'failed' | 'cancelled'; url?: string; message?: string; detail?: string };
 /** `cloud_colab_sign_in_status`: the sign-in still running in the background, if any. */
@@ -22,6 +22,8 @@ export type ColabConfig = {
   ccuBalance?: number | null; ccuRate?: number | null;
 };
 type CloudEvents = { 'cloud-setup': { provider: string; label: string }; 'colab-sign-in': ColabSignInUpdate };
+/** `cloud_provider_test`: one real, cheap request with the saved credentials. */
+type CloudTestResult = { ok: boolean; message: string; durationMs: number };
 export type CloudSettingsHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen<K extends keyof CloudEvents>(name: K, callback: (event: CloudEvents[K]) => void): Promise<() => void>;
@@ -142,8 +144,8 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   const providerRow = (id: CloudConnection['provider']) => {
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
-    return `<div class="cloud-provider" data-provider="${id}">
-      <div class="setting-row"><div><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success"></small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}${id === 'colab' ? '<button type="button" class="secondary-button" data-cloud="toggle-form" aria-expanded="false">More options</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}</div>
+    return `<details class="cloud-provider" data-provider="${id}">
+      <summary aria-label="${escape(`${provider.name} details`)}"><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success">${escape(provider.summary)}</small><span class="provider-availability"><span class="status-dot"></span></span><span class="cloud-buttons">${id === 'colab' ? '<button type="button" class="secondary-button" data-cloud="toggle-form" aria-expanded="false">More options</button>' : ''}${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></span>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}${icon('chevron')}</summary>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
       ${id === 'colab' ? colabSignInRow() : ''}<div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'colab' ? colabConfigBlock() : ''}${id === 'instabox' ? `
       <div class="cloud-image" hidden>
@@ -160,6 +162,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <p class="cloud-image-error" role="alert" hidden></p>
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="do-retry">Try again</button></div>
       </div>` : ''}
+      <div class="cloud-test"><button type="button" class="secondary-button" data-cloud="test" aria-label="Test ${escape(provider.name)}">Test</button><span role="status"></span></div>
       <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
         ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
@@ -167,20 +170,20 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <p class="cloud-error" role="alert" hidden></p>
         <div class="cloud-actions"><button type="button" class="secondary-button" data-cloud="cancel">Cancel</button>${id === 'colab' ? '<button type="button" class="secondary-button" data-cloud="colab-adc">Use gcloud ADC</button>' : ''}<button type="submit" class="primary-button">${escape(provider.connect)}</button></div>
       </form>
-    </div>`;
+    </details>`;
   };
   // The keyed long tail folds away; the fold opens by itself once one of them is connected.
   host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud providers">${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
     <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
-    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}</div></div>
+    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><details class="cloud-provider cloud-claude">
+      <summary aria-label="Claude login for cloud agents details"><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}<small class="cloud-detail">Optional long-lived token</small>${icon('chevron')}</summary>
       <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
         <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
         <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
       </form>
-    </div></div></details>`;
+    </details></div></details>`;
   let connections: CloudConnection[] = [], disposed = false, busy = '';
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
@@ -212,7 +215,10 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const toggle = root.querySelector<HTMLButtonElement>('[data-cloud="toggle"]')!;
       const form = root.querySelector<HTMLFormElement>('form')!;
       const sandboxes = id === 'cloudflare' && connection?.connected ? (connection.sandboxes ? ' · sandboxes ready' : ' · sandboxes not set up') : '';
-      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : '';
+      const statusText = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : connection?.installed === false ? 'Not installed' : PROVIDERS[id].summary;
+      root.querySelector('.cloud-detail')!.textContent = connection?.connected || connection?.installed === false ? statusText : (id in KEYED ? '' : statusText);
+      root.querySelector('summary')?.setAttribute('aria-label', `${PROVIDERS[id].name} details, ${statusText}`);
+      root.querySelector('.provider-availability')?.classList.toggle('available', Boolean(connection?.connected));
       const setup = root.querySelector<HTMLButtonElement>('[data-cloud="sandboxes"]');
       if (setup) { setup.hidden = !connection?.connected || Boolean(connection.sandboxes); setup.disabled = Boolean(busy); }
       if (id === 'colab') {
@@ -226,6 +232,10 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       }
       form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = Boolean(busy);
       const inheritRow = root.querySelector<HTMLElement>('[data-inherit-row]')!;
+      // A test runs against the saved credentials, so it can never race a connect or
+      // disconnect, and a render from another card's business must not re-enable it mid-flight.
+      const testButton = root.querySelector<HTMLButtonElement>('[data-cloud="test"]');
+      if (testButton) testButton.disabled = Boolean(busy) || testing.has(id);
       const supported = connection?.inheritEnvironment !== undefined;
       inheritRow.hidden = !supported || !connection?.connected;
       if (supported) {
@@ -599,17 +609,56 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     catch (error) { say(section(id), 'error', failure(error)); }
     finally { busy = ''; if (!disposed) { render(); syncImages(); syncCatalog(); syncColab(); } }
   }
+  /* The per-provider quick test: one real request with the saved credentials. A stale answer
+   * (another test started since) never paints, and neither does one whose credentials were
+   * connected or disconnected while it ran. */
+  const testTickets = new Map<string, number>();
+  const testing = new Set<string>();
+  async function testProvider(root: HTMLElement, id: CloudConnection['provider'], button: HTMLButtonElement): Promise<void> {
+    if (testing.has(id)) return;
+    testing.add(id);
+    const status = root.querySelector<HTMLElement>('.cloud-test [role="status"]')!;
+    const ticket = (testTickets.get(id) ?? 0) + 1;
+    testTickets.set(id, ticket);
+    const connectedWhenStarted = connections.find(c => c.provider === id)?.connected;
+    button.disabled = true; button.textContent = 'Testing…';
+    status.classList.remove('cloud-error'); status.textContent = 'Checking…';
+    try {
+      const result = await options.call<CloudTestResult>('cloud_provider_test', { provider: id });
+      if (disposed || testTickets.get(id) !== ticket) return;
+      if (connections.find(c => c.provider === id)?.connected !== connectedWhenStarted) return;
+      status.textContent = `${result.ok ? 'Working' : 'Failed'} · ${result.message} · ${(result.durationMs / 1000).toFixed(1)} s`;
+      status.classList.toggle('cloud-error', !result.ok);
+    } catch (error) {
+      if (disposed || testTickets.get(id) !== ticket) return;
+      status.textContent = `Failed · ${error instanceof Error ? error.message : String(error)}`;
+      status.classList.add('cloud-error');
+    } finally { testing.delete(id); if (!disposed) { button.disabled = false; button.textContent = 'Test again'; } }
+  }
 
   host.addEventListener('click', event => {
     const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('.cloud-colab-link') : null;
     if (link) { openColabLink(event, link); return; }
-    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-cloud]') : null;
-    if (!target || target.disabled) return;
+    const hit = event.target instanceof Element ? event.target : null;
+    const summary = hit?.closest('summary') ?? null;
+    const target = hit?.closest<HTMLButtonElement>('[data-cloud]') ?? null;
+    if (summary) {
+      // The fold is driven here: preventDefault alone does not stop WebKit from toggling a
+      // summary click, and the row's buttons must act without folding the card.
+      event.preventDefault();
+      if (!target) {
+        const card = summary.closest('details');
+        if (card) card.open = !card.open;
+        return;
+      }
+      if (target.disabled) return;
+    } else if (!target || target.disabled) return;
     const root = target.closest<HTMLElement>('.cloud-provider[data-provider]')!, id = root.dataset.provider as CloudConnection['provider'];
     const form = root.querySelector<HTMLFormElement>('form')!;
     if (target.dataset.cloud === 'cancel') { form.hidden = true; say(root, 'error', ''); render(); return; }
     if (target.dataset.cloud === 'sandboxes') { void setupSandboxes(root); return; }
     if (target.dataset.cloud === 'images') { void loadImages(); return; }
+    if (target.dataset.cloud === 'test') { void testProvider(root, id, target); return; }
     if (target.dataset.cloud === 'do-retry') { void loadCatalog(); return; }
     if (target.dataset.cloud === 'do-apply') { void applyCustom(); return; }
     if (target.dataset.cloud === 'do-cancel') { customFor = null; renderCatalog(); return; }
@@ -620,6 +669,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     // Google Colab signs in with one click; its form only holds the other ways to sign in.
     if (id === 'colab' && target.dataset.cloud === 'toggle') { if (!colabSigning && !colabPending) void colabSignIn('oauth2'); return; }
     form.hidden = !form.hidden;
+    if (!form.hidden) (root as HTMLDetailsElement).open = true;
     render();
     if (!form.hidden) form.querySelector<HTMLInputElement>('input')!.focus();
   });

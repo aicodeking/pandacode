@@ -427,3 +427,98 @@ test('cloud sandboxes: reopened Settings picks up a running Google Colab sign-in
   await expect(card.getByRole('button', { name: 'Disconnect Google Colab', exact: true })).toBeVisible();
   await expect(card.locator('.cloud-colab-signin')).toBeHidden();
 });
+
+test('a provider whose CLI is missing shows Not installed', async ({ page }) => {
+  await page.addInitScript(() => { (globalThis as any).__cloudCliMissing = true; });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = settingsRegion(page);
+  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await expect(settings.locator('.cloud-provider[data-provider="aws"] .cloud-detail')).toHaveText('Not installed');
+  await expect(settings.locator('.cloud-provider[data-provider="daytona"] .cloud-detail')).toHaveText('Linux desktops agents can see and control.');
+});
+
+test('each provider folds into its own dropdown, and connecting opens just that one', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = settingsRegion(page);
+  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const daytona = settings.locator('.cloud-provider[data-provider="daytona"]');
+  await expect(docker.locator('form')).toBeHidden();
+  await expect(daytona.locator('form')).toBeHidden();
+  // The Connect button on the summary row opens the card without folding it.
+  await docker.getByRole('button', { name: 'Connect Docker', exact: true }).click();
+  await expect(docker.locator('form')).toBeVisible();
+  await expect(daytona.locator('form')).toBeHidden();
+  // Clicking the summary itself folds it closed again.
+  await docker.locator('summary').click();
+  await expect(docker.locator('form')).toBeHidden();
+});
+
+test('the cloud test button reports an unconnected provider, then a working and a failing one', async ({ page }) => {
+  const settings = await openDockerForm(page);
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const status = docker.locator('.cloud-test [role="status"]');
+  await expect(docker.getByRole('button', { name: 'Test Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Connect Docker first');
+  // Connected, the same button passes; the failure hook flips the next run.
+  await docker.locator('form').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(docker.getByRole('button', { name: 'Disconnect Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Working');
+  await page.evaluate(() => { (globalThis as any).__cloudTestFail = true; });
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Failed');
+  const ran = await page.evaluate(() => (window as any).__cloudTests);
+  expect(ran).toEqual(['docker', 'docker', 'docker']);
+});
+
+test('cloud sandboxes: a provider whose CLI is missing shows Not installed', async ({ page }) => {
+  await page.addInitScript(() => { (globalThis as any).__cloudCliMissing = true; });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+  const settings = page.getByRole('tabpanel', { name: 'Cloud sandboxes' });
+  await expect(settings.locator('.cloud-provider[data-provider="aws"] .cloud-detail')).toHaveText('Not installed');
+  await expect(settings.locator('.cloud-provider[data-provider="daytona"] .cloud-detail')).toHaveText('Linux desktops agents can see and control.');
+});
+
+test('cloud sandboxes: each provider folds into its own dropdown, and connecting opens just that one', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+  const settings = page.getByRole('tabpanel', { name: 'Cloud sandboxes' });
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const daytona = settings.locator('.cloud-provider[data-provider="daytona"]');
+  await expect(docker.locator('form')).toBeHidden();
+  await expect(daytona.locator('form')).toBeHidden();
+  // The Connect button on the summary row opens the card without folding it.
+  await docker.getByRole('button', { name: 'Connect Docker', exact: true }).click();
+  await expect(docker.locator('form')).toBeVisible();
+  await expect(daytona.locator('form')).toBeHidden();
+  // Clicking the summary itself folds it closed again.
+  await docker.locator('summary').click();
+  await expect(docker.locator('form')).toBeHidden();
+});
+
+test('cloud sandboxes: the cloud test button reports an unconnected provider, then a working and a failing one', async ({ page }) => {
+  const settings = await openCloud(page);
+  await settings.getByRole('button', { name: 'Connect Docker', exact: true }).click();
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const status = docker.locator('.cloud-test [role="status"]');
+  await expect(docker.getByRole('button', { name: 'Test Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Connect Docker first');
+  // Connected, the same button passes; the failure hook flips the next run.
+  await docker.locator('form').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(docker.getByRole('button', { name: 'Disconnect Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Working');
+  await page.evaluate(() => { (globalThis as any).__cloudTestFail = true; });
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Failed');
+  const ran = await page.evaluate(() => (window as any).__cloudTests);
+  expect(ran).toEqual(['docker', 'docker', 'docker']);
+});
