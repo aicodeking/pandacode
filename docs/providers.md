@@ -507,7 +507,11 @@ checked explicitly. No private API, unofficial adapter, or browser-cookie
 authentication is used. Antigravity's own policy applies, with ACP approval
 requests shown in Standard; Auto edits approves explicit edit requests and Full
 access approves offered one-time permissions. Structured questions are not
-auto-selected. Modes not advertised by the server are not invented.
+auto-selected. Modes not advertised by the server are not invented: when the
+server advertises no Plan counterpart, a Plan task still runs, with PandaCode
+prefixing the read-only brief and declining state-changing permission requests,
+and a note in the activity stream; the same note accompanies Accept edits and
+Full access when the server lists no counterpart for them.
 
 **Connection check.** In Settings, expand Antigravity's installation details and
 choose **Check connection**. This separately verifies ACP initialization and an
