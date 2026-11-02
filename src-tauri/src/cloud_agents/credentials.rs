@@ -32,8 +32,10 @@ pub(crate) fn push(
         _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
     }
     if let Some(token) = local_gh_token(github_pin) {
-        configure_github_helper(sandbox, native)?;
-        env.push(("GH_TOKEN".into(), token));
+        configure_github_helper(sandbox, native, helper_host(github_pin))?;
+        env.push(("GH_TOKEN".into(), token.clone()));
+        // gh reads GH_TOKEN for github.com only; the twin covers Enterprise hosts.
+        env.push(("GH_ENTERPRISE_TOKEN".into(), token));
     }
     if let Some(value) = global_git_config("user.name") {
         env.push(("GIT_AUTHOR_NAME".into(), value.clone()));
@@ -323,11 +325,22 @@ fn local_gh_token(pin: Option<&str>) -> Option<String> {
     (!token.is_empty()).then_some(token)
 }
 
-fn configure_github_helper(sandbox: &dyn Sandbox, native: &str) -> Result<()> {
-    let helper = "!f() { [ \"$1\" = get ] || exit 0; host=; while IFS= read -r line; do case \"$line\" in host=*) host=${line#host=};; esac; done; [ \"$host\" = github.com ] || exit 0; printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }; f";
+/// The host a pinned project's git credential helper answers for. A pin names its host
+/// (`login@host`); anything else keeps github.com. Only hostname characters pass, so a
+/// malformed pin can never carry shell syntax into the helper script.
+fn helper_host(pin: Option<&str>) -> &str {
+    let Some((_, Some(host))) = pin.map(crate::github_accounts::split_pin) else { return "github.com" };
+    let sane = !host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'));
+    if sane { host } else { "github.com" }
+}
+
+fn configure_github_helper(sandbox: &dyn Sandbox, native: &str, host: &str) -> Result<()> {
+    let helper = format!(
+        "!f() {{ [ \"$1\" = get ] || exit 0; host=; while IFS= read -r line; do case \"$line\" in host=*) host=${{line#host=}};; esac; done; [ \"$host\" = {host} ] || exit 0; printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }}; f"
+    );
     let command = format!(
         "git config --global --replace-all credential.helper {}",
-        crate::cloud::shell_quote(helper)
+        crate::cloud::shell_quote(&helper)
     );
     if command.len() >= 64 * 1024 {
         return Err("Cloud GitHub credential helper command exceeded the sandbox limit.".into());
@@ -357,6 +370,16 @@ mod tests {
     use super::*;
     use crate::cloud::{sandbox::Info, Machine};
     use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command, time::Duration};
+
+    #[test]
+    fn the_credential_helper_answers_the_pinned_host_only() {
+        assert_eq!(helper_host(None), "github.com");
+        assert_eq!(helper_host(Some("alice")), "github.com", "a bare pin names the default host");
+        assert_eq!(helper_host(Some("corp@ghe.acme.dev")), "ghe.acme.dev");
+        assert_eq!(helper_host(Some("x@bad host")), "github.com", "non-hostname characters never reach the script");
+        assert_eq!(helper_host(Some("x@$(touch /tmp/pwned)")), "github.com");
+        assert_eq!(helper_host(Some("x@")), "github.com");
+    }
 
     struct TempDir(PathBuf);
     impl TempDir {

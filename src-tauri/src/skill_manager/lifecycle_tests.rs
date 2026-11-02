@@ -163,6 +163,7 @@ fn skill_manager_ask_only_reminder_skips_slash_command_turns() {
         skill: None,
         goal: None,
         codex_settings: None,
+        github_pin: None,
         images: Vec::new(),
         no_fresh_resume_fallback: false,
     };
