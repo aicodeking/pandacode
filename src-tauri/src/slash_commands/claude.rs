@@ -349,7 +349,7 @@ impl Pipe {
             let end = available.iter().position(|byte| *byte == b'\n');
             let consumed = end.map_or(available.len(), |index| index + 1);
             self.bytes += consumed;
-            if self.bytes > 4 * 1024 * 1024 || frame.len() + consumed > 512 * 1024 {
+            if self.bytes > 8 * 1024 * 1024 || frame.len() + consumed > 4 * 1024 * 1024 {
                 return Err(());
             }
             frame.extend_from_slice(&available[..consumed]);

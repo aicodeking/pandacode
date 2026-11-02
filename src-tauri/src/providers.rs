@@ -1146,6 +1146,39 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
+/// Claude's initialize reply carries its commands, agents and models in one
+/// line, which can pass 256 KiB with many skills or plugins (#276).
+const CLAUDE_INIT_FRAME: usize = 4 * 1024 * 1024;
+
+async fn read_claude_models(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) -> Result<Vec<ModelInfo>, String> {
+    let mut bytes = Vec::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut total = 0;
+    loop {
+        let count = stdout.read(&mut buffer).await.map_err(|e| format!("Claude model stream failed: {e}"))?;
+        if count == 0 { return Err("Claude exited before returning its model catalog; update the CLI or enter a custom model ID".into()); }
+        total += count;
+        if total > 2 * CLAUDE_INIT_FRAME { return Err("Claude model discovery exceeded its output limit".into()); }
+        // Only the new bytes can hold a newline: rescanning the held partial
+        // frame on every read would be quadratic in a multi-megabyte frame.
+        let scan = bytes.len();
+        bytes.extend_from_slice(&buffer[..count]);
+        let mut consumed = 0;
+        for end in bytes[scan..].iter().enumerate().filter_map(|(i, byte)| (*byte == b'\n').then_some(scan + i)) {
+            let line = &bytes[consumed..end]; consumed = end + 1;
+            if line.len() > CLAUDE_INIT_FRAME { return Err("Claude model catalog frame is too large".into()); }
+            if line.iter().all(u8::is_ascii_whitespace) { continue; }
+            let message: Value = serde_json::from_slice(line).map_err(|_| "Claude returned invalid model discovery JSON")?;
+            if message["type"] != "control_response" || message["response"]["request_id"] != "pandacode-models" { continue; }
+            let response = &message["response"];
+            if response["subtype"] != "success" { return Err("Claude could not load its model catalog; check the CLI or enter a custom model ID".into()); }
+            return parse_claude_models(&response["response"]);
+        }
+        bytes.drain(..consumed);
+        if bytes.len() > CLAUDE_INIT_FRAME { return Err("Claude model catalog frame is too large".into()); }
+    }
+}
+
 async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut command = provider_command("claude", path)?;
     claude_auth::configure(&mut command, "claude");
@@ -1181,29 +1214,7 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut stdout = child.stdout.take().ok_or("Claude stdout unavailable")?;
     let result = tokio::time::timeout(Duration::from_secs(15), async {
         write_json(&mut stdin, &json!({"type":"control_request","request_id":"pandacode-models","request":{"subtype":"initialize","hooks":null}})).await?;
-        let mut bytes = Vec::new();
-        let mut buffer = [0u8; 4096];
-        let mut total = 0;
-        loop {
-            let count = stdout.read(&mut buffer).await.map_err(|e| format!("Claude model stream failed: {e}"))?;
-            if count == 0 { return Err("Claude exited before returning its model catalog; update the CLI or enter a custom model ID".into()); }
-            total += count;
-            if total > 1024 * 1024 { return Err("Claude model discovery exceeded its output limit".into()); }
-            bytes.extend_from_slice(&buffer[..count]);
-            let mut consumed = 0;
-            for end in bytes.iter().enumerate().filter_map(|(i, byte)| (*byte == b'\n').then_some(i)) {
-                let line = &bytes[consumed..end]; consumed = end + 1;
-                if line.len() > 256 * 1024 { return Err("Claude model catalog frame is too large".into()); }
-                if line.iter().all(u8::is_ascii_whitespace) { continue; }
-                let message: Value = serde_json::from_slice(line).map_err(|_| "Claude returned invalid model discovery JSON")?;
-                if message["type"] != "control_response" || message["response"]["request_id"] != "pandacode-models" { continue; }
-                let response = &message["response"];
-                if response["subtype"] != "success" { return Err("Claude could not load its model catalog; check the CLI or enter a custom model ID".into()); }
-                return parse_claude_models(&response["response"]);
-            }
-            bytes.drain(..consumed);
-            if bytes.len() > 256 * 1024 { return Err("Claude model catalog frame is too large".into()); }
-        }
+        read_claude_models(&mut stdout).await
     }).await.unwrap_or_else(|_| Err("Claude model discovery timed out; check the CLI or enter a custom model ID".into()));
     drop(stdin);
     drop(group);
@@ -1323,6 +1334,11 @@ struct Protocol {
     acp_pending_session: Option<Value>,
     grok_context_used: u64,
     grok_reasoning: bool,
+    /// A plan task whose harness advertises no plan mode: PandaCode keeps it
+    /// read-only itself (prompt prefix, permission declines).
+    plan_fallback: bool,
+    /// Which mode a fallback ran in, shown once the prompt is sent.
+    mode_note: Option<String>,
     claude_input_tokens: Option<u64>,
     claude_output_tokens: u64,
     subagents: Option<subagents::Subagents>,
@@ -1449,6 +1465,8 @@ impl Protocol {
             acp_pending_session: None,
             grok_context_used: 0,
             grok_reasoning: false,
+            plan_fallback: false,
+            mode_note: None,
             claude_input_tokens: None,
             claude_output_tokens: 0,
             subagents: Some(subagents::Subagents::default()),
@@ -1517,7 +1535,7 @@ impl Protocol {
         // not retain a second copy for the rest of a potentially long turn.
         let mut content = std::mem::take(&mut self.image_blocks);
         let mut text = std::mem::take(&mut self.config.prompt);
-        if matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") && self.config.mode == "plan" && !text.trim().is_empty() {
+        if (matches!(self.config.provider.as_str(), "grok" | "deepseek" | "muse" | "hermes") || self.plan_fallback) && self.config.mode == "plan" && !text.trim().is_empty() {
             text = format!("{}\n\n{text}", acp::READ_ONLY_PLAN_PREFIX);
         }
         if !text.trim().is_empty() {
@@ -4908,6 +4926,21 @@ mod tests {
         assert_eq!(models[4].name, "Model Name 3.2");
         assert!(parse_claude_models(&json!({})).is_err());
         assert!(parse_claude_models(&json!({"models":vec![json!({});101]})).is_err());
+    }
+
+    #[tokio::test]
+    async fn claude_catalog_reads_an_initialize_frame_over_256_kib() {
+        // #276: many skills and plugins push Claude's one-line initialize reply
+        // past the old 256 KiB frame limit.
+        let commands: Vec<Value> = (0..3000).map(|i| json!({"name":format!("skill-{i}"),"description":"d".repeat(100)})).collect();
+        let init = json!({"type":"control_response","response":{"request_id":"pandacode-models","subtype":"success","response":{"commands":commands,"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5","displayName":"Sonnet"}]}}});
+        let output = format!("{{\"type\":\"system\"}}\n{init}\n");
+        assert!(output.len() > 256 * 1024);
+        let models = read_claude_models(&mut output.as_bytes()).await.unwrap();
+        assert_eq!(models[1].id, "sonnet");
+        // Memory stays bounded: an endless frame is refused at the limit.
+        let endless = vec![b'x'; CLAUDE_INIT_FRAME + 1];
+        assert!(read_claude_models(&mut endless.as_slice()).await.unwrap_err().contains("too large"));
     }
 
     #[test]
