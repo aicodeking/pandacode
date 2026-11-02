@@ -32,10 +32,10 @@ pub(crate) fn push(
         _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
     }
     if let Some(token) = local_gh_token(github_pin) {
-        configure_github_helper(sandbox, native, helper_host(github_pin))?;
         env.push(("GH_TOKEN".into(), token.clone()));
         // gh reads GH_TOKEN for github.com only; the twin covers Enterprise hosts.
-        env.push(("GH_ENTERPRISE_TOKEN".into(), token));
+        env.push(("GH_ENTERPRISE_TOKEN".into(), token.clone()));
+        credential_helper(helper_host(github_pin), &mut env);
     }
     if let Some(value) = global_git_config("user.name") {
         env.push(("GIT_AUTHOR_NAME".into(), value.clone()));
@@ -334,19 +334,19 @@ fn helper_host(pin: Option<&str>) -> &str {
     if sane { host } else { "github.com" }
 }
 
-fn configure_github_helper(sandbox: &dyn Sandbox, native: &str, host: &str) -> Result<()> {
+/// A git credential helper that answers `host` with the run's own `$GH_TOKEN`, carried
+/// in the run's environment (`GIT_CONFIG_KEY_0`, git 2.31+). Nothing is written to the
+/// machine's global git config, so overlapping runs can never rewrite each other's
+/// helper, and the helper always matches the token this run exported.
+fn credential_helper(host: &str, env: &mut Vec<(String, String)>) {
     let helper = format!(
         "!f() {{ [ \"$1\" = get ] || exit 0; host=; while IFS= read -r line; do case \"$line\" in host=*) host=${{line#host=}};; esac; done; [ \"$host\" = {host} ] || exit 0; printf 'username=x-access-token\\npassword=%s\\n' \"$GH_TOKEN\"; }}; f"
     );
-    let command = format!(
-        "git config --global --replace-all credential.helper {}",
-        crate::cloud::shell_quote(&helper)
-    );
-    if command.len() >= 64 * 1024 {
-        return Err("Cloud GitHub credential helper command exceeded the sandbox limit.".into());
-    }
-    crate::cloud::sandbox::checked(sandbox.exec(native, &command, Duration::from_secs(30))?)?;
-    Ok(())
+    // The only GIT_CONFIG_* entries the run env carries; another would raise
+    // GIT_CONFIG_COUNT with the next index.
+    env.push(("GIT_CONFIG_COUNT".into(), "1".into()));
+    env.push(("GIT_CONFIG_KEY_0".into(), "credential.helper".into()));
+    env.push(("GIT_CONFIG_VALUE_0".into(), helper));
 }
 
 fn global_git_config(key: &str) -> Option<String> {
