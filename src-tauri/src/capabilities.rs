@@ -594,7 +594,7 @@ fn scan_harness_configs(
     entries
 }
 
-fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
+pub(crate) fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
     let mut roots = Vec::new();
     match harness {
         "claude" | "glm" | "mimo" => {

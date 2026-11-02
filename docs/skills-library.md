@@ -1,6 +1,6 @@
 # Skills library and rules registry
 
-Issues #15 (skills) and #45 (rules). This is a small first version. It lets you import a skill or rule once, turn it on for each harness and scope, and see what each installed harness actually has.
+Issues #15 (skills) and #45 (rules). This is a small first version. It lets you import a skill or rule once, turn it on for each harness and scope, and see what each installed harness actually has. Skills other harnesses already installed on this computer are listed for one-click import, copied or linked in place.
 
 The import form keeps the local path field at its full control height. Its Kind, Source and Project menus use the current theme's text and solid panel colors, including unselected options in Windows native menus.
 
@@ -11,13 +11,15 @@ Everything is files under the app data folder. There is no schema migration.
 ```
 <app data>/skills/<id>/SKILL.md     skill (the folder keeps its other files)
 <app data>/skills/<id>/RULE.md      rule (one Markdown file)
-<app data>/skills/<id>.json         Meta: source (folder path or owner/name/path, ref, commit),
+<app data>/skills/<id>.json         Meta: source (folder path, owner/name/path, or link path),
                                     content SHA-256, acknowledged hash, activations
 <app data>/skills/.catalogs.json    Catalog sources, the last discovery report, and repositories
                                     discovery found without skills (by pushed_at)
 ```
 
 Each activation records the harness, scope, project checkout, surface, the library hash it wrote, the SHA-256 of every file or block it wrote, and any `.git/info/exclude` lines it added.
+
+A linked skill (`source.kind == "link"`, from the found list or the import form's Link option) keeps no copy: the library reads the source folder live, and activating a file harness links its skills folder to it instead of writing files. Editing the source is `drifted` (the matrix cell explains it); re-importing the same location is enough, and deleting the source is `missing`. Rules cannot be linked. Windows needs Developer Mode for links; the activation error says so.
 
 ## Adapters (`src-tauri/src/skills/adapter.rs`)
 
@@ -28,9 +30,13 @@ Each activation records the harness, scope, project checkout, surface, the libra
 | Others | `prompt` | `prompt` | `prompt` | `prompt` |
 
 - A rule block is wrapped in `<!-- pandacode:rule:<id> -->` … `<!-- /pandacode:rule:<id> -->`. Text outside the block is never changed.
-- PandaCode never writes into a skill folder it did not create, never overwrites a file or block whose hash differs from what it wrote, and on deactivation leaves edited files in place (`Change.kept`).
+- PandaCode never writes into a skill folder it did not create, never overwrites a file or block whose hash differs from what it wrote, and on deactivation leaves edited files in place (`Change.kept`). A linked skill writes only a symlink, replaces only a symlink it made, and never touches the source folder.
 - In a Git checkout, project scope adds the skill folder (and a rule file, but only when PandaCode created that file) to `info/exclude`. The path comes from `git rev-parse --git-path info/exclude`, so worktrees work too. Passing `sessionId` scopes the activation to that task's worktree.
 - Harnesses marked `prompt` only record the activation. Nothing injects these items into prompts yet (see Not yet).
+
+## Found skills (`skills/found.rs`)
+
+`skills_found` lists skill folders other harnesses read at user scope: `~/.claude/skills` (Claude Code, GLM, MiMo), `~/.codex/skills`, `~/.config/opencode/skills`, `~/.kimi-code/skills` and `~/.kimi/skills`, `~/.pi/agent/skills` (Pi, OMP), `~/.cline/skills`, plus the shared `~/.agents/skills` and `~/.zcode/skills`. The per-harness roots come from `capabilities::skill_roots`, the same list the Tools & add-ons inventory uses, deduplicated. The scan is local, read-only, and capped at 500 folders; the same skill installed for two harnesses is one entry with both locations, matched by content hash. Settings shows the entries with Copy and Link; nothing is imported or activated until you choose.
 
 ## Matrix and safety
 
@@ -52,7 +58,7 @@ Each activation records the harness, scope, project checkout, surface, the libra
 
 ## Commands
 
-`skills_list()`, `skills_import_folder({ path, kind })`, `skills_import_github({ repo, path, gitRef?, kind })`, `skills_activate({ id, harness, scope, projectId?, sessionId?, acknowledge? })`, `skills_deactivate({ id, harness, scope, projectId?, sessionId? })`, `skills_matrix({ projectId?, sessionId? })`, `skills_scan({ id })`, `skills_remove({ id })`, `skills_catalogs()`, `skills_catalog_add({ repo, gitRef? })`, `skills_catalog_refresh({ repo })`, `skills_catalog_state({ repo, state })` (`enabled`, `disabled` or `ignored`), `skills_catalog_import({ repo, paths? })` (returns `{ items, imported, skipped }`), `skills_discover()`. Here `kind` is `skill` or `rule`, and `scope` is `user` or `project`. Activate and deactivate return `{ items, kept }`.
+`skills_list()`, `skills_found()`, `skills_import_folder({ path, kind, link? })`, `skills_import_github({ repo, path, gitRef?, kind })`, `skills_activate({ id, harness, scope, projectId?, sessionId?, acknowledge? })`, `skills_deactivate({ id, harness, scope, projectId?, sessionId? })`, `skills_matrix({ projectId?, sessionId? })`, `skills_scan({ id })`, `skills_remove({ id })`, `skills_catalogs()`, `skills_catalog_add({ repo, gitRef? })`, `skills_catalog_refresh({ repo })`, `skills_catalog_state({ repo, state })` (`enabled`, `disabled` or `ignored`), `skills_catalog_import({ repo, paths? })` (returns `{ items, imported, skipped }`), `skills_discover()`. Here `kind` is `skill` or `rule`, and `scope` is `user` or `project`. Activate and deactivate return `{ items, kept }`. An activation's `surface` is `folder`, `block`, `link` or `prompt`.
 
 ## Not yet
 
@@ -85,6 +91,7 @@ mod skills;
                 skills::skills_catalog_state,
                 skills::skills_catalog_import,
                 skills::skills_discover,
+                skills::skills_found,
 ```
 
 `src/settings.ts`:
@@ -118,7 +125,7 @@ const previewSkills = createPreviewSkills();
 // in invoke()'s switch, before `default:`
     case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
     case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
-    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover':
+    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover': case 'skills_found':
       result = previewSkills.call(command, args); break;
 ```
 

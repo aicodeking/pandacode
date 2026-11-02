@@ -160,4 +160,29 @@ test('a pstack-sized collection is scanned as a catalog and imports past 64 file
   await page.getByRole('button', { name: 'Refresh acme/pstack' }).click();
   await expect(page.getByRole('status')).toHaveText('Refreshed acme/pstack. Library copies stay as imported.');
 });
+
+test('found skills list every copy other harnesses read, and link keeps one source', async ({ page }) => {
+  await open(page);
+  const found = page.getByRole('list', { name: 'Skills found on this computer' });
+  await expect(found.locator('.skills-item')).toHaveCount(2);
+  const pdf = found.locator('.skills-item', { hasText: 'pdf tools' });
+  await expect(pdf).toContainText('~/.claude/skills/pdf-tools');
+  await expect(pdf).toContainText('~/.agents/skills/pdf-tools');
+
+  await page.getByRole('button', { name: 'Link pdf tools without copying' }).click();
+  await expect(page.getByRole('status')).toHaveText('Imported pdf tools. The source folder stays the only copy.');
+  await expect(item(page, 'pdf tools')).toContainText('Linked · /Users/you/.claude/skills/pdf-tools');
+  await expect(pdf).toContainText('In the library');
+  await expect(pdf.getByRole('button')).toHaveCount(0);
+
+  await page.getByRole('checkbox', { name: 'pdf tools: Claude Code · User' }).check();
+  await expect(status(page, 'pdf tools', 0)).toHaveText('Active');
+  await page.evaluate(() => (window as any).__skills.edit('pdf-tools', 'claude', 'user'));
+  await page.getByRole('combobox', { name: 'Project for project scope' }).selectOption('orbit');
+  await expect(status(page, 'pdf tools', 0)).toHaveText('Edited on disk');
+
+  await page.getByRole('button', { name: 'Copy web tester into the library' }).click();
+  await expect(page.getByRole('status')).toHaveText('Imported web tester.');
+  await expect(item(page, 'web tester')).toContainText('/Users/you/.zcode/skills/web-tester');
+});
 });
