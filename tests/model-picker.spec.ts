@@ -37,9 +37,9 @@ test('opens on the current harness with one-line rows, a scrollable rail and a f
   await open(page);
   await expect(search(page)).toBeFocused();
   await expect(search(page)).toHaveAttribute('placeholder', /^Search \d+ models, \d+ harnesses…$/);
-  const box = (await picker(page).boundingBox())!;
-  expect(box.width).toBeCloseTo(460, 0); // The popover's entrance spring may still be settling.
-  expect(box.height).toBeLessThanOrEqual(440);
+  // The popover's entrance spring scales it, so wait for it to settle.
+  await expect.poll(async () => (await picker(page).boundingBox())!.width).toBeCloseTo(460, 0);
+  expect((await picker(page).boundingBox())!.height).toBeLessThanOrEqual(440);
   const rail = picker(page).getByRole('tablist', { name: 'Harnesses' });
   await expect(rail.getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(rail.getByRole('tab', { name: 'Teams, 2' })).toBeVisible();
@@ -54,8 +54,8 @@ test('opens on the current harness with one-line rows, a scrollable rail and a f
   for (const height of await list.getByRole('option').evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height))) expect(height).toBe(28);
   // The harness logo shows once, in the heading.
   await expect(list.locator('.model-menu-option .provider-logo')).toHaveCount(0);
-  // Instant: no transitions or running animations in the panel.
-  expect(await picker(page).evaluate(panel => [panel, ...panel.querySelectorAll('*')].filter(node => getComputedStyle(node).transitionDuration.split(',').some(value => parseFloat(value) > 0)).length)).toBe(0);
+  // Instant: no transitions or running animations in the panel, apart from the effort control's sliding thumb.
+  expect(await picker(page).evaluate(panel => [panel, ...panel.querySelectorAll('*:not(.segment-thumb)')].filter(node => getComputedStyle(node).transitionDuration.split(',').some(value => parseFloat(value) > 0)).length)).toBe(0);
 });
 
 test('search flattens matches across harnesses and the rail becomes a hit map', async ({ page }) => {
