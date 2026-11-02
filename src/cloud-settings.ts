@@ -4,6 +4,8 @@
  * this view never reads them back. */
 import './cloud-settings.css';
 import { escape, icon } from './dom';
+import { trackSegment } from './motion';
+import { isMac } from './platform';
 import { infoMark } from './tooltip';
 
 export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
@@ -73,9 +75,9 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: 'Uses your installed gcloud CLI and its sign-in (run `gcloud auth login` first); PandaCode downloads nothing and stores only the project, region and zone.', connect: 'Connect',
   },
   docker: {
-    name: 'Docker', summary: 'Containers on this machine or any Docker host.',
-    fields: [{ name: 'engine', label: 'Engine', placeholder: 'Optional; docker (default), podman, apple or lxc', optional: true }, { name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
-    note: 'Runs each task in its own container (label or name prefix pandacode) — Docker, Podman, Apple Containers, or the lxc client (LXD/Incus, which uses its own configured remotes; Podman remote hosts take ssh://). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: 'Connect',
+    name: 'Docker', summary: 'Task containers on Docker, Podman, Apple Containers or LXC.',
+    fields: [{ name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
+    note: 'Runs each task in its own container (label or name prefix pandacode). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: 'Connect',
   },
   ...Object.fromEntries(Object.entries(KEYED).map(([id, provider]) => [id, {
     name: provider.name, summary: 'Cloud machines for agents.',
@@ -83,6 +85,25 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: `Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: 'Connect',
   }])) as Record<KeyedProvider, { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }>,
 };
+/* The Docker card's engine picker (cloud/docker.rs parses these exact values). Apple Containers
+ * and the lxc client are local-only, so their Docker host field hides; Podman remotes take ssh://. */
+type EngineId = 'docker' | 'podman' | 'apple' | 'lxc';
+const ENGINES: { id: EngineId; label: string; hint: string; mac?: boolean }[] = [
+  { id: 'docker', label: 'Docker', hint: 'The standard Docker engine, on this machine or any remote host (ssh://, unix:// or tcp:// with TLS).' },
+  { id: 'podman', label: 'Podman', hint: 'Podman on this machine, or a remote host over ssh://.' },
+  { id: 'apple', label: 'Apple', hint: 'Apple’s container runtime — this Mac only, so no Docker host.', mac: true },
+  { id: 'lxc', label: 'LXC', hint: 'The lxc client (LXD or Incus) manages its own remotes — configure one with `lxc remote add`.' },
+];
+const ENGINE_BY_ID = new Map(ENGINES.map(engine => [engine.id, engine]));
+const ENGINE_ENDPOINT_PLACEHOLDER: Partial<Record<EngineId, string>> = {
+  docker: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376',
+  podman: 'Optional; empty for this machine, or ssh://user@host',
+};
+const ENGINE_FIELDS = (engine: EngineId) => {
+  const localOnly = engine === 'apple' || engine === 'lxc';
+  return { endpoint: !localOnly, tls: engine === 'docker' };
+};
+const ENGINE_HTML = `<div class="cloud-engine"><span id="cloud-engine-label">Engine</span><div class="cloud-engine-picker" role="radiogroup" aria-labelledby="cloud-engine-label">${ENGINES.filter(engine => !engine.mac || isMac).map(engine => `<label class="cloud-engine-option"><input type="radio" name="engine" value="${engine.id}"${engine.id === 'docker' ? ' checked' : ''}><span>${engine.label}</span></label>`).join('')}</div></div><p class="cloud-engine-hint" data-engine-hint hidden></p>`;
 /** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
 type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
 const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
@@ -105,7 +126,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">Try again</button></div>
       </div>` : ''}
       <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
-        ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
+        ${id === 'docker' ? ENGINE_HTML : ''}${fields.map(field => `<label data-field="${field.name}"><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
@@ -171,6 +192,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.checked = Boolean(connection?.inheritEnvironment);
         box.disabled = Boolean(busy);
       }
+      if (id === 'docker') paintEngine(root);
     }
     arrange();
   }
@@ -220,6 +242,27 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
     line.textContent = text; line.hidden = !text;
   }
+  /* The Docker card's engine picker: slide the thumb, swap the hint, and show only the fields
+   * the chosen engine takes (Apple and LXC are local-only; Podman has no Docker-style TLS). */
+  function paintEngine(root: HTMLElement): void {
+    const form = root.querySelector<HTMLFormElement>('.cloud-form'), picker = form?.querySelector<HTMLElement>('.cloud-engine-picker');
+    if (!form || !picker) return;
+    const engine = ENGINE_BY_ID.get(form.querySelector<HTMLInputElement>('input[name="engine"]:checked')?.value as EngineId)!;
+    picker.querySelectorAll('.cloud-engine-option').forEach(option => option.classList.toggle('selected', option.querySelector<HTMLInputElement>('input')!.value === engine.id));
+    trackSegment(picker, picker.querySelector<HTMLElement>('.selected'));
+    const hint = form.querySelector<HTMLElement>('[data-engine-hint]')!;
+    hint.textContent = engine.hint;
+    hint.hidden = false;
+    const visible = ENGINE_FIELDS(engine.id);
+    for (const name of ['endpoint', 'tlsCa', 'tlsCert', 'tlsKey']) {
+      const field = form.querySelector<HTMLElement>(`[data-field="${name}"]`)!;
+      field.hidden = name === 'endpoint' ? !visible.endpoint : !visible.tls;
+      // Disabled inputs leave the FormData, so a typed host never reaches the backend for an engine that refuses one.
+      field.querySelector<HTMLInputElement>('input')!.disabled = field.hidden;
+    }
+    const endpoint = form.querySelector<HTMLInputElement>('input[name="endpoint"]'), placeholder = ENGINE_ENDPOINT_PLACEHOLDER[engine.id];
+    if (endpoint && placeholder) endpoint.placeholder = placeholder;
+  }
   async function connect(id: CloudConnection['provider'], form: HTMLFormElement): Promise<void> {
     const root = section(id), data = new FormData(form);
     const value = (name: string) => String(data.get(name) ?? '').trim();
@@ -228,6 +271,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     busy = id; say(root, 'error', ''); say(root, 'progress', id === 'cloudflare' ? 'Preparing the deploy…' : 'Checking…'); render();
     try {
       const fields = Object.fromEntries(PROVIDERS[id].fields.filter(field => !field.sparse || value(field.name)).map(field => [field.name, value(field.name)]));
+      if (id === 'docker') fields.engine = value('engine');
       connections = await options.call<CloudConnection[]>('cloud_connect', { provider: id, key: value('key'), options: fields });
       if (disposed) return;
       form.reset(); form.hidden = true;
@@ -279,6 +323,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   });
   host.addEventListener('change', event => {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.name === 'engine') { paintEngine(target.closest<HTMLElement>('.cloud-provider[data-provider]')!); return; }
     if (target instanceof HTMLInputElement && target.matches('[data-cloud-inherit]')) {
       const root = target.closest<HTMLElement>('.cloud-provider[data-provider]')!;
       const id = root.dataset.provider as CloudConnection['provider'];
