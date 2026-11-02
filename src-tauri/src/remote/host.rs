@@ -1758,7 +1758,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let trust = crate::workspace::Trust::phone(full_access);
             crate::blocking(move || {
                 // `merge_as` refuses a checkout whose config names a program while the switch is off.
-                let link = crate::github_pull::merge_as(&root, Some(&repo), number, &method, trust)?;
+                let link = crate::github_pull::merge_as(&root, Some(&repo), None, number, &method, trust)?;
                 store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link)).map(|_| ())
             })
             .await?;
@@ -2692,7 +2692,7 @@ async fn pull_detail_cached(session_id: &str, root: PathBuf, repo: String, numbe
         Ok(value) => return Ok(value),
         Err(started) => started,
     };
-    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail_as(&root, Some(&repo), number, trust)).await?)
+    let mut value = serde_json::to_value(crate::blocking(move || crate::github_pull::detail_as(&root, Some(&repo), None, number, trust)).await?)
         .map_err(|error| error.to_string())?;
     fit_pull_detail(&mut value);
     with_pull_cache(|cache| {
@@ -2715,7 +2715,7 @@ async fn pull_diff_cached(session_id: &str, root: PathBuf, repo: String, number:
         Err(started) => started,
     };
     let value = crate::blocking(move || {
-        let diff = crate::github_pull::diff_as(&root, Some(&repo), number, trust)?;
+        let diff = crate::github_pull::diff_as(&root, Some(&repo), None, number, trust)?;
         let (patch, truncated) = pull_file_patch(&diff.patch, &path, diff.truncated);
         let (patch, truncated) = bounded_diff(patch, truncated);
         Ok(json!({"patch": patch, "truncated": truncated}))

@@ -12,7 +12,7 @@
 use serde::Serialize;
 use std::{path::Path, time::Duration};
 
-use crate::github::{excerpt, flag, json, names, run_gh_as, state_of, text, view_in_as, Repository, TIMEOUT};
+use crate::github::{excerpt, flag, json, names, run_gh_token_as, state_of, text, view_in_as, Repository, TIMEOUT};
 use crate::storage::TaskLink;
 use crate::workspace::Trust;
 
@@ -241,27 +241,32 @@ fn pr_args(command: &str, number: i64, extra: &[&str], repo: Option<&str>) -> Ve
 }
 
 fn gh_pr(root: &Path, args: &[String], timeout: Duration, trust: Trust) -> Result<crate::workspace::Capture, String> {
-    run_gh_as(root, &args.iter().map(String::as_str).collect::<Vec<_>>(), timeout, trust)
+    gh_pr_as(root, args, timeout, None, trust)
 }
 
-pub fn detail(root: &Path, number: i64) -> Result<PullDetail, String> {
-    detail_as(root, None, number, Trust::Desktop)
+/// [`gh_pr`] with the project's pinned account's token riding as `GH_TOKEN`.
+fn gh_pr_as(root: &Path, args: &[String], timeout: Duration, token: Option<&str>, trust: Trust) -> Result<crate::workspace::Capture, String> {
+    run_gh_token_as(root, token, &args.iter().map(String::as_str).collect::<Vec<_>>(), timeout, trust)
+}
+
+pub fn detail(root: &Path, token: Option<&str>, number: i64) -> Result<PullDetail, String> {
+    detail_as(root, None, token, number, Trust::Desktop)
 }
 
 /// [`detail`] with the caller's trust, in repository `repo` (required for a phone).
-pub(crate) fn detail_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<PullDetail, String> {
-    parse_detail(&view_in_as(root, pin(repo, trust)?, "pull", number, DETAIL_FIELDS, trust)?)
+pub(crate) fn detail_as(root: &Path, repo: Option<&str>, token: Option<&str>, number: i64, trust: Trust) -> Result<PullDetail, String> {
+    parse_detail(&view_in_as(root, pin(repo, trust)?, token, "pull", number, DETAIL_FIELDS, trust)?)
 }
 
 /// The PR's unified diff; a very large one is cut and flagged rather than refused.
-pub fn diff(root: &Path, number: i64) -> Result<PullDiff, String> {
-    diff_as(root, None, number, Trust::Desktop)
+pub fn diff(root: &Path, token: Option<&str>, number: i64) -> Result<PullDiff, String> {
+    diff_as(root, None, token, number, Trust::Desktop)
 }
 
 /// [`diff`] with the caller's trust, in repository `repo` (required for a phone).
-pub(crate) fn diff_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<PullDiff, String> {
+pub(crate) fn diff_as(root: &Path, repo: Option<&str>, token: Option<&str>, number: i64, trust: Trust) -> Result<PullDiff, String> {
     let args = pr_args("diff", number, &["--color=never"], pin(repo, trust)?);
-    let output = gh_pr(root, &args, Duration::from_secs(60), trust)?;
+    let output = gh_pr_as(root, &args, Duration::from_secs(60), token, trust)?;
     Ok(PullDiff { patch: String::from_utf8_lossy(&output.bytes).into_owned(), truncated: output.truncated })
 }
 
@@ -325,13 +330,13 @@ fn belongs_to_turn(value: &serde_json::Value, branch: &str, turn_started: i64) -
 
 /// The PR a turn opened: mentioned in its output (newest first), and either on the
 /// checkout's branch or created after the turn began.
-pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
-    detect_as(root, repo, None, turn, branch, turn_started, Trust::Desktop)
+pub fn detect(root: &Path, token: Option<&str>, repo: &Repository, turn: &[String], branch: &str, turn_started: i64) -> Result<Option<TaskLink>, String> {
+    detect_as(root, repo, None, token, turn, branch, turn_started, Trust::Desktop)
 }
 
 /// [`detect`] with the caller's trust; each candidate is viewed in repository `pinned`
 /// (required for a phone).
-pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
+pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, token: Option<&str>, turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
     let pinned = pin(pinned, trust)?;
     let mut candidates: Vec<i64> = Vec::new();
     for message in turn {
@@ -342,7 +347,7 @@ pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, tu
         }
     }
     for number in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view_in_as(root, pinned, "pull", number, LINK_FIELDS, trust) else { continue };
+        let Ok(value) = view_in_as(root, pinned, token, "pull", number, LINK_FIELDS, trust) else { continue };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -367,7 +372,7 @@ pub(crate) fn detect_in_as(root: &Path, repos: &[String], turn: &[String], branc
         }
     }
     for (repo, number) in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view_in_as(root, pin(Some(repo), trust)?, "pull", number, LINK_FIELDS, trust) else { continue };
+        let Ok(value) = view_in_as(root, pin(Some(repo), trust)?, None, "pull", number, LINK_FIELDS, trust) else { continue };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -398,14 +403,14 @@ fn pull_refs<'a>(text: &str, repos: &'a [String]) -> Vec<(&'a str, i64)> {
 }
 
 /// Look a pull request up so a manual link carries its real title and state.
-pub fn lookup(root: &Path, number: i64) -> Result<TaskLink, String> {
-    lookup_as(root, None, number, Trust::Desktop)
+pub fn lookup(root: &Path, token: Option<&str>, number: i64) -> Result<TaskLink, String> {
+    lookup_as(root, None, token, number, Trust::Desktop)
 }
 
 /// [`lookup`] with the caller's trust, in repository `repo` (required for a phone).
-pub(crate) fn lookup_as(root: &Path, repo: Option<&str>, number: i64, trust: Trust) -> Result<TaskLink, String> {
+pub(crate) fn lookup_as(root: &Path, repo: Option<&str>, token: Option<&str>, number: i64, trust: Trust) -> Result<TaskLink, String> {
     let args = pr_args("view", number, &["--json", LINK_FIELDS], pin(repo, trust)?);
-    let value = gh_pr(root, &args, TIMEOUT, trust)
+    let value = gh_pr_as(root, &args, TIMEOUT, token, trust)
         .map_err(|error| if error.to_ascii_lowercase().contains("could not resolve") { format!("Pull request #{number} was not found.") } else { error })?;
     link_from(&json(&value)?).ok_or_else(|| "GitHub returned an unexpected pull request.".into())
 }
@@ -422,20 +427,20 @@ pub fn merge_flag(method: &str) -> Result<&'static str, String> {
 
 /// Merge the pull request on GitHub, then read it back so the task's link shows it merged.
 /// Local branches and worktrees are left alone; GitHub's branch settings decide the rest.
-pub fn merge(root: &Path, number: i64, method: &str) -> Result<TaskLink, String> {
-    merge_as(root, None, number, method, Trust::Desktop)
+pub fn merge(root: &Path, token: Option<&str>, number: i64, method: &str) -> Result<TaskLink, String> {
+    merge_as(root, None, token, number, method, Trust::Desktop)
 }
 
 /// [`merge`] with the caller's trust. `gh pr merge` may run `git` in the checkout (it updates
 /// the local branch when it can), so a phone with the switch off is refused first when the
 /// checkout's config names a program or it has submodules, as for the phone's own merges.
 /// `repo` (required for a phone) pins the repository for the merge and the read-back.
-pub(crate) fn merge_as(root: &Path, repo: Option<&str>, number: i64, method: &str, trust: Trust) -> Result<TaskLink, String> {
+pub(crate) fn merge_as(root: &Path, repo: Option<&str>, token: Option<&str>, number: i64, method: &str, trust: Trust) -> Result<TaskLink, String> {
     let method_flag = merge_flag(method)?;
     let repo = pin(repo, trust)?;
     crate::workspace::refuse_untrusted_programs(root, trust)?;
-    gh_pr(root, &pr_args("merge", number, &[method_flag], repo), Duration::from_secs(60), trust)?;
-    lookup_as(root, repo, number, trust)
+    gh_pr_as(root, &pr_args("merge", number, &[method_flag], repo), Duration::from_secs(60), token, trust)?;
+    lookup_as(root, repo, token, number, trust)
 }
 
 #[cfg(test)]
@@ -494,9 +499,9 @@ mod tests {
         assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap().success());
         std::fs::write(dir.join(".gitmodules"), "[submodule \"x\"]\n\tpath = x\n\turl = https://example.com/x\n").unwrap();
         // Refused before `gh` runs at all, so this needs no network or sign-in.
-        let refused = merge_as(&dir, Some("o/r"), 1, "squash", Trust::phone(false)).unwrap_err();
+        let refused = merge_as(&dir, Some("o/r"), None, 1, "squash", Trust::phone(false)).unwrap_err();
         assert!(refused.contains("submodules"), "{refused}");
-        assert!(merge_as(&dir, Some("o/r"), 1, "bogus", Trust::phone(false)).unwrap_err().contains("squash"));
+        assert!(merge_as(&dir, Some("o/r"), None, 1, "bogus", Trust::phone(false)).unwrap_err().contains("squash"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -518,12 +523,12 @@ mod tests {
         // Refused before any `gh` (no network or sign-in needed).
         let dir = std::env::temp_dir().join(format!("pandacode-pull-pin-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(diff_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
-        assert_eq!(detail_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
-        assert_eq!(lookup_as(&dir, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
-        assert_eq!(merge_as(&dir, None, 1, "squash", Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(diff_as(&dir, None, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(detail_as(&dir, None, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(lookup_as(&dir, None, None, 1, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(merge_as(&dir, None, None, 1, "squash", Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         let repo = Repository { name_with_owner: "o/r".into(), default_branch: String::new(), url: String::new() };
-        assert_eq!(detect_as(&dir, &repo, None, &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(detect_as(&dir, &repo, None, None, &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         // The link's repository wins; then the project's origin; else refused.
         assert_eq!(pinned_repo(&dir, Some("https://github.com/up/stream/pull/12")), Ok("up/stream".into()));
         assert_eq!(pinned_repo(&dir, Some("https://example.com/x")).unwrap_err(), NO_GITHUB_REMOTE);

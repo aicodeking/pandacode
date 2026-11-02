@@ -115,7 +115,7 @@ fn gh_in(root: &Path, args: &[&str], trust: Trust) -> Result<Capture> {
 /// with the caller's trust.
 fn view(root: &Path, kind: &str, number: i64, fields: &str, trust: Trust) -> Result<Value> {
     let repo = base_repo(root)?;
-    crate::github::view_in_as(root, Some(&repo), kind, number, fields, trust)
+    crate::github::view_in_as(root, Some(&repo), None, kind, number, fields, trust)
 }
 
 fn positive(params: &Value, key: &str) -> Result<i64> {
@@ -438,7 +438,7 @@ impl Run for Search {
             let items = crate::blocking(move || {
                 // Only the project's own repository's results, whatever the query matched.
                 let repo = github_hub::base_repo(&root).ok_or("This project has no GitHub remote.")?;
-                let items = crate::github::search_as(&root, &query, SEARCH_LIMIT, trust)?;
+                let items = crate::github::search_as(&root, None, &query, SEARCH_LIMIT, trust)?;
                 Ok(items.into_iter().filter(|item| in_repo(&item.url, &repo)).collect::<Vec<_>>())
             })
             .await?;
