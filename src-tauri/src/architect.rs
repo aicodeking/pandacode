@@ -95,16 +95,27 @@ pub struct WorkerProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<String>,
 }
+pub(crate) use crate::panda_router::split_tier;
 use crate::command_operations::{self as codex_ops, ServiceTier};
 /// The installed Codex catalog's speed tiers per model, read before the team state is locked:
 /// `None` when nothing asked for a tier, `Some(Err)` when the catalog could not be read.
 pub(crate) type SpeedCatalog = Option<std::result::Result<HashMap<String, Vec<ServiceTier>>, String>>;
-/// A Codex profile's speed tier, resolved against the live catalog. A tier the catalog does not
-/// list for the model, or a catalog that cannot be read, is an error: a requested speed never
-/// silently becomes the default.
+/// A Codex profile's speed tier, resolved against the live catalog: a `<model>@<key>` slug runs
+/// `<model>` at that tier (the slug wins over `serviceTier`), so Codex never receives the slug as a
+/// model ID. A tier the catalog does not list for the model, or a catalog that cannot be read, is
+/// an error: a requested speed never silently becomes the default. Other harnesses' model IDs keep
+/// any `@`.
 pub(crate) fn resolve_speed(mut profile: WorkerProfile, speeds: &SpeedCatalog) -> Result<WorkerProfile> {
     if profile.provider != "codex" {
         return Ok(profile);
+    }
+    let catalog = speeds.as_ref().and_then(|s| s.as_ref().ok());
+    let (base, key) = split_tier(&profile.model);
+    // A model whose own catalog ID has an `@` is a model, not a slug.
+    if let Some(key) = key.filter(|_| !catalog.is_some_and(|c| c.contains_key(&profile.model))) {
+        let (base, key) = (base.to_string(), key.to_string());
+        profile.model = base;
+        profile.service_tier = Some(key);
     }
     let Some(wanted) = profile.service_tier.clone() else {
         return Ok(profile);
@@ -125,12 +136,16 @@ fn inherit_speed(mut profile: WorkerProfile, old: &str, tier: &str, speeds: &Spe
     if profile.provider != "codex" {
         return Err(format!("{old} ran at the {label} speed tier, so its replacement must too, and only Codex runs it; {} via {} cannot. Name a Codex model whose catalog lists {label}.", profile.model, profile.provider));
     }
+    // An implicitly matched roster slug must not override the inherited tier during resolution.
+    if !speeds.as_ref().and_then(|s| s.as_ref().ok()).is_some_and(|c| c.contains_key(&profile.model)) {
+        profile.model = split_tier(&profile.model).0.to_string();
+    }
     profile.service_tier = Some(tier.to_string());
     resolve_speed(profile, speeds).map_err(|e| format!("{old} ran at the {label} speed tier, so its replacement must too: {e}"))
 }
-/// Whether a Codex profile asks for a speed tier.
+/// Whether a Codex profile asks for a speed tier (a slug or `serviceTier`).
 pub(crate) fn wants_speed(profile: &WorkerProfile) -> bool {
-    profile.provider == "codex" && profile.service_tier.is_some()
+    profile.provider == "codex" && (profile.service_tier.is_some() || split_tier(&profile.model).1.is_some())
 }
 /// Reads the installed Codex catalog's speed tiers (bounded), to check requested tiers.
 pub(crate) async fn read_speeds(cwd: &std::path::Path) -> std::result::Result<HashMap<String, Vec<ServiceTier>>, String> {
@@ -604,6 +619,7 @@ fn rules(store: &Store, team: &TeamSnapshot, sid: &str) -> Result<(String, Strin
         };
         let lead = store.session(sid)?;
         let note = routing::prompt_note(&team.config, crate::model_routing::enabled());
+        let profiles = format!("{profiles}{}", if team.config.auto { routing::speed_note(&team.config) } else { String::new() });
         let staffing = if team.config.roster_only {
             let own = if note.is_empty() && team.config.workers.iter().any(|p| p.provider == lead.provider && p.model == lead.model) { ", or omit it to use your own model" } else { "" };
             format!("You lead {} with your own model ({} via {}). Use only these models for workers, never any other.{note} To pick one, set profileId to one of these entries{own}. Team: {}.", team.config.name.as_deref().map_or_else(|| "this agent team".to_string(), |name| format!("the {name} team")), lead.model, lead.provider, profiles)
@@ -1315,8 +1331,8 @@ pub fn host(
         }),
     })
 }
-/// The lead's checkout when this dispatch may ask for a Codex speed tier: a team profile that
-/// carries a tier (named, or matched by its model when routed or chosen directly).
+/// The lead's checkout when this dispatch may ask for a Codex speed tier: a Codex model slug, or a
+/// team profile that carries a tier (named, or matched by its model when routed or chosen directly).
 fn speed_context(app: &tauri::AppHandle, sid: &str, generation: u64, name: &str, args: &Value) -> Result<Option<std::path::PathBuf>> {
     if name != "pandacode_dispatch_workers" {
         return Ok(None);
@@ -1333,10 +1349,12 @@ fn speed_context(app: &tauri::AppHandle, sid: &str, generation: u64, name: &str,
     let lead = store.session(sid)?;
     Ok(Some(store.workspace_root(&lead.project_id, Some(sid))?))
 }
-/// Whether any assignment may run at a speed tier: a tiered team profile, or the replacement of a
-/// worker that ran at one (a superset: `dispatch_as` decides).
+/// Whether any assignment may run at a speed tier: a Codex slug, a tiered team profile, or the
+/// replacement of a worker that ran at one (a superset: `dispatch_as` decides).
 fn asks_speed(team: &TeamSnapshot, args: &Value) -> bool {
-    team.config.workers.iter().any(wants_speed) || !routing::replaced_tiers(team, args).is_empty()
+    let assignments = || args["assignments"].as_array().into_iter().flatten();
+    let slug = assignments().any(|a| a["provider"] == "codex" && a["model"].as_str().is_some_and(|m| split_tier(m).1.is_some()));
+    slug || team.config.workers.iter().any(wants_speed) || !routing::replaced_tiers(team, args).is_empty()
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1510,8 +1528,9 @@ fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) 
     if !config.auto {
         return Err("Choose a worker profile with profileId.".into());
     }
+    let origin = if assignment.model.as_deref().is_some_and(|m| crate::panda_router::speed_tier(assignment.provider.as_deref().unwrap_or_default(), m).is_some()) { TierOrigin::Explicit } else { TierOrigin::Implicit };
     if config.roster_only {
-        return staff_from_roster(config, lead, assignment).map(|profile| (profile, TierOrigin::Implicit));
+        return staff_from_roster(config, lead, assignment).map(|profile| (profile, origin));
     }
     let (provider, model) = match (&assignment.provider, &assignment.model) {
         (Some(provider), Some(model)) => (provider.clone(), model.clone()),
@@ -1541,7 +1560,7 @@ fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment) 
         provider,
         model,
         reasoning_effort,
-    }, TierOrigin::Implicit))
+    }, origin))
 }
 /// Named agent teams orchestrate only their listed models. Omitting the model uses the
 /// lead's own entry when the team lists it.

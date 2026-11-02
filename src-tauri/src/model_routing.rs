@@ -115,9 +115,11 @@ impl Exclusions {
         Ok(self)
     }
 
+    /// A Codex speed variant is off when it or its model is excluded.
     fn allowed(&self, provider: &str, model: &str) -> bool {
+        let base = panda_router::base_model(provider, model);
         !self.providers.iter().any(|p| p == provider)
-            && !self.models.iter().any(|m| m.provider == provider && m.model == model)
+            && !self.models.iter().any(|m| m.provider == provider && (m.model == model || m.model == base))
     }
 }
 
@@ -716,10 +718,20 @@ async fn run(rt: &'static Runtime, prefs: Preferences, pool: Vec<PoolModel>, job
 }
 
 /// A routing pool from (provider, model, name) entries: a `default` entry is dropped when the same
-/// harness lists a concrete model with the same card, so the pick names a real model.
+/// harness lists a concrete model with the same card, so the pick names a real model. A Codex speed
+/// variant (`<model>@fast`) stands for its model and is kept once, so routing never picks a speed
+/// tier on its own (the lead names one, or a roster profile carries it).
 pub fn pool_from<'a>(entries: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Vec<PoolModel> {
-    let resolved: Vec<_> =
-        entries.into_iter().map(|(p, m, n)| ((p, m, n), panda_router::resolve_card(p, m, n))).collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut entries: Vec<_> = entries.into_iter().collect();
+    // The model's own entry (and name) wins over its variants.
+    entries.sort_by_key(|&(p, m, _)| panda_router::speed_tier(p, m).is_some());
+    let resolved: Vec<_> = entries
+        .into_iter()
+        .map(|(p, m, n)| (p, panda_router::base_model(p, m), n))
+        .filter(|&(p, m, _)| seen.insert((p, m)))
+        .map(|(p, m, n)| ((p, m, n), panda_router::resolve_card(p, m, n)))
+        .collect();
     resolved
         .iter()
         .filter(|&&((provider, model, _), card)| {
@@ -906,6 +918,23 @@ mod tests {
         let json = serde_json::to_value(RoutingStatus { enabled: true, mode: Mode::Balanced, min_p: 0.8, profiler: "missing", error: None }).unwrap();
         assert_eq!(json, serde_json::json!({"enabled":true,"mode":"balanced","minP":0.8,"profiler":"missing","error":null}));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn speed_variants_follow_their_models_exclusion_and_stand_for_it_in_pools() {
+        let off = |model: &str| Exclusions { providers: vec![], models: vec![ExcludedModel { provider: "codex".into(), model: model.into() }] }.validated().unwrap();
+        // Excluding a model excludes its variants; a variant slug can be excluded on its own.
+        let base = off("sol");
+        assert!(!base.allowed("codex", "sol") && !base.allowed("codex", "sol@fast") && !base.allowed("codex", "sol@ultrafast"));
+        let variant = off("sol@fast");
+        assert!(variant.allowed("codex", "sol") && !variant.allowed("codex", "sol@fast") && variant.allowed("codex", "sol@ultrafast"));
+        // Only Codex slugs are variants.
+        let claude = Exclusions { providers: vec![], models: vec![ExcludedModel { provider: "claude".into(), model: "opus".into() }] };
+        assert!(claude.allowed("claude", "opus@fast"));
+        // A routing pool lists the model once, under its own name, whatever order the variants came in.
+        let pool = pool_from([("codex", "sol@fast", "Sol Fast · Codex"), ("codex", "sol", "Sol · Codex"), ("codex", "sol@ultrafast", "Sol Ultrafast · Codex"), ("codex", "luna@fast", "Luna Fast · Codex"), ("claude", "opus@fast", "X")]);
+        let entries: Vec<_> = pool.iter().map(|m| (m.provider.as_str(), m.model.as_str(), m.name.as_str())).collect();
+        assert_eq!(entries, [("codex", "sol", "Sol · Codex"), ("claude", "opus@fast", "X"), ("codex", "luna", "Luna Fast · Codex")]);
     }
 
     #[test]

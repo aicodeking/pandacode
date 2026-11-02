@@ -531,7 +531,7 @@ pub struct ModelInfo {
     pub default_reasoning_effort: Option<String>,
     pub context_window: Option<u64>,
     /// Codex only: every speed tier its catalog lists (key, name and description as the catalog
-    /// gives them), offered in team profiles' Speed choices.
+    /// gives them), offered to teams as `<model>@<key>` variants and in the Speed choices.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub speed_tiers: Vec<crate::command_operations::ServiceTier>,
 }

@@ -135,7 +135,9 @@ impl Registry {
             >= 2
     }
 
+    /// A Codex speed variant (`<model>@fast`) is paused with its model.
     fn is_healthy(&self, provider: &str, model: &str, now: u64) -> bool {
+        let model = panda_router::base_model(provider, model);
         !self.provider_down(provider, now)
             && !self
                 .entries
@@ -186,11 +188,14 @@ impl Registry {
     }
 }
 
+/// Failures and successes count against the model a speed variant runs, never the slug.
 pub fn record_failure(provider: &str, model: &str, reason: &str) {
+    let model = panda_router::base_model(provider, model);
     with(|r| (r.failure(provider, model, reason, now()), true));
 }
 
 pub fn record_success(provider: &str, model: &str) {
+    let model = panda_router::base_model(provider, model);
     with(|r| {
         // Most runs succeed; skip the write when nothing changes.
         let changed = r.entries.iter().any(|e| e.provider == provider) || !r.last_success.contains_key(provider);
@@ -234,6 +239,18 @@ mod tests {
             model: model.into(),
             name: model.into(),
         }
+    }
+
+    #[test]
+    fn a_codex_speed_variant_is_paused_with_its_model() {
+        let mut r = Registry::default();
+        r.failure("codex", "sol", "boom", 1_000);
+        assert!(!r.is_healthy("codex", "sol@fast", 1_001));
+        assert!(!r.is_healthy("codex", "sol@ultrafast", 1_001));
+        assert_eq!(r.healthy(vec![model("codex", "sol@fast"), model("codex", "luna@fast")], 1_001), vec![model("codex", "luna@fast")]);
+        // Only Codex slugs are variants.
+        r.failure("claude", "opus", "boom", 1_000);
+        assert!(r.is_healthy("claude", "opus@fast", 1_001));
     }
 
     #[test]

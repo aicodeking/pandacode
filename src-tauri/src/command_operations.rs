@@ -793,7 +793,7 @@ pub async fn fast_service_tier(cwd: &Path, model: &str) -> Result<String, String
 /// The key of the tier the catalog names Fast (`/fast on`).
 pub const FAST_KEY: &str = "fast";
 
-/// One speed tier the Codex catalog offers for a model. `key` is how people name it
+/// One speed tier the Codex catalog offers for a model. `key` is how people and slugs name it
 /// (`tier_key` of its name: Fast -> `fast`, "Turbo Max" -> `turbo-max`); `id` is what Codex
 /// receives as `serviceTier` (Fast's is `priority`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
