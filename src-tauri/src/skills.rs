@@ -369,10 +369,20 @@ impl Library {
         let previous = meta.activations.iter().find(|a| matches(a)).cloned();
         let old_files = previous.as_ref().map(|a| a.files.clone()).unwrap_or_default();
         let mut excluded = previous.as_ref().map(|a| a.excluded.clone()).unwrap_or_default();
+        let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, a));
+        let mut kept = Vec::new();
         let files = self.files(id)?;
         let (surface, written) = match adapter::surface(harness, meta.kind, scope, base) {
             Surface::Folder(dir) => {
-                let written = adapter::write_folder(&dir, id, &files, &old_files)?;
+                // After a surface move the new folder must be free, as for a first activation;
+                // the old copy goes only once the new one is written, and an edited file stays.
+                let written = adapter::write_folder(&dir, id, &files, if moved { &[] } else { &old_files })?;
+                if moved {
+                    kept = adapter::remove_folder(&old_files);
+                    if kept.is_empty() {
+                        excluded.drain(..).for_each(|entry| adapter::unexclude(base, &entry));
+                    }
+                }
                 if scope == Scope::Project {
                     if let Some(entry) = adapter::exclude_entry(base, &dir.join(id), true) {
                         if adapter::exclude(base, &entry)? {
@@ -402,7 +412,7 @@ impl Library {
         let activations = meta.activations.iter().filter(|a| !matches(a)).cloned().chain([activation]).collect();
         self.save(&Meta { acknowledged, activations, ..meta })?;
         drop(_guard);
-        Ok(Change { items: self.list()?, kept: Vec::new() })
+        Ok(Change { items: self.list()?, kept })
     }
 
     pub fn deactivate(&self, id: &str, harness: &str, scope: Scope, root: Option<&Path>) -> Result<Change, String> {
@@ -446,6 +456,9 @@ impl Library {
 
     fn status(meta: &Meta, activation: Option<&Activation>) -> &'static str {
         let Some(activation) = activation else { return "off" };
+        if outside_surface(meta.kind, activation) {
+            return "outdated";
+        }
         let present = |w: &Written| match activation.surface.as_str() {
             "block" => fs::read_to_string(&w.path).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
             _ => adapter::file_hash(Path::new(&w.path)).map(|hash| Some(hash == w.sha256)),
@@ -524,6 +537,14 @@ impl Library {
 
 fn active_in<'m>(meta: &'m Meta, harness: &str, scope: Scope, project: &Option<String>) -> Option<&'m Activation> {
     meta.activations.iter().find(|a| a.harness == harness && a.scope == scope && a.project == *project)
+}
+
+/// Whether a project activation's files sit outside the folder its harness reads now, as Codex
+/// skills recorded under `.codex/skills` do since it moved to `.agents/skills`.
+fn outside_surface(kind: Kind, activation: &Activation) -> bool {
+    let Some(project) = activation.project.as_deref().filter(|_| activation.surface == "folder") else { return false };
+    let Surface::Folder(dir) = adapter::surface(&activation.harness, kind, activation.scope, Path::new(project)) else { return false };
+    activation.files.iter().any(|file| !Path::new(&file.path).starts_with(&dir))
 }
 
 pub(crate) fn library(app: &AppHandle) -> Result<Library, String> {

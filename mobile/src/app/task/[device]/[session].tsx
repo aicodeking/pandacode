@@ -3,7 +3,7 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from 'expo-router/react-navigation';
 import { memo, useEffect, useRef, useState } from 'react';
-import { FlatList, Keyboard, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Dimensions, FlatList, Keyboard, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connect } from '../../../connect/client.ts';
 import { markOpen } from '../../../connect/perf.ts';
@@ -31,13 +31,27 @@ function useKeyboardHeight(): number {
   const [height, setHeight] = useState(0);
   useEffect(() => {
     const ios = Platform.OS === 'ios';
+    let current = 0;
     const move = (next: number, duration?: number) => {
+      // One dismissal fires several events below; a repeat would leave a LayoutAnimation pending
+      // for the next unrelated layout.
+      if (next === current) return;
+      current = next;
       if (ios && duration) LayoutAnimation.configureNext({ duration, update: { type: 'keyboard' } });
       setHeight(next);
     };
     const subs = [
       Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', e => move(e.endCoordinates.height, e.duration)),
       Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', e => move(0, e.duration)),
+      // An interactive dismissal (the transcript's keyboardDismissMode) can drop the hide events on
+      // iOS and leave the inset stuck, so a final frame off the screen also counts as hidden.
+      ...(ios ? [
+        Keyboard.addListener('keyboardWillChangeFrame', e => {
+          const { height: end, screenY } = e.endCoordinates;
+          if (!end || screenY >= Dimensions.get('screen').height) move(0, e.duration);
+        }),
+        Keyboard.addListener('keyboardDidHide', () => move(0)),
+      ] : []),
     ];
     return () => subs.forEach(sub => sub.remove());
   }, []);

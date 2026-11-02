@@ -71,6 +71,18 @@ const MAX_FRAME: usize = 4 * 1024 * 1024;
 const FRAME_KEEP: usize = 64 * 1024;
 const MODEL_CATALOG_LIMIT: usize = 10_000;
 const STDERR_LIMIT: usize = 16 * 1024;
+/// Time a harness has to answer each startup step (boot, session open or resume, settings).
+/// Any frame it sends renews it, so a slow but progressing agent is never cut off.
+const STARTUP_STEP: Duration = Duration::from_secs(120);
+/// Ceiling on the whole startup, so a chatty agent that never reaches the prompt still ends.
+const STARTUP_LIMIT: Duration = Duration::from_secs(300);
+/// Wait after closing a finished turn's stdin. Harnesses exit on EOF well within this.
+const FINISH_GRACE: Duration = Duration::from_millis(1000);
+/// Antigravity ignores EOF and writes context checkpoints in the background (40-80 s each).
+const ANTIGRAVITY_GRACE: Duration = Duration::from_secs(120);
+/// Under the app data dir: per-run `TEMP` folders of Antigravity on Windows.
+const AGENT_TEMP_DIR: &str = "agent-temp";
+const AGENT_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
@@ -587,7 +599,7 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     launch::find(executable_name(name))
-        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else { None })
+        .or_else(|| if name == "hermes" { launch::find("hermes-acp") } else if name == "devin" { devin::bundled() } else if name == "zcode" { zcode::bundled() } else { None })
 }
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
@@ -668,26 +680,47 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
 }
 
 fn version(path: &Path) -> Option<String> {
-    let mut child = launch::std_command(path)
-        .ok()?
-        .arg("--version")
+    capture(launch::std_command(path).ok()?, &["--version"], Duration::from_secs(2))
+        .map(|text| text.chars().take(150).collect())
+}
+
+/// Runs an installed provider's CLI and returns its stdout (up to 2 MiB); None when the
+/// provider is not installed or the command failed or stalled past `timeout`. Runs with the
+/// provider's saved environment, so a custom data dir reads the same store as its runs.
+pub(crate) fn run_provider(id: &str, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut command = launch::std_command(&executable(id)?).ok()?;
+    crate::provider_settings::apply_environment(id, &mut command);
+    capture(command, args, timeout)
+}
+
+fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration) -> Option<String> {
+    let mut child = command
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
     #[cfg(windows)]
     let _job = windows_job::Job::attach(child.id());
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        if child.try_wait().ok()?.is_some() {
-            let output = child.wait_with_output().ok()?;
-            return Some(
-                String::from_utf8_lossy(&output.stdout)
-                    .trim()
-                    .chars()
-                    .take(150)
-                    .collect(),
-            );
+    // Drained on its own thread: a child writing past the OS pipe buffer while we poll
+    // must not block forever on the write (read only after exit would never drain it).
+    let mut piped = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        use std::io::Read as _;
+        let _ = piped.read_to_end(&mut bytes);
+        bytes
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
@@ -695,7 +728,13 @@ fn version(path: &Path) -> Option<String> {
             return None;
         }
         std::thread::sleep(Duration::from_millis(20));
+    };
+    if !status.success() {
+        return None;
     }
+    let mut bytes = reader.join().ok()?;
+    bytes.truncate(2 * 1024 * 1024);
+    Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
@@ -778,6 +817,117 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
     models
 }
 
+/// `1.19.0` from v1, `opencode v2.2.5` from v2.
+fn opencode_major_version(version: &str) -> Option<u64> {
+    version
+        .split_whitespace()
+        .find_map(|word| word.trim_start_matches('v').split('.').next()?.parse().ok())
+}
+
+/// OpenCode v2 removed `models --verbose`, but its local API still reports each
+/// model's variants. Only v2 gets this command: v1 has no `api` subcommand.
+async fn opencode_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let owned = path.to_owned();
+    // Longer than `version()`'s 2 s: OpenCode's cold start can pass that, and a missed
+    // answer here would cost a v2 install its efforts.
+    let major = tokio::task::spawn_blocking(move || capture(launch::std_command(&owned).ok()?, &["--version"], Duration::from_secs(5)))
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        .and_then(opencode_major_version);
+    if major.is_some_and(|major| major >= 2) {
+        match opencode_v2_catalog(path).await {
+            Ok(models) => return Ok(models),
+            // A hung CLI would hang again; anything else falls back to the bare IDs.
+            Err(error) if error.contains("timed out") => return Err("OpenCode model discovery timed out".into()),
+            Err(_) => {}
+        }
+    }
+    extra_models::opencode(path).await
+}
+
+async fn opencode_v2_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    #[cfg(test)]
+    let app_data = std::env::temp_dir().join("pandacode-test-app-data");
+    #[cfg(test)]
+    let app_data = Some(app_data.as_path());
+    #[cfg(not(test))]
+    let app_data = crate::secret_store::dir();
+    opencode_v2_catalog_in(path, app_data).await
+}
+
+async fn opencode_v2_catalog_in(path: &Path, app_data: Option<&Path>) -> Result<Vec<ModelInfo>, String> {
+    const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+    let mut command = launch::std_command(path)?;
+    crate::provider_settings::apply_environment("opencode", &mut command);
+    // OpenCode reads config from its directory, and anyone can plant one in a shared temp folder.
+    let folder = app_data
+        .and_then(|dir| AgentTemp::create_in(&dir.join(AGENT_TEMP_DIR)))
+        .ok_or("Could not create a private folder for OpenCode discovery")?;
+    // A private server, so listing models leaves no background service behind.
+    command
+        .args(["--standalone", "api", "model.list", "--param"])
+        .arg(format!("directory={}", folder.0.display()))
+        .current_dir(&folder.0);
+    let mut output = tokio::task::spawn_blocking(move || {
+        crate::workspace::run_process(command, "OpenCode", OUTPUT_LIMIT, Duration::from_secs(15))
+    })
+    .await
+    .map_err(|_| "OpenCode discovery failed")??;
+    let parsed = if output.status.success() && !output.stdout.truncated {
+        parse_opencode_v2_models(&output.stdout.bytes)
+    } else {
+        Err("OpenCode could not load models. Check its provider login and configuration.".into())
+    };
+    // The response carries provider settings, which can hold configured API keys.
+    output.stdout.bytes.fill(0);
+    parsed
+}
+
+/// Whitelist fields: entries also carry `settings` and `headers` from the user's
+/// configuration, which must never cross into the webview.
+fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
+    const INVALID: &str = "Invalid OpenCode model catalog";
+    let response: Value = serde_json::from_slice(bytes).map_err(|_| INVALID)?;
+    let entries = response["data"].as_array().ok_or(INVALID)?;
+    if entries.len() > MODEL_CATALOG_LIMIT {
+        return Err("OpenCode returned too many models".into());
+    }
+    let mut models = entries
+        .iter()
+        .map(|entry| {
+            let (provider, model) = (entry["providerID"].as_str().unwrap_or_default(), entry["id"].as_str().unwrap_or_default());
+            let id = format!("{provider}/{model}");
+            if provider.is_empty() || model.is_empty() || !valid_model_id(&id) {
+                return Err(INVALID.to_owned());
+            }
+            Ok(ModelInfo {
+                name: model_text(entry["name"].as_str(), &id, 160),
+                description: id.clone(),
+                // The API lists variants least to most, unlike v1's sorted keys.
+                reasoning_efforts: entry["variants"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|variant| variant["id"].as_str())
+                    .filter(|effort| validate_reasoning_effort("opencode", Some(effort)).is_ok())
+                    .take(20)
+                    .map(|effort| effort_info(effort, None))
+                    .collect(),
+                default_reasoning_effort: None,
+                context_window: entry["limit"]["context"].as_u64().filter(|n| *n > 0 && *n <= 1_000_000_000),
+                id,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // `opencode models` sorts by ID; the API orders by release date.
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    models.insert(0, ModelInfo::default_choice());
+    Ok(models)
+}
+
 pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>, String> {
     let index = model_discovery_index(provider).ok_or("Unknown provider")?;
     let semaphore = &model_discovery_semaphores()[index];
@@ -801,7 +951,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "claude" => claude_models(&path).await,
         "codex" => codex_models(&path).await,
         "kimi" => kimi_models::list(&path).await,
-        "opencode" => extra_models::opencode(&path).await,
+        "opencode" => opencode_catalog(&path).await,
         "glm" => Ok(glm::models()),
         "antigravity" => acp::models(&path).await,
         "grok" => acp::grok_models(&path).await,
@@ -2732,9 +2882,9 @@ impl Drop for ProcessGroup {
     }
 }
 
-async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup) {
+async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup, grace: Duration) {
     drop(stdin);
-    if tokio::time::timeout(Duration::from_millis(1000), child.wait())
+    if tokio::time::timeout(grace, child.wait())
         .await
         .is_err()
     {
@@ -2756,6 +2906,129 @@ async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessG
     drop(cleanup);
 }
 
+/// Antigravity's Windows build unpacks 150-250 MB into `%TEMP%\\_MEI*` and removes it only on a
+/// clean exit, which a forced kill skips. So it gets its own `TEMP`, deleted when this drops.
+pub(crate) struct AgentTemp(PathBuf);
+impl AgentTemp {
+    /// None off Windows, or if the folder cannot be made: the agent then uses the system `TEMP`.
+    pub(crate) fn redirect(command: &mut Command) -> Option<Self> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let root = crate::secret_store::dir()?.join(AGENT_TEMP_DIR);
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| Self::sweep(&root));
+        let temp = Self::create_in(&root)?;
+        command.env("TEMP", &temp.0).env("TMP", &temp.0);
+        Some(temp)
+    }
+    /// Folders left by a crash or a quit. Only old ones: `pandacode serve` has no single-instance
+    /// guard, so another process's agent can be using a recent one.
+    fn sweep(root: &Path) {
+        for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+            let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+            if age.is_some_and(|age| age > AGENT_TEMP_MAX_AGE) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    /// Private to this user: discovery runs in one, where a planted file must not be readable as config.
+    fn create_in(root: &Path) -> Option<Self> {
+        let dir = root.join(uuid::Uuid::new_v4().to_string());
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir).ok()?;
+        Some(Self(dir))
+    }
+}
+impl Drop for AgentTemp {
+    fn drop(&mut self) {
+        let dir = std::mem::take(&mut self.0);
+        // Windows holds a killed process's files for a moment. Off the async workers.
+        std::thread::spawn(move || {
+            for _ in 0..5 {
+                if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    }
+}
+
+struct Lingering {
+    /// Canonical, for `end_lingering_in`.
+    cwd: PathBuf,
+    agent: tokio::task::JoinHandle<()>,
+}
+
+/// Agents past their turn, still finishing background work, by task.
+fn lingering() -> &'static Mutex<HashMap<String, Lingering>> {
+    static AGENTS: OnceLock<Mutex<HashMap<String, Lingering>>> = OnceLock::new();
+    AGENTS.get_or_init(Default::default)
+}
+
+/// Gives a finished agent `ANTIGRAVITY_GRACE` to exit by itself, without holding the turn open.
+/// Its group stays in the process registry, so app quit still kills it, and its pipes stay read,
+/// because an agent that writes to a closed pipe would die on the spot.
+#[allow(clippy::too_many_arguments)]
+fn linger_agent(
+    session_id: String,
+    cwd: &Path,
+    mut child: Child,
+    stdin: ChildStdin,
+    mut stdout: tokio::process::ChildStdout,
+    stderr: StderrReader,
+    mut group: ProcessGroup,
+    temp: Option<AgentTemp>,
+) {
+    let agent = tokio::spawn(async move {
+        let (_stderr, _temp) = (stderr, temp);
+        // In this task, so an abort stops the drain too. It never ends the select: an agent can
+        // close stdout and keep working.
+        let drain = async move {
+            let _ = tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await;
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            () = finish_child(&mut child, stdin, &mut group, ANTIGRAVITY_GRACE) => {}
+            () = drain => {}
+        }
+    });
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
+    let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
+    agents.retain(|_, lingering| !lingering.agent.is_finished());
+    agents.insert(session_id, Lingering { cwd, agent });
+}
+
+/// Ends the task's lingering agent. Its next turn must not share the conversation store with it.
+/// Dropping the aborted task kills the group and removes its temp folder.
+pub(crate) async fn end_lingering(session_id: &str) {
+    let lingering = lingering().lock().unwrap_or_else(|p| p.into_inner()).remove(session_id);
+    if let Some(Lingering { agent, .. }) = lingering {
+        agent.abort();
+        let _ = agent.await;
+    }
+}
+
+/// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
+/// is removed: on Windows a process's working directory cannot be deleted.
+pub(crate) async fn end_lingering_in(folder: &Path) {
+    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_owned());
+    let tasks: Vec<String> = lingering()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .filter(|(_, lingering)| lingering.cwd.starts_with(&folder))
+        .map(|(task, _)| task.clone())
+        .collect();
+    for task in tasks {
+        end_lingering(&task).await;
+    }
+}
+
 // Protocol fixture entry point.
 #[cfg(test)]
 #[allow(dead_code)]
@@ -2769,6 +3042,32 @@ pub async fn run(
 
 tokio::task_local! {
     static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_STARTUP_STEP: Duration;
+}
+
+fn startup_step() -> Duration {
+    #[cfg(test)]
+    if let Ok(step) = TEST_STARTUP_STEP.try_with(|step| *step) {
+        return step;
+    }
+    STARTUP_STEP
+}
+
+fn startup_deadline(started: tokio::time::Instant, now: tokio::time::Instant, step: Duration) -> tokio::time::Instant {
+    (now + step).min(started + STARTUP_LIMIT)
+}
+
+fn startup_timeout_error(waited: Duration, answered: bool) -> String {
+    let state = if answered {
+        "the agent stopped answering while its session was opening"
+    } else {
+        "the agent never answered after it was launched"
+    };
+    format!("Agent initialization timed out after {} s: {state}. A first run or a busy computer can be this slow, so send again. If it keeps happening, check the CLI's login and configuration in a terminal.", waited.as_secs())
 }
 
 /// Marks the run as having reached the harness: from here an error is the harness's (its CLI is
@@ -3103,9 +3402,15 @@ async fn run_process_with_tools(
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
     reached_harness();
+    let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
+    let mut agent_temp = None;
     let (mut child, mut group) = if let Some(spare) = spare {
         (spare.child, spare.group)
     } else {
+        if lingers {
+            end_lingering(&config.session_id).await;
+            agent_temp = AgentTemp::redirect(&mut command);
+        }
         if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
             if let Some(server) = &mcp {
                 command.args(["--mcp-config", &server.claude_config().to_string()]);
@@ -3147,7 +3452,10 @@ async fn run_process_with_tools(
     let mut buf = [0u8; 8192];
     let mut stopped = false;
     let mut input_open = true;
-    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    let started = tokio::time::Instant::now();
+    let step_limit = startup_step();
+    let mut deadline = startup_deadline(started, started, step_limit);
+    let mut answered = false;
     let result=async {
         write_json(&mut stdin,&protocol.initial()).await?;
         if protocol.config.provider == "antigravity" {
@@ -3194,7 +3502,7 @@ async fn run_process_with_tools(
                     apply_step(&mut protocol,Step::default(),&sink,&mut stdin,&mut jobs,&mut queued).await?;
                 },
                 _=tokio::time::sleep_until(deadline),if stopped || protocol.phase==0=>{
-                    if stopped{break Ok(());}break Err("Agent initialization timed out. Check the CLI's login and configuration in a terminal.".into());
+                    if stopped{break Ok(());}break Err(startup_timeout_error(started.elapsed(),answered));
                 },
                 _=tokio::time::sleep_until(protocol.approval_deadline().unwrap_or_else(||tokio::time::Instant::now()+Duration::from_secs(86400))),if !stopped && protocol.approval_deadline().is_some()=>{
                     let step=protocol.expire_approvals(tokio::time::Instant::now());
@@ -3224,6 +3532,8 @@ async fn run_process_with_tools(
                             if pi::stop_settled(&protocol.config.provider, &value) {return Ok(());}
                             continue;
                         }
+                        answered=true;
+                        if protocol.phase==0 {deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);}
                         let step=protocol.receive(value)?;
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
                     }
@@ -3246,7 +3556,11 @@ async fn run_process_with_tools(
     for event in protocol.cancel_requests().events {
         sink(event);
     }
-    finish_child(&mut child, stdin, &mut group).await;
+    if lingers && result.is_ok() && !stopped {
+        linger_agent(protocol.config.session_id.clone(), &protocol.config.cwd, child, stdin, stdout, stderr_task, group, agent_temp);
+        return Ok(());
+    }
+    finish_child(&mut child, stdin, &mut group, FINISH_GRACE).await;
     let diagnostic = tokio::time::timeout(Duration::from_millis(500), &mut stderr_task.0)
         .await
         .ok()
@@ -3322,6 +3636,93 @@ mod tests {
         assert!(!super::should_shrink(10, 1024 * 1024));
         assert!(!super::should_shrink(super::FRAME_KEEP, 2 * 1024 * 1024));
     }
+    /// Recorded from `opencode --standalone api model.list` 2.2.5 (trimmed to two models).
+    const OPENCODE_V2_MODELS: &str = r#"{"location":{"directory":"/tmp"},"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","family":"flint","name":"Flint 40B Free","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"medium","settings":{"reasoningEffort":"medium"}},{"id":"high","settings":{"reasoningEffort":"high"}},{"id":"xhigh","settings":{"reasoningEffort":"xhigh"}},{"id":"max","settings":{"reasoningEffort":"max"}}],"time":{"released":1792540800000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":262144,"output":65536}},{"id":"big-pickle","modelID":"big-pickle","providerID":"opencode","type":"chat","family":"big-pickle","name":"Big Pickle","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[],"time":{"released":1760659200000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":200000,"input":160000,"output":32000}}]}"#;
+
+    #[test]
+    fn opencode_v2_recorded_models_keep_efforts_and_drop_settings() {
+        let parsed = super::parse_opencode_v2_models(OPENCODE_V2_MODELS.as_bytes()).unwrap();
+        let ids: Vec<_> = parsed.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["default", "opencode/big-pickle", "opencode/flint-40b-free"]);
+        assert!(parsed[1].reasoning_efforts.is_empty());
+        let efforts: Vec<_> = parsed[2].reasoning_efforts.iter().map(|effort| effort.id.as_str()).collect();
+        assert_eq!(efforts, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(parsed[2].name, "Flint 40B Free");
+        assert_eq!(parsed[2].context_window, Some(262144));
+        let visible = serde_json::to_string(&parsed).unwrap();
+        assert!(!visible.contains("apiKey") && !visible.contains("baseURL"));
+    }
+
+    #[test]
+    fn opencode_v2_malformed_catalogs_do_not_echo_input() {
+        for bad in [&b"SECRET"[..], br#"{"data":"SECRET"}"#, br#"{"data":[{"id":"SECRET"}]}"#] {
+            assert!(!super::parse_opencode_v2_models(bad).unwrap_err().contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn opencode_major_version_reads_both_generations() {
+        assert_eq!(super::opencode_major_version("1.19.0\n"), Some(1));
+        assert_eq!(super::opencode_major_version("opencode v2.2.5\n"), Some(2));
+        assert_eq!(super::opencode_major_version("opencode"), None);
+    }
+
+    /// Runs the catalog against a stand-in CLI; `$MARK` records every `api` call.
+    #[cfg(unix)]
+    async fn opencode_catalog_with(version: &str, verbose: &str, api: &str) -> (Result<Vec<super::ModelInfo>, String>, bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (script, mark, models) = (root.join("opencode"), root.join("api-called"), root.join("models.json"));
+        std::fs::write(&models, api).unwrap();
+        std::fs::write(&script, format!(
+            "#!/bin/sh\ncase \"$*\" in\n*--version*) echo '{version}';;\n*'--standalone api model.list --param directory='*) : > '{mark}'; cat '{models}';;\n'models --verbose') {verbose};;\nmodels) echo opencode/plain;;\n*) exit 9;;\nesac\n",
+            mark = mark.display(), models = models.display(),
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = super::opencode_catalog(&script).await;
+        let called = mark.exists();
+        std::fs::remove_dir_all(&root).unwrap();
+        (result, called)
+    }
+
+    #[tokio::test]
+    #[ignore = "Reads the installed OpenCode's model catalog; never sends a prompt"]
+    async fn installed_opencode_catalog_reports_efforts() {
+        let path = super::executable("opencode").expect("Install OpenCode first");
+        let models = super::opencode_catalog(&path).await.unwrap();
+        let with_efforts = models.iter().filter(|model| !model.reasoning_efforts.is_empty()).count();
+        println!("{:?}: {} models, {with_efforts} with efforts", super::version(&path), models.len() - 1);
+        assert!(with_efforts > 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_reads_efforts_through_its_api() {
+        let (models, called) = opencode_catalog_with("opencode v2.2.5", "exit 1", OPENCODE_V2_MODELS).await;
+        assert!(called);
+        assert_eq!(models.unwrap()[2].reasoning_efforts.len(), 5);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_falls_back_to_plain_ids_when_its_api_fails() {
+        let (models, _) = opencode_catalog_with("opencode v2.2.5", "exit 1", "not json").await;
+        let models = models.unwrap();
+        assert_eq!(models[1].id, "opencode/plain");
+        assert!(models[1].reasoning_efforts.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v1_never_gets_the_api_command() {
+        let verbose = r#"printf 'vendor/id\n{"name":"Actual","variants":{"high":{},"low":{}}}\n'"#;
+        let (models, called) = opencode_catalog_with("1.19.0", verbose, OPENCODE_V2_MODELS).await;
+        assert!(!called);
+        let efforts: Vec<_> = models.unwrap()[1].reasoning_efforts.iter().map(|effort| effort.id.clone()).collect();
+        assert_eq!(efforts, ["low", "high"]);
+    }
+
     #[test]
     fn opencode_choices_keep_only_saved_models_and_retain_unavailable_ids() {
         let model = super::ModelInfo {
@@ -4669,6 +5070,232 @@ mod tests {
         assert_eq!(step.write[0]["method"], "session/set_mode");
         assert_eq!(step.write[0]["params"]["modeId"], "default");
         assert!(!step.write.iter().any(|r| r["method"] == "session/prompt"));
+    }
+
+    #[test]
+    fn startup_deadline_renews_with_progress_up_to_the_limit() {
+        let started = tokio::time::Instant::now();
+        let step = Duration::from_secs(120);
+        assert_eq!(startup_deadline(started, started, step), started + step);
+        let later = started + Duration::from_secs(100);
+        assert_eq!(startup_deadline(started, later, step), later + step);
+        let late = started + Duration::from_secs(250);
+        assert_eq!(startup_deadline(started, late, step), started + STARTUP_LIMIT);
+    }
+
+    #[cfg(unix)]
+    fn run_script(provider: &str, id: &str, script: &str, marker: &Path) -> impl std::future::Future<Output = Result<(), String>> {
+        let mut config = config(provider);
+        config.session_id = id.into();
+        // A closed input channel means Stop, so the sink holds its sender for the run.
+        let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sink: Sink = Arc::new(move |_| {
+            let _ = &input;
+        });
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script, "pandacode-test"]).arg(marker);
+        run_process(config, sink, receiver, command, Vec::new())
+    }
+
+    /// Answers each ACP step after `$PAUSE`, then runs `$AFTER` past the turn's end.
+    #[cfg(unix)]
+    fn acp_agent(pause: &str, after: &str) -> String {
+        format!(
+            r#"read -r a; sleep {pause}; echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{}}}}}}'
+read -r a; sleep {pause}; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s"}}}}'
+read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+{after}"#
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_steps_each_get_their_own_time_limit() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        // Two 0.6 s steps with a 1 s limit per step: the old fixed budget would have expired.
+        let run = run_script("opencode", "startup-progress", &acp_agent("0.6", ""), Path::new("/dev/null"));
+        let result = TEST_STARTUP_STEP.scope(Duration::from_secs(1), run).await;
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_timeout_says_how_far_it_got_and_keeps_stderr() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let silent = "echo 'dsh: still booting plugins' >&2; exec sleep 30";
+        let run = run_script("opencode", "startup-silent", silent, Path::new("/dev/null"));
+        let error = TEST_STARTUP_STEP.scope(Duration::from_millis(300), run).await.unwrap_err();
+        assert!(error.starts_with("Agent initialization timed out"), "{error}");
+        assert!(error.contains("never answered"), "{error}");
+        assert!(error.contains("dsh: still booting plugins"), "{error}");
+
+        let stalls = "read -r a; echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}'; exec sleep 30";
+        let run = run_script("opencode", "startup-stalled", stalls, Path::new("/dev/null"));
+        let error = TEST_STARTUP_STEP.scope(Duration::from_millis(300), run).await.unwrap_err();
+        assert!(error.contains("stopped answering"), "{error}");
+    }
+
+    /// Past the old 1.5 s kill, the agent writes to both pipes (a closed one would kill it) and
+    /// then leaves the marker. It ignores stdin's EOF, as Antigravity does.
+    #[cfg(unix)]
+    fn lingering_agent() -> String {
+        acp_agent("0", r#"sleep 2; echo '{}'; echo note >&2; echo done > "$1"; exec sleep 30"#)
+    }
+
+    #[cfg(unix)]
+    async fn wait_for(marker: &Path) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+        while tokio::time::Instant::now() < deadline {
+            if marker.exists() {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    fn marker_path() -> PathBuf {
+        std::env::temp_dir().join(format!("pandacode-linger-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_finishes_background_work_after_the_turn_without_blocking_it() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        let started = std::time::Instant::now();
+        let script = lingering_agent();
+        assert_eq!(run_script("antigravity", "linger-work", &script, &marker).await, Ok(()));
+        assert!(started.elapsed() < Duration::from_secs(2), "the turn waited for the agent");
+        assert!(lingering().lock().unwrap().contains_key("linger-work"));
+        assert!(wait_for(&marker).await, "the agent was killed before its work finished");
+        end_lingering("linger-work").await;
+        let _ = std::fs::remove_file(marker);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_next_turn_and_app_quit_end_a_lingering_agent() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let script = lingering_agent();
+        let next_turn = marker_path();
+        assert_eq!(run_script("antigravity", "linger-next", &script, &next_turn).await, Ok(()));
+        end_lingering("linger-next").await;
+        // Past the marker's 2 s, with nothing else in the way: `shutdown_all` would hide a failure.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let survived = next_turn.exists();
+        let _ = std::fs::remove_file(&next_turn);
+        assert!(!survived, "the next turn left the old agent running");
+
+        let quit = marker_path();
+        assert_eq!(run_script("antigravity", "linger-quit", &script, &quit).await, Ok(()));
+        shutdown_all();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!quit.exists(), "app quit left the agent running");
+        end_lingering("linger-quit").await;
+    }
+
+    #[tokio::test]
+    async fn removing_a_folder_ends_only_the_agents_working_in_it() {
+        let root = std::env::temp_dir().join(format!("pandacode-linger-in-{}", uuid::Uuid::new_v4()));
+        let (inside, other) = (root.join("gone/deep"), root.join("kept"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        for (task, cwd) in [("linger-in-gone", &inside), ("linger-in-kept", &other)] {
+            let lingering_agent = Lingering { cwd: cwd.canonicalize().unwrap(), agent: tokio::spawn(std::future::pending()) };
+            lingering().lock().unwrap().insert(task.into(), lingering_agent);
+        }
+        end_lingering_in(&root.join("gone")).await;
+        assert!(!lingering().lock().unwrap().contains_key("linger-in-gone"));
+        assert!(lingering().lock().unwrap().contains_key("linger-in-kept"));
+        end_lingering("linger-in-kept").await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_antigravity_run_is_not_kept_around() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let run = run_script("antigravity", "linger-failed", "echo boom >&2; exit 3", Path::new("/dev/null"));
+        let error = run.await.unwrap_err();
+        assert!(error.contains("boom"), "{error}");
+        assert!(!lingering().lock().unwrap().contains_key("linger-failed"));
+    }
+
+    #[test]
+    fn agent_temp_folder_is_deleted_with_its_contents() {
+        let root = std::env::temp_dir().join(format!("pandacode-agent-temp-{}", uuid::Uuid::new_v4()));
+        let temp = AgentTemp::create_in(&root).unwrap();
+        let unpacked = temp.0.join("_MEI123");
+        std::fs::create_dir_all(&unpacked).unwrap();
+        std::fs::write(unpacked.join("python.dll"), b"x").unwrap();
+        let dir = temp.0.clone();
+        drop(temp);
+        for _ in 0..100 {
+            if !dir.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_leaves_recent_agent_temp_folders_alone() {
+        let root = std::env::temp_dir().join(format!("pandacode-agent-sweep-{}", uuid::Uuid::new_v4()));
+        let (old, live) = (root.join("old"), root.join("live"));
+        std::fs::create_dir_all(old.join("_MEI123")).unwrap();
+        std::fs::create_dir_all(&live).unwrap();
+        let past = std::time::SystemTime::now() - AGENT_TEMP_MAX_AGE - Duration::from_secs(60);
+        std::fs::File::open(&old).unwrap().set_modified(past).unwrap();
+        AgentTemp::sweep(&root);
+        assert!(!old.exists());
+        assert!(live.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_discovery_runs_in_a_private_folder_it_then_removes() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-private-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (script, seen, models) = (root.join("opencode"), root.join("seen"), root.join("models.json"));
+        std::fs::write(&models, OPENCODE_V2_MODELS).unwrap();
+        std::fs::write(&script, format!(
+            "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$(pwd -P)\" \"$(ls -ld . | cut -c1-10)\" \"$*\" > '{}'\ncat '{}'\n",
+            seen.display(), models.display(),
+        )).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let app_data = root.join("app-data");
+
+        opencode_v2_catalog_in(&script, Some(&app_data)).await.unwrap();
+
+        let seen = std::fs::read_to_string(&seen).unwrap();
+        let lines: Vec<&str> = seen.lines().collect();
+        let folder = Path::new(lines[0]);
+        assert!(folder.starts_with(app_data.canonicalize().unwrap().join(AGENT_TEMP_DIR)), "{seen}");
+        assert_eq!(lines[1], "drwx------", "{seen}");
+        assert!(lines[2].contains(folder.file_name().unwrap().to_str().unwrap()), "{seen}");
+        for _ in 0..100 {
+            if !folder.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!folder.exists(), "the private folder stayed behind");
+
+        // Without a private folder it never runs, and the error takes the bare-ID path.
+        let _ = std::fs::remove_file(root.join("seen"));
+        for app_data in [None, Some(script.as_path())] {
+            let error = opencode_v2_catalog_in(&script, app_data).await.unwrap_err();
+            assert!(!error.contains("timed out"), "{error}");
+        }
+        assert!(!root.join("seen").exists());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

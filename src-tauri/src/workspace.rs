@@ -1299,14 +1299,28 @@ fn linked_worktree_common(path: &Path) -> Option<PathBuf> {
     .ok()
 }
 
+/// Directory entries one listing reads; a larger folder shows a partial listing.
+const LIST_ENTRIES: usize = 200_000;
+/// Symlinks one listing resolves; the listing shows 500 rows, so more could never all appear.
+const LIST_LINK_CHECKS: usize = 2_000;
+
 pub fn list_files(root: &Path, path: Option<String>) -> Result<Vec<FileEntry>, String> {
+    list_directory(root, path, LIST_ENTRIES, LIST_LINK_CHECKS)
+}
+
+fn list_directory(
+    root: &Path,
+    path: Option<String>,
+    entries: usize,
+    mut link_checks: usize,
+) -> Result<Vec<FileEntry>, String> {
     let directory = match path.as_deref() {
         None | Some("") => root.to_path_buf(),
         Some(path) => scoped_path(root, path)?,
     };
     // Retain only the first 500 sorted entries even in very large directories.
     let mut names = BinaryHeap::new();
-    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+    for entry in fs::read_dir(directory).map_err(|e| e.to_string())?.take(entries) {
         let entry = entry.map_err(|e| e.to_string())?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
@@ -1323,14 +1337,29 @@ pub fn list_files(root: &Path, path: Option<String>) -> Result<Vec<FileEntry>, S
             .map(|part| part.as_os_str().to_str().ok_or("Filename is not UTF-8"))
             .collect::<Result<Vec<_>, _>>()?
             .join("/");
-        let target = match resolve_scoped_path(root, &relative) {
-            Ok(target) => target,
-            Err(PathError::Rejected(_)) => continue,
-            // Entries can disappear during enumeration; dangling links are also omitted.
-            Err(PathError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(format!("Cannot inspect {relative}: {error}")),
+        // Entries can disappear during enumeration.
+        let kind = match entry.file_type() {
+            Ok(kind) => kind,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("Cannot inspect {relative}: {e}")),
         };
-        let is_dir = target.is_dir();
+        // Only a link can leave the already verified folder. Resolving every entry opens a
+        // handle per file on Windows, which security software and cloud drives make slow.
+        let is_dir = if kind.is_symlink() {
+            if link_checks == 0 {
+                continue;
+            }
+            link_checks -= 1;
+            match resolve_scoped_path(root, &relative) {
+                Ok(target) => target.is_dir(),
+                Err(PathError::Rejected(_)) => continue,
+                // Dangling links are omitted too.
+                Err(PathError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("Cannot inspect {relative}: {error}")),
+            }
+        } else {
+            kind.is_dir()
+        };
         names.push((!is_dir, name, relative));
         if names.len() > 500 {
             names.pop();
@@ -1627,6 +1656,42 @@ mod tests {
             fs::write(f.root.join(format!("f{i}")), "").unwrap();
         }
         assert_eq!(list_files(&f.root, None).unwrap().len(), 500);
+    }
+
+    #[test]
+    fn plain_entries_are_listed_without_spending_a_path_check() {
+        let f = Fixture::new(false);
+        fs::create_dir(f.root.join("src")).unwrap();
+        for i in 0..50 {
+            fs::write(f.root.join(format!("f{i}")), "").unwrap();
+        }
+        // No link checks at all: a plain entry must not need one, however many there are.
+        let files = list_directory(&f.root, None, LIST_ENTRIES, 0).unwrap();
+        assert_eq!(files.len(), 51);
+        assert_eq!((files[0].path.as_str(), files[0].is_dir), ("src", true));
+        assert!(files[1..].iter().all(|file| !file.is_dir));
+    }
+
+    #[test]
+    fn listing_stops_at_its_entry_budget() {
+        let f = Fixture::new(false);
+        for i in 0..50 {
+            fs::write(f.root.join(format!("f{i}")), "").unwrap();
+        }
+        assert_eq!(list_directory(&f.root, None, 7, 0).unwrap().len(), 7);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listing_resolves_only_a_bounded_number_of_links() {
+        let f = Fixture::new(false);
+        fs::write(f.root.join("target"), "").unwrap();
+        for i in 0..10 {
+            std::os::unix::fs::symlink("target", f.root.join(format!("link{i}"))).unwrap();
+        }
+        let listed = |checks| list_directory(&f.root, None, LIST_ENTRIES, checks).unwrap().len();
+        assert_eq!(listed(3), 4, "the file and the first three links");
+        assert_eq!(listed(10), 11);
     }
 
     #[cfg(unix)]

@@ -824,6 +824,28 @@ transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { 
 transcriptScroller.addEventListener('keydown', event => {
   if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
 });
+/* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
+ * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
+ * when it settles, since those rows only reach their new heights then. */
+const WINDOW_SETTLE_MS = 150;
+let windowSize = `${innerWidth}x${innerHeight}`, windowSettle = 0, restoreWindowReader: (() => void) | undefined, windowReaderTask = '';
+addEventListener('resize', () => {
+  const size = `${innerWidth}x${innerHeight}`;
+  if (size === windowSize) return; // Layout notifications (sidebar, UI size) dispatch resize too.
+  windowSize = size;
+  if (!windowSettle) {
+    transcriptScroller.toggleAttribute('data-window-resizing', true);
+    restoreWindowReader = stickToBottom ? undefined : captureTranscriptAnchor(transcriptScroller);
+    windowReaderTask = state.sessionId;
+  }
+  clearTimeout(windowSettle);
+  windowSettle = window.setTimeout(() => {
+    windowSettle = 0;
+    transcriptScroller.removeAttribute('data-window-resizing');
+    if (windowReaderTask === state.sessionId) restoreWindowReader?.();
+    restoreWindowReader = undefined;
+  }, WINDOW_SETTLE_MS);
+});
 const subagents = new Subagents($('#subagents-host'), 'subagents-panel', sessionId => ({ projectId: state.projectId, sessionId }));
 const jevActivity = new JevActivity();
 $('#transcript').before(jevActivity.host);
@@ -4352,7 +4374,8 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
     onClose: () => { projectPickerCleanup = undefined; },
     onSelect: async projectId => {
       if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
-      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(); return; }
+      // createChat closes this picker, which would drop an error thrown back to it.
+      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
@@ -4508,22 +4531,47 @@ async function createTask(projectId = state.projectId): Promise<void> {
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
-/** A projectless chat: its own folder, the usual harness and model. */
-async function createChat(): Promise<void> {
+/** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
+ *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
+async function createChat(from?: Session): Promise<void> {
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
+  // A chat nobody has written in yet is reopened, as New task reopens its draft.
+  const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
+  if (unused) {
+    if (state.projectFilter) setProjectFilter('');
+    state.query = ''; closeModal(); await selectSession(unused.id, true); return;
+  }
   const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
     ?? state.providers.find(p => p.installed) ?? state.providers[0];
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  leaveDraft('');
+  if (!from) leaveDraft('');
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('chat_create', { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
+    const connection = from && taskConnection(from)?.id;
+    if (connection) namedConnections = await call<typeof namedConnections>('connection_assign', { sessionId: created.id, connectionId: connection });
     state.projects = await call<Project[]>('list_projects');
   } finally { creatingTask = false; }
-  state.sessions.unshift(created);
+  // chat_create announces the new row, so the refresh may already have listed it.
+  upsertSession(created);
+  if (from) {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
+    const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
+    if (typed) state.drafts.set(created.id, typed);
+    state.drafts.delete(from.id);
+    if (open) prompt!.value = '';
+    attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
+    const browserItems = state.browserAttachments.get(from.id);
+    if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
+    state.browserAttachments.delete(from.id);
+    // Project files and moodboards belong to the project, so a chat cannot send them.
+    if ((from.id === state.sessionId && state.attachments.length) || state.moodboardAttachments.get(from.id)?.length) notify('Project files and moodboards stay with the project, so they were not moved to the chat.');
+    state.moodboardAttachments.delete(from.id);
+  }
   if (generation !== state.generation) { renderNavigation(); return; }
   if (state.projectFilter) setProjectFilter('');
   state.query = ''; closeModal(); await selectSession(created.id, true);

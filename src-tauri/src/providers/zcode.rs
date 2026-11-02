@@ -22,6 +22,74 @@ const FIRST_PROMPT_ID: u64 = 6;
 pub(super) const SIGN_IN: &str =
     "ZCode requires sign-in. Run `zcode` in a terminal and sign in, then send again.";
 
+/// The CLI bundled with ZCode Desktop (`…/resources/glm/zcode.cjs`), for installs
+/// without `zcode` on PATH. The launch layer runs it on the app's own Electron
+/// runtime, so no system node is needed.
+pub(super) fn bundled() -> Option<PathBuf> {
+    bundled_candidates().into_iter().find(|path| runnable(path))
+}
+
+/// The launch layer can run the script: it carries an exec bit (direct shebang
+/// exec) or a desktop app runtime sits beside it to launch it, so a bundled copy
+/// that lost its mode still counts when its app can run it.
+#[cfg(unix)]
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().is_ok_and(|metadata| {
+        metadata.is_file()
+            && (metadata.permissions().mode() & 0o111 != 0
+                || super::launch::electron_runtime(path).is_some())
+    })
+}
+
+#[cfg(not(unix))]
+fn runnable(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    let home = crate::agent_usage_providers::home();
+    [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("ZCode.app/Contents/Resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's NSIS defaults: per-user under %LOCALAPPDATA%\Programs,
+    // per-machine under %ProgramFiles%; the inner layout matches every platform.
+    let roots = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(|local| PathBuf::from(local).join("Programs"))
+        .into_iter()
+        .chain(
+            std::env::var_os("ProgramFiles")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+        );
+    roots
+        .flat_map(|root| ["ZCode", "zcode"].map(|name| root.join(name)))
+        .map(|root| root.join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's deb/rpm default installs under /opt/<product name>.
+    ["/opt/ZCode", "/opt/zcode"]
+        .iter()
+        .map(|root| PathBuf::from(root).join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn bundled_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 /// PandaCode mode → ZCode session mode. `auto` is Accept edits (edits run
 /// free, the rest ask); Standard (`ask`) and the reviewer mode run `build`.
 pub(super) fn mode(mode: &str) -> &'static str {
@@ -70,6 +138,13 @@ fn context_window_of(settings: &Value, reference: &Value) -> Option<u64> {
         .find(|entry| same_ref(&entry["ref"], reference))
         .and_then(|entry| entry["contextWindow"].as_u64())
         .filter(|n| *n > 0 && *n <= 1_000_000_000)
+}
+
+/// The catalog entry offers this reasoning level.
+fn lists_level(entry: &Value, level: &str) -> bool {
+    entry["reasoning"]["levels"]
+        .as_array()
+        .is_some_and(|levels| levels.iter().any(|item| field(item, "value") == level))
 }
 
 fn workspace_of(cwd: &std::path::Path) -> Value {
@@ -240,17 +315,20 @@ impl Protocol {
     /// Opens the run's session. Deferred persistence keeps captures and failed
     /// starts out of the user's ZCode history; resume attaches by saved id.
     pub(super) fn zcode_initial(&self) -> Value {
-        let workspace = workspace_of(&self.config.cwd);
         match &self.config.resume_id {
             Some(id) => json!({"id": ID_CREATE, "method": "session/resume",
-                "params": {"sessionId": id, "workspace": workspace}}),
-            None => json!({"id": ID_CREATE, "method": "session/create", "params": {
-                "workspace": workspace,
-                "mode": mode(&self.config.mode),
-                "persistence": "deferred",
-                "titleGenerationEnabled": false,
-            }}),
+                "params": {"sessionId": id, "workspace": workspace_of(&self.config.cwd)}}),
+            None => self.zcode_create(),
         }
+    }
+
+    fn zcode_create(&self) -> Value {
+        json!({"id": ID_CREATE, "method": "session/create", "params": {
+            "workspace": workspace_of(&self.config.cwd),
+            "mode": mode(&self.config.mode),
+            "persistence": "deferred",
+            "titleGenerationEnabled": false,
+        }})
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -260,6 +338,27 @@ impl Protocol {
             return Ok(step);
         }
         if let Some(error) = value.get("error") {
+            // Deferred persistence promotes a session on its first send, so a
+            // start that failed before it left nothing on disk and this
+            // per-run server cannot resume it. Start fresh instead of failing
+            // the thread for good; a create's own error is never swallowed.
+            if value["id"] == ID_CREATE
+                && self.config.resume_id.is_some()
+                && (error["code"] == -32004
+                    || field(error, "message")
+                        .to_lowercase()
+                        .starts_with("session not found"))
+            {
+                self.config.resume_id = None;
+                self.remote_id.clear();
+                step.events.push(self.event(
+                    "status",
+                    "The saved ZCode session is gone, so a new session started without its history",
+                    None,
+                ));
+                step.write.push(self.zcode_create());
+                return Ok(step);
+            }
             let message = short(field(error, "message"));
             let auth = field(error, "data").to_lowercase().contains("auth")
                 || message.to_lowercase().contains("account")
@@ -462,17 +561,32 @@ impl Protocol {
         }
         let catalog = &settings["model"]["available"];
         let wanted = &self.config.model;
+        let mut thought = self.config.reasoning_effort.clone();
         if !wanted.is_empty() && wanted != "default" {
             let entry = catalog
                 .as_array()
                 .into_iter()
                 .flatten()
                 .find(|entry| field(entry, "label") == *wanted);
-            let reference = match entry {
+            let mut reference = match entry {
                 Some(entry) => entry["ref"].clone(),
                 // A custom model id rides the session's current provider.
                 None => json!({"providerId": current["providerId"], "modelId": wanted}),
             };
+            // The selection itself must carry the reasoning level: the server
+            // validates `options.reasoningLevel` inside setModel and rejects the
+            // frame without it, so the later setThoughtLevel cannot repair it.
+            // An effort this model does not list falls to its default, and is
+            // not sent to setThoughtLevel either, which would fail the run.
+            if let Some(entry) = entry {
+                thought = thought.filter(|effort| lists_level(entry, effort));
+                let default = entry["reasoning"]["defaultLevel"]
+                    .as_str()
+                    .filter(|level| lists_level(entry, level));
+                if let Some(level) = thought.as_deref().or(default) {
+                    reference["options"] = json!({"reasoningLevel": level});
+                }
+            }
             self.zcode.requested_model = Some((
                 string(&reference, "providerId"),
                 string(&reference, "modelId"),
@@ -482,12 +596,12 @@ impl Protocol {
                 "params": {"sessionId": self.remote_id, "model": reference},
             }));
         }
-        if let Some(effort) = &self.config.reasoning_effort {
-            self.zcode.requested_thought = Some(effort.clone());
+        if let Some(effort) = thought {
             step.write.push(json!({
                 "id": ID_THOUGHT, "method": "session/setThoughtLevel",
                 "params": {"sessionId": self.remote_id, "thoughtLevel": effort},
             }));
+            self.zcode.requested_thought = Some(effort);
         }
         step.write.push(json!({
             "id": ID_SUBSCRIBE, "method": "session/subscribe",
@@ -542,6 +656,19 @@ pub(super) fn permission_decision(request: &Value, approved: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn bundled_candidates_cover_the_desktop_app_bundle() {
+        let expected = if cfg!(target_os = "macos") {
+            "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"
+        } else {
+            "/opt/ZCode/resources/glm/zcode.cjs"
+        };
+        assert!(bundled_candidates()
+            .iter()
+            .any(|path| path == Path::new(expected)), "missing {expected}");
+    }
 
     /// Recorded from the CLI bundled with ZCode.app (user-agent ZCode/3.16.3);
     /// session IDs, models and paths anonymized, catalog shortened to one entry.
@@ -605,6 +732,7 @@ mod tests {
         assert_eq!(step.write.len(), 3);
         assert_eq!(step.write[0]["method"], "session/setModel");
         assert_eq!(step.write[0]["params"]["model"]["modelId"], "zcproxy/GLM-5.3");
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "high");
         assert_eq!(step.write[1]["method"], "session/setThoughtLevel");
         assert_eq!(step.write[1]["params"]["thoughtLevel"], "high");
         assert_eq!(step.write[2]["method"], "session/subscribe");
@@ -620,6 +748,66 @@ mod tests {
         assert_eq!(prompt.write[0]["method"], "session/send");
         assert_eq!(prompt.write[0]["params"]["inputId"], "pandacode-1");
         assert_eq!(p.phase, 1);
+    }
+
+    #[test]
+    fn set_model_without_an_effort_sends_the_catalog_default_level() {
+        let (mut p, _) = created();
+        p.config.model = "zcproxy/GLM-5.3".into();
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+
+        // A custom id has no catalog entry to default from; the bare
+        // reference stands and the server validates it.
+        let mut custom = super::super::tests::config("zcode");
+        custom.cwd = PathBuf::from("/tmp");
+        custom.model = "pandacode/custom-model".into();
+        let mut p = Protocol::new(custom);
+        assert_eq!(p.initial()["method"], "session/create");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["method"], "session/setModel");
+        assert!(step.write[0]["params"]["model"].get("options").is_none());
+    }
+
+    #[test]
+    fn set_model_sends_an_explicit_effort_only_when_the_catalog_lists_it() {
+        let chain = |model: &str, effort: &str, snapshot: Value| {
+            let mut config = super::super::tests::config("zcode");
+            config.cwd = PathBuf::from("/tmp");
+            config.model = model.into();
+            config.reasoning_effort = Some(effort.into());
+            let mut p = Protocol::new(config);
+            p.receive(json!({"id": ID_CREATE, "result": snapshot})).unwrap().write
+        };
+        let glm = "zcproxy/GLM-5.3";
+
+        let write = chain(glm, "low", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "low");
+        assert_eq!(write[1]["params"]["thoughtLevel"], "low");
+
+        // An unlisted effort takes the model's default, and setThoughtLevel is
+        // skipped: the server would not apply it and the run would fail.
+        let write = chain(glm, "medium", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A model with no levels has no default to fall back to.
+        let mut levelless = snapshot();
+        levelless["settings"]["model"]["available"][0]["reasoning"] = json!({"levels": []});
+        let write = chain(glm, "high", levelless);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A default the entry does not list is not sent either.
+        let mut stale = snapshot();
+        stale["settings"]["model"]["available"][0]["reasoning"]["defaultLevel"] = json!("ultra");
+        let write = chain(glm, "medium", stale);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+
+        // A custom id has no entry to check: no options, setThoughtLevel still runs.
+        let write = chain("pandacode/custom-model", "high", snapshot());
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["params"]["thoughtLevel"], "high");
     }
 
     #[test]
@@ -650,6 +838,50 @@ mod tests {
         // Protocol::new pre-seeds the resume id, so a stop before the snapshot
         // already names the saved session.
         assert_eq!(p.cancel()["params"]["sessionId"], "sess_saved");
+    }
+
+    #[test]
+    fn a_dead_resume_id_falls_back_to_a_fresh_create() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        assert_eq!(p.initial()["method"], "session/resume");
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert!(p.config.resume_id.is_none(), "the dead id is dropped");
+
+        // The fresh create answers like any other and runs the chain.
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert_eq!(step.write[0]["method"], "session/subscribe");
+
+        // A create's own error is never swallowed into another create.
+        let Err(message) = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a"}}))
+        else {
+            panic!("a fresh create's error must fail the run");
+        };
+        assert_eq!(message, "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a");
+    }
+
+    #[test]
+    fn a_dead_resume_id_reports_the_lost_history() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.events.len(), 1);
+        assert_eq!(step.events[0].kind, "status");
+        assert!(step.events[0].text.contains("without its history"), "{}", step.events[0].text);
     }
 
     #[test]
