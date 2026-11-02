@@ -135,9 +135,26 @@ pub(super) fn chains(store: &storage::Store, team: &TeamSnapshot, args: &Value) 
     Ok(chains)
 }
 
-/// The team's config, its checkout's main languages (cached per checkout) and failed workers' chains, for routing.
-pub(super) async fn team_context(app: &tauri::AppHandle, sid: &str, generation: u64, args: &Value) -> Result<(TeamConfig, Vec<String>, Chains)> {
-    let (config, root, chains) = {
+/// Assignment key -> the speed tier key of the worker it replaces, which the replacement must keep.
+pub(crate) type ReplacedTiers = HashMap<String, String>;
+
+/// The speed tiers this dispatch's replacements inherit from the workers they replace.
+pub(super) fn replaced_tiers(team: &TeamSnapshot, args: &Value) -> ReplacedTiers {
+    args["assignments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            let old = team.workers.iter().find(|w| Some(w.id.as_str()) == a["replaces"].as_str())?;
+            Some((a["key"].as_str()?.to_string(), old.service_tier.clone()?))
+        })
+        .collect()
+}
+
+/// The team's config, its checkout's main languages (cached per checkout), failed workers' chains
+/// and the tiers replacements inherit, for routing.
+pub(super) async fn team_context(app: &tauri::AppHandle, sid: &str, generation: u64, args: &Value) -> Result<(TeamConfig, Vec<String>, Chains, ReplacedTiers)> {
+    let (config, root, chains, tiers) = {
         let state = app.state::<AppState>();
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let team = load(&store, sid)?.ok_or("Team unavailable.")?;
@@ -146,13 +163,14 @@ pub(super) async fn team_context(app: &tauri::AppHandle, sid: &str, generation: 
         }
         let lead = store.session(sid)?;
         let chains = chains(&store, &team, args)?;
-        (team.config, store.workspace_root(&lead.project_id, Some(sid)).ok(), chains)
+        let tiers = replaced_tiers(&team, args);
+        (team.config, store.workspace_root(&lead.project_id, Some(sid)).ok(), chains, tiers)
     };
     let langs = match root {
         Some(root) => tokio::task::spawn_blocking(move || model_routing::repo_languages(&root)).await.unwrap_or_default(),
         None => Vec::new(),
     };
-    Ok((config, langs, chains))
+    Ok((config, langs, chains, tiers))
 }
 
 /// Worker assignments run as tool-using coding agents in the team's checkout.
@@ -202,14 +220,50 @@ pub(super) fn auto_from(keys: Vec<String>, routes: Option<std::result::Result<Ve
     }
 }
 
-pub(super) async fn auto_routes(config: &TeamConfig, langs: &[String], chains: &Chains, args: &Value) -> AutoRoutes {
+/// Routed jobs grouped by the pool they route over: the team's pool, or for a replacement that keeps
+/// a speed tier, only the Codex models whose live catalog lists it (`pool_for`).
+pub(super) fn tier_groups(config: &TeamConfig, keys: Vec<String>, jobs: Vec<Job>, tiers: &ReplacedTiers, speeds: &super::SpeedCatalog) -> Vec<(Vec<String>, Vec<PoolModel>, Vec<Job>)> {
+    let mut groups: Vec<(Option<String>, Vec<String>, Vec<Job>)> = Vec::new();
+    for (key, job) in keys.into_iter().zip(jobs) {
+        let tier = tiers.get(&key).cloned();
+        match groups.iter_mut().find(|g| g.0 == tier) {
+            Some(group) => {
+                group.1.push(key);
+                group.2.push(job);
+            }
+            None => groups.push((tier, vec![key], vec![job])),
+        }
+    }
+    groups.into_iter().map(|(tier, keys, jobs)| (keys, pool_for(config, tier.as_deref(), speeds), jobs)).collect()
+}
+
+/// The routing pool, narrowed for a required speed tier to Codex models whose live catalog lists it
+/// (empty when the catalog could not be read, so nothing untiered is ever picked).
+pub(super) fn pool_for(config: &TeamConfig, tier: Option<&str>, speeds: &super::SpeedCatalog) -> Vec<PoolModel> {
+    let pool = pool(config);
+    let Some(tier) = tier else {
+        return pool;
+    };
+    let Some(Ok(catalog)) = speeds else {
+        return Vec::new();
+    };
+    pool.into_iter()
+        .filter(|m| m.provider == "codex" && catalog.get(&m.model).is_some_and(|tiers| crate::command_operations::find_tier(tiers, tier).is_some()))
+        .collect()
+}
+
+pub(super) async fn auto_routes(config: &TeamConfig, langs: &[String], chains: &Chains, tiers: &ReplacedTiers, speeds: &super::SpeedCatalog, args: &Value) -> AutoRoutes {
     let (keys, jobs) = auto_jobs(args, langs, chains, by_default(config));
     if keys.is_empty() {
         return AutoRoutes::default();
     }
     // One mode for routing and staffing, even if Settings changes it meanwhile.
     let mode = model_routing::mode();
-    auto_from(keys, model_routing::route_jobs(pool(config), jobs, Some(mode)).await, mode)
+    let mut routes = AutoRoutes::default();
+    for (keys, pool, jobs) in tier_groups(config, keys, jobs, tiers, speeds) {
+        routes.extend(auto_from(keys, model_routing::route_jobs(pool, jobs, Some(mode)).await, mode));
+    }
+    routes
 }
 
 pub(super) fn effort(provider: &str, effort: Option<&String>) -> Option<String> {
@@ -218,6 +272,16 @@ pub(super) fn effort(provider: &str, effort: Option<&String>) -> Option<String> 
 
 fn money(usd: f64) -> String {
     if usd < 0.01 { format!("${usd:.4}") } else { format!("${usd:.2}") }
+}
+
+/// The roster profile for a model.
+pub(super) fn roster_entry<'a>(config: &'a TeamConfig, provider: &str, model: &str) -> Option<&'a WorkerProfile> {
+    config.workers.iter().find(|p| p.provider == provider && p.model == model)
+}
+
+/// A Codex profile's speed tier.
+pub(super) fn profile_tier(profile: &WorkerProfile) -> Option<String> {
+    profile.service_tier.clone()
 }
 
 /// A model the user has not switched off and that is not paused after failures.
@@ -229,7 +293,7 @@ pub(super) fn usable(profile: &WorkerProfile) -> bool {
 /// team without the lead's usable model uses its first usable entry, else the lead's own model), and says which in one line. A fresh assignment
 /// in Cheap or Balanced mode opens on the ladder's first (cheapest safe) rung and escalates from there;
 /// Best mode and escalations take the policy's pick.
-pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment, routes: &AutoRoutes) -> Result<(WorkerProfile, String)> {
+pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment, routes: &AutoRoutes) -> Result<(WorkerProfile, super::TierOrigin, String)> {
     if assignment.provider.is_some() || assignment.model.is_some() {
         return Err("Use either profileId or provider and model, not both.".into());
     }
@@ -245,7 +309,7 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
                 _ => ladder.first(),
             };
             let pick = opener.cloned().unwrap_or_else(|| policy.clone());
-            let roster = config.workers.iter().find(|p| p.provider == pick.provider && p.model == pick.model);
+            let roster = roster_entry(config, &pick.provider, &pick.model);
             if config.roster_only && roster.is_none() {
                 return Err("Panda Router picked a model outside this team.".into());
             }
@@ -272,12 +336,16 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
                 provider: pick.provider,
                 model: pick.model,
                 reasoning_effort,
+                // Only a matched roster profile carries a speed tier: routing never picks one itself.
+                service_tier: roster.and_then(profile_tier),
             };
-            return Ok((profile, note));
+            return Ok((profile, super::TierOrigin::Implicit, note));
         }
         Ok(_) => "no rated model fits",
         Err(reason) => reason,
     };
+    // The lead's own model keeps a matching roster profile's speed tier, checked like any other.
+    let lead_tier = roster_entry(config, &lead.provider, &lead.model).and_then(profile_tier);
     let profile = if config.auto && !config.roster_only {
         WorkerProfile {
             id: AUTO.into(),
@@ -285,6 +353,7 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
             provider: lead.provider.clone(),
             model: lead.model.clone(),
             reasoning_effort: effort(&lead.provider, wanted).or_else(|| lead.reasoning_effort.clone()),
+            service_tier: lead_tier,
         }
     } else {
         // The lead's entry, else the first usable one; with none usable, the lead's own model.
@@ -297,11 +366,12 @@ pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &A
                 provider: lead.provider.clone(),
                 model: lead.model.clone(),
                 reasoning_effort: effort(&lead.provider, wanted).or_else(|| lead.reasoning_effort.clone()),
+                service_tier: lead_tier,
             },
         }
     };
     let note = format!("not routed ({reason}), using {} · {}", profile.name, profile.provider);
-    Ok((profile, note))
+    Ok((profile, super::TierOrigin::Implicit, note))
 }
 
 #[derive(Deserialize)]

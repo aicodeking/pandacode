@@ -312,8 +312,10 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'haiku', name: 'Claude Haiku 4.5', description: 'Sample Claude Code model metadata.', contextWindow: 200000 },
   ],
   codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000 },
+    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000, speedTiers: [PREVIEW_FAST, PREVIEW_ULTRAFAST] },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })) },
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1-Sol', description: 'Sample Codex model metadata.', speedTiers: [PREVIEW_FAST, PREVIEW_ULTRAFAST] },
+    { id: 'gpt-6-luna', name: 'GPT-6-Luna', description: 'Sample Codex model metadata.', speedTiers: [PREVIEW_FAST] },
   ],
   kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'Sample configured Kimi model.', reasoningEfforts: [{ id: 'on', name: 'On', description: 'Enable thinking.' }, { id: 'off', name: 'Off', description: 'Disable thinking.' }], contextWindow: 256000 }],
   // Mirrors the initialize modelState that `grok agent stdio` advertises.
@@ -696,7 +698,8 @@ function codexTask(value: unknown): Session {
 }
 /** A model's speed tiers in the sample Codex catalog (the default model has Fast and Ultrafast). */
 function previewServiceTiers(model: string): { id: string; key: string; name: string; description: string }[] {
-  return model === 'default' || !model || model === 'gpt-6-astra' ? [PREVIEW_FAST, PREVIEW_ULTRAFAST] : [];
+  if (model === 'default' || !model) return [PREVIEW_FAST, PREVIEW_ULTRAFAST];
+  return [...(catalogs.codex.find(entry => entry.id === model)?.speedTiers ?? [])];
 }
 /** Like native `tier_key`: the name lowercased, other characters than letters and digits one `-`. */
 const previewTierKey = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '');

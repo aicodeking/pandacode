@@ -381,3 +381,76 @@ test('the model filter is a full-height field, not a collapsed line', async ({ p
   expect(filterBox.width).toBeGreaterThan(300);
 });
 });
+
+test('Codex workers choose only speed tiers their model\'s catalog lists, in agent teams and in the classic setup', async ({ page }) => {
+  await install(page);
+  await openAgents(page);
+  await settings(page).getByRole('button', { name: 'New team' }).click();
+  await settings(page).getByRole('textbox', { name: 'Team name', exact: true }).fill('Quick');
+  const models = settings(page).getByRole('group', { name: 'Team models' });
+  const astra = 'GPT-6-Astra · Codex';
+  await models.getByRole('checkbox', { name: `Include ${astra}`, exact: true }).check();
+  await models.getByRole('radio', { name: `${astra} leads`, exact: true }).check();
+  const speed = models.getByRole('combobox', { name: `Worker speed for ${astra}`, exact: true });
+  expect(await speed.locator('option').allTextContents()).toEqual(['Default', 'Fast', 'Ultrafast']);
+  await speed.selectOption('ultrafast');
+  // Each model offers exactly its catalog's tiers (sample shapes: 6.1 Sol and Astra Fast + Ultrafast, Luna Fast, 5.6 Sol none).
+  const options = (label: string) => models.getByRole('combobox', { name: `Worker speed for ${label}`, exact: true }).locator('option').allTextContents();
+  expect(await options('GPT-6.1-Sol · Codex')).toEqual(['Default', 'Fast', 'Ultrafast']);
+  expect(await options('GPT-6-Luna · Codex')).toEqual(['Default', 'Fast']);
+  await expect(models.getByRole('combobox', { name: 'Worker speed for GPT-5.6-Sol · Codex', exact: true })).toHaveCount(0);
+  await expect(models.getByRole('combobox', { name: 'Worker speed for DeepSeek V4 Pro · DeepSeek', exact: true })).toHaveCount(0);
+  await settings(page).getByRole('button', { name: 'Save team', exact: true }).click();
+  await expect(settings(page).getByRole('listitem').filter({ hasText: 'Quick' })).toBeVisible();
+  const { setup: saved } = (await calls(page, 'architect_save_profile')).at(-1).args;
+  expect(saved.config.workers).toEqual([expect.objectContaining({ provider: 'codex', model: 'gpt-6-astra', serviceTier: 'ultrafast' })]);
+  await settings(page).getByRole('button', { name: 'Edit Quick', exact: true }).click();
+  await expect(speed).toHaveValue('ultrafast');
+
+  // Classic setup: the Speed select follows the worker's model, and a tier the new model lacks is dropped with a note.
+  await settings(page).getByRole('checkbox', { name: 'Classic team setup', exact: true }).check();
+  await closeSettings(page);
+  await page.getByRole('button', { name: 'Architect & workers', exact: true }).click();
+  const setup = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Architect & workers', exact: true }) });
+  const workerSpeed = setup.getByRole('combobox', { name: 'Speed for worker 1', exact: true });
+  const pick = async (provider: string, model: string) => {
+    await setup.getByRole('button', { name: 'Choose model for worker 1', exact: true }).click();
+    await page.keyboard.type(model);
+    await picker(page).locator(`.model-menu-option[data-provider="${provider}"][data-model="${model}"]`).click();
+    await expect(picker(page)).toBeHidden();
+  };
+  const note = setup.locator('.architect-speed-note').first();
+  await pick('codex', 'gpt-6-astra');
+  await expect(workerSpeed).toBeVisible();
+  await workerSpeed.selectOption('fast');
+  await pick('deepseek', 'deepseek-v4-pro');
+  await expect(workerSpeed).toBeHidden();
+  await expect(note).toHaveText('Fast is not available for deepseek-v4-pro; this worker will use the default speed only if you save it that way.');
+  await pick('codex', 'gpt-6-astra');
+  await expect(workerSpeed).toHaveValue('');
+  await workerSpeed.selectOption('ultrafast');
+  await expect(note).toBeHidden();
+  await pick('codex', 'gpt-6-luna');
+  expect(await workerSpeed.locator('option').allTextContents()).toEqual(['Default', 'Fast']);
+  await expect(workerSpeed).toHaveValue('');
+  await expect(note).toHaveText('Ultrafast is not available for gpt-6-luna; this worker will use the default speed only if you save it that way.');
+  await pick('codex', 'gpt-5.6-sol');
+  await expect(workerSpeed).toBeHidden();
+  await pick('codex', 'gpt-6-astra');
+  await workerSpeed.selectOption('ultrafast');
+  await setup.getByRole('button', { name: 'Save setup', exact: true }).click();
+  await expect(setup).toHaveCount(0);
+  const { config } = (await calls(page, 'architect_configure')).at(-1).args;
+  expect(config.workers[0]).toMatchObject({ provider: 'codex', model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+});
+
+test('saving a named team refuses a speed tier its model\'s catalog does not list', async ({ page }) => {
+  await install(page);
+  const error = await page.evaluate(async () => {
+    const invoke = (window as any).__teamInvoke;
+    const workers = [{ id: 'luna', name: 'Luna', provider: 'codex', model: 'gpt-6-luna', reasoningEffort: null, serviceTier: 'ultrafast' }];
+    const setup = { architect: { provider: 'codex', model: 'gpt-6-luna', reasoningEffort: null }, config: { auto: true, rosterOnly: true, name: 'Slow', workers, maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072 } };
+    try { await invoke('architect_save_profile', { id: null, name: 'Slow', setup }); return ''; } catch (cause) { return String(cause); }
+  });
+  expect(error).toContain('Luna: Ultrafast is not available for gpt-6-luna in the installed Codex catalog.');
+});

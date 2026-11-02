@@ -36,3 +36,6 @@ html[data-theme="dark"] .agent-team-lead:has(input:checked){color:var(--accent)}
 .agent-team-count{margin-right:auto;font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
 .agent-team-error{margin:0 1rem .8rem;font-size:var(--text-xs);color:var(--danger)}
 .agent-guidance,.agent-team-editor input[type=text],.agent-team-filter{background:color-mix(in srgb,var(--text) 6%,transparent)}
+.agent-team-speed{max-width:30%}
+.agent-team-speed-note{flex-basis:100%;color:var(--muted);font-size:var(--text-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.agent-team-model:has(.agent-team-speed-note){flex-wrap:wrap;padding-bottom:4px}

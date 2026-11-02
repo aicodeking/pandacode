@@ -328,7 +328,8 @@ resolved and the tier is checked against its current native catalog, and the
 catalog id is saved. `codex_service_tiers(sessionId)` lists the tiers (`id`,
 `key`, `name`, `description`) the catalog offers for the task's model. A tier's
 `key` is computed natively by `command_operations::tier_key` from its catalog
-name (lower case, each run of other characters than letters and digits one `-`).
+name (lower case, each run of other characters than letters and digits one `-`);
+Codex model lists carry the same tiers as `speedTiers`.
 
 `fork_codex_task(sessionId, remoteId?)` forks the saved Codex conversation or
 adopts a verified conversation in this checkout. Adoption imports bounded history

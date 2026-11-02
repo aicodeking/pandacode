@@ -354,6 +354,9 @@ pub async fn architect_save_profile(
     name: String,
     setup: TeamSetup,
 ) -> Result<TeamLibrary> {
+    // A worker profile's speed tier must be in the live Codex catalog for its model. A library
+    // profile belongs to no checkout, so the catalog is read outside any project.
+    super::check_profile_speeds(&std::env::temp_dir(), &setup.config.workers).await?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     save_profile(&store, id, name, setup)
 }

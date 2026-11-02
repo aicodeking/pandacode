@@ -5,7 +5,7 @@ import type { TeamLibrary, TeamProfile } from './architect-types';
 import { escape, icon } from './dom';
 import { modelChoices } from './model-catalog';
 import { providerLogo } from './provider-logos';
-import { classicTeamSetup, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
+import { classicTeamSetup, keepSpeed, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, speedOptions, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
 import type { Provider, ProviderId, ProviderModel } from './types';
 
 export interface AgentTeamsOptions {
@@ -70,7 +70,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     return installed.flatMap((provider, index) => {
       const result = loaded[index];
       return modelChoices(provider.id, result.status === 'fulfilled' ? result.value : provider.models)
-        .map(model => ({ provider: provider.id, harness: provider.name, model: model.id, name: model.name, efforts: model.reasoningEfforts }));
+        .map(model => ({ provider: provider.id, harness: provider.name, model: model.id, name: model.name, efforts: model.reasoningEfforts, speedTiers: model.speedTiers ?? [] }));
     });
   }
   /** Effort choices for a model that advertises them; empty means the harness default. */
@@ -79,14 +79,20 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   function renderModels(chosen: ReadonlySet<string>, lead: string): void {
     const saved = editing?.setup.config.workers ?? [];
     const extra = saved.filter(worker => !catalog.some(model => modelKey(model) === modelKey(worker)))
-      .map(worker => ({ provider: worker.provider, harness: harnessName(worker.provider), model: worker.model, name: worker.name.split(' · ')[0], reasoningEffort: worker.reasoningEffort }));
+      .map(worker => ({ provider: worker.provider, harness: harnessName(worker.provider), model: worker.model, name: worker.name.split(' · ')[0], reasoningEffort: worker.reasoningEffort, serviceTier: worker.serviceTier }));
     const all: TeamModel[] = [...catalog, ...extra];
     if (!all.length) { models.innerHTML = '<p class="agent-team-loading">No installed agents report models yet.</p>'; return; }
     const groups = [...new Set(all.map(model => model.provider))];
     models.innerHTML = groups.map(provider => `<section aria-label="${escape(harnessName(provider))}"><h4>${providerLogo(provider)}${escape(harnessName(provider))}</h4>${all.filter(model => model.provider === provider).map(model => {
       const key = modelKey(model), label = `${model.name} · ${model.harness}`;
       const effort = model.efforts?.length ? `<select class="agent-team-effort" aria-label="Worker effort for ${escape(label)}">${effortOptions(model, saved.find(worker => modelKey(worker) === key)?.reasoningEffort)}</select>` : '';
-      return `<div class="agent-team-model" data-key="${escape(key)}" data-search="${escape(`${label} ${model.model}`.toLowerCase())}"><label><input type="checkbox" value="${escape(key)}" aria-label="Include ${escape(label)}" ${chosen.has(key) ? 'checked' : ''}><span>${escape(model.name)}</span></label><label class="agent-team-lead"><input type="radio" name="agent-team-lead" value="${escape(key)}" aria-label="${escape(label)} leads" ${key === lead ? 'checked' : ''}><span>Lead</span></label>${effort}</div>`;
+      // Speed choices are exactly the tiers this model's catalog lists; a saved tier it no longer
+      // lists is dropped here, and the row says so.
+      const kept = keepSpeed(saved.find(worker => modelKey(worker) === key)?.serviceTier, model.speedTiers ?? [], model.name);
+      const options = speedOptions(model.speedTiers ?? [], kept.tier);
+      const speed = options ? `<select class="agent-team-effort agent-team-speed" aria-label="Worker speed for ${escape(label)}">${options}</select>` : '';
+      const note = kept.note ? `<small class="agent-team-speed-note" data-live>${escape(kept.note)}</small>` : '';
+      return `<div class="agent-team-model" data-key="${escape(key)}" data-search="${escape(`${label} ${model.model}`.toLowerCase())}"><label><input type="checkbox" value="${escape(key)}" aria-label="Include ${escape(label)}" ${chosen.has(key) ? 'checked' : ''}><span>${escape(model.name)}</span></label><label class="agent-team-lead"><input type="radio" name="agent-team-lead" value="${escape(key)}" aria-label="${escape(label)} leads" ${key === lead ? 'checked' : ''}><span>Lead</span></label>${effort}${speed}${note}</div>`;
     }).join('')}</section>`).join('');
     shown = all;
     leadSelected = lead;
@@ -100,7 +106,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
       const box = row.querySelector<HTMLInputElement>('input[type=checkbox]')!, radio = row.querySelector<HTMLInputElement>('input[type=radio]')!;
       radio.disabled = !box.checked; if (!box.checked) radio.checked = false;
       box.disabled = !box.checked && included.length >= TEAM_MODELS_MAX;
-      const effort = row.querySelector<HTMLSelectElement>('.agent-team-effort'); if (effort) effort.disabled = !box.checked;
+      row.querySelectorAll<HTMLSelectElement>('select').forEach(select => { select.disabled = !box.checked; });
     });
     if (included.length && !models.querySelector('input[type=radio]:checked')) models.querySelector<HTMLInputElement>(`input[type=radio][value="${CSS.escape(included[0].value)}"]`)!.checked = true;
     // The lead's effort applies to the lead only; its worker entry keeps the row's effort.
@@ -135,8 +141,10 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     const teamName = name.value.trim();
     const included = checked().map((box): TeamModel | undefined => {
       const model = shown.find(model => modelKey(model) === box.value);
-      const effort = box.closest('.agent-team-model')?.querySelector<HTMLSelectElement>('.agent-team-effort');
-      return model && { ...model, reasoningEffort: effort ? effort.value || null : model.reasoningEffort ?? null };
+      const row = box.closest('.agent-team-model');
+      const effort = row?.querySelector<HTMLSelectElement>('.agent-team-effort:not(.agent-team-speed)');
+      const speed = row?.querySelector<HTMLSelectElement>('.agent-team-speed');
+      return model && { ...model, reasoningEffort: effort ? effort.value || null : model.reasoningEffort ?? null, serviceTier: speed ? speed.value || null : null };
     }).filter((model): model is TeamModel => Boolean(model));
     const leadKey = models.querySelector<HTMLInputElement>('input[type=radio]:checked')?.value;
     const leadModel = included.find(model => modelKey(model) === leadKey);

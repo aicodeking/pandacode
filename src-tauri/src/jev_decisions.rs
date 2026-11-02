@@ -1159,6 +1159,7 @@ mod tests {
                 provider: "claude".into(),
                 model: "test-claude".into(),
                 reasoning_effort: None,
+                service_tier: None,
             }],
             max_parallel: 1,
             max_rounds: 3,

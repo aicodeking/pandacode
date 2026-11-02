@@ -933,6 +933,7 @@ pub(super) fn parse_grok_models(state: &Value) -> Vec<ModelInfo> {
             .filter(|id| efforts.iter().any(|effort| effort.id == *id))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.into(),
             name: model_text(entry["name"].as_str(), id, 160),
             description: model_text(entry["description"].as_str(), "", 500),
@@ -991,6 +992,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 continue;
             }
             models.push(ModelInfo {
+                speed_tiers: Vec::new(),
                 id: id.into(),
                 name: model_text(choice["name"].as_str(), id, 160),
                 description: model_text(choice["description"].as_str(), "", 500),
@@ -1006,6 +1008,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 continue;
             }
             models.push(ModelInfo {
+                speed_tiers: Vec::new(),
                 id: id.into(),
                 name: model_text(entry["name"].as_str(), id, 160),
                 description: model_text(entry["description"].as_str(), "", 500),

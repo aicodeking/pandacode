@@ -6,6 +6,8 @@ export interface WorkerProfile {
   provider: ProviderId;
   model: string;
   reasoningEffort?: string | null;
+  /** Codex workers only: a speed tier key from the model's catalog (`SpeedTier.key`); unset is the model's default. */
+  serviceTier?: string | null;
 }
 export interface TeamConfig {
   /** The task's own model leads and picks each worker's model (from `workers`, a roster of

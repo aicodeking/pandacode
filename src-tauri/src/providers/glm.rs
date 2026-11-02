@@ -105,6 +105,7 @@ pub(super) fn models() -> Vec<ModelInfo> {
     ]
     .into_iter()
     .map(|(id, name, description)| ModelInfo {
+        speed_tiers: Vec::new(),
         id: id.into(),
         name: name.into(),
         description: format!("{description} Availability depends on your plan."),

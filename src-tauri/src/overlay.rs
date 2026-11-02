@@ -1921,6 +1921,7 @@ mod tests {
                     provider: "codex".into(),
                     model: "default".into(),
                     reasoning_effort: None,
+                    service_tier: None,
                 }],
                 max_parallel: 1,
                 max_rounds: 4,

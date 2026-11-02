@@ -45,6 +45,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
         let rank = |id: &str| ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"].iter().position(|known| *known == id).unwrap_or(usize::MAX);
         efforts.sort_by_key(|effort| rank(&effort.id));
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.into(),
             name: model_text(entry["name"].as_str(), id, 160),
             description: id.into(),
@@ -75,6 +76,7 @@ fn parse_plain(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
         }
         if seen.insert(id) {
             models.push(ModelInfo {
+                speed_tiers: Vec::new(),
                 id: id.into(),
                 name: id.into(),
                 description: id.into(),

@@ -5,7 +5,7 @@ use crate::integrations::ControlClient;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
@@ -834,6 +834,9 @@ pub fn tier_missing(wanted: &str, model: &str) -> String {
     format!("{} is not available for {model} in the installed Codex catalog.", tier_label(wanted))
 }
 
+/// Why a speed tier could not be checked.
+pub const TIER_UNREAD: &str = "Couldn't read the Codex catalog to check the speed tier";
+
 fn valid_model(model: &str) -> Result<(), String> {
     if model.len() > 200 || model.chars().any(char::is_control) {
         return Err("Invalid Codex model.".into());
@@ -862,6 +865,15 @@ pub async fn service_tiers(cwd: &Path, model: &str) -> Result<Vec<ServiceTier>, 
     result
 }
 
+/// Every model's speed tiers in the installed Codex catalog, in one read: by model and by catalog
+/// id, and under `default` for the default model.
+pub async fn catalog_speed_tiers(cwd: &Path) -> Result<HashMap<String, Vec<ServiceTier>>, String> {
+    let mut client = catalog_client(cwd).await?;
+    let result = all_tiers_with(&mut client).await;
+    client.finish().await;
+    result
+}
+
 /// A control client, waiting briefly while another catalog read holds the discovery slot.
 async fn catalog_client(cwd: &Path) -> Result<ControlClient, String> {
     let mut attempt = 0;
@@ -874,6 +886,32 @@ async fn catalog_client(cwd: &Path) -> Result<ControlClient, String> {
             other => return other,
         }
     }
+}
+
+async fn all_tiers_with(client: &mut impl Transport) -> Result<HashMap<String, Vec<ServiceTier>>, String> {
+    let mut models = HashMap::new();
+    let mut cursor = Value::Null;
+    let mut cursors = HashSet::new();
+    for _ in 0..MAX_PAGES {
+        let result = client.request("model/list", json!({"cursor":cursor,"limit":100,"includeHidden":true})).await?;
+        for item in array(&result, "data")?.iter().take(100) {
+            let tiers = catalog_tiers(item);
+            for name in [&item["model"], &item["id"]].into_iter().filter_map(|v| nonempty(v, 200)) {
+                models.entry(name).or_insert_with(|| tiers.clone());
+            }
+            if item["isDefault"] == true {
+                models.entry("default".to_string()).or_insert_with(|| tiers.clone());
+            }
+        }
+        let Some(next) = nonempty(&result["nextCursor"], 4096) else {
+            break;
+        };
+        if !cursors.insert(next.clone()) {
+            break;
+        }
+        cursor = Value::String(next);
+    }
+    Ok(models)
 }
 
 pub async fn resolved_model(cwd: &Path, model: &str) -> Result<String, String> {
@@ -1095,7 +1133,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn a_fictional_tier_flows_through_lookup() {
+    async fn a_fictional_tier_flows_through_lookup_and_the_whole_catalog() {
         let catalog = json!({"data":[
             {"id":"nova","model":"nova-9","isDefault":true,"serviceTiers":[{"id":"turbo","name":"Turbo Max","description":"Fictional."}]},
             {"id":"plain","model":"plain-1","serviceTiers":[]}
@@ -1104,8 +1142,13 @@ mod tests {
         assert_eq!(tier_with(&mut fake, "nova-9", "turbo-max").await.unwrap(), "turbo");
         let mut fake = Fake::new(vec![("model/list", catalog.clone())]);
         assert_eq!(tier_with(&mut fake, "nova-9", "Turbo Max").await.unwrap(), "turbo");
-        let mut fake = Fake::new(vec![("model/list", catalog)]);
+        let mut fake = Fake::new(vec![("model/list", catalog.clone())]);
         assert_eq!(tier_with(&mut fake, "plain-1", "turbo-max").await.unwrap_err(), "Turbo-max is not available for plain-1 in the installed Codex catalog.");
+        let mut fake = Fake::new(vec![("model/list", catalog)]);
+        let all = all_tiers_with(&mut fake).await.unwrap();
+        let keys = |m: &str| all[m].iter().map(|t| t.key.as_str()).collect::<Vec<_>>();
+        assert_eq!((keys("nova-9"), keys("nova"), keys("default"), keys("plain-1")), (vec!["turbo-max"], vec!["turbo-max"], vec!["turbo-max"], vec![]));
+        assert_eq!(all["nova-9"][0].id, "turbo");
     }
     #[tokio::test]
     async fn imported_transcript_uses_bounded_pages_in_chronological_order() {
