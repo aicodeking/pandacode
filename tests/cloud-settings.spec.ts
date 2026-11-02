@@ -1,0 +1,62 @@
+import { expect, test, type Page } from '@playwright/test';
+
+/* Settings → Agents → Cloud sandboxes on the preview's mock providers: connected cards lead
+ * alphabetically, and the environment checkbox keeps its label beside it (it once stretched
+ * full-width under the global input rule). Titles start with "cloud sandboxes" for the WebKit grep. */
+async function openCloud(page: Page) {
+  await page.goto('/');
+  await page.locator('#navigation .task-item').first().waitFor();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Cloud sandboxes' }).click();
+  return page.getByRole('tabpanel', { name: 'Cloud sandboxes' });
+}
+
+async function connect(page: Page, provider: string) {
+  const card = page.locator(`.cloud-provider[data-provider="${provider}"]`);
+  await card.scrollIntoViewIfNeeded();
+  await card.getByRole('button', { name: `Connect ${provider}` }).click();
+  await card.locator('input[name="key"]').fill('k');
+  await card.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(card.getByRole('button', { name: `Disconnect ${provider}` })).toBeVisible();
+  return card;
+}
+
+const cardOrder = (page: Page) =>
+  page.locator('.cloud-settings > .cloud-provider[data-provider]').evaluateAll(els => els.map(e => e.getAttribute('data-provider')));
+
+test('cloud sandboxes: connected providers lead, the rest alphabetical', async ({ page }) => {
+  const panel = await openCloud(page);
+  // Unconnected cards sit in their fixed alphabetical order behind the Claude login card.
+  await expect(panel.locator('.cloud-provider').first()).toHaveClass(/cloud-claude/);
+  expect(await cardOrder(page).then(order => order.slice(0, 3))).toEqual(['aws', 'blaxel', 'boat']);
+  await connect(page, 'instabox');
+  await connect(page, 'boat');
+  expect(await cardOrder(page)).toEqual([
+    'boat', 'instabox',
+    'aws', 'blaxel', 'cloudflare', 'codesandbox', 'daytona', 'digitalocean', 'docker', 'e2b', 'freestyle', 'gcloud',
+    'hetzner', 'modal', 'netlify', 'railway', 'runloop', 'runpod', 'tensorlake', 'vercel', 'vultr',
+  ]);
+  await expect(panel.locator('.cloud-provider').first()).toHaveClass(/cloud-claude/);
+  await connect(page, 'daytona');
+  expect((await cardOrder(page)).slice(0, 3)).toEqual(['boat', 'daytona', 'instabox']);
+});
+
+test('cloud sandboxes: the environment checkbox keeps its label beside it', async ({ page }) => {
+  await openCloud(page);
+  const card = await connect(page, 'boat');
+  const row = card.locator('.cloud-inherit');
+  await row.scrollIntoViewIfNeeded();
+  const box = card.locator('[data-cloud-inherit]');
+  await expect(box).toBeVisible();
+  const size = await box.boundingBox();
+  expect(size!.width).toBeLessThanOrEqual(24);
+  expect(size!.height).toBeLessThanOrEqual(24);
+  const label = row.locator('.info-mark').first();
+  const mark = await label.boundingBox();
+  const viewport = page.viewportSize()!;
+  expect(mark!.x).toBeLessThan(viewport.width / 2);
+  await box.check();
+  await expect(card.locator('.cloud-row-status')).toContainText('Saved.');
+  await box.uncheck();
+  await expect(card.locator('.cloud-row-status')).toContainText('Saved. Nothing from the provider environment is sent to this cloud.');
+});
