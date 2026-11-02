@@ -1188,12 +1188,12 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
             let count = stdout.read(&mut buffer).await.map_err(|e| format!("Claude model stream failed: {e}"))?;
             if count == 0 { return Err("Claude exited before returning its model catalog; update the CLI or enter a custom model ID".into()); }
             total += count;
-            if total > 1024 * 1024 { return Err("Claude model discovery exceeded its output limit".into()); }
+            if total > 4 * 1024 * 1024 { return Err("Claude model discovery exceeded its output limit".into()); }
             bytes.extend_from_slice(&buffer[..count]);
             let mut consumed = 0;
             for end in bytes.iter().enumerate().filter_map(|(i, byte)| (*byte == b'\n').then_some(i)) {
                 let line = &bytes[consumed..end]; consumed = end + 1;
-                if line.len() > 256 * 1024 { return Err("Claude model catalog frame is too large".into()); }
+                if line.len() > 4 * 1024 * 1024 { return Err("Claude model catalog frame is too large".into()); }
                 if line.iter().all(u8::is_ascii_whitespace) { continue; }
                 let message: Value = serde_json::from_slice(line).map_err(|_| "Claude returned invalid model discovery JSON")?;
                 if message["type"] != "control_response" || message["response"]["request_id"] != "pandacode-models" { continue; }
@@ -1202,7 +1202,7 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
                 return parse_claude_models(&response["response"]);
             }
             bytes.drain(..consumed);
-            if bytes.len() > 256 * 1024 { return Err("Claude model catalog frame is too large".into()); }
+            if bytes.len() > 4 * 1024 * 1024 { return Err("Claude model catalog frame is too large".into()); }
         }
     }).await.unwrap_or_else(|_| Err("Claude model discovery timed out; check the CLI or enter a custom model ID".into()));
     drop(stdin);
