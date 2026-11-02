@@ -41,6 +41,7 @@ fn setup() -> TeamSetup {
                     provider: "claude".into(),
                     model: "".into(),
                     reasoning_effort: Some("medium".into()),
+                    service_tier: None,
                 },
                 WorkerProfile {
                     id: "builder".into(),
@@ -48,6 +49,7 @@ fn setup() -> TeamSetup {
                     provider: "kimi".into(),
                     model: "default".into(),
                     reasoning_effort: None,
+                    service_tier: None,
                 },
             ],
             max_parallel: 2,

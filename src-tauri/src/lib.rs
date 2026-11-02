@@ -1689,6 +1689,7 @@ fn prepare_task_run_in_project(
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
     let config = RunConfig {
+        required_tier: architect::required_tier(&store, &session_id).map_err(restore)?,
         session_id: session_id.clone(),
         provider: session.provider,
         model: session.model,
@@ -1746,6 +1747,7 @@ fn prepare_cloud_attach(
     store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
     store.reattach_turn(&session_id)?;
     let config = RunConfig {
+        required_tier: architect::required_tier(store, &session_id)?,
         session_id: session_id.clone(),
         provider: session.provider,
         model: session.model,
@@ -4131,6 +4133,7 @@ pub fn run() {
                 task_controls::codex_command,
                 task_controls::codex_jobs,
                 task_controls::set_task_preference,
+                task_controls::codex_service_tiers,
                 task_controls::fork_codex_task,
                 task_controls::fork_session_at_message,
                 task_controls::get_message_content,

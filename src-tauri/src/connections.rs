@@ -540,6 +540,7 @@ mod tests {
         assert_eq!(warm_key(&other.id, "claude"), "", "a warm agent never crosses connections");
 
         let config = crate::providers::RunConfig {
+            required_tier: None,
             session_id: task.id.clone(),
             provider: "claude".into(),
             model: "default".into(),

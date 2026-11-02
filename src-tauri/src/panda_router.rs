@@ -140,11 +140,36 @@ pub struct Router {
     onnx: Option<OnnxProfiler>,
 }
 
+/// Splits a `<model>@<tier>` slug at its last `@` into the model and a candidate tier key. Whether
+/// the key names a real tier is decided only against the model's live Codex catalog. Without an
+/// `@`, or with nothing on either side of it, the whole string is the model.
+pub fn split_tier(model: &str) -> (&str, Option<&str>) {
+    match model.rsplit_once('@') {
+        Some((base, key)) if !base.is_empty() && !key.is_empty() => (base, Some(key)),
+        _ => (model, None),
+    }
+}
+
+/// The model a Codex speed variant runs (its slug before the last `@`). Other harnesses' model IDs
+/// keep any `@`.
+pub fn base_model<'a>(provider: &str, model: &'a str) -> &'a str {
+    match split_tier(model) {
+        (base, Some(_)) if provider == "codex" => base,
+        _ => model,
+    }
+}
+
+/// The candidate tier key of a Codex variant slug.
+pub fn speed_tier<'a>(provider: &str, model: &'a str) -> Option<&'a str> {
+    split_tier(model).1.filter(|_| provider == "codex")
+}
+
 /// Maps a PandaCode model to a card id: the harness table, then upstream alias matching, then (for
-/// `default`) the display name. Ambiguous or unknown -> None.
+/// `default`) the display name. Ambiguous or unknown -> None. A Codex speed variant shares its
+/// model's card.
 pub fn resolve_card(provider: &str, model: &str, name: &str) -> Option<&'static str> {
     let catalog = cards::catalog().ok()?;
-    catalog.resolve(provider, model, name).map(|i| catalog.cards[i].id.as_str())
+    catalog.resolve(provider, base_model(provider, model), name).map(|i| catalog.cards[i].id.as_str())
 }
 
 /// A model's tier-list key: its card id when rated (the same model on several harnesses shares it),

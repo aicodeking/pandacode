@@ -150,6 +150,9 @@ pub struct RunConfig {
     pub goal: Option<crate::goal_state::GoalRequest>,
     /// Validated per-task settings applied before any new Codex turn.
     pub codex_settings: Option<Value>,
+    /// A team worker's required Codex speed tier key: the run refuses to go on without it
+    /// rather than fall back to the model's default speed. None for every other task.
+    pub required_tier: Option<String>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
 }
@@ -527,6 +530,10 @@ pub struct ModelInfo {
     pub reasoning_efforts: Vec<ReasoningEffortInfo>,
     pub default_reasoning_effort: Option<String>,
     pub context_window: Option<u64>,
+    /// Codex only: every speed tier its catalog lists (key, name and description as the catalog
+    /// gives them), offered to teams as `<model>@<key>` variants and in the Speed choices.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub speed_tiers: Vec<crate::command_operations::ServiceTier>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -590,6 +597,7 @@ impl ModelInfo {
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
             context_window: None,
+            speed_tiers: Vec::new(),
         }
     }
 }
@@ -806,6 +814,7 @@ fn selected_opencode_models(catalog: Vec<ModelInfo>, selected: &[String]) -> Vec
     let mut models = vec![ModelInfo::default_choice()];
     for id in selected {
         models.push(available.remove(id).unwrap_or_else(|| ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.clone(),
             name: id.clone(),
             description: "Saved OpenCode model".into(),
@@ -903,6 +912,7 @@ fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
                 return Err(INVALID.to_owned());
             }
             Ok(ModelInfo {
+                speed_tiers: Vec::new(),
                 name: model_text(entry["name"].as_str(), &id, 160),
                 description: id.clone(),
                 // The API lists variants least to most, unlike v1's sorted keys.
@@ -1000,6 +1010,10 @@ fn parse_codex_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
         if entry["hidden"] == true {
             continue;
         }
+        // `default` runs the catalog's default model, so it offers that model's speed tiers.
+        if entry["isDefault"] == true {
+            models[0].speed_tiers = crate::command_operations::catalog_tiers(entry);
+        }
         let model = entry["model"].as_str().or_else(|| entry["id"].as_str());
         if let Some(model) = model.filter(|model| valid_model_id(model)) {
             if !models.iter().any(|m| m.id == model) {
@@ -1027,6 +1041,7 @@ fn parse_codex_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
                     .filter(|id| efforts.iter().any(|effort| effort.id == *id))
                     .map(str::to_owned);
                 models.push(ModelInfo {
+                    speed_tiers: crate::command_operations::catalog_tiers(entry),
                     id: model.into(),
                     name: model_text(
                         entry["displayName"]
@@ -1108,6 +1123,7 @@ fn parse_claude_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             continue;
         }
         let model = ModelInfo {
+            speed_tiers: Vec::new(),
             id: id.into(),
             name: claude_model_name(entry, id),
             description: model_text(entry["description"].as_str(), "", 1000),
@@ -3744,6 +3760,7 @@ mod tests {
     #[test]
     fn opencode_choices_keep_only_saved_models_and_retain_unavailable_ids() {
         let model = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/selected".into(),
             name: "Selected model".into(),
             description: "Provider metadata".into(),
@@ -3752,6 +3769,7 @@ mod tests {
             context_window: Some(200_000),
         };
         let unused = super::ModelInfo {
+            speed_tiers: Vec::new(),
             id: "vendor/not-selected".into(),
             ..model.clone()
         };
@@ -3803,6 +3821,7 @@ mod tests {
 
     pub(super) fn config(provider: &str) -> RunConfig {
         RunConfig {
+            required_tier: None,
             session_id: "local".into(),
             provider: provider.into(),
             model: "default".into(),
@@ -4867,6 +4886,22 @@ mod tests {
     }
 
     #[test]
+    fn model_catalog_lists_every_speed_tier_with_its_key() {
+        let models = parse_codex_models(&json!({"data":[
+            {"model":"sol","isDefault":true,"serviceTiers":[{"id":"priority","name":"Fast","description":"2x speed"},{"id":"turbo","name":"Turbo Max","description":"Fictional."}]},
+            {"model":"luna","serviceTiers":[{"id":"priority","name":"Fast"}]},
+            {"model":"plain","serviceTiers":[]},
+            {"model":"old"}
+        ]}))
+        .unwrap();
+        let tiers: Vec<(&str, Vec<(&str, &str)>)> = models.iter().map(|m| (m.id.as_str(), m.speed_tiers.iter().map(|t| (t.key.as_str(), t.name.as_str())).collect())).collect();
+        assert_eq!(tiers, [("default", vec![("fast", "Fast"), ("turbo-max", "Turbo Max")]), ("sol", vec![("fast", "Fast"), ("turbo-max", "Turbo Max")]), ("luna", vec![("fast", "Fast")]), ("plain", vec![]), ("old", vec![])]);
+        // Sent to the window only when there are any.
+        assert_eq!(serde_json::to_value(&models[1]).unwrap()["speedTiers"][1], json!({"id":"turbo","key":"turbo-max","name":"Turbo Max","description":"Fictional."}));
+        assert!(serde_json::to_value(&models[3]).unwrap().get("speedTiers").is_none());
+    }
+
+    #[test]
     fn model_catalog_rejects_malformed_or_oversized_pages() {
         assert!(parse_codex_models(&json!({"models":[]})).is_err());
         assert!(parse_codex_models(&json!({"data":vec![json!({"model":"m"});101]})).is_err());
@@ -5411,6 +5446,7 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
                 "What exact token did you reply in your preceding answer? Reply only with that token. Do not use tools or modify files."
             };
             let cfg = RunConfig {
+                required_tier: None,
                 session_id: format!("smoke-{provider}"),
                 provider: provider.clone(),
                 model: model.clone(),

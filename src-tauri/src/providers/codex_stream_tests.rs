@@ -2,6 +2,7 @@ use super::*;
 
 fn protocol() -> Protocol {
     let mut protocol = Protocol::new(RunConfig {
+        required_tier: None,
         session_id: "local".into(),
         provider: "codex".into(),
         model: "default".into(),

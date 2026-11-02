@@ -136,6 +136,45 @@ one row per key in pool order, named after its first entry without the trailing
   always on and the others toggle the added list. A ranked model that leaves the set keeps its tier, unshown.
 - When you name models in your message, the lead uses those.
 
+### Codex speed variants
+
+A Codex speed tier can be named as part of the model, as `<model>@<tier>`, for
+example `gpt-6.1-sol@fast`. The tier is any entry of that model's catalog
+`serviceTiers`, named by its key: the catalog name in lower case, with each run of
+spaces and symbols as one `-` (Fast is `fast`, a tier named "Turbo Max" would be
+`turbo-max`). `split_tier` in `src-tauri/src/panda_router.rs` splits a slug at its
+last `@`, and only the live Codex catalog decides whether the part after it is a
+real tier. Other harnesses keep an `@` as part of the model ID. No tier name or
+model is built in, so new models and tiers work without a PandaCode update.
+
+The lead can dispatch `provider: "codex", model: "<model>@<tier>"`, and a roster or
+named-team entry may use a slug too. The dispatch reads the Codex catalog first and
+refuses a tier the model does not list, or a catalog it cannot read, with the
+reason; no worker is created. The worker runs the plain model, and the tier goes
+through the per-worker speed path in [architect-workers.md](architect-workers.md),
+which checks it again at launch and fails the worker rather than run it at the
+default speed. When a slug and a profile's `serviceTier` disagree, the slug wins.
+
+When a team turns on, every tier each installed Codex model's catalog lists
+(`speedTiers` on the model list, with key, name and description from native) gets
+a `<model>@<tier>` entry in the team catalog, after every model, so the
+1000-entry cap never drops a model for them. Routing never picks a variant on its
+own: `pool_from` folds each variant into its model, so `auto` staffs the plain
+model unless a roster entry carries a tier (also when routing is off and the worker
+falls back to the lead's model). One exception narrows the pool instead: an `auto`
+replacement of a worker that ran at a tier keeps that tier, so it routes only over
+Codex models whose live catalog lists it (`routing::pool_for`), and with none it is
+refused rather than staffed at the default speed. `route_models` lists a model's
+variants beside it in `speedVariants`, each at the plain model's cost estimate and
+marked "extra usage", because the catalog gives no prices. The lead's
+team rules name the usable variants in one sentence and say to use them only when
+speed matters or you ask for it.
+
+A variant is its model everywhere else. Excluding the model in Settings excludes
+its variants, and a variant slug can also be excluded on its own. Pausing the
+model after failures pauses its variants, and failures are recorded against the
+model. In an escalation chain, a failed `gpt-6.1-sol@fast` counts as `gpt-6.1-sol`.
+
 ## Privacy
 
 The profiler files — `model.int8.onnx` (31 MB) and `tokenizer.json` (3.5 MB) — are

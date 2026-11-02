@@ -119,6 +119,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             .or_else(|| model.display_name.filter(|name| valid(name)))
             .unwrap_or_else(|| model.model.clone());
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             // ACP set_model accepts the configured alias, not the wire model ID.
             id: alias,
             name,

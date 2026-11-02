@@ -32,3 +32,26 @@ test('an unlimited catalog (OpenCode with a saved selection) passes through', ()
   assert.equal(result.limited, false);
   assert.equal(result.models.length, 301);
 });
+
+// Tiers as native reports them on Codex model lists: key (from the catalog name), name and description.
+const tier = (id, name, key) => ({ id, key, name, description: `${name} speed.` });
+const FAST = tier('priority', 'Fast', 'fast'), ULTRAFAST = tier('ultrafast', 'Ultrafast', 'ultrafast'), TURBO = tier('turbo', 'Turbo Max', 'turbo-max');
+
+test('every catalog tier of every Codex model becomes a <model>@<key> variant after every model', async () => {
+  const { buildTeamCatalog, CATALOG_MAX } = await import('../src/team-catalog.ts');
+  const { catalog, roster } = buildTeamCatalog([
+    { id: 'codex', name: 'Codex', models: [{ id: 'default', name: 'Default', speedTiers: [FAST] }, { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', speedTiers: [FAST, ULTRAFAST] }, { id: 'gpt-6-luna', name: 'GPT-6 Luna', speedTiers: [FAST] }, { id: 'nova-9', name: 'Nova 9', speedTiers: [TURBO] }, { id: 'plain', name: 'Plain' }] },
+    { id: 'claude', name: 'Claude Code', models: [{ id: 'opus', name: 'Opus', speedTiers: [FAST] }] },
+  ]);
+  assert.deepEqual(catalog.map(p => p.model), ['default', 'opus', 'gpt-6.1-sol', 'gpt-6-luna', 'nova-9', 'plain', 'gpt-6.1-sol@fast', 'gpt-6.1-sol@ultrafast', 'gpt-6-luna@fast', 'nova-9@turbo-max']);
+  const turbo = catalog.find(p => p.model === 'nova-9@turbo-max');
+  assert.deepEqual({ ...turbo }, { id: 'codex-nova-9-turbo-max', name: 'Nova 9 Turbo Max · Codex', provider: 'codex', model: 'nova-9@turbo-max', reasoningEffort: null });
+  assert.equal(catalog.find(p => p.model === 'gpt-6.1-sol@ultrafast').name, 'GPT-6.1 Sol Ultrafast · Codex');
+  assert.equal(new Set(catalog.map(p => p.id)).size, catalog.length);
+  assert.ok(roster.every(p => !p.model.includes('@')), 'the roster lists models, not variants');
+  // A full catalog has no room left: variants never displace a model.
+  const many = Array.from({ length: CATALOG_MAX }, (_, i) => ({ id: `m${i}`, name: `M${i}`, speedTiers: [FAST] }));
+  const full = buildTeamCatalog([{ id: 'codex', name: 'Codex', models: many }]).catalog;
+  assert.equal(full.length, CATALOG_MAX);
+  assert.ok(full.every(p => !p.model.includes('@')));
+});

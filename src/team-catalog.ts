@@ -16,10 +16,12 @@ export function clipBytes(text: string, max: number): string {
 /** Native accepts up to this many catalog entries. */
 export const CATALOG_MAX = 1000;
 export const ROSTER_MAX = 24, ROSTER_PER_HARNESS = 6;
-export interface CatalogHarness { id: ProviderId; name: string; models: readonly Pick<ProviderModel, 'id' | 'name'>[] }
+export interface CatalogHarness { id: ProviderId; name: string; models: readonly Pick<ProviderModel, 'id' | 'name' | 'speedTiers'>[] }
 
 /** Every model of every harness (deduped by provider + model), ordered round-robin across
- * harnesses so the cap never drops a harness entirely. `roster` is the short list the lead sees:
+ * harnesses so the cap never drops a harness entirely, then a `<model>@<key>` variant for every
+ * speed tier each Codex model's catalog lists (key and name as native reports them; routing never
+ * picks one on its own) while room remains. `roster` is the short list the lead sees:
  * the first few models of each harness, with the same ids as the catalog. */
 export function buildTeamCatalog(harnesses: readonly CatalogHarness[]): { roster: WorkerProfile[]; catalog: WorkerProfile[] } {
   const seen = new Set<string>(), taken = new Set<string>();
@@ -30,19 +32,33 @@ export function buildTeamCatalog(harnesses: readonly CatalogHarness[]): { roster
   }));
   const profiles = new Map<string, WorkerProfile>();
   const catalog: WorkerProfile[] = [];
+  const add = (harness: CatalogHarness, model: string, name: string) => {
+    const base = `${harness.id}-${model}`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-+$/, '').slice(0, 72) || harness.id;
+    let id = base;
+    for (let n = 2; taken.has(id); n++) id = `${base.slice(0, 72 - String(n).length - 1)}-${n}`;
+    taken.add(id);
+    const profile: WorkerProfile = { id, name: clipBytes(`${name} · ${harness.name}`, 80), provider: harness.id, model, reasoningEffort: null };
+    profiles.set(`${harness.id}\u0000${model}`, profile);
+    catalog.push(profile);
+  };
   for (let position = 0; catalog.length < CATALOG_MAX && lists.some(list => position < list.length); position++) {
     harnesses.forEach((harness, index) => {
       const model = lists[index][position];
       if (!model || catalog.length >= CATALOG_MAX) return;
-      const base = `${harness.id}-${model.id}`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/-+$/, '').slice(0, 72) || harness.id;
-      let id = base;
-      for (let n = 2; taken.has(id); n++) id = `${base.slice(0, 72 - String(n).length - 1)}-${n}`;
-      taken.add(id);
-      const profile: WorkerProfile = { id, name: clipBytes(`${model.name} · ${harness.name}`, 80), provider: harness.id, model: model.id, reasoningEffort: null };
-      profiles.set(`${harness.id}\u0000${model.id}`, profile);
-      catalog.push(profile);
+      add(harness, model.id, model.name);
     });
   }
+  // Variants last, only for models already listed, so they never displace a model.
+  harnesses.forEach((harness, index) => {
+    if (harness.id !== 'codex') return;
+    for (const model of lists[index]) {
+      if (model.id === 'default' || model.id.includes('@') || !profiles.has(`${harness.id}\u0000${model.id}`)) continue;
+      for (const tier of model.speedTiers ?? []) {
+        const slug = `${model.id}@${tier.key}`;
+        if (tier.key && catalog.length < CATALOG_MAX && !profiles.has(`${harness.id}\u0000${slug}`)) add(harness, slug, `${model.name} ${tier.name}`);
+      }
+    }
+  });
   const roster: WorkerProfile[] = [];
   harnesses.forEach((harness, index) => {
     for (const model of lists[index].slice(0, ROSTER_PER_HARNESS)) {

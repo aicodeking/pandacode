@@ -67,7 +67,16 @@ export function createPreviewArchitect(host: PreviewHost) {
       const models = host.models(profile.provider);
       const model = profile.model ? models.find(model => model.id === profile.model) : models[0];
       if (profile.reasoningEffort != null && (typeof profile.reasoningEffort !== 'string' || profile.reasoningEffort.length > 32 || model && !model.reasoningEfforts?.some(effort => effort.id === profile.reasoningEffort))) throw new Error('This worker model does not support that reasoning effort.');
-      return { id: profile.id, name: profile.name.trim(), provider: profile.provider, model: profile.model, reasoningEffort: profile.reasoningEffort ?? null };
+      // Like the native check: Codex workers only, and only a tier the model's catalog lists (a slug's or serviceTier).
+      if (profile.serviceTier != null && profile.provider !== 'codex') throw new Error(`${profile.name.trim()}: only Codex workers take a speed tier.`);
+      const at = profile.provider === 'codex' ? profile.model.lastIndexOf('@') : -1;
+      const wanted = at > 0 ? profile.model.slice(at + 1) : profile.serviceTier;
+      if (wanted) {
+        const base = at > 0 ? profile.model.slice(0, at) : profile.model;
+        const tiers = (base ? models.find(entry => entry.id === base) : models[0])?.speedTiers ?? [];
+        if (!tiers.some(tier => tier.key === wanted)) throw new Error(`${profile.name.trim()}: ${wanted[0].toUpperCase()}${wanted.slice(1)} is not available for ${base || 'default'} in the installed Codex catalog.`);
+      }
+      return { id: profile.id, name: profile.name.trim(), provider: profile.provider, model: profile.model, reasoningEffort: profile.reasoningEffort ?? null, ...(profile.serviceTier ? { serviceTier: profile.serviceTier } : {}) };
     });
     if (config.workspace !== 'shared') throw new Error('Workers must use the task’s shared workspace.');
     if (config.rosterOnly && (!config.auto || !workers.length)) throw new Error('A named agent team needs at least one model.');

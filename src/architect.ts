@@ -12,6 +12,7 @@ import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './f
 import { createAgentInput, type AgentInput } from './agent-input';
 import { TailText } from './tail-text';
 import { decodeToolActivity, renderToolActivity } from './tool-activity';
+import { keepSpeed, modelSpeedTiers, speedOptions } from './team-mode';
 import { teamActive, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
 import { mountTeamProfiles } from './team-profiles';
 import { infoMark } from './tooltip';
@@ -157,10 +158,10 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   const error = host.querySelector<HTMLElement>('.architect-setup-error')!;
   const libraryHost = document.createElement('section');
   form.prepend(libraryHost);
-  const disabledControls = new Map<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement, boolean>();
+  const disabledControls = new Map<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement | HTMLSelectElement, boolean>();
   function setBusy(value: boolean): void {
     pending = value;
-    if (value) { picker?.(); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement>('input,button,textarea').forEach(el => { disabledControls.set(el, el.disabled); el.disabled = true; }); }
+    if (value) { picker?.(); form.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement | HTMLSelectElement>('input,button,textarea,select').forEach(el => { disabledControls.set(el, el.disabled); el.disabled = true; }); }
     else { disabledControls.forEach((disabled, el) => { el.disabled = disabled; }); disabledControls.clear(); }
   }
   function readSetup(): TeamSetup {
@@ -172,7 +173,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
     apply: setup => {
       if (!team && task.resumeId && setup.architect.provider !== task.provider) throw new Error('Use a new task to switch the architect harness.');
       picker?.(); Object.assign(config, structuredClone(setup.config)); Object.assign(architect, structuredClone(setup.architect));
-      renderProfiles(); refreshModelLabels();
+      renderProfiles(); refreshModelLabels(new Set());
       for (const name of ['maxRounds', 'maxAssignments', 'summaryLimit'] as const) (form.elements.namedItem(name) as HTMLInputElement).value = String(config[name]);
       guidanceField.value = config.leadGuidance ?? '';
       parallel.value = String(config.maxParallel || 3); refreshParallel();
@@ -182,33 +183,60 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   form.addEventListener('input', () => savedProfiles.changed());
   host.querySelector<HTMLButtonElement>('.architect-guidance-reset')!.addEventListener('click', () => { guidanceField.value = ''; guidanceField.focus(); savedProfiles.changed(); });
   form.addEventListener('invalid', event => { (event.target as HTMLElement).closest('details')?.setAttribute('open', ''); }, true);
-  function choose(anchor: HTMLButtonElement, selection: ModelSelection, canSwitchProvider: boolean): void {
+  function choose(anchor: HTMLButtonElement, selection: ModelSelection, canSwitchProvider: boolean, onProvider?: () => void): void {
     picker?.();
     picker = openModelPicker({ anchor, providers, current: { ...selection, model: selection.model || 'default' }, canSwitchProvider, loadModels: options.loadModels,
-      onSelect: async (provider, model) => { selection.provider = provider; selection.model = model; selection.reasoningEffort = null; anchor.innerHTML = modelMarkup(selection, providers); savedProfiles.changed(); },
+      onSelect: async (provider, model) => { selection.provider = provider; selection.model = model; selection.reasoningEffort = null; anchor.innerHTML = modelMarkup(selection, providers); onProvider?.(); savedProfiles.changed(); },
       onEffortSelect: async effort => { selection.reasoningEffort = effort; anchor.innerHTML = modelMarkup(selection, providers); savedProfiles.changed(); },
       onClose: () => { picker = undefined; },
     });
   }
   function renderProfiles(): void {
-    profiles.innerHTML = config.workers.map((profile, index) => `<div class="architect-profile" data-profile-id="${escape(profile.id)}"><div class="architect-profile-heading"><span class="architect-profile-number">${index + 1}</span><input aria-label="Worker profile ${index + 1} name" maxlength="60" value="${escape(profile.name)}"><button type="button" class="icon-button" aria-label="Remove worker profile ${index + 1}" ${config.workers.length === 1 ? 'disabled' : ''}>${icon('close')}</button></div><button type="button" class="architect-model" aria-label="Choose model for worker ${index + 1}" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(profile, providers)}</button></div>`).join('');
+    profiles.innerHTML = config.workers.map((profile, index) => `<div class="architect-profile" data-profile-id="${escape(profile.id)}"><div class="architect-profile-heading"><span class="architect-profile-number">${index + 1}</span><input aria-label="Worker profile ${index + 1} name" maxlength="60" value="${escape(profile.name)}"><button type="button" class="icon-button" aria-label="Remove worker profile ${index + 1}" ${config.workers.length === 1 ? 'disabled' : ''}>${icon('close')}</button></div><div class="architect-profile-model"><button type="button" class="architect-model" aria-label="Choose model for worker ${index + 1}" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(profile, providers)}</button>${speedSelect(profile, index)}</div><small class="architect-speed-note" data-live hidden></small></div>`).join('');
     profiles.querySelectorAll<HTMLElement>('.architect-profile').forEach((row, index) => {
       row.querySelector('input')!.addEventListener('input', event => { config.workers[index].name = (event.target as HTMLInputElement).value; });
       row.querySelector('.icon-button')!.addEventListener('click', () => { picker?.(); config.workers.splice(index, 1); renderProfiles(); savedProfiles.changed(); });
-      row.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, config.workers[index], true));
+      const speed = row.querySelector<HTMLSelectElement>('.architect-speed')!, note = row.querySelector<HTMLElement>('.architect-speed-note')!;
+      // The new model's catalog decides: a tier it lacks is dropped, and the row says so.
+      let before = modelSpeedTiers(providers, config.workers[index].provider, config.workers[index].model);
+      const syncSpeed = () => {
+        const profile = config.workers[index], tiers = modelSpeedTiers(providers, profile.provider, profile.model);
+        const kept = keepSpeed(profile.serviceTier, tiers, profile.model, before);
+        if (kept.tier) profile.serviceTier = kept.tier; else delete profile.serviceTier;
+        speed.innerHTML = speedOptions(tiers, kept.tier); speed.hidden = !speed.innerHTML;
+        note.textContent = kept.note; note.hidden = !kept.note; before = tiers;
+      };
+      speed.addEventListener('change', () => { if (speed.value) config.workers[index].serviceTier = speed.value; else delete config.workers[index].serviceTier; note.hidden = true; savedProfiles.changed(); });
+      row.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, config.workers[index], true, syncSpeed));
     });
     (host.querySelector('.architect-add') as HTMLButtonElement).disabled = config.workers.length >= 6;
   }
+  /** Default plus the tiers the model's Codex catalog lists; hidden when it lists none. */
+  function speedSelect(profile: TeamConfig['workers'][number], index: number): string {
+    const options = speedOptions(modelSpeedTiers(providers, profile.provider, profile.model), profile.serviceTier);
+    return `<select class="architect-speed" aria-label="Speed for worker ${index + 1}" ${options ? '' : 'hidden'}>${options}</select>`;
+  }
   renderProfiles();
-  function refreshModelLabels(): void {
+  /** `loaded`: harnesses whose live catalog just arrived, whose Speed choices now follow it. */
+  function refreshModelLabels(loaded: ReadonlySet<ProviderId>): void {
     if (disposed) return;
     host.querySelector<HTMLButtonElement>('.architect-model')!.innerHTML = modelMarkup(architect, providers);
     profiles.querySelectorAll<HTMLElement>('.architect-profile').forEach(row => {
       const profile = config.workers.find(profile => profile.id === row.dataset.profileId);
-      if (profile) row.querySelector<HTMLElement>('.architect-model')!.innerHTML = modelMarkup(profile, providers);
+      if (!profile) return;
+      row.querySelector<HTMLElement>('.architect-model')!.innerHTML = modelMarkup(profile, providers);
+      // A live catalog that arrived since decides: a saved tier it lacks leaves the selection and is
+      // named only in the row's note.
+      const speed = row.querySelector<HTMLSelectElement>('.architect-speed'), note = row.querySelector<HTMLElement>('.architect-speed-note');
+      if (!speed || !loaded.has(profile.provider)) return;
+      const tiers = modelSpeedTiers(providers, profile.provider, profile.model), kept = keepSpeed(profile.serviceTier, tiers, profile.model);
+      if (kept.tier) profile.serviceTier = kept.tier; else delete profile.serviceTier;
+      speed.innerHTML = speedOptions(tiers, kept.tier); speed.hidden = !speed.innerHTML;
+      if (note && kept.note) { note.textContent = kept.note; note.hidden = false; }
     });
   }
-  void Promise.allSettled([...new Set(providers.filter(p => p.installed).map(p => p.id))].map(options.loadModels)).then(refreshModelLabels);
+  const installed = [...new Set(providers.filter(p => p.installed).map(p => p.id))];
+  void Promise.allSettled(installed.map(options.loadModels)).then(results => refreshModelLabels(new Set(installed.filter((_, index) => results[index].status === 'fulfilled'))));
   host.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, architect, Boolean(team) || !task.resumeId));
   host.querySelector('.architect-add')!.addEventListener('click', () => {
     picker?.(); config.workers.push({ ...config.workers[config.workers.length - 1], id: crypto.randomUUID(), name: `Worker ${config.workers.length + 1}` }); renderProfiles(); savedProfiles.changed();

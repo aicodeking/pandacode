@@ -1,7 +1,7 @@
 /* How the Team button behaves, and named agent teams built in Settings. A named team is a
  * saved team profile whose lead may only orchestrate the models it lists (`rosterOnly`). */
 import type { ModelSelection, TeamConfig, TeamLibrary, TeamProfile, TeamSetup, WorkerProfile } from './architect-types';
-import type { ProviderId, ProviderModel } from './types';
+import type { ProviderId, ProviderModel, SpeedTier } from './types';
 
 const CLASSIC_KEY = 'pandacode.teamClassic';
 export const TEAM_MODE_EVENT = 'pandacode:team-mode';
@@ -17,7 +17,30 @@ export function setClassicTeamSetup(on: boolean): void {
   window.dispatchEvent(new CustomEvent(TEAM_MODE_EVENT, { detail: on }));
 }
 
-export type TeamModel = { provider: ProviderId; harness: string; model: string; name: string; reasoningEffort?: string | null; efforts?: ProviderModel['reasoningEfforts'] };
+export type TeamModel = { provider: ProviderId; harness: string; model: string; name: string; reasoningEffort?: string | null; efforts?: ProviderModel['reasoningEfforts']; serviceTier?: string | null; speedTiers?: readonly SpeedTier[] };
+
+/** The speed tiers a model's catalog lists, as native reported them (`default` is the harness's default model). */
+export function modelSpeedTiers(providers: readonly { id: ProviderId; models: readonly ProviderModel[] }[], provider: ProviderId, model: string): readonly SpeedTier[] {
+  return providers.find(entry => entry.id === provider)?.models.find(entry => entry.id === (model || 'default'))?.speedTiers ?? [];
+}
+const attr = (text: string) => text.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+/** A Speed select's `<option>`s: Default, then exactly the tiers the model's catalog lists, named and
+ * described as the catalog does; never a tier the catalog lacks. Empty when it lists none, which hides
+ * the Speed control. A current tier the list lacks selects nothing but Default. */
+export function speedOptions(tiers: readonly SpeedTier[], current?: string | null): string {
+  if (!tiers.length) return '';
+  const chosen = tiers.some(tier => tier.key === current) ? current : '';
+  return [{ key: '', name: 'Default', description: "The model's standard speed" }, ...tiers]
+    .map(tier => `<option value="${attr(tier.key)}" title="${attr(tier.description)}" ${chosen === tier.key ? 'selected' : ''}>${attr(tier.name)}</option>`).join('');
+}
+/** Against a model's (loaded) catalog: the saved tier if the catalog lists it, else none and a one-line
+ * note naming the stale tier (as an earlier catalog named it, else its key). */
+export function keepSpeed(saved: string | null | undefined, tiers: readonly SpeedTier[], model: string, previous: readonly SpeedTier[] = []): { tier: string | null; note: string } {
+  if (!saved) return { tier: null, note: '' };
+  if (tiers.some(tier => tier.key === saved)) return { tier: saved, note: '' };
+  const name = previous.find(tier => tier.key === saved)?.name ?? `${saved.charAt(0).toUpperCase()}${saved.slice(1)}`;
+  return { tier: null, note: `${name} is not available for ${model || 'this model'}; this worker will use the default speed only if you save it that way.` };
+}
 export const modelKey = (model: Pick<TeamModel, 'provider' | 'model'>): string => `${model.provider}:${model.model}`;
 
 /** A roster entry ID the native validator accepts: ASCII letters, digits, `_` and `-`. */
@@ -33,7 +56,8 @@ export function namedTeamSetup(name: string, lead: TeamModel, models: readonly T
   const taken = new Set<string>();
   const workers: WorkerProfile[] = models.map(model => {
     const id = rosterId(model, taken); taken.add(id);
-    return { id, name: `${model.name} · ${model.harness}`.slice(0, 80), provider: model.provider, model: model.model, reasoningEffort: model.reasoningEffort || null };
+    return { id, name: `${model.name} · ${model.harness}`.slice(0, 80), provider: model.provider, model: model.model, reasoningEffort: model.reasoningEffort || null,
+      ...(model.provider === 'codex' && model.serviceTier ? { serviceTier: model.serviceTier } : {}) };
   });
   const architect: ModelSelection = { provider: lead.provider, model: lead.model, reasoningEffort: lead.reasoningEffort || null };
   const config: TeamConfig = { auto: true, rosterOnly: true, name: name.trim(), workers, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072, ...(limits?.leadGuidance ? { leadGuidance: limits.leadGuidance } : {}) };
@@ -44,7 +68,7 @@ export function namedTeamSetup(name: string, lead: TeamModel, models: readonly T
 const selectionKey = (model: ModelSelection) => [model.provider, model.model, model.reasoningEffort ?? null];
 export function sameTeamSetup(left: TeamSetup, right: TeamSetup): boolean {
   const key = (setup: TeamSetup) => JSON.stringify([selectionKey(setup.architect),
-    setup.config.workers.map(worker => [worker.id, worker.name, ...selectionKey(worker)]),
+    setup.config.workers.map(worker => [worker.id, worker.name, ...selectionKey(worker), worker.serviceTier ?? null]),
     setup.config.maxParallel, setup.config.maxRounds, setup.config.maxAssignments, setup.config.workspace, setup.config.summaryLimit, setup.config.leadGuidance?.trim() || null]);
   return key(left) === key(right);
 }

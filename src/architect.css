@@ -44,6 +44,10 @@
 .architect-guidance-reset { align-self: flex-start; }
 .architect-profiles { display: grid; gap: 5px; }
 .architect-profile { min-width: 0; }
+.architect-profile-model { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.architect-profile-model .architect-model { flex: 1; min-width: 0; }
+.architect-speed { flex: none; width: auto; font-size: var(--text-xs); padding: 4px 8px; }
+.architect-speed-note { display: block; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .architect-profile-heading { display: flex; align-items: center; gap: 4px; margin: 0 2px 3px; }
 .architect-profile-number { font-size: var(--text-xs); color: var(--muted); min-width: 16px; text-align: center; }
 .architect-profile-heading input { width: 100%; min-width: 0; flex: 1; height: 23px; border: 0; border-radius: var(--radius-xs); background: transparent; font-size: var(--text-xs); padding: 2px 4px; }

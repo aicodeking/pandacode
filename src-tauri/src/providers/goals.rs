@@ -273,6 +273,16 @@ impl Protocol {
             .push(json!({"id":2,"method":method,"params":params}));
     }
     pub(super) fn codex_goal_ready(&mut self, step: &mut Step) -> Result<(), String> {
+        // A team worker's tier is required: its saved catalog id must be there, never null.
+        if let Some(key) = &self.config.required_tier {
+            if !self.config.codex_settings.as_ref().is_some_and(|settings| settings["serviceTier"].is_string()) {
+                return Err(format!(
+                    "This worker must run at its {} speed tier, which was not set for {}; it will not run at the default speed.",
+                    crate::command_operations::tier_label(key),
+                    self.tier_model()
+                ));
+            }
+        }
         if let Some(mut settings) = self.config.codex_settings.take() {
             self.normalize_codex_settings(&mut settings, step)?;
             let params = self.valid_live_params("thread/settings/update", settings.clone())?;
@@ -287,10 +297,20 @@ impl Protocol {
         self.codex_goal_or_prompt(step)
     }
     pub(super) fn wants_tier_catalog(&self) -> bool {
-        self.config
-            .codex_settings
-            .as_ref()
-            .is_some_and(|settings| settings["serviceTier"].is_string())
+        self.config.required_tier.is_some()
+            || self
+                .config
+                .codex_settings
+                .as_ref()
+                .is_some_and(|settings| settings["serviceTier"].is_string())
+    }
+    /// The model a speed tier is checked for, as Codex resolved it.
+    fn tier_model(&self) -> &str {
+        if self.config.model.is_empty() || self.config.model == "default" {
+            if self.active_model.is_empty() { "default" } else { &self.active_model }
+        } else {
+            &self.config.model
+        }
     }
     pub(super) fn remember_model_tiers(&mut self, result: &Value) -> bool {
         self.goals.model_catalog_pages = self.goals.model_catalog_pages.saturating_add(1);
@@ -368,13 +388,17 @@ impl Protocol {
         }
         if let Some(tier) = settings["serviceTier"].as_str() {
             let Some(supported) = &self.goals.supported_tiers else {
-                return Err("Codex could not confirm this model's speed options. Turn off Fast mode or refresh models and try again.".into());
+                return Err("Codex could not confirm this model's speed options. Set /fast off or refresh models and try again.".into());
             };
             if !supported.contains(tier) {
+                // A team worker's tier is required: refuse rather than run at the default speed.
+                if let Some(key) = &self.config.required_tier {
+                    return Err(crate::command_operations::tier_missing(key, self.tier_model()));
+                }
                 settings["serviceTier"] = Value::Null;
                 step.events.push(self.event(
                     "status",
-                    "Fast mode is unavailable for the selected model; using its standard speed",
+                    "The chosen speed tier is unavailable for the selected model; using its standard speed",
                     None,
                 ));
             }
@@ -1298,6 +1322,38 @@ printf '%s\n' '{"id":10002,"result":{"goal":{"threadId":"thread","objective":"Fi
             .receive(json!({"id":settings.write[0]["id"],"result":{}}))
             .unwrap();
         assert!(applied.events[0].data.as_ref().unwrap()["serviceTier"].is_null());
+    }
+    #[test]
+    fn a_team_workers_required_tier_is_refused_rather_than_dropped() {
+        // A plain user task keeps today's behavior: an unavailable tier becomes the standard speed.
+        let mut config = super::super::tests::config("codex");
+        config.model = "gpt-6-luna".into();
+        config.codex_settings = Some(json!({"serviceTier":"ultrafast"}));
+        let mut plain = Protocol::new(config.clone());
+        plain.receive(json!({"id":2,"result":{"thread":{"id":"thread"},"model":"gpt-6-luna"}})).unwrap();
+        let catalog = json!({"id":6,"result":{"data":[{"model":"gpt-6-luna","serviceTiers":[{"id":"priority","name":"Fast"}]}],"nextCursor":null}});
+        let settings = plain.receive(catalog.clone()).unwrap();
+        assert!(settings.write[0]["params"]["serviceTier"].is_null());
+        // A team worker with a required tier refuses, with the reason.
+        config.required_tier = Some("ultrafast".into());
+        let mut worker = Protocol::new(config.clone());
+        worker.receive(json!({"id":2,"result":{"thread":{"id":"thread"},"model":"gpt-6-luna"}})).unwrap();
+        assert_eq!(worker.receive(catalog.clone()).err().as_deref(), Some("Ultrafast is not available for gpt-6-luna in the installed Codex catalog."));
+        // A null or absent saved tier is never accepted for it, even without a catalog request.
+        for saved in [Some(json!({"serviceTier":null})), None] {
+            config.codex_settings = saved;
+            let mut worker = Protocol::new(config.clone());
+            let ready = worker.receive(json!({"id":2,"result":{"thread":{"id":"thread"},"model":"gpt-6-luna"}})).unwrap();
+            assert_eq!(ready.write[0]["method"], "model/list", "the required tier always checks the catalog");
+            let error = worker.receive(catalog.clone()).err().unwrap();
+            assert!(error.contains("must run at its Ultrafast speed tier") && error.contains("gpt-6-luna"), "{error}");
+        }
+        // A supported tier goes through.
+        config.codex_settings = Some(json!({"serviceTier":"priority"}));
+        config.required_tier = Some("fast".into());
+        let mut worker = Protocol::new(config);
+        worker.receive(json!({"id":2,"result":{"thread":{"id":"thread"},"model":"gpt-6-luna"}})).unwrap();
+        assert_eq!(worker.receive(catalog).unwrap().write[0]["params"]["serviceTier"], "priority");
     }
     #[test]
     fn speed_validation_follows_model_pages_and_does_not_guess_when_metadata_is_missing() {
