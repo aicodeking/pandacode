@@ -17,7 +17,7 @@ Goals share the four-agent concurrency limit. The adapter bounds outstanding con
 - `/usage`: account limits, reset times, and available usage history.
 - `/goal`: persistent objectives and optional budgets.
 - `/plan`: actual Codex collaboration mode; independent of approval policy.
-- `/fast`: a Fast tier advertised by the selected model's installed catalog.
+- `/fast`: the task's speed tier, from the tiers the selected model's installed Codex catalog lists. `/fast` alone opens a menu of Default and those tiers, with the catalog's names and descriptions. `/fast <tier>` picks a tier by its key, which is the catalog name in lower case with spaces and symbols as `-` (so a tier named "Turbo Max" is `turbo-max`). `/fast on` picks the tier named Fast, and `/fast off` (or `/fast default`) goes back to the model's standard speed. A tier the model does not offer is refused with a note. The choice is saved with the task and kept across turns; after a model change, a tier the new model lacks falls back to its standard speed.
 - `/personality`, `/experimental`, `/memories`: supported Codex preferences, with only allowed fields exposed.
 - `/import`: a preview of detected agent setup; imports only explicitly selected, unchanged candidates.
 - `/hooks`, `/plugins`: sanitized installed inventories. Native hook commands and credentials do not enter the renderer.

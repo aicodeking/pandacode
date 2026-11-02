@@ -368,13 +368,13 @@ impl Protocol {
         }
         if let Some(tier) = settings["serviceTier"].as_str() {
             let Some(supported) = &self.goals.supported_tiers else {
-                return Err("Codex could not confirm this model's speed options. Turn off Fast mode or refresh models and try again.".into());
+                return Err("Codex could not confirm this model's speed options. Set /fast off or refresh models and try again.".into());
             };
             if !supported.contains(tier) {
                 settings["serviceTier"] = Value::Null;
                 step.events.push(self.event(
                     "status",
-                    "Fast mode is unavailable for the selected model; using its standard speed",
+                    "The chosen speed tier is unavailable for the selected model; using its standard speed",
                     None,
                 ));
             }

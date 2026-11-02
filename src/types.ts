@@ -23,6 +23,9 @@ export interface Message { coordinationKind?: 'worker_update' | 'worker_review' 
 export interface MessagePage { messages: Message[]; hasOlder: boolean; }
 export interface ReasoningEffort { id: string; name: string; description: string; }
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; }
+/** A speed tier as the Codex catalog lists it. Native computes `key` from the name (Fast -> `fast`, "Turbo Max" -> `turbo-max`);
+ * `id` is the catalog's own id, saved as a task's `serviceTier`. */
+export interface SpeedTier { id: string; key: string; name: string; description: string; }
 export interface Provider { id: ProviderId; name: string; installed: boolean; path: string | null; version: string; models: ProviderModel[]; }
 export interface GitFile { path: string; index: string; working: string; }
 export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; }

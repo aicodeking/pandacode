@@ -107,19 +107,37 @@ test('goal workflow plan and fast commands persist task-specific settings withou
   await command(page, '/plan on');
   await expect(page.locator('#toast')).toContainText('Plan mode enabled');
   await command(page, '/fast on');
-  await expect(page.locator('#toast')).toContainText('Fast service tier enabled');
+  await expect(page.locator('#toast')).toContainText('Speed: Fast');
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-2"]').click();
   const task = await page.evaluate(() => (window as any).__goalTask('session-2'));
-  expect(task.codexSettings).toEqual({ collaborationMode: { mode: 'plan' }, serviceTier: 'fast' });
+  expect(task.codexSettings).toEqual({ collaborationMode: { mode: 'plan' }, serviceTier: 'priority' });
   await command(page, '/plan off');
   await expect(page.locator('#toast')).toContainText('Plan mode disabled');
+  await command(page, '/fast ultrafast');
+  await expect(page.locator('#toast')).toContainText('Speed: Ultrafast');
   await command(page, '/fast off');
-  await expect(page.locator('#toast')).toContainText('Fast service tier disabled');
+  await expect(page.locator('#toast')).toContainText('Speed: Default');
   expect((await calls(page, 'set_task_preference')).map((entry: any) => entry.args)).toEqual([
-    { sessionId: 'session-2', request: { action: 'plan', enabled: true } }, { sessionId: 'session-2', request: { action: 'fast', enabled: true } },
-    { sessionId: 'session-2', request: { action: 'plan', enabled: false } }, { sessionId: 'session-2', request: { action: 'fast', enabled: false } },
+    { sessionId: 'session-2', request: { action: 'plan', enabled: true } }, { sessionId: 'session-2', request: { action: 'serviceTier', tier: 'fast' } },
+    { sessionId: 'session-2', request: { action: 'plan', enabled: false } }, { sessionId: 'session-2', request: { action: 'serviceTier', tier: 'ultrafast' } },
+    { sessionId: 'session-2', request: { action: 'serviceTier', tier: null } },
   ]);
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+});
+
+test('goal workflow bare fast command chooses a speed from the model catalog', async ({ page }) => {
+  await command(page, '/fast');
+  const menu = page.getByRole('menu', { name: 'Speed', exact: true });
+  await expect(menu.getByRole('menuitemradio', { name: 'Ultrafast', exact: true })).toBeVisible();
+  expect(await menu.getByRole('menuitemradio').evaluateAll(items => items.map(item => item.getAttribute('aria-label')))).toEqual(['Default', 'Fast', 'Ultrafast']);
+  await expect(menu.getByRole('menuitemradio', { name: 'Default', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await menu.getByRole('menuitemradio', { name: 'Ultrafast', exact: true }).click();
+  await expect(page.locator('#toast')).toContainText('Speed: Ultrafast');
+  expect((await page.evaluate(() => (window as any).__goalTask('session-2'))).codexSettings.serviceTier).toBe('ultrafast');
+  await command(page, '/fast');
+  await expect(page.getByRole('menu', { name: 'Speed', exact: true }).getByRole('menuitemradio', { name: 'Ultrafast', exact: true })).toHaveAttribute('aria-checked', 'true');
+  expect((await calls(page, 'codex_service_tiers')).map((entry: any) => entry.args)).toEqual([{ sessionId: 'session-2' }, { sessionId: 'session-2' }]);
   expect(await calls(page, 'send_message')).toHaveLength(0);
 });
 
@@ -170,10 +188,12 @@ test('goal workflow prevents a competing harness console while the goal is runni
 });
 
 test('goal workflow honors command arguments and rejects invalid fast settings without losing the draft', async ({ page }) => {
+  // Any tier key goes to the model's catalog, which refuses one it does not list.
   await command(page, '/fast turbo');
-  await expect(page.locator('#toast')).toContainText('Use /fast, /fast on, or /fast off.');
+  await expect(page.locator('#toast')).toContainText('Turbo is not available for default in the installed Codex catalog.');
   await expect(page.locator('#prompt')).toHaveValue('/fast turbo ');
-  expect(await calls(page, 'set_task_preference')).toHaveLength(0);
+  expect((await calls(page, 'set_task_preference')).map((entry: any) => entry.args.request)).toEqual([{ action: 'serviceTier', tier: 'turbo' }]);
+  expect((await page.evaluate(() => (window as any).__goalTask('session-2'))).codexSettings?.serviceTier ?? null).toBeNull();
   await command(page, '/worktree feature/game');
   await expect(page.getByRole('textbox', { name: 'Branch name', exact: true })).toHaveValue('feature/game');
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();

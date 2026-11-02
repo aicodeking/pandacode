@@ -4131,6 +4131,7 @@ pub fn run() {
                 task_controls::codex_command,
                 task_controls::codex_jobs,
                 task_controls::set_task_preference,
+                task_controls::codex_service_tiers,
                 task_controls::fork_codex_task,
                 task_controls::fork_session_at_message,
                 task_controls::get_message_content,
