@@ -2807,10 +2807,11 @@ async function locateProjectFolder(): Promise<void> {
   const path = await chooseFolder(`Locate the moved "${p.name}" folder`);
   if (!path) return;
   try {
-    await call('relink_project', { projectId: p.id, path });
+    const updated = await call<Project>('relink_project', { projectId: p.id, path });
     state.projects = await call<Project[]>('list_projects');
+    notify(`Relinked ${updated.name}`);
   } catch (error) { report(error); return; }
-  notify(`Relinked ${p.name}`);
+  renderNavigation(); renderHeader();
   refreshFileLinks(workspaceContext());
   await refreshInspector();
 }

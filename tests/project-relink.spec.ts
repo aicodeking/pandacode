@@ -39,7 +39,7 @@ test('a moved project folder offers Locate folder and relinks the project', asyn
   ]);
 });
 
-test('a chat folder is never offered the relink action', async ({ page }) => {
+test('a chat folder is never offered Locate folder', async ({ page }) => {
   await probe(page, '/?sections', 'sections-pinned');
   await page.locator('.task-item', { hasText: 'Explain the borrow checker' }).click();
   await openInspectorTab(page, 'Files');

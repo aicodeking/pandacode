@@ -721,7 +721,9 @@ impl Store {
     /// moved outside PandaCode. Chats, tasks and history keep their ids.
     pub fn relink_project(&self, project_id: &str, path: &Path) -> Result<Project> {
         let project = self.project(project_id)?;
-        if crate::chats::is_chat_folder(Path::new(&project.path)) {
+        // Both ends are refused before anything else: chat folders are PandaCode-managed,
+        // and is_chat_folder reads missing paths, so vanished folders still refuse.
+        if crate::chats::is_chat_folder(Path::new(&project.path)) || crate::chats::is_chat_folder(path) {
             return Err("Chat folders cannot be relinked.".into());
         }
         let path = path
@@ -745,10 +747,15 @@ impl Store {
         if taken {
             return Err("Another project already uses this folder.".into());
         }
+        // The project's name follows its folder's, as it did when the folder was added.
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| project.name.clone());
         self.db
             .execute(
-                "UPDATE projects SET path=?2 WHERE id=?1",
-                params![project_id, path_str],
+                "UPDATE projects SET name=?2,path=?3 WHERE id=?1",
+                params![project_id, name, path_str],
             )
             .map_err(|e| e.to_string())?;
         self.project(project_id)
@@ -2042,6 +2049,8 @@ mod tests {
         let project = store.add_project(&root.join("before")).unwrap();
         let moved = store.relink_project(&project.id, &root.join("after")).unwrap();
         assert_eq!(moved.path, root.join("after").canonicalize().unwrap().to_string_lossy().to_string());
+        // The project's label follows the folder's new name.
+        assert_eq!(moved.name, "after");
         assert_eq!(store.project(&project.id).unwrap().path, moved.path);
         // Picking the folder the project already points at changes nothing.
         assert_eq!(store.relink_project(&project.id, &root.join("after")).unwrap().id, project.id);
@@ -2071,6 +2080,8 @@ mod tests {
         store.db.execute("INSERT INTO projects(id,name,path) VALUES ('chat-proj','Chat',?1)",
             params![chat_folder.to_string_lossy().to_string()]).unwrap();
         assert!(store.relink_project("chat-proj", &root.join("one")).is_err());
+        // A project cannot be relinked into the chats root either.
+        assert!(store.relink_project(&one.id, &crate::chats::root().join("chat-new")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
