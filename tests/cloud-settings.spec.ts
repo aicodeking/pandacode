@@ -65,7 +65,8 @@ test('cloud sandboxes: the environment checkbox keeps its label beside it', asyn
 
 /* Settings → Agents → Cloud sandboxes: the Docker card's engine picker (src/cloud-settings.ts).
  * The picker is native radios under a trackSegment thumb; each engine shows only the fields it
- * takes, and Apple Containers is offered on macOS only (src/platform.ts). */
+ * takes, and Apple Containers is offered on macOS only (src/platform.ts). Each provider also
+ * folds into its own <details> dropdown, with a Test button that runs one cheap check. */
 const settingsRegion = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 const picker = (page: Page) => page.locator('.cloud-engine-picker');
 async function openDockerForm(page: Page) {
@@ -126,4 +127,51 @@ test('the container engine picker sends the picked engine when connecting', asyn
   const sent = await page.evaluate(() => (window as any).__cloudConnects?.at(-1));
   expect(sent.provider).toBe('docker');
   expect(sent.options.engine).toBe('podman');
+});
+
+test('a provider whose CLI is missing shows Not installed', async ({ page }) => {
+  await page.addInitScript(() => { (globalThis as any).__cloudCliMissing = true; });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = settingsRegion(page);
+  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await expect(settings.locator('.cloud-provider[data-provider="aws"] .cloud-detail')).toHaveText('Not installed');
+  await expect(settings.locator('.cloud-provider[data-provider="daytona"] .cloud-detail')).toHaveText('Linux desktops agents can see and control.');
+});
+
+test('each provider folds into its own dropdown, and connecting opens just that one', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = settingsRegion(page);
+  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const daytona = settings.locator('.cloud-provider[data-provider="daytona"]');
+  await expect(docker.locator('form')).toBeHidden();
+  await expect(daytona.locator('form')).toBeHidden();
+  // The Connect button on the summary row opens the card without folding it.
+  await docker.getByRole('button', { name: 'Connect Docker', exact: true }).click();
+  await expect(docker.locator('form')).toBeVisible();
+  await expect(daytona.locator('form')).toBeHidden();
+  // Clicking the summary itself folds it closed again.
+  await docker.locator('summary').click();
+  await expect(docker.locator('form')).toBeHidden();
+});
+
+test('the cloud test button reports an unconnected provider, then a working and a failing one', async ({ page }) => {
+  const settings = await openDockerForm(page);
+  const docker = settings.locator('.cloud-provider[data-provider="docker"]');
+  const status = docker.locator('.cloud-test [role="status"]');
+  await expect(docker.getByRole('button', { name: 'Test Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Connect Docker first');
+  // Connected, the same button passes; the failure hook flips the next run.
+  await docker.locator('form').getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(docker.getByRole('button', { name: 'Disconnect Docker', exact: true })).toBeVisible();
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Working');
+  await page.evaluate(() => { (globalThis as any).__cloudTestFail = true; });
+  await docker.getByRole('button', { name: 'Test Docker', exact: true }).click();
+  await expect(status).toContainText('Failed');
+  const ran = await page.evaluate(() => (window as any).__cloudTests);
+  expect(ran).toEqual(['docker', 'docker', 'docker']);
 });
