@@ -284,7 +284,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     } finally { catalogLoading = false; if (!disposed && run === catalogRun) renderCatalog(); }
   }
   function syncCatalog(): void {
-    if (!connections.find(c => c.provider === 'digitalocean')?.connected) { catalogRun++; catalog = null; catalogError = ''; customFor = null; renderCatalog(); return; }
+    if (!connections.find(c => c.provider === 'digitalocean')?.connected) { catalogRun++; catalog = null; catalogError = ''; catalogLoading = false; customFor = null; renderCatalog(); return; }
     if (!catalog && !catalogLoading) void loadCatalog();
   }
   async function saveOptions(): Promise<void> {
