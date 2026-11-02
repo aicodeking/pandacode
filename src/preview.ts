@@ -1804,6 +1804,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
     case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
     case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
+    case 'cloud_digitalocean_catalog': result = previewCloud.digitalOceanCatalog(); break;
+    case 'cloud_digitalocean_set_options': result = previewCloud.setDigitalOceanOptions(args.region, args.size); break;
     case 'cloud_machines': result = previewCloud.list(); break;
     case 'cloud_create': result = previewCloud.create(args.provider, args.name); break;
     case 'cloud_power': result = previewCloud.power(args.id, args.action); break;
