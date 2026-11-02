@@ -251,7 +251,8 @@ fn read_json(path: &Path) -> Option<Value> {
     if !metadata.is_file() || metadata.len() > MAX_CONFIG_BYTES {
         return None;
     }
-    serde_json::from_slice(&fs::read(path).ok()?).ok()
+    // JSONC (comments, trailing commas) is a superset OpenCode and others accept.
+    serde_json::from_str(&crate::vsix_themes::strip_jsonc(&fs::read_to_string(path).ok()?)).ok()
 }
 
 fn read_text(path: &Path) -> Option<String> {
@@ -476,28 +477,20 @@ fn scan_harness_configs(
             }
         }
         "opencode" => {
-            for (path, source) in [
-                (
-                    home.join(".config/opencode/opencode.json"),
-                    "~/.config/opencode/opencode.json",
-                ),
-                (
-                    home.join(".opencode/opencode.json"),
-                    "~/.opencode/opencode.json",
-                ),
-            ] {
+            // OpenCode merges every one of these that exists, `.jsonc` included.
+            let mut files = vec![
+                (home.join(".config/opencode/config.json"), "~/.config/opencode/config.json"),
+                (home.join(".config/opencode/opencode.json"), "~/.config/opencode/opencode.json"),
+                (home.join(".config/opencode/opencode.jsonc"), "~/.config/opencode/opencode.jsonc"),
+                (home.join(".opencode/opencode.json"), "~/.opencode/opencode.json"),
+            ];
+            if let Some(project) = project {
+                files.push((project.join("opencode.json"), "Project opencode.json"));
+                files.push((project.join("opencode.jsonc"), "Project opencode.jsonc"));
+            }
+            for (path, source) in files {
                 if let Some(value) = read_json(&path) {
                     entries.extend(parse_mcp_json(harness, source, &value, "mcp"));
-                }
-            }
-            if let Some(project) = project {
-                if let Some(value) = read_json(&project.join("opencode.json")) {
-                    entries.extend(parse_mcp_json(
-                        harness,
-                        "Project opencode.json",
-                        &value,
-                        "mcp",
-                    ));
                 }
             }
         }
@@ -644,6 +637,14 @@ fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathB
                 roots.push((project.join(".cline/skills"), ".cline/skills"));
                 roots.push((project.join(".clinerules/skills"), ".clinerules/skills"));
                 roots.push((project.join(".claude/skills"), ".claude/skills"));
+            }
+        }
+        "deepseek" => {
+            roots.push((home.join(".dsh/skills"), "~/.dsh/skills"));
+            roots.push((home.join(".agents/skills"), "~/.agents/skills"));
+            if let Some(project) = project {
+                roots.push((project.join(".dsh/skills"), ".dsh/skills"));
+                roots.push((project.join(".agents/skills"), ".agents/skills"));
             }
         }
         _ => {}
@@ -929,6 +930,64 @@ env = { API_KEY = "secret" }
         assert!(entries
             .iter()
             .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "doc-gen"));
+        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn opencode_jsonc_remote_mcp_with_headers_is_discovered_without_header_values() {
+        let home = fixture_home("opencode-jsonc");
+        fs::create_dir_all(home.join(".config/opencode")).unwrap();
+        fs::write(
+            home.join(".config/opencode/opencode.jsonc"),
+            r#"{
+  "$schema": "https://opencode.ai/config.json",
+  // remote server with auth headers
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp", /* trailing comma below */
+      "headers": {
+        "CONTEXT7_API_KEY": "REDACTED-SECRET",
+      },
+      "enabled": true,
+    },
+  },
+}
+"#,
+        )
+        .unwrap();
+        let entries = scan_harness_configs("opencode", &home, None);
+        let server = entries
+            .iter()
+            .find(|item| item.kind == "mcp server" && item.name == "context7")
+            .expect("context7 is discovered");
+        assert_eq!(server.source, "~/.config/opencode/opencode.jsonc");
+        assert!(server.command.is_none());
+        let serialized = serde_json::to_string(&entries).unwrap();
+        assert!(!serialized.contains("REDACTED-SECRET") && !serialized.contains("context7.com"));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn deepseek_skills_inventory_reads_the_dsh_roots() {
+        let home = fixture_home("deepseek-home");
+        let project = fixture_home("deepseek-project");
+        fs::create_dir_all(home.join(".dsh/skills/user-skill")).unwrap();
+        fs::create_dir_all(home.join(".agents/skills/agents-skill")).unwrap();
+        fs::create_dir_all(project.join(".dsh/skills/project-skill")).unwrap();
+        fs::create_dir_all(project.join(".agents/skills/project-agents-skill")).unwrap();
+        let entries = scan_harness_configs("deepseek", &home, Some(&project));
+        let mut skills: Vec<_> = entries
+            .iter()
+            .filter(|item| item.harness == "deepseek" && item.kind == "skill")
+            .map(|item| item.name.as_str())
+            .collect();
+        skills.sort_unstable();
+        assert_eq!(
+            skills,
+            ["agents-skill", "project-agents-skill", "project-skill", "user-skill"]
+        );
         fs::remove_dir_all(home).unwrap();
         fs::remove_dir_all(project).unwrap();
     }

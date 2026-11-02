@@ -103,7 +103,7 @@ fn parse_skills(value: &Value) -> Catalog {
     let mut candidates: Vec<_> = skills
         .into_iter()
         .map(|((name, path), metadata)| {
-            let id = skill_id(&name, &path);
+            let id = super::hashed_id("codex:skill", &name, &path);
             let base = if used_names.contains(&format!("/{name}")) {
                 format!("/skills:{name}")
             } else {
@@ -254,16 +254,6 @@ fn bounded_description(value: &str) -> String {
         result.push(character);
     }
     result.trim().to_owned()
-}
-
-fn skill_id(name: &str, path: &str) -> String {
-    // Stable FNV-1a identifies the native name/path pair without exposing paths in UI metadata.
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in name.bytes().chain(std::iter::once(0)).chain(path.bytes()) {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("codex:skill:{hash:016x}")
 }
 
 // Authoritative command names, not copied implementation:
