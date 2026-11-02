@@ -507,12 +507,16 @@ impl Protocol {
                         step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
                     }
                     step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
-                } else {
+                    return Ok(step);
+                }
+                if !read_only {
                     // A plan task must not turn an unrecognized ACP permission
                     // request into a user-overridable write approval.
                     step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
+                    return Ok(step);
                 }
-                return Ok(step);
+                // Read, search and fetch requests keep the ordinary approval
+                // path, as in Standard mode.
             }
             let one_allow = options.is_some_and(|values| {
                 values
@@ -2075,8 +2079,26 @@ mod tests {
         assert!(declined.events.iter().any(|event| event.kind == "status" && event.text.contains("Plan mode declined")));
         let read = json!({"jsonrpc":"2.0","id":"p2","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Read Cargo.toml","kind":"read"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}]}});
         assert_eq!(p.receive(read).unwrap().write[0]["result"]["outcome"]["optionId"], "allow");
+        // Reads without an allow option keep the ordinary approval path.
+        let fetch = json!({"jsonrpc":"2.0","id":"p4","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Fetch docs","kind":"fetch"},"options":[{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]}});
+        let asked = p.receive(fetch).unwrap();
+        assert!(asked.write.is_empty());
+        assert!(asked.events.iter().any(|event| event.kind == "approval"));
         let write_only = json!({"jsonrpc":"2.0","id":"p3","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Run deploy","kind":"execute"},"options":[{"optionId":"allow","kind":"allow_once"}]}});
         assert_eq!(p.receive(write_only).unwrap().write[0]["result"]["outcome"]["outcome"], "cancelled");
+
+        // Hermes reaches the same fallback when its mode option lacks a
+        // counterpart; its own plan rules keep applying first.
+        let mut cfg = config("hermes");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        let step = p.receive(response(2, json!({"sessionId":"remote","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"chat","options":[{"value":"chat","name":"Chat"}]}]}))).unwrap();
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert!(step.write[0]["params"]["prompt"][0]["text"].as_str().unwrap().starts_with(READ_ONLY_PLAN_PREFIX));
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("no plan mode")));
+        let read = json!({"jsonrpc":"2.0","id":"p5","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Read Cargo.toml","kind":"read"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}]}});
+        assert_eq!(p.receive(read).unwrap().write[0]["result"]["outcome"]["optionId"], "allow");
 
         // Accept edits runs in the harness's own mode with a status note and no plan prefix.
         let mut cfg = config("antigravity");
