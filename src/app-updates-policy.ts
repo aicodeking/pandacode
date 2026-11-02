@@ -57,6 +57,20 @@ export function updatePrompt(state: UpdateState, installable: boolean, dismissed
   }
 }
 
+/** The sidebar banner for a state: a title and one detail line, dismissible only while a
+ * found update waits (Later). Null hides it. */
+export function bannerPrompt(state: UpdateState, installable: boolean, dismissed: string | null): { title: string; detail: string; dismissible: boolean } | null {
+  switch (state.kind) {
+    case 'available':
+      if (state.version === dismissed) return null;
+      return { title: 'Update available', detail: installable ? `PandaCode ${state.version}` : `PandaCode ${state.version} · see GitHub Releases`, dismissible: true };
+    case 'downloading': return { title: 'Downloading update', detail: `PandaCode ${state.version}${state.percent === null ? '' : ` · ${state.percent}%`}`, dismissible: false };
+    case 'ready': return { title: 'Restart to update', detail: `PandaCode ${state.version} is ready`, dismissible: false };
+    case 'installing': return { title: 'Updating PandaCode', detail: `Installing ${state.version}`, dismissible: false };
+    default: return null;
+  }
+}
+
 /** One line for Settings → About. */
 export function describeUpdate(state: UpdateState, mode: UpdateMode, now = Date.now(), installable = true): string {
   switch (state.kind) {

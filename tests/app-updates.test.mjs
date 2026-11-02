@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // The pure parts of the updater: modes, when a downloaded update may restart the app, and what About says.
-const { readyToRestart, restartNow, downloadsOnItsOwn, parseUpdateMode, updatePrompt, describeUpdate, IDLE_BEFORE_RESTART } = await import('../src/app-updates-policy.ts');
+const { readyToRestart, restartNow, downloadsOnItsOwn, parseUpdateMode, updatePrompt, bannerPrompt, describeUpdate, IDLE_BEFORE_RESTART } = await import('../src/app-updates-policy.ts');
 
 test('a downloaded update restarts only when no agent works and the user stepped away', () => {
   const now = 10_000_000;
@@ -58,4 +58,17 @@ test('About explains each state in one line', () => {
   assert.equal(describeUpdate({ kind: 'idle' }, 'notify'), 'Checks GitHub Releases automatically.');
   assert.match(describeUpdate({ kind: 'available', version: '0.3.1' }, 'automatic', now, false), /installed by its package or a new AppImage/);
   assert.match(describeUpdate({ kind: 'error', message: 'offline' }, 'automatic'), /offline$/);
+});
+
+test('the sidebar banner words each state, and Later hides it for that version', () => {
+  const available = { kind: 'available', version: '0.3.40' };
+  assert.deepEqual(bannerPrompt(available, true, null), { title: 'Update available', detail: 'PandaCode 0.3.40', dismissible: true });
+  assert.equal(bannerPrompt(available, true, '0.3.40'), null);
+  assert.ok(bannerPrompt(available, true, '0.3.39'));
+  assert.match(bannerPrompt(available, false, null).detail, /GitHub Releases/);
+  assert.deepEqual(bannerPrompt({ kind: 'downloading', version: '0.3.40', percent: 42 }, true, null), { title: 'Downloading update', detail: 'PandaCode 0.3.40 · 42%', dismissible: false });
+  assert.deepEqual(bannerPrompt({ kind: 'ready', version: '0.3.40' }, true, null), { title: 'Restart to update', detail: 'PandaCode 0.3.40 is ready', dismissible: false });
+  assert.equal(bannerPrompt({ kind: 'installing', version: '0.3.40' }, true, null).title, 'Updating PandaCode');
+  assert.equal(bannerPrompt({ kind: 'checking' }, true, null), null);
+  assert.equal(bannerPrompt({ kind: 'idle' }, true, null), null);
 });
