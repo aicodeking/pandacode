@@ -24,3 +24,9 @@ The Settings module and styles load when opened. General uses local state immedi
 ## Verification
 
 The update passed 23 Node checks, the production build, 55 Chrome browser cases, and 41 WebKit cases. These cover blur dragging and persistence, wallpaper schedules, tab keyboard navigation, delayed discovery, default-agent menus, and layout at enlarged text sizes. One existing WebKit inspector-resize timing case passed when rerun in isolation. General, Agents, and wallpaper controls were visually checked in dark and light themes and in a narrow window, with no page errors.
+
+## Workspace themes
+
+Appearance includes six palette cards: System (PandaCode’s original colors), Ocean, Amethyst, Forest, Rose and Amber. Each card previews the workspace in the current light or dark appearance. Choosing a palette updates the surfaces and its accent immediately and saves locally; accent and wallpaper controls remain available. Arrow keys select nearby cards, with Home and End jumping to the first and last.
+
+Imported VS Code themes keep their own colors. Choosing a built-in card leaves the imported theme; choosing PandaCode in the VS Code theme list restores the remembered built-in palette.

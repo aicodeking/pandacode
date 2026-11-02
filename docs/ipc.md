@@ -135,6 +135,7 @@ unarchived, completed (Settled) one.
 | create_session | {projectId, provider, model, mode} | Session |
 | fork_session_at_message | {sessionId, messageId: number} | Session (new standalone task, inclusive saved history) |
 | configure_session | {sessionId, provider, model, projectId?} | Session |
+| move_session | {sessionId, projectId} | Session |
 | set_reasoning_effort | {sessionId, reasoningEffort: string or null} | Session |
 | update_session | {sessionId, title?, archived?, model?, mode?} | void |
 | get_messages | {sessionId, beforeId?: number} | {messages: Message[], hasOlder: boolean} (latest 100, chronological) |
@@ -364,3 +365,12 @@ notice. Worker snapshots use the worker's session ID. See
 Task-scoped Run Script discovery, execution, and preview readiness commands are
 documented in [Run and preview](run-project.md). Execution uses the existing
 managed terminal event/lifecycle contract; it never interpolates shell commands.
+
+
+`move_session` moves an idle local conversation to an existing project from the main
+window. It keeps the task ID, transcript, title, model, permissions and usage links.
+Files remain in their original folders. Native resume and context usage are cleared;
+the next message restores up to 200 recent conversation entries (64 KiB) in the new
+workspace. Worktree, remote, cloud, team and linked machine tasks cannot move.
+Active agents/harness consoles, unfinished goals and automatic limit resumes must
+be stopped or cleared first. History and context changes commit atomically.

@@ -124,6 +124,7 @@ async fn direct_run_executes_tools_and_retains_followup_history() {
         sink(),
         receive,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -148,6 +149,7 @@ async fn direct_run_executes_tools_and_retains_followup_history() {
         "fixture".into(),
         sink(),
         receive,
+        None,
         None,
     )
     .await
@@ -314,6 +316,7 @@ async fn stop_interrupts_an_inflight_model_request() {
         sink(),
         receive,
         None,
+        None,
     );
     let (result, _) = tokio::time::timeout(Duration::from_millis(500), async {
         tokio::join!(work, stop)
@@ -375,6 +378,7 @@ async fn images_are_sent_inline_and_retained_without_reopening_source_files() {
         sink(),
         receive,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -396,6 +400,7 @@ async fn images_are_sent_inline_and_retained_without_reopening_source_files() {
         "fixture".into(),
         sink(),
         receive,
+        None,
         None,
     )
     .await
@@ -432,6 +437,7 @@ async fn invalid_images_fail_before_a_request_or_history_write() {
         "fixture".into(),
         sink(),
         receive,
+        None,
         None,
     )
     .await;
@@ -485,6 +491,7 @@ async fn steering_is_delivered_to_the_next_model_request() {
         sink,
         receive,
         None,
+        None,
     );
     let (result, _) = tokio::join!(run, steer);
     result.unwrap();
@@ -520,4 +527,359 @@ fn pending_steering_is_reported_failed_when_a_run_stops() {
         events.lock().unwrap()[0].data.as_ref().unwrap()["status"],
         "failed"
     );
+}
+
+#[tokio::test]
+async fn compaction_continues_the_same_saved_chat_at_every_context_size() {
+    for window in [8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576] {
+        let folder = Folder::new();
+        let (base, seen) = mock::serve(|request, _| {
+            let r: Value = serde_json::from_str(&request.body).unwrap();
+            if request.path.ends_with("count_tokens") {
+                return (
+                    200,
+                    json!({"input_tokens":r.to_string().len()/3+20}).to_string(),
+                );
+            }
+            let summary = r["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("Summarize conversation data");
+            if summary {
+                assert_eq!(r["chat_template_kwargs"]["enable_thinking"], false);
+                assert!(r.get("tools").is_none());
+            } else {
+                assert!(r["messages"].to_string().contains("ORANGE FALCON"));
+            }
+            (200, json!({"choices":[{"message":{"content":if summary {"Project ORANGE FALCON launches Tuesday. Continue the requested work."} else {"ORANGE FALCON launches Tuesday."}},"finish_reason":"stop"}]}).to_string())
+        });
+        let mut cfg = config();
+        cfg.cwd = folder.0.clone();
+        cfg.prompt = "What is the project code?".into();
+        let mut history = folder.history();
+        for round in 0..3 {
+            history.messages.push(json!({"role":"user","content":format!("Project ORANGE FALCON launches Tuesday. {}", "detail ".repeat(window/2))}));
+            history
+                .messages
+                .push(json!({"role":"assistant","content":"Details recorded."}));
+            history.save().unwrap();
+            let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            let path = history.path.clone();
+            run_session(
+                cfg.clone(),
+                format!("{base}/v1"),
+                None,
+                "local/a".into(),
+                history,
+                "same-chat".into(),
+                sink(),
+                receiver,
+                None,
+                Some(context::Budget {
+                    window,
+                    strata: true,
+                }),
+            )
+            .await
+            .unwrap();
+            let saved: History = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(
+                saved.messages[0]["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("conversation-summary"),
+                "window {window}, round {round}"
+            );
+            assert_eq!(
+                saved.messages.last().unwrap()["content"],
+                "ORANGE FALCON launches Tuesday."
+            );
+            history = Transcript {
+                path,
+                messages: saved.messages,
+            };
+        }
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path.ends_with("chat/completions"))
+                .count()
+                >= 6
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_summary_does_not_replace_saved_history() {
+    let folder = Folder::new();
+    let mut history = folder.history();
+    history.messages = vec![
+        json!({"role":"user","content":"old ".repeat(9000)}),
+        json!({"role":"assistant","content":"ok"}),
+        json!({"role":"user","content":"continue"}),
+    ];
+    history.save().unwrap();
+    let original = std::fs::read(&history.path).unwrap();
+    let (base, _) = mock::serve(|_, _| (500, r#"{"error":{"message":"summary unavailable"}}"#));
+    let error = context::prepare(
+        &client(10).unwrap(),
+        &format!("{base}/v1"),
+        None,
+        "local/a",
+        "system",
+        &[],
+        &mut history,
+        &context::Budget {
+            window: 8192,
+            strata: false,
+        },
+        &config(),
+        &sink(),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.contains("unchanged"));
+    assert_eq!(std::fs::read(&history.path).unwrap(), original);
+}
+
+#[tokio::test]
+async fn partial_output_is_saved_and_incomplete_tools_are_not_executed() {
+    let folder = Folder::new();
+    let mut cfg = config();
+    cfg.cwd = folder.0.clone();
+    cfg.mode = "auto".into();
+    let (base, _) = mock::serve(|_, _| {
+        (200,json!({"choices":[{"message":{"content":"Here is the first part.","tool_calls":[{"id":"bad","function":{"name":"write_file","arguments":"{\"path\":\"bad.txt\""}}]},"finish_reason":"length"}]}).to_string())
+    });
+    let (_sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let history = folder.history();
+    let path = history.path.clone();
+    run_session(
+        cfg,
+        format!("{base}/v1"),
+        None,
+        "local/a".into(),
+        history,
+        "same-chat".into(),
+        sink(),
+        receiver,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let h: History = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(
+        h.messages.last().unwrap()["content"],
+        "Here is the first part."
+    );
+    assert!(h.messages.last().unwrap().get("tool_calls").is_none());
+    assert!(!folder.0.join("bad.txt").exists());
+}
+
+#[tokio::test]
+async fn reads_the_loaded_strata_window_instead_of_assuming_the_model_maximum() {
+    let (base, _) = mock::serve(|request, _| {
+        assert_eq!(request.path, "/health");
+        (
+            200,
+            r#"{"service":"strata","max_context":8192,"model":"local/a"}"#,
+        )
+    });
+    let b = context::discover(&format!("{base}/v1"), None, "local/a").await;
+    assert_eq!(b.window, 8192);
+    assert!(b.strata);
+}
+
+#[tokio::test]
+async fn server_context_overflow_compacts_and_retries_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let folder = Folder::new();
+    let normals = Arc::new(AtomicUsize::new(0));
+    let count = normals.clone();
+    let (base, _) = mock::serve(move |request, _| {
+        if request.path.ends_with("count_tokens") {
+            return (200, json!({"input_tokens":100}).to_string());
+        }
+        let r: Value = serde_json::from_str(&request.body).unwrap();
+        let summary = r["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .starts_with("Summarize conversation data");
+        if !summary && count.fetch_add(1, Ordering::SeqCst) == 0 {
+            return (
+                400,
+                json!({"error":{"message":"context length exceeded"}}).to_string(),
+            );
+        }
+        (200,json!({"choices":[{"message":{"content":"The project is ORANGE FALCON."},"finish_reason":"stop"}]}).to_string())
+    });
+    let mut cfg = config();
+    cfg.cwd = folder.0.clone();
+    cfg.prompt = "continue".into();
+    let mut h = folder.history();
+    h.messages = vec![
+        json!({"role":"user","content":"Project ORANGE FALCON"}),
+        json!({"role":"assistant","content":"Recorded"}),
+    ];
+    let (_send, receive) = tokio::sync::mpsc::unbounded_channel();
+    run_session(
+        cfg,
+        format!("{base}/v1"),
+        None,
+        "local/a".into(),
+        h,
+        "same-chat".into(),
+        sink(),
+        receive,
+        None,
+        Some(context::Budget {
+            window: 8192,
+            strata: true,
+        }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(normals.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn oversized_tool_result_is_summarized_as_a_complete_group() {
+    let folder = Folder::new();
+    let mut h = folder.history();
+    h.messages = vec![
+        json!({"role":"user","content":"Inspect the build results"}),
+        json!({"role":"assistant","content":null,"tool_calls":[{"id":"build","function":{"name":"run_command","arguments":"{}"}}]}),
+        json!({"role":"tool","tool_call_id":"build","content":"Build passed. ".repeat(5000)}),
+    ];
+    h.save().unwrap();
+    let (base, _) = mock::serve(|_, _| {
+        (200,json!({"choices":[{"message":{"content":"User requested build inspection. The build tool completed successfully; report its outcome."},"finish_reason":"stop"}]}).to_string())
+    });
+    let result = context::prepare(
+        &client(10).unwrap(),
+        &format!("{base}/v1"),
+        None,
+        "local/a",
+        "system",
+        &[],
+        &mut h,
+        &context::Budget {
+            window: 8192,
+            strata: false,
+        },
+        &config(),
+        &sink(),
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(result["messages"]
+        .to_string()
+        .contains("build tool completed"));
+    assert!(h
+        .messages
+        .iter()
+        .all(|m| m["role"] != "tool" && m.get("tool_calls").is_none()));
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly selected running local model"]
+async fn live_local_summary_preserves_facts() {
+    let base = std::env::var("PANDA_CONTEXT_TEST_URL").expect("test endpoint");
+    let model = std::env::var("PANDA_CONTEXT_TEST_MODEL").expect("test model");
+    let folder = Folder::new();
+    let mut h = folder.history();
+    h.messages = vec![
+        json!({"role":"user","content":format!("Remember that project ORANGE FALCON launches Tuesday. {}", "The launch checklist is approved. ".repeat(35))}),
+        json!({"role":"assistant","content":"I have recorded the project details."}),
+        json!({"role":"user","content":"What is the project code and launch day? Answer in one short sentence."}),
+    ];
+    h.save().unwrap();
+    let b = context::discover(&base, None, &model).await;
+    assert!(b.strata);
+    let cfg = config();
+    let c = client(300).unwrap();
+    let mut request = context::prepare(
+        &c,
+        &base,
+        None,
+        &model,
+        "Answer briefly.",
+        &[],
+        &mut h,
+        &b,
+        &cfg,
+        &sink(),
+        true,
+    )
+    .await
+    .unwrap();
+    request["chat_template_kwargs"] = json!({"enable_thinking":false});
+    let answer = completion(&c, &base, None, request, &cfg, &sink())
+        .await
+        .unwrap();
+    println!("Live recall: {}", answer.text);
+    assert!(answer.text.to_uppercase().contains("ORANGE FALCON"));
+    assert!(answer.text.to_lowercase().contains("tuesday"));
+    assert!(h.messages[0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("conversation-summary"));
+}
+
+#[tokio::test]
+async fn fresh_hey_uses_gateway_metadata_and_real_count_at_8k_through_128k() {
+    for window in [8192, 32768, 131072] {
+        let folder = Folder::new();
+        let (base, seen) = mock::serve(move |request, _| {
+            match request.path.as_str() {
+                "/health" => (200,"<html>Strata app</html>".to_owned()),
+                "/v1/models" => (200,json!({"data":[{"id":"orca-iq3_xxs","owned_by":"strata","context_window":window,"meta":{"token_counting":true}}]}).to_string()),
+                "/v1/messages/count_tokens" => (200,json!({"input_tokens":6500}).to_string()),
+                "/v1/chat/completions" => {
+                    let r:Value=serde_json::from_str(&request.body).unwrap();
+                    assert_eq!(r["messages"].as_array().unwrap().len(),2);
+                    assert_eq!(r["messages"][1]["content"],"hey");
+                    assert!(r["max_tokens"].as_u64().unwrap()+6500 < window as u64);
+                    (200,json!({"choices":[{"message":{"content":"Hey!"},"finish_reason":"stop"}]}).to_string())
+                },
+                _ => panic!("unexpected route {}",request.path),
+            }
+        });
+        let base = format!("{base}/v1");
+        let budget = context::discover(&base, None, "orca-iq3_xxs").await;
+        assert_eq!(budget.window, window);
+        assert!(budget.strata);
+        let mut cfg = config();
+        cfg.cwd = folder.0.clone();
+        cfg.prompt = "hey".into();
+        cfg.instructions = "Compressible instructions. ".repeat(800);
+        let (_send, receive) = tokio::sync::mpsc::unbounded_channel();
+        run_session(
+            cfg,
+            base,
+            None,
+            "orca-iq3_xxs".into(),
+            folder.history(),
+            "same-chat".into(),
+            sink(),
+            receive,
+            None,
+            Some(budget),
+        )
+        .await
+        .unwrap();
+        let calls = seen.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|r| r.path.ends_with("chat/completions"))
+                .count(),
+            1
+        );
+        assert!(calls.iter().any(|r| r.path.ends_with("count_tokens")));
+    }
 }

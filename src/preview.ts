@@ -1590,6 +1590,16 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
+    case 'move_session': {
+      const s = session(args.sessionId), project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before moving this chat.');
+      if (s.worktreePath || s.remoteDevice || s.cloud || architect.get(s.id)) throw new Error('Worktree, remote, and team tasks stay with their original project.');
+      if (s.projectId !== project.id) {
+        s.projectId = project.id; s.resumeId = null; s.contextUsage = null; s.goalState = null; s.updatedAt = Date.now();
+      }
+      result = s; break;
+    }
     case 'configure_session': {
       const s = session(args.sessionId);
       if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');

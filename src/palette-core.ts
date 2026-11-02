@@ -5,6 +5,30 @@ import { contrast, mix, oklch, onColor, parseHex, toHex, toOklch, triplet, type 
 export type VsixTheme = { id: string; name: string; extension: string; kind: 'light' | 'dark'; colors: Record<string, string> };
 export type Tokens = Record<string, string>;
 
+export const BUILTIN_THEMES = [
+  { id: 'system', name: 'System', hue: 0 },
+  { id: 'ocean', name: 'Ocean', hue: 235 },
+  { id: 'amethyst', name: 'Amethyst', hue: 305 },
+  { id: 'forest', name: 'Forest', hue: 155 },
+  { id: 'rose', name: 'Rose', hue: 355 },
+  { id: 'amber', name: 'Amber', hue: 80 },
+] as const;
+export type BuiltinTheme = typeof BUILTIN_THEMES[number]['id'];
+
+/** Softly colored surfaces, with readable text in either appearance. */
+export function builtinTokens(id: BuiltinTheme, mode: 'light' | 'dark'): Tokens {
+  if (id === 'system') return {};
+  const hue = BUILTIN_THEMES.find(theme => theme.id === id)!.hue, dark = mode === 'dark';
+  const color = (lightness: number, chroma = 0.025) => toHex(oklch(lightness, chroma, hue));
+  return {
+    '--bg': color(dark ? 0.23 : 0.985), '--sidebar': color(dark ? 0.26 : 0.95),
+    '--panel': color(dark ? 0.28 : 0.96), '--raised': color(dark ? 0.32 : 0.92),
+    '--text': color(dark ? 0.94 : 0.25, 0.012), '--muted': color(dark ? 0.74 : 0.48, 0.018),
+    '--faint': color(dark ? 0.65 : 0.54, 0.015), '--border': color(dark ? 0.4 : 0.82, 0.018),
+    ...accentTokens(oklch(0.76, 0.13, hue), mode),
+  };
+}
+
 /** Accent shades for PandaCode's own surfaces, tuned per light and dark. */
 export function accentTokens(source: Rgb, mode: 'light' | 'dark'): Tokens {
   const { l, c: rawC, h } = toOklch(source);

@@ -178,7 +178,7 @@ let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
 let menuEpoch = 0;
 let pendingMenuOpen: { anchor: HTMLElement; release: () => void } | undefined;
-let openingProjectForTask: { id: string; generation: number } | undefined;
+let openingProjectForTask: { id: string; generation: number; move?: boolean } | undefined;
 let creatingTask = false;
 let openingSupport = false;
 let activityTimer = 0;
@@ -2856,8 +2856,9 @@ async function addProject(path: string): Promise<void> {
   state.projects = await call<Project[]>('list_projects');
   if (target) {
     if (target !== openingProjectForTask) { renderNavigation(); return; }
-    if (target.id === state.sessionId && target.generation === state.generation && newTaskView()) {
-      await changeTaskProject(added.id);
+    if (target.id === state.sessionId && target.generation === state.generation && (target.move || newTaskView())) {
+      if (target.move) await moveTaskProject(target.id, added.id);
+      else await changeTaskProject(added.id);
       if (target === openingProjectForTask) { closeModal(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); }
     } else { if (target === openingProjectForTask) closeModal(); renderNavigation(); }
     notify(`Opened ${added.name}`); return;
@@ -4445,6 +4446,54 @@ function showOpenProject(forTask = false): void {
   modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
 }
+function moveProjectBlocked(task: Session): boolean {
+  return isRunning(task.id) || configuringSessions.has(task.id) || finishingStreams.has(task.id) || Boolean(task.worktreePath || task.remoteDevice || task.cloud) || botProjects.has(task.projectId);
+}
+async function moveTaskProject(id: string, projectId: string): Promise<void> {
+  const task = state.sessions.find(item => item.id === id);
+  if (!task || moveProjectBlocked(task)) throw new Error('Stop the agent before moving. Worktree, remote, and bot tasks stay with their original project.');
+  if (task.projectId === projectId) return;
+  configuringSessions.add(id);
+  try {
+    const updated = await call<Session>('move_session', { sessionId: id, projectId });
+    const index = state.sessions.findIndex(item => item.id === id);
+    if (index >= 0) state.sessions[index] = updated;
+    threadPanels.delete(id); fileTabs.forget(id);
+    if (id === state.sessionId) {
+      ++state.generation;
+      state.attachments = [];
+      activateProject(updated.projectId, false);
+      if (state.projectFilter) setProjectFilter(updated.projectId);
+      state.collapsedFolders.delete(updated.projectId); saveCollapsedFolders();
+      restoreThreadPanel(updated);
+      terminalPanel.minimize();
+      render();
+      await refreshInspector();
+    } else renderNavigation();
+    if (chatTask(task)) await forgetChat(task.projectId);
+    notify(`Moved to ${state.projects.find(item => item.id === projectId)?.name ?? 'project'}. Files stay in their original folders.`);
+  } finally { configuringSessions.delete(id); }
+}
+async function showMoveProject(anchor: HTMLElement, id: string): Promise<void> {
+  const task = state.sessions.find(item => item.id === id);
+  if (!task || moveProjectBlocked(task)) return;
+  closeMenus();
+  const { epoch, release } = beginMenuOpen(anchor);
+  const { openProjectPicker } = await import('./project-picker').finally(release);
+  if (epoch !== menuEpoch || !anchor.isConnected) return;
+  projectPickerCleanup = openProjectPicker({
+    anchor, projects: userProjects(), currentProjectId: task.projectId,
+    description: 'Keep this conversation and use the selected project for future messages. Files stay in their original folders.', pendingLabel: 'Moving…',
+    onClose: () => { projectPickerCleanup = undefined; },
+    onSelect: projectId => moveTaskProject(id, projectId),
+    onNewProject: () => run((async () => {
+      if (id !== state.sessionId) await selectSession(id);
+      if (id !== state.sessionId) return;
+      showOpenProject();
+      openingProjectForTask = { id, generation: state.generation, move: true };
+    })()),
+  });
+}
 async function changeTaskProject(projectId: string): Promise<void> {
   const selected = session();
   if (!selected || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('A project can only be changed before starting the task.');
@@ -4742,6 +4791,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Task actions', actions: true, items: [
     { id: 'pin-task', label: s.pinned ? 'Unpin task' : 'Pin task', icon: 'pin', disabled: orderingBusy },
     { id: 'rename', label: 'Rename task', icon: 'edit' },
+    { id: 'move-project', label: 'Move to project…', icon: 'folder', disabled: moveProjectBlocked(s) },
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
     taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSessions.has(s.id) },
@@ -4752,7 +4802,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: id => {
     if (s.id !== state.sessionId || generation !== state.generation) return;
-    closeChoiceMenu(); run(action(id, anchor));
+    closeChoiceMenu(); if (id === 'move-project') { run(showMoveProject(anchor, s.id)); return; } run(action(id, anchor));
   } });
 }
 async function pinTask(id: string): Promise<void> {
@@ -4820,6 +4870,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
       { id: 'down', label: 'Move down', leading: icon('arrow', 'icon-down'), disabled: fixed || orderingBusy || index === ids.length - 1 },
     ] : [],
     { id: 'rename', label: 'Rename…', icon: 'edit', separator: true },
+    { id: 'move-project', label: 'Move to project…', icon: 'folder', disabled: moveProjectBlocked(task) },
     ...task.archived ? [] : [{ id: 'wake', label: 'Schedule a wake-up…', icon: 'clock' }],
     ...id === state.sessionId ? [] : [{ id: 'unread', label: unread ? 'Mark as read' : 'Mark as unread', icon: 'chat' }],
     ...branch && !task.archived && !task.remoteDevice ? [{ id: 'branch-task', label: `New task from ${branch}…`, icon: 'worktree' }] : [],
@@ -4831,6 +4882,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
   ], onSelect: async choice => {
     closeChoiceMenu();
     if (choice === 'pin') { run(pinTask(id)); return; }
+    if (choice === 'move-project') { await showMoveProject(anchor, id); return; }
     if (choice === 'wake') { openWakeComposer(anchor.isConnected ? anchor : $('#navigation'), id); return; }
     if (choice === 'stage' || choice === 'delete') { sidebarTaskAction(choice === 'stage' ? done ? 'reopen' : 'complete' : choice, id); return; }
     // Renames the row's task in place; the open thread stays open.

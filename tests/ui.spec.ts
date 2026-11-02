@@ -1332,7 +1332,7 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
     return { inViewport: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
   }));
-  expect(hitTargets).toHaveLength(19);
+  expect(hitTargets).toHaveLength(20);
   expect(hitTargets.every(target => target.inViewport && target.reachable)).toBe(true);
   await menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
   await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Kimi Code');
@@ -2700,6 +2700,7 @@ for (const delayedCommand of ['add_project', 'list_projects']) {
       await route.fulfill({ response, body: previewBody(body) });
     });
     await page.reload();
+    await expect(prompt(page)).toBeVisible();
     await page.locator('.new-task-button').click();
     await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in orbit?');
     const sessionId = await draftTaskId(page);
@@ -3477,3 +3478,82 @@ test('streaming keeps the transcript at the bottom after sending and leaves a re
   expect(Math.abs(await historyOffset(anchor) - anchorY)).toBeLessThan(2);
 });
 
+
+test('moves conversation history to another project while preserving the open draft', async ({ page }) => {
+  const before = await page.locator('#transcript').innerText();
+  await prompt(page).fill('Continue the remaster here');
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Choose project', exact: true });
+  await expect(picker.getByRole('searchbox', { name: 'Search projects' })).toBeFocused();
+  await expect(picker).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: '/private/tmp/pandacode-move-project.png' });
+  await picker.getByRole('option', { name: /pandacode/ }).click();
+  await expect(picker).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(prompt(page)).toHaveValue('Continue the remaster here');
+  expect(await page.locator('#transcript').innerText()).toBe(before);
+  const task = await page.evaluate(async () => (await import((window as any).__pandacodePreviewUrl)).invoke('get_task', { sessionId: 'session-1' }));
+  expect(task.projectId).toBe('project-2');
+  expect(task.resumeId).toBeNull();
+  await expect(page.locator('.composer-context')).toContainText('pandacode');
+});
+
+test('moving a background conversation keeps the current thread and draft open', async ({ page }) => {
+  await prompt(page).fill('Keep the current draft');
+  await taskRow(page, 'session-2').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('option', { name: /pandacode/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Choose project', exact: true })).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(prompt(page)).toHaveValue('Keep the current draft');
+  const task = await page.evaluate(async () => (await import((window as any).__pandacodePreviewUrl)).invoke('get_task', { sessionId: 'session-2' }));
+  expect(task.projectId).toBe('project-2');
+});
+
+test('moving a conversation can be cancelled and is disabled while its agent runs', async ({ page }) => {
+  await page.getByRole('button', { name: 'Task actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Choose project', exact: true })).toBeHidden();
+  await prompt(page).fill('Implement this');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Move to project…', exact: true })).toBeDisabled();
+});
+
+
+test('moves conversation history to a newly opened folder', async ({ page }) => {
+  await page.getByRole('button', { name: 'Task actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('button', { name: 'Open project…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Open project', exact: true });
+  await dialog.getByRole('textbox', { name: 'Project folder', exact: true }).fill('/projects/remastering');
+  await dialog.getByRole('button', { name: 'Open project', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.composer-context')).toContainText('remastering');
+  await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
+});
+
+
+test('moves conversation only after a successful save and shows a failed save in the picker', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const body = source.replace(/case ['"]move_session['"]\s*:/, `$& throw new Error('Unable to save the move. Try again.');`);
+    await route.fulfill({ response, body: previewBody(body) });
+  });
+  await page.reload();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await prompt(page).fill('Keep this draft after failure');
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Choose project', exact: true });
+  await picker.getByRole('option', { name: /pandacode/ }).click();
+  await expect(picker.getByRole('alert')).toHaveText('Unable to save the move. Try again.');
+  await page.keyboard.press('Escape');
+  await expect(prompt(page)).toHaveValue('Keep this draft after failure');
+  await expect(page.locator('.composer-context')).toContainText('orbit');
+});

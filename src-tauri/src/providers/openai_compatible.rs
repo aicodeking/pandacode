@@ -1,6 +1,7 @@
 //! Direct OpenAI-compatible HTTP provider. No CLI, account, or fallback endpoint.
 use super::*;
 use crate::connections::{Connection, OpenaiCompatible};
+mod context;
 mod local_tools;
 
 pub(crate) const ID: &str = "openai-compatible";
@@ -268,6 +269,7 @@ struct Completion {
     reasoning: String,
     calls: std::collections::BTreeMap<usize, Value>,
     finished: bool,
+    limited: bool,
 }
 impl Completion {
     fn frame(&mut self, value: Value, config: &RunConfig, sink: &Sink) -> Result<(), String> {
@@ -327,9 +329,7 @@ impl Completion {
             }
         }
         if choice["finish_reason"] == "length" {
-            return Err(
-                "The model reached its output limit. Ask it to work in smaller steps.".into(),
-            );
+            self.limited = true;
         }
         if !choice["finish_reason"].is_null() {
             self.finished = true;
@@ -452,8 +452,15 @@ pub(super) async fn run(
         .validated()?;
     let base = base_url(&endpoint.base_url)?;
     let key = crate::connections::compatible_key(Some(&connection.id), &endpoint.base_url)?;
-    let model = if config.model.is_empty() || config.model == "default"
-        || (!endpoint.models.is_empty() && !endpoint.models.iter().any(|id| id == config.model.strip_prefix("pandacode-local/").unwrap_or(&config.model))) {
+    let model = if config.model.is_empty()
+        || config.model == "default"
+        || (!endpoint.models.is_empty()
+            && !endpoint.models.iter().any(|id| {
+                id == config
+                    .model
+                    .strip_prefix("pandacode-local/")
+                    .unwrap_or(&config.model)
+            })) {
         endpoint.model_id.clone()
     } else {
         config
@@ -466,7 +473,20 @@ pub(super) async fn run(
         .direct_instructions(&config.cwd, config.skill.as_ref())?;
     config.instructions.push_str(&instructions);
     let (history, resume) = Transcript::open(&config)?;
-    run_session(config, base, key, model, history, resume, sink, input, host).await
+    let budget = context::discover(&base, key.as_deref(), &model).await;
+    run_session(
+        config,
+        base,
+        key,
+        model,
+        history,
+        resume,
+        sink,
+        input,
+        host,
+        Some(budget),
+    )
+    .await
 }
 
 struct DirectSteers {
@@ -539,6 +559,7 @@ async fn run_session(
     sink: Sink,
     mut input: UnboundedReceiver<RunInput>,
     host: Option<ToolHost>,
+    budget: Option<context::Budget>,
 ) -> Result<(), String> {
     let tool_host = local_tools::host(&config, host)?;
     let tools: Vec<Value> = tool_host.tools.iter().map(|spec| json!({"type":"function","function":{"name":spec["name"],"description":spec["description"],"parameters":spec["inputSchema"]}})).collect();
@@ -573,7 +594,24 @@ async fn run_session(
             steers.deliver(&mut history)?;
             let mut messages = vec![json!({"role":"system","content":system})];
             messages.extend(history.messages.clone());
-            let request = json!({"model":model,"messages":messages,"tools":tools,"stream":true});
+            let request = if let Some(budget) = &budget {
+                context::prepare(
+                    &client,
+                    &base,
+                    key.as_deref(),
+                    &model,
+                    &system,
+                    &tools,
+                    &mut history,
+                    budget,
+                    &config,
+                    &sink,
+                    false,
+                )
+                .await?
+            } else {
+                json!({"model":model,"messages":messages,"tools":tools,"stream":true})
+            };
             if serde_json::to_vec(&request)
                 .map_err(|_| "Could not encode the request.")?
                 .len()
@@ -582,7 +620,38 @@ async fn run_session(
                 return Err("Conversation is too large. Start a new task.".into());
             }
             let response =
-                completion(&client, &base, key.as_deref(), request, &config, &sink).await?;
+                match completion(&client, &base, key.as_deref(), request, &config, &sink).await {
+                    Err(error) if budget.is_some() && context::overflow(&error) => {
+                        let request = context::prepare(
+                            &client,
+                            &base,
+                            key.as_deref(),
+                            &model,
+                            &system,
+                            &tools,
+                            &mut history,
+                            budget.as_ref().unwrap(),
+                            &config,
+                            &sink,
+                            true,
+                        )
+                        .await?;
+                        completion(&client, &base, key.as_deref(), request, &config, &sink).await?
+                    }
+                    result => result?,
+                };
+            if response.limited {
+                // Never execute truncated tool arguments or discard a partial text answer.
+                if !response.text.is_empty() {
+                    history
+                        .messages
+                        .push(json!({"role":"assistant","content":response.text}));
+                    history.save()?;
+                    sink(Protocol::new(config.clone()).event("status", "The reply reached its output limit. Send ‘continue’ in this chat to carry on.", None));
+                    return Ok(());
+                }
+                return Err("The model used its reply budget without finishing an answer. Your chat is saved; try a shorter request or turn off model thinking.".into());
+            }
             history.messages.push(response.message()?);
             history.save()?;
             if response.calls.is_empty() {

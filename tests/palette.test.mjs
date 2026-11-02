@@ -66,3 +66,17 @@ test('every shipped wallpaper has an accent that makes readable buttons', async 
     }
   }
 });
+
+test('built-in workspace palettes keep text, accents and focus readable in both appearances', async () => {
+  const { BUILTIN_THEMES, builtinTokens } = await import('../src/palette-core.ts');
+  for (const { id } of BUILTIN_THEMES) for (const mode of ['light', 'dark']) {
+    const t = builtinTokens(id, mode);
+    if (id === 'system') { assert.deepEqual(t, {}); continue; }
+    for (const surface of ['--bg', '--sidebar', '--panel', '--raised']) {
+      assert.ok(ratio(t['--text'], t[surface]) >= 4.5, `${id} ${mode}: text on ${surface}`);
+      assert.ok(ratio(t['--muted'], t[surface]) >= 4.5, `${id} ${mode}: muted on ${surface}`);
+    }
+    assert.ok(ratio(t['--on-accent'], t['--accent']) >= 4.5, `${id} ${mode}: button text`);
+    assert.ok(ratio(t['--focus'], t['--bg']) >= 3, `${id} ${mode}: focus`);
+  }
+});

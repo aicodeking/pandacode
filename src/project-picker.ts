@@ -6,6 +6,8 @@ type ProjectPickerOptions = {
   anchor: HTMLElement;
   projects: Project[];
   currentProjectId: string;
+  description?: string;
+  pendingLabel?: string;
   onSelect: (projectId: string) => Promise<void>;
   onNewProject: () => void;
   onClose: () => void;
@@ -20,12 +22,19 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', 'Choose project');
   panel.innerHTML = `<div class="project-menu-search">${icon('search')}<input type="search" aria-label="Search projects" placeholder="Search projects…" autocomplete="off" spellcheck="false" maxlength="200"></div><div class="project-menu-list" role="listbox" aria-label="Projects"></div><p class="project-menu-count" role="status" hidden></p><p class="project-menu-empty" role="status" hidden></p><p class="project-menu-error" role="alert" hidden></p><p class="project-menu-pending" role="status" hidden>Opening…</p><div class="project-menu-footer"><button type="button" class="project-menu-open">${icon('plus')}Open project…</button></div>`;
+  if (options.description) {
+    const description = document.createElement('p');
+    description.className = 'project-menu-count';
+    description.textContent = options.description;
+    panel.querySelector('.project-menu-search')!.after(description);
+  }
+  if (options.pendingLabel) panel.querySelector('.project-menu-pending[role="status"]')!.textContent = options.pendingLabel;
   const search = panel.querySelector<HTMLInputElement>('input')!;
   const list = panel.querySelector<HTMLElement>('.project-menu-list')!;
-  const count = panel.querySelector<HTMLElement>('.project-menu-count')!;
+  const count = panel.querySelector<HTMLElement>('.project-menu-count[role="status"]')!;
   const empty = panel.querySelector<HTMLElement>('.project-menu-empty')!;
   const error = panel.querySelector<HTMLElement>('.project-menu-error')!;
-  const pendingStatus = panel.querySelector<HTMLElement>('.project-menu-pending')!;
+  const pendingStatus = panel.querySelector<HTMLElement>('.project-menu-pending[role="status"]')!;
   const openButton = panel.querySelector<HTMLButtonElement>('.project-menu-open')!;
   const anchorId = anchor.id;
   const originalExpanded = anchor.getAttribute('aria-expanded');

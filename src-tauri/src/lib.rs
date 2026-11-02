@@ -887,6 +887,15 @@ async fn set_task_stage(
     Ok(task)
 }
 #[tauri::command]
+async fn move_session(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, project_id: String) -> Result<Session> {
+    if window.label() != "main" { return Err("Move chats in the main window.".into()); }
+    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    if agents.contains_key(&session_id) || terminal::harness_running(&state.terminals, &session_id)? {
+        return Err("Stop the agent or harness console before moving this chat.".into());
+    }
+    state.store.lock().map_err(|e| e.to_string())?.move_session(&session_id, &project_id)
+}
+#[tauri::command]
 async fn configure_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -4213,6 +4222,7 @@ pub fn run() {
                 set_task_stage,
                 start_task,
                 configure_session,
+                move_session,
                 set_reasoning_effort,
                 update_session,
                 delete_session_with_attachment_cleanup,
