@@ -54,6 +54,7 @@ impl Transport for ControlClient {
 
 pub async fn execute(cwd: &Path, request: Request) -> Result<Value, String> {
     validate_request(&request)?;
+    let cwd = &codex_path(cwd);
     let mut client = ControlClient::start(cwd).await?;
     let result = execute_with(&mut client, cwd, request).await;
     client.finish().await;
@@ -415,7 +416,7 @@ fn import_preview(cwd: &Path, include_home: bool, response: Value) -> Result<Val
     for item in candidates.iter().take(MAX_IMPORTS) {
         let in_scope = match item["cwd"].as_str() {
             None | Some("") => include_home,
-            Some(path) => Path::new(path) == cwd,
+            Some(path) => same_cwd(path, cwd),
         };
         if !in_scope {
             continue;
@@ -509,7 +510,7 @@ fn remove_imports(cwd: &Path, include_home: bool, ids: &[String]) {
 }
 
 fn conversations(result: &Value, cwd: &Path) -> Result<Value, String> {
-    let items:Vec<_>=array(result,"data")?.iter().take(50).filter(|item|item["cwd"].as_str().is_some_and(|path|Path::new(path)==cwd)).filter_map(|item| {
+    let items:Vec<_>=array(result,"data")?.iter().take(50).filter(|item|item["cwd"].as_str().is_some_and(|path|same_cwd(path,cwd))).filter_map(|item| {
         let id=remote_id(&item["id"]).ok()?;
         Some(json!({"id":id,"title":nonempty(&item["name"],160).or_else(||nonempty(&item["preview"],160)).unwrap_or_else(||"Untitled task".into()),"description":clean(&item["model"],160),"source":"Codex","updatedAt":item["updatedAt"].as_i64()}))
     }).collect();
@@ -541,6 +542,7 @@ pub struct Fork {
 }
 pub async fn fork_thread(cwd: &Path, thread_id: &str) -> Result<Fork, String> {
     remote_id(&json!(thread_id))?;
+    let cwd = &codex_path(cwd);
     let mut client = ControlClient::start(cwd).await?;
     let result=client.request("thread/fork",json!({"threadId":thread_id,"cwd":cwd,"excludeTurns":true,"deferGoalContinuation":true})).await;
     client.finish().await;
@@ -595,7 +597,7 @@ pub async fn validate_conversation(cwd: &Path, thread_id: &str) -> Result<Fork, 
     let thread = &response["thread"];
     if thread["cwd"]
         .as_str()
-        .is_none_or(|path| Path::new(path) != cwd)
+        .is_none_or(|path| !same_cwd(path, cwd))
         || remote_id(&thread["id"])? != thread_id
     {
         return Err("This Codex conversation belongs to a different project.".into());
@@ -605,6 +607,54 @@ pub async fn validate_conversation(cwd: &Path, thread_id: &str) -> Result<Fork, 
         model: nonempty(&thread["model"], 160),
         reasoning_effort: nonempty(&thread["reasoningEffort"], 32),
     })
+}
+
+/// Codex reports a thread's cwd as the process saw it (`C:\a\b`), while paths
+/// PandaCode canonicalized or stored carry the Windows verbatim prefix
+/// (`\\?\C:\a\b`). On Windows the same folder must compare equal however it is
+/// spelled (verbatim prefix, letter case, `/` separators, a trailing separator);
+/// genuinely different folders still fail closed.
+fn same_cwd(reported: &str, cwd: &Path) -> bool {
+    same_cwd_on(reported, cwd, cfg!(windows))
+}
+
+fn same_cwd_on(reported: &str, cwd: &Path, windows: bool) -> bool {
+    if !windows {
+        return Path::new(reported) == cwd;
+    }
+    let key = |path: &Path| {
+        let plain = ordinary_on(path, true).to_string_lossy().replace('/', "\\");
+        // Keep a drive root's separator (`C:\`), drop any other trailing one.
+        let trimmed = if plain.len() > 3 { plain.trim_end_matches('\\') } else { plain.as_str() };
+        trimmed.to_lowercase()
+    };
+    !reported.is_empty() && key(Path::new(reported)) == key(cwd)
+}
+
+/// The folder as Codex itself names it: Codex filters `thread/list` and import
+/// detection by exact cwd, and never records the verbatim prefix.
+fn codex_path(path: &Path) -> PathBuf {
+    ordinary_on(path, cfg!(windows))
+}
+
+/// `path` without a Windows verbatim prefix (`\\?\C:\…`, `\\?\UNC\server\share\…`);
+/// malformed verbatim forms and every path off Windows are left unchanged.
+fn ordinary_on(path: &Path, windows: bool) -> PathBuf {
+    let text = path.to_string_lossy();
+    if !windows {
+        return path.to_path_buf();
+    }
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        if unc.split('\\').filter(|part| !part.is_empty()).count() >= 2 {
+            return PathBuf::from(format!(r"\\{unc}"));
+        }
+    }
+    if let Some(drive) = text.strip_prefix(r"\\?\") {
+        if drive.as_bytes().get(1..3) == Some(b":\\") && drive.as_bytes()[0].is_ascii_alphabetic() {
+            return PathBuf::from(drive);
+        }
+    }
+    path.to_path_buf()
 }
 
 /// Read only the selected project's task transcript. Large histories retain the
@@ -625,6 +675,15 @@ async fn conversation_messages_with(
     cwd: &Path,
     thread_id: &str,
 ) -> Result<Vec<(String, String)>, String> {
+    conversation_messages_with_on(client, cwd, thread_id, cfg!(windows)).await
+}
+
+async fn conversation_messages_with_on(
+    client: &mut impl Transport,
+    cwd: &Path,
+    thread_id: &str,
+    windows: bool,
+) -> Result<Vec<(String, String)>, String> {
     let result = client
         .request(
             "thread/read",
@@ -635,7 +694,7 @@ async fn conversation_messages_with(
     if remote_id(&thread["id"])? != thread_id
         || thread["cwd"]
             .as_str()
-            .is_none_or(|value| Path::new(value) != cwd)
+            .is_none_or(|value| !same_cwd_on(value, cwd, windows))
     {
         return Err("This Codex conversation belongs to a different project.".into());
     }
@@ -1099,4 +1158,124 @@ mod tests {
         assert!(!view.to_string().contains("SECRET"));
         assert_eq!(view["cursor"], "next");
     }
+    #[test]
+    fn same_cwd_matches_verbatim_and_plain_forms_only_on_windows() {
+        assert!(same_cwd_on(r"C:\project", Path::new(r"C:\project"), false));
+        assert!(same_cwd_on(r"C:\project", Path::new(r"C:\project"), true));
+        assert!(same_cwd("/project", Path::new("/project")));
+        // Windows canonicalize returns \\?\ paths; either side may carry the prefix.
+        assert!(same_cwd_on(r"C:\project", Path::new(r"\\?\C:\project"), true));
+        assert!(same_cwd_on(r"\\?\C:\project", Path::new(r"C:\project"), true));
+        assert!(same_cwd_on(
+            r"\\server\share\project",
+            Path::new(r"\\?\UNC\server\share\project"),
+            true
+        ));
+        assert!(same_cwd_on(
+            r"\\?\UNC\server\share\project",
+            Path::new(r"\\server\share\project"),
+            true
+        ));
+        // Off Windows the prefix is a literal name and is never stripped.
+        assert!(!same_cwd_on(r"\\?\C:\project", Path::new(r"C:\project"), false));
+        assert!(!same_cwd_on(r"\\?\home\project", Path::new(r"/home/project"), false));
+        // Malformed verbatim forms fall through unchanged and fail closed.
+        assert!(!same_cwd_on(r"\\?\UNC\server", Path::new(r"\\server"), true));
+        assert!(!same_cwd_on(r"\\?\C:", Path::new(r"C:"), true));
+    }
+    #[test]
+    fn same_cwd_rejects_foreign_folders_empty_and_near_misses() {
+        assert!(!same_cwd_on(r"C:\other", Path::new(r"\\?\C:\project"), true));
+        assert!(!same_cwd_on(r"/other", Path::new(r"/project"), false));
+        assert!(!same_cwd_on("", Path::new(r"\\?\C:\project"), true));
+        // Stripping must not turn a prefix of one path into the other path.
+        assert!(!same_cwd_on(r"C:\prefix", Path::new(r"\\?\C:\pre"), true));
+        assert!(!same_cwd_on(r"\\?\C:\pre", Path::new(r"C:\prefix"), true));
+        assert!(!same_cwd("", Path::new("/project")));
+        assert!(!same_cwd("/other", Path::new("/project")));
+    }
+    #[tokio::test]
+    async fn imported_transcript_accepts_a_verbatim_windows_cwd_only_on_windows() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut fake = Fake::new(vec![
+            (
+                "thread/read",
+                json!({"thread":{"id":id,"cwd":r"C:\Users\me\project"}}),
+            ),
+            (
+                "thread/items/list",
+                json!({"data":[{"item":{"type":"agentMessage","text":"Done"}}],"nextCursor":null}),
+            ),
+        ]);
+        let messages = conversation_messages_with_on(
+            &mut fake,
+            Path::new(r"\\?\C:\Users\me\project"),
+            &id,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(messages, vec![("assistant".into(), "Done".into())]);
+        let mut off_windows = Fake::new(vec![(
+            "thread/read",
+            json!({"thread":{"id":id,"cwd":r"C:\Users\me\project"}}),
+        )]);
+        assert_eq!(
+            conversation_messages_with_on(
+                &mut off_windows,
+                Path::new(r"\\?\C:\Users\me\project"),
+                &id,
+                false
+            )
+            .await
+            .unwrap_err(),
+            "This Codex conversation belongs to a different project."
+        );
+    }
+    #[tokio::test]
+    async fn imported_transcript_rejects_foreign_or_missing_project_folders() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut fake = Fake::new(vec![(
+            "thread/read",
+            json!({"thread":{"id":id,"cwd":"/other"}}),
+        )]);
+        assert_eq!(
+            conversation_messages_with(&mut fake, Path::new("/project"), &id)
+                .await
+                .unwrap_err(),
+            "This Codex conversation belongs to a different project."
+        );
+        let mut missing = Fake::new(vec![(
+            "thread/read",
+            json!({"thread":{"id":id}}),
+        )]);
+        assert_eq!(
+            conversation_messages_with(&mut missing, Path::new("/project"), &id)
+                .await
+                .unwrap_err(),
+            "This Codex conversation belongs to a different project."
+        );
+    }
+    #[test]
+    fn same_cwd_on_windows_ignores_case_separators_and_trailing_slashes() {
+        let cwd = Path::new(r"\\?\C:\Users\me\project");
+        for spelling in [r"c:\users\ME\Project", r"C:/Users/me/project", r"C:\Users\me\project\", r"C:/Users/me/project/"] {
+            assert!(same_cwd_on(spelling, cwd, true), "{spelling}");
+        }
+        assert!(same_cwd_on(r"c:\", Path::new(r"\\?\C:\"), true));
+        assert!(!same_cwd_on(r"C:\Users\me\project2", cwd, true));
+        assert!(!same_cwd_on(r"D:\Users\me\project", cwd, true));
+        assert!(!same_cwd_on(r"C:\Users\me", cwd, true));
+        // Off Windows paths stay exact: case is significant.
+        assert!(!same_cwd_on("/Users/me/Project", Path::new("/Users/me/project"), false));
+    }
+    #[test]
+    fn codex_receives_the_folder_without_the_verbatim_prefix() {
+        assert_eq!(ordinary_on(Path::new(r"\\?\C:\Users\me\project"), true), PathBuf::from(r"C:\Users\me\project"));
+        assert_eq!(ordinary_on(Path::new(r"\\?\UNC\server\share\p"), true), PathBuf::from(r"\\server\share\p"));
+        assert_eq!(ordinary_on(Path::new(r"\\?\Volume{x}\p"), true), PathBuf::from(r"\\?\Volume{x}\p"));
+        assert_eq!(ordinary_on(Path::new(r"\\?\C:\p"), false), PathBuf::from(r"\\?\C:\p"));
+        assert_eq!(codex_path(Path::new("/project")), PathBuf::from("/project"));
+    }
+
 }
