@@ -1,7 +1,7 @@
 /* Browser preview of the skills library (src-tauri/src/skills.rs): an in-memory library, a
  * pretend Claude Code and Codex install, and the same refusals the native side gives. */
 import { LIBRARY_DIR } from './preview-skill-manager';
-import type { SkillActivation, SkillCell, SkillFinding, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
+import type { SkillActivation, SkillCell, SkillFinding, SkillFound, SkillItem, SkillKind, SkillMatrix, SkillScope } from './skills-library';
 
 const PROMPT = new Set(['kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'muse', 'devin', 'zcode', 'hermes', 'cursor']);
 const FILES = ['claude', 'codex'];
@@ -20,6 +20,11 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').re
 const hash = (text: string) => [...text].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(16).padStart(8, '0').repeat(8);
 
 type Entry = { item: SkillItem; text: string };
+/** What `skills_found` would list: folders other harnesses read on this computer. */
+const FOUND: { name: string; text: string; locations: { label: string; path: string }[] }[] = [
+  { name: 'pdf tools', text: '# pdf tools\nAssemble PDFs from Markdown and split big ones.', locations: [{ label: '~/.claude/skills', path: '/Users/you/.claude/skills/pdf-tools' }, { label: '~/.agents/skills', path: '/Users/you/.agents/skills/pdf-tools' }] },
+  { name: 'web tester', text: '# web tester\nClick through a site and report failures.', locations: [{ label: '~/.zcode/skills', path: '/Users/you/.zcode/skills/web-tester' }] },
+];
 
 export function createPreviewSkills() {
   const entries = new Map<string, Entry>();
@@ -54,6 +59,10 @@ export function createPreviewSkills() {
     const surface = PROMPT.has(harness) ? 'prompt' : entry.item.kind === 'skill' ? `${base}/.${harness}/skills/${entry.item.id}` : harness === 'claude' ? `${base}/${scope === 'user' ? '.claude/' : ''}CLAUDE.md` : `${base}/${scope === 'user' ? '.codex/' : ''}AGENTS.md`;
     if (!activation) return { id: entry.item.id, scope, status: 'off', surface };
     if (activation.surface === 'prompt') return { id: entry.item.id, scope, status: 'prompt', surface };
+    if (activation.surface === 'link') {
+      const status = disk.get(key(entry.item.id, harness, scope)) === 'edited' ? 'drifted' : 'active';
+      return { id: entry.item.id, scope, status, surface };
+    }
     const onDisk = disk.get(key(entry.item.id, harness, scope));
     const status = onDisk === undefined ? 'missing' : onDisk !== activation.sha256 ? 'drifted' : activation.sha256 !== entry.item.sha256 ? 'outdated' : 'active';
     return { id: entry.item.id, scope, status, surface };
@@ -66,12 +75,15 @@ export function createPreviewSkills() {
     list,
     /** Rules & library's folder import: a skill or rule named for the folder or Markdown file; a name with 'setup'
      * carries a download piped into a shell, so its activation asks first. */
-    importFolder(path: unknown, kind: unknown) {
+    importFolder(path: unknown, kind: unknown, link: unknown) {
       const text = String(path ?? '').trim();
       if (!text.startsWith('/')) throw new Error('Choose a folder or Markdown file.');
-      const name = text.split('/').filter(Boolean).pop()!.replace(/\.md$/, '');
-      const body = name.includes('setup') ? '# Setup\nInstall with `curl -fsSL https://example.com/install.sh | sh`.' : `# ${name}\nImported from ${text}.`;
-      return add(kind === 'rule' ? 'rule' : 'skill', name, body, { kind: 'folder', location: text, gitRef: null, commit: null });
+      const onDisk = FOUND.find(skill => skill.locations.some(l => l.path === text));
+      const name = onDisk?.name ?? text.split('/').filter(Boolean).pop()!.replace(/\.md$/, '');
+      const body = onDisk?.text ?? (name.includes('setup') ? '# Setup\nInstall with `curl -fsSL https://example.com/install.sh | sh`.' : `# ${name}\nImported from ${text}.`);
+      const linked = link === true && kind !== 'rule';
+      if (link === true && kind === 'rule') throw new Error('Only skills with a SKILL.md folder can be linked.');
+      return add(kind === 'rule' ? 'rule' : 'skill', name, body, { kind: linked ? 'link' : 'folder', location: text, gitRef: null, commit: null });
     },
     /** Skills → Add skill → Bot library (`skill_manager_add_library`): imports the chosen skills from a source,
      * kind `folder` for a local folder and `skills` otherwise; an item already here from elsewhere is left alone. */
@@ -104,7 +116,8 @@ export function createPreviewSkills() {
       const k = key(entry.item.id, h, s);
       const previous = entry.item.activations.find(a => a.harness === h && a.scope === s);
       if (previous && previous.surface !== 'prompt' && disk.get(k) !== previous.sha256) throw new Error('That file was edited on disk; PandaCode will not overwrite it.');
-      const activation: SkillActivation = { harness: h, scope: s, project: s === 'project' ? PROJECT_ROOT : null, surface: PROMPT.has(h) ? 'prompt' : entry.item.kind === 'skill' ? 'folder' : 'block', sha256: entry.item.sha256, files: [] };
+      const surface: SkillActivation['surface'] = PROMPT.has(h) ? 'prompt' : entry.item.kind === 'skill' ? entry.item.source.kind === 'link' ? 'link' : 'folder' : 'block';
+      const activation: SkillActivation = { harness: h, scope: s, project: s === 'project' ? PROJECT_ROOT : null, surface, sha256: entry.item.sha256, files: [] };
       if (!PROMPT.has(h)) disk.set(k, entry.item.sha256);
       entry.item = { ...entry.item, activations: [...entry.item.activations.filter(a => a !== previous), activation] };
       return { items: list(), kept: [] };
@@ -150,11 +163,25 @@ export function createPreviewSkills() {
       }));
       return { project: projectId ? PROJECT_ROOT : null, harnesses };
     },
+    /** Skills other harnesses read on this computer, marked when the library holds them. */
+    found(): SkillFound[] {
+      return FOUND.map(skill => {
+        const copy = [...entries.values()].find(entry => entry.item.id === slug(skill.name))?.item;
+        return {
+          name: skill.name,
+          description: skill.text.split('\n').find(l => l.trim() && !l.startsWith('#')) ?? '',
+          sha256: hash(skill.text),
+          locations: skill.locations,
+          inLibrary: copy?.sha256 === hash(skill.text),
+          libraryId: copy ? copy.id : null,
+        };
+      });
+    },
     /** One entry point for `invoke` in src/preview.ts. */
     call(command: string, args: Record<string, any>): unknown {
       switch (command) {
         case 'skills_list': return list();
-        case 'skills_import_folder': return this.importFolder(args.path, args.kind);
+        case 'skills_import_folder': return this.importFolder(args.path, args.kind, args.link);
         case 'skills_import_github': return this.importGithub(args.repo, args.path, args.gitRef, args.kind);
         case 'skills_activate': return this.activate(args.id, args.harness, args.scope, args.projectId, args.acknowledge);
         case 'skills_deactivate': return this.deactivate(args.id, args.harness, args.scope);
@@ -162,6 +189,7 @@ export function createPreviewSkills() {
         case 'skills_deactivate_all': return this.deactivateAll(args.id);
         case 'skills_scan': return this.scan(args.id);
         case 'skills_remove': return this.remove(args.id);
+        case 'skills_found': return this.found();
         default: throw new Error(`Unknown preview command: ${command}`);
       }
     },
