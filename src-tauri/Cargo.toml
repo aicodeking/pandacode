@@ -80,6 +80,10 @@ webkit2gtk = { version = "2", features = ["v2_40"] }
 cairo-rs = { version = "0.18", features = ["png"] }
 gio = "0.18"
 keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+# Clipboard images WebKitGTK never exposes as pasted files (issue #272). The Wayland
+# feature is not a default; it reaches Niri, Hyprland, KDE and GNOME's data-control.
+# WKWebView and WebView2 hand pasted images over as files, so other targets skip it.
+arboard = { version = "3", features = ["wayland-data-control"] }
 
 [profile.release]
 lto = "thin"

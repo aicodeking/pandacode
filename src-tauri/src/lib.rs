@@ -662,6 +662,31 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     store.remove_project(&project_id)
 }
 #[tauri::command]
+async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
+    let (project, worktrees) = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let project = store.relink_project(&project_id, &PathBuf::from(path))?;
+        (project, store.project_worktrees(&project_id)?)
+    };
+    // Task worktrees stay where they are, but their `.git` files still name the old folder:
+    // `git worktree repair` from the moved checkout points them back. Best effort, since a
+    // folder that is not a Git repository has no worktrees to repair.
+    if !worktrees.is_empty() {
+        let root = PathBuf::from(&project.path);
+        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+            let args: Vec<&str> = ["worktree", "repair"].into_iter().chain(worktrees.iter().map(String::as_str)).collect();
+            workspace::run_git_bounded(&root, &args, 64 * 1024, false, std::time::Duration::from_secs(30))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.and_then(|out| if out.status.success() { Ok(()) } else { Err(format!("git exited with {}", out.status)) }))
+        {
+            eprintln!("relink_project: worktree repair failed: {error}");
+        }
+    }
+    Ok(project)
+}
+#[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     listed_sessions(&state)
 }
@@ -3094,6 +3119,13 @@ async fn import_prompt_image(
     blocking(move || prompt_attachments::import_image(&dir, source)).await
 }
 
+/// The clipboard image for the composer's paste fallback (WebKitGTK never exposes
+/// OS clipboard images as pasted files), or None when the clipboard holds no image.
+#[tauri::command]
+async fn read_clipboard_image() -> Result<Option<String>> {
+    blocking(prompt_attachments::clipboard_image).await
+}
+
 #[tauri::command]
 async fn read_document(path: String) -> Result<prompt_attachments::DocumentText> {
     blocking(move || prompt_attachments::read_document(std::path::Path::new(&path))).await
@@ -4109,6 +4141,7 @@ pub fn run() {
                 list_projects,
                 add_project,
                 remove_project,
+                relink_project,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
@@ -4239,6 +4272,7 @@ pub fn run() {
                 skills::skills_discover,
                 set_task_link,
                 import_prompt_image,
+                read_clipboard_image,
                 prompt_image,
                 reveal_path,
                 read_document,
