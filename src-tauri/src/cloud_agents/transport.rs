@@ -101,11 +101,17 @@ fn inherit_list(
         .into_iter()
         .filter(|(name, _)| !removed.contains(&name.as_str()))
         .collect();
-    vars.extend(
-        team.iter()
-            .filter(|(name, _)| !removed.contains(&name.as_str()))
-            .map(|(name, value)| (name.clone(), value.clone())),
-    );
+    for (name, value) in team {
+        if removed.contains(&name.as_str()) {
+            continue;
+        }
+        // A team that inherited the shared set repeats those globals in its own
+        // map; exporting them twice would only double-count the size cap.
+        if vars.iter().any(|(existing, same)| existing == name && same == value) {
+            continue;
+        }
+        vars.push((name.clone(), value.clone()));
+    }
     checked_environment(vars)
 }
 
