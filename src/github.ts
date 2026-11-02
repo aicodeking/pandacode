@@ -88,7 +88,8 @@ export function createGithub(host: GithubHost) {
   }
   function connected(projectId: string): boolean {
     const value = cached(projectId);
-    return githubEnabled() && Boolean(value?.installed && value.authenticated && value.repo);
+    // An unresolvable pin (its account was logged out) keeps every GitHub feature off.
+    return githubEnabled() && Boolean(value?.installed && value.authenticated && value.repo) && !value?.error;
   }
 
   async function mentionSearch(projectId: string, sessionId: string | undefined, query: string): Promise<MentionEntry[]> {
@@ -320,6 +321,7 @@ export function createGithub(host: GithubHost) {
     const describe = (value: GithubStatus | null): string => {
       if (!githubEnabled()) return 'Off · no gh commands run';
       if (!value) return projectId ? 'Could not check the GitHub CLI' : 'Open a project to check its connection';
+      if (value.error) return value.error;
       if (!value.installed) return 'Install the GitHub CLI (gh) to connect';
       if (!value.authenticated) return `Run gh auth login to connect${value.version ? ` · gh ${value.version}` : ''}`;
       const who = value.login ? `Connected as ${value.login}` : 'Connected';

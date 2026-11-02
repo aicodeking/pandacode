@@ -425,15 +425,23 @@ const previewGithub = (() => {
     { projectId: 'project-1', number: 97, title: 'Dark mode contrast for muted text', body: 'Muted text fails WCAG AA on the charcoal surfaces.', state: 'open', labels: ['design'], assignees: ['you'], updatedAt: new Date(now - 2 * 86400_000).toISOString(), author: 'you' },
   ];
   const pulls: { projectId: string; number: number; title: string; body: string; base: string; head: string }[] = [{ projectId: 'project-1', number: 130, title: 'Debounce library search', body: '', base: 'main', head: 'feat/debounce' }];
-  // Two signed-in accounts so the hub's account chip has something to pick between.
-  const accounts = [{ login: 'octo-work', host: 'github.com', active: true }, { login: 'octo-personal', host: 'github.com', active: false }];
+  // Three signed-in accounts so the hub's account chip has something to pick between,
+  // including one on a GitHub Enterprise host (its pin carries the host).
+  const accounts = [
+    { login: 'octo-work', host: 'github.com', active: true },
+    { login: 'octo-personal', host: 'github.com', active: false },
+    { login: 'corp-bot', host: 'ghe.example.invalid', active: false },
+  ];
   const pins = new Map<string, string>();
+  const dropped = new Set<string>();
   let next = 200;
   const url = (projectId: string, kind: 'issue' | 'pull', number: number) => `${repos[projectId]?.url}/${kind === 'pull' ? 'pull' : 'issues'}/${number}`;
+  const listed = () => accounts.filter(account => !dropped.has(account.login)).map(account => ({ ...account }));
   return {
     pulls,
-    status(projectId: string) { return { installed: true, version: '2.62.0', authenticated: true, login: 'you', repo: repos[projectId] ?? null, error: repos[projectId] ? null : null, accounts: accounts.map(account => ({ ...account })) }; },
-    accounts(projectId: string) { return { accounts: accounts.map(account => ({ ...account })), pinned: pins.get(projectId) ?? null }; },
+    status(projectId: string) { return { installed: true, version: '2.62.0', authenticated: true, login: 'you', repo: repos[projectId] ?? null, error: repos[projectId] ? null : null, accounts: listed() }; },
+    accounts(projectId: string) { return { accounts: listed(), pinned: pins.get(projectId) ?? null }; },
+    drop(login: string) { dropped.add(login); },
     setAccount(projectId: string, login: string | null) { if (login) pins.set(projectId, login); else pins.delete(projectId); },
     nextNumber(_projectId: string) { return ++next; },
     search(projectId: string, query: string) {
@@ -609,6 +617,8 @@ function agent(event: AgentEvent) { emit('agent-event', event); }
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
+/** tests: drop a signed-in GitHub account (`__previewGithubDropAccount('corp-bot')`), as a logout would. */
+(window as any).__previewGithubDropAccount = (login: string) => previewGithub.drop(login);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
 function assertIdle(s: Session): void {
   if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before changing this task.');

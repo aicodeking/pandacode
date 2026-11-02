@@ -43,6 +43,8 @@ const STALE = 60_000;
 const TABS: { id: Tab; label: string }[] = [{ id: 'threads', label: 'Threads' }, { id: 'pulls', label: 'Pull requests' }, { id: 'issues', label: 'Issues' }, { id: 'actions', label: 'Actions' }];
 const stored = (key: string) => { try { return localStorage.getItem(key) ?? ''; } catch { return ''; } };
 const store = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* A per-device preference only. */ } };
+/** A pin stores `login@host`; the chip shows just the login part. */
+const pinLogin = (value: string) => { const at = value.lastIndexOf('@'); return at < 0 ? value : value.slice(0, at); };
 
 /** Small GitHub-style state glyphs, drawn in the item's state color. */
 const GLYPHS = {
@@ -141,11 +143,12 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     const where = project
       ? `<span class="gh-where" title="${escape(project.path)}">${icon('folder')}${escape(project.path.split('/').slice(-2).join('/'))}</span>`
       : `<button type="button" class="gh-clone" data-gh="clone" ${cloning ? 'disabled' : ''}>${icon('download')}${cloning === item.nameWithOwner ? 'Cloning…' : 'Clone to this computer'}</button>`;
-    // One chip per signed-in pair: it names the account this project's GitHub calls run as.
+    // The chip names the account this project's GitHub calls run as; a pin whose account
+    // was logged out stays visible (and clearable) even though it lists no more.
     const active = accounts.find(account => account.active) ?? accounts[0];
-    const chip = project && accounts.length >= 2
+    const chip = project && (accounts.length >= 2 || pinned)
       ? (() => {
-          const chosen = pinned ?? active?.login ?? '';
+          const chosen = pinned ? pinLogin(pinned) : active?.login ?? '';
           return `<button type="button" class="gh-account" data-gh="account" aria-haspopup="menu" aria-label="GitHub account: ${escape(chosen)}" title="GitHub account: ${escape(chosen)}">${escape(chosen)}${icon('chevron')}</button>`;
         })()
       : '';
@@ -278,7 +281,8 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       title: 'GitHub account',
       items: [
         { id: '', label: 'Default', description: active ? `${active.login} on ${active.host}` : 'gh’s active account', selected: !pinned },
-        ...accounts.map(account => ({ id: account.login, label: account.login, description: account.host, selected: pinned === account.login })),
+        // A pin names the host too: `gh auth token --user` alone would resolve on the default one.
+        ...accounts.map(account => ({ id: `${account.login}@${account.host}`, label: account.login, description: account.host, selected: pinned === `${account.login}@${account.host}` })),
       ],
       onSelect: async id => {
         await host.setAccount(project.id, id || null);

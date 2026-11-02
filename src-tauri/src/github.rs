@@ -604,12 +604,12 @@ mod tests {
     #[test]
     #[ignore]
     fn live_cli_shapes_match_the_parsers() {
-    let root = std::env::current_dir().unwrap();
-    let status = status(&root, None);
-    assert!(status.installed && status.authenticated, "{status:?}");
-    let repo = status.repo.expect("this checkout has a GitHub remote");
-    assert!(!repo.default_branch.is_empty());
-    let states = link_states(&root, None, &Repository { name_with_owner: "cli/cli".into(), default_branch: "trunk".into(), url: String::new() }, &[("issue".into(), 1), ("pull".into(), 999_999_999)]).unwrap();
+        let root = std::env::current_dir().unwrap();
+        let status = status(&root, None);
+        assert!(status.installed && status.authenticated, "{status:?}");
+        let repo = status.repo.expect("this checkout has a GitHub remote");
+        assert!(!repo.default_branch.is_empty());
+        let states = link_states(&root, None, &Repository { name_with_owner: "cli/cli".into(), default_branch: "trunk".into(), url: String::new() }, &[("issue".into(), 1), ("pull".into(), 999_999_999)]).unwrap();
         assert_eq!(states.len(), 1, "a missing number is skipped, not fatal: {states:?}");
         assert_eq!(states[0].number, 1);
         assert!(["issue", "pull"].contains(&states[0].kind.as_str()));
