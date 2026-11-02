@@ -94,11 +94,12 @@ impl Boat {
             _ => Err(format!("boat sandboxes can start, stop or be deleted, not {action}.")),
         }
     }
-    /// Free trials cap auto-stop at 2 h; when a longer TTL is refused, take the cap.
+    /// Free trials cap auto-stop at 2 h; when a longer TTL is refused for that, take the cap.
+    /// Any other failure stays an error: a 2 h TTL could stop a paid machine mid-task.
     async fn keep_alive(&self, id: &str, minutes: u32) -> Result<()> {
         let seconds = (u64::from(minutes) * 60).clamp(60, TTL_MAX);
         match self.patch_ttl(id, seconds).await {
-            Err(_) if seconds > TRIAL_TTL => self.patch_ttl(id, TRIAL_TTL).await,
+            Err(error) if seconds > TRIAL_TTL && error.to_lowercase().contains("trial") => self.patch_ttl(id, TRIAL_TTL).await,
             result => result,
         }
     }
@@ -203,6 +204,8 @@ mod tests {
             ("PATCH", "/v1/sandboxes/bx_3") if request.body.contains("name") => (200, r#"{"ok":true,"sandbox":{"id":"bx_3","name":"pc-new","state":"provisioning"}}"#.into()),
             ("PATCH", "/v1/sandboxes/bx_1") if request.body.contains("86400") => (403, r#"{"ok":false,"message":"Free-trial auto-stop is 2 hours maximum. Set a TTL of 2 hours or less, or end the trial (first payment) to lift it."}"#.into()),
             ("PATCH", "/v1/sandboxes/bx_1") => (200, r#"{"ok":true,"sandbox":{"id":"bx_1"}}"#.into()),
+            ("PATCH", "/v1/sandboxes/bx_5") => (500, r#"{"ok":false,"message":"internal error"}"#.into()),
+            ("PATCH", "/v1/sandboxes/bx_6") => (403, r#"{"ok":false,"message":"This key may not change sandboxes."}"#.into()),
             ("POST", "/v1/sandboxes/bx_2/resume") => (202, r#"{"ok":true}"#.into()),
             ("DELETE", "/v1/sandboxes/bx_2") => (202, r#"{"ok":true}"#.into()),
             ("POST", "/v1/sandboxes/bx_1/commands") if request.body.contains("detached") => (200, r#"{"ok":true,"processId":77,"pid":77}"#.into()),
@@ -243,6 +246,17 @@ mod tests {
         assert!(log.iter().any(|r| r.method == "PATCH" && r.body.contains("86400")));
         let retry = log.iter().find(|r| r.method == "PATCH" && r.body.contains("7200")).expect("no retry at the trial cap");
         assert_eq!(retry.path, "/v1/sandboxes/bx_1");
+    }
+
+    /// A paid account's outage or a plain refusal must not quietly shorten the TTL to 2 h.
+    #[tokio::test]
+    async fn keep_alive_takes_the_cap_only_for_the_trial_refusal() {
+        let (boat, seen) = boat();
+        assert!(boat.keep_alive("bx_5", 24 * 60).await.unwrap_err().contains("internal error"));
+        assert!(boat.keep_alive("bx_6", 24 * 60).await.unwrap_err().contains("may not change"));
+        let log = seen.lock().unwrap();
+        assert_eq!(log.len(), 2, "no retry at the trial cap");
+        assert!(log.iter().all(|r| r.body.contains("86400")));
     }
 
     #[tokio::test]

@@ -15,6 +15,8 @@ use crate::Result;
 
 const DEFAULT_API: &str = "https://api.blaxel.ai/v0";
 const SERVICE: &str = "Blaxel";
+/// The API version Blaxel's SDKs send.
+const API_VERSION: &str = "2026-09-22";
 const IMAGE: &str = "blaxel/base-image:latest";
 /// `waitForCompletion` on the sandbox API gives up after 60 s; longer commands are polled.
 const WAIT_SECONDS: u64 = 55;
@@ -64,7 +66,13 @@ impl Blaxel {
         Ok(Blaxel::new(None, key, workspace))
     }
     async fn call(&self, method: reqwest::Method, url: &str, body: Option<Value>, timeout: Duration) -> Result<Value> {
-        let request = http::client(timeout)?.request(method, url).bearer_auth(&self.key).header("X-Blaxel-Workspace", &self.workspace);
+        // The sandbox gateway reads Blaxel's own headers; the control plane takes either.
+        let request = http::client(timeout)?
+            .request(method, url)
+            .bearer_auth(&self.key)
+            .header("X-Blaxel-Authorization", format!("Bearer {}", self.key))
+            .header("X-Blaxel-Workspace", &self.workspace)
+            .header("Blaxel-Version", API_VERSION);
         http::send(SERVICE, match body { Some(body) => request.json(&body), None => request }).await
     }
     async fn api(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<Value> {
@@ -74,7 +82,8 @@ impl Blaxel {
     pub async fn list(&self) -> Result<Vec<Machine>> {
         let all = self.api(reqwest::Method::GET, "/sandboxes", None).await?;
         let mine = |s: &&Value| s["metadata"]["labels"]["pandacode"] == "true" && !matches!(s["status"].as_str(), Some("TERMINATED" | "DELETING"));
-        Ok(all.as_array().map(|items| items.iter().filter(mine).map(machine).collect()).unwrap_or_default())
+        // A bare array, or `{data, meta}` from the versioned API.
+        Ok(all.as_array().or(all["data"].as_array()).map(|items| items.iter().filter(mine).map(machine).collect()).unwrap_or_default())
     }
     pub async fn create(&self, name: &str) -> Result<Machine> {
         let body = json!({"metadata": {"name": slug(name), "labels": {"pandacode": "true"}}, "spec": {"runtime": {"image": IMAGE, "memory": 4096}}});
@@ -256,6 +265,32 @@ mod tests {
         let (base, _) = mock::serve(|_, _| (401, r#"{"error":"nope"}"#.to_string()));
         let api = Blaxel::new(Some(base), "bad".into(), "w".into());
         assert!(block(api.list()).unwrap_err().contains("refused the credentials"));
+    }
+
+    #[tokio::test]
+    async fn control_plane_and_sandbox_requests_carry_blaxels_headers() {
+        let (api, seen) = blaxel();
+        api.list().await.unwrap();
+        api.exec("a-1", "echo hi", Duration::from_secs(9)).await.unwrap();
+        let log = seen.lock().unwrap();
+        assert!(log.iter().any(|r| r.path == "/v0/sandboxes") && log.iter().any(|r| r.path == "/sbx/process"));
+        for request in log.iter() {
+            let header = |name: &str| request.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str());
+            assert_eq!(request.authorization.as_deref(), Some("Bearer key-1"), "{}", request.path);
+            assert_eq!(header("x-blaxel-authorization"), Some("Bearer key-1"), "{}", request.path);
+            assert_eq!(header("x-blaxel-workspace"), Some("ws"), "{}", request.path);
+            assert_eq!(header("blaxel-version"), Some(API_VERSION), "{}", request.path);
+        }
+    }
+
+    #[tokio::test]
+    async fn lists_read_the_versioned_shape_and_refusals_keep_blaxels_message() {
+        let (base, _) = mock::serve(|_, _| (200, r#"{"data":[{"metadata":{"name":"a-1","labels":{"pandacode":"true"}},"status":"DEPLOYED"}],"meta":{"total":1}}"#.to_string()));
+        let machines = Blaxel::new(Some(base), "k".into(), "w".into()).list().await.unwrap();
+        assert_eq!(machines.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), vec!["blaxel:a-1"]);
+        let (base, _) = mock::serve(|_, _| (403, r#"{"error":"Workspace role is missing"}"#.to_string()));
+        let error = Blaxel::new(Some(base), "k".into(), "w".into()).list().await.unwrap_err();
+        assert!(error.contains("HTTP 403") && error.contains("Workspace role is missing") && error.contains("Settings → Cloud"), "{error}");
     }
 
     /// Needs BL_API_KEY and BL_WORKSPACE; run with `cargo test blaxel_live -- --ignored`.

@@ -59,16 +59,35 @@ impl Vultr {
     /// The account SSH key holding our public key, creating one named after the key's tail
     /// when missing; instances embed it at create. Matched by material, not name.
     async fn key_id(&self, public: &str) -> Result<String> {
-        let keys = self.api(reqwest::Method::GET, "/ssh-keys?per_page=100", None).await?;
-        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
-            if key["ssh_key"].as_str().map(str::trim) == Some(public) {
-                return key["id"].as_str().map(str::to_string).ok_or_else(|| "Vultr reported an unreadable SSH key.".to_string());
-            }
+        if let Some(id) = self.listed_key(public).await? {
+            return Ok(id);
         }
         let tail: String = public.chars().rev().filter(|c| c.is_ascii_alphanumeric()).take(6).collect::<Vec<_>>().into_iter().rev().collect();
         let name = if tail.is_empty() { KEY_NAME.to_string() } else { format!("{KEY_NAME}-{tail}") };
-        let made = self.api(reqwest::Method::POST, "/ssh-keys", Some(json!({"name": name, "ssh_key": public}))).await?;
-        made["ssh_key"]["id"].as_str().map(str::to_string).ok_or_else(|| "Vultr did not report the new SSH key.".to_string())
+        let made = self.api(reqwest::Method::POST, "/ssh-keys", Some(json!({"name": name, "ssh_key": public}))).await;
+        if let Ok(made) = &made {
+            if let Some(id) = made["ssh_key"]["id"].as_str() {
+                return Ok(id.to_string());
+            }
+        }
+        // A reply without the id, or a create that lost a race against another task
+        // registering the same material, still leaves the key in the account.
+        if let Some(id) = self.listed_key(public).await? {
+            return Ok(id);
+        }
+        // Nothing matched: the create's own error, else the reply never named the key.
+        Err(made.err().unwrap_or_else(|| "Vultr did not report the new SSH key.".into()))
+    }
+
+    /// The id of the account key whose material matches, from one list page.
+    async fn listed_key(&self, public: &str) -> Result<Option<String>> {
+        let keys = self.api(reqwest::Method::GET, "/ssh-keys?per_page=100", None).await?;
+        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
+            if key["ssh_key"].as_str().map(str::trim) == Some(public) {
+                return key["id"].as_str().map(|id| Some(id.to_string())).ok_or_else(|| "Vultr reported an unreadable SSH key.".to_string());
+            }
+        }
+        Ok(None)
     }
 
     /// The OS id of stock Ubuntu 24.04 on this account; Vultr has no image slugs, so the
@@ -339,6 +358,27 @@ mod tests {
         assert!(Vultr::new(Some(base), "t".into()).ubuntu_id().await.is_err());
         assert_eq!(api.ip("i9").await.unwrap(), "203.0.113.8");
         let _ = seen;
+    }
+
+    /// A create refused because another task registered the same material first still finds
+    /// the key; a refusal with no such key keeps the create's own error.
+    #[tokio::test]
+    async fn a_refused_or_unreadable_create_relists_the_registered_key() {
+        let race = |create: (u16, &'static str), key: &'static str| {
+            let lists = std::sync::atomic::AtomicUsize::new(0);
+            mock::serve(move |request, _| match request.method.as_str() {
+                "GET" if lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => (200, r#"{"ssh_keys":[]}"#.to_string()),
+                "GET" => (200, format!(r#"{{"ssh_keys":[{{"id":"k5","name":"pandacode","ssh_key":"{key}"}}]}}"#)),
+                _ => (create.0, create.1.to_string()),
+            })
+        };
+        let (base, seen) = race((400, r#"{"error":"SSH key already exists","status":400}"#), "ssh-ed25519 CCCC pandacode");
+        assert_eq!(Vultr::new(Some(base), "t".into()).key_id("ssh-ed25519 CCCC pandacode").await.unwrap(), "k5");
+        assert_eq!(seen.lock().unwrap().iter().filter(|r| r.method == "POST").count(), 1, "the refused create must not be retried");
+        let (base, _) = race((201, r#"{"ssh_key":{}}"#), "ssh-ed25519 DDDD pandacode");
+        assert_eq!(Vultr::new(Some(base), "t".into()).key_id("ssh-ed25519 DDDD pandacode").await.unwrap(), "k5");
+        let (base, _) = race((400, r#"{"error":"Invalid SSH key","status":400}"#), "ssh-ed25519 OTHER");
+        assert_eq!(Vultr::new(Some(base), "t".into()).key_id("ssh-ed25519 EEEE pandacode").await.unwrap_err(), "Vultr: Invalid SSH key");
     }
 
     #[test]
