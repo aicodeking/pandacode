@@ -56,7 +56,8 @@ Settings → Agents → Model routing:
   becomes 0.5; any other saved value is kept.
 - **Profiler**: *Ready*, *Downloading…*, *Not downloaded* or *Failed*, with
   **Download** (or **Retry**). *Keyword heuristic: …* (no button) means the profiler
-  cannot run on this system — macOS older than 13.4, or ONNX Runtime failed to start —
+  cannot run on this system — a build without the profiler (Intel Mac, x86_64 Linux,
+  x86_64 Windows), macOS older than 13.4, or ONNX Runtime failed to start —
   and the heuristic routes for the rest of the session.
 - **Route**: describe a task to see the pick and the alternatives, with
   P(success) and estimated cost.
