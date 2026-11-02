@@ -115,8 +115,9 @@ fn prepare_machine(app: &tauri::AppHandle, sid: &str) -> Result<Ready> {
     stage(app, sid, "installing", Some(&format!("Installing {}…", task.provider)));
     // OpenCode's model catalog differs between releases, so the machine runs exactly the
     // version this computer does (issue #206); the other harnesses install their latest.
+    // A timeout reads as "no version" and installs v1 (issue #209), so slow hosts get time.
     let version = if task.provider == "opencode" {
-        crate::providers::run_provider("opencode", &["--version"], Duration::from_secs(5))
+        crate::providers::run_provider("opencode", &["--version"], Duration::from_secs(30))
             .and_then(|raw| raw.lines().next().map(str::to_owned))
     } else {
         None

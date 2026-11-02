@@ -6,6 +6,9 @@ use std::time::Duration;
 /// Harnesses that can run on a cloud machine.
 pub(crate) const HARNESSES: [&str; 5] = ["claude", "glm", "mimo", "codex", "opencode"];
 
+/// Suffix of the runtime-marker sibling naming a host version npm does not publish.
+const UNPUBLISHED: &str = ".unpublished";
+
 /// Makes sure `harness` can run on the machine; returns the absolute path of the program
 /// to execute there (for `glm`/`mimo`, Claude Code). `version` is the harness's own
 /// `--version` line on this computer, when known: the machine then runs exactly that
@@ -49,7 +52,7 @@ pub(crate) fn ensure_runtime(
     // parsed pin, not the raw host output: a bare `2` or a prefixed line like
     // "OpenCode 2.1.2" would otherwise never match a freshly installed CLI and
     // reinstall on every run.
-    let pin = version.and_then(parse_version);
+    let pin = opencode_pin(version);
     if let Some(path) = cached_program(sandbox, native, &runtime, pin.as_deref(), onboarding)? {
         return Ok(path);
     }
@@ -86,15 +89,14 @@ npm install -g --prefix "$home/.pandacode/npm" @anthropic-ai/claude-code
         }
         "codex" | "opencode" => {
             ensure_node(sandbox, native, &arch, &libc, progress)?;
-            let (label, package) = if harness == "codex" {
-                ("Installing Codex CLI…".to_owned(), "@openai/codex".to_owned())
+            let (label, steps) = if harness == "codex" {
+                ("Installing Codex CLI…".to_owned(), npm_install("@openai/codex"))
             } else {
-                let package = opencode_package(version);
-                let label = match version.and_then(parse_version) {
+                let label = match &pin {
                     Some(pin) => format!("Installing OpenCode {pin}…"),
                     None => "Installing OpenCode…".to_owned(),
                 };
-                (label, package)
+                (label, opencode_install_steps(version, &runtime))
             };
             progress(&label);
             execute(
@@ -104,10 +106,9 @@ npm install -g --prefix "$home/.pandacode/npm" @anthropic-ai/claude-code
                     r#"set -eu
 home=$(cd "$HOME" && pwd -P)
 export PATH="$home/.pandacode/node/bin:$home/.pandacode/npm/bin:$home/.local/bin:$PATH"
-mkdir -p "$home/.pandacode/npm"
-npm install -g --prefix "$home/.pandacode/npm" {}
-"#,
-                    crate::cloud::shell_quote(&package)
+mkdir -p "$home/.pandacode/npm" "$home/.pandacode/runtime"
+{steps}
+"#
                 ),
             )?;
         }
@@ -121,9 +122,11 @@ npm install -g --prefix "$home/.pandacode/npm" {}
 }
 
 /// The harness installed by a previous run, when its program still runs and — for a pinned
-/// version — reports exactly that version. The comparison asks the program itself (stdout
-/// only, both sides) rather than the marker's stored line, whose capture merges stderr on
-/// the machine: an asymmetric channel would reinstall on every run (review finding).
+/// version — reports exactly that version, or that version is recorded as unpublished on
+/// npm, so the latest release stands in until the host's version changes. The comparison
+/// asks the program itself (stdout only, both sides) rather than the marker's stored line,
+/// whose capture merges stderr on the machine: an asymmetric channel would reinstall on
+/// every run (review finding).
 fn cached_program(
     sandbox: &dyn Sandbox,
     native: &str,
@@ -132,10 +135,12 @@ fn cached_program(
     onboarding: &str,
 ) -> Result<Option<String>> {
     let version_clause = match version {
-        Some(version) => format!(
-            " && [ \"$(\"$program\" --version 2>/dev/null | sed -n '1p')\" = {} ]",
-            crate::cloud::shell_quote(version)
-        ),
+        Some(version) => {
+            let version = crate::cloud::shell_quote(version);
+            format!(
+                " && {{ [ \"$(\"$program\" --version 2>/dev/null | sed -n '1p')\" = {version} ] || [ \"$(cat \"$marker{UNPUBLISHED}\" 2>/dev/null)\" = {version} ]; }}"
+            )
+        }
         None => String::new(),
     };
     let cached = execute(
@@ -221,19 +226,60 @@ fn host_generation(version: Option<&str>) -> Option<u32> {
         .or_else(|| version.and_then(parse_generation))
 }
 
-/// The npm package for the machine's OpenCode: v2 hosts run `@opencode/cli`
-/// because `opencode-ai` publishes only 1.x and npm has no `opencode-ai@2.x`
-/// (issue #209), pinned to the host's version when one parses.
-fn opencode_package(version: Option<&str>) -> String {
-    let pin = version.and_then(parse_version);
-    let package = if host_generation(version).unwrap_or(1) >= 2 {
-        "@opencode/cli"
+/// The version to pin: major 0 (`0.0.0-beta-19507`) is a local or preview build that npm
+/// does not carry, so it installs unpinned.
+fn opencode_pin(version: Option<&str>) -> Option<String> {
+    version
+        .and_then(parse_version)
+        .filter(|pin| !pin.starts_with("0."))
+}
+
+/// The npm packages for the machine's OpenCode, its own generation's first: v2 hosts run
+/// `@opencode/cli` because `opencode-ai` publishes only 1.x and npm has no
+/// `opencode-ai@2.x` (issue #209).
+fn opencode_packages(version: Option<&str>) -> (&'static str, &'static str) {
+    if host_generation(version).unwrap_or(1) >= 2 {
+        ("@opencode/cli", "opencode-ai")
     } else {
-        "opencode-ai"
-    };
-    match pin {
+        ("opencode-ai", "@opencode/cli")
+    }
+}
+
+/// `opencode_packages`' own package, pinned to the host's version when one parses.
+fn opencode_package(version: Option<&str>) -> String {
+    let (package, _) = opencode_packages(version);
+    match opencode_pin(version) {
         Some(pin) => format!("{package}@{pin}"),
         None => package.to_owned(),
+    }
+}
+
+fn npm_install(package: &str) -> String {
+    format!(
+        r#"npm install -g --prefix "$home/.pandacode/npm" {}"#,
+        crate::cloud::shell_quote(package)
+    )
+}
+
+/// Both OpenCode packages own `bin/opencode`, so the other generation's goes first or npm
+/// fails with EEXIST. A pin npm does not publish falls back to the latest release and is
+/// recorded beside the marker, so `cached_program` keeps that install instead of
+/// reinstalling on every run.
+fn opencode_install_steps(version: Option<&str>, runtime: &str) -> String {
+    let (package, other) = opencode_packages(version);
+    let uninstall = format!(
+        r#"npm uninstall -g --prefix "$home/.pandacode/npm" {} >/dev/null 2>&1 || true"#,
+        crate::cloud::shell_quote(other)
+    );
+    let unpublished = format!(r#""$home/.pandacode/runtime/{runtime}{UNPUBLISHED}""#);
+    let latest = npm_install(package);
+    match opencode_pin(version) {
+        Some(pin) => format!(
+            "{uninstall}\nif {pinned}; then\n  rm -f {unpublished}\nelse\n  {latest}\n  printf '%s\\n' {quoted} > {unpublished}\nfi",
+            pinned = npm_install(&opencode_package(version)),
+            quoted = crate::cloud::shell_quote(&pin),
+        ),
+        None => format!("{uninstall}\n{latest}\nrm -f {unpublished}"),
     }
 }
 
@@ -625,6 +671,95 @@ mod tests {
         assert!(!opencode_package(Some("2.x")).starts_with("opencode-ai@"));
         assert!(!opencode_package(Some("2.1.2")).starts_with("opencode-ai@"));
         assert!(!opencode_package(Some("1.19.5")).starts_with("@opencode/cli"));
+    }
+
+    /// Both packages own `bin/opencode`, so the other generation's is removed first and a
+    /// failed removal never stops the install.
+    #[test]
+    fn opencode_install_removes_the_other_generation_first() {
+        let v2 = opencode_install_steps(Some("2.1.2"), "opencode-2");
+        let removal = r#"npm uninstall -g --prefix "$home/.pandacode/npm" 'opencode-ai' >/dev/null 2>&1 || true"#;
+        assert!(v2.starts_with(removal), "{v2}");
+
+        let v1 = opencode_install_steps(Some("1.19.5"), "opencode-1");
+        let removal = r#"npm uninstall -g --prefix "$home/.pandacode/npm" '@opencode/cli' >/dev/null 2>&1 || true"#;
+        assert!(v1.starts_with(removal), "{v1}");
+    }
+
+    /// A version npm does not publish must not fail the run: the pinned install falls back
+    /// to the same package unpinned, and major 0 never pins at all.
+    #[test]
+    fn opencode_install_falls_back_to_the_unpinned_package() {
+        let steps = opencode_install_steps(Some("2.1.2"), "opencode-2");
+        let pinned = r#"if npm install -g --prefix "$home/.pandacode/npm" '@opencode/cli@2.1.2'; then"#;
+        let latest = r#"npm install -g --prefix "$home/.pandacode/npm" '@opencode/cli'"#;
+        assert!(steps.contains(pinned), "{steps}");
+        assert!(steps.contains(&format!("else\n  {latest}\n")), "{steps}");
+
+        let beta = Some("0.0.0-beta-19507");
+        assert_eq!(opencode_pin(beta), None);
+        assert_eq!(opencode_package(beta), "opencode-ai");
+        let steps = opencode_install_steps(beta, "opencode-0");
+        assert!(steps.contains(r#"npm install -g --prefix "$home/.pandacode/npm" 'opencode-ai'"#), "{steps}");
+        assert!(!steps.contains("0.0.0"), "{steps}");
+    }
+
+    /// The fallback runs for real: npm refuses the pin, the unpinned package installs, and
+    /// the next run reuses that install instead of reinstalling. A later host version, or a
+    /// successful pin, ends the exception.
+    #[test]
+    fn unpublished_pin_installs_latest_once_and_is_then_cached() {
+        let temp = TempDir::new();
+        let root = temp.0.join("machine");
+        fs::create_dir_all(root.join("home/.local/bin")).unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let npm = root.join("bin/npm");
+        fs::write(
+            &npm,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/npm.log\"\ncase \"$*\" in *@9.9.9*) echo 'npm error 404' >&2; exit 1 ;; esac\n",
+        )
+        .unwrap();
+        let executable = root.join("home/.local/bin/opencode");
+        fs::write(&executable, "#!/bin/sh\nprintf '2.1.2\\n'\n").unwrap();
+        for file in [&npm, &executable] {
+            let mut permissions = fs::metadata(file).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(file, permissions).unwrap();
+        }
+        let sandbox = FakeSandbox {
+            root: root.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        let runtime = "opencode-9";
+        // The steps run directly: ensure_runtime refuses any machine that is not Linux.
+        let install = |host: &str| {
+            let script = format!(
+                "set -eu\nhome=$(cd \"$HOME\" && pwd -P)\nmkdir -p \"$home/.pandacode/runtime\"\n{}\n",
+                opencode_install_steps(Some(host), runtime)
+            );
+            let (code, output) = sandbox.exec("fake", &script, Duration::from_secs(30)).unwrap();
+            assert_eq!(code, Some(0), "{output}");
+        };
+        install("9.9.9");
+        let path = mark_runtime(&sandbox, "fake", runtime, "opencode").unwrap();
+        let log = fs::read_to_string(root.join("home/npm.log")).unwrap();
+        assert!(log.contains("@opencode/cli@9.9.9"), "{log}");
+        assert!(log.lines().last().unwrap().ends_with("@opencode/cli"), "{log}");
+        let flag = root.join(format!("home/.pandacode/runtime/{runtime}{UNPUBLISHED}"));
+        assert_eq!(fs::read_to_string(&flag).unwrap(), "9.9.9\n");
+
+        // Same host version: the machine's 2.1.2 stands in, with no second install.
+        assert_eq!(
+            cached_program(&sandbox, "fake", runtime, Some("9.9.9"), "").unwrap().as_deref(),
+            Some(path.as_str())
+        );
+        // A different host version is not covered by the exception.
+        assert_eq!(cached_program(&sandbox, "fake", runtime, Some("9.9.10"), "").unwrap(), None);
+
+        // A pin npm accepts clears the record, so the old version stops being excused.
+        install("9.9.10");
+        assert!(!flag.exists());
+        assert_eq!(cached_program(&sandbox, "fake", runtime, Some("9.9.9"), "").unwrap(), None);
     }
 
     /// The runtime marker id carries the generation: a machine provisioned for one

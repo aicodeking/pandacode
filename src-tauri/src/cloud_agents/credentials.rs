@@ -271,9 +271,9 @@ fn push_opencode(
                     file = crate::cloud::shell_quote(&file),
                 );
                 let (code, output) = sandbox.exec(native, &import, Duration::from_secs(300))?;
-                crate::cloud::sandbox::checked((code, output)).map_err(|error| {
-                    format!("The cloud machine could not import the OpenCode logins: {error}")
-                })?;
+                // Fixed text: the command's output could echo credential values.
+                crate::cloud::sandbox::checked((code, output))
+                    .map_err(|_| "The cloud machine could not import the OpenCode logins.")?;
                 signed_in = true;
             }
         }
@@ -502,12 +502,18 @@ mod tests {
             "Sign in to OpenCode on this computer first (run `opencode auth login`)."
         );
 
-        // A failing import surfaces the machine's own message.
-        fs::write(temp.0.join("machine/bin/opencode"), "#!/bin/sh\nexit 3\n").unwrap();
+        // A failing import reports a fixed message, never the command's output.
+        fs::write(
+            temp.0.join("machine/bin/opencode"),
+            "#!/bin/sh\necho echoed-credential\nexit 3\n",
+        )
+        .unwrap();
         let export = || Some(EXPORT.to_owned());
         let result = push_opencode(&sandbox, "fake", &host, &remote_home, &program, &export);
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("could not import the OpenCode logins"), "{error}");
+        assert_eq!(
+            result.unwrap_err(),
+            "The cloud machine could not import the OpenCode logins."
+        );
     }
 }
 
