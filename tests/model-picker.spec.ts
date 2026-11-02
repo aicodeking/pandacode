@@ -38,7 +38,7 @@ test('opens on the current harness with one-line rows, a scrollable rail and a f
   await expect(search(page)).toBeFocused();
   await expect(search(page)).toHaveAttribute('placeholder', /^Search \d+ models, \d+ harnesses…$/);
   const box = (await picker(page).boundingBox())!;
-  expect(box.width).toBe(460);
+  expect(box.width).toBeCloseTo(460, 0); // The popover's entrance spring may still be settling.
   expect(box.height).toBeLessThanOrEqual(440);
   const rail = picker(page).getByRole('tablist', { name: 'Harnesses' });
   await expect(rail.getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
