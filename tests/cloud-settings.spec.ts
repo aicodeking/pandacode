@@ -97,6 +97,8 @@ test('the container engine picker swaps the fields each engine needs', async ({ 
   await options.filter({ hasText: 'Podman' }).click();
   await expect(endpoint).toBeVisible();
   await expect(tls).toBeHidden();
+  await expect(endpoint.locator('span')).toHaveText('Podman host');
+  await expect(endpoint.locator('input')).toHaveAccessibleName('Docker Podman host');
   await expect(endpoint.locator('input')).toHaveAttribute('placeholder', /ssh:\/\/user@host/);
   await expect(hint).toContainText('ssh://');
   await options.filter({ hasText: 'LXC' }).click();
@@ -105,6 +107,7 @@ test('the container engine picker swaps the fields each engine needs', async ({ 
   await options.filter({ hasText: 'Docker' }).click();
   await expect(endpoint).toBeVisible();
   await expect(tls).toBeVisible();
+  await expect(endpoint.locator('span')).toHaveText('Docker host');
 });
 
 test('the container engine picker hides Apple off the Mac', async ({ page }) => {

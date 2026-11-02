@@ -95,13 +95,15 @@ const ENGINES: { id: EngineId; label: string; hint: string; mac?: boolean }[] = 
   { id: 'lxc', label: 'LXC', hint: 'The lxc client (LXD or Incus) manages its own remotes — configure one with `lxc remote add`.' },
 ];
 const ENGINE_BY_ID = new Map(ENGINES.map(engine => [engine.id, engine]));
-const ENGINE_ENDPOINT_PLACEHOLDER: Partial<Record<EngineId, string>> = {
-  docker: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376',
-  podman: 'Optional; empty for this machine, or ssh://user@host',
-};
-const ENGINE_FIELDS = (engine: EngineId) => {
-  const localOnly = engine === 'apple' || engine === 'lxc';
-  return { endpoint: !localOnly, tls: engine === 'docker' };
+/* Per-engine form: which fields show, and the labels and placeholders each engine's own fields
+ * carry. The hidden combinations are the ones cloud/docker.rs refuses (any endpoint for Apple
+ * Containers and LXC, tcp:// and TLS for Podman). The Image field is the same for every engine
+ * (all four take a docker-style reference; the default is ubuntu:24.04). */
+const ENGINE_FORM: Record<EngineId, { endpoint: boolean; tls: boolean; endpointLabel: string; endpointPlaceholder: string }> = {
+  docker: { endpoint: true, tls: true, endpointLabel: 'Docker host', endpointPlaceholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376' },
+  podman: { endpoint: true, tls: false, endpointLabel: 'Podman host', endpointPlaceholder: 'Optional; empty for this machine, or ssh://user@host' },
+  apple: { endpoint: false, tls: false, endpointLabel: 'Docker host', endpointPlaceholder: '' },
+  lxc: { endpoint: false, tls: false, endpointLabel: 'Docker host', endpointPlaceholder: '' },
 };
 const ENGINE_HTML = `<div class="cloud-engine"><span id="cloud-engine-label">Engine</span><div class="cloud-engine-picker" role="radiogroup" aria-labelledby="cloud-engine-label">${ENGINES.filter(engine => !engine.mac || isMac).map(engine => `<label class="cloud-engine-option"><input type="radio" name="engine" value="${engine.id}"${engine.id === 'docker' ? ' checked' : ''}><span>${engine.label}</span></label>`).join('')}</div></div><p class="cloud-engine-hint" data-engine-hint hidden></p>`;
 /** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
@@ -253,15 +255,22 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const hint = form.querySelector<HTMLElement>('[data-engine-hint]')!;
     hint.textContent = engine.hint;
     hint.hidden = false;
-    const visible = ENGINE_FIELDS(engine.id);
-    for (const name of ['endpoint', 'tlsCa', 'tlsCert', 'tlsKey']) {
-      const field = form.querySelector<HTMLElement>(`[data-field="${name}"]`)!;
-      field.hidden = name === 'endpoint' ? !visible.endpoint : !visible.tls;
-      // Disabled inputs leave the FormData, so a typed host never reaches the backend for an engine that refuses one.
-      field.querySelector<HTMLInputElement>('input')!.disabled = field.hidden;
+    const spec = ENGINE_FORM[engine.id];
+    const endpointField = form.querySelector<HTMLElement>('[data-field="endpoint"]')!;
+    endpointField.hidden = !spec.endpoint;
+    const endpointInput = endpointField.querySelector<HTMLInputElement>('input')!;
+    // Disabled inputs leave the FormData, so a typed host never reaches the backend for an engine that refuses one.
+    endpointInput.disabled = !spec.endpoint;
+    if (spec.endpoint) {
+      endpointField.querySelector<HTMLElement>('span')!.textContent = spec.endpointLabel;
+      endpointInput.placeholder = spec.endpointPlaceholder;
+      endpointInput.setAttribute('aria-label', `Docker ${spec.endpointLabel}`);
     }
-    const endpoint = form.querySelector<HTMLInputElement>('input[name="endpoint"]'), placeholder = ENGINE_ENDPOINT_PLACEHOLDER[engine.id];
-    if (endpoint && placeholder) endpoint.placeholder = placeholder;
+    for (const name of ['tlsCa', 'tlsCert', 'tlsKey']) {
+      const field = form.querySelector<HTMLElement>(`[data-field="${name}"]`)!;
+      field.hidden = !spec.tls;
+      field.querySelector<HTMLInputElement>('input')!.disabled = !spec.tls;
+    }
   }
   async function connect(id: CloudConnection['provider'], form: HTMLFormElement): Promise<void> {
     const root = section(id), data = new FormData(form);
