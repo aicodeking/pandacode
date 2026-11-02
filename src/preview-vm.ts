@@ -109,10 +109,9 @@ export function createPreviewCloud() {
   };
   const connections = () => [...BASE, ...KEYED].map(provider => ({ provider, connected: connected.has(provider), detail: connected.get(provider) ?? null, ...(provider === 'cloudflare' ? { sandboxes: connected.has(provider) && sandboxes } : {}), ...(provider !== 'railway' ? { inheritEnvironment: inheritEnvironment.has(provider) } : {}) }));
   /* DigitalOcean's droplet options: three regions, a size pinned to New York only, one that works
-   * everywhere, and the saved pair (native defaults nyc1 and s-2vcpu-4gb). `__digitalOceanCatalogFail`
-   * makes listing fail; picks are recorded in `__doOptionSaves`. */
-  const DO_DEFAULT_SIZE = 's-2vcpu-4gb';
-  let doRegion = '', doSize = DO_DEFAULT_SIZE;
+   * everywhere, and the saved pair (nothing at first; create falls back to nyc1 and s-2vcpu-4gb).
+   * `__digitalOceanCatalogFail` makes listing fail; picks are recorded in `__doOptionSaves`. */
+  let doRegion = '', doSize = '';
   const digitalOceanCatalog = () => {
     if (!connected.has('digitalocean')) throw new Error('Connect DigitalOcean in Settings → Cloud first.');
     if ((globalThis as any).__digitalOceanCatalogFail) throw new Error('DigitalOcean did not answer in time.');
@@ -128,7 +127,7 @@ export function createPreviewCloud() {
   };
   const slug = (value: unknown, what: string, example: string) => {
     const text = String(value ?? '').trim();
-    if (text && (text.length > 32 || !/^[a-z0-9-]+$/.test(text))) throw new Error(`That does not look like a DigitalOcean ${what} (for example ${example}).`);
+    if (text && (text.length > 32 || !/^[a-z0-9_-]+$/.test(text))) throw new Error(`That does not look like a DigitalOcean ${what} (for example ${example}).`);
     return text;
   };
   const find = (id: unknown) => { const machine = machines.find(m => m.id === id); if (!machine) throw new Error('Unknown cloud machine.'); return machine; };
@@ -146,7 +145,7 @@ export function createPreviewCloud() {
     },
     /** Providers that can run cloud agents, ready once connected. */
     agentTargets() { return AGENT_TARGETS.map(([provider, label]) => ({ provider, label, ready: connected.has(provider) })); },
-    disconnect(provider: unknown) { connected.delete(String(provider)); if (provider === 'cloudflare') sandboxes = false; if (provider === 'instabox') instaboxImage = INSTABOX_DEFAULT; if (provider === 'digitalocean') { doRegion = ''; doSize = DO_DEFAULT_SIZE; } return connections(); },
+    disconnect(provider: unknown) { connected.delete(String(provider)); if (provider === 'cloudflare') sandboxes = false; if (provider === 'instabox') instaboxImage = INSTABOX_DEFAULT; if (provider === 'digitalocean') { doRegion = ''; doSize = ''; } return connections(); },
     setInheritEnvironment(provider: unknown, inherit: unknown) {
       const id = String(provider);
       if (![...BASE, ...KEYED].includes(id)) throw new Error('Choose an available cloud provider.');

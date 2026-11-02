@@ -228,7 +228,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   }
 
   /* DigitalOcean's droplet region and machine size, filled from the account's catalog. */
-  let catalog: DoCatalog | null = null, catalogError = '', catalogLoading = false, optionSaving = false, customFor: 'region' | 'size' | null = null;
+  let catalog: DoCatalog | null = null, catalogError = '', catalogLoading = false, optionSaving = false, customFor: 'region' | 'size' | null = null, catalogRun = 0;
   function renderCatalog(): void {
     const root = section('digitalocean'), box = root.querySelector<HTMLElement>('[data-do-options]')!;
     const region = box.querySelector<HTMLSelectElement>('[data-do="region"]')!, size = box.querySelector<HTMLSelectElement>('[data-do="size"]')!;
@@ -270,13 +270,21 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     if (catalogError) status.hidden = true;
   }
   async function loadCatalog(): Promise<void> {
+    const run = ++catalogRun;
     catalogLoading = true; catalogError = ''; renderCatalog();
-    try { catalog = await options.call<DoCatalog>('cloud_digitalocean_catalog'); }
-    catch (error) { catalog = null; catalogError = `Could not load regions and sizes: ${error instanceof Error ? error.message : String(error)}`; }
-    finally { catalogLoading = false; if (!disposed) renderCatalog(); }
+    try {
+      const loaded = await options.call<DoCatalog>('cloud_digitalocean_catalog');
+      // A fetch that outlived a disconnect (or its reconnect) must not revive stale state.
+      if (run !== catalogRun) return;
+      catalog = loaded;
+    } catch (error) {
+      if (run !== catalogRun) return;
+      catalog = null;
+      catalogError = `Could not load regions and sizes: ${error instanceof Error ? error.message : String(error)}`;
+    } finally { catalogLoading = false; if (!disposed && run === catalogRun) renderCatalog(); }
   }
   function syncCatalog(): void {
-    if (!connections.find(c => c.provider === 'digitalocean')?.connected) { catalog = null; catalogError = ''; customFor = null; renderCatalog(); return; }
+    if (!connections.find(c => c.provider === 'digitalocean')?.connected) { catalogRun++; catalog = null; catalogError = ''; customFor = null; renderCatalog(); return; }
     if (!catalog && !catalogLoading) void loadCatalog();
   }
   async function saveOptions(): Promise<void> {
