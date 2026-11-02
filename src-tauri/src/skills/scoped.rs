@@ -148,7 +148,11 @@ impl Library {
                 ));
                 continue;
             }
-            let folder = self.dir.join(id);
+            let folder = self.skill_dir(&item.meta);
+            if !folder.join("SKILL.md").is_file() {
+                skipped.push(format!("{} is missing from disk.", item.meta.name));
+                continue;
+            }
             let main = std::fs::read_to_string(folder.join("SKILL.md")).unwrap_or_default();
             let (_, _, body) = frontmatter(&main);
             let body: String = body.chars().take(SKILL_CHARS).collect();
