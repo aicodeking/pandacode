@@ -62,3 +62,65 @@ test('cloud sandboxes: the environment checkbox keeps its label beside it', asyn
   await box.uncheck();
   await expect(card.locator('.cloud-row-status')).toContainText('Saved. Nothing from the provider environment is sent to this cloud.');
 });
+
+/* Settings → Agents → Cloud sandboxes: the Docker card's engine picker (src/cloud-settings.ts).
+ * The picker is native radios under a trackSegment thumb; each engine shows only the fields it
+ * takes, and Apple Containers is offered on macOS only (src/platform.ts). */
+const settingsRegion = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
+const picker = (page: Page) => page.locator('.cloud-engine-picker');
+async function openDockerForm(page: Page) {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = settingsRegion(page);
+  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings.getByRole('button', { name: 'Connect Docker', exact: true }).click();
+  return settings;
+}
+
+test('the container engine picker swaps the fields each engine needs', async ({ page }) => {
+  const settings = await openDockerForm(page);
+  const form = settings.getByRole('form', { name: 'Connect Docker' });
+  const options = picker(page).locator('label');
+  await expect(options).toHaveCount(4);
+  const hint = form.locator('[data-engine-hint]');
+  const endpoint = form.locator('[data-field="endpoint"]');
+  const tls = form.locator('[data-field="tlsCa"]');
+  await expect(endpoint).toBeVisible();
+  await expect(tls).toBeVisible();
+  await expect(hint).toBeVisible();
+  await expect(endpoint.locator('input')).toHaveAttribute('placeholder', /tcp:\/\/host:2376/);
+  await options.filter({ hasText: 'Apple' }).click();
+  await expect(endpoint).toBeHidden();
+  await expect(endpoint.locator('input')).toBeDisabled();
+  await expect(tls).toBeHidden();
+  await expect(hint).toContainText('this Mac only');
+  await options.filter({ hasText: 'Podman' }).click();
+  await expect(endpoint).toBeVisible();
+  await expect(tls).toBeHidden();
+  await expect(endpoint.locator('input')).toHaveAttribute('placeholder', /ssh:\/\/user@host/);
+  await expect(hint).toContainText('ssh://');
+  await options.filter({ hasText: 'LXC' }).click();
+  await expect(endpoint).toBeHidden();
+  await expect(hint).toContainText('lxc remote add');
+  await options.filter({ hasText: 'Docker' }).click();
+  await expect(endpoint).toBeVisible();
+  await expect(tls).toBeVisible();
+});
+
+test('the container engine picker hides Apple off the Mac', async ({ page }) => {
+  await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Win32' }));
+  const settings = await openDockerForm(page);
+  const options = picker(page).locator('label');
+  await expect(options).toHaveCount(3);
+  await expect(options.filter({ hasText: 'Apple' })).toHaveCount(0);
+});
+
+test('the container engine picker sends the picked engine when connecting', async ({ page }) => {
+  const settings = await openDockerForm(page);
+  await picker(page).locator('label', { hasText: 'Podman' }).click();
+  await settings.getByRole('form', { name: 'Connect Docker' }).locator('[type="submit"]').click();
+  await expect(settings.getByRole('button', { name: 'Disconnect Docker', exact: true })).toBeVisible();
+  const sent = await page.evaluate(() => (window as any).__cloudConnects?.at(-1));
+  expect(sent.provider).toBe('docker');
+  expect(sent.options.engine).toBe('podman');
+});
