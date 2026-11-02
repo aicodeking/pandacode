@@ -5,7 +5,9 @@
 //! Cloud lists the account's, with any slug accepted). Like AWS and Google Cloud VMs they run
 //! until stopped, and the panel stops them after idle runs.
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::{http, http::block, sandbox::{Info, Sandbox}, ssh, Machine};
 use crate::Result;
@@ -26,6 +28,18 @@ const BOOT_TRIES: u32 = 60;
 const BOOT_PAUSE: u64 = 5;
 /// A power action completes within this many polls.
 const ACTION_TRIES: u32 = 60;
+/// Regions and sizes rarely change: one account's lists are remembered this long so
+/// reopening Settings → Cloud does not re-request them.
+const CATALOG_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// A cached catalog: the two lists, with when they were fetched.
+type CachedCatalog = (Instant, Value, Value);
+
+/// The cached region and size lists per (API base, token): another account refetches.
+fn catalog_cache() -> &'static Mutex<HashMap<(String, String), CachedCatalog>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), CachedCatalog>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub struct DigitalOcean {
     api: String,
@@ -61,10 +75,22 @@ impl DigitalOcean {
         super::settings().providers.get("digitalocean").and_then(|options| options.get(name)).filter(|value| !value.is_empty()).cloned().unwrap_or_default()
     }
 
-    /// The regions and sizes the account offers, with the saved pair, for Settings → Cloud.
-    pub async fn catalog(&self) -> Result<Value> {
+    /// The account's region and size lists, from the cache while it is fresh.
+    async fn catalog_lists(&self) -> Result<(Value, Value)> {
+        let account = (self.api.clone(), self.key.clone());
+        let cached = catalog_cache().lock().unwrap().get(&account).filter(|(at, _, _)| at.elapsed() < CATALOG_TTL).map(|(_, regions, sizes)| (regions.clone(), sizes.clone()));
+        if let Some(lists) = cached {
+            return Ok(lists);
+        }
         let regions = self.api(reqwest::Method::GET, "/regions?per_page=200", None).await?;
         let sizes = self.api(reqwest::Method::GET, "/sizes?per_page=200", None).await?;
+        catalog_cache().lock().unwrap().insert(account, (Instant::now(), regions.clone(), sizes.clone()));
+        Ok((regions, sizes))
+    }
+
+    /// The regions and sizes the account offers, with the saved pair, for Settings → Cloud.
+    pub async fn catalog(&self) -> Result<Value> {
+        let (regions, sizes) = self.catalog_lists().await?;
         let regions: Vec<Value> = regions["regions"].as_array().map(|items| items.iter().filter(|item| item["available"].as_bool() == Some(true)).filter_map(|item| {
             let slug = item["slug"].as_str()?;
             Some(json!({"value": slug, "label": format!("{} ({slug})", item["name"].as_str().unwrap_or_default())}))
@@ -602,6 +628,8 @@ mod tests {
         let page = api.catalog().await.unwrap();
         assert_eq!(page["region"].as_str(), Some("fra1"), "the catalog reports the saved pair");
         assert_eq!(page["size"].as_str(), Some("c-2"));
+        // The lists ride the hour cache: the second read re-requests nothing.
+        assert_eq!(seen.lock().unwrap().iter().filter(|r| r.path.starts_with("/regions") || r.path.starts_with("/sizes")).count(), 2);
         // Empty restores the create-time defaults; bad slugs are refused in the usual voice.
         set_options(Some(String::new()), None).unwrap();
         let saved = super::super::settings().providers["digitalocean"].clone();
