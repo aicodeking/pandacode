@@ -131,7 +131,7 @@ impl Server {
                                 // expires and a late Approve runs nothing.
                                 Ok(Ok(body)) => tokio::select! {
                                     response = context.respond(body) => response,
-                                    () = closed(&mut stream) => return,
+                                    () = closed(&stream) => return,
                                 },
                                 Ok(Err(status)) => HttpResponse::empty(status),
                                 Err(_) => HttpResponse::empty(408),
@@ -292,10 +292,14 @@ impl HttpResponse {
     }
 }
 
-/// Returns once the client closes the connection (or it fails).
-async fn closed(stream: &mut TcpStream) {
+/// Returns once the client closes the connection (or it fails). It only peeks, so bytes the
+/// client sends during a call stay in the socket. EOF can't be seen past unread bytes, so a
+/// client that sends some stops being watched and the call ends on its own limits.
+async fn closed(stream: &TcpStream) {
     let mut byte = [0; 1];
-    while matches!(stream.read(&mut byte).await, Ok(1..)) {}
+    if matches!(stream.peek(&mut byte).await, Ok(1..)) {
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u8>, u16> {
@@ -598,6 +602,23 @@ mod tests {
             handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
         }
     }
+    #[tokio::test]
+    async fn closed_sees_eof_and_leaves_pipelined_bytes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        client.write_all(b"pipelined").await.unwrap();
+        // Bytes pending: not closed, and nothing consumed while it watches.
+        assert!(tokio::time::timeout(Duration::from_millis(50), closed(&stream)).await.is_err());
+        let mut bytes = [0; 9];
+        stream.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"pipelined");
+        // Nothing pending: it waits, then a close ends it.
+        assert!(tokio::time::timeout(Duration::from_millis(50), closed(&stream)).await.is_err());
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(5), closed(&stream)).await.expect("the client closed");
+    }
+
     async fn server() -> Server {
         Server::start(host(), "parent".into(), Arc::new(|_| {}))
             .await

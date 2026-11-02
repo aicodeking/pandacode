@@ -1,5 +1,5 @@
-//! Builds without ONNX Runtime (Intel macOS, x86_64 Linux; see `panda_onnx` in build.rs): the profiler
-//! never loads, so `Router` stays on the keyword heuristic.
+//! Builds without ONNX Runtime (Intel macOS, x86_64 Linux, x86_64 Windows; see `panda_onnx` in build.rs):
+//! the profiler never loads, so `Router` stays on the keyword heuristic.
 
 use std::path::Path;
 

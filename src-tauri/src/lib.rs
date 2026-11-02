@@ -107,6 +107,8 @@ struct RunningAgent {
     assistant: Arc<Mutex<String>>,
     /// When the harness last sent anything; team watchdogs stop a turn that went silent.
     last_event: Arc<std::sync::atomic::AtomicI64>,
+    /// A maintenance command on a team's lead: Stop ends this run and leaves the team alone.
+    team_maintenance: bool,
 }
 impl RunningAgent {
     fn new(input: UnboundedSender<RunInput>, stopped: Arc<AtomicBool>) -> Self {
@@ -114,6 +116,7 @@ impl RunningAgent {
             input,
             stopped,
             run_id: uuid::Uuid::new_v4().to_string(),
+            team_maintenance: false,
             approvals: Arc::new(Mutex::new(HashSet::new())),
             pending_requests: Arc::new(Mutex::new(HashMap::new())),
             started_at_ms: storage::now(),
@@ -692,6 +695,31 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
         return Err("Stop this project's architect teams first.".into());
     }
     store.remove_project(&project_id)
+}
+#[tauri::command]
+async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
+    let (project, worktrees) = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let project = store.relink_project(&project_id, &PathBuf::from(path))?;
+        (project, store.project_worktrees(&project_id)?)
+    };
+    // Task worktrees stay where they are, but their `.git` files still name the old folder:
+    // `git worktree repair` from the moved checkout points them back. Best effort, since a
+    // folder that is not a Git repository has no worktrees to repair.
+    if !worktrees.is_empty() {
+        let root = PathBuf::from(&project.path);
+        if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
+            let args: Vec<&str> = ["worktree", "repair"].into_iter().chain(worktrees.iter().map(String::as_str)).collect();
+            workspace::run_git_bounded(&root, &args, 64 * 1024, false, std::time::Duration::from_secs(30))
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.and_then(|out| if out.status.success() { Ok(()) } else { Err(format!("git exited with {}", out.status)) }))
+        {
+            eprintln!("relink_project: worktree repair failed: {error}");
+        }
+    }
+    Ok(project)
 }
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
@@ -1300,6 +1328,18 @@ struct PreparedCommand {
     resolution: slash_commands::Resolution,
 }
 
+impl PreparedCommand {
+    /// Whether this runs on a team's lead without the team. Only `/compact` takes arguments:
+    /// "/status of the migration" is a request for the team, not a command.
+    fn runs_bare_on_team(&self) -> bool {
+        self.resolution.maintenance
+            && slash_commands::split_command(&self.original)
+                .is_some_and(|(name, arguments)| arguments.is_empty() || name == "/compact")
+    }
+}
+
+const COMPACT_NEEDS_CONVERSATION: &str = "Start a conversation before compacting its context.";
+
 async fn prepare_command(
     state: &AppState,
     session_id: &str,
@@ -1325,7 +1365,7 @@ async fn prepare_command(
             return Ok(None);
         };
         if task.provider == "codex" && name == "/compact" && task.resume_id.is_none() {
-            return Err("Start a conversation before compacting its context.".into());
+            return Err(COMPACT_NEEDS_CONVERSATION.into());
         }
         (
             task.provider,
@@ -1343,6 +1383,24 @@ async fn prepare_command(
         original,
         resolution,
     }))
+}
+
+/// A lead's message is the team's unless it is a maintenance command. It may be ordinary text
+/// that starts with a slash, so a failed lookup never fails it; only a guard error is final.
+fn team_command_gate(prepared: Result<Option<PreparedCommand>>) -> Result<Option<PreparedCommand>> {
+    match prepared {
+        Err(error) if error == COMPACT_NEEDS_CONVERSATION => Err(error),
+        Err(_) => Ok(None),
+        Ok(command) => Ok(command.filter(PreparedCommand::runs_bare_on_team)),
+    }
+}
+
+pub(crate) async fn team_maintenance_command(
+    state: &AppState,
+    session_id: &str,
+    text: &str,
+) -> Result<Option<PreparedCommand>> {
+    team_command_gate(prepare_command(state, session_id, Some(text)).await)
 }
 
 /// Where a prompt goes. A mirror goes to its host even when a team was saved on it (a
@@ -1512,7 +1570,14 @@ fn prepare_task_run_in_project(
         return Err("This task is already running in an agent or harness console.".into());
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
+    let team_maintenance = admission.team.is_none()
+        && admission.command.as_ref().is_some_and(PreparedCommand::runs_bare_on_team);
+    if team_maintenance {
+        // An idle team stays as it is; an active one, or a worker, is still refused.
+        architect::check_manual(&store, &session_id)?;
+    } else {
+        architect::validate_admission(&store, &session_id, admission.team.as_ref())?;
+    }
     let session = reconcile_inactive_task(&store, &agents, store.session(&session_id)?);
     if admission.cloud_attach {
         return prepare_cloud_attach(&store, &mut agents, session, tx, stopped);
@@ -1674,7 +1739,8 @@ fn prepare_task_run_in_project(
         codex_settings: session.codex_settings,
     };
     architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
-    let agent = RunningAgent::new(tx, stopped.clone());
+    let mut agent = RunningAgent::new(tx, stopped.clone());
+    agent.team_maintenance = team_maintenance;
     let run_id = agent.run_id.clone();
     let pending_approvals = agent.approvals.clone();
     let pending_requests = agent.pending_requests.clone();
@@ -1713,7 +1779,7 @@ fn prepare_cloud_attach(
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
-    store.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL WHERE id=?1", [&session_id]).map_err(|e| e.to_string())?;
+    store.reattach_turn(&session_id)?;
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1763,6 +1829,7 @@ pub(crate) async fn attach_cloud_run(app: tauri::AppHandle, session_id: String) 
             team: None,
             cloud_attach: true,
             kind: None,
+            command: None,
         },
     )
     .await
@@ -1789,6 +1856,7 @@ pub(crate) async fn launch_app_turn(
             team: None,
             cloud_attach: false,
             kind: Some(kind),
+            command: None,
         },
     )
     .await
@@ -1845,6 +1913,7 @@ async fn launch_operation(
             team: None,
             cloud_attach: false,
             kind: None,
+            command: None,
         },
     )
     .await
@@ -1870,6 +1939,34 @@ pub(crate) fn launch_team_task<'a>(
             team: Some(admission),
             cloud_attach: false,
             kind: None,
+            command: None,
+        },
+    ))
+}
+
+/// Runs a maintenance command on a team's lead as an ordinary task run, with no team admission.
+pub(crate) fn launch_team_maintenance<'a>(
+    app: tauri::AppHandle,
+    state: State<'a, AppState>,
+    session_id: String,
+    text: String,
+    image_ids: Option<Vec<String>>,
+    expected_project: Option<String>,
+    command: PreparedCommand,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(launch_operation_admitted(
+        app,
+        state,
+        session_id,
+        Some(text),
+        image_ids,
+        OperationAdmission {
+            expected_project,
+            goal: None,
+            team: None,
+            cloud_attach: false,
+            kind: None,
+            command: Some(command),
         },
     ))
 }
@@ -1880,6 +1977,8 @@ struct OperationAdmission {
     team: Option<architect::Admission>,
     cloud_attach: bool,
     kind: Option<architect::internal_turns::CoordinationKind>,
+    /// Already resolved by the caller, so it is not looked up again.
+    command: Option<PreparedCommand>,
 }
 
 async fn launch_operation_admitted(
@@ -1896,11 +1995,14 @@ async fn launch_operation_admitted(
         team: team_admission,
         cloud_attach,
         kind,
+        command: prepared,
     } = admission;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let command = if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
+    let command = if prepared.is_some() {
+        prepared
+    } else if goal.is_none() && team_admission.is_none() && !cloud_attach && kind.is_none() {
         prepare_command(&state, &session_id, text.as_deref()).await?
     } else {
         None
@@ -2508,6 +2610,10 @@ async fn launch_operation_admitted(
     });
     Ok(())
 }
+fn runs_team_maintenance(state: &AppState, session_id: &str) -> Result<bool> {
+    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    Ok(agents.get(session_id).is_some_and(|agent| agent.team_maintenance))
+}
 #[tauri::command]
 async fn stop_session(
     app: tauri::AppHandle,
@@ -2525,7 +2631,7 @@ async fn stop_session(
         store.request_stop(&session_id)?;
         architect::load(&store, &session_id)?.is_some()
     };
-    if is_team {
+    if is_team && !runs_team_maintenance(&state, &session_id)? {
         architect::architect_control(app, state, session_id, "stop".into()).await?;
         return Ok(());
     }
@@ -2968,12 +3074,10 @@ async fn remove_worktree(
     if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
-    let store = state.store.clone();
-    blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))
-    })
-    .await
+    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
+    // A lingering agent's working directory would block the removal on Windows.
+    providers::end_lingering_in(&path).await;
+    blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await
 }
 
 #[tauri::command]
@@ -3048,6 +3152,13 @@ async fn import_prompt_image(
         (None, None) => return Err("Choose an image to attach.".into()),
     };
     blocking(move || prompt_attachments::import_image(&dir, source)).await
+}
+
+/// The clipboard image for the composer's paste fallback (WebKitGTK never exposes
+/// OS clipboard images as pasted files), or None when the clipboard holds no image.
+#[tauri::command]
+async fn read_clipboard_image() -> Result<Option<String>> {
+    blocking(prompt_attachments::clipboard_image).await
 }
 
 #[tauri::command]
@@ -4090,6 +4201,7 @@ pub fn run() {
                 remove_project,
                 rename_project,
                 relocate_project,
+                relink_project,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
@@ -4220,6 +4332,7 @@ pub fn run() {
                 skills::skills_discover,
                 set_task_link,
                 import_prompt_image,
+                read_clipboard_image,
                 prompt_image,
                 reveal_path,
                 read_document,

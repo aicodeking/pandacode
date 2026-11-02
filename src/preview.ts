@@ -892,7 +892,7 @@ const architect = createPreviewArchitect({
 
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
-const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>(), machineOffline = new Set<string>();
 /** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
 const SETTLED_SHOWN = 24;
 function machineRows(parentId: string) {
@@ -900,6 +900,7 @@ function machineRows(parentId: string) {
     sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
     status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
     machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+    ...(machineOffline.has(child.id) ? { hostOffline: true } : {}),
   }));
 }
 function machineChildren(parentId: string) {
@@ -925,6 +926,8 @@ function installMachineChildren(): void {
     const at = Date.now();
     (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
   };
+  // The computer running a thread dropping off or coming back.
+  w.__machineChildOffline ??= (id: string, offline: boolean) => { if (offline) machineOffline.add(id); else machineOffline.delete(id); emit('sessions-changed', {}); };
   w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
 }
 /** Menu bar popover data; `window.__trayCalls` records what it asked for. */
@@ -1004,6 +1007,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   });
   if (command === 'remote_device_grants' || command === 'remote_set_device_grant' || command.startsWith('remote_pair_')) return (await import('./preview-grants')).previewGrants(command, args) as T;
   if (command === 'remote_diagnostics' || command === 'remote_diagnostics_export') return (await import('./preview-diagnostics')).previewDiagnostics(command, args) as T;
+  if (command === 'list_files' && (window as any).__filesFail) {
+    // Test seam: `__filesFail` fails folder reads like a moved project folder; relink_project clears it.
+    throw new Error('Project folder is unavailable: No such file or directory (os error 2)');
+  }
   if (command === 'remote_reconnect') {
     // Tests steer it: `__remoteReconnectHold` waits for `__remoteReconnectRelease()`, `__remoteReconnectFail` is an error text.
     const w = window as any; w.__remoteReconnects = (w.__remoteReconnects ?? 0) + 1;
@@ -1076,7 +1083,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
     return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
   }
-  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; const wait = (window as any).__orchestrationChildrenDelay; if (wait) await new Promise(done => setTimeout(done, wait)); return machineChildren(args.sessionId) as T; }
   if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
   if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
@@ -1507,6 +1514,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = { ...project }; break;
     }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
+    case 'relink_project': {
+      const project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      project.path = String(args.path ?? '');
+      // The located folder reads again, like the real relink.
+      (window as any).__filesFail = false;
+      result = { ...project, addedOrder: projects.indexOf(project) + 1 }; break;
+    }
     case 'delete_session': {
       const task = session(args.sessionId); assertIdle(task);
       if (architect.isActive(task.id)) throw new Error('Stop the team before deleting this task.');
@@ -1524,7 +1539,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
-      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode }); break;
+      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
+      emit('sessions-changed', undefined); break; // As chat_create does natively, before it returns.
     }
     case 'chat_cleanup': {
       const chat = projects.some(p => p.id === args.projectId && p.path.includes('/PandaCode Chats/')) && !sessions.some(s => s.projectId === args.projectId);
@@ -1887,6 +1903,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Any registry ID shows the yellow swatch; native reads browser-captures/<id>.png.
     case 'prompt_image': result = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(args.id)) ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' : null; break;
+    // The preview browser exposes pasted images as files, so the native fallback only
+    // matters to tests, which provide the base64 through the invoke hook.
+    case 'read_clipboard_image': result = null; break;
     case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
     case 'read_document': {
       const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';

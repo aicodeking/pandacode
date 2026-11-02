@@ -44,7 +44,7 @@ import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus,
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
-import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, morph } from './dom';
+import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
@@ -71,7 +71,7 @@ import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
-import { decorateTranscript, initOrchestration, syncOrchestration } from './machine-orchestration';
+import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import type { RemoteStart } from './remote-progress';
@@ -91,6 +91,7 @@ import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { forgetProjectIcon, projectIconHtml } from './project-icons';
+import { mountTextUndo } from './text-undo';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
@@ -479,7 +480,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
     <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
-    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('worktree')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div></div></header>
+    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('worktree')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
     <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
@@ -829,10 +830,32 @@ transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { 
 transcriptScroller.addEventListener('keydown', event => {
   if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
 });
+/* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
+ * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
+ * when it settles, since those rows only reach their new heights then. */
+const WINDOW_SETTLE_MS = 150;
+let windowSize = `${innerWidth}x${innerHeight}`, windowSettle = 0, restoreWindowReader: (() => void) | undefined, windowReaderTask = '';
+addEventListener('resize', () => {
+  const size = `${innerWidth}x${innerHeight}`;
+  if (size === windowSize) return; // Layout notifications (sidebar, UI size) dispatch resize too.
+  windowSize = size;
+  if (!windowSettle) {
+    transcriptScroller.toggleAttribute('data-window-resizing', true);
+    restoreWindowReader = stickToBottom ? undefined : captureTranscriptAnchor(transcriptScroller);
+    windowReaderTask = state.sessionId;
+  }
+  clearTimeout(windowSettle);
+  windowSettle = window.setTimeout(() => {
+    windowSettle = 0;
+    transcriptScroller.removeAttribute('data-window-resizing');
+    if (windowReaderTask === state.sessionId) restoreWindowReader?.();
+    restoreWindowReader = undefined;
+  }, WINDOW_SETTLE_MS);
+});
 const subagents = new Subagents($('#subagents-host'), 'subagents-panel', sessionId => ({ projectId: state.projectId, sessionId }));
 const jevActivity = new JevActivity();
 $('#transcript').before(jevActivity.host);
-mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents] : [subagents]);
+mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents, lineageSource] : [subagents, lineageSource]);
 const wallpapers = mountWallpapers($('.workspace'));
 // The accent follows the scene on screen; a VS Code theme keeps its own colors.
 const syncPaletteWallpaper = () => palette.setWallpaper(wallpapers.enabled ? wallpapers.currentId : undefined);
@@ -1458,12 +1481,13 @@ function renderHeader(): void {
   // A chat has no project: no project bar, deploy or run script.
   document.body.classList.toggle('chat-thread', chat);
   $('.conversation-pane').classList.toggle('bot-thread', Boolean(bot));
-  $('#breadcrumb').innerHTML = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
+  const crumb = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
+  if (!showsHtml($('#breadcrumb'), crumb)) $('#breadcrumb').innerHTML = crumb;
   const s = session(), bar = document.querySelector<HTMLElement>('#composer-area .composer-context');
   if (s && bar) {
     const markup = worktrees.contextBar(s, fresh);
     // A menu opening from the bar keeps its anchor; replacing it mid-open would cancel the menu.
-    if (bar.outerHTML !== markup && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
+    if (!showsHtml(bar, markup, true) && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
   }
 }
 /** What the empty prompt invites: a task, or a message to the bot whose thread this is. */
@@ -2164,12 +2188,27 @@ function renderComposer(): void {
     : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
+  // The composer redraws on every session change; the orchestration slot's nodes outlive it.
+  const orchestrationSlot = document.querySelector('#machine-orchestration');
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}${modelTriggerHtml(s, modelLocked, true)}<span class="composer-separator"></span>${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>`;
+  // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
+  if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
+    const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (fresh) {
+      // Every attribute the template varies across renders; extend this list when the template gains one.
+      for (const name of ['placeholder', 'aria-description', 'rows']) {
+        const value = fresh.getAttribute(name);
+        if (value === null) oldPrompt.removeAttribute(name); else oldPrompt.setAttribute(name, value);
+      }
+      fresh.replaceWith(oldPrompt);
+    }
+  }
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
   $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name }));
+  if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -2184,7 +2223,8 @@ function renderComposer(): void {
   }
   // The prompt stays open during a run: messages typed then are queued or steered.
   // A finished run whose history failed to load waits for Retry before anything else is sent.
-  if (prompt) { prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
+  // Writing an unchanged value would still clear the reused field's undo history in some engines.
+  if (prompt) { if (prompt.value !== previous) prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
   if (prompt && typing?.id === s.id && !prompt.disabled) { prompt.focus({ preventScroll: true }); prompt.setSelectionRange(typing.start, typing.end); }
   if (botForThread()) botThread.paintReplyChip(s.id);
   const footnote = document.querySelector('.composer-footnote');
@@ -2262,15 +2302,16 @@ function renderBoardView(): void {
   $('.workspace').classList.toggle('side-thread', board || (hub && state.boardPanel));
   renderSidebarVisibility();
   const viewMenu = $('#view-menu'), current = WORKSPACE_VIEWS.find(view => view.id === state.view)!;
-  viewMenu.innerHTML = `${icon(current.icon)}${icon('down')}`;
-  viewMenu.setAttribute('aria-label', `Workspace view: ${current.label}`);
-  viewMenu.title = `Workspace view: ${current.label}`;
+  const viewIcons = `${icon(current.icon)}${icon('down')}`, viewName = `Workspace view: ${current.label}`;
+  if (!showsHtml(viewMenu, viewIcons)) viewMenu.innerHTML = viewIcons;
+  if (viewMenu.getAttribute('aria-label') !== viewName) { viewMenu.setAttribute('aria-label', viewName); viewMenu.title = viewName; }
   syncGithubHub(hub);
   const pane = $('.conversation-pane');
   const paneWasHidden = pane.hidden;
   pane.hidden = (hub || board) && !state.boardPanel;
   if (paneWasHidden !== pane.hidden) { inspectorSuppressed = board && pane.hidden; renderInspector(); }
   subagents.setTask(state.sessionId, !pane.hidden);
+  syncOrchestration();
   jevActivity.setTask(pane.hidden ? '' : state.sessionId);
   if (board || hub) { pane.setAttribute('role', 'region'); pane.setAttribute('aria-label', 'Task details'); }
   else { pane.removeAttribute('role'); pane.removeAttribute('aria-label'); }
@@ -2852,6 +2893,21 @@ async function showTaskSkills(task: Session): Promise<void> {
     },
     manage: () => { closeModal(); run(showSettings('skills')); },
   });
+}
+/** A project folder renamed or moved outside PandaCode: pick its new location and repoint the project. */
+async function locateProjectFolder(): Promise<void> {
+  const p = project();
+  if (!p || isChatProject(p)) return;
+  const path = await chooseFolder(`Locate the moved "${p.name}" folder`);
+  if (!path) return;
+  try {
+    const updated = await call<Project>('relink_project', { projectId: p.id, path });
+    state.projects = await call<Project[]>('list_projects');
+    notify(`Relinked ${updated.name}`);
+  } catch (error) { report(error); return; }
+  renderNavigation(); renderHeader();
+  refreshFileLinks(workspaceContext());
+  await refreshInspector();
 }
 const SLASH_INSTRUCTIONS: Record<string, string> = {
   init: 'Inspect this repository and create or update AGENTS.md with concise, accurate project instructions: setup, development commands, tests, architecture, and conventions. Preserve existing useful guidance.',
@@ -4229,7 +4285,9 @@ function renderInspector(): void {
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
   const loadError = state.inspectorTab === 'changes' ? state.gitError : state.filesError;
   if (loadError) {
-    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button></div>`;
+    // A project folder that was renamed or moved on disk can be relinked; worktree and chat folders cannot.
+    const relocatable = loadError.startsWith('Project folder is unavailable') && !isChatProject(project());
+    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button>${relocatable ? `<button class="secondary-button" data-action="locate-project-folder">${icon('folder')}Locate folder…</button>` : ''}</div>`;
     target.querySelector('p')!.style.overflowWrap = 'anywhere';
     return;
   }
@@ -4430,7 +4488,8 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
     onClose: () => { projectPickerCleanup = undefined; },
     onSelect: async projectId => {
       if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
-      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(); return; }
+      // createChat closes this picker, which would drop an error thrown back to it.
+      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
@@ -4586,22 +4645,47 @@ async function createTask(projectId = state.projectId): Promise<void> {
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
-/** A projectless chat: its own folder, the usual harness and model. */
-async function createChat(): Promise<void> {
+/** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
+ *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
+async function createChat(from?: Session): Promise<void> {
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
+  // A chat nobody has written in yet is reopened, as New task reopens its draft.
+  const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
+  if (unused) {
+    if (state.projectFilter) setProjectFilter('');
+    state.query = ''; closeModal(); await selectSession(unused.id, true); return;
+  }
   const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
     ?? state.providers.find(p => p.installed) ?? state.providers[0];
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  leaveDraft('');
+  if (!from) leaveDraft('');
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('chat_create', { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
+    const connection = from && taskConnection(from)?.id;
+    if (connection) namedConnections = await call<typeof namedConnections>('connection_assign', { sessionId: created.id, connectionId: connection });
     state.projects = await call<Project[]>('list_projects');
   } finally { creatingTask = false; }
-  state.sessions.unshift(created);
+  // chat_create announces the new row, so the refresh may already have listed it.
+  upsertSession(created);
+  if (from) {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
+    const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
+    if (typed) state.drafts.set(created.id, typed);
+    state.drafts.delete(from.id);
+    if (open) prompt!.value = '';
+    attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
+    const browserItems = state.browserAttachments.get(from.id);
+    if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
+    state.browserAttachments.delete(from.id);
+    // Project files and moodboards belong to the project, so a chat cannot send them.
+    if ((from.id === state.sessionId && state.attachments.length) || state.moodboardAttachments.get(from.id)?.length) notify('Project files and moodboards stay with the project, so they were not moved to the chat.');
+    state.moodboardAttachments.delete(from.id);
+  }
   if (generation !== state.generation) { renderNavigation(); return; }
   if (state.projectFilter) setProjectFilter('');
   state.query = ''; closeModal(); await selectSession(created.id, true);
@@ -5691,7 +5775,7 @@ function renderBots(): void {
   if (markRead) markRead.hidden = unread.size === 0;
   document.querySelector('.sidebar')?.classList.toggle('bots-view', sidebarView === 'bots');
   const barHtml = botsBarHtml(sidebarView, sidebarBots.length, unread.size);
-  if (bar.innerHTML !== barHtml) bar.innerHTML = barHtml;
+  if (!showsHtml(bar, barHtml)) bar.innerHTML = barHtml;
   // The head (and its search field) is built once, so typing never loses focus.
   if (!panel.firstElementChild) {
     panel.innerHTML = botsPanelHeadHtml();
@@ -5705,7 +5789,7 @@ function renderBots(): void {
   }
   const list = panel.querySelector<HTMLElement>('.bots-panel-list')!;
   const html = botsListHtml({ bots: sidebarBots, channels: sidebarChannels, selectedProject: state.sharedChannelId ? undefined : current?.projectId, selectedChannel: state.sharedChannelId, signals: bot => botSignals(bot, unread), loaded: botsLoaded, hiddenOpen: hiddenBotsOpen }, botsQuery);
-  if (list.innerHTML !== html) {
+  if (!showsHtml(list, html)) {
     const menuAnchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
     if (menuAnchor && list.contains(menuAnchor)) botsListPendingRender = true;
     else { list.innerHTML = html; botsListPendingRender = false; }
@@ -6146,6 +6230,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
+    case 'locate-project-folder': await locateProjectFolder(); break;
     case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
     case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
@@ -6322,6 +6407,7 @@ document.addEventListener('change', event => {
     document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
   }
 });
+mountTextUndo();
 document.addEventListener('keydown', event => {
   if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing || event.defaultPrevented || event.key.toLowerCase() !== 'b' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
   event.preventDefault(); event.stopPropagation(); toggleSidebar();
@@ -6423,7 +6509,7 @@ async function boot(): Promise<void> {
   }).then(() => undefined));
   run(initRemote());
   run(initCloudAgents());
-  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), title: id => state.sessions.find(s => s.id === id)?.title }));
+  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), visible: () => !$('.conversation-pane').hidden, title: id => state.sessions.find(s => s.id === id)?.title }));
   run(subscribe('bot-notification', event => { if (event?.text) notify(String(event.text).replace(/\s+/g, ' ').slice(0, 160)); }).then(() => undefined));
   run(subscribe('bot-failover', (ask: FailoverAsk) => {
     if (!ask?.sessionId) return;

@@ -396,6 +396,7 @@ pub(crate) fn validate_admission(
 ) -> Result<()> {
     let Some(admission) = admission else {
         check_manual(store, sid)?;
+        // The one exception is a maintenance command on the lead (`prepare_task_run_in_project`).
         if load(store, sid)?.is_some() {
             return Err("Start this task using its architect team controls.".into());
         }
@@ -831,7 +832,12 @@ pub(crate) async fn architect_start_in_project(
     expected_project: Option<String>,
 ) -> Result<()> {
     text_check(&text)?;
-    let (team, admission) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
+    let (team, admission) = match admit_lead_send(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref()).await? {
+        LeadSend::Maintenance(command) => {
+            return crate::launch_team_maintenance(app, state, session_id, text, image_ids, expected_project, command).await;
+        }
+        LeadSend::Team(team, admission) => (*team, admission),
+    };
     emit(&app, &team);
     if let Err(error) = crate::launch_team_task(
         app.clone(),
@@ -847,6 +853,25 @@ pub(crate) async fn architect_start_in_project(
         return Err(error);
     }
     Ok(())
+}
+pub(crate) enum LeadSend {
+    /// Runs on the lead's harness; the team's state is never touched.
+    Maintenance(crate::PreparedCommand),
+    Team(Box<TeamSnapshot>, Admission),
+}
+/// Decides what a message to the lead is. This comes first: `start_state` ends the old objective.
+pub(crate) async fn admit_lead_send(
+    state: &AppState,
+    session_id: &str,
+    text: &str,
+    image_ids: Option<Vec<String>>,
+    expected_project: Option<&str>,
+) -> Result<LeadSend> {
+    if let Some(command) = crate::team_maintenance_command(state, session_id, text).await? {
+        return Ok(LeadSend::Maintenance(command));
+    }
+    let (team, admission) = start_state(state, session_id, text, image_ids, expected_project)?;
+    Ok(LeadSend::Team(Box::new(team), admission))
 }
 /// Begin a new objective for an idle team and reserve the architect's first turn.
 pub(crate) fn start_state(
@@ -926,6 +951,13 @@ pub async fn architect_control(
     session_id: String,
     action: String,
 ) -> Result<TeamSnapshot> {
+    // What `stop_session` does for this run besides signalling it; `control_state` signals it.
+    if action == "stop" && crate::runs_team_maintenance(&state, &session_id)? {
+        crate::remote::orchestrate::task_stopped(&app, &session_id);
+        if crate::cloud_agents::transport::is_cloud(&session_id) {
+            crate::cloud_agents::tasks::stop_run(&app, &session_id);
+        }
+    }
     // Right after Pause or Stop the old agents can still be exiting; give them a moment
     // instead of refusing the Resume the user just clicked.
     let mut attempts = 0;
@@ -942,11 +974,17 @@ pub async fn architect_control(
     wake(app);
     Ok(team)
 }
-fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<TeamSnapshot> {
+pub(crate) fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<TeamSnapshot> {
     let team = {
         let agents = state.agents.lock().map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
         refuse_mirror(&store, session_id)?;
+        // A maintenance command on the lead: Stop ends that run alone, and the team stays as it is.
+        if let Some(agent) = agents.get(session_id).filter(|agent| action == "stop" && agent.team_maintenance) {
+            store.request_stop(session_id)?;
+            let _ = agent.send(RunInput::Stop);
+            return Ok(load(&store, session_id)?.ok_or("Team is unavailable.")?);
+        }
         let mut team = load(&store, session_id)?.ok_or("Team is unavailable.")?;
         match action {
             "pause" | "stop" => {
@@ -2469,7 +2507,7 @@ pub(crate) fn completed(
     wake(app.clone());
 }
 #[cfg(test)]
-fn completed_state(
+pub(crate) fn completed_state(
     state: &AppState,
     sid: &str,
     admission: Option<&Admission>,

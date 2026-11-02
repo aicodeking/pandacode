@@ -94,6 +94,17 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     return image;
   }
 
+  /** The native clipboard image, for webviews (WebKitGTK) that never expose OS
+   * clipboard images as pasted files; unreadable or empty clipboards stay silent. */
+  async function attachClipboardImage(taskId: string): Promise<void> {
+    let base64: string | null;
+    try {
+      base64 = await call<string | null>('read_clipboard_image');
+    } catch { return; /* No clipboard access here; the paste stays a no-op. */ }
+    if (!base64) return;
+    await addImage(taskId, { dataUrl: `data:image/png;base64,${base64}`, name: 'Pasted image.png', origin: 'paste' });
+  }
+
   async function addDocument(taskId: string, path: string): Promise<void> {
     const document = await call<Omit<PromptDocument, 'kind' | 'id'>>('read_document', { path });
     add(taskId, { kind: 'document', id: id(), ...document });
@@ -219,11 +230,23 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     images: (taskId: string) => list(taskId).filter((a): a is PromptImage => a.kind === 'image').length,
     /** Clipboard images pasted into the composer become attachments instead of nothing. */
     handlePaste(event: ClipboardEvent): boolean {
-      const files = [...(event.clipboardData?.files ?? [])].filter(file => file.type.startsWith('image/'));
-      if (!files.length || !host.taskId()) return false;
-      event.preventDefault();
-      attachFiles(files, 'paste').catch(host.report);
-      return true;
+      const data = event.clipboardData;
+      const files = [...(data?.files ?? [])].filter(file => file.type.startsWith('image/'));
+      const taskId = host.taskId();
+      if (files.length && taskId) {
+        event.preventDefault();
+        attachFiles(files, 'paste').catch(host.report);
+        return true;
+      }
+      // WebKitGTK (Linux) never exposes OS clipboard images as pasted files, so an
+      // image-only paste looks empty there; the native read covers it. Pastes with
+      // any file or text are left to the browser, so only this one reads natively.
+      const types = [...(data?.types ?? [])];
+      if (taskId && !data?.files.length && !types.includes('Files') && !types.some(type => type.startsWith('text/'))) {
+        event.preventDefault();
+        attachClipboardImage(taskId).catch(host.report);
+      }
+      return false;
     },
     /** Files dropped on the window attach to the current task; the composer lights up while dragging. */
     installDropZone(zone: () => HTMLElement | null): void {

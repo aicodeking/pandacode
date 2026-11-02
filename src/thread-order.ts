@@ -11,7 +11,7 @@ function stops(nav: HTMLElement): HTMLElement[] {
 export function syncRovingFocus(nav: HTMLElement): void {
   const items = stops(nav), focused = items.find(item => item === document.activeElement);
   const current = focused ?? items.find(item => item.classList.contains('selected')) ?? items[0];
-  for (const item of nav.querySelectorAll<HTMLElement>(`${STOPS}, .task-action, .folder-new-task`)) item.tabIndex = item === current ? 0 : -1;
+  for (const item of nav.querySelectorAll<HTMLElement>(`${STOPS}, .task-action, .folder-new-task`)) { const index = item === current ? '0' : '-1'; if (item.getAttribute('tabindex') !== index) item.setAttribute('tabindex', index); }
 }
 function moveFocus(nav: HTMLElement, from: HTMLElement, key: string): boolean {
   const items = stops(nav), index = items.indexOf(from);

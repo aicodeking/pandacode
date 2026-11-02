@@ -104,7 +104,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     return `<div class="cloud-provider" data-provider="${id}">
       <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div></div>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
-      <label class="cloud-inherit" data-inherit-row hidden><input type="checkbox" data-cloud-inherit> Include provider environment variables${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</label>${id === 'instabox' ? `
+      <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'instabox' ? `
       <div class="cloud-image" hidden>
         <div class="cloud-image-row"><label><span>Machine image</span><select aria-label="InstaBox machine image" disabled></select></label>${infoMark(IMAGE_HELP, 'About machine images')}</div>
         <p class="cloud-image-status" role="status" hidden></p>
@@ -123,6 +123,21 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   let connections: CloudConnection[] = [], disposed = false, busy = '';
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
+
+  /* Connected providers first, then the rest, each alphabetical by name. The Claude
+   * login card above them is never a provider card, so it stays where it is. */
+  function arrange(): void {
+    const grid = host.querySelector<HTMLElement>('.cloud-settings')!;
+    const name = (id: CloudConnection['provider']) => PROVIDERS[id].name.toLowerCase();
+    const on = (id: CloudConnection['provider']) => connections.some(c => c.provider === id && c.connected);
+    const ids = (Object.keys(PROVIDERS) as CloudConnection['provider'][]).sort((a, b) => Number(on(b)) - Number(on(a)) || name(a).localeCompare(name(b)));
+    const current = [...grid.querySelectorAll<HTMLElement>(':scope > .cloud-provider[data-provider]')].map(card => card.dataset.provider);
+    if (ids.every((id, index) => current[index] === id)) return;
+    // Moving a card blurs whatever inside it had focus (the Disconnect button), so put focus back.
+    const active = document.activeElement;
+    for (const id of ids) grid.append(section(id));
+    if (active instanceof HTMLElement && host.contains(active) && document.activeElement !== active) active.focus({ preventScroll: true });
+  }
 
   function render(): void {
     for (const id of Object.keys(PROVIDERS) as CloudConnection['provider'][]) {
@@ -146,6 +161,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.disabled = Boolean(busy);
       }
     }
+    arrange();
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }

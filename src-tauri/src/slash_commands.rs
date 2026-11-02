@@ -2,6 +2,7 @@
 mod acp;
 pub(crate) mod claude;
 mod codex;
+mod deepseek;
 mod kimi;
 mod muse;
 mod pi;
@@ -390,7 +391,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
             "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
                 acp::discover(provider, cwd).await
             }
-            "deepseek" => Ok(Catalog::default()),
+            "deepseek" => deepseek::discover(cwd),
             "codex" => codex::discover(cwd).await,
             "kimi" => kimi::discover(cwd).await,
             "pi" | "omp" => pi::discover(provider, cwd).await,
@@ -435,6 +436,16 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     } else {
         false
     }
+}
+
+/// Stable FNV-1a over a skill's name and path, so ids never expose paths.
+fn hashed_id(prefix: &str, name: &str, path: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in name.bytes().chain(std::iter::once(0)).chain(path.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{prefix}:{hash:016x}")
 }
 
 fn normalize(catalog: &mut Catalog, provider: &str) {
@@ -890,6 +901,32 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn deepseek_skills_resolve_as_native_prompts() {
+        let mut catalog = Catalog {
+            commands: vec![SlashCommand {
+                id: "deepseek:skill:1".into(),
+                name: "/ds-tdd".into(),
+                description: "Test-first loop".into(),
+                argument_hint: Some("[instructions]".into()),
+                kind: "prompt".into(),
+                source: "DeepSeek skill · project".into(),
+                reason: None,
+                invocation: Invocation::Native,
+            }],
+            warnings: vec![],
+        };
+        normalize(&mut catalog, "deepseek");
+        assert!(matches!(
+            command(&catalog, "/ds-tdd").invocation,
+            Invocation::Native
+        ));
+        let result = resolve_from_catalog("deepseek", "/ds-tdd fix the bug", &catalog).unwrap();
+        assert_eq!(result.prompt, "/ds-tdd fix the bug");
+        assert!(result.skill.is_none() && result.action.is_none());
+        assert!(result.accepts_attachments && !result.maintenance);
     }
 
     #[test]

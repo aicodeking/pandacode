@@ -55,6 +55,13 @@ accept inline configuration arguments.
 - Context/status commands retain the task's prior board stage after completion,
   interruption, or failure. They do not mark development work ready for review.
   A new Codex task must have a provider conversation before `/compact` can run.
+- With a team on, a message to the lead that resolves to a context/status command
+  the harness runs natively runs bare on the lead's harness, outside the team: the
+  objective, summary, workers and requests stay as they are, and Stop ends only that
+  run. Only `/compact` takes arguments, so `/status of the migration` goes to the
+  team as ordinary text, as does anything that does not resolve to such a command.
+  While the team is active the command is refused; pause the team first. Worker
+  assignments never run as commands.
 - Commands that cannot consume attachments reject them before submission. The
   installed Kimi 0.26.0 ACP discards image blocks in its slash dispatcher, so
   PandaCode rejects attachments for Kimi slash commands. Normal Kimi messages

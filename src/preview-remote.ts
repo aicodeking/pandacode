@@ -20,7 +20,9 @@ let orchestration = false, pending: LinkRequest[] = [];
 const hostOff = new Set<string>(['dev-mini']);
 const links = new Map<string, Access>();
 const targets = () => (signedIn ? sampleDevices() : []).filter(d => !d.current && d.host);
-const orchestrationStatus = (): OrchestrationStatus => ({ enabled: orchestration, links: targets().filter(d => links.has(d.id)).map(d => ({ deviceId: d.id, name: d.name, platform: d.platform, online: d.online, access: links.get(d.id)! })) });
+/** Stored links whose computer left the account (`__remoteRevoke`), as `links::status_of` lists them. */
+const departedLinks = () => signedIn ? allDevices().filter(d => revoked.has(d.id) && links.has(d.id)).map(d => ({ deviceId: d.id, name: d.name, platform: '', online: false, access: links.get(d.id)!, departed: true })) : [];
+const orchestrationStatus = (): OrchestrationStatus => ({ enabled: orchestration, links: [...targets().filter(d => links.has(d.id)).map(d => ({ deviceId: d.id, name: d.name, platform: d.platform, online: d.online, access: links.get(d.id)! })), ...departedLinks()] });
 function setLink(deviceId: string, access: Access | null, emit: (name: string, payload: unknown) => void): OrchestrationStatus {
   if (access && !targets().some(d => d.id === deviceId)) throw new Error('Turn on remote control on that computer before linking it.');
   if (access && !['read', 'ask', 'full'].includes(access)) throw new Error(`Unknown access: ${access}`);

@@ -24,7 +24,7 @@ Each activation records the harness, scope, project checkout, surface, the libra
 | Harness | Skill, user | Skill, project | Rule, user | Rule, project |
 |---|---|---|---|---|
 | Claude Code | `~/.claude/skills/<id>/` | `<checkout>/.claude/skills/<id>/` | block in `~/.claude/CLAUDE.md` | block in `<checkout>/CLAUDE.md` |
-| Codex | `~/.codex/skills/<id>/` | `<checkout>/.codex/skills/<id>/` | block in `~/.codex/AGENTS.md` | block in `<checkout>/AGENTS.md` |
+| Codex | `~/.codex/skills/<id>/` | `<checkout>/.agents/skills/<id>/` | block in `~/.codex/AGENTS.md` | block in `<checkout>/AGENTS.md` |
 | Others | `prompt` | `prompt` | `prompt` | `prompt` |
 
 - A rule block is wrapped in `<!-- pandacode:rule:<id> -->` … `<!-- /pandacode:rule:<id> -->`. Text outside the block is never changed.

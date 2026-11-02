@@ -82,6 +82,88 @@ fn imports_activates_for_claude_and_codex_and_reports_drift() {
 }
 
 #[test]
+fn codex_project_skills_go_where_codex_reads_them() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    fx.import(Kind::Skill, &fx.folder("release", &[("SKILL.md", SKILL)]));
+    fx.library.activate("release-notes", "codex", Scope::Project, Some(&root), false).unwrap();
+    assert!(root.join(".agents/skills/release-notes/SKILL.md").is_file());
+    assert!(!root.join(".codex/skills").exists());
+    fx.library.deactivate("release-notes", "codex", Scope::Project, Some(&root)).unwrap();
+    assert!(!root.join(".agents/skills/release-notes").exists());
+}
+
+/// Rewrites a Codex project activation as the old adapter recorded it, in `.codex/skills`.
+fn plant_old_codex_activation(fx: &Fixture, root: &Path, id: &str) -> PathBuf {
+    let old = root.join(".codex/skills").join(id);
+    fs::create_dir_all(&old).unwrap();
+    let new = root.join(".agents/skills").join(id);
+    fs::rename(new.join("SKILL.md"), old.join("SKILL.md")).unwrap();
+    fs::remove_dir_all(&new).unwrap();
+    let entry = format!("/.codex/skills/{id}/");
+    fs::write(root.join(".git/info/exclude"), format!("{entry}\n")).unwrap();
+    let meta = fx.library.load(id).unwrap();
+    let activations = meta.activations.iter().cloned().map(|a| Activation {
+        files: vec![Written { path: old.join("SKILL.md").to_string_lossy().into_owned(), sha256: a.files[0].sha256.clone() }],
+        excluded: vec![entry.clone()],
+        ..a
+    }).collect();
+    fx.library.save(&Meta { activations, ..meta }).unwrap();
+    old
+}
+
+#[test]
+fn old_codex_project_activations_read_outdated_and_sync_moves_them() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    fx.import(Kind::Skill, &fx.folder("release", &[("SKILL.md", SKILL)]));
+    let ids = vec!["release-notes".to_string()];
+    assert!(fx.library.sync_project("codex", &root, &ids).is_empty());
+    let old = plant_old_codex_activation(&fx, &root, "release-notes");
+
+    let matrix = fx.library.matrix(Some(&root)).unwrap();
+    assert_eq!(Fixture::cell(&matrix, "codex", "release-notes", Scope::Project).status, "outdated");
+    assert!(fx.library.project_active("codex", &root).is_empty(), "Codex cannot read the old folder");
+
+    assert!(fx.library.sync_project("codex", &root, &ids).is_empty());
+    assert!(root.join(".agents/skills/release-notes/SKILL.md").is_file());
+    assert!(!old.exists());
+    let exclude = fs::read_to_string(root.join(".git/info/exclude")).unwrap();
+    assert!(exclude.lines().any(|l| l == "/.agents/skills/release-notes/") && !exclude.contains(".codex"), "{exclude}");
+    let matrix = fx.library.matrix(Some(&root)).unwrap();
+    assert_eq!(Fixture::cell(&matrix, "codex", "release-notes", Scope::Project).status, "active");
+    assert_eq!(fx.library.project_active("codex", &root), ids);
+}
+
+#[test]
+fn moving_a_codex_activation_keeps_user_files() {
+    let fx = Fixture::new();
+    let root = fx.repo();
+    fx.import(Kind::Skill, &fx.folder("release", &[("SKILL.md", SKILL)]));
+    let ids = vec!["release-notes".to_string()];
+    fx.library.sync_project("codex", &root, &ids);
+    let old = plant_old_codex_activation(&fx, &root, "release-notes");
+
+    // A folder the user made at the new location is refused, and the old copy stays recorded.
+    let manual = root.join(".agents/skills/release-notes");
+    fs::create_dir_all(&manual).unwrap();
+    fs::write(manual.join("SKILL.md"), "hand made").unwrap();
+    assert!(fx.library.sync_project("codex", &root, &ids)[0].contains("did not create"));
+    assert_eq!(fs::read_to_string(manual.join("SKILL.md")).unwrap(), "hand made");
+    assert!(old.join("SKILL.md").is_file());
+    assert!(fx.library.project_active("codex", &root).is_empty());
+    fs::remove_dir_all(&manual).unwrap();
+
+    // An edited old copy moves too: the edit is left where it was and reported.
+    fs::write(old.join("SKILL.md"), "my edit").unwrap();
+    let change = fx.library.activate("release-notes", "codex", Scope::Project, Some(&root), false).unwrap();
+    assert_eq!(change.kept, [old.join("SKILL.md").to_string_lossy().into_owned()]);
+    assert_eq!(fs::read_to_string(old.join("SKILL.md")).unwrap(), "my edit");
+    assert_eq!(fs::read_to_string(manual.join("SKILL.md")).unwrap(), SKILL);
+    assert!(fs::read_to_string(root.join(".git/info/exclude")).unwrap().contains("/.codex/skills/release-notes/"), "the leftover stays hidden");
+}
+
+#[test]
 fn rules_become_managed_blocks_and_project_files_are_excluded() {
     let fx = Fixture::new();
     let root = fx.repo();

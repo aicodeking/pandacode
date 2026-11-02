@@ -37,6 +37,48 @@ async function pasteImage(page: Page, name = 'shot.png'): Promise<void> {
   }, [PNG, name]);
 }
 
+/** Dispatches a paste whose clipboardData carries the given types but no files, as
+ * WebKitGTK delivers an OS clipboard image (issue #272: Flameshot on Fedora Wayland). */
+async function pasteWithoutFiles(page: Page, types: string[] = []): Promise<boolean> {
+  return page.evaluate(types => {
+    const data = new DataTransfer();
+    for (const type of types) data.setData(type, `sample ${type}`);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    document.querySelector('#prompt')!.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, types);
+}
+
+test('a paste that carries no files reads the clipboard image natively', async ({ page }) => {
+  await probe(page, `if (command === 'read_clipboard_image') return ${JSON.stringify(PNG)};`);
+  await prompt(page).focus();
+  const prevented = await pasteWithoutFiles(page);
+  expect(prevented).toBe(true);
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first()).toContainText('Pasted image.png');
+  await expect(page.locator('#toast')).not.toContainText('Attached');
+  const imported = await calls(page, 'import_prompt_image');
+  expect(imported[0].args.dataUrl).toBe(`data:image/png;base64,${PNG}`);
+  expect(imported[0].args.name).toBe('Pasted image.png');
+});
+
+test('pasting text never reads the clipboard, and an empty clipboard read leaves the paste alone', async ({ page }) => {
+  await probe(page, `if (command === 'read_clipboard_image') throw new Error('clipboard read refused');`);
+  await prompt(page).focus();
+  const prevented = await pasteWithoutFiles(page, ['text/plain']);
+  expect(prevented).toBe(false);
+  expect(await pasteWithoutFiles(page, ['text/html'])).toBe(false);
+  await expect(chips(page)).toHaveCount(0);
+  await expect(prompt(page)).toBeFocused();
+  expect(await calls(page, 'read_clipboard_image')).toHaveLength(0);
+  // An unreadable or imageless clipboard: the paste is cancelled but nothing attaches.
+  const second = await pasteWithoutFiles(page);
+  expect(second).toBe(true);
+  await expect(chips(page)).toHaveCount(0);
+  expect(await calls(page, 'read_clipboard_image')).toHaveLength(1);
+  await expect(page.locator('#toast')).not.toContainText('clipboard');
+});
+
 test('the attach menu offers files, a folder, project files and a sketch, and attaches picker results as chips', async ({ page }) => {
   await probe(page);
   await attachButton(page).click();

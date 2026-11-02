@@ -1036,3 +1036,8 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 /* Full paths stay readable when relinking a project on another drive. */
 .project-location-current { overflow-wrap: anywhere; color: var(--muted); margin: 8px 0 20px; }
 #relocate-project-form #choose-project-location { margin-top: 12px; }
+/* A window drag would reflow and repaint every transcript row at each step. While the size changes
+ * (main.ts), rows off screen skip that work at their remembered height; the thread lays out once
+ * when it settles. Only then: permanently, an unanchored WKWebView jumps when scrolling up. */
+#transcript>*{contain-intrinsic-size:auto 300px}
+#transcript[data-window-resizing]>*{content-visibility:auto}
