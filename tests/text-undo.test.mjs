@@ -62,9 +62,11 @@ test('the handler is Linux-only and ignores everything that is not a text edit',
 test('the terminal keeps its Ctrl keys: xterm fields are never text edits', () => {
   const doc = fakeDoc();
   attachTextUndo(doc, 'Linux x86_64');
-  doc.activeElement = { tagName: 'TEXTAREA', closest: selector => ({}) };
+  let asked;
+  doc.activeElement = { tagName: 'TEXTAREA', closest: selector => { asked = selector; return {}; } };
   run(doc, key());
   assert.deepEqual(doc.commands, []);
+  assert.equal(asked, '.xterm');
   doc.activeElement = { tagName: 'TEXTAREA' };
   run(doc, key());
   assert.deepEqual(doc.commands, ['undo']);
