@@ -124,6 +124,16 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
 
+  /* Connected providers first, then the rest, each alphabetical by name. The Claude
+   * login card above them is never a provider card, so it stays where it is. */
+  function arrange(): void {
+    const grid = host.querySelector<HTMLElement>('.cloud-settings')!;
+    const name = (id: CloudConnection['provider']) => PROVIDERS[id].name.toLowerCase();
+    const on = (id: CloudConnection['provider']) => connections.some(c => c.provider === id && c.connected);
+    const ids = (Object.keys(PROVIDERS) as CloudConnection['provider'][]).sort((a, b) => Number(on(b)) - Number(on(a)) || name(a).localeCompare(name(b)));
+    for (const id of ids) grid.append(section(id));
+  }
+
   function render(): void {
     for (const id of Object.keys(PROVIDERS) as CloudConnection['provider'][]) {
       const connection = connections.find(c => c.provider === id), root = section(id);
@@ -146,6 +156,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.disabled = Boolean(busy);
       }
     }
+    arrange();
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }
