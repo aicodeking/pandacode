@@ -87,6 +87,7 @@ import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFile
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
+import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
@@ -2152,6 +2153,17 @@ function renderComposer(): void {
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}${modelTriggerHtml(s, modelLocked, true)}<span class="composer-separator"></span>${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>`;
+  // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
+  if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
+    const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (fresh) {
+      for (const name of ['placeholder', 'aria-description', 'rows']) {
+        const value = fresh.getAttribute(name);
+        if (value === null) oldPrompt.removeAttribute(name); else oldPrompt.setAttribute(name, value);
+      }
+      fresh.replaceWith(oldPrompt);
+    }
+  }
   $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
@@ -6180,6 +6192,7 @@ document.addEventListener('change', event => {
     document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
   }
 });
+mountTextUndo();
 document.addEventListener('keydown', event => {
   if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing || event.defaultPrevented || event.key.toLowerCase() !== 'b' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
   event.preventDefault(); event.stopPropagation(); toggleSidebar();
