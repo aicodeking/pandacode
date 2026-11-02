@@ -546,6 +546,7 @@ mod tests {
             reasoning_effort: None,
             mode: "full".into(),
             cwd: dir.clone(),
+            extra_dirs: Vec::new(),
             resume_id: None,
             prompt: "hello".into(),
             instructions: String::new(),
