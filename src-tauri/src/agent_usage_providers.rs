@@ -688,7 +688,7 @@ fn antigravity_command(
     limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>, ()> {
-    let mut command = crate::providers::provider_command("antigravity", path).map_err(|_|())?.into_std();
+    let mut command = crate::providers::provider_command("antigravity", path, true).map_err(|_|())?.into_std();
     // Prevent agy auto-update notices from corrupting --version or /usage JSON on stdout.
     command
         .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")

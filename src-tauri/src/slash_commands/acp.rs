@@ -18,7 +18,7 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         // project's chat history; its commands arrive with the first task instead.
         return Err(NO_COMMANDS.into());
     }
-    let mut command = crate::providers::provider_command(provider, &path)?;
+    let mut command = crate::providers::provider_command(provider, &path, true)?;
     match provider {
         "opencode" => {
             command.arg("acp");

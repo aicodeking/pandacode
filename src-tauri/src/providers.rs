@@ -4,7 +4,7 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -177,6 +177,13 @@ pub struct RunConfig {
     /// Runtime-only: `RunConfig` is not serialized (`GoalRequest` has no `Serialize`),
     /// so a `serde` skip attribute cannot be attached here.
     pub(crate) no_fresh_resume_fallback: bool,
+    /// The team's pre-merged environment (its own values plus the shared global set
+    /// it did not opt out of), decided once at spawn prep. Applied after the
+    /// provider's saved variables, so a team value wins over a shared name.
+    pub team_environment: BTreeMap<String, String>,
+    /// Whether the launch still receives the shared global environment set: the
+    /// team's choice AND the provider card's, decided at spawn prep.
+    pub team_use_global_environment: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -857,10 +864,15 @@ pub(crate) fn executable(name: &str) -> Option<PathBuf> {
 
 /// Starts a provider CLI with the provider's saved environment variables applied.
 /// Everything else a launch adds (credentials, endpoints, a named connection)
-/// is applied later and wins.
-pub(crate) fn provider_command(provider: &str, path: &Path) -> Result<Command, String> {
+/// is applied later and wins. `include_global` drops the shared global set for a
+/// team that opted out of it.
+pub(crate) fn provider_command(
+    provider: &str,
+    path: &Path,
+    include_global: bool,
+) -> Result<Command, String> {
     let mut command = command(path)?;
-    crate::provider_settings::apply_environment(provider, &mut command);
+    crate::provider_settings::apply_provider_environment(provider, include_global, &mut command);
     Ok(command)
 }
 
@@ -1502,7 +1514,7 @@ async fn opencode_v2_catalog_in(path: &Path, app_data: Option<&Path>) -> Result<
         );
         ZeroingString(format!("Basic {}", encoded.0))
     };
-    let mut command = provider_command("opencode", path)?;
+    let mut command = provider_command("opencode", path, true)?;
     // Explicitly override OPENCODE_PASSWORD after apply_environment so an inherited
     // or saved password cannot shadow the per-call secret.
     command
@@ -1925,7 +1937,7 @@ async fn read_claude_models(stdout: &mut (impl tokio::io::AsyncRead + Unpin)) ->
 }
 
 async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = provider_command("claude", path)?;
+    let mut command = provider_command("claude", path, true)?;
     claude_auth::configure(&mut command, "claude");
     command
         .args([
@@ -1969,7 +1981,7 @@ async fn claude_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn codex_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = provider_command("codex", path)?;
+    let mut command = provider_command("codex", path, true)?;
     command
         .arg("app-server")
         .current_dir(std::env::temp_dir())
@@ -4580,7 +4592,8 @@ async fn run_inner(
         })?;
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
-    let mut command = provider_command(&config.provider, &path)?;
+    let mut command = provider_command(&config.provider, &path, config.team_use_global_environment)?;
+    crate::provider_settings::apply_team_environment(&config.team_environment, &mut command);
     let defer_antigravity_gemini_dir = config.provider == "antigravity" && connection.is_some();
     let mut command = {
         let (config, disabled, agents) =
@@ -5676,6 +5689,8 @@ mod tests {
             codex_settings: None,
             images: Vec::new(),
             no_fresh_resume_fallback: false,
+            team_environment: BTreeMap::new(),
+            team_use_global_environment: true,
         }
     }
 
@@ -8135,6 +8150,8 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
                 codex_settings: None,
                 images: Vec::new(),
                 no_fresh_resume_fallback: false,
+                team_environment: Default::default(),
+                team_use_global_environment: true,
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));
             let outcome = match tokio::time::timeout(Duration::from_secs(90), &mut task).await {

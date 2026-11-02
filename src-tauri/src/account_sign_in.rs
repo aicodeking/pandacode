@@ -206,7 +206,7 @@ pub async fn account_sign_in_start(app: tauri::AppHandle, id: String) -> Result<
     let launch = crate::connections::launch(&connection)?;
     let name = if provider == "codex" { "Codex" } else { "Claude Code" };
     let path = launch.executable.clone().or_else(|| crate::providers::executable(&provider)).ok_or_else(|| format!("Could not find {name}. Install it or set its path in Settings."))?;
-    let mut command = crate::providers::provider_command(&provider, &path)?;
+    let mut command = crate::providers::provider_command(&provider, &path, true)?;
     command.args(if provider == "codex" { &["login"][..] } else { &["auth", "login", "--claudeai"][..] });
     command.envs(launch.env.iter().map(|(k, v)| (k, v)));
     command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);

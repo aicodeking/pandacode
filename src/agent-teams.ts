@@ -29,6 +29,13 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
       <input type="search" class="agent-team-filter" aria-label="Filter models" placeholder="Filter models…" autocomplete="off" spellcheck="false">
       <div class="agent-team-models" role="group" aria-label="Team models"><p class="agent-team-loading" role="status">Loading models…</p></div>
       <label class="agent-team-field" hidden><span>Lead effort</span><select class="agent-team-lead-effort" aria-label="Lead effort"></select></label>
+      <section class="agent-team-env" aria-label="Team environment" hidden>
+        <h4>Environment variables</h4>
+        <p class="agent-team-env-note">Added to every harness this team starts, after the provider's own variables. Values are saved on this computer and never shown again.</p>
+        <label class="agent-team-env-global"><input type="checkbox" class="agent-team-use-global"> Use global environment variables</label>
+        <div class="agent-team-env-list" aria-label="Saved team variables"></div>
+        <div class="agent-team-env-row"><input class="agent-team-env-name" aria-label="Variable name" placeholder="NAME" maxlength="128" autocomplete="off" spellcheck="false"><input class="agent-team-env-value" aria-label="Variable value" placeholder="value" maxlength="4096" autocomplete="off" spellcheck="false"><button type="button" class="secondary-button agent-team-env-add">Add</button></div>
+      </section>
       <div class="agent-team-actions"><span class="agent-team-count" aria-live="polite"></span><button type="button" class="secondary-button agent-team-cancel">Cancel</button><button type="submit" class="primary-button">Save team</button></div>
     </form>
     <p class="agent-team-error" role="alert" hidden></p>
@@ -42,6 +49,11 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   const models = editor.querySelector<HTMLElement>('.agent-team-models')!;
   const count = editor.querySelector<HTMLElement>('.agent-team-count')!;
   const leadEffort = editor.querySelector<HTMLSelectElement>('.agent-team-lead-effort')!;
+  const envSection = editor.querySelector<HTMLElement>('.agent-team-env')!;
+  const envList = editor.querySelector<HTMLElement>('.agent-team-env-list')!;
+  const envGlobal = editor.querySelector<HTMLInputElement>('.agent-team-use-global')!;
+  const envName = editor.querySelector<HTMLInputElement>('.agent-team-env-name')!;
+  const envValue = editor.querySelector<HTMLInputElement>('.agent-team-env-value')!;
   const error = host.querySelector<HTMLElement>('.agent-team-error')!;
   const guidance = host.querySelector<HTMLTextAreaElement>('.agent-guidance')!;
   const guidanceSave = host.querySelector<HTMLButtonElement>('.agent-guidance-save')!;
@@ -123,6 +135,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     editor.hidden = false; create.hidden = true;
     name.value = profile?.name ?? ''; filter.value = '';
     name.focus();
+    renderEnvironment();
     const chosen = new Set((profile?.setup.config.workers ?? []).map(modelKey));
     const lead = profile ? modelKey(profile.setup.architect) : '';
     if (!catalog.length) {
@@ -131,6 +144,42 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     }
     renderModels(chosen, lead);
   }
+  /** The edited profile as the latest library holds it, after an environment write. */
+  const currentEditing = (): TeamProfile | null => editing && library ? namedTeams(library).find(profile => profile.id === editing!.id) ?? null : null;
+  /** The saved variables' names only; the values stay on this computer. */
+  function renderEnvironment(): void {
+    envSection.hidden = !editing;
+    if (!editing) return;
+    envGlobal.checked = editing.useGlobalEnvironment !== false;
+    envList.replaceChildren(...editing.environmentNames.map(variable => {
+      const row = document.createElement('span');
+      row.className = 'agent-team-env-var';
+      row.innerHTML = `<code>${escape(variable)}</code><button type="button" class="secondary-button" data-remove-env="${escape(variable)}" aria-label="Remove ${escape(variable)}">Remove</button>`;
+      return row;
+    }));
+  }
+  /** One environment write, then the fresh names-only list. False keeps the user's input. */
+  async function saveEnvironment(operation: () => Promise<unknown>): Promise<boolean> {
+    if (busy || !editing) return false;
+    busy = true; error.hidden = true;
+    try {
+      await operation();
+      await refresh();
+      editing = currentEditing();
+      if (disposed) return false;
+      renderEnvironment();
+      return true;
+    } catch (cause) { if (!disposed) showError(cause); return false; }
+    finally { busy = false; }
+  }
+  const submitEnvironment = (): void => {
+    const variable = envName.value.trim();
+    if (!variable) { envName.focus(); return; }
+    const value = envValue.value;
+    void saveEnvironment(() => options.call('architect_set_team_environment_variable', { profileId: editing!.id, name: variable, value })).then(saved => {
+      if (saved) { envName.value = ''; envValue.value = ''; envName.focus(); }
+    });
+  };
   function closeEditor(): void { editor.hidden = true; create.hidden = false; editing = null; }
   async function save(event: SubmitEvent): Promise<void> {
     event.preventDefault();
@@ -170,6 +219,21 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
   editor.addEventListener('submit', event => void save(event));
   models.addEventListener('change', sync);
   filter.addEventListener('input', applyFilter);
+  envList.addEventListener('click', event => {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('button') : null;
+    const variable = target?.dataset.removeEnv;
+    if (variable) void saveEnvironment(() => options.call('architect_remove_team_environment_variable', { profileId: editing!.id, name: variable }));
+  });
+  envGlobal.addEventListener('change', () => {
+    const useGlobal = envGlobal.checked;
+    void saveEnvironment(() => options.call('architect_set_team_use_global_environment', { profileId: editing!.id, useGlobalEnvironment: useGlobal })).then(saved => { if (!saved) envGlobal.checked = !useGlobal; });
+  });
+  envSection.addEventListener('click', event => {
+    if (event.target instanceof Element && event.target.closest('.agent-team-env-add')) submitEnvironment();
+  });
+  envSection.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && event.target instanceof Element && (event.target as HTMLElement).matches('.agent-team-env-name,.agent-team-env-value')) { event.preventDefault(); submitEnvironment(); }
+  });
   editor.addEventListener('keydown', event => {
     // Escape closes the editor, not the Settings dialog around it.
     if (event.key === 'Escape' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); closeEditor(); create.focus(); }
