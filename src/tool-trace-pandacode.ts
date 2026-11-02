@@ -363,6 +363,8 @@ export function pandacodeFamily(name: string): PandaFamily | undefined {
 
 // --- Machine orchestration (docs/machine-orchestration.md) -------------------
 
+/** One `pandacode_machine_list` row. `runningThreads` and `harnesses` come from newer hosts only. */
+export type MachineListEntry = { id: string; name: string; platform: string; online: boolean; hosting: boolean; access: string | null; runningThreads?: number; harnesses?: unknown[] };
 export type MachineResult = { thread?: string; machine?: string; status?: string; linked?: boolean; pending?: boolean };
 /** What a PandaCode machine tool returned (`{ thread, machine: { name }, status }`, or `{ linked, pending }` for a link). */
 export function machineResult(output: string): MachineResult {
@@ -381,10 +383,14 @@ export function machineResult(output: string): MachineResult {
 /** `Starting a thread on ProMini`-style rows for the `machine_*` tools. */
 function machineTrace(tool: string, fields: Fields, output: string, running: boolean): { verb: string; object: string } | undefined {
   const tense = (now: string, done: string) => running ? now : done;
-  const result = machineResult(output), name = result.machine ?? field(fields, 'machine'), threads = Array.isArray(fields.threads) ? fields.threads.length : 0;
+  // `machine: "auto"` lets PandaCode pick, so only the tool's answer can name the machine.
+  const asked = field(fields, 'machine'), result = machineResult(output), name = result.machine ?? (asked.toLowerCase() === 'auto' ? '' : asked), threads = Array.isArray(fields.threads) ? fields.threads.length : 0;
   const on = name ? clip(name, 40) : '';
   switch (tool) {
-    case 'list': return { verb: tense('Listing', 'Listed'), object: 'machines' };
+    case 'list': {
+      const listed = out(output).obj.machines, busy = Array.isArray(listed) ? (listed as Partial<MachineListEntry>[]).reduce((sum, machine) => sum + (Number(machine?.runningThreads) || 0), 0) : 0;
+      return { verb: tense('Listing', 'Listed'), object: `machines${busy ? ` · ${count(busy, 'running thread')}` : ''}` };
+    }
     case 'link':
       // The tool returns after ~40 s with `pending` while the card still waits for the user.
       if (!running && result.pending) return { verb: 'Waiting for you', object: 'to link a machine' };

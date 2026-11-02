@@ -267,7 +267,7 @@ async fn session(app: &tauri::AppHandle, generation: u64, token: &str) -> Outcom
 /// CPU, not a round trip (TLS 1.3 takes one either way). 0-RTT early data is not used: a
 /// replayed upgrade would replace this device's socket at the relay (close 4000, a minute's
 /// backoff), and the relay can't tell a replay apart.
-fn tls() -> tokio_tungstenite::Connector {
+pub(super) fn tls() -> tokio_tungstenite::Connector {
     static CONFIG: std::sync::OnceLock<std::sync::Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
     let config = CONFIG.get_or_init(|| {
         let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
@@ -762,6 +762,7 @@ fn presence(app: &tauri::AppHandle, list: &Value) {
         let first = !inner.presence;
         apply_presence(&mut inner, list);
         prune_packing(&mut packing(), &inner.devices);
+        super::orchestrate::links::remember_presence(&inner.devices);
         (super::remember_names(&inner.devices), first)
     };
     emit_presence(app);

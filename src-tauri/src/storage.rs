@@ -1127,6 +1127,13 @@ impl Store {
         Ok(())
     }
 
+    /// A cloud run re-attached after a restart: running again, so a Stop saved before the
+    /// quit no longer counts.
+    pub fn reattach_turn(&self, sid: &str) -> Result<()> {
+        self.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,stop_requested=0 WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn begin_goal_operation(&self, sid: &str) -> Result<()> {
         let task = self.session(sid)?;
         if task.archived || task.task_stage == "completed" {
@@ -1619,7 +1626,9 @@ impl Store {
             self.start_turn_message(sid, content)?
         };
         for child in reported {
-            self.db.execute("UPDATE machine_threads SET reported=1,reported_by=?3 WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
+            // A thread still running (its computer went offline) stays unreported: the wake told
+            // of it once (`reported_by`), and its end reports as usual.
+            self.db.execute("UPDATE machine_threads SET reported_by=?3,reported=NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND status IN ('running','waiting')) WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(message_id)

@@ -25,7 +25,7 @@ fn key() -> String {
 
 /// A link given under the test devices' current key.
 fn linked(access: Access) -> Link {
-    Link { access, at: 1, key: key() }
+    Link { access, at: 1, key: key(), name: String::new() }
 }
 
 fn inner() -> Inner {
@@ -218,7 +218,7 @@ fn the_catalog_validates_arguments() {
 }
 
 fn claim(store: &Store, parent: &str) -> Option<(String, Vec<String>)> {
-    threads::claim(store, parent, |_| "ProMini".to_string()).unwrap()
+    threads::claim(store, parent, |_| "ProMini".to_string(), |_| false).unwrap()
 }
 
 #[test]
@@ -443,8 +443,10 @@ fn a_thread_in_error_does_not_hold_a_wait() {
     let running = threads::own(&store, &parent, &child(&store, &project, &parent, "running")).unwrap();
     let idle = threads::own(&store, &parent, &child(&store, &project, &parent, "waiting")).unwrap();
     let unlinked: Result<(Child, String)> = Err("ProMini is not linked".into());
-    assert!(settled([unlinked.clone(), Ok((idle, "ProMini".into()))].iter()));
-    assert!(!settled([unlinked, Ok((running, "ProMini".into()))].iter()));
+    assert!(settled([unlinked.clone(), Ok((idle, "ProMini".into()))].iter(), |_| false));
+    assert!(!settled([unlinked.clone(), Ok((running.clone(), "ProMini".into()))].iter(), |_| false));
+    // A running thread on a dead host doesn't hold it either.
+    assert!(settled([unlinked, Ok((running, "ProMini".into()))].iter(), |device| device == "studio"));
 }
 
 #[test]
@@ -671,4 +673,403 @@ fn startup_reads_link_wakes_by_index_not_every_message() {
     // Messages are only searched by key, never scanned (with or without an index).
     assert!(!plan.iter().any(|step| step.starts_with("SCAN") && (step.contains("messages") || step.split_whitespace().nth(1) == Some("m"))), "{plan:?}");
     assert!(plan.iter().any(|step| step.starts_with("SEARCH messages USING COVERING INDEX messages_session")), "{plan:?}");
+}
+
+fn candidate(id: &str, online: bool, access: Access, harnesses: Option<&[&str]>, running: usize) -> Candidate {
+    Candidate { id: id.into(), name: id.to_uppercase(), online, access, harnesses: harnesses.map(|list| list.iter().map(|h| h.to_string()).collect()), model: Some(true), running }
+}
+
+#[test]
+fn auto_picks_the_least_busy_online_computer_with_the_harness() {
+    let codex: Option<&[&str]> = Some(&["codex"]);
+    let pick = |machines: &[Candidate]| pick_machine(machines, "codex", "default").map(|m| m.id.clone());
+    // The fewest running threads, then the name.
+    assert_eq!(pick(&[candidate("b", true, Access::Ask, codex, 1), candidate("a", true, Access::Full, codex, 2)]), Ok("b".to_string()));
+    assert_eq!(pick(&[candidate("b", true, Access::Ask, codex, 1), candidate("a", true, Access::Ask, codex, 1)]), Ok("a".to_string()));
+    // Only one qualifies: offline, read-only, missing the harness or unknown ones don't.
+    assert_eq!(pick(&[candidate("off", false, Access::Full, codex, 0), candidate("read", true, Access::Read, codex, 0), candidate("other", true, Access::Ask, Some(&["claude"]), 0), candidate("mute", true, Access::Ask, None, 0), candidate("busy", true, Access::Ask, codex, 7)]), Ok("busy".to_string()));
+    // Why not.
+    assert!(pick(&[]).unwrap_err().contains("No computer is linked"));
+    assert!(pick(&[candidate("read", true, Access::Read, codex, 0)]).unwrap_err().contains("No computer is linked"));
+    assert_eq!(pick(&[candidate("a", false, Access::Ask, codex, 0), candidate("b", false, Access::Full, None, 0)]), Err("Every linked computer is offline: A, B.".to_string()));
+    assert_eq!(pick(&[candidate("a", true, Access::Ask, Some(&["claude"]), 0), candidate("off", false, Access::Ask, codex, 0)]), Err("No online linked computer has codex installed: A.".to_string()));
+}
+
+#[test]
+fn the_catalog_says_when_to_use_auto() {
+    let launch = catalog().iter().find(|t| t["name"] == "pandacode_machine_launch").unwrap();
+    assert!(launch["description"].as_str().unwrap().contains("\"auto\""));
+    assert!(validate_spec(catalog(), "pandacode_machine_launch", &json!({"machine": "auto", "prompt": "x", "provider": "codex", "model": "default"})).is_ok());
+}
+
+#[test]
+fn running_threads_are_counted_per_computer_across_the_app() {
+    let (store, project, parent) = store();
+    let other = store.create_session(&project, "claude", "sonnet", "full").unwrap().id;
+    child(&store, &project, &parent, "running");
+    child(&store, &project, &other, "running");
+    child(&store, &project, &other, "idle");
+    assert_eq!(threads::running_by_device(&store).unwrap().get("studio"), Some(&2));
+}
+
+#[test]
+fn an_offline_computer_keeps_its_link_but_one_with_remote_control_off_does_not() {
+    let mut inner = inner();
+    inner.settings.links.insert("studio".into(), linked(Access::Ask));
+    // Presence reports every offline device as not hosting.
+    inner.devices[1].online = false;
+    inner.devices[1].host = false;
+    assert_eq!(links::access(&inner, &inner.devices[1].clone()), Some(Access::Ask));
+    assert_eq!(links::warm_targets(&inner), Vec::<String>::new(), "nothing to warm while it is away");
+    inner.devices[1].online = true;
+    assert_eq!(links::access(&inner, &inner.devices[1].clone()), None);
+    inner.devices[1].host = true;
+    assert_eq!(links::warm_targets(&inner), vec!["studio".to_string()]);
+}
+
+#[test]
+fn a_host_counts_as_offline_only_past_the_limit() {
+    let limit = links::HOST_OFFLINE_AFTER.as_millis() as i64;
+    let known = Some(std::collections::HashMap::from([("away".to_string(), Some(1000)), ("here".to_string(), None)]));
+    assert!(!links::offline_past(&None, "away", i64::MAX), "nothing known before the first presence");
+    assert!(!links::offline_past(&known, "here", i64::MAX));
+    assert!(!links::offline_past(&known, "away", 1000 + limit));
+    assert!(links::offline_past(&known, "away", 1000 + limit + 1));
+    assert!(links::offline_past(&known, "left the account", 0));
+    assert_eq!(links::next_past(&known, 1000), Some(links::HOST_OFFLINE_AFTER));
+    assert_eq!(links::next_past(&known, 1000 + limit + 1), None, "already past: nothing to wait for");
+    assert_eq!(links::next_past(&None, 0), None);
+}
+
+#[test]
+fn a_dead_host_wakes_its_idle_parent_once_and_its_thread_reports_later() {
+    let (store, project, parent) = store();
+    let thread = child(&store, &project, &parent, "running");
+    let done = child(&store, &project, &parent, "idle");
+    let dead = |store: &Store| threads::claim(store, &parent, |_| "ProMini".to_string(), |d| d == "studio").unwrap();
+    assert_eq!(claim(&store, &parent), None, "the host is still within the limit");
+    let (text, ids) = dead(&store).expect("every running thread is on a dead host");
+    assert_eq!(ids, vec![thread.clone(), done.clone()]);
+    assert!(text.contains("finished or are on a computer that went offline"), "{text}");
+    assert!(text.contains(": running\nProMini has been offline for over 5 minutes"), "{text}");
+    assert_eq!(store.session(&thread).unwrap().status, "running", "its status stays as stored");
+    let kind = Some(CoordinationKind::MachineThreads);
+    let turn = store.begin_task_turn_reporting(&parent, &text, kind, &ids).unwrap();
+    store.message(&parent, "assistant", "I will wait.").unwrap();
+    store.finish_task_turn(&parent, true, false).unwrap();
+    assert_eq!(dead(&store), None, "told once");
+    assert!(!restore_wake(&store, &parent, turn).unwrap(), "the agent saw it");
+    // The host came back and the thread finished: it reports as usual, once.
+    store.db.execute("UPDATE sessions SET status='idle' WHERE id=?1", [&thread]).unwrap();
+    let (text, ids) = claim(&store, &parent).expect("reports normally");
+    assert_eq!(ids, vec![thread.clone()]);
+    assert!(text.contains("have finished.") && !text.contains("offline"), "{text}");
+    store.begin_task_turn_reporting(&parent, &text, kind, &ids).unwrap();
+    store.finish_task_turn(&parent, true, false).unwrap();
+    assert_eq!(claim(&store, &parent), None);
+}
+
+#[test]
+fn an_offline_wake_waits_for_every_running_thread_and_is_given_back_if_undelivered() {
+    let (store, project, parent) = store();
+    let thread = child(&store, &project, &parent, "running");
+    let live = child(&store, &project, &parent, "running");
+    store.db.execute("UPDATE sessions SET remote_device='box' WHERE id=?1", [&live]).unwrap();
+    let dead = |store: &Store| threads::claim(store, &parent, |_| "ProMini".to_string(), |d| d == "studio").unwrap();
+    assert_eq!(dead(&store), None, "another thread still runs on a live host");
+    store.db.execute("UPDATE sessions SET status='idle' WHERE id=?1", [&live]).unwrap();
+    let (text, ids) = dead(&store).unwrap();
+    let turn = store.begin_task_turn_reporting(&parent, &text, Some(CoordinationKind::MachineThreads), &ids).unwrap();
+    store.finish_task_turn(&parent, false, false).unwrap();
+    assert_eq!(dead(&store), None);
+    // That turn never reached its agent, and startup finds it from `reported_by` alone.
+    assert_eq!(recover_wakes(&store, &Default::default()).unwrap(), Vec::<String>::new());
+    assert!(!restore_wake(&store, &parent, turn).unwrap(), "startup already gave it back");
+    assert_eq!(dead(&store).unwrap().1, vec![thread, live]);
+}
+
+#[test]
+fn only_a_running_thread_on_a_dead_host_reports_host_offline() {
+    let (store, project, parent) = store();
+    let running = threads::own(&store, &parent, &child(&store, &project, &parent, "running")).unwrap();
+    let idle = threads::own(&store, &parent, &child(&store, &project, &parent, "idle")).unwrap();
+    let rows = threads::children_view(&[running.clone(), idle], |_| "ProMini".to_string(), |d| d == "studio");
+    assert_eq!((rows[0]["hostOffline"].clone(), rows[0]["status"].clone()), (json!(true), json!("running")));
+    assert!(rows[1].get("hostOffline").is_none(), "a settled thread has nothing to wait for");
+    assert!(threads::children_view(&[running], |_| String::new(), |_| false)[0].get("hostOffline").is_none());
+}
+
+#[test]
+fn reattaching_a_cloud_run_clears_a_stale_stop() {
+    let (store, _, parent) = store();
+    store.begin_task_turn(&parent, "work").unwrap();
+    store.request_stop(&parent).unwrap();
+    store.db.execute("UPDATE sessions SET status='interrupted' WHERE id=?1", [&parent]).unwrap();
+    store.reattach_turn(&parent).unwrap();
+    let stop: bool = store.db.query_row("SELECT stop_requested FROM sessions WHERE id=?1", [&parent], |r| r.get(0)).unwrap();
+    assert_eq!((stop, store.session(&parent).unwrap().status), (false, "running".to_string()));
+}
+
+#[test]
+fn auto_placement_follows_an_explicit_model() {
+    use super::super::catalog::Cache;
+    let now = std::time::Instant::now();
+    let mut cache = Cache::default();
+    cache.put(("a".into(), Some("codex".into())), now, json!([{"id": "gpt-5"}]));
+    cache.put(("b".into(), Some("codex".into())), now, json!([{"id": "gpt-6"}]));
+    let codex: Option<&[&str]> = Some(&["codex"]);
+    let machines = |model: &str| -> Vec<Candidate> {
+        // `a` is the less busy, so it wins unless the model rules it out.
+        [("a", 0), ("b", 3)].map(|(id, running)| Candidate { model: cache.has_model(id, "codex", model, now), ..candidate(id, true, Access::Ask, codex, running) }).into()
+    };
+    let pick = |model: &str| pick_machine(&machines(model), "codex", model).map(|m| m.id.clone());
+    assert_eq!(pick("gpt-6"), Ok("b".to_string()), "the busier computer that has it");
+    assert_eq!(pick("gpt-5"), Ok("a".to_string()));
+    assert_eq!(pick("default"), Ok("a".to_string()), "default passes everywhere");
+    assert_eq!(pick("gpt-9"), Err("No online linked computer has gpt-9 for codex: A, B.".to_string()));
+    // One that could not say goes after one known to have it, however idle.
+    let list = [Candidate { model: None, ..candidate("idle", true, Access::Ask, codex, 0) }, candidate("busy", true, Access::Ask, codex, 5)];
+    assert_eq!(pick_machine(&list, "codex", "gpt-6").unwrap().id, "busy");
+    assert_eq!(pick_machine(&list[..1], "codex", "gpt-6").unwrap().id, "idle", "the launch still checks it");
+}
+
+#[test]
+fn only_running_threads_count_for_placement_but_waiting_ones_still_fill_the_cap() {
+    let (store, project, parent) = store();
+    child(&store, &project, &parent, "running");
+    for _ in 1..threads::MAX_RUNNING {
+        child(&store, &project, &parent, "waiting");
+    }
+    assert_eq!(threads::running_by_device(&store).unwrap().get("studio"), Some(&1));
+    assert!(check_capacity(&store, &parent).is_err(), "waiting threads still count toward the cap");
+    assert_eq!(claim(&store, &parent), None, "and hold the wake");
+}
+
+#[test]
+fn a_host_crossing_the_limit_tells_the_ui_once_each_way_for_a_running_parent() {
+    let (store, project, parent) = store();
+    child(&store, &project, &parent, "running");
+    // The parent runs, so it can't be woken, and no child event will come.
+    store.db.execute("UPDATE sessions SET status='running' WHERE id=?1", [&parent]).unwrap();
+    let limit = links::HOST_OFFLINE_AFTER.as_millis() as i64;
+    let away = Some(std::collections::HashMap::from([("studio".to_string(), Some(1000))]));
+    let back = Some(std::collections::HashMap::from([("studio".to_string(), None)]));
+    let mut seen = Default::default();
+    let mut tick = |known: &Option<std::collections::HashMap<String, Option<i64>>>, now: i64| {
+        links::hosts_crossed(&mut seen, &threads::active_devices(&store).unwrap(), |device| links::offline_past(known, device, now))
+    };
+    assert!(!tick(&away, 1000 + limit), "within the limit");
+    assert!(tick(&away, 1000 + limit + 1), "past it");
+    assert!(!tick(&away, 1000 + limit + 2), "once");
+    assert!(tick(&back, 1000 + limit + 3), "it came back");
+    assert!(!tick(&back, 1000 + limit + 4), "once");
+    assert!(tick(&away, 1000 + limit + 5), "gone again");
+    // The thread ended on its own: nothing more to say about that host.
+    store.db.execute("UPDATE sessions SET status='idle' WHERE remote_device='studio'", []).unwrap();
+    assert!(!tick(&back, 1000 + limit + 6));
+    assert_eq!(claim(&store, &parent), None, "its parent is still running");
+}
+
+fn ms(value: u64) -> Duration {
+    Duration::from_millis(value)
+}
+
+/// A sleeper with a settable deadline (ms from now) and a count of its ticks.
+type Aimed = (Arc<std::sync::Mutex<links::Sleeper>>, Arc<std::sync::Mutex<Option<u64>>>, Arc<std::sync::atomic::AtomicUsize>);
+
+fn sleeper() -> Aimed {
+    Default::default()
+}
+
+fn aim((sleeper, due, ticks): &Aimed) {
+    let left = due.lock().unwrap().map(ms);
+    if links::Sleeper::aim(sleeper, left) {
+        let (sleeper, due, ticks) = (sleeper.clone(), due.clone(), ticks.clone());
+        tokio::spawn(async move {
+            let after_tick = due.clone();
+            links::Sleeper::run(&sleeper, || due.lock().unwrap().map(ms), || {
+                ticks.fetch_add(1, Ordering::SeqCst);
+                *after_tick.lock().unwrap() = None;
+            })
+            .await;
+        });
+    }
+}
+
+#[tokio::test]
+async fn an_earlier_deadline_replaces_a_later_one_in_the_one_sleeper() {
+    let aimed = sleeper();
+    *aimed.1.lock().unwrap() = Some(60_000);
+    aim(&aimed);
+    tokio::time::sleep(ms(20)).await;
+    // Presence moved the deadline up: the same sleeper takes it, far before the first.
+    *aimed.1.lock().unwrap() = Some(10);
+    aim(&aimed);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while aimed.2.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(ms(5)).await;
+        }
+    })
+    .await
+    .expect("it woke at the earlier deadline");
+    tokio::time::sleep(ms(30)).await;
+    assert_eq!(aimed.2.load(Ordering::SeqCst), 1, "one sleeper, one tick");
+}
+
+#[tokio::test]
+async fn a_sleeper_that_ended_is_replaced_and_turning_off_ends_one() {
+    let aimed = sleeper();
+    assert!(!links::Sleeper::aim(&aimed.0, None), "nothing due: nothing sleeps");
+    *aimed.1.lock().unwrap() = Some(1);
+    aim(&aimed);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while aimed.2.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(ms(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // It ended (nothing due after its tick). A new deadline starts a new one.
+    tokio::time::sleep(ms(10)).await;
+    *aimed.1.lock().unwrap() = Some(1);
+    aim(&aimed);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while aimed.2.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(ms(1)).await;
+        }
+    })
+    .await
+    .expect("a deadline after the exit gets a new sleeper");
+    // Turned off while one sleeps: re-aiming ends it, and then none runs.
+    *aimed.1.lock().unwrap() = Some(60_000);
+    aim(&aimed);
+    tokio::time::sleep(ms(10)).await;
+    *aimed.1.lock().unwrap() = None;
+    aim(&aimed);
+    tokio::time::sleep(ms(10)).await;
+    assert!(links::Sleeper::aim(&aimed.0, Some(ms(1))), "the old one is gone: a new one must start");
+}
+
+#[tokio::test]
+async fn an_aim_during_the_sleepers_last_look_starts_a_new_one() {
+    let sleeper: Arc<std::sync::Mutex<links::Sleeper>> = Default::default();
+    assert!(links::Sleeper::aim(&sleeper, Some(ms(1))));
+    let racing: std::sync::Mutex<Option<std::thread::JoinHandle<bool>>> = Default::default();
+    links::Sleeper::run(&sleeper, || {
+        // A presence update while the sleeper decides nothing is due.
+        let other = sleeper.clone();
+        *racing.lock().unwrap() = Some(std::thread::spawn(move || links::Sleeper::aim(&other, Some(ms(1)))));
+        std::thread::sleep(ms(30));
+        None
+    }, || {})
+    .await;
+    let started = racing.lock().unwrap().take().unwrap().join().unwrap();
+    assert!(started, "it waited out the last look, saw the sleeper gone and starts a new one");
+}
+
+#[test]
+fn a_thread_on_a_computer_that_left_stays_readable_until_unlinked() {
+    let mut inner = inner();
+    inner.presence = true;
+    inner.settings.links.insert("gone".into(), linked(Access::Ask));
+    // Gone from presence, stored link: reads the local copy, and its host counts as offline.
+    assert_eq!(links::read_access(&inner, "gone"), Some(Access::Ask));
+    assert_eq!(links::need(links::read_access(&inner, "gone"), Access::Read, "Old Mac"), Ok(Access::Ask));
+    assert!(links::offline_past(&Some(Default::default()), "gone", 0));
+    // Launch, message and stop keep the current check: no presence row, no access.
+    let (store, _, parent) = store();
+    assert!(commit_mode(&inner, &store, &parent, "gone").unwrap_err().contains("not linked"));
+    assert_eq!(inner.devices.iter().find(|d| d.id == "gone").and_then(|d| links::access(&inner, d)), None);
+    // Unlinking cuts it.
+    inner.settings.links.remove("gone");
+    assert_eq!(links::read_access(&inner, "gone"), None);
+    assert!(links::need(links::read_access(&inner, "gone"), Access::Read, "Old Mac").unwrap_err().contains("not linked"));
+    // A computer on the account that was never linked, or a changed key, is refused as ever.
+    assert_eq!(links::read_access(&inner, "box"), None);
+    inner.settings.links.insert("box".into(), Link { key: "other".into(), ..linked(Access::Ask) });
+    assert_eq!(links::read_access(&inner, "box"), None);
+    // Before the first presence frame nothing is known.
+    inner.presence = false;
+    inner.settings.links.insert("gone".into(), linked(Access::Ask));
+    assert_eq!(links::read_access(&inner, "gone"), None);
+}
+
+/// `inner()` after presence, with `studio` gone from it and a stored link left behind.
+fn departed(name: &str) -> Inner {
+    let mut inner = inner();
+    inner.presence = true;
+    inner.devices.retain(|d| d.id != "studio");
+    inner.settings.links.insert("studio".into(), Link { name: name.into(), ..linked(Access::Read) });
+    inner
+}
+
+#[test]
+fn a_link_to_a_computer_that_left_is_listed_so_it_can_be_cut() {
+    let row = |name: &str| json!({"deviceId": "studio", "name": name, "platform": "", "online": false, "access": "read", "departed": true});
+    assert_eq!(links::status_of(&departed("ProMini"))["links"], json!([row("ProMini")]));
+    assert_eq!(links::status_of(&departed(""))["links"], json!([row("Removed computer")]), "a link older than names");
+    let mut before = departed("ProMini");
+    before.presence = false;
+    assert_eq!(links::status_of(&before)["links"], json!([]), "before presence nothing has left");
+    // A listed row is the same set that still serves machine_read and machine_wait.
+    let mut inner = departed("ProMini");
+    assert_eq!(links::read_access(&inner, "studio"), Some(Access::Read));
+    links::apply_link(&mut inner, "studio", None).unwrap();
+    assert_eq!(links::read_access(&inner, "studio"), None, "unlinking cuts it");
+    assert_eq!(links::status_of(&inner)["links"], json!([]));
+}
+
+#[test]
+fn a_computer_that_left_can_be_unlinked_but_not_given_access_or_picked() {
+    let mut inner = departed("ProMini");
+    for access in [Access::Read, Access::Ask, Access::Full] {
+        assert!(links::apply_link(&mut inner, "studio", Some(access)).unwrap_err().contains("remote control"));
+    }
+    assert_eq!(inner.settings.links["studio"].access, Access::Read, "a refusal leaves it as it was");
+    assert!(links::resolve(&inner, "studio").is_err(), "no tool can name it");
+    assert!(links::warm_targets(&inner).is_empty());
+}
+
+#[test]
+fn an_offline_linked_computer_can_change_access_but_not_be_linked_anew() {
+    let mut inner = inner();
+    links::apply_link(&mut inner, "studio", Some(Access::Full)).unwrap();
+    (inner.devices[1].online, inner.devices[1].host) = (false, false);
+    links::apply_link(&mut inner, "studio", Some(Access::Read)).unwrap();
+    assert_eq!(inner.settings.links["studio"].access, Access::Read, "downgrading a sleeping laptop works");
+    inner.devices[1].public_key = "another-key".into();
+    assert!(links::apply_link(&mut inner, "studio", Some(Access::Full)).is_err(), "a changed key needs linking again");
+    assert_eq!(inner.settings.links["studio"].access, Access::Read);
+    inner.settings.links.clear();
+    inner.devices[1].public_key = "any".into();
+    assert!(links::apply_link(&mut inner, "studio", Some(Access::Ask)).is_err(), "offline and not linked: refused");
+}
+
+#[test]
+fn linking_keeps_the_name_for_later() {
+    let mut inner = inner();
+    links::apply_link(&mut inner, "studio", Some(Access::Ask)).unwrap();
+    assert_eq!(inner.settings.links["studio"].name, "ProMini");
+}
+
+#[test]
+fn a_named_launch_on_an_offline_computer_is_refused() {
+    let mut inner = inner();
+    assert_eq!(links::launchable(&inner, "studio", Some(Access::Ask), "ProMini"), Ok(Access::Ask));
+    inner.devices[1].online = false;
+    assert_eq!(links::launchable(&inner, "studio", Some(Access::Ask), "ProMini"), Err("ProMini is offline.".into()));
+    assert!(links::launchable(&inner, "studio", None, "ProMini").unwrap_err().contains("not linked"), "the link is the first thing to fix");
+    assert!(links::launchable(&inner, "studio", Some(Access::Read), "ProMini").unwrap_err().contains("read only"));
+}
+
+#[test]
+fn an_idle_tick_needs_no_links_and_no_threads() {
+    assert!(links::tick_idle(true, true));
+    assert!(!links::tick_idle(false, true), "a link keeps it looking");
+    assert!(!links::tick_idle(true, false), "threads outlive their link");
+    let (store, project, parent) = store();
+    assert!(threads::check_none(&store).unwrap());
+    let id = store.create_session(&project, "codex", "gpt", "ask").unwrap().id;
+    record_child(&store, &parent, &id).unwrap();
+    assert!(!threads::check_none(&store).unwrap());
 }

@@ -882,7 +882,7 @@ const architect = createPreviewArchitect({
 
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
-const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>(), machineOffline = new Set<string>();
 /** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
 const SETTLED_SHOWN = 24;
 function machineRows(parentId: string) {
@@ -890,6 +890,7 @@ function machineRows(parentId: string) {
     sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
     status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
     machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+    ...(machineOffline.has(child.id) ? { hostOffline: true } : {}),
   }));
 }
 function machineChildren(parentId: string) {
@@ -915,6 +916,8 @@ function installMachineChildren(): void {
     const at = Date.now();
     (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
   };
+  // The computer running a thread dropping off or coming back.
+  w.__machineChildOffline ??= (id: string, offline: boolean) => { if (offline) machineOffline.add(id); else machineOffline.delete(id); emit('sessions-changed', {}); };
   w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
 }
 /** Menu bar popover data; `window.__trayCalls` records what it asked for. */
@@ -1066,7 +1069,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
     return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
   }
-  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; const wait = (window as any).__orchestrationChildrenDelay; if (wait) await new Promise(done => setTimeout(done, wait)); return machineChildren(args.sessionId) as T; }
   if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
   if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
