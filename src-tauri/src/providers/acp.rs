@@ -890,10 +890,10 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
-    #[allow(unused_mut)]
     let mut command = super::provider_command("antigravity", path)?;
     #[cfg(target_os = "linux")]
     command.arg("--uid=");
+    let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
     Ok(parse_models(&metadata))
@@ -1099,11 +1099,11 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
         Ok(command) => command,
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };
-    #[allow(unused_mut)]
     let mut command = command;
     #[cfg(target_os = "linux")]
     command.arg("--uid=");
     let discovery = super::acp_catalog::begin("antigravity", &path);
+    let _temp = super::AgentTemp::redirect(&mut command);
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
     if let Ok((metadata, _)) = &result { super::acp_catalog::store(discovery, metadata); }
     Ok(connection_status(result))
@@ -1540,6 +1540,31 @@ mod tests {
         );
         assert_eq!(p.phase, 1);
     }
+    /// Frames recorded from `opencode acp` 2.2.5: `effort` appears only once a model
+    /// with variants is selected, and its reply still says `default` right after a
+    /// change (session.list then shows the variant applied).
+    #[test]
+    fn opencode_v2_recorded_config_options_apply_the_effort() {
+        let model = |current: &str| json!({"id":"model","name":"Model","category":"model","type":"select","currentValue":current,"options":[{"value":"opencode/big-pickle","name":"opencode/Big Pickle"},{"value":"opencode/deepseek-v4.1-flash-free","name":"opencode/DeepSeek V4.1 Flash Free"}]});
+        let mode = json!({"id":"mode","name":"Session Mode","category":"mode","type":"select","currentValue":"build","options":[{"value":"build","name":"build"},{"value":"plan","name":"plan"}]});
+        let effort = json!({"id":"effort","name":"Effort","description":"Available effort levels for this model","category":"thought_level","type":"select","currentValue":"default","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"},{"value":"default","name":"Default"}]});
+        let mut cfg = config("opencode");
+        cfg.model = "opencode/deepseek-v4.1-flash-free".into();
+        cfg.reasoning_effort = Some("max".into());
+        let mut p = Protocol::new(cfg);
+        p.initial();
+        p.receive(capabilities()).unwrap();
+        let session = json!({"sessionId":"ses_e65e2baf1ffefwvoiHNuedS9dv","configOptions":[model("opencode/big-pickle"),mode.clone()]});
+        assert_eq!(p.receive(response(2, session)).unwrap().write[0]["params"]["configId"], "mode");
+        let selected = p.receive(response(4, json!({"configOptions":[model("opencode/big-pickle"),mode.clone()]}))).unwrap();
+        assert_eq!(selected.write[0]["params"]["configId"], "model");
+        let chosen = p.receive(response(5, json!({"configOptions":[model("opencode/deepseek-v4.1-flash-free"),effort.clone(),mode.clone()]}))).unwrap();
+        assert_eq!(chosen.write[0]["params"]["configId"], "effort");
+        assert_eq!(chosen.write[0]["params"]["value"], "max");
+        let prompt = p.receive(response(6, json!({"configOptions":[model("opencode/deepseek-v4.1-flash-free"),effort,mode]}))).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+    }
+
     #[test]
     fn opencode_selects_later_models_from_large_flat_and_grouped_catalogs() {
         for grouped in [false, true] {
