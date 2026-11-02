@@ -32,7 +32,18 @@ export interface TeamConfig {
 }
 export type ModelSelection = Pick<WorkerProfile, 'provider' | 'model' | 'reasoningEffort'>;
 export interface TeamSetup { architect: ModelSelection; config: TeamConfig }
-export interface TeamProfile { id: string; name: string; setup: TeamSetup; updatedAt: number }
+/** A named team as the webview sees it: environment values are write-only, so a
+ * profile carries only the saved variables' names and the inheritance choice. */
+export interface TeamProfile {
+  id: string;
+  name: string;
+  setup: TeamSetup;
+  updatedAt: number;
+  /** Names of the team's own environment variables; values never leave the native side. */
+  environmentNames: string[];
+  /** Whether the team's launches also inherit the shared global environment set. */
+  useGlobalEnvironment: boolean;
+}
 export interface TeamLibrary {
   enabled: boolean;
   lastSetup: TeamSetup | null;
@@ -82,6 +93,8 @@ export interface TeamWorker extends WorkerProfile {
 export interface TeamSnapshot {
   sessionId: string;
   config: TeamConfig;
+  /** Names of the team's own environment variables; values never reach the webview. */
+  environmentNames?: string[];
   /** Selected during an architect turn; becomes effective at the next turn. */
   pendingSetup?: TeamSetup | null;
   status: 'ready' | 'running' | 'waiting' | 'paused' | 'completed' | 'failed' | 'interrupted';

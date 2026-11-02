@@ -897,6 +897,8 @@ fn config() -> TeamConfig {
         workspace: "shared".into(),
         summary_limit: 2000,
         lead_guidance: None,
+        environment: Default::default(),
+        use_global_environment: true,
     }
 }
 fn fixture() -> (Store, TeamSnapshot) {

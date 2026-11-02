@@ -553,6 +553,8 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            team_environment: Default::default(),
+            team_use_global_environment: true,
         };
         let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
         let sink: crate::providers::Sink = std::sync::Arc::new(move |_| {

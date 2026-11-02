@@ -942,12 +942,14 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
                 max_parallel: 3,
                 max_rounds: 5,
                 max_assignments: 10,
-                workspace: "shared".into(),
-                summary_limit: 2000,
-                lead_guidance: None,
-            },
-        );
-        team.status = status.into();
+            workspace: "shared".into(),
+            summary_limit: 2000,
+            lead_guidance: None,
+            environment: Default::default(),
+            use_global_environment: true,
+        },
+    );
+    team.status = status.into();
         team.generation = 4;
         team.objective = "Build it".into();
         team.summary = Some("Built it".into());

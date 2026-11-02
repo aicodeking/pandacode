@@ -235,7 +235,7 @@ impl Discovery {
 }
 
 pub(super) async fn models(path: &Path, provider: &str) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::provider_command(provider, path)?;
+    let mut command = super::provider_command(provider, path, true)?;
     command.args(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
     if provider == "omp" {
         command.args(["--no-rules", "--no-lsp", "--no-title"]);

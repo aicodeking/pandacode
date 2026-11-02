@@ -1,7 +1,7 @@
 use super::*;
 use crate::architect::{self, WorkerProfile};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{atomic::AtomicU8, Arc, Mutex},
 };
@@ -56,6 +56,8 @@ fn setup() -> TeamSetup {
             workspace: "shared".into(),
             summary_limit: 1500,
             lead_guidance: None,
+            environment: BTreeMap::new(),
+            use_global_environment: true,
         },
     }
 }
@@ -807,4 +809,239 @@ fn auto_team_default_keeps_the_new_tasks_own_model_as_lead() {
     let team = architect::load(&store, &created.id).unwrap().unwrap();
     assert!(team.config.auto);
     assert_eq!(team.config.workers, auto.config.workers);
+}
+
+fn team_environment_profile(store: &Store) -> String {
+    save_profile(store, None, "Env team".into(), setup())
+        .unwrap()
+        .profiles[0]
+        .id
+        .clone()
+}
+
+#[test]
+fn team_environment_variables_are_validated_before_they_are_saved() {
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let id = team_environment_profile(&store);
+    assert!(set_team_environment_variable(&store, &id, "HTTPS_PROXY", "http://127.0.0.1:7890").is_ok());
+    assert!(set_team_environment_variable(&store, &id, "EMPTY_ALLOWED", "").is_ok());
+    for name in ["", "1ABC", "A-B", "A B", "A=B", &"x".repeat(129)] {
+        assert!(set_team_environment_variable(&store, &id, name, "1").is_err(), "{name:?}");
+    }
+    for value in [&"x".repeat(crate::provider_settings::MAX_ENV_VALUE + 1), "a\0b"] {
+        assert!(set_team_environment_variable(&store, &id, "GOOD_NAME", value).is_err());
+    }
+    // Rejected saves never touch the stored library.
+    assert_eq!(
+        read(&store).unwrap().profiles[0].setup.config.environment,
+        BTreeMap::from([
+            ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
+            ("EMPTY_ALLOWED".into(), String::new()),
+        ])
+    );
+}
+
+#[test]
+fn saved_team_environment_survives_a_reload_and_junk_entries_are_dropped() {
+    let disk = Disk::new();
+    let id = {
+        let store = Store::open(&disk.database()).unwrap();
+        let id = team_environment_profile(&store);
+        set_team_environment_variable(&store, &id, "HTTPS_PROXY", "http://127.0.0.1:7890").unwrap();
+        set_team_environment_variable(&store, &id, "NO_PROXY", "localhost").unwrap();
+        set_team_environment_variable(&store, &id, "EXTRA", "1").unwrap();
+        remove_team_environment_variable(&store, &id, "EXTRA").unwrap();
+        id
+    };
+    {
+        let store = Store::open(&disk.database()).unwrap();
+        assert_eq!(
+            read(&store).unwrap().profiles[0].setup.config.environment,
+            BTreeMap::from([
+                ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
+                ("NO_PROXY".into(), "localhost".into()),
+            ])
+        );
+        // Junk planted in the stored library JSON (a hand-edited file) must not reach a launch.
+        let content: String = store
+            .db
+            .query_row("SELECT content FROM architect_library WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        let mut library: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let environment = library["profiles"][0]["setup"]["config"]["environment"]
+            .as_object_mut()
+            .unwrap();
+        environment.insert("BAD-NAME".into(), serde_json::json!("1"));
+        environment.insert("A B".into(), serde_json::json!("1"));
+        environment.insert(
+            "TOO_LONG".into(),
+            serde_json::json!("x".repeat(crate::provider_settings::MAX_ENV_VALUE + 1)),
+        );
+        environment.insert("NUL".into(), serde_json::json!("a\0b"));
+        store
+            .db
+            .execute(
+                "UPDATE architect_library SET content=?1 WHERE id=1",
+                params![serde_json::to_string(&library).unwrap()],
+            )
+            .unwrap();
+    }
+    let store = Store::open(&disk.database()).unwrap();
+    assert_eq!(
+        read(&store).unwrap().profiles[0].setup.config.environment,
+        BTreeMap::from([
+            ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
+            ("NO_PROXY".into(), "localhost".into()),
+        ]),
+        "junk entries are dropped on load and the saved variables survive"
+    );
+}
+
+#[test]
+fn team_profiles_expose_environment_names_but_never_values() {
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let id = team_environment_profile(&store);
+    set_team_environment_variable(&store, &id, "HTTPS_PROXY", "http://team-proxy.invalid:7890").unwrap();
+    set_team_environment_variable(&store, &id, "NO_PROXY", "localhost").unwrap();
+    set_team_use_global_environment(&store, &id, false).unwrap();
+    let payload = profiles_payload(&store).unwrap();
+    assert_eq!(
+        payload["profiles"][0]["environmentNames"],
+        serde_json::json!(["HTTPS_PROXY", "NO_PROXY"])
+    );
+    assert_eq!(payload["profiles"][0]["useGlobalEnvironment"], serde_json::json!(false));
+    assert!(
+        !payload.to_string().contains("http://team-proxy.invalid:7890"),
+        "environment values never reach the webview"
+    );
+    // A save from the webview cannot smuggle values in: they are ignored, and the
+    // variables set through the dedicated command survive it.
+    let mut from_webview = setup();
+    from_webview
+        .config
+        .environment
+        .insert("INJECTED".into(), "secret-value".into());
+    save_profile(&store, Some(id), "Env team".into(), from_webview).unwrap();
+    let stored = &read(&store).unwrap().profiles[0].setup.config.environment;
+    assert!(!stored.contains_key("INJECTED"));
+    assert_eq!(stored["HTTPS_PROXY"], "http://team-proxy.invalid:7890");
+    assert!(!profiles_payload(&store).unwrap().to_string().contains("secret-value"));
+}
+
+#[test]
+fn the_team_environment_merges_global_and_team_variables() {
+    let global = BTreeMap::from([
+        ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
+        ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
+    ]);
+    let mut profile = TeamProfile {
+        id: "team".into(),
+        name: "Env team".into(),
+        setup: setup(),
+        updated_at: 0,
+    };
+    profile
+        .setup
+        .config
+        .environment
+        .insert("HTTPS_PROXY".into(), "http://127.0.0.1:1080".into());
+    assert!(profile.setup.config.use_global_environment);
+    // Global on: the team's own value wins over the shared name.
+    assert_eq!(
+        effective_team_environment(&global, &profile),
+        vec![
+            ("HTTPS_PROXY".to_string(), "http://127.0.0.1:1080".to_string()),
+            ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn a_team_that_opts_out_of_the_global_environment_gets_only_its_own_variables() {
+    let global = BTreeMap::from([
+        ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
+        ("TEAM_SHARED".into(), "global".into()),
+    ]);
+    let mut profile = TeamProfile {
+        id: "team".into(),
+        name: "Env team".into(),
+        setup: setup(),
+        updated_at: 0,
+    };
+    profile.setup.config.use_global_environment = false;
+    profile
+        .setup
+        .config
+        .environment
+        .insert("TEAM_OWN".into(), "own".into());
+    assert_eq!(
+        effective_team_environment(&global, &profile),
+        vec![("TEAM_OWN".to_string(), "own".to_string())]
+    );
+}
+
+#[test]
+fn old_team_profiles_without_environment_fields_still_parse() {
+    let mut stored = serde_json::to_value(setup()).unwrap();
+    let config = stored["config"].as_object_mut().unwrap();
+    config.remove("environment");
+    config.remove("useGlobalEnvironment");
+    let parsed: TeamSetup = serde_json::from_value(stored).unwrap();
+    assert!(parsed.config.environment.is_empty());
+    assert!(parsed.config.use_global_environment);
+}
+
+#[test]
+fn redacted_snapshots_carry_names_but_never_values() {
+    let mut config = setup().config;
+    config.environment.insert("TEAM_TOKEN".into(), "hush-value".into());
+    config.environment.insert("A_FIRST".into(), "quiet".into());
+    let mut team = architect::new_team("redact".into(), config.clone());
+    team.pending_setup = Some(TeamSetup {
+        architect: ModelSelection { provider: "claude".into(), model: "lead".into(), reasoning_effort: None },
+        config,
+    });
+    let payload = crate::architect::redact_team(&team);
+    let text = payload.to_string();
+    for value in ["hush-value", "quiet"] {
+        assert!(!text.contains(value), "environment values never reach the webview: {text}");
+    }
+    assert_eq!(
+        payload["environmentNames"],
+        serde_json::json!(["A_FIRST", "TEAM_TOKEN"])
+    );
+    assert!(payload["config"].get("environment").is_none());
+    assert!(payload["pendingSetup"]["config"].get("environment").is_none());
+    // A webview that echoes the redacted config back deserializes with defaults,
+    // so no value can round-trip through `architect_configure` either.
+    let echoed: TeamConfig = serde_json::from_value(payload["config"].clone()).unwrap();
+    assert!(echoed.environment.is_empty());
+    assert!(echoed.use_global_environment);
+}
+
+#[test]
+fn the_launch_environment_merges_the_shared_set_and_respects_both_opt_outs() {
+    let global = BTreeMap::from([
+        ("TEAM_SHARED".into(), "global".into()),
+        ("TEAM_OWN".into(), "global".into()),
+    ]);
+    let mut config = setup().config;
+    config.environment.insert("TEAM_OWN".into(), "team".into());
+    // A team that inherits: the shared set joins its own values, team values win.
+    let (merged, include_global) =
+        team_launch_environment(&global, &config, true);
+    assert!(include_global);
+    assert_eq!(merged.get("TEAM_SHARED").map(String::as_str), Some("global"));
+    assert_eq!(merged.get("TEAM_OWN").map(String::as_str), Some("team"));
+    // The team opted out: only its own variables, whatever the provider card says.
+    config.use_global_environment = false;
+    let (merged, include_global) = team_launch_environment(&global, &config, true);
+    assert!(!include_global);
+    assert_eq!(merged, BTreeMap::from([("TEAM_OWN".into(), "team".into())]));
+    // The provider card disabled global inheritance: the shared set drops even for
+    // a team that did not opt out, and the launch loses the shared set entirely.
+    config.use_global_environment = true;
+    let (merged, include_global) = team_launch_environment(&global, &config, false);
+    assert!(!include_global);
+    assert_eq!(merged, BTreeMap::from([("TEAM_OWN".into(), "team".into())]));
 }

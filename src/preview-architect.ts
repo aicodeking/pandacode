@@ -25,6 +25,9 @@ export function createPreviewArchitect(host: PreviewHost) {
   const teams = new Map<string, TeamRun>();
   const configs = new Map<string, TeamConfig>();
   let library: TeamLibrary = { enabled: false, lastSetup: null, activeProfileId: null, profiles: [] };
+  // Environment values are write-only, like the native side: names ride the profile,
+  // values are kept here and never read back or persisted.
+  const environmentValues = new Map<string, string>();
 
   function integer(value: unknown, low: number, high: number, label: string): number {
     if (!Number.isInteger(value) || Number(value) < low || Number(value) > high) throw new Error(`${label} must be between ${low} and ${high}.`);
@@ -95,7 +98,9 @@ export function createPreviewArchitect(host: PreviewHost) {
           const name = profileName(profile.name), key = name.toLowerCase();
           if (typeof profile.id !== 'string' || !profile.id || ids.has(profile.id) || names.has(key)) continue;
           const setup = validateSetup(profile.setup);
-          profiles.push({ id: profile.id, name, setup, updatedAt: Number.isFinite(profile.updatedAt) ? profile.updatedAt : 0 });
+          profiles.push({ id: profile.id, name, setup, updatedAt: Number.isFinite(profile.updatedAt) ? profile.updatedAt : 0,
+            environmentNames: Array.isArray(profile.environmentNames) ? profile.environmentNames.filter((entry): entry is string => typeof entry === 'string').sort() : [],
+            useGlobalEnvironment: profile.useGlobalEnvironment !== false });
           ids.add(profile.id); names.add(key);
         } catch { /* Invalid older templates do not hide other saved profiles. */ }
       }
@@ -119,7 +124,9 @@ export function createPreviewArchitect(host: PreviewHost) {
     const existing = id == null ? undefined : library.profiles.find(profile => profile.id === id);
     if (id != null && !existing) throw new Error('Team profile not found.');
     if (library.profiles.some(profile => profile.id !== existing?.id && profile.name.toLowerCase() === checkedName.toLowerCase())) throw new Error('A team profile with this name already exists.');
-    const profile = { id: existing?.id ?? crypto.randomUUID(), name: checkedName, setup: checked, updatedAt: Date.now() };
+    const profile = { id: existing?.id ?? crypto.randomUUID(), name: checkedName, setup: checked, updatedAt: Date.now(),
+      // Values never come from the webview: an edit keeps the stored variables.
+      environmentNames: existing?.environmentNames ?? [], useGlobalEnvironment: existing?.useGlobalEnvironment ?? true };
     if (existing) library.profiles[library.profiles.indexOf(existing)] = profile;
     else library.profiles.push(profile);
     if (library.activeProfileId === profile.id && JSON.stringify(profile.setup) !== JSON.stringify(library.lastSetup)) library.activeProfileId = null;
@@ -130,6 +137,35 @@ export function createPreviewArchitect(host: PreviewHost) {
     library.profiles = library.profiles.filter(profile => profile.id !== id);
     if (library.activeProfileId === id) library.activeProfileId = null;
     persistLibrary(); return profiles();
+  }
+  const envKey = (profileId: string, name: string) => `${profileId}\n${name}`;
+  /** Saves one of a named team's environment variables; the value is never read back. */
+  function setEnvironmentVariable(profileId: unknown, name: unknown, value: unknown): void {
+    if (typeof profileId !== 'string' || typeof name !== 'string' || typeof value !== 'string') throw new Error('Give a team profile, a variable name and a value.');
+    const profile = library.profiles.find(profile => profile.id === profileId);
+    if (!profile) throw new Error('Team profile not found.');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > 128) throw new Error('Environment variable names use letters, digits and underscores, and do not start with a digit.');
+    if (value.length > 4096 || value.includes('\0')) throw new Error(`The value of ${name} is too long or contains NUL.`);
+    if (!profile.environmentNames.includes(name) && profile.environmentNames.length >= 64) throw new Error('Use up to 64 environment variables.');
+    environmentValues.set(envKey(profile.id, name), value);
+    if (!profile.environmentNames.includes(name)) { profile.environmentNames.push(name); profile.environmentNames.sort(); }
+    persistLibrary();
+  }
+  function removeEnvironmentVariable(profileId: unknown, name: unknown): void {
+    if (typeof profileId !== 'string' || typeof name !== 'string') throw new Error('Give a team profile and a variable name.');
+    const profile = library.profiles.find(profile => profile.id === profileId);
+    if (!profile) throw new Error('Team profile not found.');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || name.length > 128) throw new Error('Environment variable names use letters, digits and underscores, and do not start with a digit.');
+    environmentValues.delete(envKey(profile.id, name));
+    profile.environmentNames = profile.environmentNames.filter(entry => entry !== name);
+    persistLibrary();
+  }
+  function setUseGlobalEnvironment(profileId: unknown, useGlobalEnvironment: unknown): void {
+    if (typeof profileId !== 'string' || typeof useGlobalEnvironment !== 'boolean') throw new Error('Give a team profile and the inheritance choice.');
+    const profile = library.profiles.find(profile => profile.id === profileId);
+    if (!profile) throw new Error('Team profile not found.');
+    profile.useGlobalEnvironment = useGlobalEnvironment;
+    persistLibrary();
   }
   function inherit(sessionId: unknown): void {
     const parent = host.parent(sessionId);
@@ -353,5 +389,5 @@ export function createPreviewArchitect(host: PreviewHost) {
     }
     persist();
   }
-  return { get, configure, profiles, setLeadGuidance, saveProfile, deleteProfile, inherit, start, control, workerMessages, teamMessages, remove, isActive: (sessionId: string) => active(teams.get(sessionId)) };
+  return { get, configure, profiles, setLeadGuidance, saveProfile, deleteProfile, setEnvironmentVariable, removeEnvironmentVariable, setUseGlobalEnvironment, inherit, start, control, workerMessages, teamMessages, remove, isActive: (sessionId: string) => active(teams.get(sessionId)) };
 }

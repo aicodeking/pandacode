@@ -6,6 +6,7 @@ use crate::{
 };
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::State;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +137,24 @@ pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
             |r| r.get::<_, String>(0),
         )
         .map_err(|e| e.to_string())?;
-    serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))
+    let mut library: TeamLibrary =
+        serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))?;
+    for profile in &mut library.profiles {
+        sanitize_environment(&mut profile.setup.config.environment);
+    }
+    if let Some(setup) = &mut library.last_setup {
+        sanitize_environment(&mut setup.config.environment);
+    }
+    Ok(library)
+}
+/// Keeps only variables with valid names and values, so a hand-edited library
+/// file cannot inject junk into a launch (`provider_settings::valid_vars`).
+fn sanitize_environment(environment: &mut std::collections::BTreeMap<String, String>) {
+    environment.retain(|name, value| {
+        crate::provider_settings::valid_env_name(name)
+            && value.len() <= crate::provider_settings::MAX_ENV_VALUE
+            && !value.contains('\0')
+    });
 }
 /// A saved profile never carries a team's model catalog (every installed model, up to 1000): it is
 /// rebuilt when the team turns on. `last_setup` keeps it, so a new task inheriting an auto team
@@ -187,6 +205,19 @@ pub(crate) fn save_profile(
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
     let mut library = read(store)?;
+    // The webview never carries environment values: strip whatever it sent and
+    // keep the variables the dedicated commands stored (none for a new profile).
+    let mut setup = setup;
+    if let Some(profile) = id
+        .as_ref()
+        .and_then(|id| library.profiles.iter().find(|profile| &profile.id == id))
+    {
+        setup.config.environment = profile.setup.config.environment.clone();
+        setup.config.use_global_environment = profile.setup.config.use_global_environment;
+    } else {
+        setup.config.environment.clear();
+        setup.config.use_global_environment = true;
+    }
     if library
         .profiles
         .iter()
@@ -351,10 +382,190 @@ pub(crate) fn set_lead_guidance(
     write(store, &library)?;
     Ok(library)
 }
+/// A stored profile's variables and its global-inheritance choice, for paths that
+/// apply a profile by id. Errors when the profile is gone.
+pub(crate) fn profile_environment(
+    store: &Store,
+    id: &str,
+) -> Result<(std::collections::BTreeMap<String, String>, bool)> {
+    let profile = read(store)?
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == id)
+        .ok_or("This team profile no longer exists.")?;
+    Ok((
+        profile.setup.config.environment,
+        profile.setup.config.use_global_environment,
+    ))
+}
+/// The team's environment for a launch: the shared global set (when the provider
+/// still inherits it and the team did not opt out) with the team's own values
+/// winning over shared names. Values are write-only upstream: the caller passes
+/// the global map in, so no settings lock is read here.
+pub(crate) fn merge_team_environment(
+    global: &std::collections::BTreeMap<String, String>,
+    own: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut merged = global.clone();
+    merged.extend(own.clone());
+    merged
+}
+/// The same merge as an ordered list of pairs: the team's own variables in name
+/// order first, then the shared names it does not carry.
+pub(crate) fn effective_team_environment(
+    global: &std::collections::BTreeMap<String, String>,
+    profile: &TeamProfile,
+) -> Vec<(String, String)> {
+    let own = &profile.setup.config.environment;
+    if !profile.setup.config.use_global_environment {
+        return own.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    }
+    own.iter()
+        .chain(
+            global
+                .iter()
+                .filter(|(name, _)| !own.contains_key(*name))
+                .map(|(k, v)| (k, v)),
+        )
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+/// The pre-decided launch environment for a team run, decided once at spawn prep
+/// and carried on `RunConfig` so warm adoption needs no new decisions: the team's
+/// own values plus the shared global set, unless the team opted out or its
+/// provider card disabled global inheritance. The flag decides the provider's
+/// saved global inheritance at application time.
+pub(crate) fn team_launch_environment(
+    global: &std::collections::BTreeMap<String, String>,
+    config: &TeamConfig,
+    provider_inherits_global: bool,
+) -> (std::collections::BTreeMap<String, String>, bool) {
+    let include_global = config.use_global_environment && provider_inherits_global;
+    let team_environment = if include_global {
+        merge_team_environment(global, &config.environment)
+    } else {
+        config.environment.clone()
+    };
+    (team_environment, include_global)
+}
+/// One environment edit against a stored profile, saved atomically. Rejected
+/// edits never touch the stored library.
+fn edit_profile_environment(
+    store: &Store,
+    id: &str,
+    edit: impl FnOnce(&mut TeamConfig) -> Result<()>,
+) -> Result<()> {
+    let transaction = store
+        .db
+        .unchecked_transaction()
+        .map_err(|e| e.to_string())?;
+    let mut library = read(store)?;
+    let profile = library
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.id == id)
+        .ok_or("This team profile no longer exists.")?;
+    edit(&mut profile.setup.config)?;
+    profile.updated_at = storage::now();
+    write(store, &library)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+/// Saves one of the team's environment variables. Names and values follow the
+/// provider variable rules; values are write-only and never shown again.
+pub(crate) fn set_team_environment_variable(
+    store: &Store,
+    id: &str,
+    name: &str,
+    value: &str,
+) -> Result<()> {
+    validate_environment_name(name)?;
+    if value.len() > crate::provider_settings::MAX_ENV_VALUE || value.contains('\0') {
+        return Err(format!("The value of {name} is too long or contains NUL."));
+    }
+    let mut name = name.to_string();
+    edit_profile_environment(store, id, move |config| {
+        if config.environment.len() >= crate::provider_settings::MAX_ENV
+            && !config.environment.contains_key(&name)
+        {
+            return Err(format!(
+                "Use up to {} environment variables.",
+                crate::provider_settings::MAX_ENV
+            ));
+        }
+        config.environment.insert(std::mem::take(&mut name), value.to_string());
+        Ok(())
+    })
+}
+pub(crate) fn remove_team_environment_variable(
+    store: &Store,
+    id: &str,
+    name: &str,
+) -> Result<()> {
+    validate_environment_name(name)?;
+    edit_profile_environment(store, id, |config| {
+        config.environment.remove(name);
+        Ok(())
+    })
+}
+pub(crate) fn set_team_use_global_environment(
+    store: &Store,
+    id: &str,
+    use_global: bool,
+) -> Result<()> {
+    edit_profile_environment(store, id, |config| {
+        config.use_global_environment = use_global;
+        Ok(())
+    })
+}
+fn validate_environment_name(name: &str) -> Result<()> {
+    if !crate::provider_settings::valid_env_name(name) {
+        return Err(
+            "Environment variable names use letters, digits and underscores, and do not start with a digit."
+                .into(),
+        );
+    }
+    Ok(())
+}
+/// The library as the webview sees it: environment values are replaced by names
+/// (`environmentNames` per profile), so nothing secret ever reaches the UI.
+pub(crate) fn profiles_payload(store: &Store) -> Result<serde_json::Value> {
+    let library = read(store)?;
+    let setup = |setup: &TeamSetup| -> Result<serde_json::Value> {
+        let mut value =
+            serde_json::to_value(setup).map_err(|e| format!("Saved team setup is invalid: {e}"))?;
+        if let Some(config) = value.get_mut("config").and_then(|config| config.as_object_mut()) {
+            config.remove("environment");
+        }
+        Ok(value)
+    };
+    let profiles = library
+        .profiles
+        .iter()
+        .map(|profile| {
+            let mut value = json!({
+                "id": profile.id,
+                "name": profile.name,
+                "updatedAt": profile.updated_at,
+                "environmentNames": profile.setup.config.environment.keys().cloned().collect::<Vec<_>>(),
+                "useGlobalEnvironment": profile.setup.config.use_global_environment,
+            });
+            value["setup"] = setup(&profile.setup)?;
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(json!({
+        "enabled": library.enabled,
+        "lastSetup": library.last_setup.as_ref().map(setup).transpose()?,
+        "activeProfileId": library.active_profile_id,
+        "leadGuidance": library.lead_guidance,
+        "profiles": profiles,
+    }))
+}
 #[tauri::command]
-pub async fn architect_profiles(state: State<'_, AppState>) -> Result<TeamLibrary> {
+pub async fn architect_profiles(state: State<'_, AppState>) -> Result<serde_json::Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    read(&store)
+    profiles_payload(&store)
 }
 #[tauri::command]
 pub async fn architect_save_profile(
@@ -362,25 +573,56 @@ pub async fn architect_save_profile(
     id: Option<String>,
     name: String,
     setup: TeamSetup,
-) -> Result<TeamLibrary> {
+) -> Result<serde_json::Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    save_profile(&store, id, name, setup)
+    save_profile(&store, id, name, setup)?;
+    profiles_payload(&store)
 }
 #[tauri::command]
 pub async fn architect_set_lead_guidance(
     state: State<'_, AppState>,
     guidance: Option<String>,
-) -> Result<TeamLibrary> {
+) -> Result<serde_json::Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    set_lead_guidance(&store, guidance)
+    set_lead_guidance(&store, guidance)?;
+    profiles_payload(&store)
 }
 #[tauri::command]
 pub async fn architect_delete_profile(
     state: State<'_, AppState>,
     id: String,
-) -> Result<TeamLibrary> {
+) -> Result<serde_json::Value> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    delete_profile(&store, &id)
+    delete_profile(&store, &id)?;
+    profiles_payload(&store)
+}
+#[tauri::command]
+pub async fn architect_set_team_environment_variable(
+    state: State<'_, AppState>,
+    profile_id: String,
+    name: String,
+    value: String,
+) -> Result<()> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    set_team_environment_variable(&store, &profile_id, &name, &value)
+}
+#[tauri::command]
+pub async fn architect_remove_team_environment_variable(
+    state: State<'_, AppState>,
+    profile_id: String,
+    name: String,
+) -> Result<()> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    remove_team_environment_variable(&store, &profile_id, &name)
+}
+#[tauri::command]
+pub async fn architect_set_team_use_global_environment(
+    state: State<'_, AppState>,
+    profile_id: String,
+    use_global_environment: bool,
+) -> Result<()> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    set_team_use_global_environment(&store, &profile_id, use_global_environment)
 }
 #[cfg(test)]
 mod tests;

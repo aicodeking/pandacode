@@ -1729,6 +1729,21 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    // The team environment is decided once here and carried on RunConfig, so a
+    // warm adoption later needs no new decisions: the team's own values plus the
+    // shared global set (dropped when the team or its provider card opted out).
+    let (team_environment, team_use_global_environment) = admission
+        .team
+        .as_ref()
+        .and_then(|team| architect::load(&store, &team.parent).ok().flatten())
+        .map(|team| {
+            architect::profiles::team_launch_environment(
+                &crate::provider_settings::global_environment(),
+                &team.config,
+                crate::provider_settings::includes_global_environment(&session.provider),
+            )
+        })
+        .unwrap_or((Default::default(), true));
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1743,6 +1758,8 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        team_environment,
+        team_use_global_environment,
     };
     architect::mark_started(&store, &session_id, admission.team.as_ref()).map_err(restore)?;
     let mut agent = RunningAgent::new(tx, stopped.clone());
@@ -1800,6 +1817,8 @@ fn prepare_cloud_attach(
         skill: None,
         goal: None,
         codex_settings: session.codex_settings,
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     };
     let agent = RunningAgent::new(tx, stopped);
     let prepared = PreparedRun {
@@ -4240,6 +4259,9 @@ pub fn run() {
                 architect::profiles::architect_set_lead_guidance,
                 architect::profiles::architect_save_profile,
                 architect::profiles::architect_delete_profile,
+                architect::profiles::architect_set_team_environment_variable,
+                architect::profiles::architect_remove_team_environment_variable,
+                architect::profiles::architect_set_team_use_global_environment,
                 architect::architect_get,
                 architect::architect_configure,
                 architect::architect_start,

@@ -13,7 +13,7 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         let frame = crate::providers::devin_commands(&path, cwd).await?;
         return frame.as_ref().and_then(|frame| parse_runtime(provider, frame)).ok_or(NO_COMMANDS.into());
     }
-    let mut command = crate::providers::provider_command(provider, &path)?;
+    let mut command = crate::providers::provider_command(provider, &path, true)?;
     match provider {
         "opencode" => {
             command.arg("acp");

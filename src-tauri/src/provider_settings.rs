@@ -161,14 +161,31 @@ fn valid_environment(
 /// The provider's effective environment: the global list unless the provider
 /// opted out, with the provider's own variables overriding shared names.
 fn effective_environment(settings: &Settings, provider: &str) -> Vec<(String, String)> {
-    let mut vars = BTreeMap::new();
-    if !settings.global_environment_disabled.iter().any(|id| id == provider) {
-        vars.extend(settings.global_environment.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
-    if let Some(own) = settings.environment.get(provider) {
-        vars.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
-    }
-    vars.into_iter().collect()
+    effective_environment_with(settings, provider, true)
+}
+
+/// The shared global set every harness launch may inherit, for callers that
+/// merge their own variables over it (a team that opted out passes an empty map).
+pub(crate) fn global_environment() -> BTreeMap<String, String> {
+    CONFIG
+        .get()
+        .and_then(|runtime| runtime.lock().ok())
+        .map(|runtime| runtime.settings.global_environment.clone())
+        .unwrap_or_default()
+}
+
+/// Whether the provider's launches still include the shared global set.
+pub(crate) fn includes_global_environment(provider: &str) -> bool {
+    CONFIG
+        .get()
+        .and_then(|runtime| runtime.lock().ok())
+        .is_none_or(|runtime| {
+            !runtime
+                .settings
+                .global_environment_disabled
+                .iter()
+                .any(|id| id == provider)
+        })
 }
 
 /// The provider's effective environment variables, in name order.
@@ -182,7 +199,44 @@ pub fn environment(provider: &str) -> Vec<(String, String)> {
 /// Applies the provider's saved environment to a command about to start its CLI.
 /// Provider sign-in and endpoint configuration is applied after this and wins.
 pub fn apply_environment(provider: &str, command: &mut impl crate::child_env::EnvTarget) {
-    apply_vars(&environment(provider), command);
+    apply_provider_environment(provider, true, command);
+}
+
+/// The same, with the caller's decision on the shared global set: a team that
+/// opted out of it starts its harnesses with the provider's own variables only.
+pub(crate) fn apply_provider_environment(
+    provider: &str,
+    include_global: bool,
+    command: &mut impl crate::child_env::EnvTarget,
+) {
+    let vars = CONFIG
+        .get()
+        .and_then(|runtime| runtime.lock().ok())
+        .map(|runtime| effective_environment_with(&runtime.settings, provider, include_global))
+        .unwrap_or_default();
+    apply_vars(&vars, command);
+}
+
+/// The team's own variables for a launch, applied after the provider's saved
+/// environment so a team value wins over a shared name.
+pub(crate) fn apply_team_environment(
+    vars: &BTreeMap<String, String>,
+    command: &mut impl crate::child_env::EnvTarget,
+) {
+    for (name, value) in vars {
+        command.set_var(std::ffi::OsStr::new(name.as_str()), std::ffi::OsStr::new(value.as_str()));
+    }
+}
+
+fn effective_environment_with(settings: &Settings, provider: &str, include_global: bool) -> Vec<(String, String)> {
+    let mut vars = BTreeMap::new();
+    if include_global && !settings.global_environment_disabled.iter().any(|id| id == provider) {
+        vars.extend(settings.global_environment.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    if let Some(own) = settings.environment.get(provider) {
+        vars.extend(own.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    vars.into_iter().collect()
 }
 
 fn apply_vars(vars: &[(String, String)], command: &mut impl crate::child_env::EnvTarget) {
@@ -1421,6 +1475,59 @@ mod tests {
         let fingerprint = serde_json::to_string(&vars).unwrap();
         assert!(fingerprint.contains("HTTPS_PROXY"));
         assert_ne!(fingerprint, serde_json::to_string(&Vec::<(String, String)>::new()).unwrap());
+    }
+
+    #[test]
+    fn the_team_environment_overrides_provider_variables_on_a_command() {
+        // Spawn order: the provider's saved variables are applied first, then the
+        // team's pre-merged environment, so a team variable wins over a shared name.
+        let provider = vec![("FOO".to_string(), "provider".to_string())];
+        let team = BTreeMap::from([
+            ("FOO".to_string(), "team".to_string()),
+            ("BAR".to_string(), "team".to_string()),
+        ]);
+        let mut command = tokio::process::Command::new("claude");
+        apply_vars(&provider, &mut command);
+        apply_team_environment(&team, &mut command);
+        let env: std::collections::HashMap<_, _> = command.as_std().get_envs().collect();
+        assert_eq!(env[std::ffi::OsStr::new("FOO")], Some(std::ffi::OsStr::new("team")));
+        assert_eq!(env[std::ffi::OsStr::new("BAR")], Some(std::ffi::OsStr::new("team")));
+    }
+
+    #[test]
+    fn the_include_global_flag_drops_the_shared_set_but_keeps_the_providers_own() {
+        let settings = Settings {
+            global_environment: BTreeMap::from([("GLOBAL_ONE".into(), "g".into())]),
+            environment: BTreeMap::from([(
+                "claude".into(),
+                BTreeMap::from([("OWN_ONE".into(), "o".into())]),
+            )]),
+            global_environment_disabled: Vec::new(),
+            ..Settings::default()
+        };
+        let with_global = effective_environment_with(&settings, "claude", true);
+        assert_eq!(
+            with_global,
+            vec![
+                ("GLOBAL_ONE".to_string(), "g".to_string()),
+                ("OWN_ONE".to_string(), "o".to_string()),
+            ]
+        );
+        // A team that opted out: the provider's own variables still launch.
+        let without = effective_environment_with(&settings, "claude", false);
+        assert_eq!(without, vec![("OWN_ONE".to_string(), "o".to_string())]);
+        // The provider card disabled global inheritance: the shared set drops
+        // regardless of the flag, and its own variables keep launching.
+        let mut settings = settings;
+        settings.global_environment_disabled = vec!["claude".into()];
+        assert_eq!(
+            effective_environment_with(&settings, "claude", true),
+            vec![("OWN_ONE".to_string(), "o".to_string())]
+        );
+        assert_eq!(
+            effective_environment_with(&settings, "claude", false),
+            vec![("OWN_ONE".to_string(), "o".to_string())]
+        );
     }
 
     #[test]
