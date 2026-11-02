@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(page["sizes"].as_array().unwrap().iter().map(|s| s["label"].as_str().unwrap()).collect::<Vec<_>>(), vec!["2 vCPU · 4 GB · $24/mo (s-2vcpu-4gb)", "2 vCPU · 3 GB · $15.75/mo (c-2)", "1 vCPU · 1 GB · $6/mo (s-1vcpu-1gb)"]);
         assert_eq!(page["sizes"][0]["regions"], json!(["nyc1", "fra1", "ams3"]));
         assert_eq!(page["sizes"][1]["regions"], json!([]));
-        assert_eq!(page["sizes"][2]["regions"], json!([]), "a size without regions_available still lists");
+        assert_eq!(page["sizes"][2]["regions"], json!([]), "a size without regions still lists");
         assert_eq!((page["region"].as_str(), page["size"].as_str()), (Some(""), Some("")));
         assert!(seen.lock().unwrap().iter().any(|r| r.path == "/regions?per_page=200") && seen.lock().unwrap().iter().any(|r| r.path == "/sizes?per_page=200"));
         assert!(seen.lock().unwrap().iter().filter(|r| r.path.starts_with("/regions") || r.path.starts_with("/sizes")).all(|r| r.authorization.as_deref() == Some("Bearer tok-1")));
