@@ -229,6 +229,37 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
     })
 }
 
+/// The clipboard's image, if any, as base64 PNG bytes for the composer's paste
+/// fallback: WebKitGTK does not expose OS clipboard images as pasted files, so a
+/// paste that carries no files and no text is read here instead (Flameshot on
+/// Fedora Wayland). None when the clipboard holds no image at all.
+pub fn clipboard_image() -> Result<Option<String>, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| format!("Could not open the clipboard: {e}"))?;
+    let shot = match clipboard.get_image() {
+        Ok(shot) => shot,
+        // An empty clipboard is a plain no-op paste, not an error worth reporting.
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => return Err(format!("Could not read the clipboard image: {e}")),
+    };
+    clipboard_png(shot)
+}
+
+/// RGBA pixels straight off the clipboard, normalized into the same PNG bytes the
+/// attachment import accepts, so a pasted clipboard image flows through one pipeline.
+fn clipboard_png(shot: arboard::ImageData) -> Result<Option<String>, String> {
+    let (width, height) = (shot.width as u32, shot.height as u32);
+    if width == 0 || height == 0 {
+        return Ok(None);
+    }
+    let rgba = image::RgbaImage::from_raw(width, height, shot.bytes.into_owned())
+        .ok_or("Could not read the clipboard image.")?;
+    let mut png = Vec::new();
+    rgba.write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+        .map_err(|_| "Could not read the clipboard image.".to_string())?;
+    Ok(Some(STANDARD.encode(png)))
+}
+
 /// A sent image or screenshot as a `data:` URL, so the transcript can show it again.
 /// Only registry IDs are accepted; None when the capture was pruned or never existed.
 pub fn image_data_url(dir: &Path, id: &str) -> Result<Option<String>, String> {
@@ -524,6 +555,30 @@ mod tests {
         assert_eq!(image_data_url(&dir, &uuid::Uuid::new_v4().to_string()).unwrap(), None);
         assert!(image_data_url(&dir, "../secret").is_err());
         assert!(image_data_url(&dir, &id.to_uppercase()).is_err());
+    }
+
+    #[test]
+    fn clipboard_image_becomes_base64_png() {
+        use image::GenericImageView;
+        let shot = arboard::ImageData { width: 2, height: 1, bytes: vec![255, 0, 0, 255, 0, 255, 0, 255].into() };
+        let base64 = clipboard_png(shot).unwrap().unwrap();
+        let (image, format) = decode(&STANDARD.decode(base64).unwrap()).unwrap();
+        assert_eq!(format, ImageFormat::Png);
+        assert_eq!((image.width(), image.height()), (2, 1));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn empty_clipboard_dimensions_are_ignored() {
+        let shot = arboard::ImageData { width: 0, height: 0, bytes: Vec::new().into() };
+        assert_eq!(clipboard_png(shot).unwrap(), None);
+    }
+
+    #[test]
+    fn clipboard_buffers_that_do_not_match_their_dimensions_are_refused() {
+        let shot = arboard::ImageData { width: 1, height: 2, bytes: vec![1, 2, 3, 4].into() };
+        assert!(clipboard_png(shot).is_err());
     }
 
     fn temp_dir(label: &str) -> PathBuf {

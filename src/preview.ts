@@ -1843,6 +1843,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Any registry ID shows the yellow swatch; native reads browser-captures/<id>.png.
     case 'prompt_image': result = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(args.id)) ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' : null; break;
+    // The preview browser exposes pasted images as files, so the native fallback only
+    // matters to tests, which provide the base64 through the invoke hook.
+    case 'read_clipboard_image': result = null; break;
     case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
     case 'read_document': {
       const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';

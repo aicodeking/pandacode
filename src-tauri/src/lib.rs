@@ -3094,6 +3094,13 @@ async fn import_prompt_image(
     blocking(move || prompt_attachments::import_image(&dir, source)).await
 }
 
+/// The clipboard image for the composer's paste fallback (WebKitGTK never exposes
+/// OS clipboard images as pasted files), or None when the clipboard holds no image.
+#[tauri::command]
+async fn read_clipboard_image() -> Result<Option<String>> {
+    blocking(prompt_attachments::clipboard_image).await
+}
+
 #[tauri::command]
 async fn read_document(path: String) -> Result<prompt_attachments::DocumentText> {
     blocking(move || prompt_attachments::read_document(std::path::Path::new(&path))).await
@@ -4239,6 +4246,7 @@ pub fn run() {
                 skills::skills_discover,
                 set_task_link,
                 import_prompt_image,
+                read_clipboard_image,
                 prompt_image,
                 reveal_path,
                 read_document,

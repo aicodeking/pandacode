@@ -19,6 +19,10 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+# Reading clipboard images the webview does not expose (WebKitGTK pastes); the
+# Wayland feature is not a default and is what makes the clipboard reachable on
+# Niri, Hyprland, KDE and GNOME's ext-data-control compositors.
+arboard = { version = "3", features = ["wayland-data-control"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "=0.9.12", default-features = false, features = ["parse", "serde"] }
