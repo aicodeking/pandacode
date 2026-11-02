@@ -395,6 +395,7 @@ pub(crate) fn validate_admission(
 ) -> Result<()> {
     let Some(admission) = admission else {
         check_manual(store, sid)?;
+        // The one exception is a maintenance command on the lead (`prepare_task_run_in_project`).
         if load(store, sid)?.is_some() {
             return Err("Start this task using its architect team controls.".into());
         }
@@ -830,7 +831,12 @@ pub(crate) async fn architect_start_in_project(
     expected_project: Option<String>,
 ) -> Result<()> {
     text_check(&text)?;
-    let (team, admission) = start_state(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref())?;
+    let (team, admission) = match admit_lead_send(&state, &session_id, &text, image_ids.clone(), expected_project.as_deref()).await? {
+        LeadSend::Maintenance(command) => {
+            return crate::launch_team_maintenance(app, state, session_id, text, image_ids, expected_project, command).await;
+        }
+        LeadSend::Team(team, admission) => (*team, admission),
+    };
     emit(&app, &team);
     if let Err(error) = crate::launch_team_task(
         app.clone(),
@@ -846,6 +852,25 @@ pub(crate) async fn architect_start_in_project(
         return Err(error);
     }
     Ok(())
+}
+pub(crate) enum LeadSend {
+    /// Runs on the lead's harness; the team's state is never touched.
+    Maintenance(crate::PreparedCommand),
+    Team(Box<TeamSnapshot>, Admission),
+}
+/// Decides what a message to the lead is. This comes first: `start_state` ends the old objective.
+pub(crate) async fn admit_lead_send(
+    state: &AppState,
+    session_id: &str,
+    text: &str,
+    image_ids: Option<Vec<String>>,
+    expected_project: Option<&str>,
+) -> Result<LeadSend> {
+    if let Some(command) = crate::team_maintenance_command(state, session_id, text).await? {
+        return Ok(LeadSend::Maintenance(command));
+    }
+    let (team, admission) = start_state(state, session_id, text, image_ids, expected_project)?;
+    Ok(LeadSend::Team(Box::new(team), admission))
 }
 /// Begin a new objective for an idle team and reserve the architect's first turn.
 pub(crate) fn start_state(
@@ -2468,7 +2493,7 @@ pub(crate) fn completed(
     wake(app.clone());
 }
 #[cfg(test)]
-fn completed_state(
+pub(crate) fn completed_state(
     state: &AppState,
     sid: &str,
     admission: Option<&Admission>,

@@ -917,3 +917,265 @@ fn context_commands_restore_the_board_stage_and_reject_unsupported_images() {
         .unwrap()
         .is_empty());
 }
+
+/// A settled team on a lead with history: a parked worker, a saved request, a board stage.
+fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState>, String) {
+    let (state, project_id) = test_state();
+    let sid = {
+        let store = state.store.lock().unwrap();
+        let task = store.create_session(&project_id, provider, "default", "ask").unwrap();
+        store.db.execute("UPDATE sessions SET task_stage=?2 WHERE id=?1", rusqlite::params![task.id, stage]).unwrap();
+        let mut team = architect::new_team(
+            task.id.clone(),
+            architect::TeamConfig {
+                auto: false,
+                roster_only: false,
+                name: None,
+                workers: vec![architect::WorkerProfile {
+                    id: "fast".into(),
+                    name: "Fast worker".into(),
+                    provider: "codex".into(),
+                    model: "default".into(),
+                    reasoning_effort: None,
+                }],
+                catalog: Vec::new(),
+                max_parallel: 3,
+                max_rounds: 5,
+                max_assignments: 10,
+                workspace: "shared".into(),
+                summary_limit: 2000,
+                lead_guidance: None,
+            },
+        );
+        team.status = status.into();
+        team.generation = 4;
+        team.objective = "Build it".into();
+        team.summary = Some("Built it".into());
+        team.workers.push(architect::Worker {
+            id: "fast".into(),
+            session_id: "parked-session".into(),
+            name: "Fast worker".into(),
+            profile_id: "fast".into(),
+            provider: "codex".into(),
+            model: "default".into(),
+            reasoning_effort: None,
+            status: "parked".into(),
+            assignment: "Compare the implementations".into(),
+            summary: String::new(),
+            error: None,
+            depends_on: Vec::new(),
+            files: Vec::new(),
+            read_only: false,
+            attempt: 1,
+            created_at: 1,
+            updated_at: 1,
+            keys: Vec::new(),
+            abandoned: false,
+            result_revision: 0,
+            checkpoint: None,
+            timed_out: false,
+            failovers: 0,
+            parent_worker: None,
+            resume_prompt: None,
+            tool_catalog_version: 0,
+        });
+        store.db.execute(
+            "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+            rusqlite::params![task.id, serde_json::to_string(&team).unwrap()],
+        ).unwrap();
+        store.db.execute(
+            "INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,'run-tests','dispatch','{}','fast')",
+            [&task.id],
+        ).unwrap();
+        task.id
+    };
+    (state, sid)
+}
+
+/// The harness's real init frame fills the catalog the send path looks commands up in.
+fn advertise_claude_commands(state: &AppState, sid: &str) {
+    let store = state.store.lock().unwrap();
+    let project = store.session(sid).unwrap().project_id;
+    let cwd = store.workspace_root(&project, Some(sid)).unwrap();
+    assert!(slash_commands::observe_runtime(
+        "claude",
+        &cwd,
+        &serde_json::json!({"type":"system","subtype":"init","slash_commands":["compact","status","help","review"]}),
+    ));
+}
+
+/// Everything saved for the team, byte for byte, and the number of saved requests.
+fn team_record(state: &AppState, sid: &str) -> (String, i64) {
+    let store = state.store.lock().unwrap();
+    let content = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [sid], |row| row.get(0)).unwrap();
+    let requests = store.db.query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1", [sid], |row| row.get(0)).unwrap();
+    (content, requests)
+}
+
+fn send_to_lead(state: &AppState, sid: &str, text: &str) -> Result<architect::LeadSend> {
+    tauri::async_runtime::block_on(architect::admit_lead_send(state, sid, text, None, None))
+}
+
+fn prepare_maintenance(state: &Arc<AppState>, sid: &str, text: &str, command: PreparedCommand) -> Result<PreparedRun> {
+    let (tx, _rx) = unbounded_channel();
+    prepare_task_run_in_project(
+        state,
+        sid.to_owned(),
+        Some(text.into()),
+        vec![],
+        tx,
+        Arc::new(AtomicBool::new(false)),
+        RunAdmission { command: Some(command), ..Default::default() },
+    )
+}
+
+#[test]
+fn lead_maintenance_commands_leave_the_team_and_board_stage_alone() {
+    for (stage, text, prompt) in [
+        ("review", "/compact", "/compact"),
+        ("in_progress", "/compact", "/compact"),
+        ("pending", "/compact keep the auth notes", "/compact keep the auth notes"),
+        ("review", "/status", "/status"),
+    ] {
+        for (successful, stopped) in [(true, false), (false, false), (false, true)] {
+            let (state, sid) = settled_team_lead("claude", stage, "completed");
+            advertise_claude_commands(&state, &sid);
+            let before = team_record(&state, &sid);
+            let architect::LeadSend::Maintenance(command) = send_to_lead(&state, &sid, text).unwrap() else {
+                panic!("{text} must not start a team turn");
+            };
+            assert_eq!(team_record(&state, &sid), before, "{text}");
+            let prepared = prepare_maintenance(&state, &sid, text, command).unwrap();
+            assert_eq!(prepared.config.prompt, prompt);
+            assert!(prepared.team.is_none());
+            assert_eq!(team_record(&state, &sid), before, "{text}");
+            // Stop must reach this run alone: the team's own stop would bump its generation.
+            assert!(runs_team_maintenance(&state, &sid).unwrap());
+            // The run's end, in the order the run does it.
+            state.store.lock().unwrap().finish_task_operation(&sid, successful, stopped, prepared.restore_stage.as_deref()).unwrap();
+            state.agents.lock().unwrap().remove(&sid);
+            architect::completed_state(&state, &sid, prepared.team.as_ref(), successful, stopped, &mut |_| panic!("the team changed"));
+            assert_eq!(team_record(&state, &sid), before, "{text}");
+            let store = state.store.lock().unwrap();
+            assert_eq!(store.session(&sid).unwrap().task_stage, stage, "{text}");
+            let team = architect::load(&store, &sid).unwrap().unwrap();
+            assert_eq!((team.objective.as_str(), team.generation, team.status.as_str()), ("Build it", 4, "completed"));
+            assert_eq!(team.summary.as_deref(), Some("Built it"));
+            assert_eq!(team.workers[0].status, "parked");
+        }
+    }
+}
+
+#[test]
+fn other_lead_messages_still_start_a_team_turn() {
+    for text in [
+        "/status of the migration",
+        "/help me choose a schema",
+        "/review",
+        "/not-advertised",
+        "Continue with the next step.",
+    ] {
+        let (state, sid) = settled_team_lead("claude", "review", "completed");
+        advertise_claude_commands(&state, &sid);
+        let architect::LeadSend::Team(team, admission) = send_to_lead(&state, &sid, text).unwrap() else {
+            panic!("{text} must go to the team");
+        };
+        assert_eq!((team.objective.as_str(), team.generation), (text, 5));
+        let (tx, _rx) = unbounded_channel();
+        let prepared = prepare_task_run_in_project(
+            &state,
+            sid.clone(),
+            Some(text.into()),
+            vec![],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            RunAdmission { team: Some(admission), ..Default::default() },
+        )
+        .unwrap();
+        assert!(prepared.config.prompt.contains("PandaCode architect mode"), "{text}");
+        assert!(prepared.config.prompt.contains(text), "{text}");
+        assert!(prepared.restore_stage.is_none(), "{text}");
+        assert!(!runs_team_maintenance(&state, &sid).unwrap());
+    }
+}
+
+#[test]
+fn a_compact_guard_error_returns_before_any_team_change() {
+    let (state, sid) = settled_team_lead("codex", "review", "completed");
+    let before = team_record(&state, &sid);
+    assert_eq!(send_to_lead(&state, &sid, "/compact").err().as_deref(), Some(COMPACT_NEEDS_CONVERSATION));
+    assert_eq!(team_record(&state, &sid), before);
+    assert_eq!(state.store.lock().unwrap().session(&sid).unwrap().task_stage, "review");
+}
+
+#[test]
+fn a_failed_command_lookup_leaves_the_message_for_the_team() {
+    for error in ["Command discovery timed out.", "Unknown command /x.", "This command opens a PandaCode control. Run it from the message box."] {
+        assert!(team_command_gate(Err(error.into())).unwrap().is_none(), "{error}");
+    }
+    assert!(team_command_gate(Err(COMPACT_NEEDS_CONVERSATION.into())).is_err());
+}
+
+#[test]
+fn maintenance_is_refused_on_an_active_team_and_on_its_workers() {
+    let (state, sid) = settled_team_lead("claude", "in_progress", "waiting");
+    advertise_claude_commands(&state, &sid);
+    let before = team_record(&state, &sid);
+    let architect::LeadSend::Maintenance(command) = send_to_lead(&state, &sid, "/compact").unwrap() else {
+        panic!("/compact must not start a team turn");
+    };
+    assert!(prepare_maintenance(&state, &sid, "/compact", command).is_err());
+    assert_eq!(team_record(&state, &sid), before);
+    assert!(state.agents.lock().unwrap().is_empty());
+    assert!(state.store.lock().unwrap().messages(&sid, None).unwrap().is_empty());
+
+    let (state, lead) = settled_team_lead("claude", "review", "completed");
+    let worker = {
+        let store = state.store.lock().unwrap();
+        let project = store.session(&lead).unwrap().project_id;
+        let worker = store.create_session(&project, "claude", "default", "ask").unwrap();
+        let mut team = architect::load(&store, &lead).unwrap().unwrap();
+        team.workers[0].session_id = worker.id.clone();
+        store.db.execute("UPDATE architect_teams SET content=?2 WHERE session_id=?1", rusqlite::params![lead, serde_json::to_string(&team).unwrap()]).unwrap();
+        store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'fast',?2)", rusqlite::params![lead, worker.id]).unwrap();
+        worker.id
+    };
+    advertise_claude_commands(&state, &worker);
+    let architect::LeadSend::Maintenance(command) = send_to_lead(&state, &worker, "/compact").unwrap() else {
+        panic!("a worker has no team of its own to start");
+    };
+    assert!(prepare_maintenance(&state, &worker, "/compact", command).is_err());
+    assert!(state.agents.lock().unwrap().is_empty());
+}
+
+// A worker's assignment is model-authored text: even a "/status" opener is briefed verbatim.
+#[test]
+fn worker_assignments_never_run_as_commands() {
+    for text in ["/compact", "/status of the migration: verify each step."] {
+        let (state, lead) = settled_team_lead("claude", "in_progress", "running");
+        let worker = {
+            let store = state.store.lock().unwrap();
+            let project = store.session(&lead).unwrap().project_id;
+            let worker = store.create_session(&project, "claude", "default", "ask").unwrap();
+            let mut team = architect::load(&store, &lead).unwrap().unwrap();
+            team.workers[0].session_id = worker.id.clone();
+            team.workers[0].status = "running".into();
+            store.db.execute("UPDATE architect_teams SET content=?2 WHERE session_id=?1", rusqlite::params![lead, serde_json::to_string(&team).unwrap()]).unwrap();
+            worker.id
+        };
+        let (tx, _rx) = unbounded_channel();
+        let prepared = prepare_task_run_in_project(
+            &state,
+            worker,
+            Some(text.into()),
+            vec![],
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            RunAdmission { team: Some(architect::Admission { parent: lead, generation: 4 }), ..Default::default() },
+        )
+        .unwrap();
+        assert!(prepared.config.prompt.contains("PandaCode worker named"), "{text}");
+        assert!(prepared.config.prompt.contains(text), "{text}");
+        assert!(prepared.restore_stage.is_none(), "{text}");
+    }
+}
