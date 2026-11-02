@@ -646,6 +646,14 @@ fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathB
                 roots.push((project.join(".claude/skills"), ".claude/skills"));
             }
         }
+        "deepseek" => {
+            roots.push((home.join(".dsh/skills"), "~/.dsh/skills"));
+            roots.push((home.join(".agents/skills"), "~/.agents/skills"));
+            if let Some(project) = project {
+                roots.push((project.join(".dsh/skills"), ".dsh/skills"));
+                roots.push((project.join(".agents/skills"), ".agents/skills"));
+            }
+        }
         _ => {}
     }
     roots
@@ -929,6 +937,29 @@ env = { API_KEY = "secret" }
         assert!(entries
             .iter()
             .any(|item| item.harness == "cline" && item.kind == "skill" && item.name == "doc-gen"));
+        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn deepseek_skills_inventory_reads_the_dsh_roots() {
+        let home = fixture_home("deepseek-home");
+        let project = fixture_home("deepseek-project");
+        fs::create_dir_all(home.join(".dsh/skills/user-skill")).unwrap();
+        fs::create_dir_all(home.join(".agents/skills/agents-skill")).unwrap();
+        fs::create_dir_all(project.join(".dsh/skills/project-skill")).unwrap();
+        fs::create_dir_all(project.join(".agents/skills/project-agents-skill")).unwrap();
+        let entries = scan_harness_configs("deepseek", &home, Some(&project));
+        let mut skills: Vec<_> = entries
+            .iter()
+            .filter(|item| item.harness == "deepseek" && item.kind == "skill")
+            .map(|item| item.name.as_str())
+            .collect();
+        skills.sort_unstable();
+        assert_eq!(
+            skills,
+            ["agents-skill", "project-agents-skill", "project-skill", "user-skill"]
+        );
         fs::remove_dir_all(home).unwrap();
         fs::remove_dir_all(project).unwrap();
     }

@@ -578,6 +578,15 @@ including API-key and DeepSeek Account models. The picker preserves each model's
 full invocation ID. Before prompting, PandaCode selects the model, then applies
 the effort from the session's updated `configOptions`.
 
+**Slash menu skills.** dsh publishes no command catalog over ACP, but its skill
+stack scans `.dsh/skills` and `.agents/skills` in the project plus `~/.dsh/skills`
+and `~/.agents/skills` (or their `DSH_HOME`/`DSH_AGENTS_HOME` overrides), and a
+prompt token naming a user-invocable skill (`/ds-tdd fix the bug`) injects that
+skill's instructions. PandaCode mirrors those roots to fill the DeepSeek slash
+menu, so `/ds-tdd` completes and reaches dsh's own skill invocation. Skills with
+`user-invocable: false` stay out of the menu, and custom skill directories
+configured in a dsh profile are not scanned.
+
 ## Grok Build
 
 xAI's Grok Build CLI (`grok`, installed with `curl -fsSL https://x.ai/cli/install.sh | bash`)
