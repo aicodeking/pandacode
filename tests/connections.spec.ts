@@ -87,6 +87,7 @@ const seedConnection = async (page: import('@playwright/test').Page) => {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(), source = await response.text();
     const body = source.replace(/switch\s*\(command\)\s*\{/, `(window.__calls ??= []).push({ command, args: structuredClone(args) });
+      if (command === window.__failCommand) throw new Error('Could not save the connection.');
       switch (command) {`);
     await route.fulfill({ response, body: `${body}\npreviewConnections = ${JSON.stringify({ connections: [connection], tasks: {} })};\n` });
   });
@@ -146,6 +147,65 @@ test('issue 252: moving a new task to No project moves its text and connection a
   expect(assigned.at(-1).args).toEqual({ sessionId: sent[0].args.sessionId, connectionId: 'work' });
   await expect(page.locator(`#navigation .task-item[data-id="${sent[0].args.sessionId}"]`)).toHaveCount(1);
   await expect(page.locator(`#navigation .task-item[data-id="${draft}"]`)).toHaveCount(0);
+});
+
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+const pasteImage = (page: import('@playwright/test').Page) => page.evaluate(base64 => {
+  const data = new DataTransfer();
+  data.items.add(new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], 'shot.png', { type: 'image/png' }));
+  document.querySelector('#prompt')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+}, PNG);
+const draftWithTextAndImage = async (page: import('@playwright/test').Page) => {
+  await seedConnection(page);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+  await prompt.fill('Look at this');
+  await pasteImage(page);
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  await expect(prompt).toHaveValue('Look at this');
+  return prompt;
+};
+
+test('a new task moved to No project ends as one chat holding its text and attachment, with no draft left', async ({ page }) => {
+  const prompt = await draftWithTextAndImage(page);
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(page.locator('.chat-welcome')).toBeVisible();
+  await expect(prompt).toHaveValue('Look at this');
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  await expect.poll(async () => (await callsNamed(page, 'discard_draft')).length).toBe(1);
+  expect(await callsNamed(page, 'chat_create')).toHaveLength(1);
+  await prompt.press('Enter');
+  await expect.poll(async () => (await callsNamed(page, 'send_message')).length).toBe(1);
+  const [{ args: sent }] = await callsNamed(page, 'send_message');
+  expect(sent.imageIds).toHaveLength(1);
+  expect(sent.text).toContain('Look at this');
+  // New task finds no hidden draft to reopen: it creates a fresh one with an empty composer.
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  await expect(prompt).toHaveValue('');
+  await expect(page.locator('#attachments .prompt-chip')).toHaveCount(0);
+});
+
+test('a failed move to No project reports the error and leaves the text and attachment on the new task', async ({ page }) => {
+  const prompt = await draftWithTextAndImage(page);
+  await page.locator('#model-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await picker.getByRole('tab', { name: 'Claude Work', exact: true }).click();
+  await picker.getByRole('option', { name: 'Claude Work · Claude Sonnet 5', exact: true }).click();
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Work · Claude Sonnet 5');
+  const draft = await page.locator('#prompt').getAttribute('data-session-id');
+  await page.evaluate(() => { (window as any).__failCommand = 'connection_assign'; });
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(page.getByText('Could not save the connection.')).toBeVisible();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', draft!);
+  await expect(prompt).toHaveValue('Look at this');
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  expect(await callsNamed(page, 'discard_draft')).toHaveLength(0);
 });
 
 test('issue 193: New chat opens one chat, even when the native refresh lands first and on a second click', async ({ page }) => {

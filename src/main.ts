@@ -4369,7 +4369,8 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
     onClose: () => { projectPickerCleanup = undefined; },
     onSelect: async projectId => {
       if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
-      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected); return; }
+      // createChat closes this picker, which would drop an error thrown back to it.
+      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
@@ -4526,7 +4527,7 @@ async function createTask(projectId = state.projectId): Promise<void> {
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
- *  the chat takes over its choices and typed text, so the draft is left empty and discarded on the way out. */
+ *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
 async function createChat(from?: Session): Promise<void> {
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
@@ -4558,6 +4559,13 @@ async function createChat(from?: Session): Promise<void> {
     if (typed) state.drafts.set(created.id, typed);
     state.drafts.delete(from.id);
     if (open) prompt!.value = '';
+    attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
+    const browserItems = state.browserAttachments.get(from.id);
+    if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
+    state.browserAttachments.delete(from.id);
+    // Project files and moodboards belong to the project, so a chat cannot send them.
+    if ((from.id === state.sessionId && state.attachments.length) || state.moodboardAttachments.get(from.id)?.length) notify('Project files and moodboards stay with the project, so they were not moved to the chat.');
+    state.moodboardAttachments.delete(from.id);
   }
   if (generation !== state.generation) { renderNavigation(); return; }
   if (state.projectFilter) setProjectFilter('');
