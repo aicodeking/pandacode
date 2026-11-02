@@ -276,13 +276,16 @@ pub(crate) fn read_local(path: &Path) -> Result<Files, String> {
             if kind.is_dir() {
                 pending.push(entry.path());
             } else if kind.is_file() {
-                let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
-                total += bytes.len();
-                if files.len() >= MAX_FILES || total > MAX_BYTES {
+                // Stat before reading: a folder that crosses a limit is refused without
+                // first reading the crossing file into memory.
+                let len = entry.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                if files.len() >= MAX_FILES || total + len > MAX_BYTES {
                     return Err(format!(
                         "That folder holds more than {MAX_FILES} files or 1 MB."
                     ));
                 }
+                let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
+                total += bytes.len();
                 let relative = entry
                     .path()
                     .strip_prefix(path)
@@ -332,14 +335,13 @@ impl Library {
             self.dir.join(&meta.id)
         }
     }
-    /// A missing linked folder reads as empty (statuses report it missing) instead of failing
-    /// the whole library list.
+    /// A linked source that is gone or cannot be read (over the file or size limits, no
+    /// permission) reads as empty, so one bad link never fails the whole library list;
+    /// statuses report it missing and activation names it.
     fn files(&self, meta: &Meta) -> Result<Files, String> {
         let dir = self.skill_dir(meta);
-        if meta.is_linked() && !dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let mut files = read_local(&dir)?;
+        let read = if meta.is_linked() { read_local(&dir).unwrap_or_default() } else { read_local(&dir)? };
+        let mut files = read;
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     }
@@ -402,7 +404,7 @@ impl Library {
         source: Source,
         same_source_only: bool,
     ) -> Result<Item, String> {
-        if source.kind == "link" && (kind == Kind::Rule || !files.iter().any(|(p, _)| p == "SKILL.md")) {
+        if source.kind == "link" && (kind == Kind::Rule || !Path::new(&source.location).is_dir() || !files.iter().any(|(p, _)| p == "SKILL.md")) {
             return Err("Only skills with a SKILL.md folder can be linked.".into());
         }
         let files = normalize(kind, files)?;
@@ -494,8 +496,16 @@ impl Library {
         let item = self.item(self.load(id)?)?;
         let meta = item.meta;
         let kind = meta.kind;
-        if meta.is_linked() && !Path::new(&meta.source.location).is_dir() {
-            return Err(format!("The linked folder {} is missing.", meta.source.location));
+        let files = self.files(&meta)?;
+        if meta.is_linked() {
+            if files.is_empty() {
+                return Err(format!("The linked folder {} is missing or cannot be read.", meta.source.location));
+            }
+            // The imported hash is the reviewed content; a changed source waits for a
+            // re-import, which re-runs the safety scan, before any harness reads it.
+            if content_hash(&files) != meta.sha256 {
+                return Err(format!("The linked folder {} changed since it was imported; re-import it to review the new content.", meta.source.location));
+            }
         }
         let acknowledged = if item.findings.is_empty() || meta.acknowledged.as_deref() == Some(meta.sha256.as_str()) {
             meta.acknowledged.clone()
@@ -517,7 +527,6 @@ impl Library {
         // Old lines a surface move releases, only once the new record is saved.
         let mut release = Vec::new();
         let mut items = Vec::new();
-        let files = self.files(&meta)?;
         let checkout = (scope == Scope::Project).then_some(base);
         // A project's exclude line is added after the write's read-only checks pass (so a
         // refused write, such as the user's own folder already there, never hides anything)
@@ -544,6 +553,11 @@ impl Library {
         }
         let mut checkouts = Checkouts::default();
         let (surface, written, added) = match adapter::surface(harness, meta.kind, scope, base) {
+=======
+        let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, a));
+        let mut kept = Vec::new();
+        let (surface, written) = match adapter::surface(harness, meta.kind, scope, base) {
+>>>>>>> ec924f3 (fix: linked skills wait for a re-import when the source changes)
             Surface::Folder(dir) => {
                 // After a surface move the new folder must be free, as for a first activation;
                 // the old copy goes only once the new one is written, and an edited file stays.
@@ -559,6 +573,13 @@ impl Library {
                     });
                     if edited {
                         return Err(format!("{} was edited on disk; PandaCode will not replace it with a link.", meta.name));
+                    }
+                    // Anything extra under the old copy folder (a file PandaCode did not
+                    // write) would survive the cleanup and block the link: check first, while
+                    // every tracked file is still in place.
+                    let target = dir.join(id);
+                    if target.is_dir() && !folder_only_holds(&target, &old_files) {
+                        return Err(format!("{} still has files PandaCode did not write; remove them before switching it to a link.", target.display()));
                     }
                 }
                 let previous_files: &[Written] = if moved || switching { &[] } else { &old_files };
@@ -1229,6 +1250,26 @@ fn outside_surface(kind: Kind, activation: &Activation) -> bool {
         .files
         .iter()
         .any(|file| !Path::new(&file.path).starts_with(&dir))
+}
+
+/// Whether every file under `dir` is one PandaCode wrote (`written`), so replacing the folder
+/// with a link loses nothing the user made.
+fn folder_only_holds(dir: &Path, written: &[Written]) -> bool {
+    let tracked: Vec<&Path> = written.iter().map(|w| Path::new(&w.path)).collect();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { return false };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { return false };
+            if kind.is_dir() {
+                stack.push(path);
+            } else if !tracked.contains(&path.as_path()) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 pub(crate) fn library(app: &AppHandle) -> Result<Library, String> {
