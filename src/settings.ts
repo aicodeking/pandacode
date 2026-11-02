@@ -1,5 +1,6 @@
 import './settings.css';
 import { mountProviderReadiness } from './provider-readiness';
+import { mountProviderTest } from './provider-test';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import { providerLogo } from './provider-logos';
@@ -204,7 +205,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       if (!row) {
         row = document.createElement('details');
         row.className = 'provider-diagnostic'; row.dataset.provider = provider.id;
-        row.innerHTML = `<summary aria-label="${escape(provider.name)} details"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>Version</span><span class="settings-provider-version"></span><span>Location</span><code></code></div>`;
+        row.innerHTML = `<summary aria-label="${escape(provider.name)} details"><span class="provider-avatar ${provider.id}">${providerLogo(provider.id)}</span><strong></strong><span class="provider-availability"><span class="status-dot"></span><span class="settings-installed"></span></span>${icon('chevron')}</summary><div class="settings-provider-details"><span>Version</span><span class="settings-provider-version"></span><span>Location</span><code></code></div><div class="provider-test" hidden></div>`;
       }
       if (provider.id === 'antigravity' && !row.querySelector('.provider-readiness')) {
         const check = document.createElement('div');
@@ -216,6 +217,12 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
       row.querySelector('.settings-provider-version')!.textContent = provider.version || 'Not reported';
       row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
+      // The quick test rides in the opened card; installed agents only.
+      const testSlot = row.querySelector<HTMLElement>('.provider-test');
+      if (provider.installed) {
+        if (!testSlot!.hasChildNodes()) readinessCleanup.push(mountProviderTest(testSlot!, provider.id, provider.name));
+        testSlot!.hidden = false;
+      } else if (testSlot) { testSlot.hidden = true; }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
     }

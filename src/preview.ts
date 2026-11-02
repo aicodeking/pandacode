@@ -1465,6 +1465,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
     case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
+    case 'provider_test': ((window as any).__providerTests ??= []).push(args.provider); result = (globalThis as any).__providerTestFail ? { ok: false, installed: true, version: null, path: '/sample/bin/' + args.provider, message: 'The sample agent exited with 1.', durationMs: 15 } : { ok: true, installed: true, version: 'sample 1.2.3', path: '/sample/bin/' + args.provider, message: 'sample 1.2.3', durationMs: 24 }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
     case 'list_agent_integrations': result = { servers: [{ name: 'Preview documentation', description: 'Sample MCP integration', status: 'ready', authStatus: 'not required', tools: [{ name: 'search_docs', description: 'Search sample documentation.' }] }], skills: [{ name: 'Project guidelines', description: 'Sample skill', status: 'enabled' }], apps: [], warnings: [] }; break;
@@ -1801,6 +1802,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_connect': ((window as any).__cloudConnects ??= []).push({ provider: args.provider, options: args.options ?? {} }); result = previewCloud.connect(args.provider, args.key, args.options ?? {}); emit('vm-changed', {}); break;
     case 'cloud_disconnect': result = previewCloud.disconnect(args.provider); emit('vm-changed', {}); break;
     case 'cloud_set_inherit_environment': result = previewCloud.setInheritEnvironment(args.provider, args.inherit); break;
+    case 'cloud_provider_test': ((window as any).__cloudTests ??= []).push(args.provider); result = previewCloud.test(args.provider); break;
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
     case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
     case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;

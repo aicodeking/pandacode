@@ -22,6 +22,10 @@ pub struct Connection {
     pub inherit_environment: Option<bool>,
     /// Non-secret details shown in Settings, such as an API URL or account.
     pub detail: Option<String>,
+    /// Providers run by this machine's own CLI (Docker engines, AWS, Google Cloud): whether
+    /// that CLI is installed. Absent on token providers, where `connected` is the whole story.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<bool>,
 }
 
 /// Providers whose cloud agents can inherit the harness's saved environment. Deploy-only
@@ -32,18 +36,19 @@ fn inherits_environment(providers: &std::collections::BTreeMap<String, std::coll
 
 pub fn connections() -> Vec<Connection> {
     let settings = super::settings();
+    let installed_tool = |name: &str| crate::token_saver::find_tool(name).is_some();
     vec![
-        Connection { provider: "daytona", connected: super::secret("daytona_key").is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "daytona"), detail: settings.daytona_organization.or(settings.daytona_api_url) },
-        Connection { provider: "cloudflare", connected: super::secret("cloudflare_token").is_some() && settings.cloudflare_account.is_some(), sandboxes: Some(super::secret("cloudflare_worker_token").is_some() && settings.cloudflare_worker_url.is_some()), inherit_environment: inherits_environment(&settings.providers, "cloudflare"), detail: settings.cloudflare_account.clone() },
-        Connection { provider: "aws", connected: settings.aws_region.is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "aws"), detail: settings.aws_region.map(|region| format!("{} · {region}", settings.aws_profile.unwrap_or_else(|| "default profile".into()))) },
-        Connection { provider: "vercel", connected: super::secret("vercel_token").is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "vercel"), detail: settings.vercel_team },
-        Connection { provider: "railway", connected: super::secret("railway_token").is_some(), sandboxes: None, inherit_environment: None, detail: settings.railway_workspace },
-        Connection { provider: "netlify", connected: super::secret("netlify_token").is_some(), sandboxes: None, inherit_environment: None, detail: settings.providers.get("netlify").and_then(|options| options.get("siteId").cloned()) },
-        Connection { provider: "gcloud", connected: settings.gcloud_project.is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "gcloud"), detail: settings.gcloud_project.map(|project| match settings.gcloud_region { Some(region) => format!("{project} · {region}"), None => project }) },
-        Connection { provider: "docker", connected: settings.providers.contains_key("docker"), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "docker"), detail: settings.providers.get("docker").and_then(|options| options.get("detail").cloned()) },
+        Connection { provider: "daytona", connected: super::secret("daytona_key").is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "daytona"), detail: settings.daytona_organization.or(settings.daytona_api_url), installed: None },
+        Connection { provider: "cloudflare", connected: super::secret("cloudflare_token").is_some() && settings.cloudflare_account.is_some(), sandboxes: Some(super::secret("cloudflare_worker_token").is_some() && settings.cloudflare_worker_url.is_some()), inherit_environment: inherits_environment(&settings.providers, "cloudflare"), detail: settings.cloudflare_account.clone(), installed: None },
+        Connection { provider: "aws", connected: settings.aws_region.is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "aws"), detail: settings.aws_region.map(|region| format!("{} · {region}", settings.aws_profile.unwrap_or_else(|| "default profile".into()))), installed: Some(installed_tool("aws")) },
+        Connection { provider: "vercel", connected: super::secret("vercel_token").is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "vercel"), detail: settings.vercel_team, installed: None },
+        Connection { provider: "railway", connected: super::secret("railway_token").is_some(), sandboxes: None, inherit_environment: None, detail: settings.railway_workspace, installed: None },
+        Connection { provider: "netlify", connected: super::secret("netlify_token").is_some(), sandboxes: None, inherit_environment: None, detail: settings.providers.get("netlify").and_then(|options| options.get("siteId").cloned()), installed: None },
+        Connection { provider: "gcloud", connected: settings.gcloud_project.is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "gcloud"), detail: settings.gcloud_project.map(|project| match settings.gcloud_region { Some(region) => format!("{project} · {region}"), None => project }), installed: Some(installed_tool("gcloud")) },
+        Connection { provider: "docker", connected: settings.providers.contains_key("docker"), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "docker"), detail: settings.providers.get("docker").and_then(|options| options.get("detail").cloned()), installed: Some(installed_tool(super::docker::saved_binary(settings.providers.get("docker")))) },
     ]
     .into_iter()
-    .chain(super::sandbox::KEYED.iter().map(|&provider| Connection { provider, connected: super::sandbox::ready(provider), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, provider), detail: settings.providers.get(provider).and_then(|options| options.get("detail").cloned()) }))
+    .chain(super::sandbox::KEYED.iter().map(|&provider| Connection { provider, connected: super::sandbox::ready(provider), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, provider), detail: settings.providers.get(provider).and_then(|options| options.get("detail").cloned()), installed: None }))
     .collect()
 }
 
@@ -181,6 +186,74 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
         Ok(connections())
     })
     .await
+}
+
+/// One provider's quick test result for Settings → Agents → Cloud sandboxes.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudTest {
+    pub ok: bool,
+    pub message: String,
+    pub duration_ms: u64,
+}
+
+/// The Settings quick test for one cloud provider: one real, cheap request with the saved
+/// credentials. It never echoes the key and never changes what is saved.
+#[tauri::command]
+pub async fn cloud_provider_test(provider: String) -> Result<CloudTest> {
+    crate::blocking(move || {
+        // Netlify is deploy-only and so is not in PROVIDERS, but its token still has a check.
+        if !super::PROVIDERS.contains(&provider.as_str()) && provider != "netlify" {
+            return Err("Unknown cloud provider.".into());
+        }
+        let started = std::time::Instant::now();
+        let outcome = check_provider(&provider);
+        Ok(CloudTest {
+            ok: outcome.is_ok(),
+            message: match outcome { Ok(message) => message, Err(message) => message },
+            duration_ms: started.elapsed().as_millis() as u64,
+        })
+    })
+    .await
+}
+
+fn check_provider(provider: &str) -> Result<String> {
+    let settings = super::settings();
+    Ok(match provider {
+        // The CLI-backed providers have cheap identity calls of their own.
+        "aws" => format!("Signed in as {}.", Aws::connected()?.identity()?),
+        "gcloud" => {
+            let project = settings.gcloud_project.ok_or("Connect Google Cloud first — no project is saved.")?;
+            super::deploy::gcloud_verify(&project, settings.gcloud_region.as_deref())?;
+            format!("gcloud can open project {project}.")
+        }
+        "docker" => super::docker::test()?,
+        "vercel" => {
+            let token = super::secret("vercel_token").ok_or("No Vercel token saved. Connect first.")?;
+            let team = settings.providers.get("vercel").and_then(|o| o.get("teamId").cloned()).or(settings.vercel_team);
+            block(verify_vercel(&token, team.as_deref()))?;
+            "Vercel token verified.".into()
+        }
+        "railway" => {
+            let token = super::secret("railway_token").ok_or("No Railway token saved. Connect first.")?;
+            block(verify_railway(RAILWAY_API, &token, settings.railway_workspace.as_deref()))?;
+            "Railway token verified.".into()
+        }
+        "netlify" => {
+            let token = super::secret("netlify_token").ok_or("No Netlify token saved. Connect first.")?;
+            let site = settings.providers.get("netlify").and_then(|options| options.get("siteId").cloned());
+            block(verify_netlify(NETLIFY_API, &token, site.as_deref()))?;
+            "Netlify token verified.".into()
+        }
+        // Daytona, Cloudflare and the keyed REST providers: the connected sandbox already knows
+        // how to authenticate itself, so the test is its own machine list.
+        other => {
+            let sandbox = super::sandbox::connected(other)?;
+            let machines = sandbox.list()?;
+            let name = super::sandbox::AGENT_PROVIDERS.iter().find(|(id, _)| *id == other).map(|(_, name)| *name).unwrap_or(other);
+            format!("{name} answered · {} machines.", machines.len())
+        }
+    })
 }
 
 /// Set or clear one saved option of a provider (`settings.providers[provider][name]`).
@@ -529,6 +602,15 @@ mod tests {
         assert_eq!(settings.providers["gcloud"]["zone"], "us-east1-b");
         set_option(&mut settings, "gcloud", "zone", None);
         assert!(!settings.providers.contains_key("gcloud"));
+    }
+
+    #[tokio::test]
+    async fn cloud_provider_test_refuses_unknown_providers() {
+        assert!(cloud_provider_test("not-a-cloud".into()).await.is_err());
+        // agentcore is known but has no test of its own (the AWS card covers that login).
+        let result = cloud_provider_test("agentcore".into()).await.unwrap();
+        assert!(!result.ok);
+        assert!(result.message.contains("can't run cloud agents"), "{}", result.message);
     }
 
     #[test]

@@ -790,6 +790,113 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
+/// The Settings → Agents quick test for one harness: did its CLI start and answer `--version`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderTest {
+    pub ok: bool,
+    pub installed: bool,
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub message: String,
+    pub duration_ms: u64,
+}
+
+/// How long the quick test waits for `--version` (discovery's probe gets 2 s; this one is explicit).
+const TEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The Settings quick test: run the installed CLI's `--version` with its saved environment.
+/// Metadata only — no prompt is sent and no session is created.
+pub fn run_provider_test(id: &str) -> ProviderTest {
+    let path = executable(id);
+    run_provider_test_at(id, path.as_deref(), TEST_TIMEOUT)
+}
+
+fn run_provider_test_at(id: &str, path: Option<&Path>, timeout: Duration) -> ProviderTest {
+    let name = PROVIDERS.iter().find(|(pid, _)| *pid == id).map(|(_, n)| *n).unwrap_or(id);
+    let started = std::time::Instant::now();
+    let Some(path) = path else {
+        return ProviderTest { ok: false, installed: false, version: None, path: None, message: format!("{name} is not installed."), duration_ms: 0 };
+    };
+    let path_string = path.to_string_lossy().into_owned();
+    let elapsed = || started.elapsed().as_millis() as u64;
+    // Antigravity's ACP server has no `--version`; installation is the check, and its deeper
+    // check (sign-in, ACP session) is provider_check_connection.
+    if id == "antigravity" {
+        return ProviderTest { ok: true, installed: true, version: Some("ACP".into()), path: Some(path_string), message: "Installed (ACP).".into(), duration_ms: elapsed() };
+    }
+    match probe_version(id, path, timeout) {
+        Ok(version) if version.is_empty() => ProviderTest { ok: true, installed: true, version: None, path: Some(path_string), message: "Working, but it printed no version.".into(), duration_ms: elapsed() },
+        Ok(version) => ProviderTest { ok: true, installed: true, version: Some(version.clone()), path: Some(path_string), message: version, duration_ms: elapsed() },
+        Err(message) => ProviderTest { ok: false, installed: true, version: None, path: Some(path_string), message, duration_ms: elapsed() },
+    }
+}
+
+/// `--version` with stdout and stderr captured separately, so a failing CLI explains itself.
+/// Same construction as `run_provider` (std command, the provider's saved environment applied).
+fn probe_version(id: &str, path: &Path, timeout: Duration) -> Result<String, String> {
+    let mut command = launch::std_command(path)?;
+    crate::provider_settings::apply_environment(id, &mut command);
+    let mut child = command
+        .args(["--version"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("{} did not start ({error}).", path.display()))?;
+    #[cfg(windows)]
+    let _job = windows_job::Job::attach(child.id());
+    // Drained on their own threads: a child writing past the OS pipe buffer while we poll
+    // must not block forever on the write.
+    let stdout = drain_pipe(child.stdout.take());
+    let stderr = drain_pipe(child.stderr.take());
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{} could not be waited on.", path.display()));
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Did not answer within {} s.", timeout.as_secs().max(1)));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let stdout = stdout.join().map_err(|_| "The version probe was interrupted.".to_string())?;
+    let stderr = stderr.join().unwrap_or_default();
+    if !status.success() {
+        let reason = String::from_utf8_lossy(&stderr).lines().map(str::trim).find(|line| !line.is_empty()).map(|line| line.chars().take(200).collect::<String>()).unwrap_or_default();
+        return Err(match status.code() {
+            Some(code) => format!("Exited with {code}.\n{reason}"),
+            None => format!("Stopped by a signal.\n{reason}"),
+        });
+    }
+    Ok(String::from_utf8_lossy(&stdout).trim().chars().take(150).collect())
+}
+
+fn drain_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            // Version output is tiny; the cap keeps a chatty child from ballooning memory,
+            // since read_to_end otherwise runs until EOF.
+            use std::io::Read as _;
+            let _ = pipe.take(2 * 1024 * 1024).read_to_end(&mut bytes);
+        }
+        bytes
+    })
+}
+
+#[tauri::command]
+pub async fn provider_test(provider: String) -> Result<ProviderTest, String> {
+    crate::blocking(move || Ok(run_provider_test(&provider))).await
+}
+
 /// Blocking discovery; invoke on a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
     PROVIDERS.into_iter()
@@ -3832,6 +3939,61 @@ mod tests {
         assert_eq!(super::opencode_major_version("1.19.0\n"), Some(1));
         assert_eq!(super::opencode_major_version("opencode v2.2.5\n"), Some(2));
         assert_eq!(super::opencode_major_version("opencode"), None);
+    }
+
+    #[cfg(unix)]
+    fn fake_agent_cli(script: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-provider-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("agent");
+        std::fs::write(&path, format!("#!/bin/sh\n{script}")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn remove_fake_agent(path: &std::path::Path) {
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_test_reports_a_working_cli() {
+        let script = fake_agent_cli("case \"$*\" in *--version*) echo 'sample 1.2.3';; esac\n");
+        let result = super::run_provider_test_at("opencode", Some(&script), std::time::Duration::from_secs(5));
+        assert!(result.ok && result.installed, "{}", result.message);
+        assert_eq!(result.version.as_deref(), Some("sample 1.2.3"));
+        assert_eq!(result.message, "sample 1.2.3");
+        remove_fake_agent(&script);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_test_reports_a_failing_cli() {
+        let script = fake_agent_cli("echo 'broken config' >&2\nexit 3\n");
+        let result = super::run_provider_test_at("opencode", Some(&script), std::time::Duration::from_secs(5));
+        assert!(!result.ok && result.installed);
+        assert!(result.message.contains("Exited with 3"), "{}", result.message);
+        assert!(result.message.contains("broken config"), "{}", result.message);
+        remove_fake_agent(&script);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_test_reports_a_stalled_cli() {
+        let script = fake_agent_cli("sleep 30\n");
+        let result = super::run_provider_test_at("opencode", Some(&script), std::time::Duration::from_millis(300));
+        assert!(!result.ok && result.installed);
+        assert!(result.message.contains("Did not answer"), "{}", result.message);
+        remove_fake_agent(&script);
+    }
+
+    #[test]
+    fn provider_test_reports_a_missing_install() {
+        let result = super::run_provider_test_at("opencode", None, std::time::Duration::from_secs(1));
+        assert!(!result.ok && !result.installed);
+        assert!(result.message.contains("not installed"), "{}", result.message);
     }
 
     /// Runs the catalog against a stand-in CLI; `$MARK` records every `api` call.
