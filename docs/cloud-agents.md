@@ -83,6 +83,9 @@ change emits `cloud-agent://progress` `{sessionId, stage, detail}` plus
 - Follow-ups, stop, approvals, input, steering: the ordinary commands.
 - `cloud_instabox_images() → {images: [{value, label}], selected}` and
   `cloud_instabox_set_image({image}) → same` — the InstaBox machine image (below).
+- `cloud_digitalocean_catalog() → {regions, sizes, region, size}` and
+  `cloud_digitalocean_set_options({region, size}) → connections` — the DigitalOcean region
+  and machine size (below).
 
 ## Provider settings
 
@@ -91,7 +94,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | Provider | Key | Options |
 | --- | --- | --- |
 | docker | — (no credentials) | `engine` (`docker`, `podman`, `apple` for Apple Containers on this machine, or `lxc` for the LXD/Incus client — which selects its own remote, so no endpoint), `endpoint` (empty for this machine's daemon, `ssh://[user@]host[:port]` over the shared SSH transport — for Podman this runs the remote podman directly, `tcp://host:port` with TLS (Docker only), or `unix:///path`), `image` (default `ubuntu:24.04`), and `tlsCa`/`tlsCert`/`tlsKey` paths for `tcp://` Docker hosts. One container or instance per task, named `pc-…` (labelled `pandacode` on Docker/Podman/Apple; the prefix is the ownership marker on LXC, which has no labels). Machines keep their disk until deleted and use the host's own resources. A Docker daemon is root-equivalent on its machine — an endpoint is a trust decision like any VPS |
-| digitalocean | API token | `region` (default `nyc1`). Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
+| digitalocean | API token | `region` (default `nyc1`) and `size` (default `s-2vcpu-4gb`), chosen after connecting in Settings → Cloud from the account's own catalog (`cloud_digitalocean_catalog`, refreshed live) or any slug typed under Custom. Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
 | vultr | API key | `region` (default `ewr`). Instances carry the `pandacode` tag; the Ubuntu 24.04 image is picked by name from the account's OS list at create (Vultr has no image slugs), and `user_data` is sent base64-encoded. Bill while they exist, stopped included — delete ends the billing |
 | hetzner | API token | `location` (default `fsn1`). Servers carry the `pandacode=true` label and are persistent VMs billed while they exist; CPX22 on the stock Ubuntu 24.04 image. Stop is a graceful shutdown followed by a hard poweroff, as Hetzner's own guidance orders them |
 | runpod | API key | `gpu` (default an RTX 3090) and `image` (default RunPod's own Ubuntu 24.04 base image, which ships SSH configured). Pods expose SSH on their public IP through the container's port 22 and authorize PandaCode's key with the documented `SSH_PUBLIC_KEY` pod variable; only pods named `pc-…` (the run pipeline's names) appear in the panel. The container disk is cleared when a pod stops (only the `/workspace` volume survives), so pods are non-persistent: a stopped pod is replaced by a fresh one and rehydrated, like Cloudflare's sandboxes. A running pod bills its GPU until stopped — the panel's stop releases it |
