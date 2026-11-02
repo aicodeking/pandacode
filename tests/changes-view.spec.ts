@@ -167,14 +167,14 @@ test('menus stage, unstage, open and copy without reaching the document', async 
   await page.evaluate(() => document.addEventListener('click', e => { if ((e.target as HTMLElement).closest('#host')) (window as any).leaked = true; }));
   await page.getByRole('button', { name: 'More actions' }).click();
   const menu = await page.evaluate(() => (window as any).harness.lastMenu.items.map((i: any) => i.label));
-  expect(menu).toEqual(['Stage all', 'Unstage all', 'Commit…', 'Refresh']);
+  expect(menu).toEqual(['Stage all', 'Unstage all', 'Commit…', 'Refresh', 'Discard all changes…']);
   await pick(page, 'stage-all');
   await page.getByRole('button', { name: 'More actions' }).click();
   await pick(page, 'unstage-all');
   await page.getByRole('button', { name: 'More actions' }).click();
   await pick(page, 'refresh');
   await page.locator('.cv-file[data-path="src/both.ts"] [data-cv-action="file-menu"]').click();
-  expect(await page.evaluate(() => (window as any).harness.lastMenu.items.map((i: any) => i.label))).toEqual(['Stage file', 'Unstage file', 'Open file', 'Copy path']);
+  expect(await page.evaluate(() => (window as any).harness.lastMenu.items.map((i: any) => i.label))).toEqual(['Stage file', 'Unstage file', 'Open file', 'Copy path', 'Discard changes…']);
   await pick(page, 'open');
   const log = (await calls(page)).filter(c => c[0] !== 'loadDiff' && c[0] !== 'choose');
   expect(log).toEqual([
@@ -184,6 +184,28 @@ test('menus stage, unstage, open and copy without reaching the document', async 
     ['openFile', 'src/both.ts'],
   ]);
   expect(await page.evaluate(() => (window as any).leaked)).toBeUndefined();
+});
+
+test('menus discard one file or every change', async ({ page }) => {
+  await mount(page, FILES, DIFFS);
+  await page.locator('.cv-file[data-path="notes/todo.txt"] [data-cv-action="file-menu"]').click();
+  const item = await page.evaluate(() => (window as any).harness.lastMenu.items.find((i: any) => i.id === 'discard'));
+  expect(item).toMatchObject({ label: 'Discard changes…', danger: true });
+  await pick(page, 'discard');
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await pick(page, 'discard-all');
+  const log = (await calls(page)).filter(c => c[0] === 'discard');
+  expect(log).toEqual([
+    ['discard', ['notes/todo.txt']],
+    ['discard', FILES.map(f => f.path)],
+  ]);
+});
+
+test('discard all is disabled on a clean tree', async ({ page }) => {
+  await mount(page, [], {});
+  await page.getByRole('button', { name: 'More actions' }).click();
+  const item = await page.evaluate(() => (window as any).harness.lastMenu.items.find((i: any) => i.id === 'discard-all'));
+  expect(item.disabled).toBe(true);
 });
 
 test('inline commit bar submits on Enter and cancels on Escape', async ({ page }) => {

@@ -4078,6 +4078,7 @@ function showChangesView(target: HTMLElement, key: string): void {
     changesView = mountChangesView(host, {
       loadDiff: (path, staged) => call<string>('git_diff', { ...context, path, staged }),
       stage: (paths, staged) => stage(paths, staged),
+      discard: paths => discard(paths),
       commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
@@ -4241,6 +4242,25 @@ function attachFile(path: string): void {
   if (state.attachments.includes(path)) { notify('File already attached.'); return; }
   if (state.attachments.length >= 5) { notify('Attach up to 5 files per message.'); return; }
   state.attachments.push(path); renderComposer(); notify('Attached ' + path.split('/').pop());
+}
+/** Asks first: discarding reverts tracked files to HEAD and deletes new ones, which Git can't undo. */
+async function discard(paths: string[]): Promise<void> {
+  if (!project() || !paths.length || !await confirmDiscard(paths)) return;
+  const generation = state.generation;
+  await call('git_discard', { ...workspaceContext(), paths });
+  if (generation !== state.generation) return;
+  state.selectedKind = ''; await refreshInspector();
+  notify(paths.length === 1 ? `Discarded changes to ${paths[0].split('/').pop()}` : `Discarded changes to ${paths.length} files`);
+}
+function confirmDiscard(paths: string[]): Promise<boolean> {
+  const one = paths.length === 1;
+  const dialog = modal(one ? 'Discard changes?' : `Discard changes to ${paths.length} files?`, `<form id="discard-changes-form">${one ? `<p class="delete-task-name">${escape(paths[0])}</p>` : ''}<p class="delete-task-description">Staged and unstaged edits go back to the last commit, and new files are deleted. This can’t be undone.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Discard</button></div></form>`, 'delete-task-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('#discard-changes-form')!;
+  form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(false), { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+  });
 }
 async function stage(paths: string[], staged: boolean): Promise<void> {
   if (!project() || !paths.length) return;

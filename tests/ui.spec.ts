@@ -2936,6 +2936,35 @@ test('reviews a diff, stages changes, and commits within the sample session', as
   await expect(page.locator('#toast')).toContainText('Preview commit created');
 });
 
+test('discards one file and then every change after confirming', async ({ page }) => {
+  await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
+  const view = page.locator('#inspector-content .changes-view');
+  const menuItem = (name: string) => page.getByRole('menuitem', { name, exact: true });
+  await expect(changeFiles(page)).toHaveCount(3);
+  const first = changeFiles(page).first();
+  const path = await first.getAttribute('data-path');
+  await first.getByRole('button', { name: 'File actions', exact: true }).click();
+  await menuItem('Discard changes…').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('Discard changes?');
+  await expect(dialog).toContainText(path!);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(changeFiles(page)).toHaveCount(3);
+  await first.getByRole('button', { name: 'File actions', exact: true }).click();
+  await menuItem('Discard changes…').click();
+  await dialog.getByRole('button', { name: 'Discard', exact: true }).click();
+  await expect(changeFiles(page)).toHaveCount(2);
+  await expect(view.locator(`.cv-file[data-path="${path}"]`)).toHaveCount(0);
+  await expect(page.locator('#toast')).toContainText('Discarded changes to');
+  await view.getByRole('button', { name: 'More actions', exact: true }).click();
+  await menuItem('Discard all changes…').click();
+  await expect(dialog).toContainText('Discard changes to 2 files?');
+  await dialog.getByRole('button', { name: 'Discard', exact: true }).click();
+  await expect(view.getByText('Working tree clean', { exact: true })).toBeVisible();
+  await expect(page.locator('#toast')).toContainText('Discarded changes to 2 files');
+});
+
 test('navigates the command palette using the keyboard', async ({ page }) => {
   await page.keyboard.press('ControlOrMeta+k');
   await page.getByRole('textbox', { name: 'Search tasks and commands' }).fill('Refine the navigation');
