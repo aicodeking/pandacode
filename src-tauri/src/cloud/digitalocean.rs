@@ -77,7 +77,7 @@ impl DigitalOcean {
             Some(json!({
                 "value": slug,
                 "label": format!("{} vCPU · {gb} GB · ${price}/mo ({slug})", item["vcpus"].as_u64().unwrap_or(0)),
-                "regions": item["regions_available"].as_array().map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>()).unwrap_or_default(),
+                "regions": item["regions"].as_array().map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>()).unwrap_or_default(),
             }))
         }).collect()).unwrap_or_default();
         Ok(json!({"regions": regions, "sizes": sizes, "region": Self::saved("region"), "size": Self::saved("size")}))
@@ -287,9 +287,10 @@ fn valid_name(name: &str) -> Result<&str> {
     ok.then_some(name).ok_or_else(|| "DigitalOcean names use lowercase letters, digits and dashes, starting with a letter or digit (up to 63).".to_string())
 }
 
-/// Region and size slugs are lowercase letters, digits and dashes, up to 32 characters.
+/// Region and size slugs are lowercase letters, digits, dashes and underscores (storage
+/// slugs like so1_5 carry one), up to 32 characters.
 fn check_slug(value: &str, kind: &str, examples: &str) -> Result<()> {
-    let ok = value.len() <= 32 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let ok = value.len() <= 32 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     ok.then_some(()).ok_or_else(|| format!("That does not look like a DigitalOcean {kind} (for example {examples})."))
 }
 
@@ -352,6 +353,10 @@ pub fn set_options(region: Option<String>, size: Option<String>) -> Result<()> {
     }
     let detail = detail(&entry);
     entry.insert("detail".into(), detail);
+    // A disconnect that raced this save removed the key; do not resurrect the entry.
+    if super::secret("digitalocean_key").is_none() {
+        return Err("Connect DigitalOcean in Settings → Cloud first.".into());
+    }
     super::save_settings(&settings)
 }
 pub fn disconnect() -> Result<()> {
@@ -416,7 +421,7 @@ mod tests {
         let (base, seen) = mock::serve(|request, _| match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/account") => (200, br#"{"account":{"status":"active","email":"me@example.com"}}"#.to_vec()),
             ("GET", "/regions?per_page=200") => (200, br#"{"regions":[{"available":true,"name":"New York 1","slug":"nyc1"},{"available":false,"name":"Retired","slug":"old1"},{"available":true,"name":"Frankfurt 1","slug":"fra1"}]}"#.to_vec()),
-            ("GET", "/sizes?per_page=200") => (200, br#"{"sizes":[{"available":true,"slug":"s-2vcpu-4gb","vcpus":2,"memory":4096,"price_monthly":24.0,"regions_available":["nyc1","fra1","ams3"]},{"available":false,"slug":"s-old","vcpus":1,"memory":1024,"price_monthly":5.0},{"available":true,"slug":"c-2","vcpus":2,"memory":3072,"price_monthly":15.75,"regions_available":[]},{"available":true,"slug":"s-1vcpu-1gb","vcpus":1,"memory":1024,"price_monthly":6.0}]}"#.to_vec()),
+            ("GET", "/sizes?per_page=200") => (200, br#"{"sizes":[{"available":true,"slug":"s-2vcpu-4gb","vcpus":2,"memory":4096,"price_monthly":24.0,"regions":["nyc1","fra1","ams3"]},{"available":false,"slug":"s-old","vcpus":1,"memory":1024,"price_monthly":5.0},{"available":true,"slug":"c-2","vcpus":2,"memory":3072,"price_monthly":15.75,"regions":[]},{"available":true,"slug":"s-1vcpu-1gb","vcpus":1,"memory":1024,"price_monthly":6.0}]}"#.to_vec()),
             ("GET", "/account/keys?per_page=200") => (200, br#"{"ssh_keys":[{"id":7,"name":"other","public_key":"ssh-rsa ZZZ"},{"id":9,"name":"pandacode","public_key":"ssh-ed25519 AAAA pandacode"}]}"#.to_vec()),
             ("POST", "/account/keys") => (201, br#"{"ssh_key":{"id":11,"name":"pandacode"}}"#.to_vec()),
             ("GET", "/droplets?tag_name=pandacode&per_page=200") => (200, br#"{"droplets":[{"id":1,"name":"job","status":"active","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":2,"name":"wip","status":"new","size_slug":"s-2vcpu-4gb","region":{"slug":"fra1"}},{"id":3,"name":"off","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":5,"name":"done","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}}]}"#.to_vec()),
@@ -603,6 +608,9 @@ mod tests {
         assert!(!saved.contains_key("region") && !saved.contains_key("size"));
         assert_eq!(saved["detail"], "API token saved");
         assert_eq!(DigitalOcean::size(), SIZE);
+        // Storage-optimized slugs carry an underscore (the so1_5 family).
+        set_options(None, Some("so1_5-4vcpu-32gb".into())).unwrap();
+        assert_eq!(DigitalOcean::size(), "so1_5-4vcpu-32gb");
         assert!(set_options(None, Some("C-2".into())).unwrap_err().contains("That does not look like a DigitalOcean machine size (for example s-2vcpu-4gb or c-2)."));
         assert!(set_options(Some("NYC 1".into()), None).unwrap_err().contains("That does not look like a DigitalOcean region (for example nyc1 or fra1)."));
         super::super::remove_secret("digitalocean_key");

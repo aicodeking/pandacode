@@ -97,7 +97,7 @@ test('DigitalOcean provider connections list regions and sizes once connected', 
   await expect(region).toBeEnabled();
   await expect(size).toBeEnabled();
   await expect(region).toHaveValue('');
-  await expect(size).toHaveValue('s-2vcpu-4gb');
+  await expect(size).toHaveValue('');
   await expect(region.locator('option')).toHaveText(['Default (nyc1)', 'New York 1 (nyc1)', 'Frankfurt 1 (fra1)', 'Singapore 1 (sgp1)', 'Custom…']);
   await expect(size.locator('option')).toHaveText(['Standard (s-2vcpu-4gb)', '2 vCPU · 4 GB · $24/mo (s-2vcpu-4gb)', '4 vCPU · 8 GB · $48/mo (s-4vcpu-8gb)', '2 vCPU · 4 GB · $15.75/mo (c-2)', 'Custom…']);
 });
@@ -109,9 +109,9 @@ test('provider connections narrow the machine sizes by region and save the picke
   const size = card.getByRole('combobox', { name: 'DigitalOcean machine size' });
 
   await region.selectOption('fra1');
-  await expect(card.locator('.cloud-detail')).toHaveText('Connected · s-2vcpu-4gb · fra1');
+  await expect(card.locator('.cloud-detail')).toHaveText('Connected · fra1');
   await expect(size.locator('option')).toHaveText(['Standard (s-2vcpu-4gb)', '2 vCPU · 4 GB · $24/mo (s-2vcpu-4gb)', '2 vCPU · 4 GB · $15.75/mo (c-2)', 'Custom…']);
-  await expect.poll(() => saves(page)).toEqual([{ region: 'fra1', size: 's-2vcpu-4gb' }]);
+  await expect.poll(() => saves(page)).toEqual([{ region: 'fra1', size: '' }]);
 
   // c-2 has no region list, so it works everywhere and keeps every region listed.
   await size.selectOption('c-2');
@@ -126,7 +126,7 @@ test('provider connections narrow the machine sizes by region and save the picke
   await expect(card.locator('.cloud-detail')).toHaveText('Connected · s-4vcpu-8gb');
   await expect(region.locator('option')).toHaveText(['Default (nyc1)', 'New York 1 (nyc1)', 'Custom…']);
   await expect.poll(() => saves(page)).toEqual([
-    { region: 'fra1', size: 's-2vcpu-4gb' },
+    { region: 'fra1', size: '' },
     { region: 'fra1', size: 'c-2' },
     { region: '', size: 'c-2' },
     { region: '', size: 's-4vcpu-8gb' },
