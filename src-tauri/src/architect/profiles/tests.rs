@@ -844,7 +844,7 @@ fn team_environment_variables_are_validated_before_they_are_saved() {
 #[test]
 fn saved_team_environment_survives_a_reload_and_junk_entries_are_dropped() {
     let disk = Disk::new();
-    let id = {
+    {
         let store = Store::open(&disk.database()).unwrap();
         let id = team_environment_profile(&store);
         set_team_environment_variable(&store, &id, "HTTPS_PROXY", "http://127.0.0.1:7890").unwrap();
@@ -898,6 +898,45 @@ fn saved_team_environment_survives_a_reload_and_junk_entries_are_dropped() {
 }
 
 #[test]
+fn a_hand_edited_library_with_too_many_variables_drops_the_whole_set() {
+    let disk = Disk::new();
+    let store = Store::open(&disk.database()).unwrap();
+    let id = team_environment_profile(&store);
+    // An empty map is not serialized, so give the profile one variable first.
+    set_team_environment_variable(&store, &id, "KEEP", "1").unwrap();
+    let content: String = store
+        .db
+        .query_row("SELECT content FROM architect_library WHERE id=1", [], |r| r.get(0))
+        .unwrap();
+    let mut library: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let environment = library["profiles"][0]["setup"]["config"]["environment"]
+        .as_object_mut()
+        .unwrap();
+    for index in 0..=crate::provider_settings::MAX_ENV {
+        environment.insert(format!("VALID_{index}"), serde_json::json!("1"));
+    }
+    store
+        .db
+        .execute(
+            "UPDATE architect_library SET content=?1 WHERE id=1",
+            params![serde_json::to_string(&library).unwrap()],
+        )
+        .unwrap();
+    // Over the launch cap nothing launches partially: the whole set drops, like
+    // the provider loader's.
+    assert!(read(&store)
+        .unwrap()
+        .profiles
+        .iter()
+        .find(|profile| profile.id == id)
+        .unwrap()
+        .setup
+        .config
+        .environment
+        .is_empty());
+}
+
+#[test]
 fn team_profiles_expose_environment_names_but_never_values() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let id = team_environment_profile(&store);
@@ -934,25 +973,20 @@ fn the_team_environment_merges_global_and_team_variables() {
         ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
         ("HTTPS_PROXY".into(), "http://127.0.0.1:7890".into()),
     ]);
-    let mut profile = TeamProfile {
-        id: "team".into(),
-        name: "Env team".into(),
-        setup: setup(),
-        updated_at: 0,
-    };
-    profile
-        .setup
-        .config
+    let mut config = setup().config;
+    config
         .environment
         .insert("HTTPS_PROXY".into(), "http://127.0.0.1:1080".into());
-    assert!(profile.setup.config.use_global_environment);
+    assert!(config.use_global_environment);
     // Global on: the team's own value wins over the shared name.
+    let (team_environment, include_global) = team_launch_environment(&global, &config, true);
+    assert!(include_global);
     assert_eq!(
-        effective_team_environment(&global, &profile),
-        vec![
-            ("HTTPS_PROXY".to_string(), "http://127.0.0.1:1080".to_string()),
-            ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
-        ]
+        team_environment,
+        BTreeMap::from([
+            ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
+            ("HTTPS_PROXY".into(), "http://127.0.0.1:1080".into()),
+        ])
     );
 }
 
@@ -962,21 +996,14 @@ fn a_team_that_opts_out_of_the_global_environment_gets_only_its_own_variables() 
         ("HTTP_PROXY".into(), "http://127.0.0.1:7890".into()),
         ("TEAM_SHARED".into(), "global".into()),
     ]);
-    let mut profile = TeamProfile {
-        id: "team".into(),
-        name: "Env team".into(),
-        setup: setup(),
-        updated_at: 0,
-    };
-    profile.setup.config.use_global_environment = false;
-    profile
-        .setup
-        .config
-        .environment
-        .insert("TEAM_OWN".into(), "own".into());
+    let mut config = setup().config;
+    config.use_global_environment = false;
+    config.environment.insert("TEAM_OWN".into(), "own".into());
+    let (team_environment, include_global) = team_launch_environment(&global, &config, true);
+    assert!(!include_global);
     assert_eq!(
-        effective_team_environment(&global, &profile),
-        vec![("TEAM_OWN".to_string(), "own".to_string())]
+        team_environment,
+        BTreeMap::from([("TEAM_OWN".into(), "own".into())])
     );
 }
 

@@ -68,17 +68,45 @@ fn cloud_provider(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
     super::load(&store, session_id).ok().flatten().map(|cloud| cloud.provider)
 }
 
-/// The harness's saved environment variables for a cloud run, when this cloud is set to
-/// inherit them (off by default, so nothing is sent without the user asking for it).
-/// Variables the local launch would scrub ("Prefer saved Claude login") are filtered
-/// here too: the remote `cmd.sh` can only set, never remove.
-fn inherited_environment(cloud_provider: &str, harness: &str) -> Result<Vec<(String, String)>, String> {
+/// The saved environment variables for a cloud run, when this cloud is set to
+/// inherit them (off by default, so nothing is sent without the user asking for
+/// it): the harness's saved variables, with the run's team's global-inheritance
+/// decision, followed by the team's own pairs so a team value wins over a shared
+/// name exactly as it does locally. Variables the local launch would scrub
+/// ("Prefer saved Claude login") are filtered here too: the remote `cmd.sh` can
+/// only set, never remove.
+fn inherited_environment(
+    cloud_provider: &str,
+    harness: &str,
+    include_global: bool,
+    team: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, String> {
     let inherits = crate::cloud::settings().providers.get(cloud_provider).and_then(|options| options.get("inheritEnvironment").map(String::as_str)) == Some("true");
+    inherit_list(inherits, harness, include_global, team)
+}
+
+/// The list once the cloud's inheritance choice is known: nothing when it is off,
+/// otherwise the harness's saved variables followed by the team's pairs, guarded.
+fn inherit_list(
+    inherits: bool,
+    harness: &str,
+    include_global: bool,
+    team: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, String> {
     if !inherits {
         return Ok(Vec::new());
     }
     let removed = crate::providers::claude_auth::removed_environment(harness);
-    checked_environment(crate::provider_settings::environment(harness).into_iter().filter(|(name, _)| !removed.contains(&name.as_str())).collect())
+    let mut vars: Vec<(String, String)> = crate::provider_settings::environment_with_global(harness, include_global)
+        .into_iter()
+        .filter(|(name, _)| !removed.contains(&name.as_str()))
+        .collect();
+    vars.extend(
+        team.iter()
+            .filter(|(name, _)| !removed.contains(&name.as_str()))
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+    checked_environment(vars)
 }
 
 /// Loopback guard and size cap for an environment about to travel to a cloud machine.
@@ -125,7 +153,12 @@ pub(crate) async fn command(config: &RunConfig, configure: impl FnOnce(&mut Comm
         Vec::new()
     } else {
         match cloud_provider(app, &config.session_id) {
-            Some(cloud) => inherited_environment(cloud.as_str(), &config.provider)?,
+            Some(cloud) => inherited_environment(
+                cloud.as_str(),
+                &config.provider,
+                config.team_use_global_environment,
+                &config.team_environment,
+            )?,
             None => Vec::new(),
         }
     };
@@ -253,5 +286,28 @@ mod tests {
         vars.truncate(4);
         assert_eq!(super::checked_environment(vars).unwrap().len(), 4);
         assert!(super::checked_environment(Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_teams_variables_reach_the_bridge_only_while_the_cloud_inherits_and_pass_the_guards() {
+        let team = std::collections::BTreeMap::from([
+            ("TEAM_TOKEN".to_string(), "hush".to_string()),
+            ("NO_PROXY".to_string(), "localhost".to_string()),
+        ]);
+        // Off by default: nothing is sent, not even the team's own variables.
+        assert!(super::inherit_list(false, "codex", true, &team).unwrap().is_empty());
+        // Inheriting: the team's pairs ride (the provider's saved list is empty in
+        // tests) with the team's global opt-out honoured, guarded like any saved
+        // variable.
+        let vars = super::inherit_list(true, "codex", false, &team).unwrap();
+        assert!(vars.contains(&("TEAM_TOKEN".to_string(), "hush".to_string())));
+        assert!(vars.contains(&("NO_PROXY".to_string(), "localhost".to_string())));
+        // A loopback proxy in a team variable is refused before the machine starts.
+        let team = std::collections::BTreeMap::from([
+            ("HTTPS_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
+        ]);
+        let error = super::inherit_list(true, "codex", false, &team).unwrap_err();
+        assert!(error.contains("HTTPS_PROXY") && error.contains("cloud machine"));
+        assert!(!error.contains("7890"), "the value is never echoed back");
     }
 }

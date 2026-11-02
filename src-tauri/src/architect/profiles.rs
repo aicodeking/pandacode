@@ -148,8 +148,13 @@ pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
     Ok(library)
 }
 /// Keeps only variables with valid names and values, so a hand-edited library
-/// file cannot inject junk into a launch (`provider_settings::valid_vars`).
+/// file cannot inject junk into a launch (`provider_settings::valid_vars`). More
+/// variables than any launch accepts: the whole set drops, like the provider
+/// loader's.
 fn sanitize_environment(environment: &mut std::collections::BTreeMap<String, String>) {
+    if environment.len() > crate::provider_settings::MAX_ENV {
+        *environment = Default::default();
+    }
     environment.retain(|name, value| {
         crate::provider_settings::valid_env_name(name)
             && value.len() <= crate::provider_settings::MAX_ENV_VALUE
@@ -409,26 +414,6 @@ pub(crate) fn merge_team_environment(
     let mut merged = global.clone();
     merged.extend(own.clone());
     merged
-}
-/// The same merge as an ordered list of pairs: the team's own variables in name
-/// order first, then the shared names it does not carry.
-pub(crate) fn effective_team_environment(
-    global: &std::collections::BTreeMap<String, String>,
-    profile: &TeamProfile,
-) -> Vec<(String, String)> {
-    let own = &profile.setup.config.environment;
-    if !profile.setup.config.use_global_environment {
-        return own.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    }
-    own.iter()
-        .chain(
-            global
-                .iter()
-                .filter(|(name, _)| !own.contains_key(*name))
-                .map(|(k, v)| (k, v)),
-        )
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
 }
 /// The pre-decided launch environment for a team run, decided once at spawn prep
 /// and carried on `RunConfig` so warm adoption needs no new decisions: the team's

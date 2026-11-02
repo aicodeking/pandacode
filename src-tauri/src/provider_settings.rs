@@ -158,12 +158,6 @@ fn valid_environment(
         .collect()
 }
 
-/// The provider's effective environment: the global list unless the provider
-/// opted out, with the provider's own variables overriding shared names.
-fn effective_environment(settings: &Settings, provider: &str) -> Vec<(String, String)> {
-    effective_environment_with(settings, provider, true)
-}
-
 /// The shared global set every harness launch may inherit, for callers that
 /// merge their own variables over it (a team that opted out passes an empty map).
 pub(crate) fn global_environment() -> BTreeMap<String, String> {
@@ -190,10 +184,16 @@ pub(crate) fn includes_global_environment(provider: &str) -> bool {
 
 /// The provider's effective environment variables, in name order.
 pub fn environment(provider: &str) -> Vec<(String, String)> {
+    environment_with_global(provider, true)
+}
+
+/// The same, with the caller's decision on the shared global set: a team that
+/// opted out of it launches its harnesses with the provider's own variables only.
+pub(crate) fn environment_with_global(provider: &str, include_global: bool) -> Vec<(String, String)> {
     let Some(runtime) = CONFIG.get().and_then(|runtime| runtime.lock().ok()) else {
         return Vec::new();
     };
-    effective_environment(&runtime.settings, provider)
+    effective_environment_with(&runtime.settings, provider, include_global)
 }
 
 /// Applies the provider's saved environment to a command about to start its CLI.
@@ -1579,18 +1579,18 @@ mod tests {
         };
         // Global on for claude; the provider's own value overrides the shared name.
         assert_eq!(
-            effective_environment(&settings, "claude"),
+            effective_environment_with(&settings, "claude", true),
             [
                 ("HTTPS_PROXY".to_string(), "http://127.0.0.1:1080".to_string()),
                 ("HTTP_PROXY".to_string(), "http://127.0.0.1:7890".to_string()),
             ]
         );
         // The opt-out leaves codex with nothing of its own.
-        assert_eq!(effective_environment(&settings, "codex"), Vec::new());
+        assert_eq!(effective_environment_with(&settings, "codex", true), Vec::new());
         // Different effective environments produce different warm-key fingerprints.
         assert_ne!(
-            serde_json::to_string(&effective_environment(&settings, "claude")).unwrap(),
-            serde_json::to_string(&effective_environment(&settings, "codex")).unwrap()
+            serde_json::to_string(&effective_environment_with(&settings, "claude", true)).unwrap(),
+            serde_json::to_string(&effective_environment_with(&settings, "codex", true)).unwrap()
         );
     }
 
