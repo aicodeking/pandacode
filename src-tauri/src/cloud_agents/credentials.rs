@@ -8,13 +8,15 @@ use std::{
 };
 
 /// Writes the login files `harness` needs and returns environment variables for the agent
-/// process. `program` is the harness executable installed on the machine. Called before
+/// process. `program` is the harness executable installed on the machine. `github_login`
+/// pins the GitHub account a project uses; None keeps gh's active account. Called before
 /// every run. Never logs secret values.
 pub(crate) fn push(
     sandbox: &dyn Sandbox,
     native: &str,
     harness: &str,
     program: &str,
+    github_login: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     if !["claude", "glm", "mimo", "codex", "opencode"].contains(&harness) {
         return Err(format!("Unsupported cloud agent harness '{harness}'."));
@@ -29,7 +31,7 @@ pub(crate) fn push(
         "opencode" => push_opencode(sandbox, native, &home, &remote_home, program, &export_host_opencode)?,
         _ => return Err(format!("Unsupported cloud agent harness '{harness}'.")),
     }
-    if let Some(token) = local_gh_token() {
+    if let Some(token) = local_gh_token(github_login) {
         configure_github_helper(sandbox, native)?;
         env.push(("GH_TOKEN".into(), token));
     }
@@ -295,9 +297,14 @@ fn export_host_opencode() -> Option<String> {
     )
 }
 
-fn local_gh_token() -> Option<String> {
+/// The pinned account's own token, or gh's active one. A pinned read that fails returns
+/// None so the run goes out without GH_TOKEN — never with a different account's token.
+fn local_gh_token(login: Option<&str>) -> Option<String> {
     let mut command = Command::new("gh");
     command.args(["auth", "token"]);
+    if let Some(login) = login {
+        command.arg(format!("--user={login}"));
+    }
     let output = crate::workspace::run_process(
         command,
         "GitHub authentication",

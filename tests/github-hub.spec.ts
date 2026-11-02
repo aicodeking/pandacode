@@ -149,6 +149,29 @@ test('a repository that is only on GitHub can be cloned, then worked on', async 
   await expect(side(page).locator('.new-task-welcome')).toBeHidden();
 });
 
+test('a project pins one of its signed-in GitHub accounts', async ({ page }) => {
+  await openHub(page);
+  // Two accounts are signed in, so the chip shows and names gh's active one while nothing is pinned.
+  const chip = () => hub(page).getByRole('button', { name: 'GitHub account: octo-work' });
+  await expect(chip()).toBeVisible();
+  await chip().click();
+  const menu = page.locator('.choice-menu');
+  const personal = menu.getByRole('menuitemradio', { name: 'octo-personal' });
+  // With no pin, the check sits on Default, gh's active account (octo-work here).
+  await expect(menu.getByRole('menuitemradio', { name: 'Default' })).toHaveAttribute('aria-checked', 'true');
+  await expect(menu.getByRole('menuitemradio', { name: 'octo-work' })).toHaveAttribute('aria-checked', 'false');
+  await personal.click();
+  await expect(hub(page).getByRole('button', { name: 'GitHub account: octo-personal' })).toBeVisible();
+  // The pin outlives a refetch of the accounts.
+  await hub(page).locator('[data-gh="refresh"]').first().dispatchEvent('click');
+  await expect(hub(page).getByRole('button', { name: 'GitHub account: octo-personal' })).toBeVisible();
+  await hub(page).getByRole('button', { name: 'GitHub account: octo-personal' }).click();
+  await expect(personal).toHaveAttribute('aria-checked', 'true');
+  await menu.getByRole('menuitemradio', { name: 'Default' }).click();
+  await expect(chip()).toBeVisible();
+  await expect(hub(page).getByRole('button', { name: 'GitHub account: octo-personal' })).toHaveCount(0);
+});
+
 test('the GitHub view stays out of the way when GitHub is turned off', async ({ page }) => {
   await page.addInitScript(() => { localStorage.setItem('pandacode.github', 'off'); localStorage.setItem('pandacode.view', 'github'); });
   await page.goto('/');
