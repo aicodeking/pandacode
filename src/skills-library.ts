@@ -39,7 +39,7 @@ export type SkillsLibraryHost = {
 
 export const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-shaped value', approvals: 'Turns off approvals or the sandbox', 'pipe-to-shell': 'Download piped into a shell' };
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
-const SURFACE_HINTS: Record<SkillActivation['surface'], string> = { folder: '', block: '', prompt: '', link: 'Linked skill: the source folder changed since it was imported. Re-import it to review the new content.' };
+const SURFACE_HINTS: Record<SkillActivation['surface'], string> = { folder: '', block: '', prompt: '', link: 'Linked skill: the source folder changed or cannot be read. Re-import it to review the new content.' };
 const listText = (items: readonly string[]) => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 const message = (error: unknown) => errorText(error);
 /** The page's one line about what is on it (rules; the bot library, read-only, when it has skills) and where skills
