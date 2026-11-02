@@ -75,9 +75,12 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
             || extension.eq_ignore_ascii_case("cjs")
     });
     if node_script {
-        // A desktop app's bundled CLI (ZCode's `zcode.cjs`) is built for the app's
-        // own Electron runtime, which exists even where no system node does.
-        if let Some(runtime) = electron_runtime(path) {
+        // ZCode's bundled CLI (`glm/zcode.cjs`) is built for the app's own Electron
+        // runtime, which exists even where no system node does. Nothing else gets
+        // ELECTRON_RUN_AS_NODE, however it sits inside an app bundle.
+        let bundled_zcode = path.file_name().is_some_and(|name| name == "zcode.cjs")
+            && path.parent().and_then(Path::file_name).is_some_and(|name| name == "glm");
+        if let Some(runtime) = bundled_zcode.then(|| electron_runtime(path)).flatten() {
             return Ok(Launch {
                 program: external_path_for(&runtime, windows),
                 args: vec![external_path_for(path, windows).into_os_string()],
@@ -857,6 +860,28 @@ mod tests {
         assert_eq!(launch.program, external_path_for(&binary, true));
         assert_eq!(launch.args, [script.into_os_string()]);
         assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    /// Any other script at the bundled CLI's depth stays out of the app's runtime,
+    /// even with a runtime binary right there for it to find.
+    #[test]
+    fn only_glm_zcode_cjs_runs_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let (resources, binary) = if cfg!(target_os = "macos") {
+            ("ZCode.app/Contents/Resources", "ZCode.app/Contents/MacOS/ZCode")
+        } else if cfg!(windows) {
+            ("ZCode/resources", "ZCode/ZCode.exe")
+        } else {
+            ("ZCode/resources", "ZCode/zcode")
+        };
+        f.file(binary, "");
+        for name in ["glm/other.cjs", "glm/zcode.js", "tools/zcode.cjs"] {
+            let script = f.file(&format!("{resources}/{name}"), "#!/usr/bin/env node\n");
+            fs::write(script.with_file_name("node.exe"), "").unwrap();
+            let launch = resolve(&script, cfg!(windows)).unwrap();
+            assert_eq!(launch.env, None, "{name}");
+            assert_ne!(launch.program, f.0.join(binary), "{name}");
+        }
     }
 
     #[test]

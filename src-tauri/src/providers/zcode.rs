@@ -140,6 +140,13 @@ fn context_window_of(settings: &Value, reference: &Value) -> Option<u64> {
         .filter(|n| *n > 0 && *n <= 1_000_000_000)
 }
 
+/// The catalog entry offers this reasoning level.
+fn lists_level(entry: &Value, level: &str) -> bool {
+    entry["reasoning"]["levels"]
+        .as_array()
+        .is_some_and(|levels| levels.iter().any(|item| field(item, "value") == level))
+}
+
 fn workspace_of(cwd: &std::path::Path) -> Value {
     let path = cwd.to_string_lossy().to_string();
     json!({"workspacePath": path, "workspaceKey": path})
@@ -344,6 +351,11 @@ impl Protocol {
             {
                 self.config.resume_id = None;
                 self.remote_id.clear();
+                step.events.push(self.event(
+                    "status",
+                    "The saved ZCode session is gone, so a new session started without its history",
+                    None,
+                ));
                 step.write.push(self.zcode_create());
                 return Ok(step);
             }
@@ -549,6 +561,7 @@ impl Protocol {
         }
         let catalog = &settings["model"]["available"];
         let wanted = &self.config.model;
+        let mut thought = self.config.reasoning_effort.clone();
         if !wanted.is_empty() && wanted != "default" {
             let entry = catalog
                 .as_array()
@@ -563,16 +576,16 @@ impl Protocol {
             // The selection itself must carry the reasoning level: the server
             // validates `options.reasoningLevel` inside setModel and rejects the
             // frame without it, so the later setThoughtLevel cannot repair it.
-            let level = self.config.reasoning_effort.clone().or_else(|| {
-                let entry = entry?;
-                let levels = entry["reasoning"]["levels"].as_array()?;
-                if levels.is_empty() {
-                    return None;
+            // An effort this model does not list falls to its default, and is
+            // not sent to setThoughtLevel either, which would fail the run.
+            if let Some(entry) = entry {
+                thought = thought.filter(|effort| lists_level(entry, effort));
+                let default = entry["reasoning"]["defaultLevel"]
+                    .as_str()
+                    .filter(|level| lists_level(entry, level));
+                if let Some(level) = thought.as_deref().or(default) {
+                    reference["options"] = json!({"reasoningLevel": level});
                 }
-                entry["reasoning"]["defaultLevel"].as_str().map(str::to_owned)
-            });
-            if let Some(level) = level {
-                reference["options"] = json!({"reasoningLevel": level});
             }
             self.zcode.requested_model = Some((
                 string(&reference, "providerId"),
@@ -583,12 +596,12 @@ impl Protocol {
                 "params": {"sessionId": self.remote_id, "model": reference},
             }));
         }
-        if let Some(effort) = &self.config.reasoning_effort {
-            self.zcode.requested_thought = Some(effort.clone());
+        if let Some(effort) = thought {
             step.write.push(json!({
                 "id": ID_THOUGHT, "method": "session/setThoughtLevel",
                 "params": {"sessionId": self.remote_id, "thoughtLevel": effort},
             }));
+            self.zcode.requested_thought = Some(effort);
         }
         step.write.push(json!({
             "id": ID_SUBSCRIBE, "method": "session/subscribe",
@@ -757,6 +770,47 @@ mod tests {
     }
 
     #[test]
+    fn set_model_sends_an_explicit_effort_only_when_the_catalog_lists_it() {
+        let chain = |model: &str, effort: &str, snapshot: Value| {
+            let mut config = super::super::tests::config("zcode");
+            config.cwd = PathBuf::from("/tmp");
+            config.model = model.into();
+            config.reasoning_effort = Some(effort.into());
+            let mut p = Protocol::new(config);
+            p.receive(json!({"id": ID_CREATE, "result": snapshot})).unwrap().write
+        };
+        let glm = "zcproxy/GLM-5.3";
+
+        let write = chain(glm, "low", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "low");
+        assert_eq!(write[1]["params"]["thoughtLevel"], "low");
+
+        // An unlisted effort takes the model's default, and setThoughtLevel is
+        // skipped: the server would not apply it and the run would fail.
+        let write = chain(glm, "medium", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A model with no levels has no default to fall back to.
+        let mut levelless = snapshot();
+        levelless["settings"]["model"]["available"][0]["reasoning"] = json!({"levels": []});
+        let write = chain(glm, "high", levelless);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A default the entry does not list is not sent either.
+        let mut stale = snapshot();
+        stale["settings"]["model"]["available"][0]["reasoning"]["defaultLevel"] = json!("ultra");
+        let write = chain(glm, "medium", stale);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+
+        // A custom id has no entry to check: no options, setThoughtLevel still runs.
+        let write = chain("pandacode/custom-model", "high", snapshot());
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["params"]["thoughtLevel"], "high");
+    }
+
+    #[test]
     fn default_model_sends_directly_and_custom_ids_ride_the_current_provider() {
         let (mut p, step) = created();
         assert_eq!(step.write.len(), 1, "no model or effort is configured");
@@ -813,6 +867,21 @@ mod tests {
             panic!("a fresh create's error must fail the run");
         };
         assert_eq!(message, "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a");
+    }
+
+    #[test]
+    fn a_dead_resume_id_reports_the_lost_history() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.events.len(), 1);
+        assert_eq!(step.events[0].kind, "status");
+        assert!(step.events[0].text.contains("without its history"), "{}", step.events[0].text);
     }
 
     #[test]
