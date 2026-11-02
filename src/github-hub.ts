@@ -109,7 +109,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
       const current = cache.get(name);
       if (current?.loading || (!force && current && Date.now() - current.at < STALE)) return;
       cache.set(name, { ...current, loading: true, at: current?.at ?? 0 });
-      try { cache.set(name, { items: await host.call<T[]>(command, { repo: name }), loading: false, at: Date.now() }); }
+      try { cache.set(name, { items: await host.call<T[]>(command, { repo: name, projectId: mapping.get(name) ?? null }), loading: false, at: Date.now() }); }
       catch (cause) { cache.set(name, { error: cause instanceof Error ? cause.message : String(cause), loading: false, at: Date.now() }); }
       if (!disposed && name === selected) render();
     };
@@ -318,7 +318,7 @@ export function mountGithubHub(root: HTMLElement, host: HubHost): HubView {
     renderBody();
     if (!expanded.has(run.id) || details.has(key)) return;
     try {
-      const loaded = await host.call<RunDetails>('github_run_details', { repo: name, id: run.id });
+      const loaded = await host.call<RunDetails>('github_run_details', { repo: name, id: run.id, projectId: mapping.get(name) ?? null });
       // Summaries are rendered once here, sanitized by markdownHtml, so the synchronous body can hold them.
       const jobs = [...loaded.jobs, ...(loaded.attempts ?? []).flatMap(attempt => attempt.jobs)].filter(job => job.summary);
       const summaries = Object.fromEntries(await Promise.all(jobs.map(async job => [job.id, await markdownHtml(job.summary)] as const)));

@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use crate::github::{json, names, run_gh, state_of, text, TIMEOUT};
+use crate::github::{json, names, run_gh, run_gh_token, state_of, text, TIMEOUT};
 use crate::workspace::{checked, run_process};
 
 const LIST_LIMIT: &str = "50";
@@ -210,10 +210,10 @@ fn author(value: &serde_json::Value) -> String {
     value.get("author").map(|author| text(author, "login")).unwrap_or_default()
 }
 
-pub fn pulls(repo: &str) -> Result<Vec<HubPull>, String> {
+pub fn pulls(repo: &str, token: Option<&str>) -> Result<Vec<HubPull>, String> {
     let repo = valid_repo(repo)?;
     let fields = "number,title,author,state,isDraft,headRefName,baseRefName,updatedAt,url,reviewDecision,statusCheckRollup,additions,deletions,labels";
-    let capture = run_gh(&account_root(), &["pr", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), &format!("--json={fields}")], TIMEOUT)?;
+    let capture = run_gh_token(&account_root(), token, &["pr", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), &format!("--json={fields}")], TIMEOUT)?;
     let value = json(&capture)?;
     let items = value.as_array().ok_or("GitHub returned an unexpected response.")?;
     Ok(items
@@ -236,9 +236,9 @@ pub fn pulls(repo: &str) -> Result<Vec<HubPull>, String> {
         .collect())
 }
 
-pub fn issues(repo: &str) -> Result<Vec<HubIssue>, String> {
+pub fn issues(repo: &str, token: Option<&str>) -> Result<Vec<HubIssue>, String> {
     let repo = valid_repo(repo)?;
-    let capture = run_gh(&account_root(), &["issue", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), "--json=number,title,author,updatedAt,url,comments,labels,assignees"], TIMEOUT)?;
+    let capture = run_gh_token(&account_root(), token, &["issue", "list", &format!("--repo={repo}"), "--state=open", &format!("--limit={LIST_LIMIT}"), "--json=number,title,author,updatedAt,url,comments,labels,assignees"], TIMEOUT)?;
     let value = json(&capture)?;
     let items = value.as_array().ok_or("GitHub returned an unexpected response.")?;
     Ok(items
@@ -299,9 +299,9 @@ pub fn runs_of(value: &serde_json::Value) -> Vec<HubRun> {
 }
 
 /// The repository's most recent workflow runs, newest first.
-pub fn runs(repo: &str) -> Result<Vec<HubRun>, String> {
+pub fn runs(repo: &str, token: Option<&str>) -> Result<Vec<HubRun>, String> {
     let repo = valid_repo(repo)?;
-    let capture = run_gh(&account_root(), &["api", &format!("repos/{repo}/actions/runs?per_page={LIST_LIMIT}")], TIMEOUT)?;
+    let capture = run_gh_token(&account_root(), token, &["api", &format!("repos/{repo}/actions/runs?per_page={LIST_LIMIT}")], TIMEOUT)?;
     Ok(runs_of(&json(&capture)?))
 }
 
@@ -376,13 +376,13 @@ pub fn attempt_of(run: &serde_json::Value, attempt: i64, all_jobs: &serde_json::
     }
 }
 
-pub fn run_details(repo: &str, id: i64) -> Result<RunDetails, String> {
+pub fn run_details(repo: &str, id: i64, token: Option<&str>) -> Result<RunDetails, String> {
     let repo = valid_repo(repo)?;
     if id <= 0 {
         return Err("Choose a workflow run.".into());
     }
     let root = account_root();
-    let api = |path: String| run_gh(&root, &["api", &path], TIMEOUT).and_then(|capture| json(&capture));
+    let api = |path: String| run_gh_token(&root, token, &["api", &path], TIMEOUT).and_then(|capture| json(&capture));
     let jobs = api(format!("repos/{repo}/actions/runs/{id}/jobs?per_page=100"))?;
     let artifacts = api(format!("repos/{repo}/actions/runs/{id}/artifacts?per_page=100"))?;
     // Summaries are extra: one check-runs read for the commit, skipped if it fails.
@@ -519,8 +519,8 @@ mod tests {
         assert!(details.artifacts[1].expired);
         assert_eq!(details_of(&json!({}), &json!({})), RunDetails::default());
         assert!(details.jobs[1].steps.is_empty() && details.jobs[1].summary.is_empty());
-        assert!(run_details("orbit-labs/orbit", 0).is_err());
-        assert!(run_details("--x", 1).is_err());
+        assert!(run_details("orbit-labs/orbit", 0, None).is_err());
+        assert!(run_details("--x", 1, None).is_err());
     }
 
     #[test]

@@ -117,9 +117,11 @@ fn gh_command(root: &Path, args: &[&str], token: Option<&str>) -> Command {
         .env("NO_COLOR", "1")
         .env("CLICOLOR", "0");
     // A pinned project's token rides as GH_TOKEN, so gh acts as that account; without
-    // one gh stays on its own active account.
+    // one gh stays on its own active account. gh reads GH_TOKEN for github.com only,
+    // so its GH_ENTERPRISE_TOKEN twin rides along for Enterprise checkouts.
     if let Some(token) = token {
         command.env("GH_TOKEN", token);
+        command.env("GH_ENTERPRISE_TOKEN", token);
     }
     command
 }
@@ -536,6 +538,8 @@ mod tests {
         let with = gh_command(std::path::Path::new("/"), &["--version"], Some("gho_pinned"));
         let value = with.get_envs().find(|(key, _)| *key == "GH_TOKEN").and_then(|(_, value)| value).expect("a pinned account's token rides as GH_TOKEN");
         assert_eq!(value, std::ffi::OsStr::new("gho_pinned"));
+        let enterprise = with.get_envs().find(|(key, _)| *key == "GH_ENTERPRISE_TOKEN").and_then(|(_, value)| value).expect("the Enterprise twin rides along");
+        assert_eq!(enterprise, std::ffi::OsStr::new("gho_pinned"));
         let without = gh_command(std::path::Path::new("/"), &["--version"], None);
         assert!(without.get_envs().find(|(key, _)| *key == "GH_TOKEN").is_none(), "no token leaves gh on its own active account");
     }

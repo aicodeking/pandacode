@@ -17,8 +17,12 @@ Enterprise account pins with its host): each call resolves that account's token
 from your own `gh` keyring and hands it to the one `gh` process it starts, so
 PandaCode still stores no tokens. Default follows gh's own default account,
 including a GH_TOKEN exported into PandaCode's environment; a project pin
-always overrides it. Repository listings in the GitHub view keep using `gh`'s
-active account.
+always overrides it. That account also runs the project's listings in the
+GitHub view (its pull requests, issues and workflow runs) and every harness
+process a task of the project starts, so the agent's own `gh` and `git`
+calls and its terminal console act as the pinned account too. Only the
+repository browser (and cloning from it) keeps using `gh`'s active account,
+since what it lists belongs to that account.
 
 ## GitHub view
 
