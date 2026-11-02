@@ -156,10 +156,17 @@ async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, tex
 
 /// `compose` marks the brief seen before the turn starts. When the turn never starts (a refused
 /// launch or a full image limit) the brief was not delivered, so the next message carries it.
-fn unbrief(app: &tauri::AppHandle, session_id: &str, version: i64) {
+fn unbrief(app: &tauri::AppHandle, session_id: &str, previous: i64, composed: i64) {
     if let Ok(store) = app.state::<AppState>().store.lock() {
-        let _ = super::mark_briefed(&store, session_id, version);
+        let _ = restore_brief(&store, session_id, previous, composed);
     }
+}
+
+/// Puts back `previous` only while the thread is still at the version this turn `composed`, so a
+/// failed turn never rolls back a newer brief.
+fn restore_brief(store: &Store, session_id: &str, previous: i64, composed: i64) -> Result<()> {
+    store.db.execute("UPDATE bot_threads SET brief_version=?2 WHERE session_id=?1 AND brief_version=?3", rusqlite::params![session_id, previous, composed]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub(crate) async fn deliver(app: &tauri::AppHandle, inbound: Inbound) -> Result<String> {
@@ -226,7 +233,7 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
         (compose(app, &store, &bot, &session_id, &kind, &inbound.sender_name, &format!("{text}{moodboard}"))?, briefed)
     };
     if let Err(error) = start_or_queue(app, &bot, &session_id, turn, inbound.image_ids, &inbound.sender_id, force_queue).await {
-        unbrief(app, &session_id, briefed);
+        unbrief(app, &session_id, briefed, bot.memory_version);
         return Err(error);
     }
     let _ = app.emit("bots-changed", ());
@@ -250,7 +257,7 @@ pub(crate) async fn run_scheduled(app: &tauri::AppHandle, bot_id: &str, label: &
         (bot, session, turn, briefed)
     };
     if let Err(error) = start_or_queue(app, &bot, &session_id, turn, None, "schedule", false).await {
-        unbrief(app, &session_id, briefed);
+        unbrief(app, &session_id, briefed, bot.memory_version);
         return Err(error);
     }
     let _ = app.emit("bots-changed", ());
@@ -509,6 +516,26 @@ mod tests {
         assert!(!steer_while_busy(&bot("steer"), &["image-id".into()], "desktop"));
         assert!(!steer_while_busy(&bot("steer"), &[], "bot:scout"));
         assert!(!steer_while_busy(&bot("steer"), &[], "channel:launch"));
+    }
+
+    #[test]
+    fn a_failed_turn_restores_only_the_brief_it_composed() {
+        let root = std::env::temp_dir().join(format!("pandacode-unbrief-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = super::super::BotInput { name: "Scout".into(), role: "Research".into(), instructions: "Be brief.".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = super::super::create(&store, &input, &root).unwrap();
+        let (session, _) = super::super::thread_session(&store, &bot, super::super::DESKTOP, super::super::DESKTOP, "Scout · You").unwrap();
+
+        super::super::mark_briefed(&store, &session, 5).unwrap();
+        restore_brief(&store, &session, 4, 5).unwrap();
+        assert_eq!(super::super::brief_version_of(&store, &session).unwrap(), 4, "undelivered brief goes out again");
+
+        // A newer brief landed while the turn was failing: it stays.
+        super::super::mark_briefed(&store, &session, 6).unwrap();
+        restore_brief(&store, &session, 4, 5).unwrap();
+        assert_eq!(super::super::brief_version_of(&store, &session).unwrap(), 6);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
