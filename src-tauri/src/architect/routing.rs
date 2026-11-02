@@ -535,6 +535,8 @@ mod council_diversity_tests {
             workers: vec![WorkerProfile { id: "fast".into(), name: "Fast".into(), provider: "codex".into(), model: "m".into(), reasoning_effort: None }],
             catalog: vec![], max_parallel: 0, max_rounds: 0, max_assignments: 0, workspace: "shared".into(), summary_limit: 0, lead_guidance: None,
             council: Some(Default::default()),
+            environment: Default::default(),
+            use_global_environment: true,
         });
         let mut old: crate::architect::Worker = serde_json::from_value(json!({"id":"old","sessionId":"s","name":"n","profileId":"auto","provider":"codex","model":"m","reasoningEffort":null,"status":"failed","assignment":"a","summary":"","error":null,"dependsOn":[],"files":[],"attempt":1,"createdAt":1,"updatedAt":1})).unwrap();
         old.council = Some(Default::default());

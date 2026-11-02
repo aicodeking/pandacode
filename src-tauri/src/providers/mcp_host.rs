@@ -1366,7 +1366,7 @@ mod tests {
         let server = server().await;
         let entry = server.zcode_config();
         let workspace = std::env::temp_dir();
-        let mut command = provider_command("zcode", &path).unwrap();
+        let mut command = provider_command("zcode", &path, true).unwrap();
         command
             .arg("app-server")
             .current_dir(&workspace)

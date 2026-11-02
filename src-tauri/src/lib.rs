@@ -1176,6 +1176,8 @@ fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     }
 }
 
@@ -2267,7 +2269,22 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
-    let config = RunConfig { prompt, images, skill, goal: admission.goal, ..launch_config(&session, cwd) };
+    // The team environment is decided once here and carried on RunConfig, so a
+    // warm adoption later needs no new decisions: the team's own values plus the
+    // shared global set (dropped when the team or its provider card opted out).
+    let (team_environment, team_use_global_environment) = admission
+        .team
+        .as_ref()
+        .and_then(|team| architect::load(&store, &team.parent).ok().flatten())
+        .map(|team| {
+            architect::profiles::team_launch_environment(
+                &crate::provider_settings::global_environment(),
+                &team.config,
+                crate::provider_settings::includes_global_environment(&session.provider),
+            )
+        })
+        .unwrap_or((Default::default(), true));
+    let config = RunConfig { prompt, images, skill, goal: admission.goal, team_environment, team_use_global_environment, ..launch_config(&session, cwd) };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
     let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
     architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
@@ -2329,6 +2346,8 @@ fn prepare_cloud_attach(
         skill: None,
         goal: None,
         codex_settings: session.codex_settings,
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     };
     let mut agent = RunningAgent::new(tx, stopped);
     // A re-attached run has no team admission: whether it is a worker's comes from the store.
@@ -5334,6 +5353,9 @@ pub fn run() {
                 architect::profiles::architect_set_lead_guidance,
                 architect::profiles::architect_save_profile,
                 architect::profiles::architect_delete_profile,
+                architect::profiles::architect_set_team_environment_variable,
+                architect::profiles::architect_remove_team_environment_variable,
+                architect::profiles::architect_set_team_use_global_environment,
                 architect::architect_get,
                 architect::architect_configure,
                 architect::architect_set_council,

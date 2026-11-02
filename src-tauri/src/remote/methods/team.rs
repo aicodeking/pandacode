@@ -141,6 +141,8 @@ pub(crate) fn auto_config(harnesses: &[Harness], last: Option<&TeamConfig>) -> T
         lead_guidance: None,
         // The phone has no Council controls, so its automatic teams never convene one.
         council: None,
+        environment: Default::default(),
+        use_global_environment: true,
     }
 }
 
