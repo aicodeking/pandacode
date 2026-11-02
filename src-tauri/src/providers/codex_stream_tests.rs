@@ -14,6 +14,7 @@ fn protocol() -> Protocol {
         skill: None,
         goal: None,
         codex_settings: None,
+        github_pin: None,
         images: Vec::new(),
     });
     protocol.remote_id = "main".into();

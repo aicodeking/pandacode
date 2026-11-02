@@ -359,7 +359,7 @@ pub(crate) fn detect_as(root: &Path, repo: &Repository, pinned: Option<&str>, to
 /// from [`crate::github_hub::github_remotes`]): a pull request link in any of them is a
 /// candidate, newest mention first, and each lookup is pinned to the repository in its URL.
 /// Refused with no repository (no phone path leaves `gh` to pick one).
-pub(crate) fn detect_in_as(root: &Path, repos: &[String], turn: &[String], branch: &str, turn_started: i64, trust: Trust) -> Result<Option<TaskLink>, String> {
+pub(crate) fn detect_in_as(root: &Path, repos: &[String], turn: &[String], branch: &str, turn_started: i64, token: Option<&str>, trust: Trust) -> Result<Option<TaskLink>, String> {
     if repos.iter().all(|repo| repo.trim().is_empty()) {
         return Err(NO_GITHUB_REMOTE.into());
     }
@@ -372,7 +372,7 @@ pub(crate) fn detect_in_as(root: &Path, repos: &[String], turn: &[String], branc
         }
     }
     for (repo, number) in candidates.into_iter().take(MAX_CANDIDATES) {
-        let Ok(value) = view_in_as(root, pin(Some(repo), trust)?, None, "pull", number, LINK_FIELDS, trust) else { continue };
+        let Ok(value) = view_in_as(root, pin(Some(repo), trust)?, token, "pull", number, LINK_FIELDS, trust) else { continue };
         if belongs_to_turn(&value, branch, turn_started) {
             return Ok(link_from(&value));
         }
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(pinned_repo(&dir, Some("https://github.com/me/fork/pull/9")), Ok("me/fork".into()));
         assert!(std::process::Command::new("git").args(["config", "remote.origin.gh-resolved", "base"]).current_dir(&dir).status().unwrap().success());
         assert_eq!(pinned_repo(&dir, None), Ok("me/fork".into()));
-        assert_eq!(detect_in_as(&dir, &[], &[], "", 0, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
+        assert_eq!(detect_in_as(&dir, &[], &[], "", 0, None, Trust::phone(true)).unwrap_err(), NO_GITHUB_REMOTE);
         let repos = ["up/stream".to_owned(), "me/fork".to_owned()];
         let text = "Opened https://github.com/me/fork/pull/7, then https://github.com/Up/Stream/pull/12 and notgithub.com/up/stream/pull/5 or https://github.com/other/x/pull/3";
         assert_eq!(pull_refs(text, &repos), [("me/fork", 7), ("up/stream", 12)], "any remote's links, in order");

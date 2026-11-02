@@ -1177,6 +1177,7 @@ fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
         skill: None,
         goal: None,
         codex_settings: session.codex_settings.clone(),
+        github_pin: None,
     }
 }
 
@@ -2268,7 +2269,7 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
-    let config = RunConfig { prompt, images, skill, goal: admission.goal, ..launch_config(&session, cwd) };
+    let config = RunConfig { prompt, images, skill, goal: admission.goal, github_pin: github_accounts::pinned_login(&session.project_id), ..launch_config(&session, cwd) };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
     let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
     architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
@@ -2330,6 +2331,8 @@ fn prepare_cloud_attach(
         skill: None,
         goal: None,
         codex_settings: session.codex_settings,
+        // A cloud run's environment is pinned on its machine (credentials.rs), never here.
+        github_pin: None,
     };
     let mut agent = RunningAgent::new(tx, stopped);
     // A re-attached run has no team admission: whether it is a worker's comes from the store.
@@ -4079,21 +4082,46 @@ async fn project_icon(state: State<'_, AppState>, project_id: String) -> Result<
 async fn github_repos() -> Result<Vec<github_hub::HubRepo>> {
     blocking(github_hub::repos).await
 }
+/// The token for an optional project pin: None (no local project) keeps gh's active
+/// account, and a pin that cannot resolve fails the call instead of switching identity.
+fn optional_pin(project_id: Option<&str>) -> std::result::Result<Option<String>, String> {
+    match project_id {
+        Some(project) => github_token(project),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
-async fn github_repo_pulls(repo: String) -> Result<Vec<github_hub::HubPull>> {
-    blocking(move || github_hub::pulls(&repo)).await
+async fn github_repo_pulls(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubPull>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::pulls(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_repo_issues(repo: String) -> Result<Vec<github_hub::HubIssue>> {
-    blocking(move || github_hub::issues(&repo)).await
+async fn github_repo_issues(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubIssue>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::issues(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_repo_runs(repo: String) -> Result<Vec<github_hub::HubRun>> {
-    blocking(move || github_hub::runs(&repo)).await
+async fn github_repo_runs(repo: String, project_id: Option<String>) -> Result<Vec<github_hub::HubRun>> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::runs(&repo, token.as_deref())
+    })
+    .await
 }
 #[tauri::command]
-async fn github_run_details(repo: String, id: i64) -> Result<github_hub::RunDetails> {
-    blocking(move || github_hub::run_details(&repo, id)).await
+async fn github_run_details(repo: String, id: i64, project_id: Option<String>) -> Result<github_hub::RunDetails> {
+    blocking(move || {
+        let token = optional_pin(project_id.as_deref())?;
+        github_hub::run_details(&repo, id, token.as_deref())
+    })
+    .await
 }
 /// Which local projects check out which GitHub repositories, by their `origin` remote.
 #[tauri::command]
@@ -4114,6 +4142,14 @@ async fn github_clone_repo(state: State<'_, AppState>, repo: String, parent: Str
 /// gh keyring; None keeps gh on its active account. The token never leaves the child env.
 fn github_token(project_id: &str) -> std::result::Result<Option<String>, String> {
     github_accounts::token_for(github_accounts::pinned_login(project_id).as_deref())
+}
+
+/// The pinned account's token for a task's project, for surfaces that know only the
+/// session (the terminal console). None keeps gh's active account.
+pub(crate) fn session_github_token(app: &tauri::AppHandle, session_id: &str) -> Option<String> {
+    let state = app.try_state::<AppState>()?;
+    let project = state.store.lock().ok()?.session(session_id).ok()?.project_id;
+    github_accounts::token_for(github_accounts::pinned_login(&project).as_deref()).ok().flatten()
 }
 
 #[tauri::command]
