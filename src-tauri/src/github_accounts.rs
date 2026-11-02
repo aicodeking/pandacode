@@ -15,15 +15,18 @@ pub struct Account {
 
 /// Every signed-in account in a combined `gh auth status` report, in file order.
 /// A `✓ Logged in to <host> account <login> …` line creates an account; `- Active
-/// account: true/false` markers attach to the most recent one; an account no marker
-/// reached keeps the legacy default (the only account on its host is the active one),
-/// and a host never shows more than one active account — the first claim wins.
+/// account: true/false` markers attach to the most recent account of their host
+/// section (an unindented host header starts a new one, so a failed env-token
+/// entry never marks another host's account); an account no marker reached keeps
+/// the legacy default (the only account on its host is the active one), and a
+/// host never shows more than one active account — the first claim wins.
 pub fn parse_status(report: &str) -> Vec<Account> {
     let mut accounts: Vec<Account> = Vec::new();
     let mut marked = Vec::new();
+    let mut latest: Option<usize> = None;
     for line in report.lines() {
-        let line = line.trim_start();
-        if let Some(rest) = line.strip_prefix("✓ Logged in to ") {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("✓ Logged in to ") {
             let Some((host, login)) = rest.split_once(" account ") else { continue };
             let (host, login) = (host.trim(), login.split_whitespace().next().unwrap_or_default());
             if host.is_empty() || login.is_empty() {
@@ -31,8 +34,9 @@ pub fn parse_status(report: &str) -> Vec<Account> {
             }
             accounts.push(Account { login: login.to_string(), host: host.to_string(), active: false });
             marked.push(false);
-        } else if let Some(rest) = line.strip_prefix("- Active account: ") {
-            let Some(latest) = marked.len().checked_sub(1) else { continue };
+            latest = Some(accounts.len() - 1);
+        } else if let Some(rest) = trimmed.strip_prefix("- Active account: ") {
+            let Some(latest) = latest else { continue };
             marked[latest] = true;
             if rest.trim() != "true" {
                 continue;
@@ -42,6 +46,10 @@ pub fn parse_status(report: &str) -> Vec<Account> {
                 continue;
             }
             accounts[latest].active = true;
+        } else if !trimmed.is_empty() && trimmed.len() == line.len() {
+            // An unindented host header starts a new section; its failed env-token
+            // entries and their markers belong to this host, never the previous one.
+            latest = None;
         }
     }
     for (index, reached) in marked.iter().enumerate() {
@@ -78,6 +86,7 @@ pub fn pinned_login(project_id: &str) -> Option<String> {
     settings().projects.get(project_id).cloned()
 }
 pub fn set_pinned_login(project_id: &str, login: Option<&str>) -> crate::Result<()> {
+    // Read-modify-write without a lock: two concurrent pins can lose one; re-pin to recover.
     let mut all = settings();
     match login {
         Some(login) => { all.projects.insert(project_id.to_string(), login.to_string()); }
@@ -92,19 +101,33 @@ pub fn token_from_output(output: &str) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
+/// A pin is `login@host`, or a bare `login` for the default host (older pins). Logins and
+/// hostnames never contain `@`, and the split is at the last one to be safe regardless.
+pub fn split_pin(value: &str) -> (&str, Option<&str>) {
+    match value.rsplit_once('@') {
+        Some((login, host)) => (login, Some(host)),
+        None => (value, None),
+    }
+}
+
 pub fn token_error(login: &str) -> String {
     format!("GitHub account {login} is not signed in. Run `gh auth login` to add it.")
 }
 
 /// The pinned account's token, resolved fresh from the user's own gh keyring on every
-/// call. The token travels only to the child process's environment; it is never logged
-/// or stored. A missing or failed lookup is an error, never another account's token.
-pub fn token_for(login: Option<&str>) -> Result<Option<String>, String> {
-    let Some(login) = login else { return Ok(None) };
+/// call. The pin names the account (`login@host`, or a bare login for the default host).
+/// The token travels only to the child process's environment; it is never logged or
+/// stored. A missing or failed lookup is an error, never another account's token.
+pub fn token_for(pin: Option<&str>) -> Result<Option<String>, String> {
+    let Some(value) = pin else { return Ok(None) };
+    let (login, host) = split_pin(value);
     let program = crate::providers::tool_path("gh").unwrap_or_else(|| "gh".into());
     let mut command = Command::new(program);
+    command.args(["auth", "token"]);
+    if let Some(host) = host {
+        command.arg(format!("--hostname={host}"));
+    }
     command
-        .args(["auth", "token"])
         // The `--flag=value` form keeps the login out of the CLI's option parser.
         .arg(format!("--user={login}"))
         .current_dir(home());
@@ -289,5 +312,50 @@ github.com
     #[test]
     fn token_error_names_the_account_and_how_to_add_it() {
         assert_eq!(token_error("alice"), "GitHub account alice is not signed in. Run `gh auth login` to add it.");
+    }
+
+    #[test]
+    fn split_pin_separates_login_and_host_at_the_last_at_sign() {
+        assert_eq!(split_pin("alice"), ("alice", None));
+        assert_eq!(split_pin("alice@ghe.acme.dev"), ("alice", Some("ghe.acme.dev")));
+        assert_eq!(split_pin("a@b@c"), ("a@b", Some("c")));
+    }
+
+    /// Real shape when PandaCode inherits a GH_TOKEN (gh 2.103.3): the failed token entry
+    /// carries the `Active account: true` marker and reaches no account, so the keyring
+    /// account parses with gh's own `false` mark and stays the only one to resolve as.
+    #[test]
+    fn parse_status_keeps_a_failed_gh_token_entry_out_of_the_accounts() {
+        assert_eq!(
+            parse_status(
+                "\
+github.com
+  X Failed to log in to github.com using token (GH_TOKEN)
+  - Active account: true
+  ✓ Logged in to github.com account hongkongkiwi (keyring)
+  - Active account: false
+"
+            ),
+            vec![account("hongkongkiwi", "github.com", false)]
+        );
+    }
+
+    /// A failed env-token entry on a later host must not mark the previous host's
+    /// last account: its host header ends the earlier section first.
+    #[test]
+    fn parse_status_keeps_a_later_failed_entry_from_marking_the_previous_host() {
+        assert_eq!(
+            parse_status(
+                "\
+github.com
+  ✓ Logged in to github.com account alice (keyring)
+  - Active account: false
+ghe.acme.dev
+  X Failed to log in to ghe.acme.dev using token (GH_ENTERPRISE_TOKEN)
+  - Active account: true
+"
+            ),
+            vec![account("alice", "github.com", false)]
+        );
     }
 }

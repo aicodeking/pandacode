@@ -12,10 +12,13 @@ whose remote is not on GitHub simply show nothing.
 A project can also pin one GitHub account of its own. When more than one account
 is signed in to `gh`, the GitHub view's header shows a chip listing every one of
 them, and the account you pick is the one that project's issues, pull requests
-and searches run as. The pin stores a login only: each call resolves that
-account's token from your own `gh` keyring and hands it to the one `gh` process
-it starts, so PandaCode still stores no tokens. Repository listings in the
-GitHub view keep using `gh`'s active account.
+and searches run as. The pin stores the account's login and host only (an
+Enterprise account pins with its host): each call resolves that account's token
+from your own `gh` keyring and hands it to the one `gh` process it starts, so
+PandaCode still stores no tokens. Default follows gh's own default account,
+including a GH_TOKEN exported into PandaCode's environment; a project pin
+always overrides it. Repository listings in the GitHub view keep using `gh`'s
+active account.
 
 ## GitHub view
 
