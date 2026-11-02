@@ -882,7 +882,7 @@ fn probe_version(id: &str, path: &Path, timeout: Duration) -> Result<String, Str
 fn drain_pipe<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut bytes = Vec::new();
-        if let Some(mut pipe) = pipe {
+        if let Some(pipe) = pipe {
             // Version output is tiny; the cap keeps a chatty child from ballooning memory,
             // since read_to_end otherwise runs until EOF.
             use std::io::Read as _;
