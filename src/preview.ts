@@ -1137,9 +1137,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
-    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
+    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
-    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
+    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : args?.provider === 'laya' ? [{ id: 'laya-system-one', name: 'laya-system-one' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
     case 'jev_watch_run': break; // Preview never starts Chrome or contacts model providers.
     case 'jev_assist_prepare': {
