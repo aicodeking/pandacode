@@ -717,6 +717,42 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Project not found.".into())
     }
+    /// Point a project at its folder's new location after the folder was renamed or
+    /// moved outside PandaCode. Chats, tasks and history keep their ids.
+    pub fn relink_project(&self, project_id: &str, path: &Path) -> Result<Project> {
+        let project = self.project(project_id)?;
+        if crate::chats::is_chat_folder(Path::new(&project.path)) {
+            return Err("Chat folders cannot be relinked.".into());
+        }
+        let path = path
+            .canonicalize()
+            .map_err(|e| format!("Cannot open folder: {e}"))?;
+        if !path.is_dir() {
+            return Err("Choose a folder.".into());
+        }
+        let path_str = path.to_string_lossy().to_string();
+        if path_str == project.path {
+            return Ok(project);
+        }
+        let taken: bool = self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE path=?1 AND id<>?2)",
+                params![path_str, project_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if taken {
+            return Err("Another project already uses this folder.".into());
+        }
+        self.db
+            .execute(
+                "UPDATE projects SET path=?2 WHERE id=?1",
+                params![project_id, path_str],
+            )
+            .map_err(|e| e.to_string())?;
+        self.project(project_id)
+    }
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM projects WHERE id=?1", [project_id])
@@ -1994,6 +2030,47 @@ mod tests {
         assert_eq!(store.project(&added[2].id).unwrap().added_order, added[2].added_order);
         let json = serde_json::to_value(&listed[0]).unwrap();
         assert!(json.get("addedOrder").is_some_and(|value| value.is_i64()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relinking_points_the_project_at_its_moved_folder() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-relink-{}", id()));
+        std::fs::create_dir_all(root.join("before")).unwrap();
+        std::fs::create_dir_all(root.join("after")).unwrap();
+        let project = store.add_project(&root.join("before")).unwrap();
+        let moved = store.relink_project(&project.id, &root.join("after")).unwrap();
+        assert_eq!(moved.path, root.join("after").canonicalize().unwrap().to_string_lossy().to_string());
+        assert_eq!(store.project(&project.id).unwrap().path, moved.path);
+        // Picking the folder the project already points at changes nothing.
+        assert_eq!(store.relink_project(&project.id, &root.join("after")).unwrap().id, project.id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relinking_refuses_missing_taken_file_and_chat_folders() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-relink-{}", id()));
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        let one = store.add_project(&root.join("one")).unwrap();
+        let two = store.add_project(&root.join("two")).unwrap();
+        // The folder was renamed away, so the chosen path does not resolve.
+        assert!(store.relink_project(&one.id, &root.join("gone")).is_err());
+        // Another project already lives at the chosen folder.
+        assert!(store.relink_project(&one.id, &root.join("two")).is_err());
+        assert_eq!(store.project(&one.id).unwrap().path, one.path, "failed relinks keep the stored path");
+        assert_eq!(store.project(&two.id).unwrap().path, two.path);
+        // A file is not a folder.
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        assert!(store.relink_project(&one.id, &root.join("file.txt")).is_err());
+        // Chat folders are PandaCode-managed and never relinked; the stored path is
+        // inserted directly because add_project would refuse the missing folder.
+        let chat_folder = crate::chats::root().join("chat-re1inktest");
+        store.db.execute("INSERT INTO projects(id,name,path) VALUES ('chat-proj','Chat',?1)",
+            params![chat_folder.to_string_lossy().to_string()]).unwrap();
+        assert!(store.relink_project("chat-proj", &root.join("one")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

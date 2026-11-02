@@ -2800,6 +2800,20 @@ async function addProject(path: string): Promise<void> {
   closeModal(); render(); if (generation !== state.generation) return; await refreshInspector();
   notify(`Opened ${added.name}`);
 }
+/** A project folder renamed or moved outside PandaCode: pick its new location and repoint the project. */
+async function locateProjectFolder(): Promise<void> {
+  const p = project();
+  if (!p || isChatProject(p)) return;
+  const path = await chooseFolder(`Locate the moved "${p.name}" folder`);
+  if (!path) return;
+  try {
+    await call('relink_project', { projectId: p.id, path });
+    state.projects = await call<Project[]>('list_projects');
+  } catch (error) { report(error); return; }
+  notify(`Relinked ${p.name}`);
+  refreshFileLinks(workspaceContext());
+  await refreshInspector();
+}
 const SLASH_INSTRUCTIONS: Record<string, string> = {
   init: 'Inspect this repository and create or update AGENTS.md with concise, accurate project instructions: setup, development commands, tests, architecture, and conventions. Preserve existing useful guidance.',
   recap: 'Summarize this conversation concisely: objective, changes, important decisions, validation, and remaining work.',
@@ -4174,7 +4188,9 @@ function renderInspector(): void {
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
   const loadError = state.inspectorTab === 'changes' ? state.gitError : state.filesError;
   if (loadError) {
-    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button></div>`;
+    // A project folder that was renamed or moved on disk can be relinked; worktree and chat folders cannot.
+    const relocatable = loadError.startsWith('Project folder is unavailable') && !isChatProject(project());
+    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button>${relocatable ? `<button class="secondary-button" data-action="locate-project-folder">${icon('folder')}Locate folder…</button>` : ''}</div>`;
     target.querySelector('p')!.style.overflowWrap = 'anywhere';
     return;
   }
@@ -6037,6 +6053,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
+    case 'locate-project-folder': await locateProjectFolder(); break;
     case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
     case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;

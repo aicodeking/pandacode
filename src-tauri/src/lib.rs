@@ -662,6 +662,14 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     store.remove_project(&project_id)
 }
 #[tauri::command]
+async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .relink_project(&project_id, &PathBuf::from(path))
+}
+#[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
     listed_sessions(&state)
 }
@@ -4109,6 +4117,7 @@ pub fn run() {
                 list_projects,
                 add_project,
                 remove_project,
+                relink_project,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
