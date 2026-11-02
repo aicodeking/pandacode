@@ -86,6 +86,12 @@ impl Library {
                 continue;
             }
             let folder = self.skill_dir(&item.meta);
+            // A linked source that changed since import waits for a re-import (and its safety
+            // re-scan) before it reaches a prompt, exactly as activation does.
+            if item.meta.is_linked() && super::read_local(&folder).map(|files| super::content_hash(&files)) != Ok(item.meta.sha256.clone()) {
+                skipped.push(format!("{} changed since it was imported or cannot be read; re-import it in Settings → Skills & rules.", item.meta.name));
+                continue;
+            }
             if !folder.join("SKILL.md").is_file() {
                 skipped.push(format!("{} is missing from disk.", item.meta.name));
                 continue;

@@ -67,7 +67,7 @@ impl Library {
                 let Ok(files) = read_local(&path) else { continue };
                 let main = files.iter().find(|(p, _)| p == "SKILL.md").map(|(_, b)| String::from_utf8_lossy(b).into_owned());
                 let Some(main) = main else { continue };
-                let (front_name, description, _) = frontmatter(&main);
+                let (front_name, description, body) = frontmatter(&main);
                 let sha256 = super::content_hash(&files);
                 let folder_id = super::slug(front_name.as_deref().unwrap_or(&name));
                 let location = FoundLocation { label: label.to_string(), path: path.to_string_lossy().into_owned() };
@@ -80,7 +80,10 @@ impl Library {
                 }
                 by_hash.push(FoundSkill {
                     name: front_name.unwrap_or_else(|| name.clone()),
-                    description: description.unwrap_or_default(),
+                    description: description.unwrap_or_else(|| {
+                        // The same first-line fallback the library import uses.
+                        body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or_default().chars().take(200).collect()
+                    }),
                     in_library: library.iter().any(|meta| meta.kind == super::Kind::Skill && meta.sha256 == sha256),
                     library_id: library.iter().find(|meta| meta.kind == super::Kind::Skill && meta.id == folder_id).map(|meta| meta.id.clone()),
                     sha256,

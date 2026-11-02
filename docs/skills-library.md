@@ -19,7 +19,7 @@ Everything is files under the app data folder. There is no schema migration.
 
 Each activation records the harness, scope, project checkout, surface, the library hash it wrote, the SHA-256 of every file or block it wrote, and any `.git/info/exclude` lines it added.
 
-A linked skill (`source.kind == "link"`, from the found list or the import form's Link option) keeps no copy: the library reads the source folder live, and activating a file harness links its skills folder to it instead of writing files. Editing the source is `drifted` (the matrix cell explains it); re-importing the same location is enough, and deleting the source is `missing`. Rules cannot be linked. Windows needs Developer Mode for links; the activation error says so.
+A linked skill (`source.kind == "link"`, from the found list or the import form's Link option) keeps no copy: the library reads the source folder live, and activating a file harness links its skills folder to it instead of writing files. Editing the source is `drifted`, and activation and bot prompt delivery both refuse until the same location is re-imported, which re-runs the safety scan and drops the old acknowledgement; that re-import is all a link needs (no re-activation). A source that is gone or cannot be read (over the file or size limits) is `missing`, never fails the library list, and activation names it. Rules and single files cannot be linked. Windows needs Developer Mode for links; the activation error says so.
 
 ## Adapters (`src-tauri/src/skills/adapter.rs`)
 

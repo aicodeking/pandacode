@@ -185,7 +185,8 @@ export function createPreviewSkills() {
       }
       const k = key(entry.item.id, h, s);
       const previous = entry.item.activations.find(a => a.harness === h && a.scope === s);
-      if (previous && previous.surface !== 'prompt' && disk.get(k) !== previous.sha256) throw new Error('That file was edited on disk; PandaCode will not overwrite it.');
+      if (entry.item.source.kind === 'link' && disk.get(k) === 'edited') throw new Error('The linked folder changed since it was imported; re-import it to review the new content.');
+      if (previous && (previous.surface === 'folder' || previous.surface === 'block') && disk.get(k) !== previous.sha256) throw new Error('That file was edited on disk; PandaCode will not overwrite it.');
       const surface: SkillActivation['surface'] = PROMPT.has(h) ? 'prompt' : entry.item.kind === 'skill' ? entry.item.source.kind === 'link' ? 'link' : 'folder' : 'block';
       const activation: SkillActivation = { harness: h, scope: s, project: s === 'project' ? PROJECT_ROOT : null, surface, sha256: entry.item.sha256, files: [] };
       if (!PROMPT.has(h)) disk.set(k, entry.item.sha256);
@@ -197,7 +198,7 @@ export function createPreviewSkills() {
       const previous = entry.item.activations.find(a => a.harness === harness && a.scope === scope);
       if (!previous) throw new Error(`${entry.item.name} is not active there.`);
       const k = key(entry.item.id, String(harness), scope as SkillScope);
-      const kept = previous.surface !== 'prompt' && disk.has(k) && disk.get(k) !== previous.sha256 ? [cell(entry, String(harness), scope as SkillScope).surface] : [];
+      const kept = previous.surface === 'folder' && disk.has(k) && disk.get(k) !== previous.sha256 ? [cell(entry, String(harness), scope as SkillScope).surface] : [];
       if (!kept.length) disk.delete(k);
       entry.item = { ...entry.item, activations: entry.item.activations.filter(a => a !== previous) };
       return { items: list(), kept };
