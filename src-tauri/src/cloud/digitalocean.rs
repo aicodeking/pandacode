@@ -323,7 +323,7 @@ pub fn connect(key: &str, options: &Value) -> Result<()> {
     if let Some(size) = size {
         entry.insert("size".into(), size.into());
     }
-    let detail = detail(&entry);
+    let detail = detail(entry);
     entry.insert("detail".into(), detail);
     super::save_settings(&settings)
 }
@@ -351,7 +351,7 @@ pub fn set_options(region: Option<String>, size: Option<String>) -> Result<()> {
         Some(size) => { entry.insert("size".into(), size.into()); }
         None => { entry.remove("size"); }
     }
-    let detail = detail(&entry);
+    let detail = detail(entry);
     entry.insert("detail".into(), detail);
     // A disconnect that raced this save removed the key; do not resurrect the entry.
     if super::secret("digitalocean_key").is_none() {
