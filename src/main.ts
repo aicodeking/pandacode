@@ -51,7 +51,7 @@ import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -69,7 +69,7 @@ import { groupTurns, formatDuration, turnLabel, type TranscriptTurn } from './tu
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
-import { compatibleModel, contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
+import { compatibleModel, contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { SECTIONS } from './settings-sections';
 import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
@@ -108,6 +108,7 @@ import { mountTextUndo } from './text-undo';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
+import { createTaskUsage } from './task-usage';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -592,19 +593,7 @@ const tokenSaver = createTokenSaver({
   },
 });
 void tokenSaver.loadTools();
-/* Per-task token totals from the agents' own logs; one fetch per session, refetched when a run ends. */
-const taskUsage = new Map<string, TaskTokenUsage | null>();
-function usageLine(usage: TaskTokenUsage): string {
-  return `This task so far: ${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out, ${tokenCount(usage.cacheRead)} cache reads.`;
-}
-function ensureTaskUsage(sessionId: string): void {
-  if (taskUsage.has(sessionId)) return;
-  taskUsage.set(sessionId, null);
-  void call<TaskTokenUsage | null>('task_token_usage', { sessionId }).then(usage => {
-    taskUsage.set(sessionId, usage ?? null);
-    if (state.sessionId === sessionId) renderContextUsage();
-  }).catch(() => taskUsage.delete(sessionId));
-}
+const taskUsageView = createTaskUsage({ call });
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
@@ -1194,14 +1183,9 @@ function renderContextUsage(): void {
   const label = context?.label ?? '';
   if (indicator.textContent !== label) indicator.textContent = label;
   indicator.title = context?.detail ?? '';
-  const usage = taskUsage.get(s.id);
-  if (usage && context) {
-    const line = usageLine(usage);
-    if (!indicator.title.includes(line)) indicator.title += `\n${line}`;
-  }
-  ensureTaskUsage(s.id);
-  // The line keeps its place when empty, so the prompt never moves between threads.
+  // Keep the footnote's height stable even when neither value is available.
   indicator.parentElement!.classList.toggle('is-empty', !context);
+  taskUsageView.render(s.draft ? null : s.id);
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 /** The toast's Undo, while it shows; ⌘Z runs it too. */
@@ -2673,7 +2657,7 @@ function renderComposer(): void {
   const steerBar = document.querySelector<HTMLElement>('#composer-area .composer-steer-bar');
   if (steerBar && !hadSteerBar && oldPrompt?.dataset.sessionId === s.id) settleUnfolded(steerBar);
   if (botForThread()) botThread.paintReplyChip(s.id);
-  $('#composer-area').insertAdjacentHTML('beforeend', '<div class="composer-footnote is-empty"><span class="context-indicator" hidden></span></div>');
+  $('#composer-area').insertAdjacentHTML('beforeend', '<div class="composer-footnote is-empty"><button type="button" class="task-usage-button" data-action="task-usage" aria-haspopup="dialog" aria-expanded="false" hidden></button><span class="context-indicator" hidden></span></div>');
   renderContextUsage();
   $('#attachments').insertAdjacentHTML('beforebegin', '<div class="browser-context-attachments" role="group" aria-label="Browser attachments"></div>');
   renderBrowserAttachments(); browserPanel?.refresh();
@@ -6825,6 +6809,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
+    case 'task-usage': taskUsageView.open(element); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
     case 'tab-pull': state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector(); break;
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
@@ -7097,10 +7082,10 @@ async function boot(): Promise<void> {
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
   run(subscribe('agent-event', (event: AgentEvent) => {
+    if (event.kind === 'turn_complete') taskUsageView.refresh(event.sessionId);
     if (event.kind !== 'done') return;
-    taskUsage.delete(event.sessionId);
+    taskUsageView.refresh(event.sessionId);
     if (event.sessionId !== state.sessionId) return;
-    ensureTaskUsage(event.sessionId);
     void designPanel?.refresh();
     progressPip?.refresh(event.sessionId);
     if (document.hasFocus()) markTraySeen(event.sessionId);

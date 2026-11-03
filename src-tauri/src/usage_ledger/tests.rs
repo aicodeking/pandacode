@@ -167,12 +167,40 @@ fn task_usage_sums_only_linked_session_logs_and_honors_since() {
         FileEntry { agent: Some(Agent::Claude), records: vec![record(1, 999, 999, None)], ..FileEntry::default() },
     );
     let links = ["8f0e7c5a-1111-4222-8333-444455556666".to_string(), "aaaa1111-b222-4c33-8d44-555566667777".to_string()];
-    let usage = task_usage_from_cache(&cache, &links, 0);
+    let usage = task_usage_from_cache(&cache, &links, 0, &pricing::PriceBook::bundled());
     assert_eq!((usage.input, usage.cache_read, usage.output), (117, 0, 58), "streamed copies count once");
     assert_eq!((usage.first_used, usage.last_used), (Some(3_600_000), Some(18_000_000)));
-    let since = task_usage_from_cache(&cache, &links, 3);
+    let since = task_usage_from_cache(&cache, &links, 3, &pricing::PriceBook::bundled());
     assert_eq!((since.input, since.output), (100, 50));
     assert_eq!((since.first_used, since.last_used), (Some(18_000_000), Some(18_000_000)));
+}
+
+#[test]
+fn task_usage_prices_each_model_cache_tier_and_keeps_unknowns_partial() {
+    let book = PriceBook::from_prices(parse_prices(&json!({
+        "model-a": {"input_cost_per_token":0.000002,"output_cost_per_token":0.000008,"cache_read_input_token_cost":0.0000002,"cache_creation_input_token_cost":0.000003,"cache_creation_input_token_cost_above_1hr":0.000004},
+        "model-b": {"input_cost_per_token":0.000001,"output_cost_per_token":0.000004,"input_cost_per_token_above_200k_tokens":0.000002,"output_cost_per_token_above_200k_tokens":0.000006}
+    })));
+    let a = Record { key: Some(10), hour: 1, model: "model-a".into(), class: 0, input: 100, cache_read: 1000, cache_write: 20, cache_write_1h: 30, output: 50 };
+    let b = Record { key: Some(11), hour: 2, model: "model-b".into(), class: 2, input: 300_000, cache_read: 0, cache_write: 0, cache_write_1h: 0, output: 100 };
+    let unknown = Record { key: Some(12), model: "unknown".into(), input: 7, output: 3, ..b.clone() };
+    let mut cache = Cache::default();
+    cache.files.insert("/logs/first.jsonl".into(), FileEntry { agent: Some(Agent::Claude), records: vec![a.clone(), a.clone(), unknown], ..Default::default() });
+    cache.files.insert("/logs/rollout-second.jsonl".into(), FileEntry { agent: Some(Agent::Codex), records: vec![b.clone()], ..Default::default() });
+    let links = vec!["first".into(), "second".into(), "missing".into()];
+    let usage = task_usage_from_cache(&cache, &links, 0, &book);
+    assert_eq!((usage.input, usage.output, usage.cache_read, usage.cache_write), (300107, 153, 1000, 50));
+    assert!((usage.cost_usd.unwrap() - 0.60158).abs() < 1e-10);
+    assert_eq!(usage.unpriced_tokens, 10);
+    assert_eq!(usage.missing_sessions, 1);
+    assert_eq!(usage.models.len(), 3);
+    assert_eq!(usage.models.iter().find(|m| m.model == "unknown").unwrap().cost_usd, None);
+    assert_eq!(usage.models.iter().map(|m| m.tokens).sum::<u64>(), usage.input + usage.output + usage.cache_read + usage.cache_write);
+    // No known prices is unavailable, never a zero-dollar estimate.
+    let unpriced = PriceBook::from_prices(HashMap::new());
+    let usage = task_usage_from_cache(&cache, &links, 0, &unpriced);
+    assert_eq!(usage.cost_usd, None);
+    assert_eq!(usage.unpriced_tokens, 301310);
 }
 
 #[test]
@@ -218,9 +246,9 @@ fn linked_refresh_matches_a_full_scan_through_appends_and_deletes() {
     let totals = |full: &mut Cache, slim: &mut Cache| {
         refresh_cache(full, &roots, 0);
         refresh_linked(slim, &roots, &links, 0);
-        let expected = task_usage_from_cache(full, &links, 0);
-        assert_eq!(task_usage_from_cache(slim, &links, 0), expected);
-        assert_eq!(task_usage_from_cache(slim, &links, 1_790_413_081 / 3600 + 1), task_usage_from_cache(full, &links, 1_790_413_081 / 3600 + 1));
+        let expected = task_usage_from_cache(full, &links, 0, &pricing::PriceBook::bundled());
+        assert_eq!(task_usage_from_cache(slim, &links, 0, &pricing::PriceBook::bundled()), expected);
+        assert_eq!(task_usage_from_cache(slim, &links, 1_790_413_081 / 3600 + 1, &pricing::PriceBook::bundled()), task_usage_from_cache(full, &links, 1_790_413_081 / 3600 + 1, &pricing::PriceBook::bundled()));
         expected
     };
     // First sight walks the roots and reads only the linked files.
@@ -253,8 +281,8 @@ fn linked_refresh_follows_archived_rollouts_and_extra_logs_of_a_session() {
     let totals = |full: &mut Cache, slim: &mut Cache| {
         refresh_cache(full, &roots, 0);
         refresh_linked(slim, &roots, &links, 0);
-        let expected = task_usage_from_cache(full, &links, 0);
-        assert_eq!(task_usage_from_cache(slim, &links, 0), expected);
+        let expected = task_usage_from_cache(full, &links, 0, &pricing::PriceBook::bundled());
+        assert_eq!(task_usage_from_cache(slim, &links, 0, &pricing::PriceBook::bundled()), expected);
         expected
     };
     let first = totals(&mut full, &mut slim);
@@ -288,7 +316,7 @@ fn a_saved_cache_reloads_to_the_same_ledger_and_task_totals() {
     let loaded = load_cache(&path);
     let ledger = |cache: &Cache| serde_json::to_value(aggregate(cache, &book(), 0, 1)).unwrap();
     assert_eq!(ledger(&loaded), ledger(&cache));
-    assert_eq!(task_usage_from_cache(&loaded, &links, 0), task_usage_from_cache(&cache, &links, 0));
+    assert_eq!(task_usage_from_cache(&loaded, &links, 0, &pricing::PriceBook::bundled()), task_usage_from_cache(&cache, &links, 0, &pricing::PriceBook::bundled()));
     assert_eq!(load_cache(&root.join("missing.json")).files.len(), 0);
     std::fs::remove_dir_all(&root).unwrap();
 }

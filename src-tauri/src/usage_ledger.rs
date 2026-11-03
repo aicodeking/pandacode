@@ -80,7 +80,7 @@ pub(crate) struct SourceInfo {
     files: usize,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Pricing {
     source: pricing::Source,
@@ -471,6 +471,20 @@ pub(crate) struct TaskUsage {
     pub output: u64,
     pub first_used: Option<i64>,
     pub last_used: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub unpriced_tokens: u64,
+    pub missing_sessions: usize,
+    pub models: Vec<TaskModelUsage>,
+    pub pricing: Option<Pricing>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskModelUsage {
+    pub provider: Agent,
+    pub model: String,
+    pub tokens: u64,
+    pub cost_usd: Option<f64>,
 }
 
 /// Whether one cached log file belongs to the harness session: Claude names the file
@@ -485,13 +499,20 @@ fn file_belongs_to(link: &str, agent: Agent, path: &Path) -> bool {
 
 /// Sums the cached records of every log file belonging to one of `links`, keeping
 /// only records from `since_hour` on. Pure so tests can build the cache by hand.
-fn task_usage_from_cache(cache: &Cache, links: &[String], since_hour: i64) -> TaskUsage {
+fn task_usage_from_cache(cache: &Cache, links: &[String], since_hour: i64, book: &pricing::PriceBook) -> TaskUsage {
     let mut usage = TaskUsage::default();
     let mut replies = HashSet::new();
-    for (path, entry) in &cache.files {
+    let mut found = HashSet::new();
+    // Stable summation and duplicate selection across cache reloads.
+    let mut files: Vec<_> = cache.files.iter().collect();
+    files.sort_by_key(|(path, _)| *path);
+    for (path, entry) in files {
         let Some(agent) = entry.agent else { continue };
         if !links.iter().any(|link| file_belongs_to(link, agent, Path::new(path))) {
             continue;
+        }
+        if !entry.records.is_empty() {
+            found.extend(links.iter().filter(|link| file_belongs_to(link, agent, Path::new(path))));
         }
         for record in &entry.records {
             if record.hour < since_hour {
@@ -507,11 +528,29 @@ fn task_usage_from_cache(cache: &Cache, links: &[String], since_hour: i64) -> Ta
             usage.cache_read += record.cache_read;
             usage.cache_write += record.cache_write + record.cache_write_1h;
             usage.output += record.output;
+            let tokens = record.input + record.cache_read + record.cache_write + record.cache_write_1h + record.output;
+            let cost = book.cost(record).map(|(cost, _)| cost);
+            if let Some(cost) = cost {
+                *usage.cost_usd.get_or_insert(0.0) += cost;
+            } else {
+                usage.unpriced_tokens += tokens;
+            }
+            let index = usage.models.iter().position(|row| row.provider == agent && row.model == record.model.as_str())
+                .unwrap_or_else(|| {
+                    usage.models.push(TaskModelUsage { provider: agent, model: record.model.to_string(), tokens: 0, cost_usd: cost.map(|_| 0.0) });
+                    usage.models.len() - 1
+                });
+            let row = &mut usage.models[index];
+            row.tokens += tokens;
+            if let Some(cost) = cost { *row.cost_usd.get_or_insert(0.0) += cost; }
             let started = record.hour * 3_600_000;
             usage.first_used = Some(usage.first_used.map_or(started, |first| first.min(started)));
             usage.last_used = Some(usage.last_used.map_or(started, |last| last.max(started)));
         }
     }
+    usage.missing_sessions = links.iter().collect::<HashSet<_>>().difference(&found).count();
+    usage.models.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.model.cmp(&b.model)).then_with(|| format!("{:?}", a.provider).cmp(&format!("{:?}", b.provider))));
+    usage.pricing = Some(Pricing { source: book.source, fetched_at: book.fetched_at });
     usage
 }
 
@@ -519,11 +558,14 @@ fn task_usage_from_cache(cache: &Cache, links: &[String], since_hour: i64) -> Ta
 /// Only the task's own log files are refreshed, so a run end reads just what it appended.
 pub(crate) async fn task_usage(dir: PathBuf, links: Vec<String>, since_ms: Option<i64>) -> crate::Result<TaskUsage> {
     let mut state = state().lock().await;
-    let since_scan = crate::storage::now() - HISTORY_DAYS * 86_400_000;
+    let price_path = dir.join("usage-prices.json");
     with_cache(&mut state, &dir, move |cache| {
-        let changed = refresh_linked(cache, &agent_roots(), &links, since_scan);
+        // Task totals include all available history, including tasks older than the overview's year.
+        let changed = refresh_linked(cache, &agent_roots(), &links, 0);
+        // Composer updates are local-only. The usage overview maintains the saved price book.
+        let book = pricing::load_saved(&price_path).unwrap_or_else(pricing::PriceBook::bundled);
         let since_hour = since_ms.map_or(0, |ms| ms.div_euclid(3_600_000));
-        (changed, task_usage_from_cache(cache, &links, since_hour))
+        (changed, task_usage_from_cache(cache, &links, since_hour, &book))
     })
     .await
 }

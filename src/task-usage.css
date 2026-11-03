@@ -1,0 +1,24 @@
+.composer-footnote .task-usage-button{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;font:inherit;line-height:inherit;padding:0 4px;border-radius:var(--ds-radius-chip);font-variant-numeric:tabular-nums;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
+.composer-footnote .task-usage-button:hover,.composer-footnote .task-usage-button[aria-expanded="true"]{color:var(--text);background:var(--ds-row-hover)}
+.composer-footnote .context-indicator{flex-shrink:0}
+.task-usage-panel{position:fixed;z-index:90;box-sizing:border-box;padding:16px;overflow:hidden;gap:12px;font-size:var(--ds-text-ui);color:var(--text);border-radius:var(--ds-radius-card)}
+.task-usage-content{min-height:0;overflow:auto}
+/* An imported theme can be dark even when the app's appearance preference is light. */
+html[data-vsix] .task-usage-panel{--glass-warm:color-mix(in srgb,var(--panel) 92%,transparent);--glass-border:var(--ds-border)}
+.task-usage-panel>header{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.task-usage-panel h2{margin:0;font-size:var(--ds-text-lead);font-weight:500;color:var(--ds-title-ink);letter-spacing:.02em}
+.task-usage-panel h3{font-size:var(--ds-text-ui);font-weight:500;margin:16px 0 8px}
+.task-usage-panel p{margin:10px 0 0;line-height:1.5}
+.task-usage-hero{display:flex;flex-direction:column;gap:4px;margin:4px 0 16px}
+.task-usage-hero strong{font-size:24px;font-weight:500;font-variant-numeric:tabular-nums}
+.task-usage-hero span,.task-usage-note,.task-usage-source{color:var(--muted);font-size:var(--ds-text-meta)}
+.task-usage-totals{display:grid;gap:8px;margin:0;padding:12px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+.task-usage-totals>div{display:flex;justify-content:space-between;gap:12px}
+.task-usage-totals dt{color:var(--muted)}
+.task-usage-totals dd{margin:0;font-variant-numeric:tabular-nums}
+.task-usage-models{list-style:none;margin:0;padding:0;display:grid;gap:10px}
+.task-usage-models li{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.task-usage-models li>div{min-width:0;display:grid;gap:3px}
+.task-usage-models strong{font-weight:450;overflow-wrap:anywhere}
+.task-usage-models small{color:var(--muted);font-size:var(--ds-text-meta)}
+.task-usage-models li>span{flex-shrink:0;font-variant-numeric:tabular-nums}
