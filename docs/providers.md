@@ -916,12 +916,22 @@ across turns.
 the `session/event` stream; a busy session queues a second message server-side, so
 steering holds for the next turn.
 
+**Slash commands.** Discovery opens a throwaway deferred session and reads
+`slashCommands` from the `session/create` snapshot (builtins include `/goal` and
+`/compact`, plus the user's custom commands). A live create or resume publishes
+the same list so the composer `/` menu stays in sync. `/compact` is sent as an
+ordinary prompt, which the server already handles.
+
+**Usage.** Per-turn token totals come from `turn.completed` and show in the
+transcript. Coding Plan quota (Lite, Pro, Max credits) is desktop account state
+and is not on the session protocol; the Settings usage card says so.
+
 **Not yet.** Screenshots are refused (the composer offers documents and folders
 with a note); interactive questions (`interaction/requestUserInput`) decline with a
-note so the turn continues; slash-command discovery and the harness console are not
-offered. The protocol is ZCode's private surface and evolves with the CLI — frames
-are parsed defensively (unknown events ignored, unknown reverse requests answered
-`-32601`) and pinned per recorded version.
+note so the turn continues; the harness console is not offered. The protocol is
+ZCode's private surface and evolves with the CLI — frames are parsed defensively
+(unknown events ignored, unknown reverse requests answered `-32601`) and pinned
+per recorded version.
 
 Verified against the CLI bundled with ZCode.app (user-agent `ZCode/3.16.3`) on
 2026-10-25 by driving `zcode app-server` directly (create, subscribe, two turns,
