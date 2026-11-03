@@ -41,6 +41,7 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
         "hermes" => {
             crate::providers::hermes::configure_command(&mut command, &path);
         }
+        "antigravity" => crate::providers::acp::antigravity_args(&mut command),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");

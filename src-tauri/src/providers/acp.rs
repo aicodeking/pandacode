@@ -73,10 +73,20 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
         "hermes" => super::hermes::configure(command, config),
+        "antigravity" => antigravity_args(command),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
         }
+    }
+}
+
+/// The standalone server needs no subcommand; the `agy` CLI fallback serves ACP from `acp`.
+pub(crate) fn antigravity_args(command: &mut Command) {
+    if Path::new(command.as_std().get_program()).file_stem().is_some_and(|stem| stem == "agy") {
+        command.arg("acp");
+    } else if cfg!(target_os = "linux") {
+        command.arg("--uid=");
     }
 }
 
@@ -971,8 +981,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
     let mut command = super::provider_command("antigravity", path)?;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
@@ -1180,8 +1189,7 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };
     let mut command = command;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let discovery = super::acp_catalog::begin("antigravity", &path);
     let _temp = super::AgentTemp::redirect(&mut command);
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
@@ -2307,6 +2315,11 @@ mod tests {
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
+        for agy in ["agy", "agy.exe", "/usr/local/bin/agy"] {
+            let mut c = Command::new(agy);
+            configure(&mut c, &config("antigravity"));
+            assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), [std::ffi::OsStr::new("acp")], "{agy}");
+        }
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));

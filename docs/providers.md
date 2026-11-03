@@ -499,8 +499,9 @@ written into argv or a settings file; it is resolved from PandaCode's secrets st
 subprocess credential scrubbing is enabled.
 
 Antigravity launches Google's official `agy_acp_server.par` (`agy_acp_server.exe`
-on Windows), which can be selected in Settings. The standalone `agy` terminal
-CLI is not misidentified as an ACP server. The executable and provider sign-in
+on Windows), which can be selected in Settings. When that server is not found,
+PandaCode falls back to the standalone `agy` CLI and starts its ACP server with
+`agy acp`. The executable and provider sign-in
 must already be installed. ACP initialization/session metadata supplies its model
 labels and supported controls; image, HTTP MCP, resume, and planning support are
 checked explicitly. No private API, unofficial adapter, or browser-cookie
