@@ -118,3 +118,19 @@ fn live_claude_conversations() {
     let longest = logs.iter().map(|path| claude::history(path).len()).max().unwrap_or(0);
     println!("{} logs, {} conversations ({titled} titled, {missing} with missing folders), longest history {longest}, scan {first:?}", logs.len(), summaries.len());
 }
+
+#[test]
+fn claude_summary_keeps_a_windows_cwd_from_a_crlf_log() {
+    let dir = temp();
+    let path = dir.join(format!("{SESSION}.jsonl"));
+    let cwd = r"C:\Users\me\proj";
+    let lines = [
+        json!({"type":"user","sessionId":SESSION,"cwd":cwd,"timestamp":"2026-09-20T10:00:01.000Z","message":{"role":"user","content":"Hello"}}).to_string(),
+        json!({"type":"assistant","sessionId":SESSION,"cwd":cwd,"timestamp":"2026-09-20T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}).to_string(),
+    ];
+    std::fs::write(&path, lines.join("\r\n") + "\r\n").unwrap();
+    let summary = claude::summarize(&path).unwrap();
+    assert_eq!((summary.cwd.as_str(), summary.messages), (cwd, 2));
+    assert_eq!(claude::history(&path).len(), 2);
+    std::fs::remove_dir_all(dir).ok();
+}

@@ -21,6 +21,8 @@ const MAX_IMAGE_SOURCE: usize = 24 * 1024 * 1024;
 /// What `providers::attachments::load` accepts per image.
 const MAX_IMAGE_PNG: usize = 5 * 1024 * 1024;
 const MAX_IMAGE_EDGE: u32 = 2048;
+/// Largest edge any image may decode to; also bounds raw clipboard pixels.
+const MAX_DECODE_EDGE: usize = 12_000;
 /// Shared with project-file context blocks, so one message stays bounded.
 pub const MAX_TEXT: usize = 32 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
@@ -115,8 +117,8 @@ fn decode(bytes: &[u8]) -> Result<(DynamicImage, ImageFormat), String> {
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
-    limits.max_image_width = Some(12_000);
-    limits.max_image_height = Some(12_000);
+    limits.max_image_width = Some(MAX_DECODE_EDGE as u32);
+    limits.max_image_height = Some(MAX_DECODE_EDGE as u32);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let image = reader
@@ -227,6 +229,46 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
         height,
         thumbnail: thumbnail(&image)?,
     })
+}
+
+/// The clipboard's image, if any, as base64 PNG bytes for the composer's paste
+/// fallback: WebKitGTK does not expose OS clipboard images as pasted files, so a
+/// paste that carries no files and no text is read here instead (Flameshot on
+/// Fedora Wayland). None when the clipboard holds no image, and always None off
+/// Linux, whose webviews hand pasted images over as files. Read only on a paste.
+#[cfg(target_os = "linux")]
+pub fn clipboard_image() -> Result<Option<String>, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| format!("Could not open the clipboard: {e}"))?;
+    let shot = match clipboard.get_image() {
+        Ok(shot) => shot,
+        // An empty clipboard is a plain no-op paste, not an error worth reporting.
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => return Err(format!("Could not read the clipboard image: {e}")),
+    };
+    clipboard_png(shot.width, shot.height, shot.bytes.into_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn clipboard_image() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+/// RGBA pixels straight off the clipboard, scaled to the attachment edge and
+/// encoded as the PNG `import_image` accepts, so the paste stays inside its caps.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn clipboard_png(width: usize, height: usize, rgba: Vec<u8>) -> Result<Option<String>, String> {
+    if width == 0 || height == 0 {
+        return Ok(None);
+    }
+    // Same bound `decode` puts on any other image source.
+    if width > MAX_DECODE_EDGE || height > MAX_DECODE_EDGE {
+        return Err("This image is damaged or too large to decode.".into());
+    }
+    let rgba = image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+        .ok_or("Could not read the clipboard image.")?;
+    let png = encode_png(&DynamicImage::ImageRgba8(rgba), MAX_IMAGE_EDGE)?;
+    Ok(Some(STANDARD.encode(png)))
 }
 
 /// A sent image or screenshot as a `data:` URL, so the transcript can show it again.
@@ -524,6 +566,35 @@ mod tests {
         assert_eq!(image_data_url(&dir, &uuid::Uuid::new_v4().to_string()).unwrap(), None);
         assert!(image_data_url(&dir, "../secret").is_err());
         assert!(image_data_url(&dir, &id.to_uppercase()).is_err());
+    }
+
+    #[test]
+    fn clipboard_image_becomes_base64_png() {
+        use image::GenericImageView;
+        let base64 = clipboard_png(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap().unwrap();
+        let (image, format) = decode(&STANDARD.decode(base64).unwrap()).unwrap();
+        assert_eq!(format, ImageFormat::Png);
+        assert_eq!((image.width(), image.height()), (2, 1));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn empty_clipboard_dimensions_are_ignored() {
+        assert_eq!(clipboard_png(0, 0, Vec::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn clipboard_buffers_that_do_not_match_their_dimensions_are_refused() {
+        assert!(clipboard_png(1, 2, vec![1, 2, 3, 4]).is_err());
+        assert!(clipboard_png(12_001, 1, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn large_clipboard_images_are_scaled_to_the_attachment_edge() {
+        let base64 = clipboard_png(4000, 10, vec![200; 4000 * 10 * 4]).unwrap().unwrap();
+        let (image, _) = decode(&STANDARD.decode(base64).unwrap()).unwrap();
+        assert_eq!(image.width(), MAX_IMAGE_EDGE);
     }
 
     fn temp_dir(label: &str) -> PathBuf {

@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.86"
+version = "0.3.91"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -51,10 +51,12 @@ if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
 
-# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links: none exists for
-# Intel macOS, and the x86_64 Linux one needs glibc 2.38 (releases build on Ubuntu 22.04). Keep this
+# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links and runs on
+# baseline hardware: none exists for Intel macOS, the x86_64 Linux one needs glibc 2.38 (releases build
+# on Ubuntu 22.04), and the x86_64 Windows one is built with /arch:AVX2 (its .CRT$XCU static initializers
+# execute BMI2 instructions before main(), crashing with 0xc000001d on pre-AVX2 CPUs). Keep this
 # predicate in step with `panda_onnx` in build.rs; other targets route with the keyword heuristic.
-[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), target_os = "windows"))'.dependencies]
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
@@ -69,8 +71,8 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 # These use the platform webview already required by Tauri; none enters the Mac build.
 [target.'cfg(target_os = "windows")'.dependencies]
 dunce = "1"
-webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Security"] }
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_ProcessStatus", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_Security"] }
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -78,6 +80,10 @@ webkit2gtk = { version = "2", features = ["v2_40"] }
 cairo-rs = { version = "0.18", features = ["png"] }
 gio = "0.18"
 keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
+# Clipboard images WebKitGTK never exposes as pasted files (issue #272). The Wayland
+# feature is not a default; it reaches Niri, Hyprland, KDE and GNOME's data-control.
+# WKWebView and WebView2 hand pasted images over as files, so other targets skip it.
+arboard = { version = "3", features = ["wayland-data-control"] }
 
 [profile.release]
 lto = "thin"

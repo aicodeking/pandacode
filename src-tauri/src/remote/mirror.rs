@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 /// Cloning and checking out can take a while on the host: its worst case plus margin.
 const START_TIMEOUT: Duration = Duration::from_secs(super::start::WORST_CASE.as_secs() + 3 * 60);
 /// A burst of presence frames (and renewals) makes one subscribe round.
-const SUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
+pub(super) const SUBSCRIBE_DEBOUNCE: Duration = Duration::from_millis(250);
 /// Mirrors per host whose afterId page goes out together with a reconnect's subscribe; with
 /// it they fill the host's four read lanes.
 const PIPELINED: usize = 3;
@@ -157,7 +157,7 @@ pub(crate) struct Viewer {
     /// Approval and question cards shown per local task: request id → kind.
     cards: HashMap<String, HashMap<String, String>>,
     /// Starts not yet answered, by local id.
-    starts: HashMap<String, PendingStart>,
+    pub(super) starts: HashMap<String, PendingStart>,
     /// Per host with a subscribe (and its replay pages) in flight: the live entries that
     /// arrived meanwhile, shown once the replay is, so none hides an older replayed one.
     held: HashMap<String, Held>,
@@ -185,9 +185,9 @@ pub(crate) struct PendingStart {
     /// Ends the `task.start` call still waiting for its reply.
     cancel: Arc<Notify>,
     /// A call for it (the start, or asking how it went) is in flight.
-    busy: bool,
+    pub(super) busy: bool,
     /// The user stopped it but the host has not confirmed: asked again when it is back.
-    cancelling: bool,
+    pub(super) cancelling: bool,
 }
 
 /// The journal entry (and live frame) of a run end.
@@ -569,7 +569,7 @@ fn active(state: &AppState, local: &str) -> bool {
 }
 
 /// Ends a running mirror's turn once: false (and nothing changes) when it already ended.
-fn finish_once(store: &Store, local: &str, successful: bool, stopped: bool) -> Result<bool> {
+pub(super) fn finish_once(store: &Store, local: &str, successful: bool, stopped: bool) -> Result<bool> {
     let running: bool = store.db.query_row("SELECT status IN ('running','waiting') FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
     if running {
         store.finish_task_turn(local, successful, stopped)?;
@@ -885,14 +885,14 @@ pub(crate) fn store_older(store: &Store, local: &str, (base, before): (i64, i64)
 
 /// What a host's status means for a mirror that shows `local`.
 #[derive(Debug, PartialEq)]
-enum Reconcile {
+pub(super) enum Reconcile {
     Same,
     Set(String),
     /// The run ended while this computer was not listening.
     Ended { successful: bool, stopped: bool },
 }
 
-fn reconcile(local: &str, host: &str) -> Reconcile {
+pub(super) fn reconcile(local: &str, host: &str) -> Reconcile {
     let active = |status: &str| matches!(status, "running" | "waiting");
     if active(host) {
         return if local == host { Reconcile::Same } else { Reconcile::Set(host.to_owned()) };
@@ -1154,7 +1154,7 @@ fn store_early(app: &tauri::AppHandle, pages: Vec<(&str, i64, Result<Value>)>) -
 
 /// Stores a mirror's first page of a sync: a tail into one with nothing copied (older hosts
 /// answer the oldest page, without `hasOlder`), else an afterId page.
-fn store_first(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
+pub(super) fn store_first(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
     if after == 0 && page.get("hasOlder").is_some() {
         store_tail(store, local, page)
     } else {
@@ -1334,7 +1334,7 @@ fn resume_starts(app: &tauri::AppHandle, online: &HashSet<String>) {
 
 /// How a start stands, from `task.startStatus` (or from its failure).
 #[derive(Debug, PartialEq)]
-enum StartState {
+pub(super) enum StartState {
     Running,
     /// The host task, and its worktree note (see [`start_note`]).
     Done(String, Option<String>),
@@ -1352,7 +1352,7 @@ fn past_deadline(outcome: StartState, late: bool) -> StartState {
     }
 }
 
-fn start_state(reply: &Result<Value>) -> StartState {
+pub(super) fn start_state(reply: &Result<Value>) -> StartState {
     match reply {
         Err(error) if client::maybe_ran(error) || error == super::socket::OFFLINE => StartState::Unreachable,
         // Older hosts refuse `task.startStatus` as an unknown method: the start can't be found.
@@ -1446,10 +1446,12 @@ fn waiting_for(app: &tauri::AppHandle, device: &str, start_id: &str, repo: Optio
     let _ = app.emit("remote://start-progress", json!({"deviceId": device, "startId": start_id, "repo": repo, "stage": "starting", "percent": null, "detail": format!("Waiting for {}…", super::device_label(device))}));
 }
 
-/// Links a started mirror; one the user stopped meanwhile is stopped on its host now.
+/// Links a started mirror; one the user stopped meanwhile is stopped on its host now. The
+/// host already follows its task for this viewer, so its events flow; the round starts at once
+/// and copies the new mirror's first page beside its subscribe.
 fn linked(app: &tauri::AppHandle, state: &AppState, local: &str, session: &str, stop_now: bool) -> Result<()> {
     attach(state, local, session)?;
-    subscribe_soon(app);
+    subscribe_reconnected(app);
     if stop_now {
         let (app, local) = (app.clone(), local.to_owned());
         tauri::async_runtime::spawn(async move {
@@ -1463,7 +1465,7 @@ fn linked(app: &tauri::AppHandle, state: &AppState, local: &str, session: &str, 
 
 /// What a `task.cancelStart` call settled.
 #[derive(Debug, PartialEq)]
-enum Cancel {
+pub(super) enum Cancel {
     /// The host confirmed it stopped it (or never had it): put the row back.
     Cancelled,
     /// The host had already made its task.
@@ -1481,7 +1483,7 @@ enum Cancel {
     Refused(String),
 }
 
-fn cancel_outcome(reply: &Result<Value>) -> Cancel {
+pub(super) fn cancel_outcome(reply: &Result<Value>) -> Cancel {
     match reply {
         Ok(reply) if reply["cancelled"] == false && reply["pending"] == true => Cancel::TooLate,
         Ok(reply) if reply["cancelled"] == false => started_session(reply).map_or_else(Cancel::Refused, Cancel::Started),
@@ -1530,7 +1532,7 @@ fn start_note(reply: &Value) -> Option<String> {
     reply["note"].as_str().map(|note| note.lines().next().unwrap_or_default().chars().take(300).collect::<String>()).filter(|note| !note.trim().is_empty())
 }
 
-fn started_session(reply: &Value) -> Result<String> {
+pub(super) fn started_session(reply: &Value) -> Result<String> {
     reply["sessionId"].as_str().filter(|id| host::valid_id(id).is_ok()).map(str::to_owned).ok_or_else(|| "The other computer did not start the task.".to_string())
 }
 
@@ -1539,7 +1541,7 @@ fn attach(state: &AppState, local: &str, session: &str) -> Result<()> {
     link(&*lock(state)?, local, session)
 }
 
-fn link(store: &Store, local: &str, session: &str) -> Result<()> {
+pub(super) fn link(store: &Store, local: &str, session: &str) -> Result<()> {
     store.db.execute("UPDATE sessions SET remote_session=?2 WHERE id=?1 AND remote_session IS NULL", params![local, session]).map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -1569,7 +1571,7 @@ pub(crate) fn repo_summary(origin: &str, branch: &str, status: &str, ahead: Opti
 }
 
 /// What another computer would see of this checkout. Reads only local refs (no fetch).
-fn repo_status(root: &Path) -> Result<Value> {
+pub(super) fn repo_status(root: &Path) -> Result<Value> {
     let quick = Duration::from_secs(10);
     let origin = git(root, &["config", "--get", "remote.origin.url"], quick).unwrap_or_default();
     let branch = git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], quick).unwrap_or_default();
@@ -1577,6 +1579,12 @@ fn repo_status(root: &Path) -> Result<Value> {
     let ahead = git(root, &["rev-list", "--count", "@{u}..HEAD"], quick).ok();
     let pushed = !branch.is_empty() && git(root, &["rev-parse", "--verify", "--quiet", &format!("refs/remotes/origin/{branch}")], quick).is_ok();
     Ok(repo_summary(&origin, &branch, &status, ahead.as_deref(), pushed))
+}
+
+/// What a start needs of this checkout: its GitHub repository and branch. A config read and one
+/// git process; [`repo_status`]'s other four (`git status` above all) answer the UI's own check.
+pub(super) fn start_target(root: &Path) -> (Option<String>, String) {
+    (super::start::origin_repo(root), git(root, &["symbolic-ref", "--quiet", "--short", "HEAD"], Duration::from_secs(10)).unwrap_or_default())
 }
 
 async fn project_status(state: &AppState, project_id: &str) -> Result<Value> {
@@ -1674,9 +1682,10 @@ pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Resul
     if request.prompt.is_empty() || request.prompt.len() > host::MAX_TEXT {
         return Err("Send between 1 byte and 100 KB of text.".into());
     }
-    let check = project_status(&state, &request.project_id).await?;
-    let repo = check["repo"].as_str().ok_or(NO_REPO)?.to_owned();
-    let branch = request.branch.clone().filter(|b| !b.trim().is_empty()).or_else(|| check["branch"].as_str().filter(|b| !b.is_empty()).map(str::to_owned));
+    let root = lock(&state)?.workspace_root(&request.project_id, None)?;
+    let (repo, current) = tauri::async_runtime::spawn_blocking(move || start_target(&root)).await.map_err(|e| e.to_string())?;
+    let repo = repo.ok_or(NO_REPO)?;
+    let branch = request.branch.clone().filter(|b| !b.trim().is_empty()).or_else(|| Some(current).filter(|b| !b.is_empty()));
     // Images go first, before any row exists: a failed upload leaves the New task as it was.
     let image_ids = super::images::send(app, &device_id, &request.image_ids).await?;
     let cancel = Arc::new(Notify::new());
@@ -1687,25 +1696,64 @@ pub(crate) async fn commit(app: &tauri::AppHandle, mut request: Launch) -> Resul
         let remote_state = remote(app);
         let mut inner = remote_state.lock();
         let store = lock(&state)?;
-        if let Some(parent) = request.parent.as_deref() {
-            request.mode = Some(super::orchestrate::commit_mode(&inner, &store, parent, &device_id)?.to_owned());
-        }
-        let (local, created) = mirror_row(&store, &request)?;
-        // The host echoes `startId` in its `task.progress` events (remote/start.rs), runs a
-        // repeated start once, and reports or cancels it by this id. A machine thread's is its
-        // own id, so a start a quit cut off is followed up again (`load_starts`).
-        let start_id = if request.parent.is_some() { Some(local.clone()) } else { request.start_id.clone().filter(|id| host::valid_id(id).is_ok()) };
-        if let Some(start_id) = &start_id {
-            inner.viewer.starts.insert(local.clone(), PendingStart { device: device_id.clone(), start_id: start_id.clone(), created, cancel: cancel.clone(), busy: true, cancelling: false });
-        }
-        (local, created, start_id)
+        commit_row(&mut inner, &store, &mut request, &cancel)?
     };
     let _ = app.emit("sessions-changed", ());
-    let Launch { prompt, provider, model, mode, effort, worktree, .. } = request;
-    let body = json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids});
+    let mode = request.mode.clone();
+    let body = start_body(request, &repo, branch.as_deref(), start_id.as_deref(), &image_ids);
     let (start_app, start_local) = (app.clone(), local.clone());
     let start = tauri::async_runtime::spawn(async move { start(start_app, start_local, created, device_id, repo, start_id, cancel, body).await });
     Ok(Committed { local, mode, start })
+}
+
+/// Makes a launch's mirror row and registers its start, under both locks.
+pub(super) fn commit_row(inner: &mut super::Inner, store: &Store, request: &mut Launch, cancel: &Arc<Notify>) -> Result<(String, bool, Option<String>)> {
+    if let Some(parent) = request.parent.as_deref() {
+        request.mode = Some(super::orchestrate::commit_mode(inner, store, parent, &request.device)?.to_owned());
+    }
+    let (local, created) = mirror_row(store, request)?;
+    // The host echoes `startId` in its `task.progress` events (remote/start.rs), runs a
+    // repeated start once, and reports or cancels it by this id. A machine thread's is its
+    // own id, so a start a quit cut off is followed up again (`load_starts`).
+    let start_id = if request.parent.is_some() { Some(local.clone()) } else { request.start_id.clone().filter(|id| host::valid_id(id).is_ok()) };
+    if let Some(start_id) = &start_id {
+        inner.viewer.starts.insert(local.clone(), PendingStart { device: request.device.clone(), start_id: start_id.clone(), created, cancel: cancel.clone(), busy: true, cancelling: false });
+    }
+    Ok((local, created, start_id))
+}
+
+/// The `task.start` params of a committed launch.
+pub(super) fn start_body(request: Launch, repo: &str, branch: Option<&str>, start_id: Option<&str>, image_ids: &[String]) -> Value {
+    let Launch { prompt, provider, model, mode, effort, worktree, .. } = request;
+    json!({"repo": repo, "branch": branch, "worktree": worktree, "prompt": prompt, "provider": provider, "model": model, "mode": mode, "effort": effort, "startId": start_id, "imageIds": image_ids})
+}
+
+/// What a `task.start` reply means for its mirror.
+#[derive(Debug, PartialEq)]
+pub(super) enum AfterStart {
+    /// The reply was lost, maybe not the start: the row stays in `starts` (the id it goes by,
+    /// if it is still there), so Stop cancels it and the host is asked how it went.
+    Lost(Option<String>),
+    /// Started; stop it there too when the user stopped it meanwhile.
+    Link { session: String, stop_now: bool },
+    Failed(String),
+}
+
+/// Settles a start's entry in `starts` from its reply. `tracked`: it has a start id to ask by.
+pub(super) fn after_start(viewer: &mut Viewer, local: &str, tracked: bool, started: Result<String>) -> AfterStart {
+    match started {
+        Err(error) if tracked && client::maybe_ran(&error) => AfterStart::Lost(viewer.starts.get_mut(local).map(|start| {
+            start.busy = false;
+            start.start_id.clone()
+        })),
+        started => {
+            let stop_now = viewer.starts.remove(local).is_some_and(|start| start.cancelling);
+            match started {
+                Ok(session) => AfterStart::Link { session, stop_now },
+                Err(error) => AfterStart::Failed(error),
+            }
+        }
+    }
 }
 
 /// Sends `task.start` for a committed mirror row and links it to the host task.
@@ -1719,38 +1767,31 @@ async fn start(app: tauri::AppHandle, local: String, created: bool, device_id: S
     .and_then(|reply| Ok((started_session(&reply)?, start_note(&reply))));
     let note = started.as_ref().ok().and_then(|(_, note)| note.clone());
     let started = started.map(|(session, _)| session);
-    match started {
-        // The reply was lost, maybe not the start: the row stays (running) in `starts`, so
-        // Stop cancels it, and the host is asked by `startId` how it went once it is back
-        // (`resume_start`). Meanwhile the row says what it waits for.
-        Err(error) if start_id.is_some() && client::maybe_ran(&error) => {
-            let kept = {
-                let state = remote(&app);
-                let mut inner = state.lock();
-                inner.viewer.starts.get_mut(&local).map(|start| {
-                    start.busy = false;
-                    start.start_id.clone()
-                })
-            };
+    let lost = started.as_ref().err().cloned().unwrap_or_default();
+    let outcome = after_start(&mut remote(&app).lock().viewer, &local, start_id.is_some(), started);
+    let linked = match outcome {
+        // `resume_start` asks the host by `startId` how it went once it is back; meanwhile the
+        // row says what it waits for. The subscribe round is what gets that going.
+        AfterStart::Lost(kept) => {
             if let Some(start_id) = kept {
                 waiting_for(&app, &device_id, &start_id, Some(&repo));
             }
-            super::diagnostics::record("rpc.timeout", format!("task.start on {}: {error}", super::device_label(&device_id)));
-            eprintln!("PandaCode Connect: lost the reply to a start ({error}); asking the host again when it is back.");
+            super::diagnostics::record("rpc.timeout", format!("task.start on {}: {lost}", super::device_label(&device_id)));
+            eprintln!("PandaCode Connect: lost the reply to a start ({lost}); asking the host again when it is back.");
+            subscribe_soon(&app);
+            Ok(())
         }
-        started => {
-            let stop_now = remote(&app).lock().viewer.starts.remove(&local).is_some_and(|start| start.cancelling);
-            if let Err(error) = started.and_then(|session| linked(&app, &state, &local, &session, stop_now)) {
-                not_started(&app, &state, &local, created, &error);
-                if error != super::start::CANCELLED {
-                    super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
-                }
-                let _ = app.emit("sessions-changed", ());
-                return Err(error);
-            }
+        AfterStart::Link { session, stop_now } => linked(&app, &state, &local, &session, stop_now),
+        AfterStart::Failed(error) => Err(error),
+    };
+    if let Err(error) = linked {
+        not_started(&app, &state, &local, created, &error);
+        if error != super::start::CANCELLED {
+            super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
         }
+        let _ = app.emit("sessions-changed", ());
+        return Err(error);
     }
-    subscribe_soon(&app);
     let _ = app.emit("sessions-changed", ());
     Ok((local, note))
 }
@@ -1768,15 +1809,7 @@ fn not_started(app: &tauri::AppHandle, state: &AppState, local: &str, created: b
         abandon(state, local, created);
         return;
     }
-    let failed = lock(state).and_then(|store| {
-        let waiting: bool = store.db.query_row("SELECT status IN ('running','waiting') AND remote_session IS NULL FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
-        if !waiting || error == super::start::CANCELLED {
-            return Ok(waiting);
-        }
-        super::orchestrate::fail_start(&store, local, error)?;
-        Ok(false)
-    });
-    match failed {
+    match lock(state).and_then(|store| record_not_started(&store, local, error)) {
         // Stopped while it started: ends as stopped.
         Ok(true) => finish(app, local, false, true, "Turn stopped"),
         Ok(false) if error != super::start::CANCELLED => {
@@ -1788,6 +1821,17 @@ fn not_started(app: &tauri::AppHandle, state: &AppState, local: &str, created: b
         Ok(false) => {}
         Err(store_error) => eprintln!("PandaCode Connect: could not record a failed start: {store_error}"),
     }
+}
+
+/// Saves a machine thread's start that did not happen. True when its turn is still to end as
+/// stopped (a cancelled start of a thread still waiting for it).
+pub(super) fn record_not_started(store: &Store, local: &str, error: &str) -> Result<bool> {
+    let waiting: bool = store.db.query_row("SELECT status IN ('running','waiting') AND remote_session IS NULL FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    if !waiting || error == super::start::CANCELLED {
+        return Ok(waiting);
+    }
+    super::orchestrate::fail_start(store, local, error)?;
+    Ok(false)
 }
 
 /// Machine threads whose start a quit cut off are followed up again by their start id (the

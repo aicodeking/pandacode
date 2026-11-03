@@ -11,6 +11,8 @@ pub(crate) mod diagnostics;
 pub(crate) mod grants;
 mod host;
 mod images;
+#[cfg(test)]
+mod loopback;
 pub(crate) mod mirror;
 pub(crate) mod orchestrate;
 pub(crate) mod routes;
@@ -725,7 +727,7 @@ mod tests {
             .map(|n| {
                 let remote = remote.clone();
                 std::thread::spawn(move || {
-                    remote.lock().settings.links.insert(format!("d{n}"), config::Link { access: config::Access::Read, at: n as i64, key: "k".into() });
+                    remote.lock().settings.links.insert(format!("d{n}"), config::Link { access: config::Access::Read, at: n as i64, key: "k".into(), name: String::new() });
                     remote.save();
                 })
             })
@@ -741,7 +743,7 @@ mod tests {
     fn a_stale_token_never_signs_out_a_newer_sign_in() {
         let mut inner = Inner { token: Some("new".into()), generation: 3, ..Default::default() };
         inner.settings.account = Some(config::Account::default());
-        inner.settings.links.insert("studio".into(), config::Link { access: config::Access::Full, at: 1, key: "k".into() });
+        inner.settings.links.insert("studio".into(), config::Link { access: config::Access::Full, at: 1, key: "k".into(), name: String::new() });
         assert!(!inner.clear_sign_in(Some("old")));
         assert_eq!(inner.settings.links.len(), 1);
         assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (Some("new"), 3, true));

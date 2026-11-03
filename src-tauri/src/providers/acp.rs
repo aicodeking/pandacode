@@ -134,6 +134,18 @@ pub(super) fn configuration(mode: &str) -> String {
     inline.to_string()
 }
 
+/// How much a harness's own mode ID approves without asking: 1 asks, 2 edits,
+/// 3 anything. A guess from the name, used only to refuse a fallback.
+fn mode_reach(id: &str) -> u8 {
+    let id = id.to_ascii_lowercase();
+    if ["bypass", "yolo", "full", "danger", "dont", "trust", "unsafe"].iter().any(|word| id.contains(word)) {
+        3
+    } else if ["accept", "auto", "edit"].iter().any(|word| id.contains(word)) {
+        2
+    } else {
+        1
+    }
+}
 pub(super) fn options<'a>(config: &'a Value, category: &str) -> Option<&'a Value> {
     let selects = || config["configOptions"].as_array().into_iter().flatten().take(64).filter(|option| option["type"] == "select");
     // An exact ID wins: Cline files its account `provider` option under the model category too.
@@ -158,8 +170,30 @@ pub(super) fn choices(option: &Value) -> Vec<&Value> {
         .collect()
 }
 fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result<Value, String> {
-    if !choices(option).iter().any(|entry| entry["value"] == value) {
-        return Err("The harness does not advertise the selected setting. Refresh its models or choose the harness default.".into());
+    let offered = choices(option);
+    if !offered.iter().any(|entry| entry["value"] == value) {
+        // Name the setting, the rejected value and what the harness actually offers
+        // (issue #209): the generic sentence left no way to see which side disagreed.
+        let setting = ["id", "category"]
+            .into_iter()
+            .find_map(|field| option[field].as_str().filter(|name| !name.is_empty()))
+            .unwrap_or("setting");
+        let names: Vec<&str> = offered
+            .iter()
+            .filter_map(|entry| entry["value"].as_str())
+            .collect();
+        let take = names.len().min(12);
+        let shown = names[..take].join(", ");
+        let offers = if names.len() > take {
+            format!("{shown}, …")
+        } else if names.is_empty() {
+            "nothing".to_owned()
+        } else {
+            shown
+        };
+        return Err(format!(
+            "The harness does not advertise the selected {setting} \"{value}\". It offers: {offers}. Refresh its models or choose the harness default."
+        ));
     }
     Ok(
         json!({"jsonrpc":"2.0","id":id,"method":"session/set_config_option","params":{"sessionId":session,"configId":option["id"],"value":value}}),
@@ -472,6 +506,30 @@ impl Protocol {
                     return Ok(step);
                 }
             }
+            if self.plan_fallback {
+                // The harness runs in its own mode, so PandaCode enforces the
+                // plan rules itself: reads pass, anything else is declined.
+                let tool = &value["params"]["toolCall"];
+                let read_only = matches!(field(tool, "kind"), "read" | "search" | "fetch" | "think");
+                let wanted = if read_only { "allow_once" } else { "reject_once" };
+                let choice = options.and_then(|values| values.iter().find(|entry| entry["kind"] == wanted));
+                if let Some(selected) = choice {
+                    if !read_only {
+                        let title = model_text(tool["title"].as_str().or_else(|| self.tools.get(field(tool, "toolCallId")).map(|t| t.name.as_str())), "a state-changing action", 200);
+                        step.events.push(self.event("status", format!("Plan mode declined: {title}"), None));
+                    }
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":selected["optionId"]}}}));
+                    return Ok(step);
+                }
+                if !read_only {
+                    // A plan task must not turn an unrecognized ACP permission
+                    // request into a user-overridable write approval.
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"cancelled"}}}));
+                    return Ok(step);
+                }
+                // Read, search and fetch requests keep the ordinary approval
+                // path, as in Standard mode.
+            }
             let one_allow = options.is_some_and(|values| {
                 values
                     .iter()
@@ -523,7 +581,7 @@ impl Protocol {
         }
     }
 
-    fn acp_startup_status(&self, step: &mut Step) {
+    fn acp_startup_status(&mut self, step: &mut Step) {
         let label = step.write.iter().find_map(|request| match field(request, "method") {
             "authenticate" => Some("Checking harness sign-in"),
             "session/new" => Some("Opening session"),
@@ -538,6 +596,12 @@ impl Protocol {
             "session/prompt" => Some("Waiting for response"),
             _ => None,
         });
+        if label == Some("Waiting for response") {
+            if let Some(note) = self.mode_note.take() {
+                step.events.push(self.event("status", note, None));
+                return;
+            }
+        }
         if let Some(label) = label { step.events.push(self.event("status", label, None)); }
     }
     /// Grok Build annotates every frame with the context it currently holds and
@@ -652,6 +716,9 @@ impl Protocol {
         } else {
             &["default", "ask", "code"]
         };
+        // On these harnesses the ACP mode is the approval policy, so a missing
+        // one must fail the run rather than silently widen access.
+        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin");
         if let Some(option) = options(&self.acp_config, "mode") {
             let found = candidates
                 .iter()
@@ -664,9 +731,10 @@ impl Protocol {
                     .push(choice_request(&self.remote_id, 4, option, id)?);
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin") {
+            if permission_modes {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
+            self.mode_fallback()?;
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
             if let Some(mode) = candidates
                 .iter()
@@ -675,10 +743,13 @@ impl Protocol {
                 step.write.push(json!({"jsonrpc":"2.0","id":4,"method":"session/set_mode","params":{"sessionId":self.remote_id,"modeId":mode["id"]}}));
                 return Ok(());
             }
-            if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin") {
+            if permission_modes {
                 return Err("This harness does not advertise the selected task mode.".into());
             }
+            self.mode_fallback()?;
         } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin") {
+            // With no mode information at all (a bare resumed session, for
+            // instance) the run still fails rather than guess.
             return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin") {
                 "This harness does not advertise the selected task mode."
             } else {
@@ -686,6 +757,37 @@ impl Protocol {
             }.into());
         }
         self.acp_model(step)
+    }
+    /// A generic harness without the selected mode keeps running in its own
+    /// mode, with a note naming that mode instead of a failed session (#269).
+    /// It never runs in a mode that approves more than the task allows, and a
+    /// plan task keeps its read-only rules on PandaCode's side.
+    fn mode_fallback(&mut self) -> Result<(), String> {
+        let (id, name) = match options(&self.acp_config, "mode") {
+            Some(option) => {
+                let id = field(option, "currentValue");
+                (id, choices(option).into_iter().find(|entry| entry["value"] == id).map_or("", |entry| field(entry, "name")))
+            }
+            None => {
+                let id = field(&self.acp_config["modes"], "currentModeId");
+                let modes = self.acp_config["modes"]["availableModes"].as_array();
+                (id, modes.and_then(|modes| modes.iter().find(|mode| mode["id"] == id)).map_or("", |mode| field(mode, "name")))
+            }
+        };
+        let current = model_text(Some(if name.is_empty() { id } else { name }), "default", 80);
+        let reach = mode_reach(id);
+        let chosen = match self.config.mode.as_str() { "plan" => 0, "auto" => 2, "full" => 3, _ => 1 };
+        let label = match chosen { 0 => "Plan", 2 => "Accept edits", 3 => "Full access", _ => "Standard" };
+        if reach > chosen.max(1) {
+            return Err(format!("This harness does not advertise a {label} mode, and its own mode ({current}) approves more than {label} allows."));
+        }
+        self.plan_fallback = chosen == 0;
+        self.mode_note = match chosen {
+            0 => Some(format!("This harness has no Plan mode; it runs in its {current} mode, and PandaCode asks for a plan and declines changes.")),
+            1 => None,
+            _ => Some(format!("This harness has no {label} mode; it runs in its {current} mode.")),
+        };
+        Ok(())
     }
     /// Devin keeps each setting on its saved session, so a resumed task skips
     /// the round trip for any value it already has.
@@ -868,10 +970,10 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
-    #[allow(unused_mut)]
     let mut command = super::provider_command("antigravity", path)?;
     #[cfg(target_os = "linux")]
     command.arg("--uid=");
+    let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
     Ok(parse_models(&metadata))
@@ -1077,11 +1179,11 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
         Ok(command) => command,
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };
-    #[allow(unused_mut)]
     let mut command = command;
     #[cfg(target_os = "linux")]
     command.arg("--uid=");
     let discovery = super::acp_catalog::begin("antigravity", &path);
+    let _temp = super::AgentTemp::redirect(&mut command);
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
     if let Ok((metadata, _)) = &result { super::acp_catalog::store(discovery, metadata); }
     Ok(connection_status(result))
@@ -1518,6 +1620,31 @@ mod tests {
         );
         assert_eq!(p.phase, 1);
     }
+    /// Frames recorded from `opencode acp` 2.2.5: `effort` appears only once a model
+    /// with variants is selected, and its reply still says `default` right after a
+    /// change (session.list then shows the variant applied).
+    #[test]
+    fn opencode_v2_recorded_config_options_apply_the_effort() {
+        let model = |current: &str| json!({"id":"model","name":"Model","category":"model","type":"select","currentValue":current,"options":[{"value":"opencode/big-pickle","name":"opencode/Big Pickle"},{"value":"opencode/deepseek-v4.1-flash-free","name":"opencode/DeepSeek V4.1 Flash Free"}]});
+        let mode = json!({"id":"mode","name":"Session Mode","category":"mode","type":"select","currentValue":"build","options":[{"value":"build","name":"build"},{"value":"plan","name":"plan"}]});
+        let effort = json!({"id":"effort","name":"Effort","description":"Available effort levels for this model","category":"thought_level","type":"select","currentValue":"default","options":[{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"},{"value":"default","name":"Default"}]});
+        let mut cfg = config("opencode");
+        cfg.model = "opencode/deepseek-v4.1-flash-free".into();
+        cfg.reasoning_effort = Some("max".into());
+        let mut p = Protocol::new(cfg);
+        p.initial();
+        p.receive(capabilities()).unwrap();
+        let session = json!({"sessionId":"ses_e65e2baf1ffefwvoiHNuedS9dv","configOptions":[model("opencode/big-pickle"),mode.clone()]});
+        assert_eq!(p.receive(response(2, session)).unwrap().write[0]["params"]["configId"], "mode");
+        let selected = p.receive(response(4, json!({"configOptions":[model("opencode/big-pickle"),mode.clone()]}))).unwrap();
+        assert_eq!(selected.write[0]["params"]["configId"], "model");
+        let chosen = p.receive(response(5, json!({"configOptions":[model("opencode/deepseek-v4.1-flash-free"),effort.clone(),mode.clone()]}))).unwrap();
+        assert_eq!(chosen.write[0]["params"]["configId"], "effort");
+        assert_eq!(chosen.write[0]["params"]["value"], "max");
+        let prompt = p.receive(response(6, json!({"configOptions":[model("opencode/deepseek-v4.1-flash-free"),effort,mode]}))).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+    }
+
     #[test]
     fn opencode_selects_later_models_from_large_flat_and_grouped_catalogs() {
         for grouped in [false, true] {
@@ -1574,6 +1701,80 @@ mod tests {
         assert_eq!(selected.last().unwrap()["value"], last);
         assert!(choice_request("remote", 5, &option, &last).is_ok());
         assert!(choice_request("remote", 5, &option, "vendor/model-10000").is_err());
+    }
+    /// Issue #209: a value the harness does not offer fails with an error that names
+    /// what was rejected and what is actually available, instead of the generic
+    /// "selected setting" line that names nothing.
+    #[test]
+    fn choice_request_names_the_rejected_setting_value_and_offered_choices() {
+        let option = &metadata()["configOptions"][0];
+        let error = choice_request("remote", 5, option, "vendor/missing")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("does not advertise the selected model \"vendor/missing\""),
+            "{error}"
+        );
+        assert!(error.contains("It offers:"), "{error}");
+        assert!(error.contains("vendor/a"), "{error}");
+        assert!(error.contains("vendor/b"), "{error}");
+        assert!(!error.contains("…"), "{error}");
+        assert!(
+            error.contains("Refresh its models or choose the harness default."),
+            "{error}"
+        );
+    }
+    #[test]
+    fn choice_request_caps_the_offered_list_at_twelve_values() {
+        let options: Vec<Value> = (0..20)
+            .map(|index| json!({"value": format!("vendor/model-{index:02}")}))
+            .collect();
+        let option = json!({"id":"model","category":"model","type":"select","options":options});
+        let error = choice_request("remote", 5, &option, "vendor/missing")
+            .err()
+            .unwrap();
+        for listed in 0..12 {
+            assert!(
+                error.contains(&format!("vendor/model-{listed:02}")),
+                "{error}"
+            );
+        }
+        for cut in 12..20 {
+            assert!(
+                !error.contains(&format!("vendor/model-{cut:02}")),
+                "{error}"
+            );
+        }
+        assert!(error.contains("…"), "{error}");
+        assert!(
+            error.contains("Refresh its models or choose the harness default."),
+            "{error}"
+        );
+    }
+    /// The named setting falls back from a missing or empty option id to its category,
+    /// then to the word "setting".
+    #[test]
+    fn choice_request_names_the_category_then_setting_when_the_option_has_no_id() {
+        for option in [
+            json!({"id":"","category":"thought_level","type":"select","options":[{"value":"low"},{"value":"high"}]}),
+            json!({"category":"thought_level","type":"select","options":[{"value":"low"},{"value":"high"}]}),
+        ] {
+            let error = choice_request("remote", 5, &option, "turbo").err().unwrap();
+            assert!(
+                error.contains("does not advertise the selected thought_level \"turbo\""),
+                "{error}"
+            );
+            assert!(error.contains("low"), "{error}");
+        }
+        let anonymous = json!({"type":"select","options":[{"value":"low"},{"value":"high"}]});
+        let error = choice_request("remote", 5, &anonymous, "turbo")
+            .err()
+            .unwrap();
+        assert!(
+            error.contains("does not advertise the selected setting \"turbo\""),
+            "{error}"
+        );
+        assert!(error.contains("high"), "{error}");
     }
     #[test]
     fn legacy_acp_catalog_keeps_later_models() {
@@ -1865,7 +2066,7 @@ mod tests {
         }
     }
     #[test]
-    fn unsupported_images_mcp_effort_or_plan_fail_before_any_prompt() {
+    fn unsupported_images_mcp_or_effort_fail_before_any_prompt() {
         let mut p = Protocol::new(config("antigravity"));
         p.image_blocks.push(json!({"type":"image"}));
         let mut cap = capabilities();
@@ -1884,6 +2085,90 @@ mod tests {
         let step = p.receive(cap).unwrap();
         assert_eq!(step.write[0]["method"], "session/new");
         assert_eq!(step.write[0]["params"]["mcpServers"], json!([]));
+        let mut cfg = config("opencode");
+        cfg.reasoning_effort = Some("ultra".into());
+        let mut p = Protocol::new(cfg);
+        p.acp_config = metadata();
+        p.remote_id = "remote".into();
+        assert!(p.receive(response(4, json!({}))).is_err());
+    }
+
+    #[test]
+    fn a_generic_harness_without_the_selected_mode_runs_in_its_own_mode() {
+        // A harness whose own modes lack a plan choice (#269) keeps the session
+        // alive and PandaCode enforces the read-only plan rules instead.
+        let mut cfg = config("antigravity");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        assert_eq!(p.initial()["method"], "initialize");
+        p.receive(capabilities()).unwrap();
+        let step = p.receive(response(2, json!({"sessionId":"remote","modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"}]}}))).unwrap();
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert!(step.write[0]["params"]["prompt"][0]["text"].as_str().unwrap().starts_with(READ_ONLY_PLAN_PREFIX));
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("no Plan mode; it runs in its Agent mode")));
+        let edit = json!({"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Edit src/main.rs","kind":"edit"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}]}});
+        let declined = p.receive(edit).unwrap();
+        assert_eq!(declined.write[0]["result"]["outcome"]["optionId"], "reject");
+        assert!(declined.events.iter().any(|event| event.kind == "status" && event.text.contains("Plan mode declined")));
+        let read = json!({"jsonrpc":"2.0","id":"p2","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Read Cargo.toml","kind":"read"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}]}});
+        assert_eq!(p.receive(read).unwrap().write[0]["result"]["outcome"]["optionId"], "allow");
+        // Reads without an allow option keep the ordinary approval path.
+        let fetch = json!({"jsonrpc":"2.0","id":"p4","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Fetch docs","kind":"fetch"},"options":[{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]}});
+        let asked = p.receive(fetch).unwrap();
+        assert!(asked.write.is_empty());
+        assert!(asked.events.iter().any(|event| event.kind == "approval"));
+        let write_only = json!({"jsonrpc":"2.0","id":"p3","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Run deploy","kind":"execute"},"options":[{"optionId":"allow","kind":"allow_once"}]}});
+        assert_eq!(p.receive(write_only).unwrap().write[0]["result"]["outcome"]["outcome"], "cancelled");
+
+        // Hermes reaches the same fallback when its mode option lacks a
+        // counterpart; its own plan rules keep applying first.
+        let mut cfg = config("hermes");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        let step = p.receive(response(2, json!({"sessionId":"remote","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"chat","options":[{"value":"chat","name":"Chat"}]}]}))).unwrap();
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert!(step.write[0]["params"]["prompt"][0]["text"].as_str().unwrap().starts_with(READ_ONLY_PLAN_PREFIX));
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("no Plan mode; it runs in its Chat mode")));
+        let read = json!({"jsonrpc":"2.0","id":"p5","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Read Cargo.toml","kind":"read"},"options":[{"optionId":"allow","kind":"allow_once"},{"optionId":"reject","kind":"reject_once"}]}});
+        assert_eq!(p.receive(read).unwrap().write[0]["result"]["outcome"]["optionId"], "allow");
+
+        // Accept edits runs in the harness's own mode with a status note and no plan prefix.
+        let mut cfg = config("antigravity");
+        cfg.mode = "auto".into();
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        let step = p.receive(response(2, json!({"sessionId":"remote","modes":{"currentModeId":"agent","availableModes":[{"id":"agent","name":"Agent"}]}}))).unwrap();
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert!(step.write[0]["params"]["prompt"][0]["text"].as_str().unwrap().starts_with("Explain this project"));
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("Accept edits")));
+
+        // The same fallback applies when the harness advertises its modes as a
+        // mode option without a plan choice.
+        let mut cfg = config("antigravity");
+        cfg.mode = "plan".into();
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        let step = p.receive(response(2, json!({"sessionId":"remote","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"agent","options":[{"value":"agent","name":"Agent"}]}]}))).unwrap();
+        assert_eq!(step.write[0]["method"], "session/prompt");
+        assert!(step.write[0]["params"]["prompt"][0]["text"].as_str().unwrap().starts_with(READ_ONLY_PLAN_PREFIX));
+        assert!(step.events.iter().any(|event| event.kind == "status" && event.text.contains("no Plan mode; it runs in its Agent mode")));
+
+        // A harness whose own mode approves more than the chosen one is never
+        // a fallback: Plan and Standard refuse an edit or bypass mode, Accept
+        // edits refuses a bypass mode, and Full access takes any.
+        for (mode, current, fails) in [("plan", "autoEdit", true), ("default", "yolo", true), ("auto", "accept-edits", false), ("auto", "bypassPermissions", true), ("full", "yolo", false)] {
+            let mut cfg = config("antigravity");
+            cfg.mode = mode.into();
+            let mut p = Protocol::new(cfg);
+            p.receive(capabilities()).unwrap();
+            let result = p.receive(response(2, json!({"sessionId":"remote","modes":{"currentModeId":current,"availableModes":[{"id":current}]}})));
+            assert_eq!(result.is_err(), fails, "{mode} in {current}");
+            if fails { assert!(result.err().unwrap().contains("approves more than")); }
+        }
+
+        // With no mode information at all the run still fails rather than
+        // guess what the harness would allow.
         let mut cfg = config("antigravity");
         cfg.mode = "plan".into();
         assert!(Protocol::new(cfg)
@@ -1891,12 +2176,14 @@ mod tests {
             .err()
             .unwrap()
             .contains("planning"));
+
+        // Harnesses whose modes are their approval policy still fail rather
+        // than widen access.
         let mut cfg = config("opencode");
-        cfg.reasoning_effort = Some("ultra".into());
+        cfg.mode = "plan".into();
         let mut p = Protocol::new(cfg);
-        p.acp_config = metadata();
-        p.remote_id = "remote".into();
-        assert!(p.receive(response(4, json!({}))).is_err());
+        p.receive(capabilities()).unwrap();
+        assert!(p.receive(response(2, json!({"sessionId":"remote","modes":{"availableModes":[{"id":"build"}]}}))).err().unwrap().contains("does not advertise the selected task mode"));
     }
     fn permission() -> Value {
         json!({"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Run command","kind":"execute"},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}})

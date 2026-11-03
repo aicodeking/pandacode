@@ -883,3 +883,52 @@ test('layout preferences hand focus to the inspector toggle when the inspector i
   await expect(page.locator('#inspector')).toBeHidden();
   await expect(page.locator('#inspector-toggle')).toBeFocused();
 });
+
+// A window drag restyles and reflows every transcript row per step; rows off screen skip that
+// work only while the size changes, then the thread lays out once at the settled width.
+test.describe('window resize in a long thread', () => {
+  const rows = Array.from({ length: 80 }, (_, index) => [
+    { id: 5000 + index * 2, sessionId: 'session-1', role: 'user', content: `Question ${index}`, createdAt: index },
+    { id: 5001 + index * 2, sessionId: 'session-1', role: 'assistant', content: 'A reply that wraps across the column. '.repeat(30), createdAt: index },
+  ]).flat();
+  async function openLong(page: Page): Promise<void> {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch(), source = await response.text();
+      await route.fulfill({ response, body: source.replace(/async function invoke\(command, args\) \{/, `async function invoke(command, args) {
+        if (!window.__longThread) { window.__longThread = true; messages['session-1'] = ${JSON.stringify(rows)}; id = Math.max(id, 6000); }`) });
+    });
+    await open(page);
+    await expect(page.locator('#transcript [data-message-id="5159"]')).toBeAttached();
+  }
+  const skipped = (page: Page) => page.locator('#transcript').evaluate(node => getComputedStyle(node.firstElementChild!).contentVisibility);
+  const settled = (page: Page) => expect(page.locator('#transcript')).not.toHaveAttribute('data-window-resizing');
+
+  test('rows skip work only while the size changes, and a following thread stays pinned', async ({ page }) => {
+    await openLong(page);
+    expect(await skipped(page)).toBe('visible');
+    await page.locator('#transcript').evaluate(node => {
+      const seen: string[] = (window as any).__rowStates = [];
+      new MutationObserver(() => seen.push(getComputedStyle(node.firstElementChild!).contentVisibility)).observe(node, { attributes: true, attributeFilter: ['data-window-resizing'] });
+    });
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await expect.poll(() => page.evaluate(() => (window as any).__rowStates)).toEqual(['auto', 'visible']);
+    await settled(page);
+    const gap = await page.locator('#transcript').evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight);
+    expect(gap).toBeLessThanOrEqual(2);
+    // A resize event with no size change (the sidebar's layout notification) is not a window drag.
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    await expect(page.locator('#transcript')).not.toHaveAttribute('data-window-resizing');
+  });
+
+  test('a reader scrolled up keeps their place when the width settles', async ({ page }) => {
+    await openLong(page);
+    const row = page.locator('#transcript [data-message-id="5081"]');
+    await row.evaluate(node => { const scroller = document.querySelector('#transcript')!; scroller.scrollTop += node.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 120; });
+    await page.locator('#transcript').dispatchEvent('wheel', { deltaY: -10 });
+    const before = await row.evaluate(node => node.getBoundingClientRect().top);
+    for (const width of [1300, 1100, 1000]) await page.setViewportSize({ width, height: 940 });
+    await settled(page);
+    const after = await row.evaluate(node => node.getBoundingClientRect().top);
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+  });
+});

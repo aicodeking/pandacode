@@ -4,6 +4,8 @@ use serde_json::Value;
 use std::time::Duration;
 
 const LIMIT: usize = 16 * 1024 * 1024;
+/// A word this long in a 401/403 message may be a key, so the message is not shown.
+const TOKEN_LIKE: usize = 20;
 
 pub fn client(timeout: Duration) -> Result<reqwest::Client, String> {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
@@ -23,13 +25,29 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client, String> {
 /// The service's own message from an error body, else the status.
 pub fn error_message(service: &str, status: u16, body: &str) -> String {
     let parsed: Option<Value> = serde_json::from_str(body).ok();
-    let message = parsed.as_ref().and_then(|v| v["message"].as_str().or(v["error"]["message"].as_str()).or(v["error"].as_str()).or(v["errors"][0]["message"].as_str())).map(str::to_string)
-        .or_else(|| Some(body.trim().chars().take(300).collect::<String>()).filter(|s| !s.is_empty() && !s.starts_with('<')));
-    match (status, message) {
-        (401 | 403, _) => format!("{service} refused the credentials (HTTP {status}). Check them in Settings → Cloud."),
-        (_, Some(message)) => format!("{service}: {message}"),
-        _ => format!("{service} returned HTTP {status}."),
+    let structured = parsed.as_ref().and_then(|v| v["message"].as_str().or(v["error"]["message"].as_str()).or(v["error"].as_str()).or(v["errors"][0]["message"].as_str())).map(str::to_string);
+    if matches!(status, 401 | 403) {
+        return match structured.as_deref().and_then(refusal_detail) {
+            Some(detail) => format!("{service} refused the credentials (HTTP {status}): {detail}. Check them in Settings → Cloud."),
+            None => format!("{service} refused the credentials (HTTP {status}). Check them in Settings → Cloud."),
+        };
     }
+    match structured.or_else(|| Some(body.trim().chars().take(300).collect::<String>()).filter(|s| !s.is_empty() && !s.starts_with('<'))) {
+        Some(message) => format!("{service}: {message}"),
+        None => format!("{service} returned HTTP {status}."),
+    }
+}
+
+/// A refusal's own message, as one bounded line, unless it could be echoing a credential.
+/// ponytail: any long word counts as a token, since this has no access to the secret itself;
+/// a refusal naming a long ID or URL falls back to the generic text.
+fn refusal_detail(message: &str) -> Option<String> {
+    if message.split_whitespace().any(|word| word.chars().count() >= TOKEN_LIKE) {
+        return None;
+    }
+    let line = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line: String = line.chars().take(300).collect();
+    Some(line.trim_end_matches('.').to_string()).filter(|detail| !detail.is_empty())
 }
 
 pub async fn send(service: &str, request: reqwest::RequestBuilder) -> Result<Value, String> {
@@ -132,5 +150,15 @@ mod tests {
         assert!(error_message("AWS", 403, "denied").contains("refused the credentials"));
         assert_eq!(error_message("Cloudflare", 502, "<html>bad gateway</html>"), "Cloudflare returned HTTP 502.");
         assert_eq!(error_message("Cloudflare", 400, r#"{"errors":[{"message":"Bad token"}]}"#), "Cloudflare: Bad token");
+    }
+
+    #[test]
+    fn refusals_keep_the_providers_message_and_the_hint_but_never_a_token() {
+        assert_eq!(error_message("Blaxel", 403, r#"{"error":"Workspace mismatch."}"#), "Blaxel refused the credentials (HTTP 403): Workspace mismatch. Check them in Settings → Cloud.");
+        let generic = "Blaxel refused the credentials (HTTP 401). Check them in Settings → Cloud.";
+        assert_eq!(error_message("Blaxel", 401, r#"{"message":"Invalid key bl_abcdefghijklmnopqrstuvwxyz"}"#), generic);
+        // Only a structured message counts: a raw body could hold anything.
+        assert_eq!(error_message("Blaxel", 401, "denied for this key"), generic);
+        assert_eq!(error_message("Blaxel", 401, r#"{"message":"  "}"#), generic);
     }
 }

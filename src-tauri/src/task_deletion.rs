@@ -108,6 +108,15 @@ pub async fn delete_session(
     }
     // A deleted task never sends a follow-up; free its waiting agent.
     crate::providers::discard_warm_agent(&session_id);
+    // Lingering agents go first, so their folders can be removed. A refused deletion keeps them.
+    let owned = {
+        let state = app.state::<AppState>();
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        candidates(&store, &session_id)
+    };
+    for id in owned.iter().flatten() {
+        crate::providers::end_lingering(id).await;
+    }
     crate::blocking(move || {
         let cloud = app.state::<AppState>().store.lock().ok().and_then(|store| crate::cloud_agents::load(&store, &session_id).ok().flatten());
         let deleted = delete_with_files(&app.state::<AppState>(), &session_id, app.path().app_data_dir().ok().as_deref())?;

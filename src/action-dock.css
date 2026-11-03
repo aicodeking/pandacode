@@ -64,15 +64,15 @@ html .workspace .action-dock .update-later{height:calc(var(--dock-item) - 10px)}
 .action-dock .dock-badge[hidden]{display:none}
 @media(max-height:640px){.action-dock .dock-badge{top:-2px;right:-3px}}
 
-/* The Agents flyout: the team and subagent panels in one glass, left of the dock and aligned with
+/* The Agents flyout: the team, subagent and lineage panels in one glass, left of the dock and aligned with
  * its Agents item (below it when the dock is a row); src/action-dock.ts places it. Their old
  * floating triggers are gone; the dock item replaces them. */
 .agents-flyout{position:absolute;z-index:8;width:min(400px,calc(100vw - 96px));display:flex;flex-direction:column;overflow:hidden;border-radius:var(--ds-radius-card);color:var(--text);text-align:left;cursor:auto}
 .agents-flyout[hidden]{display:none}
-.agents-flyout>:is(.architect-host,.subagents-host){display:flex;flex-direction:column;min-height:0;flex:0 1 auto}
-.agents-flyout>:is(.architect-host,.subagents-host)[hidden],.agents-flyout>:is(.architect-host,.subagents-host):not(:has(>.architect-panel,>.subagents-panel)){display:none}
+.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host){display:flex;flex-direction:column;min-height:0;flex:0 1 auto}
+.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host)[hidden],.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host):not(:has(>.architect-panel,>.subagents-panel,>.lineage-panel)){display:none}
 .agents-flyout>*+*:not([hidden]){margin-top:2px}
-html .workspace .agents-flyout :is(.architect-panel,.subagents-panel){position:static;z-index:auto;flex:0 1 auto;width:auto;min-height:0;max-height:none;padding:0;border:0 solid transparent;border-radius:0;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+html .workspace .agents-flyout :is(.architect-panel,.subagents-panel,.lineage-panel){position:static;z-index:auto;flex:0 1 auto;width:auto;min-height:0;max-height:none;padding:0;border:0 solid transparent;border-radius:0;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
 .architect-trigger,.subagents-trigger{display:none!important}
 
 /* Short windows: smaller tiles and gaps. */

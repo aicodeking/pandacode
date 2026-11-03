@@ -97,7 +97,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     return `<div class="cloud-provider" data-provider="${id}">
       <div class="setting-row"><div><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success"></small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}</div>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
-      <label class="cloud-inherit" data-inherit-row hidden><input type="checkbox" data-cloud-inherit> Include provider environment variables${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</label>${id === 'instabox' ? `
+      <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'instabox' ? `
       <div class="cloud-image" hidden>
         <div class="cloud-image-row"><label><span>Machine image</span><select aria-label="InstaBox machine image" disabled></select></label>${infoMark(IMAGE_HELP, 'About machine images')}</div>
         <p class="cloud-image-status" role="status" hidden></p>
@@ -115,7 +115,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   };
   // The keyed long tail folds away; the fold opens by itself once one of them is connected.
   host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud providers">${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
-    <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3><span class="cloud-more-count ds-success"></span>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
+    <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
     <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
       <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}</div></div>
       <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
@@ -129,11 +129,28 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
 
-  let moreOpened = false;
+  /* Connected providers first, then the rest, each alphabetical by name. Connected ones are never behind the
+   * fold, which holds only the unconnected one-key providers. The Claude login card is never a provider card. */
+  function arrange(): void {
+    const [grid, more] = host.querySelectorAll<HTMLElement>('.cloud-settings');
+    const name = (id: CloudConnection['provider']) => PROVIDERS[id].name.toLowerCase();
+    const on = (id: CloudConnection['provider']) => connections.some(c => c.provider === id && c.connected);
+    const ids = (Object.keys(PROVIDERS) as CloudConnection['provider'][]).sort((a, b) => Number(on(b)) - Number(on(a)) || name(a).localeCompare(name(b)));
+    const home = (id: CloudConnection['provider']) => on(id) || !(id in KEYED) ? grid : more;
+    if (ids.every(id => section(id).parentElement === home(id)) && [grid, more].every(group => {
+      const shown = [...group.querySelectorAll<HTMLElement>(':scope > .cloud-provider[data-provider]')].map(card => card.dataset.provider);
+      return ids.filter(id => home(id) === group).every((id, index) => shown[index] === id);
+    })) return;
+    // Moving a card blurs whatever inside it had focus (the Disconnect button), so put focus back, opening the fold it landed behind.
+    const active = document.activeElement;
+    for (const id of ids) home(id).append(section(id));
+    if (active instanceof HTMLElement && host.contains(active) && document.activeElement !== active) {
+      if (more.contains(active)) host.querySelector<HTMLDetailsElement>('.cloud-more')!.open = true;
+      active.focus({ preventScroll: true });
+    }
+  }
+
   function render(): void {
-    const more = connections.filter(c => c.connected && c.provider in KEYED).length;
-    host.querySelector('.cloud-more-count')!.textContent = more ? `${more} connected` : '';
-    if (more && !moreOpened) { moreOpened = true; host.querySelector<HTMLDetailsElement>('.cloud-more')!.open = true; }
     for (const id of Object.keys(PROVIDERS) as CloudConnection['provider'][]) {
       const connection = connections.find(c => c.provider === id), root = section(id);
       const toggle = root.querySelector<HTMLButtonElement>('[data-cloud="toggle"]')!;
@@ -155,6 +172,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.disabled = Boolean(busy);
       }
     }
+    arrange();
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }

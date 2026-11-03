@@ -31,8 +31,9 @@ export const SQUASHFS_COMPRESSIONS = Object.freeze({ 1: 'gzip', 2: 'lzma', 3: 'l
 
 // Every Tauri AppImage carries this hook; AppRun sources it before starting the app.
 export const GTK_HOOK = 'apprun-hooks/linuxdeploy-plugin-gtk.sh';
-// The plugin writes `export GDK_BACKEND=x11 # Crash with Wayland backend on Wayland`.
-const FORCED_BACKEND = /^([ \t]*)export GDK_BACKEND=x11(?=[ \t]*(?:#.*)?$)/gm;
+// The plugin forces `export GDK_BACKEND=x11`; Tauri 2.12's copy comments that line out. Either
+// way X11 stays the default, so a Tauri update never moves Linux users to Wayland by itself.
+const FORCED_BACKEND = /^([ \t]*)(?:#[ \t]*)?export GDK_BACKEND=x11(?=[ \t]*(?:#.*)?$)/gm;
 const DEFAULT_BACKEND = 'export GDK_BACKEND="${GDK_BACKEND:-x11}"';
 
 /** The GTK hook with X11 as a default instead of forced. Throws if the hook changed shape. */

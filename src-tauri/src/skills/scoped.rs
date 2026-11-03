@@ -37,7 +37,7 @@ impl Library {
     pub fn project_active(&self, harness: &str, root: &Path) -> Vec<String> {
         let project = Some(root.to_string_lossy().into_owned());
         let Ok(items) = self.list() else { return Vec::new() };
-        items.into_iter().filter(|i| i.meta.kind == Kind::Skill && super::active_in(&i.meta, harness, Scope::Project, &project).is_some()).map(|i| i.meta.id).collect()
+        items.into_iter().filter(|i| i.meta.kind == Kind::Skill && super::active_in(&i.meta, harness, Scope::Project, &project).is_some_and(|a| !super::outside_surface(i.meta.kind, a))).map(|i| i.meta.id).collect()
     }
 
     /// Makes exactly `ids` active for `harness` in a bot's own workspace `root`; other harnesses

@@ -12,8 +12,10 @@
 .cloud-buttons{display:flex;gap:6px;align-items:center}
 .cloud-row-status{margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--ds-text-meta);color:var(--muted)}
 .cloud-row-status.cloud-error{color:var(--ds-danger)}
-.cloud-inherit{display:flex;align-items:center;gap:8px;margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--ds-text-meta);color:var(--muted);cursor:pointer}
-.cloud-inherit input{flex:none}
+.cloud-inherit{display:flex;align-items:center;gap:6px;margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--ds-text-meta);color:var(--muted)}
+.cloud-inherit label{display:flex;align-items:center;gap:8px;cursor:pointer}
+.cloud-inherit input{flex:none;width:16px;height:16px;padding:0;border-radius:0;background:none;accent-color:var(--accent)}
+.cloud-inherit .info-mark{margin-left:0}
 .cloud-image{display:flex;flex-direction:column;gap:6px;margin:-2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px}
 .cloud-image-row{display:flex;align-items:center;gap:6px}
 .cloud-image label{display:flex;flex:1;min-width:0;align-items:center;gap:10px;font-size:var(--ds-text-ui)}
@@ -24,6 +26,4 @@
 .cloud-image-status{margin:0;font-size:var(--ds-text-meta);color:var(--muted)}
 .cloud-image-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
 .cloud-form input,.cloud-image select{background:var(--ds-card-inset)}
-/* The keyed long tail sits in a fold; its summary counts the connected ones in the success tone. */
-.cloud-more>summary>.cloud-more-count{margin-left:auto;font-size:var(--ds-text-meta)}
-.cloud-more>summary>.cloud-more-count:empty{display:none}
+/* The unconnected keyed long tail sits in a fold. */

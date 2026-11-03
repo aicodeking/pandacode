@@ -4,7 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
 import { memo, useCallback, useEffect, useMemo, useState, type Ref } from 'react';
 import { markPaint } from '../connect/perf.ts';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import type { Message } from '../connect/types.ts';
 import { connect } from '../connect/client.ts';
 import { taskKey, useConnect, useHistory, useLive, useLoaded, useMessages, useOlder, useSent, type LiveItem } from '../store/index.ts';
@@ -26,6 +26,10 @@ import { mono, useColors } from './theme.ts';
 const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
 /** How far from the newest message (pt) before the jump-to-latest button shows. */
 const AWAY = 240;
+/** Fabric can stop painting an inverted list at rest on iOS 27, so subview clipping is off there:
+ * https://github.com/facebook/react-native/issues/59731. That report says clipping alone doesn't
+ * cause it, so this may not cure it; RN 0.88 has no option for the inverted path itself. */
+const IOS_27 = Platform.OS === 'ios' && parseInt(Platform.Version, 10) >= 27;
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
@@ -314,7 +318,7 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
       initialNumToRender={10}
       maxToRenderPerBatch={8}
       windowSize={9}
-      removeClippedSubviews
+      removeClippedSubviews={!IOS_27}
     />
     </ThreadContext.Provider>
   );

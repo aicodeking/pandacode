@@ -1004,3 +1004,9 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
    about 100–200 ms; springs in motion.ts carry surfaces. Reduced Motion removes CSS
    transitions and animations (the block near the top of the narrow-window rules), and
    motion.ts keeps only a short cross-fade there. */
+
+/* A window drag would reflow and repaint every transcript row at each step. While the size changes
+ * (main.ts), rows off screen skip that work at their remembered height; the thread lays out once
+ * when it settles. Only then: permanently, an unanchored WKWebView jumps when scrolling up. */
+#transcript>*{contain-intrinsic-size:auto 300px}
+#transcript[data-window-resizing]>*{content-visibility:auto}

@@ -72,8 +72,9 @@ const labelOf = (item: HTMLElement) => item.dataset.dockTip || item.getAttribute
 function rove(dock: HTMLElement, focus?: HTMLElement): void {
   const items = dockItems(dock);
   const current = focus && items.includes(focus as HTMLButtonElement) ? focus : items.find(item => item.tabIndex === 0) ?? items[0];
-  for (const item of buttons(dock)) item.tabIndex = item === current ? 0 : -1;
-  dock.setAttribute('aria-orientation', vertical(dock) ? 'vertical' : 'horizontal');
+  for (const item of buttons(dock)) { const index = item === current ? '0' : '-1'; if (item.getAttribute('tabindex') !== index) item.setAttribute('tabindex', index); }
+  const orientation = vertical(dock) ? 'vertical' : 'horizontal';
+  if (dock.getAttribute('aria-orientation') !== orientation) dock.setAttribute('aria-orientation', orientation);
 }
 
 /** The shared hover pill: slides to the item under the pointer or focus, fades out on leave. */
@@ -358,14 +359,15 @@ export function mountActionDock(dock: HTMLElement): void {
   requestAnimationFrame(() => { rove(dock); place(); });
 }
 
-/** What the Agents item reads from the team and subagent views (the architect view loads lazily). */
+/** What the Agents item reads from the team, subagent and lineage views (the architect view loads lazily). */
 export type AgentSource = { present: boolean; running: number; isOpen: boolean; open(focus: boolean): void; close(focus?: boolean): void };
 const AGENTS_OPEN = 150, AGENTS_CLOSE = 300;
 
-/** The Agents item: shown while the task has a team or subagents, badged with how many run.
- * Hovering opens `flyout` (both views' panels) left of the dock; it stays while the pointer is
+/** The Agents item: shown while the task has a team, subagents or machine threads, badged with how
+ * many run. Hovering opens `flyout` (every view's panel) left of the dock; it stays while the pointer is
  * on the item or the panel and closes `AGENTS_CLOSE` ms after it leaves both, which also carries
  * it across the gap. A click (Enter/Space) pins or unpins it; Escape closes it. */
+const AGENT_PANELS = '.architect-panel, .subagents-panel, .lineage-panel';
 export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, sources: () => AgentSource[]): void {
   const badge = item.querySelector<HTMLElement>('.dock-badge')!;
   let pinned = false, openTimer = 0, closeTimer = 0, shown = -1, focusedInside = false;
@@ -383,11 +385,11 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
       Object.assign(flyout.style, { right: `${Math.round(Math.max(8, header.right - box.right))}px`, top: `${Math.round(box.bottom - header.top + 8)}px`, maxHeight: `${Math.round(innerHeight - box.bottom - 20)}px` });
     }
   };
-  const focusFirst = () => flyout.querySelector<HTMLElement>('.architect-close, [data-subagent-id], .subagents-close')?.focus();
+  const focusFirst = () => flyout.querySelector<HTMLElement>('.architect-close, [data-subagent-id], .subagents-close, .lineage-open')?.focus();
   const show = (focus: boolean) => {
     clearTimeout(openTimer); clearTimeout(closeTimer);
     for (const source of sources()) if (source.present && !source.isOpen) source.open(false);
-    if (!flyout.querySelector('.architect-panel, .subagents-panel')) return;
+    if (!flyout.querySelector(AGENT_PANELS)) return;
     flyout.hidden = false; item.setAttribute('aria-expanded', 'true'); place();
     if (focus) focusFirst();
   };
@@ -414,8 +416,9 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   const refresh = () => {
     const present = sources().filter(source => source.present);
     const running = present.reduce((sum, source) => sum + source.running, 0);
-    item.hidden = !present.length;
-    item.setAttribute('aria-label', running ? `Agents: ${running} running` : 'Agents');
+    if (item.hidden !== !present.length) item.hidden = !present.length;
+    const label = running ? `Agents: ${running} running` : 'Agents';
+    if (item.getAttribute('aria-label') !== label) item.setAttribute('aria-label', label);
     badgeTo(running);
     if (!present.length && isOpen()) hide(); else place();
   };
@@ -424,7 +427,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   // Panels opened elsewhere (a transcript link, the command palette) show the flyout; closing the
   // last panel from inside it hides the flyout.
   new MutationObserver(() => {
-    const panel = flyout.querySelector('.architect-panel, .subagents-panel');
+    const panel = flyout.querySelector(AGENT_PANELS);
     if (panel && !isOpen()) { pinned = true; flyout.hidden = false; item.setAttribute('aria-expanded', 'true'); place(); }
     else if (!panel && isOpen()) hide();
     else place();

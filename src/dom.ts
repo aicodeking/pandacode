@@ -233,6 +233,15 @@ export async function markdown(target: HTMLElement, value: string, scroll?: HTML
   }
 }
 
+/** Whether `element`'s children (or with `outer`, `element` itself) already show `html`.
+ *  `innerHTML` reads back normalized (quotes, entities, SVG attributes), so a raw string compare
+ *  never matches; this compares parsed markup. */
+export function showsHtml(element: Element, html: string, outer = false): boolean {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  return template.innerHTML === (outer ? element.outerHTML : element.innerHTML);
+}
+
 /** Update `target`'s children to match `html`, touching only what changed. Unchanged rows
  *  keep their nodes (images stay decoded, hover and focus stay put); `depth` bounds how far
  *  it descends before replacing a subtree whose shape changed. */
