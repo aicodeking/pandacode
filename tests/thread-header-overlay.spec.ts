@@ -87,6 +87,25 @@ test.describe('thread header overlay', () => {
     expect(panel.bottom).toBeLessThanOrEqual(520);
   });
 
+  test('find in thread stays on a match in a folded turn while the thread was following its end', async ({ page }) => {
+    await openThread(page);
+    await page.waitForTimeout(400);
+    await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
+    await page.locator('#transcript').evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await page.keyboard.press('ControlOrMeta+f');
+    await page.getByRole('search').getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('search');
+    await expect(page.getByRole('search').locator('.thread-find-count')).toHaveText(/^\d+ of \d+$/);
+    const inView = () => page.evaluate(() => {
+      const [range] = [...(CSS as any).highlights.get('thread-find-current')] as Range[];
+      const match = range.getBoundingClientRect(), view = document.querySelector('#transcript')!.getBoundingClientRect();
+      return match.top >= view.top && match.bottom <= view.bottom;
+    });
+    await expect.poll(inView).toBe(true);
+    // It holds: the fold's height change does not pull the thread back to its end.
+    await page.waitForTimeout(400);
+    expect(await inView()).toBe(true);
+  });
+
   test('find in thread lands every match below the fade and the find bar', async ({ page }) => {
     await openThread(page);
     // Let the thread's refresh redraw land first; it restores the scroll position it remembered.
@@ -117,8 +136,9 @@ test.describe('thread header overlay', () => {
     // the thread a match can sit above the bar, since the first message is flush with the top.
     for (const [index, key] of ['', 'Shift+Enter', ...Array(total).fill('Enter')].entries()) {
       if (key) await input.press(key);
+      // A match in a folded turn lands once its turn has opened.
+      await expect.poll(async () => (await current()).top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       const rect = await current();
-      expect(rect.top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       expect(rect.bottom, `step ${index}`).toBeLessThanOrEqual(bottom);
       const underBar = rect.left < bar.x + bar.width && bar.x < rect.right && rect.top < bar.y + bar.height && bar.y < rect.bottom;
       expect(underBar, `step ${index}`).toBe(false);

@@ -10,7 +10,8 @@ const patch = (path = 'src/feature.ts', text = 'updated') => `diff --git a/${pat
 
 async function install(page: Page, config: { messages?: any[]; details?: Record<string, any> } = {}): Promise<void> {
   const runtimeErrors: string[] = []; errors.set(page, runtimeErrors);
-  page.on('pageerror', error => runtimeErrors.push(error.message));
+  // WebKit reports a height change made before paint (a live reply growing) as an error; nothing is lost, the rest arrive next frame.
+  page.on('pageerror', error => { if (!error.message.startsWith('ResizeObserver loop')) runtimeErrors.push(error.message); });
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(), source = await response.text();
     const marker = /async function invoke\(command, args\) \{/;

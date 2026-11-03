@@ -5,7 +5,8 @@ const chats = (page: Page) => page.getByRole('region', { name: 'Finished tasks',
 
 async function newChat(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'New chat', exact: true }).click();
-  await expect(chats(page).locator('.task-item.selected')).toHaveCount(1);
+  await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Ask anything…');
+  await expect(chats(page).locator('.task-item.selected')).toHaveAttribute('title', /New conversation/);
 }
 
 test.beforeEach(async ({ page }) => {

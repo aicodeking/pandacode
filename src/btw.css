@@ -39,4 +39,8 @@ html .btw-composer:has(.btw-input:placeholder-shown) .send-button:not(.stop-butt
 /* While the side agent runs the model trigger is disabled: its chevron gives the name the room. */
 .btw-panel .btw-composer .model-picker:disabled>.icon:last-child{display:none}
 .btw-panel [hidden]{display:none!important}
-@media(prefers-contrast:more){.btw-head{outline:1px solid var(--border);outline-offset:-1px}}
+/* The side prompt is the main prompt's inner card. */
+html[data-theme] .workspace .btw-composer{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .workspace .btw-composer:focus-within{border-color:var(--ds-border-strong)}
+.btw-panel .btw-composer :is(.model-picker,.mode-picker){font-size:var(--ds-text-ui)}
+@media(prefers-contrast:more){.btw-head{outline:1px solid var(--border);outline-offset:-1px}html[data-theme] .workspace .btw-composer{border-color:var(--border);box-shadow:none}}

@@ -108,8 +108,8 @@ test('follow-ups reuse the side thread with only new main-thread context, and th
   await side(page).fill('fresh start');
   await side(page).press('Enter');
   await expect(page.locator('.btw-head strong')).toHaveText('fresh start');
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(sideId);
   const fresh = (await calls(page, 'send_message')).at(-1);
-  expect(fresh.args.sessionId).not.toBe(sideId);
   expect(fresh.args.text).toContain('User: Build the feature');
 });
 
@@ -319,8 +319,8 @@ test('Enter queues, Cmd/Ctrl+Enter steers and Stop stops the side thread, never 
   await prompt(page).press('Enter');
   const stop = panel(page).getByRole('button', { name: 'Stop side thread', exact: true });
   await expect(stop).toBeVisible();
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(main);
   const sideId = (await calls(page, 'send_message')).at(-1).args.sessionId;
-  expect(sideId).not.toBe(main);
 
   await side(page).fill('queued follow-up');
   await side(page).press('Enter');
@@ -350,6 +350,8 @@ test('a side thread approval is answered in the panel', async ({ page }) => {
   await prompt(page).fill('/btw needs approval');
   await prompt(page).press('Enter');
   await expect(panel(page).getByRole('button', { name: 'Stop side thread', exact: true })).toBeVisible();
+  const main = await mainId(page);
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(main);
   const sideId = (await calls(page, 'send_message')).at(-1).args.sessionId;
   await page.evaluate(id => (window as any).__btwEmit('agent-event', { sessionId: id, kind: 'approval', requestId: 'side-approval', text: 'Run npm test?' }), sideId);
   const bar = panel(page).getByRole('region', { name: 'Approval needed', exact: true });

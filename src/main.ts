@@ -3663,7 +3663,10 @@ function scheduleLimitResumes(): void {
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
-  if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishingStreams.has(task.id)) return;
+  // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
+  const finishing = finishingStreams.get(task.id);
+  if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
+  if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishing) return;
   const hold = state.queueHolds.get(task.id);
   if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
   task.resumeAtReset = false;
@@ -6746,6 +6749,8 @@ document.addEventListener('keydown', event => {
 const threadFind = createThreadFind({
   pane: () => document.querySelector<HTMLElement>('.conversation-pane'),
   transcript: () => document.querySelector<HTMLElement>('#transcript'),
+  release: () => { stickToBottom = false; },
+  openReply: keepReplyOpen,
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
 });
 document.addEventListener('keydown', event => {

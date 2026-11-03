@@ -17,8 +17,10 @@ const task = (page: Page, title: string) => page.locator('#navigation .task-item
 async function openTask(page: Page, title: string) {
   // Many launched threads fold a project's older tasks behind "Show N more".
   const more = page.locator('#navigation').getByRole('button', { name: /^Show \d+ more/ });
-  if (!await task(page, title).count() && await more.count()) await more.first().click();
-  await task(page, title).first().click();
+  await expect(async () => {
+    if (!await task(page, title).count() && await more.count()) await more.first().click();
+    await task(page, title).first().click({ timeout: 1000 });
+  }).toPass();
   await expect(page.locator('#prompt')).toBeVisible();
   return (await page.locator('#prompt').getAttribute('data-session-id'))!;
 }

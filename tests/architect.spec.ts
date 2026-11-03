@@ -54,7 +54,8 @@ test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]);
 // Local fixture hooks drive the actual UI event handlers without calling a model.
 async function installArchitect(page: Page, snapshots: Record<string, TeamSnapshot> = {}, taskMessages: Record<string, Message[]> = {}): Promise<void> {
   const runtimeErrors: string[] = []; errors.set(page, runtimeErrors);
-  page.on('pageerror', error => runtimeErrors.push(error.message));
+  // WebKit reports a height change made before paint (a live reply growing) as an error; nothing is lost, the rest arrive next frame.
+  page.on('pageerror', error => { if (!error.message.startsWith('ResizeObserver loop')) runtimeErrors.push(error.message); });
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(); const source = await response.text();
     const marker = /async function invoke\(command, args\) \{/;
@@ -430,7 +431,11 @@ test.describe('architect teams', () => {
     });
     await expect(transcript(page).locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
     await expect(transcript(page).locator('[data-tool-key="tool:verify"]')).toBeAttached();
-    expect(await order()).toEqual([0, 1, 2, 3, 4]);
+    // In order and all present; the sample thread's rows may still sit above them for a moment.
+    await expect.poll(async () => {
+      const rows = await order();
+      return rows[0] >= 0 && rows.every((row, index) => row === rows[0] + index);
+    }).toBe(true);
   });
 
   test('keeps earlier workers above a resumed coordination turn', async ({ page }) => {

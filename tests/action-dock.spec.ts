@@ -106,9 +106,10 @@ test.describe('action dock', () => {
     await expect(terminal).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#terminal-drawer')).toBeVisible();
     // The terminal may take focus once its shell starts, so the next item is reached directly.
-    await browser.focus();
-    await page.keyboard.press(' ');
-    await expect(browser).toHaveClass(/\bactive\b/);
+    await expect(async () => {
+      if (!await browser.evaluate(node => node.classList.contains('active'))) { await browser.focus(); await page.keyboard.press(' '); }
+      await expect(browser).toHaveClass(/\bactive\b/, { timeout: 1000 });
+    }).toPass();
     await expect(browser).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#browser-panel')).toBeVisible();
     // Focus that left the dock comes back to the last item through one Tab stop.

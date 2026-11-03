@@ -39,6 +39,17 @@ test('saved turns: header sentence and time, clamped reply, footer only with cha
   expect(errors).toEqual([]);
 });
 
+test('find in thread opens a clamped reply when the match is past its clamp', async ({ page }) => {
+  await open(page);
+  const reply = cards(page).nth(1).locator('.turn-card-reply');
+  await expect(reply).not.toHaveAttribute('data-open', '');
+  await page.keyboard.press('ControlOrMeta+f');
+  await page.getByRole('search').getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('an incremental update would avoid the rebuild');
+  await expect(page.getByRole('search').locator('.thread-find-count')).toHaveText('1 of 1');
+  await expect(reply).toHaveAttribute('data-open', '');
+  await expect(reply.locator('.turn-card-more')).toHaveText('Show less');
+});
+
 test('Read more expands and collapses the reply, by pointer and keyboard', async ({ page }) => {
   await open(page);
   const reply = cards(page).nth(1).locator('.turn-card-reply');

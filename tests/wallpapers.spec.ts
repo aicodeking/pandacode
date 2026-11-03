@@ -104,6 +104,8 @@ for (const theme of ['light', 'dark']) {
     await open(page);
     const normal = await barStyles(page);
     await page.emulateMedia({ contrast: 'more' });
+    // Colours ease over 180 ms: sample what they settle on.
+    await page.waitForTimeout(400);
     const highContrast = await barStyles(page);
     await page.emulateMedia({ contrast: 'no-preference' });
     await appearance(page);
@@ -114,13 +116,13 @@ for (const theme of ['light', 'dark']) {
     await toggle.uncheck();
     await expect(scene(page)).not.toHaveAttribute('data-wallpaper');
     await expect(images(page)).toHaveCount(0);
-    expect(await barStyles(page)).toEqual(normal);
+    await expect.poll(() => barStyles(page)).toEqual(normal);
     await toggle.check();
     await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
     await page.emulateMedia({ contrast: 'more' });
     await expect(scene(page)).not.toHaveAttribute('data-wallpaper');
     await expect(images(page)).toHaveCount(0);
-    expect(await barStyles(page)).toEqual(highContrast);
+    await expect.poll(() => barStyles(page)).toEqual(highContrast);
   });
 }
 

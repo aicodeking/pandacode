@@ -430,9 +430,12 @@ test('Pi offers four approval modes with Accept edits', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'pi'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
 });
 
@@ -462,9 +465,12 @@ test('DeepSeek has a key card, four approval modes and effort levels', async ({ 
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'deepseek'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -480,9 +486,12 @@ test('Command Code has a key card, four approval modes and its own model list', 
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'commandcode'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -502,9 +511,12 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   await page.goto('/');
   await page.locator('.new-task-button').click();
   await expect(page.locator('.new-task-welcome')).toBeVisible();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');
@@ -527,9 +539,12 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await page.goto('/');
   await page.locator('.new-task-button').click();
   await expect(page.locator('.new-task-welcome')).toBeVisible();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');

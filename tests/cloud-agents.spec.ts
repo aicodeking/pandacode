@@ -117,7 +117,8 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await modal.getByLabel('Modal Environment').fill('main');
   await modal.locator('[type="submit"]').click();
   await expect(settings.getByRole('button', { name: 'Disconnect Modal', exact: true })).toBeVisible();
-  await expect(settings.locator('details.cloud-more > summary')).toContainText('1 connected');
+  // A connected provider leaves the fold for the first group.
+  await expect(settings.locator('details.cloud-more .cloud-provider[data-provider="modal"]')).toHaveCount(0);
   await expect(settings.locator('.cloud-provider[data-provider="modal"] .cloud-detail')).toHaveText('Connected · main');
 
   await settings.getByRole('button', { name: 'Connect Vercel', exact: true }).click();

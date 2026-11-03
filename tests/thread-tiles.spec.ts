@@ -28,6 +28,8 @@ test.describe('thread tiles', () => {
     await row(page, other).click({ modifiers: ['Meta'] });
     await expect(page.locator('.thread-tile')).toHaveCount(2);
     await expect.poll(() => current(page)).toBe(other);
+    // A new tile arrives with a slight scale: read the positions once it has landed.
+    await page.locator('.thread-tile').evaluateAll(tiles => Promise.all(tiles.flatMap(tile => tile.getAnimations().map(animation => animation.finished.catch(() => undefined)))));
     const a = await box(page, `.thread-tile[data-tile="${first}"]`), b = await box(page, `.thread-tile[data-tile="${other}"]`), area = await box(page, '.work-area');
     expect(a.top).toBe(b.top);
     expect(b.left).toBeGreaterThanOrEqual(a.right);

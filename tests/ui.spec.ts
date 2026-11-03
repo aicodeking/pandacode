@@ -16,8 +16,12 @@ const activeSectionRows = (page: Page) => page.locator('#navigation [data-thread
 const changeFiles = (page: Page) => page.locator('#inspector-content .changes-view .cv-file');
 const projectFilter = (page: Page) => page.getByRole('button', { name: 'Filter projects', exact: true });
 const chooseProjectFilter = async (page: Page, name: string) => {
-  await projectFilter(page).click();
-  await page.getByRole('dialog', { name: 'Filter projects', exact: true }).getByRole('menuitemradio', { name, exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
+  // A redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await menu.isVisible()) await projectFilter(page).click();
+    await menu.getByRole('menuitemradio', { name, exact: true }).click({ timeout: 1000 });
+  }).toPass();
 };
 const previewProjectNames = (page: Page) => page.evaluate(async () => {
   const { invoke } = await import((window as any).__pandacodePreviewUrl);
@@ -248,7 +252,8 @@ async function installHistoryFixture(page: Page, total: number, formatted = fals
   await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
 }
 const olderRequests = (page: Page) => page.evaluate(() => (window as any).__historyFixture.calls.filter((call: any) => call.beforeId));
-const historyOffset = (element: Locator) => element.evaluate(node => node.getBoundingClientRect().top - node.closest('#transcript')!.getBoundingClientRect().top);
+// A redraw can detach the row between finding and reading it: a poll then reads again.
+const historyOffset = (element: Locator) => element.evaluate(node => { const transcript = node.closest('#transcript'); return transcript ? node.getBoundingClientRect().top - transcript.getBoundingClientRect().top : Infinity; });
 const scrollHistoryTop = (page: Page) => page.locator('#transcript').evaluate(element => {
   element.scrollTop = 0;
   element.dispatchEvent(new Event('scroll'));
@@ -1039,10 +1044,13 @@ test('finds and selects projects beyond the first hundred filter options', async
     await route.fulfill({ response, body: previewBody(body) });
   });
   await page.reload();
-  await projectFilter(page).click();
   const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
   const search = menu.getByRole('searchbox', { name: 'Search projects', exact: true });
-  await expect(search).toBeFocused();
+  // A redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await menu.isVisible()) await projectFilter(page).click();
+    await expect(search).toBeFocused({ timeout: 1000 });
+  }).toPass();
   expect(await menu.getByRole('menuitemradio').count()).toBeLessThanOrEqual(100);
   await search.fill('Fixture project 119');
   await expect(menu.getByRole('menuitemradio')).toHaveCount(1);

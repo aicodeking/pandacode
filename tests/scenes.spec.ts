@@ -32,6 +32,7 @@ test('a thread keeps its scene across switches and reloads, and threads differ',
   expect([...again]).toEqual([...first]);
   await page.reload();
   await expect(layer(page)).toHaveAttribute('data-gl', '');
+  await expect(rows(page).nth(first.size - 1)).toBeAttached();
   expect([...await scenesByThread(page)]).toEqual([...first]);
 });
 
