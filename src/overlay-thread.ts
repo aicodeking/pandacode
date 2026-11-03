@@ -201,7 +201,7 @@ export class OverlayThreadView {
     this.host.querySelector<HTMLElement>('.launcher-thread-empty')!.hidden = messages.length > 0;
     this.host.querySelector('.launcher-thread-empty')!.textContent = 'The agent is getting started…';
     const status = this.host.querySelector<HTMLElement>('.launcher-thread-status')!;
-    status.textContent = statusLabel(child?.status || thread.status); status.dataset.status = child?.status || thread.status;
+    status.textContent = statusLabel(child?.status || thread.status); status.dataset.status = child?.status || thread.status; status.dataset.kind = this.task!.kind;
     if (follow) this.scroll.scrollTop = this.scroll.scrollHeight; else restore?.();
     this.initial = false;
     this.fillHistory();

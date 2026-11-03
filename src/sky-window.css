@@ -1,0 +1,39 @@
+/* The thread as a window (src/sky-window.ts): a procedural scene (src/scenes/: the sky, the aurora, …) behind the conversation, inside the main pane's rounded inset.
+ * The canvas is the WebGL sky; until it paints (or if WebGL fails) the layer's own gradient is the sky, graded by theme. */
+.thread-sky{position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden;
+  background:linear-gradient(to bottom,var(--sky-top,#2f7fe0),var(--sky-mid,#6fb0f0) 55%,var(--sky-horizon,#cfe6f8))}
+.thread-sky::after{content:"";position:absolute;inset:0;background:rgb(255 255 255 / .42)}
+html[data-theme="dark"] .thread-sky::after{background:rgb(0 0 0 / .62)}
+.thread-sky[data-gl]::after{content:none}
+.thread-sky>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0}
+.thread-sky[data-gl]>canvas{opacity:1}
+.thread-sky>canvas.thread-sky-fade{opacity:1}
+.thread-sky>canvas.thread-sky-fade[hidden]{display:none}
+.thread-sky[hidden],.workspace:is(.board-view,.github-view,[data-wallpaper]) .thread-sky{display:none}
+.workspace[data-scene]>.main-pane{isolation:isolate;--panel-surface:transparent}
+
+/* Over the bare sky text sits on the sky itself, as it did before the sky: no cards behind it. The sky's grade keeps every
+ * pixel inside the reading column within reach of the ink (light: Y >= the floor, dark: Y <= the ceiling, src/sky-window.ts),
+ * and the ink steps a little further than on a plain page; tests/sky.spec.ts measures the worst pixel behind each item.
+ * Only the composer (a card before the sky) and the user's bubble keep a fill. */
+html[data-theme] .workspace[data-scene="sky"]>.main-pane{
+  --sky-glass:color-mix(in srgb,var(--bg) 92%,transparent);
+  --sky-glass-blur:blur(22px) saturate(1.25);
+}
+html[data-theme="dark"] .workspace[data-scene="sky"]>.main-pane{--muted:#c2c2c2;--faint:#c0c0c0;--ds-info:color-mix(in srgb,var(--info) 60%,white);--ds-danger:color-mix(in srgb,var(--danger) 55%,white);--ds-success:color-mix(in srgb,var(--success) 70%,white)}
+html:not([data-theme="dark"]) .workspace[data-scene="sky"]>.main-pane{--muted:#3a3a36;--faint:#3a3a36}
+/* Small meta text (a message's time, the preview note) is 12–13px on the bare sky: in light it steps past --muted toward the
+ * text so the worst pixel behind it (late evening) still clears ~5.5:1. */
+html:not([data-theme="dark"]) .workspace[data-scene="sky"]>.main-pane :is(.message-meta,.message-meta time,.preview-status){color:color-mix(in srgb,var(--muted) 40%,var(--text))}
+html[data-theme] .workspace[data-scene="sky"] .conversation-pane{--thread-surface:var(--sky-glass);--thread-frost:var(--sky-glass-blur)}
+html[data-theme] .workspace[data-scene="sky"] .conversation-pane .composer-area .composer{
+  background:var(--sky-glass);backdrop-filter:var(--sky-glass-blur);-webkit-backdrop-filter:var(--sky-glass-blur);
+  border-radius:var(--ds-radius-card);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+/* A soft halo in the page tone under text and icons on the scene: no edge, it only steadies glyphs over cloud texture. */
+html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.new-task-welcome,.workspace-header){text-shadow:0 0 6px color-mix(in srgb,var(--bg) 55%,transparent)}
+html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.workspace-header) .icon{filter:drop-shadow(0 0 3px color-mix(in srgb,var(--bg) 50%,transparent))}
+html[data-theme] .workspace[data-scene="sky"] .main-pane :is(.composer,.user-message .message-content,pre,code){text-shadow:none}
+
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more),(forced-colors:active){
+  .thread-sky{display:none}
+}

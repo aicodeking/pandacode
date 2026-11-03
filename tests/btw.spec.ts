@@ -67,7 +67,7 @@ test('/btw while the main thread runs opens a side thread without queueing or st
   expect(await calls(page, 'send_message')).toHaveLength(2);
   // By the way is an ordinary inspector tab: selected while open, and closable.
   const tab = page.locator('#inspector .inspector-tab[data-view="btw"]');
-  await expect(tab.locator('.inspector-tab-button')).toHaveAttribute('aria-current', 'true');
+  await expect(tab.locator('.inspector-tab-button')).toHaveAttribute('aria-selected', 'true');
   await tab.getByRole('button', { name: 'Close By the way', exact: true }).click();
   await expect(tab).toBeHidden();
   await expect(page.locator('#inspector-title')).not.toHaveText('By the way');
@@ -108,8 +108,8 @@ test('follow-ups reuse the side thread with only new main-thread context, and th
   await side(page).fill('fresh start');
   await side(page).press('Enter');
   await expect(page.locator('.btw-head strong')).toHaveText('fresh start');
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(sideId);
   const fresh = (await calls(page, 'send_message')).at(-1);
-  expect(fresh.args.sessionId).not.toBe(sideId);
   expect(fresh.args.text).toContain('User: Build the feature');
 });
 
@@ -233,7 +233,7 @@ test('typing in the side prompt survives streaming, and Esc there never stops th
 // The side panel's own thread view and composer (docs/btw.md).
 const panel = (page: Page) => page.locator('.btw-panel');
 const mainTrigger = (page: Page) => page.locator('#model-picker-trigger');
-const sideModel = (page: Page) => panel(page).getByRole('button', { name: 'Choose harness and model', exact: true });
+const sideModel = (page: Page) => panel(page).getByRole('button', { name: /^Model: / });
 const sideMode = (page: Page) => panel(page).locator('.mode-picker');
 const picker = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 const mainId = (page: Page): Promise<string> => page.evaluate(() => (window as any).__mainId);
@@ -254,7 +254,7 @@ const rows = (page: Page, selector: string) => page.locator(selector).evaluate(r
     text: (row.querySelector('.message-content')?.textContent ?? row.querySelector('.turn-activity-label')?.textContent ?? '').trim().slice(0, 60),
   })));
 
-test('the side thread is drawn as the main transcript draws it', async ({ page }) => {
+test('the side thread draws chat rows and opens as a full thread with its turn in a card', async ({ page }) => {
   const sideId = await openSide(page);
   const inPanel = await rows(page, '.btw-transcript');
   // A user row with the context chip, the tool turn, then the answer with its actions.
@@ -266,7 +266,10 @@ test('the side thread is drawn as the main transcript draws it', async ({ page }
   await page.getByRole('button', { name: 'Open side thread as a full thread', exact: true }).click();
   await expect(page.locator(`.task-item[data-id="${sideId}"]`)).toHaveAttribute('aria-current', 'page');
   await expect(page.locator('#transcript .agent-message[data-message-id]')).toHaveCount(1);
-  expect(await rows(page, '#transcript')).toEqual(inPanel);
+  // The panel keeps chat rows; the same turn opened as a full thread is one card, with the same bubble and context chip.
+  await expect(page.locator('#transcript .turn-card')).toHaveCount(1);
+  const full = await rows(page, '#transcript');
+  expect(full[0]).toEqual(inPanel[0]);
 });
 
 test('model, effort and permissions change the side thread only and survive reopening the panel', async ({ page }) => {
@@ -316,8 +319,8 @@ test('Enter queues, Cmd/Ctrl+Enter steers and Stop stops the side thread, never 
   await prompt(page).press('Enter');
   const stop = panel(page).getByRole('button', { name: 'Stop side thread', exact: true });
   await expect(stop).toBeVisible();
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(main);
   const sideId = (await calls(page, 'send_message')).at(-1).args.sessionId;
-  expect(sideId).not.toBe(main);
 
   await side(page).fill('queued follow-up');
   await side(page).press('Enter');
@@ -347,6 +350,8 @@ test('a side thread approval is answered in the panel', async ({ page }) => {
   await prompt(page).fill('/btw needs approval');
   await prompt(page).press('Enter');
   await expect(panel(page).getByRole('button', { name: 'Stop side thread', exact: true })).toBeVisible();
+  const main = await mainId(page);
+  await expect.poll(async () => (await calls(page, 'send_message')).at(-1).args.sessionId).not.toBe(main);
   const sideId = (await calls(page, 'send_message')).at(-1).args.sessionId;
   await page.evaluate(id => (window as any).__btwEmit('agent-event', { sessionId: id, kind: 'approval', requestId: 'side-approval', text: 'Run npm test?' }), sideId);
   const bar = panel(page).getByRole('region', { name: 'Approval needed', exact: true });

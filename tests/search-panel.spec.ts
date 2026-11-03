@@ -26,14 +26,14 @@ test('the panel opens on Changes and labelled views open as tabs', async ({ page
   await expect(page.locator('#inspector-title')).toHaveText('Changes');
   // The change count is part of the Changes button's name.
   await expect(tab(page, 'tab-changes')).toHaveAccessibleName(/^Changes, \d+ changed files?$/);
-  await expect(tab(page, 'tab-changes')).toHaveAttribute('aria-current', 'true');
+  await expect(tab(page, 'tab-changes')).toHaveAttribute('aria-selected', 'true');
   for (const name of ['Files', 'Search', 'Browser']) await openInspectorTab(page, name);
-  for (const name of ['Files', 'Search', 'Browser']) await expect(page.locator('.inspector-tabs').getByRole('button', { name, exact: true })).toBeVisible();
+  for (const name of ['Files', 'Search', 'Browser']) await expect(page.locator('.inspector-tabs').getByRole('tab', { name, exact: true })).toBeVisible();
   await tab(page, 'tab-files').click();
   await expect(tab(page, 'tab-files')).toHaveClass(/selected/);
   await expect(page.locator('#inspector-title')).toHaveText('Files');
   await expect(page.locator('#inspector-content .file-row').first()).toBeVisible();
-  await expect(tab(page, 'tab-files')).toHaveAttribute('aria-current', 'true');
+  await expect(tab(page, 'tab-files')).toHaveAttribute('aria-selected', 'true');
   await tab(page, 'tab-changes').click();
   await expect(page.locator('#inspector-title')).toHaveText('Changes');
   await expect(tab(page, 'tab-changes')).toHaveClass(/selected/);

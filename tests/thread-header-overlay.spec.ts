@@ -36,18 +36,21 @@ test.describe('thread header overlay', () => {
       const collapsed = await page.locator('.workspace').evaluate(node => node.classList.contains('sidebar-collapsed'));
       const inset = width > 650 && !collapsed ? 8 : 0;
       expect(main.top).toBe(inset);
-      expect(Math.abs(top - main.top)).toBeLessThanOrEqual(1);
       const headerBox = await box(page, '.workspace-header');
       expect(headerBox.top + headerBox.height / 2).toBeCloseTo(55 / 2, 0);
+      // At ≤650px the action dock is a row in the header, so the transcript starts below it (action-dock.css
+      // `--header-under: 0`) and nothing scrolls behind the row's icons.
+      const row = width <= 650, under = row ? 0 : headerBox.height;
+      expect(Math.abs(top - (row ? headerBox.top + headerBox.height : main.top))).toBeLessThanOrEqual(1);
       // At rest the first row sits just below the header, so nothing clickable lies under its drag band.
       const padding = await transcript.evaluate(node => ({ top: parseFloat(getComputedStyle(node).paddingTop), scroll: parseFloat(getComputedStyle(node).scrollPaddingTop) }));
-      expect(padding.top).toBeCloseTo(headerBox.height, 0);
+      if (!row) expect(padding.top).toBeCloseTo(headerBox.height, 0);
       // scrollIntoView and focus land rows below the header band too.
-      expect(padding.scroll).toBeGreaterThanOrEqual(headerBox.height);
+      expect(padding.scroll).toBeGreaterThanOrEqual(under);
       await transcript.evaluate(node => { node.scrollTop = 0; });
       const first = (await box(page, '#transcript .message')).top - top;
-      expect(first).toBeGreaterThanOrEqual(headerBox.height - 0.5);
-      expect(first).toBeLessThanOrEqual(headerBox.height + 4);
+      expect(first).toBeGreaterThanOrEqual(row ? 0 : headerBox.height - 0.5);
+      expect(first).toBeLessThanOrEqual((row ? padding.top : headerBox.height) + 4);
 
       await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
       await transcript.evaluate(node => { node.scrollTop = 90; });
@@ -66,7 +69,7 @@ test.describe('thread header overlay', () => {
     const transcript = page.locator('#transcript');
     await transcript.evaluate(node => { node.scrollTop = 0; });
     const before = (await box(page, '#transcript .message')).top;
-    await page.getByRole('button', { name: 'Team', exact: true }).click();
+    await page.getByRole('button', { name: 'Team: off', exact: true }).click();
     await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
     const agents = page.locator('#action-dock #agents-toggle');
     await expect(agents).toBeVisible();
@@ -82,6 +85,25 @@ test.describe('thread header overlay', () => {
     expect(panel.right).toBeLessThanOrEqual(dock.left);
     expect(Math.abs(panel.top - item.top)).toBeLessThanOrEqual(2);
     expect(panel.bottom).toBeLessThanOrEqual(520);
+  });
+
+  test('find in thread stays on a match in a folded turn while the thread was following its end', async ({ page }) => {
+    await openThread(page);
+    await page.waitForTimeout(400);
+    await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
+    await page.locator('#transcript').evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await page.keyboard.press('ControlOrMeta+f');
+    await page.getByRole('search').getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('search');
+    await expect(page.getByRole('search').locator('.thread-find-count')).toHaveText(/^\d+ of \d+$/);
+    const inView = () => page.evaluate(() => {
+      const [range] = [...(CSS as any).highlights.get('thread-find-current')] as Range[];
+      const match = range.getBoundingClientRect(), view = document.querySelector('#transcript')!.getBoundingClientRect();
+      return match.top >= view.top && match.bottom <= view.bottom;
+    });
+    await expect.poll(inView).toBe(true);
+    // It holds: the fold's height change does not pull the thread back to its end.
+    await page.waitForTimeout(400);
+    expect(await inView()).toBe(true);
   });
 
   test('find in thread lands every match below the fade and the find bar', async ({ page }) => {
@@ -114,8 +136,9 @@ test.describe('thread header overlay', () => {
     // the thread a match can sit above the bar, since the first message is flush with the top.
     for (const [index, key] of ['', 'Shift+Enter', ...Array(total).fill('Enter')].entries()) {
       if (key) await input.press(key);
+      // A match in a folded turn lands once its turn has opened.
+      await expect.poll(async () => (await current()).top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       const rect = await current();
-      expect(rect.top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       expect(rect.bottom, `step ${index}`).toBeLessThanOrEqual(bottom);
       const underBar = rect.left < bar.x + bar.width && bar.x < rect.right && rect.top < bar.y + bar.height && bar.y < rect.bottom;
       expect(underBar, `step ${index}`).toBe(false);

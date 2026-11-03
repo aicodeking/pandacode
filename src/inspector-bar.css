@@ -7,25 +7,30 @@ html[data-theme] .workspace>.inspector .inspector-strip>.inspector-tabs{display:
 /* One surface with the panel below: the wallpaper rules' tinted fill for the old segmented tabs would cover only the tabs' width. */
 html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-strip>.inspector-tabs{background:transparent}
 .inspector-tabs>.segment-thumb{display:none}
-.inspector-tab{position:relative;display:flex;align-items:center;flex:none;height:var(--control);border-radius:var(--radius-sm);color:var(--muted)}
-.inspector-tab:hover{color:var(--text);background:color-mix(in srgb,var(--text) 5%,transparent)}
-.inspector-tab:has(>.selected){color:var(--text);background:var(--fill-active);box-shadow:none}
-html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab>.inspector-tab-button{display:flex;align-items:center;gap:6px;height:var(--control);min-height:0;padding:0 9px 0 8px;border-radius:var(--radius-sm);background:transparent;box-shadow:none;color:inherit;font-size:var(--text-sm);font-weight:var(--weight-medium);line-height:1;white-space:nowrap}
-html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:has(>.inspector-tab-close:not([hidden]))>.inspector-tab-button{padding-right:21px}
+.inspector-tab{position:relative;display:flex;align-items:center;flex:none;height:var(--control);border-radius:var(--ds-radius-control);color:var(--muted)}
+.inspector-tab:hover{color:var(--text);background:var(--ds-row-hover)}
+/* The selected tab is the raised thumb of a segmented control: raised fill, its own hairline, a soft shadow. */
+.inspector-tab:has(>.selected){color:var(--text);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab>.inspector-tab-button{display:flex;align-items:center;gap:6px;height:var(--control);min-height:0;padding:0 9px 0 8px;border-radius:var(--ds-radius-control);background:transparent;box-shadow:none;color:inherit;font-size:var(--ds-text-ui);font-weight:var(--weight-regular);letter-spacing:var(--ds-row-tracking);line-height:1;white-space:nowrap}
+/* The selected tab reads as the .ds-seg thumb: text ink and a medium weight, as the segmented controls elsewhere. */
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab>.inspector-tab-button.selected{font-weight:var(--weight-medium)}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:has(>.inspector-tab-close:not([hidden]))>.inspector-tab-button{padding-right:27px}
 .inspector-tab-button .icon{flex:none;width:var(--icon-sm);height:var(--icon-sm)}
 .inspector-tab-button:focus-visible,.inspector-tab-close:focus-visible,.inspector-tab-add:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
-html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-count{min-width:18px;padding:0 5px;border-radius:var(--radius-full);line-height:17px;text-align:center;font-size:var(--text-xs);font-weight:var(--weight-medium);background:var(--fill-active);color:var(--muted)}
+html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-count{min-width:18px;padding:0 5px;border-radius:var(--radius-full);line-height:17px;text-align:center;font-size:var(--ds-text-chip);font-weight:var(--weight-medium);letter-spacing:0;background:transparent;box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--faint);font-variant-numeric:tabular-nums}
 html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-count:empty{display:none}
-html[data-theme] .workspace>.inspector .inspector-tab>.inspector-tab-close{position:absolute;top:0;bottom:0;right:3px;margin:auto 0;width:18px;height:18px;padding:0;border-radius:var(--radius-sm);color:var(--muted);background:transparent;opacity:0}
+html[data-theme] .workspace>.inspector .inspector-tab>.inspector-tab-close{position:absolute;top:0;bottom:0;right:2px;margin:auto 0;width:24px;height:24px;padding:0;border-radius:var(--ds-radius-chip);color:var(--muted);background:transparent;opacity:0}
 html[data-theme] .workspace>.inspector .inspector-tab:is(:hover,:focus-within)>.inspector-tab-close{opacity:1}
-html[data-theme] .workspace>.inspector .inspector-tab>.inspector-tab-close:hover{color:var(--text);background:color-mix(in srgb,var(--text) 10%,transparent)}
+html[data-theme] .workspace>.inspector .inspector-tab>.inspector-tab-close:hover{color:var(--text);background:var(--ds-fill-hover)}
 .inspector-tab-close .icon{width:var(--icon-xs);height:var(--icon-xs)}
-html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab-add{flex:none;width:24px;height:24px;min-height:0;padding:0;border-radius:var(--radius-sm);background:transparent;box-shadow:none;--press:1}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab-add{flex:none;width:24px;height:24px;min-height:0;padding:0;border-radius:var(--ds-radius-chip);background:transparent;box-shadow:none;color:var(--muted);--press:1}
 .inspector-tab-add .icon{width:var(--icon-sm);height:var(--icon-sm)}
+/* Always in reach: + stays at the strip's end over tabs that scrolled under it, on the panel's own surface. */
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab-add{position:sticky;right:0;z-index:1;background:var(--panel-surface,var(--bg))}
 .inspector-strip-actions{display:flex;align-items:center;gap:2px;flex:none;margin-left:auto}
-.inspector-strip-actions>.icon-button{width:var(--control-sm);height:var(--control-sm)}
+.inspector-strip-actions>.icon-button{width:var(--control-sm);height:var(--control-sm);border-radius:var(--ds-radius-chip);color:var(--muted)}
 .inspector-strip-actions>.icon-button .icon{width:var(--icon-sm);height:var(--icon-sm)}
-.inspector-strip-actions>.icon-button:hover,html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab-add:hover{color:var(--text);background:color-mix(in srgb,var(--text) 6%,transparent)}
+.inspector-strip-actions>.icon-button:hover,html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab-add:hover{color:var(--text);background:var(--ds-fill-hover)}
 html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-label{padding:0;border-radius:0;background:none;color:inherit;font:inherit;min-width:0}
 
 /* Edge fades say the strip scrolls: each side fades only while tabs are hidden beyond it (scroll-driven; no fade where unsupported). */
@@ -38,7 +43,56 @@ html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-labe
     animation:strip-fade-l linear both,strip-fade-r linear both;
     animation-timeline:scroll(self x);
     animation-range:0 24px,calc(100% - 24px) 100%;
-    -webkit-mask-image:linear-gradient(to right,transparent,#000 var(--strip-fade-l),#000 calc(100% - var(--strip-fade-r)),transparent);
-    mask-image:linear-gradient(to right,transparent,#000 var(--strip-fade-l),#000 calc(100% - var(--strip-fade-r)),transparent);
+    /* The right fade ends where the sticky + begins (24px wide); the + itself never fades. */
+    -webkit-mask-image:linear-gradient(to right,transparent,#000 var(--strip-fade-l),#000 calc(100% - 24px - var(--strip-fade-r)),transparent calc(100% - 24px),#000 calc(100% - 24px));
+    mask-image:linear-gradient(to right,transparent,#000 var(--strip-fade-l),#000 calc(100% - 24px - var(--strip-fade-r)),transparent calc(100% - 24px),#000 calc(100% - 24px));
   }
 }
+
+/* Many open views: unselected tabs give way first. A label that no longer fits whole wraps onto a clipped second line, so the tab turns icon-only (name in the tooltip and accessible name) instead of truncating, and never narrower than keeps the close button off its middle. The selected tab always keeps its label. */
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected)){flex:0 1 auto;min-width:58px}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-button{flex:1 1 auto;flex-wrap:wrap;align-content:flex-start;min-width:0;max-width:100%;overflow:hidden}
+html[data-theme] .workspace>.inspector .inspector-tab-button>.inspector-tab-label{flex:none;line-height:var(--control);white-space:nowrap}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-button>.inspector-tab-count{flex:none}
+html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-button>.icon{margin-block:calc((var(--control) - var(--icon-sm)) / 2)}
+/* Colours follow the shared hover timing: in 120ms, out 180ms, ease-out. */
+.inspector-tab,.inspector-tab-close,.inspector-tab-add,.inspector-strip-actions>.icon-button{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out}
+.inspector-tab:hover,.inspector-tab-close:hover,.inspector-tab-add:hover,.inspector-strip-actions>.icon-button:hover{transition-duration:var(--ds-ease-in)}
+/* A narrow strip (content box ≤250px: about a 1100px window): unselected tabs are their icon alone (name in the tooltip and accessible name), closed after selecting them; the selected tab keeps its label and close button. */
+.inspector-strip{container:inspector-strip / inline-size}
+@container inspector-strip (max-width:250px){
+  html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected)){flex:none;min-width:0}
+  html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-button{padding:0 6px}
+  html[data-theme] .workspace>.inspector .inspector-strip>.inspector-tabs{gap:0}
+  html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab>.inspector-tab-button.selected{padding-left:7px;gap:5px}
+  html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-button>:is(.inspector-tab-label,.inspector-tab-count),
+  html[data-theme] .workspace>.inspector .inspector-tabs>.inspector-tab:not(:has(>.selected))>.inspector-tab-close{display:none}
+}
+/* Five or more open views go icon-only the same way at any width, so the selected tab's label always fits. */
+html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])){gap:0}
+html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected)){flex:none;min-width:0}
+html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-button{padding:0 6px}
+html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-button>:is(.inspector-tab-label,.inspector-tab-count),
+html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-close{display:none}
+/* Four open views in a strip up to 420px (the default inspector width) go icon-only the same way, so the selected tab and the + button stay in view without scrolling. */
+@container inspector-strip (max-width:420px){
+  html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])){gap:0}
+  html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected)){flex:none;min-width:0}
+  html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-button{padding:0 6px}
+  html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-button>:is(.inspector-tab-label,.inspector-tab-count),
+  html[data-theme] .workspace>.inspector .inspector-tabs:has(>.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden])~.inspector-tab:not([hidden]))>.inspector-tab:not(:has(>.selected))>.inspector-tab-close{display:none}
+}
+
+/* The selected tab's icon takes its view's tint (the dock's panels use the same set); unselected tabs stay neutral. */
+.inspector-tab:is([data-view="files"],[data-view="file"],[data-view="search"]){--view-tint:var(--ds-tone-plan)}
+.inspector-tab[data-view="changes"]{--view-tint:var(--ds-tone-edit)}
+.inspector-tab:is([data-view="browser"],[data-view="vm"]){--view-tint:var(--ds-tone-remote)}
+.inspector-tab:is([data-view="pull"],[data-view="design"]){--view-tint:var(--ds-tone-worktree)}
+.inspector-tab[data-view="simulator"]{--view-tint:var(--ds-tone-saver)}
+.inspector-tab[data-view="btw"]{--view-tint:var(--ds-tone-team)}
+.inspector-tab-button>.icon{transition:color var(--ds-ease-out) ease-out}
+.inspector-tab:has(>.selected)>.inspector-tab-button>.icon{color:var(--view-tint,currentColor)}
+
+/* Increase Contrast: the selected thumb keeps a solid edge and no shadow; forced colours outline it in system colours. */
+@media(prefers-contrast:more){.inspector-tab:has(>.selected){box-shadow:inset 0 0 0 1px var(--text)}}
+@media(forced-colors:active){.inspector-tab:has(>.selected){outline:1px solid CanvasText;outline-offset:-1px}}

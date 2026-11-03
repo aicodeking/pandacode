@@ -5,7 +5,7 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#inspector')).toBeVisible();
   await openInspectorTab(page, 'Files');
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('tab', { name: 'Files', exact: true }).click();
 });
 
 test('renders Markdown as a reader and switches to raw source', async ({ page }) => {

@@ -106,6 +106,7 @@ test('Settings has a dedicated Agent usage section with lazy loading and provide
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   const usage = settings.getByRole('tabpanel', { name: 'Agent usage', exact: true });
   expect(await calls(page)).toEqual([]);
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
   await expect(usage.getByRole('tab', { name: 'Overview', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect.poll(async () => (await calls(page)).length).toBe(installed.length);
@@ -115,7 +116,9 @@ test('Settings has a dedicated Agent usage section with lazy loading and provide
   await expect(usage.locator('#usage-panel-codex')).toContainText('68% used');
   await usage.getByRole('tab', { name: 'Codex', exact: true }).press('Home');
   await expect(usage.getByRole('tab', { name: 'Overview', exact: true })).toBeFocused();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
   expect((await calls(page)).length).toBe(installed.length);
   await usage.getByRole('button', { name: 'Refresh usage', exact: true }).click();
@@ -127,6 +130,7 @@ test('Settings has a dedicated Agent usage section with lazy loading and provide
   await page.screenshot({ path: testInfo.outputPath('settings-agent-usage-dark-narrow.png'), animations: 'disabled' });
   await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   await settings.getByRole('tab', { name: 'Agent usage', exact: true }).click();
   await expect.poll(async () => (await calls(page)).length).toBe(installed.length * 3);
 });
@@ -135,6 +139,7 @@ test('Agent usage opens ChatGPT weekly limits directly from its provider card wi
   await page.clock.install();
   await openApp(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
   const shortcut = page.locator('#chatgpt-connection').getByRole('button', { name: 'ChatGPT usage', exact: true });
   await expect(shortcut).toBeVisible();

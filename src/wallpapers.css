@@ -1,12 +1,11 @@
-/* One landscape spans the sidebar and workspace, including both bars. */
+/* The scene sits inside the main pane (the thread is a window); the frame around it is a fixed tint (src/inset-shell.css). */
 .workspace{position:relative;isolation:isolate;overflow:hidden}
 .main-pane{position:relative;overflow:hidden}
 .workspace-wallpaper{position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden;background:var(--bg)}
-.workspace:not([data-wallpaper])>.workspace-wallpaper{display:none}
+.workspace:not([data-wallpaper]) .workspace-wallpaper{display:none}
 .workspace-wallpaper img{position:absolute;width:calc(100% + var(--wallpaper-bleed,0px) * 2);height:calc(100% + var(--wallpaper-bleed,0px) * 2);inset:calc(-1 * var(--wallpaper-bleed,0px));object-fit:cover;object-position:center;filter:var(--wallpaper-filter,none)}
 .workspace-wallpaper::after{content:"";position:absolute;inset:0;background:rgb(255 255 255 / var(--wallpaper-scrim-center,.856))}
-html .workspace[data-wallpaper] :is(.main-pane,.sidebar,.inspector){--muted:#50534b;--faint:#585b52}
-.workspace[data-wallpaper] :is(.project-board,.conversation-pane){background:transparent}
+.workspace[data-scene] :is(.project-board,.conversation-pane){background:transparent}
 .workspace[data-wallpaper] .project-board::before{display:none}
 /* Cards share the sidebar and thread material; their content stays sharp. */
 .workspace[data-wallpaper] .board-card{--muted:var(--text);background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);box-shadow:none}
@@ -15,12 +14,11 @@ html .workspace[data-wallpaper] :is(.main-pane,.sidebar,.inspector){--muted:#505
 .workspace[data-wallpaper] .board-card-open:active{background:color-mix(in srgb,var(--accent) 6%,transparent)}
 .workspace[data-wallpaper] .board-card-start{background:color-mix(in srgb,var(--raised) 58%,transparent)}
 .workspace[data-wallpaper] .board-card-start:is(:hover,:active){background:color-mix(in srgb,var(--accent-dim) 66%,transparent)}
-html .workspace[data-wallpaper]>.main-pane>.workspace-header{background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none}
+html .workspace[data-scene]>.main-pane>.workspace-header{background:transparent;border:0;backdrop-filter:none;-webkit-backdrop-filter:none}
 /* Over a wallpaper the header glass is the sidebar's frost material, a little denser so the muted header text stays legible. */
-.workspace[data-wallpaper]>.main-pane{--header-glass:rgb(255 255 255 / .78);--header-blur:blur(14px) saturate(1.1);--header-band-blur:blur(14px)}
-html[data-theme="dark"] .workspace[data-wallpaper]>.main-pane{--header-glass:rgb(26 29 25 / .72)}
+.workspace[data-scene]>.main-pane{--header-glass:rgb(255 255 255 / .78);--header-blur:blur(14px) saturate(1.1);--header-band-blur:blur(14px)}
+html[data-theme="dark"] .workspace[data-scene]>.main-pane{--header-glass:rgb(26 29 25 / .72)}
 html[data-theme="dark"] .workspace-wallpaper::after{background:rgb(28 28 27 / var(--wallpaper-scrim-center,.856))}
-html[data-theme="dark"] .workspace[data-wallpaper] :is(.main-pane,.sidebar,.inspector){--muted:#d0cfc5;--faint:#c4c3b8}
 
 /* Navigation, board cards, and threads share the same frosted material. */
 .workspace[data-wallpaper]{--workspace-frost-surface:rgb(255 255 255 / .5);--workspace-frost:blur(24px) saturate(1.1)}
@@ -36,13 +34,12 @@ html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{backgro
 /* One blur layer for the inspector; its contents only add translucent tints. */
 html[data-theme] .workspace[data-wallpaper]>.inspector :is(.inspector-heading,.code-preview,.diff-viewer,.browser-panel,.browser-toolbar){background:transparent}
 html[data-theme] .workspace[data-wallpaper]>.inspector :is(.inspector-tabs,.commit-form textarea,.diff-viewer-toolbar,.browser-address,.browser-servers){background:color-mix(in srgb,var(--panel) 28%,transparent)}
-html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs button.selected{background:color-mix(in srgb,var(--text) 12%,transparent)}
 .workspace[data-wallpaper]>.inspector diffs-container{--diffs-bg:transparent}
 .workspace[data-wallpaper]>.inspector .browser-viewport:has(>.browser-home:not([hidden])){background:transparent}
 .workspace[data-wallpaper]>.inspector .browser-server-icon{background:color-mix(in srgb,var(--bg) 28%,transparent)}
 
 /* Tint the surfaces, never their text. Only floating UI needs a blur layer. */
-.workspace[data-wallpaper] .conversation-pane{
+.workspace[data-scene] .conversation-pane{
   --thread-surface:rgb(255 255 255 / .68);
   --thread-floating:rgb(255 255 255 / .56);
   --thread-inset:rgb(246 246 239 / .4);
@@ -52,7 +49,7 @@ html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs button.se
   --thread-border:rgb(70 70 52 / .18);
   --thread-frost:blur(18px) saturate(1.1);
 }
-html[data-theme="dark"] .workspace[data-wallpaper] .conversation-pane{
+html[data-theme="dark"] .workspace[data-scene] .conversation-pane{
   --thread-surface:rgb(32 33 30 / .72);
   --thread-floating:rgb(32 33 30 / .56);
   --thread-inset:rgb(57 59 51 / .32);
@@ -61,10 +58,10 @@ html[data-theme="dark"] .workspace[data-wallpaper] .conversation-pane{
   --thread-error:rgb(99 44 38 / .4);
   --thread-border:rgb(230 230 207 / .18);
 }
-.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context,.secondary-button){background:var(--thread-surface)}
+.workspace[data-scene] .conversation-pane :is(.composer,.composer-context,.secondary-button){background:var(--thread-surface)}
 /* The prompt box and the bar above it are borderless; increased contrast restores the edge. */
-.workspace[data-wallpaper] .conversation-pane :is(.composer,.composer-context),.workspace[data-wallpaper] .conversation-pane .composer:focus-within{border-color:transparent}
-.workspace[data-wallpaper] .conversation-pane .composer{backdrop-filter:var(--thread-frost);-webkit-backdrop-filter:var(--thread-frost)}
+.workspace[data-scene] .conversation-pane :is(.composer,.composer-context),.workspace[data-scene] .conversation-pane .composer:focus-within{border-color:transparent}
+.workspace[data-scene] .conversation-pane .composer{backdrop-filter:var(--thread-frost);-webkit-backdrop-filter:var(--thread-frost)}
 /* Both agent panels sit inside the Agents flyout's glass (action-dock.css), with no fill of their own. */
 html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
   background:transparent;
@@ -72,16 +69,16 @@ html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
   backdrop-filter:none;
   -webkit-backdrop-filter:none;
 }
-.workspace[data-wallpaper] .conversation-pane :is(.markdown pre,.tool-activity pre,.browser-context-chip,.board-completed-note){background:var(--thread-inset)}
-.workspace[data-wallpaper] .conversation-pane :is(.markdown :not(pre)>code,.user-avatar,.tool-extra){background:var(--thread-inset)}
-.workspace[data-wallpaper] .conversation-pane :is(.attachments>span,.preview-notice){background:var(--thread-accent)}
-.workspace[data-wallpaper] .conversation-pane .message-error{background:var(--thread-error)}
-.workspace[data-wallpaper] .conversation-pane :is(.icon-button:hover,.secondary-button:hover,.subagent-row:hover){background:var(--thread-hover)}
-.workspace[data-wallpaper] .conversation-pane :is(.model-picker,.mode-picker,#team-trigger,.composer-project):is(:active,[aria-expanded=true]),
-.workspace[data-wallpaper] .conversation-pane :is(.subagent-row:active,.icon-button.active,.welcome-project:hover,.welcome-project:active){background:var(--thread-accent)}
-.workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button){background:color-mix(in srgb,var(--accent) 92%,transparent)}
-.workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button):hover:not(:disabled){background:color-mix(in srgb,var(--accent) 98%,transparent)}
-.workspace[data-wallpaper] .conversation-pane .send-button.stop-button{background:color-mix(in srgb,var(--text) 90%,transparent)}
+.workspace[data-scene] .conversation-pane :is(.markdown pre,.tool-activity pre,.browser-context-chip,.board-completed-note){background:var(--thread-inset)}
+.workspace[data-scene] .conversation-pane :is(.markdown :not(pre)>code,.user-avatar,.tool-extra){background:var(--thread-inset)}
+.workspace[data-scene] .conversation-pane :is(.attachments>span,.preview-notice){background:var(--thread-accent)}
+.workspace[data-scene] .conversation-pane .message-error{background:var(--thread-error)}
+.workspace[data-scene] .conversation-pane :is(.icon-button:hover,.secondary-button:hover,.subagent-row:hover){background:var(--thread-hover)}
+.workspace[data-scene] .conversation-pane :is(.model-picker,.mode-picker,#team-trigger,.composer-project):is(:active,[aria-expanded=true]),
+.workspace[data-scene] .conversation-pane :is(.subagent-row:active,.icon-button.active,.welcome-project:hover,.welcome-project:active){background:var(--thread-accent)}
+.workspace[data-scene] .conversation-pane :is(.send-button:not(.stop-button),.primary-button){background:color-mix(in srgb,var(--accent) 92%,transparent)}
+.workspace[data-scene] .conversation-pane :is(.send-button:not(.stop-button),.primary-button):hover:not(:disabled){background:color-mix(in srgb,var(--accent) 98%,transparent)}
+.workspace[data-scene] .conversation-pane .send-button.stop-button{background:color-mix(in srgb,var(--text) 90%,transparent)}
 
 /* Keep drawer frost behind its children: an ancestor blur prevents nested
    agent popovers from blurring the transcript in Chromium. */
@@ -91,8 +88,8 @@ html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
   html .workspace :is(.architect-panel,.subagents-panel).floating-menu{background:var(--panel);border-color:var(--text);backdrop-filter:none;-webkit-backdrop-filter:none}
   .workspace-wallpaper{display:none}
   html[data-theme] .workspace[data-wallpaper]>:is(.sidebar,.inspector){border-color:var(--border)}
-  html .workspace[data-wallpaper]>.main-pane>.workspace-header{background:var(--bg)}
-  .workspace[data-wallpaper] :is(.project-board,.conversation-pane){background:var(--bg)}
+  html .workspace[data-scene]>.main-pane>.workspace-header{background:var(--bg)}
+  .workspace[data-scene] :is(.project-board,.conversation-pane){background:var(--bg)}
   html:root .workspace.side-thread[data-wallpaper] .conversation-pane{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
   .workspace.side-thread[data-wallpaper] .conversation-pane::before{content:none}
   html:root .workspace[data-wallpaper] .board-card{background:var(--bg);border-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none}
@@ -100,12 +97,12 @@ html .workspace :is(.architect-panel,.subagents-panel).floating-menu{
   html:root .workspace[data-wallpaper] .board-card-start{background:var(--raised)}
   html:root .workspace[data-wallpaper] :is(.board-card-open:active,.board-card-start:hover,.board-card-start:active){background:var(--accent-dim)}
   /* Apply immediately, before the wallpaper controller drops data-wallpaper. */
-  html:root .workspace[data-wallpaper] .conversation-pane{
+  html:root .workspace[data-scene] .conversation-pane{
     --thread-surface:var(--panel);--thread-floating:var(--panel);--thread-inset:var(--raised);
     --thread-hover:var(--raised);--thread-accent:var(--accent-dim);--thread-error:var(--bg);
     --thread-border:var(--text);--thread-frost:none;
   }
-  .workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button),
-  .workspace[data-wallpaper] .conversation-pane :is(.send-button:not(.stop-button),.primary-button):hover:not(:disabled){background:var(--accent)}
-  .workspace[data-wallpaper] .conversation-pane .send-button.stop-button{background:var(--text)}
+  .workspace[data-scene] .conversation-pane :is(.send-button:not(.stop-button),.primary-button),
+  .workspace[data-scene] .conversation-pane :is(.send-button:not(.stop-button),.primary-button):hover:not(:disabled){background:var(--accent)}
+  .workspace[data-scene] .conversation-pane .send-button.stop-button{background:var(--text)}
 }

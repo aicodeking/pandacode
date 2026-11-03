@@ -11,20 +11,25 @@ export class ProjectRunner {
   private revisions = new Map<string, number>();
   private starting = new Set<string>();
   private previewRevisions = new Map<string, number>();
+  private exits = new Map<string, () => boolean>();
   constructor(private options: {
     context(): RunContext | undefined;
     start(requestId?: string): Promise<() => boolean>;
     navigate(url: string, context: RunContext): Promise<void>;
     notify(message: string): void;
-  }) {}
+  }) { window.addEventListener('pandacode:terminal-exit', () => this.paint()); }
   available(context = this.options.context()): boolean { return Boolean(context && this.scripts.get(key(context))); }
+  /** The Run terminal's script is up: from its start until it exits or its tab closes. */
+  running(context = this.options.context()): boolean { return Boolean(context && this.exits.get(key(context))?.() === false); }
   paint(): void {
     const context = this.options.context(), available = this.available(context);
-    const busy = Boolean(context && this.starting.has(key(context)));
+    const busy = Boolean(context && this.starting.has(key(context))), running = !busy && this.running(context);
     document.querySelectorAll<HTMLButtonElement>('[data-action="run-project"]').forEach(button => {
       button.hidden = !available || Boolean(button.dataset.sessionId && button.dataset.sessionId !== context?.sessionId);
       button.disabled = busy;
       button.setAttribute('aria-busy', String(busy));
+      button.toggleAttribute('data-running', running);
+      if (running) button.setAttribute('aria-description', 'Running'); else button.removeAttribute('aria-description');
       const label = busy ? 'Starting…' : 'Run';
       if (button.dataset.label !== label) { button.innerHTML = `${icon('play')}<span>${label}</span>`; button.dataset.label = label; }
     });
@@ -51,6 +56,7 @@ export class ProjectRunner {
       await active?.();
       if (key(this.options.context() ?? { projectId: '' }) !== id) throw new Error('Task changed before the script could start.');
       const exited = await this.options.start(requestId);
+      this.exits.set(id, exited);
       const revision = (this.previewRevisions.get(id) ?? 0) + 1;
       this.previewRevisions.set(id, revision);
       const hasPreview = Boolean(script.previewUrl || script.previewPath);

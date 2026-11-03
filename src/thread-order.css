@@ -1,6 +1,8 @@
-.task-pin{display:inline-flex;color:var(--accent);flex:none}
+.task-pin{display:inline-flex;color:var(--accent-ink);flex:none}
+html[data-theme=dark] .task-pin{color:var(--accent)}
 .task-pin .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
-.activity-heading>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent)}
+.activity-heading>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent-ink)}
+html[data-theme=dark] .activity-heading>.icon{color:var(--accent)}
 .task-item[draggable=true]{position:relative;cursor:grab}
 .task-item[draggable=true]:active{cursor:grabbing}
 .task-item.task-dragging{opacity:.45}

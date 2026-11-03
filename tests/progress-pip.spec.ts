@@ -166,10 +166,11 @@ test('starts collapsed in a narrow pane and softens while the pointer reads the 
   await page.screenshot({ path: 'test-results/progress-pip-narrow.png' });
   await page.getByRole('button', { name: /^Show visual progress/ }).click();
   await expect(card(page)).toBeVisible();
-  const transcript = (await page.locator('#transcript').boundingBox())!;
-  await page.mouse.move(transcript.x + transcript.width - 60, transcript.y + 200);
+  // Over the transcript, left of the dock that floats on its right edge.
+  const transcript = (await page.locator('#transcript').boundingBox())!, reading = transcript.x + transcript.width - 130;
+  await page.mouse.move(reading, transcript.y + 200);
   await expect.poll(() => opacity(page)).toBeLessThan(0.45);
-  await page.mouse.move(transcript.x + transcript.width - 40, transcript.y + 220);
+  await page.mouse.move(reading + 20, transcript.y + 220);
   await card(page).locator('.pp-head').hover();
   await expect.poll(() => opacity(page)).toBe(1);
   // With reduced motion the morph is instant and still leaves one shape.

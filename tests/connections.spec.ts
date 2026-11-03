@@ -6,7 +6,7 @@ test('a named connection is added in Settings, chosen for a task in the model pi
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('#named-connections');
   await card.getByRole('button', { name: 'Add connection', exact: true }).click();
   await card.getByLabel('Harness', { exact: true }).selectOption('claude');

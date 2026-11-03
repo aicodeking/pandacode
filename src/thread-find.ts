@@ -12,6 +12,10 @@ type Host = {
   /** The pane the bar floats over, and the scrolling transcript inside it. */
   pane(): HTMLElement | null;
   transcript(): HTMLElement | null;
+  /** The transcript stops following its bottom, which would otherwise pull it back off a match. */
+  release(): void;
+  /** Opens a turn card's clamped reply, so a match past its clamp can be seen. */
+  openReply(reply: HTMLElement): void;
   /** Where focus returns when the bar closes. */
   restoreFocus(): void;
 };
@@ -115,12 +119,16 @@ export function createThreadFind(host: Host) {
   function reveal(): void {
     const range = ranges[current], transcript = host.transcript();
     if (!range || !transcript) return;
+    let opened = false;
     for (let node = range.startContainer.parentElement; node && node !== transcript; node = node.parentElement) {
-      if (node instanceof HTMLDetailsElement && !node.open) node.open = true;
+      if (node instanceof HTMLDetailsElement && !node.open) { node.open = true; opened = true; }
+      else if (node.matches('.turn-card-reply[data-overflow]:not([data-open])')) { host.openReply(node); opened = true; }
     }
     const rect = range.getBoundingClientRect(), bottom = transcript.getBoundingClientRect().bottom, top = clearTop(transcript);
+    const outside = rect.top < top || rect.bottom > bottom - 24;
+    if (opened || outside) host.release();
     // A third of the way down the clear area, never under anything floating over the transcript.
-    if (rect.top < top || rect.bottom > bottom - 24) transcript.scrollTop += rect.top - top - (bottom - top) / 3;
+    if (outside) transcript.scrollTop += rect.top - top - (bottom - top) / 3;
   }
 
   /** Re-run the query. A fresh query starts at the match nearest the reader; a refresh after

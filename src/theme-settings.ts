@@ -18,7 +18,7 @@ export function colorsSummary(): string {
   if (palette.vsix) return `${palette.vsix.name} · VS Code theme`;
   const accent = palette.accent;
   if (palette.builtin !== 'system') return `${BUILTIN_THEMES.find(theme => theme.id === palette.builtin)!.name} palette`;
-  if (accent.mode === 'wallpaper') return 'Accent follows the wallpaper';
+  if (accent.mode === 'wallpaper') return palette.sky ? 'Sky blue accent' : 'Accent follows the wallpaper';
   if (accent.mode === 'classic') return 'Classic yellow accent';
   const index = SWATCHES.indexOf(accent.color);
   return `${index >= 0 ? SWATCH_NAMES[index] : 'Custom'} accent`;
@@ -40,10 +40,12 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     </section>
     <section class="colors-section" aria-labelledby="vsix-heading">
       <h3 id="vsix-heading">VS Code theme</h3>
-      <div class="vsix-list" role="radiogroup" aria-labelledby="vsix-heading" aria-busy="true"></div>
-      <div class="vsix-actions">
-        <button type="button" class="secondary-button" data-colors="import">${icon('download')}Import .vsix…</button>
-        <form class="vsix-install"><input name="extension" placeholder="publisher.extension" aria-label="Open VSX extension ID" autocomplete="off" spellcheck="false" maxlength="201" required><button class="secondary-button">Install</button></form>
+      <div class="colors-card">
+        <div class="vsix-list" role="radiogroup" aria-labelledby="vsix-heading" aria-busy="true"></div>
+        <div class="vsix-actions">
+          <button type="button" class="secondary-button" data-colors="import">${icon('download')}Import .vsix…</button>
+          <form class="vsix-install"><input name="extension" placeholder="publisher.extension" aria-label="Open VSX extension ID" autocomplete="off" spellcheck="false" maxlength="201" required><button class="secondary-button">Install</button></form>
+        </div>
       </div>
       <p class="vsix-status" role="status" aria-live="polite"></p>
     </section>`;
@@ -70,21 +72,30 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     if (summary) summary.textContent = colorsSummary();
     const current = palette.accent, locked = Boolean(palette.vsix);
     const checked = (choice: AccentChoice) => !locked && (choice.mode === current.mode && (choice.mode !== 'custom' || (current.mode === 'custom' && current.color === choice.color)));
-    const custom = current.mode === 'custom' && !SWATCHES.includes(current.color) ? current.color : '#4f8ef7';
-    const option = (choice: AccentChoice, label: string, swatch: string, extra = '') => `<button type="button" role="radio" class="accent-choice" aria-checked="${checked(choice)}" data-accent='${escape(JSON.stringify(choice))}' ${locked ? 'disabled' : ''} ${extra}><span class="accent-swatch" style="--swatch:${escape(swatch)}"></span><span>${label}</span></button>`;
+    const own = current.mode === 'custom' && !SWATCHES.includes(current.color);
+    // Until a custom colour is picked the swatch is a hue wheel, never a copy of one of the swatches beside it.
+    const custom = own ? current.color : '#808080';
+    const option = (choice: AccentChoice, label: string, swatch: string, extra = '', kind = '') => `<button type="button" role="radio" class="accent-choice" aria-checked="${checked(choice)}" data-accent='${escape(JSON.stringify(choice))}' ${locked ? 'disabled' : ''} ${extra}><span class="accent-swatch${kind}" style="--swatch:${escape(swatch)}"></span><span>${label}</span></button>`;
     accents.innerHTML = [
-      option({ mode: 'wallpaper' }, 'Wallpaper', palette.wallpaperAccent ?? CLASSIC, 'title="The most vivid color of the current wallpaper"'),
+      palette.sky ? option({ mode: 'wallpaper' }, 'Sky', palette.wallpaperAccent ?? CLASSIC, 'title="The calm blue of the thread\'s sky"', ' accent-swatch-sky')
+        : option({ mode: 'wallpaper' }, 'Wallpaper', palette.wallpaperAccent ?? CLASSIC, 'title="The most vivid color of the current wallpaper"'),
       option({ mode: 'classic' }, 'Classic', CLASSIC),
       ...SWATCHES.map((color, i) => option({ mode: 'custom', color }, SWATCH_NAMES[i], color)),
-      `<label class="accent-choice accent-custom ${current.mode === 'custom' && !SWATCHES.includes(current.color) && !locked ? 'accent-custom-on' : ''}"><span class="accent-swatch" style="--swatch:${escape(custom)}"></span><span>Custom</span><input type="color" value="${escape(custom)}" aria-label="Custom accent color" ${locked ? 'disabled' : ''}></label>`,
+      `<label class="accent-choice accent-custom ${own && !locked ? 'accent-custom-on' : ''}"><span class="accent-swatch${own ? '' : ' accent-swatch-pick'}" style="--swatch:${escape(custom)}"></span><span>Custom</span><input type="color" value="${escape(custom)}" aria-label="Custom accent color" ${locked ? 'disabled' : ''}></label>`,
     ].join('');
     host.querySelector<HTMLElement>('.colors-note')!.hidden = !locked;
+  }
+  /** The user's own accent (what PandaCode uses without an imported theme), so the PandaCode row keeps its colour under one. */
+  function ownAccent(): string {
+    const accent = palette.accent;
+    if (accent.mode === 'custom') return accent.color;
+    return accent.mode === 'wallpaper' ? palette.wallpaperAccent ?? CLASSIC : CLASSIC;
   }
   function renderThemes(): void {
     const active = palette.vsix?.id ?? '';
     const row = (theme: VsixTheme | null) => {
       const id = theme?.id ?? '';
-      const swatches = theme ? swatchesOf(theme).map(color => `<i style="--swatch:${escape(color)}"></i>`).join('') : '<i class="vsix-bamboo"></i>';
+      const swatches = theme ? swatchesOf(theme).map(color => `<i style="--swatch:${escape(color)}"></i>`).join('') : `<i class="vsix-bamboo" style="--swatch:${escape(ownAccent())}"></i>`;
       return `<div class="vsix-row"><button type="button" role="radio" class="vsix-choice" aria-checked="${id === active}" data-theme-id="${escape(id)}"><span class="vsix-swatches" aria-hidden="true">${swatches}</span><span class="vsix-name"><strong>${escape(theme?.name ?? 'PandaCode')}</strong><small>${escape(theme ? `${theme.extension} · ${theme.kind === 'dark' ? 'Dark' : 'Light'}` : `${BUILTIN_THEMES.find(theme => theme.id === palette.builtin)!.name} palette · accent and wallpaper apply`)}</small></span></button>${theme ? `<button type="button" class="icon-button vsix-remove" data-remove="${escape(id)}" aria-label="Remove ${escape(theme.name)}" title="Remove">${icon('trash')}</button>` : ''}</div>`;
     };
     list.setAttribute('aria-busy', 'false');
@@ -114,7 +125,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     const builtin = target.closest<HTMLButtonElement>('[data-builtin]');
     if (builtin) { palette.setBuiltin(builtin.dataset.builtin as BuiltinTheme); renderThemes(); renderAccents(); return; }
     const accent = target.closest<HTMLButtonElement>('[data-accent]');
-    if (accent && !accent.disabled) { palette.setAccent(JSON.parse(accent.dataset.accent!)); renderAccents(); return; }
+    if (accent && !accent.disabled) { palette.setAccent(JSON.parse(accent.dataset.accent!)); renderAccents(); renderThemes(); return; }
     const choice = target.closest<HTMLButtonElement>('[data-theme-id]');
     if (choice) { palette.setVsix(themes.find(theme => theme.id === choice.dataset.themeId) ?? null); renderThemes(); renderAccents(); return; }
     const remove = target.closest<HTMLButtonElement>('[data-remove]');
@@ -145,7 +156,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
   });
   host.addEventListener('input', event => {
     const input = event.target as HTMLInputElement;
-    if (input.type === 'color') palette.setAccent({ mode: 'custom', color: input.value });
+    if (input.type === 'color') { palette.setAccent({ mode: 'custom', color: input.value }); renderThemes(); }
   });
   host.addEventListener('change', event => { if ((event.target as HTMLInputElement).type === 'color') renderAccents(); });
   host.querySelector<HTMLFormElement>('.vsix-install')!.addEventListener('submit', event => {
@@ -153,7 +164,7 @@ export function mountThemeSettings(host: HTMLElement, options: ThemeSettingsHost
     const input = (event.target as HTMLFormElement).querySelector<HTMLInputElement>('input')!, id = input.value.trim();
     if (id) void added(options.call<VsixTheme[]>('theme_install', { extensionId: id }), id).then(() => { if (!busy) input.value = ''; });
   });
-  const onPalette = () => { if (!disposed) renderAccents(); };
+  const onPalette = () => { if (!disposed) { renderAccents(); renderThemes(); } };
   window.addEventListener('pandacode-palette-change', onPalette);
   renderAccents();
   void load();

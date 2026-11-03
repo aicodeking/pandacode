@@ -286,6 +286,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     ...HIGHLIGHT,
     tokenizeMaxLength: TOKENIZE_MAX_LINES,
     disableErrorHandling: true,
+    // The content strip is each diff's one Tab stop; Chrome would also stop on the scroller inside the shadow root.
+    onPostRender: node => node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => { code.tabIndex = -1; }),
     enableLineSelection: false,
     // This CSS is constant; no patch content is ever interpolated into it.
     // Pierre adds it to every container it creates, including hunk groups mounted later.

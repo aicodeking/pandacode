@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 // takes documents and folders but no images.
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
-const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Choose harness and model', exact: true });
+const modelTrigger = (page: Page) => page.getByRole('button', { name: /^Model: / });
 const modelPicker = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => ((window as any).__grokCalls ?? []).filter((entry: any) => entry.command === command), command);
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
@@ -93,7 +93,7 @@ test('a Grok task takes documents and folders but explains that images are not a
 test('the Provider connections settings explain how to install and sign in to Grok Build', async ({ page }) => {
   await newGrokTask(page);
   await page.keyboard.press('Meta+,');
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card', { hasText: 'Grok Build' });
   await expect(card).toBeVisible();
   await expect(card).toContainText('grok login');

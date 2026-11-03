@@ -33,3 +33,15 @@ test('a long mirror thread shows its newest messages first and older ones prepen
   }
   await expect(message(170)).toHaveCount(1);
 });
+
+test('a task on another computer shows a remote-toned icon named for that computer', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#navigation .task-item').first().waitFor();
+  await page.evaluate(() => (window as any).__previewMirrorThread(10, 10));
+  const row = page.locator('#navigation .task-item').filter({ hasText: 'Long remote thread' });
+  const mark = row.getByRole('img', { name: 'Runs on Studio iMac', exact: true });
+  await expect(mark).toBeVisible();
+  await expect(mark).toHaveAttribute('title', 'Runs on Studio iMac');
+  const toned = await mark.evaluate(el => { const probe = document.createElement('i'); probe.style.color = 'var(--ds-tone-remote)'; document.body.append(probe); const tone = getComputedStyle(probe).color; probe.remove(); return getComputedStyle(el).color === tone; });
+  expect(toned).toBe(true);
+});

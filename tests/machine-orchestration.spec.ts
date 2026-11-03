@@ -7,7 +7,7 @@ async function signIn(page: Page) {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click(); await page.getByRole('tab', { name: 'Remote access' }).click();
   const panel = page.getByRole('tabpanel', { name: 'Remote access' });
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByRole('button', { name: 'Sign out' })).toBeVisible();
@@ -17,8 +17,10 @@ const task = (page: Page, title: string) => page.locator('#navigation .task-item
 async function openTask(page: Page, title: string) {
   // Many launched threads fold a project's older tasks behind "Show N more".
   const more = page.locator('#navigation').getByRole('button', { name: /^Show \d+ more/ });
-  if (!await task(page, title).count() && await more.count()) await more.first().click();
-  await task(page, title).first().click();
+  await expect(async () => {
+    if (!await task(page, title).count() && await more.count()) await more.first().click();
+    await task(page, title).first().click({ timeout: 1000 });
+  }).toPass();
   await expect(page.locator('#prompt')).toBeVisible();
   return (await page.locator('#prompt').getAttribute('data-session-id'))!;
 }

@@ -18,4 +18,4 @@
 @media(prefers-contrast:more){:is(.attachments,.message-attachments)>.prompt-chip{border-color:var(--text)}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.attachments>.prompt-chip,.attachments>.prompt-chip button,.message-context>summary{transition:background-color 130ms ease-out,color 130ms ease-out,border-color 130ms ease-out}.message-context[open]>pre{animation:mc-fade 160ms ease-out}@keyframes mc-fade{from{opacity:0}}}
+@media(prefers-reduced-motion:no-preference){.attachments>.prompt-chip,.attachments>.prompt-chip button,.message-context>summary{transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out,border-color var(--ds-ease-in) ease-out}.message-context[open]>pre{animation:mc-fade 160ms ease-out}@keyframes mc-fade{from{opacity:0}}}

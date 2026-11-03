@@ -7,7 +7,8 @@ async function openCloud(page: Page) {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Cloud sandboxes' }).click();
+  await page.getByRole('tab', { name: 'Connections' }).click();
+  await page.locator('.cloud-more > summary').click();
   return page.getByRole('tabpanel', { name: 'Cloud sandboxes' });
 }
 
@@ -24,19 +25,17 @@ async function connect(page: Page, provider: string) {
 const cardOrder = (page: Page) =>
   page.locator('.cloud-settings > .cloud-provider[data-provider]').evaluateAll(els => els.map(e => e.getAttribute('data-provider')));
 
-test('cloud sandboxes: connected providers lead, the rest alphabetical', async ({ page }) => {
-  const panel = await openCloud(page);
-  // Unconnected cards sit in their fixed alphabetical order behind the Claude login card.
-  await expect(panel.locator('.cloud-provider').first()).toHaveClass(/cloud-claude/);
-  expect(await cardOrder(page).then(order => order.slice(0, 3))).toEqual(['aws', 'blaxel', 'boat']);
+test('cloud sandboxes: connected providers lead, the rest alphabetical, and only unconnected one-key ones stay in the fold', async ({ page }) => {
+  await openCloud(page);
+  expect(await cardOrder(page).then(order => order.slice(0, 3))).toEqual(['aws', 'cloudflare', 'daytona']);
   await connect(page, 'instabox');
   await connect(page, 'boat');
   expect(await cardOrder(page)).toEqual([
     'boat', 'instabox',
-    'aws', 'blaxel', 'cloudflare', 'codesandbox', 'daytona', 'digitalocean', 'docker', 'e2b', 'freestyle', 'gcloud',
-    'hetzner', 'modal', 'netlify', 'railway', 'runloop', 'runpod', 'tensorlake', 'vercel', 'vultr',
+    'aws', 'cloudflare', 'daytona', 'docker', 'gcloud', 'netlify', 'railway', 'vercel',
+    'blaxel', 'codesandbox', 'digitalocean', 'e2b', 'freestyle', 'hetzner', 'modal', 'runloop', 'runpod', 'tensorlake', 'vultr',
   ]);
-  await expect(panel.locator('.cloud-provider').first()).toHaveClass(/cloud-claude/);
+  await expect(page.locator('.cloud-more .cloud-provider[data-provider="boat"]')).toHaveCount(0);
   await connect(page, 'daytona');
   expect((await cardOrder(page)).slice(0, 3)).toEqual(['boat', 'daytona', 'instabox']);
 });

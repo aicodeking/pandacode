@@ -4,6 +4,20 @@ import { openInspectorTab } from './inspector-tab-helper';
 const dock = (page: Page) => page.getByRole('toolbar', { name: 'Workspace actions', exact: true });
 const rect = (page: Page, selector: string) => page.locator(selector).first().evaluate(node => node.getBoundingClientRect().toJSON() as DOMRect);
 const overlaps = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+// Every animation the dock starts, recorded when it starts: counting running ones a round trip later races a
+// ~267 ms spring on a loaded machine (the cause of the old flakes).
+const recordDock = (page: Page) => page.evaluate(() => {
+  const w = window as unknown as { __dockStarted: string[]; __dockWrapped?: boolean };
+  w.__dockStarted = [];
+  if (w.__dockWrapped) return;
+  w.__dockWrapped = true;
+  const animate = Element.prototype.animate;
+  Element.prototype.animate = function (this: Element, keyframes: Keyframe[] | PropertyIndexedKeyframes | null, options?: number | KeyframeAnimationOptions) {
+    if (this.closest('#action-dock')) w.__dockStarted.push(`${this.id || this.className}${typeof options === 'object' && options.pseudoElement ? options.pseudoElement : ''}`);
+    return animate.call(this, keyframes, options);
+  };
+});
+const dockStarted = (page: Page) => page.evaluate(() => (window as unknown as { __dockStarted: string[] }).__dockStarted);
 const dockAnimations = (page: Page) => page.evaluate(() => document.getAnimations().filter(animation => animation.playState === 'running' && ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest('#action-dock')).length);
 
 async function open(page: Page, width = 1440, height = 940): Promise<void> {
@@ -12,7 +26,8 @@ async function open(page: Page, width = 1440, height = 940): Promise<void> {
   await page.goto('/');
   await expect(page.locator('#prompt')).toBeEnabled();
   await expect(page.locator('#transcript .message').first()).toBeVisible();
-  // Measure after the entrance has settled.
+  // Measure after the entrance has settled and the opening thread switch has let go (items snap during one).
+  await expect(page.locator('#action-dock:not([data-snap])')).toHaveCount(1);
   await expect.poll(() => dockAnimations(page)).toBe(0);
 }
 
@@ -23,7 +38,7 @@ test.describe('action dock', () => {
     await expect(toolbar).toHaveAttribute('aria-orientation', 'vertical');
     // The header keeps only its leading items; every action lives in the dock.
     await expect(page.locator('.workspace-header .header-actions button')).toHaveCount(0);
-    for (const name of ['Toggle inspector (⌘ ⇧ B)', /^Toggle terminal/, 'Open browser', 'Project moodboards', 'Deploy', 'Task actions']) {
+    for (const name of ['Toggle inspector', /^Toggle terminal/, 'Open browser', 'Project moodboards', 'Deploy', 'Task actions']) {
       await expect(toolbar.getByRole('button', { name, exact: typeof name === 'string' })).toBeVisible();
     }
     const items = await toolbar.locator('button:visible').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON() as DOMRect));
@@ -43,13 +58,12 @@ test.describe('action dock', () => {
     expect(box.right).toBeLessThanOrEqual(main.right);
     expect(main.right).toBeLessThan(inspector.left);
     expect(main.right - box.right).toBeLessThan(16);
-    // It stays clear of the composer and of every message in the transcript.
+    // It hovers over the thread, and stays clear of the composer.
     expect(overlaps(box, await rect(page, '#composer'))).toBe(false);
-    for (const message of await page.locator('#transcript .message').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON() as DOMRect))) expect(overlaps(box, message)).toBe(false);
     const glass = await toolbar.evaluate(node => getComputedStyle(node).backdropFilter);
     expect(glass).toContain('blur');
 
-    await toolbar.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+    await toolbar.getByRole('button', { name: 'Toggle inspector', exact: true }).click();
     await expect(page.locator('#inspector')).toBeHidden();
     const closed = await rect(page, '#action-dock');
     expect(page.viewportSize()!.width - closed.right).toBeLessThan(16 + 8);
@@ -59,10 +73,14 @@ test.describe('action dock', () => {
   test('is one Tab stop with arrow-key roving, and panels show their active state', async ({ page }) => {
     await open(page);
     const toolbar = dock(page);
-    const inspector = toolbar.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true });
+    const inspector = toolbar.getByRole('button', { name: 'Toggle inspector', exact: true });
     const terminal = page.locator('#terminal-toggle'), browser = page.locator('#browser-toggle'), more = page.locator('#task-menu-trigger');
     await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
     await expect(inspector).toHaveClass(/\bactive\b/);
+    // Panel toggles expose their state; shortcuts live in aria-keyshortcuts, not the name.
+    await expect(inspector).toHaveAttribute('aria-pressed', 'true');
+    await expect(browser).toHaveAttribute('aria-pressed', 'false');
+    await expect(inspector).toHaveAttribute('aria-keyshortcuts', 'Meta+Shift+B Control+Shift+B');
     await inspector.focus();
     await page.keyboard.press('ArrowDown');
     await expect(terminal).toBeFocused();
@@ -72,7 +90,8 @@ test.describe('action dock', () => {
     const tip = page.locator('.action-dock-tip');
     await expect(tip).toBeVisible();
     await expect(tip).toHaveText(/^Toggle terminal/);
-    expect((await rect(page, '.action-dock-tip')).right).toBeLessThanOrEqual((await rect(page, '#action-dock')).left);
+    // Polled: the bubble springs into place, and a loaded machine may read it mid-spring.
+    await expect.poll(async () => (await rect(page, '.action-dock-tip')).right - (await rect(page, '#action-dock')).left).toBeLessThanOrEqual(0);
     await page.keyboard.press('End');
     await expect(more).toBeFocused();
     await page.keyboard.press('ArrowDown');
@@ -87,9 +106,11 @@ test.describe('action dock', () => {
     await expect(terminal).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('#terminal-drawer')).toBeVisible();
     // The terminal may take focus once its shell starts, so the next item is reached directly.
-    await browser.focus();
-    await page.keyboard.press(' ');
-    await expect(browser).toHaveClass(/\bactive\b/);
+    await expect(async () => {
+      if (!await browser.evaluate(node => node.classList.contains('active'))) { await browser.focus(); await page.keyboard.press(' '); }
+      await expect(browser).toHaveClass(/\bactive\b/, { timeout: 1000 });
+    }).toPass();
+    await expect(browser).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#browser-panel')).toBeVisible();
     // Focus that left the dock comes back to the last item through one Tab stop.
     await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
@@ -104,9 +125,10 @@ test.describe('action dock', () => {
     await expect.poll(() => dockAnimations(page)).toBe(0);
     const run = page.locator('#run-project-button');
     await expect(run).toBeHidden();
+    await recordDock(page);
     await run.evaluate(node => { (node as HTMLElement).hidden = false; });
     await expect(run).toBeVisible();
-    expect(await dockAnimations(page)).toBeGreaterThan(0);
+    expect(await dockStarted(page)).toContain('run-project-button');
     // Leaving, the item keeps its box (inert) until the collapse ends, then it is gone.
     await expect.poll(() => dockAnimations(page)).toBe(0);
     await run.evaluate(node => { (node as HTMLElement).hidden = true; });
@@ -114,8 +136,9 @@ test.describe('action dock', () => {
     await expect(run).not.toHaveAttribute('data-leaving');
     await expect(run).toBeHidden();
     // Hover grows the icon a little with a spring; nothing uses a CSS transition.
+    await recordDock(page);
     await page.locator('#browser-toggle').hover();
-    expect(await dockAnimations(page)).toBeGreaterThan(0);
+    await expect.poll(async () => (await dockStarted(page)).length).toBeGreaterThan(0);
     await expect(page.locator('.action-dock-tip')).toHaveText('Open browser');
     await expect(page.locator('#browser-toggle')).toHaveCSS('transition-duration', '0s');
     await expect.poll(() => page.locator('#browser-toggle .icon').evaluate(node => getComputedStyle(node).scale)).toBe('1.05');
@@ -236,7 +259,7 @@ test.describe('action dock', () => {
     await page.locator('#terminal-toggle').click();
     // File tabs open in the inspector, so the dock keeps its place in the conversation.
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('#inspector [data-action="open-file"][data-path="README.md"]').click();
     await expect(page.locator('#inspector #file-tabs')).toBeVisible();
     await expect.poll(async () => Math.round((await rect(page, '#action-dock')).top - header.bottom)).toBe(Math.round(box.top - header.bottom));
@@ -254,6 +277,67 @@ test.describe('action dock', () => {
     expect(overlaps(button, await rect(page, '#action-dock'))).toBe(false);
     const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.bc-settings') !== null, { x: button.left + button.width / 2, y: button.top + button.height / 2 });
     expect(hit).toBe(true);
+  });
+
+  test('takes no layout: the thread and composer measure the same with the dock gone', async ({ page }) => {
+    await open(page);
+    const measure = () => page.evaluate(() => Object.fromEntries(
+      ['#transcript', '.conversation-pane>.file-tabs', '.conversation-pane>.task-details-heading', '.conversation-pane>.jev-activity', '.conversation-pane>.file-view', '#composer-area', '#composer']
+        .map(selector => [selector, document.querySelector(selector)?.getBoundingClientRect().toJSON() ?? null])));
+    for (const closed of [false, true]) {
+      if (closed) { await page.getByRole('button', { name: 'Toggle inspector', exact: true }).click(); await expect(page.locator('#inspector')).toBeHidden(); }
+      const shown = await measure();
+      await page.locator('#action-dock').evaluate(node => { (node as HTMLElement).style.display = 'none'; });
+      expect(await measure()).toEqual(shown);
+      await page.locator('#action-dock').evaluate(node => { (node as HTMLElement).style.display = ''; });
+      // A clearance that does not depend on the dock's box would pass the comparison, so the column itself is checked too.
+      const pane = await rect(page, '.conversation-pane');
+      expect(shown['#transcript']!.left).toBe(pane.left);
+      expect(shown['#transcript']!.right).toBe(pane.right);
+      const composer = shown['#composer-area']!;
+      expect(Math.abs((composer.left + composer.right) / 2 - (pane.left + pane.right) / 2)).toBeLessThan(1);
+    }
+  });
+
+  test('only the card takes the pointer, and a wheel over it scrolls the thread', async ({ page }) => {
+    await open(page);
+    const box = await rect(page, '#action-dock');
+    const hit = (x: number, y: number) => page.evaluate(([px, py]) => {
+      const node = document.elementFromPoint(px, py);
+      return node?.closest('#action-dock') ? 'dock' : node?.closest('#transcript') ? 'transcript' : node?.tagName;
+    }, [x, y]);
+    const middleX = box.left + box.width / 2, middleY = box.top + box.height / 2;
+    expect(await hit(middleX, middleY)).toBe('dock');
+    for (const [x, y] of [[box.left - 2, middleY], [box.right + 2, middleY], [middleX, box.top - 2], [middleX, box.bottom + 2]]) expect(await hit(x, y)).toBe('transcript');
+
+    const transcript = page.locator('#transcript');
+    const top = () => transcript.evaluate(node => node.scrollTop);
+    // Room to scroll either way, whatever the sample thread's length.
+    await transcript.evaluate(node => { const room = document.createElement('div'); room.style.height = '3000px'; node.append(room); node.scrollTop = 1200; });
+    await page.mouse.move(middleX, middleY);
+    const before = await top();
+    await page.mouse.wheel(0, -200);
+    await expect.poll(top).toBeCloseTo(before - 200, 0);
+    await page.mouse.wheel(0, 120);
+    await expect.poll(top).toBeCloseTo(before - 80, 0);
+  });
+
+  test('a wheel over the row in the header leaves the thread alone', async ({ page }) => {
+    await open(page, 620);
+    const transcript = page.locator('#transcript');
+    await transcript.evaluate(node => { const room = document.createElement('div'); room.style.height = '3000px'; node.append(room); });
+    // A real wheel over the thread releases the bottom pin first; a scripted scrollTop would be re-pinned.
+    const area = await rect(page, '#transcript');
+    await page.mouse.move(area.left + area.width / 2, area.top + area.height / 2);
+    await page.mouse.wheel(0, -600);
+    const top = () => transcript.evaluate(node => node.scrollTop);
+    await expect.poll(async () => { const a = await top(); await page.waitForTimeout(120); return a === await top(); }).toBe(true);
+    const before = await top();
+    const box = await rect(page, '#action-dock');
+    await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2);
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(100);
+    expect(await top()).toBe(before);
   });
 
   test('is instant under reduced motion', async ({ page }) => {
@@ -279,7 +363,7 @@ test.describe('action dock', () => {
     const opacity = () => pill.evaluate(node => getComputedStyle(node).opacity);
     await page.locator('#terminal-toggle').hover();
     await expect.poll(opacity).toBe('1');
-    // The inspector toggle is active: the pill glides there and fades out over the accent fill.
+    // The inspector toggle is active: the pill glides there and fades out over the active fill.
     await page.locator('#inspector-toggle').hover();
     await expect(pill).toHaveAttribute('data-muted', '');
     await expect.poll(opacity).toBe('0');
@@ -292,6 +376,24 @@ test.describe('action dock', () => {
     await expect.poll(opacity).toBe('1');
   });
 
+  test('an item that slides under a resting pointer opens no label until the pointer moves', async ({ page }) => {
+    await open(page);
+    const tip = page.locator('.action-dock-tip');
+    const box = await rect(page, '#inspector-toggle');
+    await page.mouse.move(box.left + box.width / 2, box.top + box.height / 2);
+    await expect(tip).toHaveText(/^Toggle inspector/);
+    // The update prompt appears: the dock springs taller and re-centres, so another item passes under the pointer.
+    await page.locator('#update-status').evaluate(node => { (node as HTMLElement).hidden = false; });
+    await expect.poll(() => dockAnimations(page)).toBe(0);
+    await page.waitForTimeout(450);
+    const under = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('#action-dock button')?.id ?? '', { x: box.left + box.width / 2, y: box.top + box.height / 2 });
+    expect(under).not.toBe('inspector-toggle');
+    await expect(tip).toBeHidden();
+    // Real movement over the new item opens its label as usual.
+    await page.mouse.move(box.left + box.width / 2 + 1, box.top + box.height / 2);
+    await expect(tip).toBeVisible();
+  });
+
   test('a lone group folds its separator with its item', async ({ page }) => {
     await open(page);
     await page.mouse.click(5, 300);
@@ -299,19 +401,20 @@ test.describe('action dock', () => {
     const group = page.locator('.action-dock-group[data-group="status"]');
     await expect(group).toBeHidden();
     const before = (await rect(page, '#action-dock')).height;
+    const separator = async () => (await dockStarted(page)).filter(started => started.startsWith('action-dock-group') && started.endsWith('::before')).length;
+    await recordDock(page);
     await update.evaluate(node => { (node as HTMLElement).hidden = false; });
-    const separator = () => group.evaluate(node => node.getAnimations({ subtree: false }).length + document.getAnimations().filter(animation => (animation.effect as KeyframeEffect).pseudoElement === '::before' && (animation.effect as KeyframeEffect).target === node).length);
-    expect(await separator()).toBeGreaterThan(0);
+    await expect.poll(separator).toBeGreaterThan(0);
     await expect.poll(() => dockAnimations(page)).toBe(0);
     const grown = await rect(page, '#action-dock');
     expect(grown.height).toBeGreaterThan(before + 38);
     // Re-centred around its new height, still clear of header and composer.
     expect(grown.top - (await rect(page, '.workspace-header')).bottom).toBeGreaterThanOrEqual(12);
     expect((await rect(page, '#composer-area')).top - grown.bottom).toBeGreaterThanOrEqual(12);
+    await recordDock(page);
     await update.evaluate(node => { (node as HTMLElement).hidden = true; });
     // The group stays laid out until its separator and item have folded away.
-    await expect(group).toBeVisible();
-    expect(await separator()).toBeGreaterThan(0);
+    await expect.poll(separator).toBeGreaterThan(0);
     await expect(group).toBeHidden();
     await expect.poll(async () => Math.round((await rect(page, '#action-dock')).height)).toBe(Math.round(before));
   });
@@ -351,7 +454,7 @@ test.describe('action dock', () => {
     test(`keeps a solid fallback under increased contrast and reduced transparency in ${theme}`, async ({ page, browserName }) => {
       await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
       await open(page);
-      const material = () => dock(page).evaluate(node => ({ filter: getComputedStyle(node).backdropFilter, solid: !/rgba\(.*, 0\.\d+\)/.test(getComputedStyle(node).backgroundColor) }));
+      const material = () => dock(page).evaluate(node => ({ filter: getComputedStyle(node).backdropFilter, solid: !/(, | \/ )0?\.\d+\)$/.test(getComputedStyle(node).backgroundColor) }));
       expect(await material()).toEqual({ filter: 'blur(16px) saturate(1.15)', solid: false });
       await page.emulateMedia({ contrast: 'more' });
       await expect.poll(material).toEqual({ filter: 'none', solid: true });
@@ -373,6 +476,37 @@ test.describe('action dock', () => {
     const current = (page: Page) => page.locator('.task-item.selected').getAttribute('data-id');
     const subagent = async (page: Page, id: string, status: string) => page.evaluate(([session, id, status]) => (window as any).__previewSubagent(session, { id, name: `Agent ${id}`, status }), [(await current(page))!, id, status]);
 
+    test('lands at once on a thread switch and springs for a change inside the thread', async ({ page }) => {
+      await open(page);
+      await subagent(page, 'a', 'running');
+      await expect(agents(page)).toBeVisible();
+      await expect.poll(() => dockAnimations(page)).toBe(0);
+      const other = page.locator('.task-item:not(.selected)').first();
+      const moved = await page.evaluate(async () => {
+        const seen = (window as any).__dockSeen = new Set<string>();
+        let watching = true;
+        const watch = () => {
+          for (const animation of document.getAnimations()) if (((animation.effect as KeyframeEffect | null)?.target as Element | null)?.closest('#action-dock button')) seen.add(((animation.effect as KeyframeEffect).target as Element).id || 'item');
+          if (watching) requestAnimationFrame(watch);
+        };
+        watch();
+        (window as any).__dockStop = () => { watching = false; };
+        return true;
+      });
+      expect(moved).toBe(true);
+      await other.click();
+      await expect(agents(page)).toBeHidden();
+      await page.waitForTimeout(400);
+      expect(await page.evaluate(() => { (window as any).__dockStop(); return [...(window as any).__dockSeen]; })).toEqual([]);
+      // Inside the thread the item still springs in.
+      const animating = await page.evaluate(async id => {
+        (window as any).__previewSubagent(id, { id: 'b', name: 'Agent b', status: 'running' });
+        await new Promise(requestAnimationFrame);
+        return document.getAnimations().filter(animation => ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.id === 'agents-toggle').length;
+      }, (await current(page))!);
+      expect(animating).toBeGreaterThan(0);
+    });
+
     test('appears with a team or subagents, badges the running count and leaves with neither', async ({ page }) => {
       await open(page);
       await expect(agents(page)).toBeHidden();
@@ -382,8 +516,8 @@ test.describe('action dock', () => {
       await expect(agents(page)).toHaveAttribute('aria-haspopup', 'dialog');
       const badge = agents(page).locator('.dock-badge');
       await expect(badge).toHaveText('2');
-      // The badge is an accent fill with on-accent text and no border.
-      const style = await badge.evaluate(node => { const s = getComputedStyle(node), probe = document.createElement('i'); probe.style.color = 'var(--accent)'; document.body.append(probe); const accent = getComputedStyle(probe).color; probe.style.color = 'var(--on-accent)'; const on = getComputedStyle(probe).color; probe.remove(); return { fill: s.backgroundColor === accent, text: s.color === on, border: s.borderTopWidth }; });
+      // The badge is a team-tone fill with page-coloured text and no border.
+      const style = await badge.evaluate(node => { const s = getComputedStyle(node), probe = document.createElement('i'); probe.style.color = 'var(--ds-tone-team)'; document.body.append(probe); const tone = getComputedStyle(probe).color; probe.style.color = 'var(--bg)'; const on = getComputedStyle(probe).color; probe.remove(); return { fill: s.backgroundColor === tone, text: s.color === on, border: s.borderTopWidth }; });
       expect(style).toEqual({ fill: true, text: true, border: '0px' });
       await subagent(page, 'a', 'completed');
       await expect(badge).toHaveText('1');
@@ -396,7 +530,7 @@ test.describe('action dock', () => {
       await page.locator('.task-item:not(.selected)').first().click();
       await expect(agents(page)).toBeHidden();
       // A team brings it back.
-      await page.getByRole('button', { name: 'Team', exact: true }).click();
+      await page.getByRole('button', { name: 'Team: off', exact: true }).click();
       await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
       await expect(agents(page)).toBeVisible();
     });
@@ -426,7 +560,7 @@ test.describe('action dock', () => {
 
     test('a click pins it open, Escape closes it, and both a team and subagents show', async ({ page }) => {
       await open(page);
-      await page.getByRole('button', { name: 'Team', exact: true }).click();
+      await page.getByRole('button', { name: 'Team: off', exact: true }).click();
       await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
       await subagent(page, 'a', 'running');
       await agents(page).click();

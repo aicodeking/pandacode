@@ -5,7 +5,7 @@
 .github-filter-toggle{display:inline-flex;align-items:center;gap:.5rem;font-size:var(--text-sm);white-space:nowrap;padding:.3rem .2rem}
 .github-filter-toggle input{width:15px;height:15px;accent-color:var(--accent);margin:0}
 .github-issue-list{display:flex;flex-direction:column;gap:.3rem;max-height:min(46vh,26rem);overflow:auto;padding:.2rem;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--panel) 72%,transparent)}
-.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:var(--radius-sm);cursor:pointer;transition:background-color 120ms}
+.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:var(--radius-sm);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out}
 .github-issue:hover{background:color-mix(in srgb,var(--text) 4%,transparent)}
 .github-issue input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0;margin:0}
 .github-issue-linked{color:var(--muted)}
@@ -29,4 +29,4 @@
 @media(prefers-contrast:more){.github-issue-list{border:1px solid var(--text)}.github-issue-badge{outline:1px solid var(--text)}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.github-issue-badge,.github-issue-update{transition:background-color 130ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.github-issue-badge,.github-issue-update{transition:background-color var(--ds-ease-out) ease-out}}

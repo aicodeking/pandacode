@@ -5,8 +5,11 @@ import { escape, icon } from './dom';
  * that contains the mark; hidden on any press, key, scroll, or when the mark leaves. */
 let bubble: HTMLElement | undefined, anchor: Element | undefined, frame = 0;
 
-export function infoMark(text: string, label = 'Details'): string {
-  return `<span class="info-mark" role="img" aria-label="${escape(label)}" data-tip="${escape(text)}">${icon('info')}</span>`;
+/** A Tab stop of its own (the tip shows on keyboard focus and is its accessible description); pass `inline`
+ * inside a control (a menu row, a summary) that already shows the tip on its own focus. */
+export function infoMark(text: string, label = 'Details', inline = false): string {
+  const focus = inline ? '' : ` tabindex="0" aria-description="${escape(text)}"`;
+  return `<span class="info-mark" role="img" aria-label="${escape(label)}"${focus} data-tip="${escape(text)}">${icon('info')}</span>`;
 }
 
 function hide(): void {

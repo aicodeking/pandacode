@@ -1,0 +1,388 @@
+/* Design system: the --ds-* tokens, the shared primitives (.ds-*) and the global base restyle
+ * (buttons, fields, menus, tooltips, toast, dialogs). Loaded right after styles.css, so component
+ * stylesheets still win over it. Every colour derives from the palette tokens (src/palette.ts), so
+ * dark, light, wallpapers and imported VS Code themes follow; no literal accent colours.
+ * Living reference: the browser preview with `?ds` (primitives) and `?ds=source` (a recreation of
+ * the reference screenshot, src/redesign/gallery.ts).
+ *
+ * Measured from the reference (/tmp/redesign/reference2.png, 2048x843, sampled with canvas
+ * getImageData; the image is ~1.45x CSS px: 16px titles have 17px caps):
+ *   page #151515 · outer card #191919 (+2% text) · inner card #1e1e1e (+2.5% over the outer)
+ *   hairline #222222-#282828 on page/card (white 6-8%) · raised thumb border #393939-#464646 (white 12-18%)
+ *   shadow: page darkens to #0f0f0f 1-3px below a card (≈ 0 1px 2px black .3 + 0 2px 6px black .25)
+ *   primary button #eeeeee, label #161616, outer radius ≈8px, inner corners ≈2px, split gap ≈5px
+ *   toggle 37x23.5, ON track #eeeeee (rim peaks are the image's resampling) knob #161616 · OFF track #191919-#1a1a1a (darker than its card) knob #909090
+ *   segmented: track #191919, top edge #0a, sides #22, bottom #3b; thumb #1e1e1e, top edge #46, faint sides, #15 shadow below
+ *   chip #232323 fill + hairline, muted text · avatar #6c60cc
+ *   text: heading peak #f7, title #dadada-#e0e0e0, muted #909090 (labels, icons #8d8d8d), faint meta #696969, paused #5d5d5d
+ *   status: green #3fba50 (check #3fb057, +84 #32c147), red #fa524a (Fix #fe5747), blue #15a0ec (dot #169fed),
+ *   running dot #09bf81 · meter grey #333333 · mic pill #0f0f0f (darker than the page)
+ *   icons ≈1.7 stroke (24-unit viewBox) at 20px · card radius ≈16px, inner ≈10px, outer card padding ≈6px */
+
+/* ---------- Tokens ---------- */
+:root{
+  /* Surfaces. Light: an outer card is a faint grey step, the inner card and raised controls are white,
+   * each with a hairline and a soft shadow. Translucent, so they read over a panel, a wallpaper or an
+   * imported theme. */
+  --ds-card:color-mix(in srgb,var(--text) 3%,transparent);
+  --ds-card-inner:color-mix(in srgb,var(--bg) 92%,transparent);
+  --ds-card-inset:var(--ds-card-inner);
+  --ds-raised:color-mix(in srgb,var(--bg) 92%,transparent);
+  --ds-border:color-mix(in srgb,var(--text) 9%,transparent);
+  --ds-border-strong:color-mix(in srgb,var(--text) 14%,transparent);
+  /* An inner card keeps a hairline in light mode; in dark the reference has no lit edge, only its shadow. */
+  --ds-border-inner:var(--ds-border);
+  --ds-chip-border:color-mix(in srgb,var(--text) 4%,transparent);
+  /* Non-text trailing glyphs (chevrons) and a paused row's icons sit below text contrast, as in the reference. */
+  --ds-glyph-faint:color-mix(in srgb,var(--text) 40%,var(--bg));
+  /* Headings and row titles. Tracking matches the reference's string widths (its type runs 4-6% wider). */
+  --ds-title-ink:var(--text);
+  --ds-row-ink:color-mix(in srgb,var(--text) 96%,var(--bg));
+  --ds-row-tracking:.02em;
+  --ds-shadow-card:0 1px 2px rgb(0 0 0 / .04),0 2px 8px rgb(0 0 0 / .04);
+  --ds-shadow-raised:0 1px 2px rgb(0 0 0 / .08),0 1px 1px rgb(0 0 0 / .04);
+  --ds-row-hover:color-mix(in srgb,var(--text) 5%,transparent);
+  --ds-row-press:color-mix(in srgb,var(--text) 8%,transparent);
+  --ds-fill:color-mix(in srgb,var(--text) 5%,transparent);
+  --ds-fill-hover:color-mix(in srgb,var(--text) 9%,transparent);
+  --ds-track:color-mix(in srgb,var(--text) 3%,transparent);
+  --ds-track-strong:color-mix(in srgb,var(--text) 12%,transparent);
+  /* The segmented track is recessed: a dark top edge and a lit bottom edge. */
+  --ds-seg-edge-top:color-mix(in srgb,var(--text) 16%,transparent);
+  --ds-seg-edge-bottom:color-mix(in srgb,var(--text) 6%,transparent);
+  --ds-seg-shadow:inset 0 1px 1px rgb(0 0 0 / .04);
+  --ds-thumb:var(--ds-raised);
+  /* The raised thumb carries its own hairline, so every segmented control gets it from one token. */
+  --ds-thumb-shadow:inset 0 0 0 1px var(--ds-border-strong),var(--ds-shadow-raised);
+  --ds-primary-bg:var(--text);
+  --ds-primary-fg:var(--bg);
+  --ds-primary-hover:color-mix(in srgb,var(--text) 86%,var(--bg));
+  --ds-primary-shadow:0 1px 2px rgb(0 0 0 / .12);
+  --ds-toggle-off:color-mix(in srgb,var(--text) 12%,transparent);
+  --ds-toggle-knob-off:var(--bg);
+  --ds-toggle-knob-shadow:0 1px 2px rgb(0 0 0 / .18);
+  /* Status text and dots. */
+  --ds-success:var(--success);
+  --ds-danger:var(--danger);
+  --ds-info:var(--info);
+  --ds-warn:var(--warning);
+  /* State tones: what a control's colour says it is doing. Never a replacement for --accent; off and default stay
+   * neutral, so colour means on or different from default. --ds-hue-* are the bases (tests/palette.test.mjs reads them
+   * from this file); keep and toward step every tone at once for wallpapers, imported themes and Increase Contrast. */
+  --ds-hue-plan:#1c52ad;--ds-hue-edit:#075f55;--ds-hue-full:#874300;--ds-hue-team:#5f35b3;--ds-hue-saver:#17652f;--ds-hue-remote:#08587b;--ds-hue-worktree:#9c2260;
+  --ds-tone-keep:100%;--ds-tone-toward:var(--text);--ds-tone-fill-amount:10%;
+  --ds-tone-plan:color-mix(in srgb,var(--ds-hue-plan) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-edit:color-mix(in srgb,var(--ds-hue-edit) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-full:color-mix(in srgb,var(--ds-hue-full) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-team:color-mix(in srgb,var(--ds-hue-team) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-saver:color-mix(in srgb,var(--ds-hue-saver) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-remote:color-mix(in srgb,var(--ds-hue-remote) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-worktree:color-mix(in srgb,var(--ds-hue-worktree) var(--ds-tone-keep),var(--ds-tone-toward));
+  --ds-tone-plan-fill:color-mix(in srgb,var(--ds-tone-plan) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-edit-fill:color-mix(in srgb,var(--ds-tone-edit) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-full-fill:color-mix(in srgb,var(--ds-tone-full) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-team-fill:color-mix(in srgb,var(--ds-tone-team) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-saver-fill:color-mix(in srgb,var(--ds-tone-saver) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-remote-fill:color-mix(in srgb,var(--ds-tone-remote) var(--ds-tone-fill-amount),transparent);
+  --ds-tone-worktree-fill:color-mix(in srgb,var(--ds-tone-worktree) var(--ds-tone-fill-amount),transparent);
+  /* Geometry (the reference at 1/1.45). Rows: 38px single line, 48px with a subtitle, plus the card's 2px gap; primary 36px, its split chevron 34px wide. Inner radius = card radius less its 6px padding. */
+  --ds-radius-card:16px;--ds-radius-inner:10px;--ds-radius-control:8px;--ds-radius-chip:6px;
+  --ds-card-pad:6px;
+  --ds-row-h:38px;--ds-row-h-sub:48px;--ds-row-pad-y:3px;--ds-row-pad-x:10px;--ds-row-gap:12px;
+  --ds-btn-h:36px;--ds-btn-primary-h:36px;
+  --ds-toggle-w:37px;--ds-toggle-h:24px;
+  --ds-section-gap:11px;
+  /* Type scale (rem, so --ui-scale applies): title 19px, body 16px (row titles), sub 15px (row subtitles and
+   * meta), ui 14px, meta 13px, chip 12.5px. */
+  --ds-text-title:1.3571rem;--ds-text-lead:1.2143rem;--ds-text-row-lg:1.1929rem;--ds-text-body:1.1429rem;--ds-text-head:1.1071rem;--ds-text-check:1.0929rem;--ds-icon-tray:19px;--ds-text-sub:var(--text-lg);--ds-text-ui:1rem;--ds-text-meta:var(--text-md);--ds-text-chip:.8929rem;
+  /* Motion: colour eases in --ds-ease-in (120ms) and out --ds-ease-out (180ms), both ease-out, defined in
+   * styles.css so every sheet that loads it shares them; press scales to .98 on the spring. */
+  --ds-press:.98;
+}
+/* Light bases (PandaCode's own and imported light themes): status colours take a step toward the text so
+ * they clear 4.5:1 on the page, a card, the frame and a card over a light wallpaper. */
+html:not([data-theme="dark"]){
+  --ds-success:color-mix(in srgb,var(--success) 85%,var(--text));
+  --ds-danger:color-mix(in srgb,var(--danger) 90%,var(--text));
+  --ds-info:color-mix(in srgb,var(--info) 75%,var(--text));
+  --ds-warn:color-mix(in srgb,var(--warning) 70%,var(--text));
+}
+/* Light text tones (PandaCode's own palette; imported themes set theirs inline): muted and faint
+ * text clear 4.5:1 on the page, a card, the frame, a card on the frame and selected rows. */
+@media not (prefers-contrast:more){:root:not([data-theme="dark"]){--muted:#5a5a55;--faint:#5f5f5a}}
+/* Over a wallpaper the frost behind text (frame, panels at 78%, glass menus outside .workspace) can be a
+ * mid tone, so muted and faint text take a further step toward the text and still clear 4.5:1 on the
+ * brightest dark scene and the darkest light one. Imported themes set theirs inline and keep them. */
+@media not (prefers-contrast:more){
+  :root:not([data-theme="dark"]):has(.workspace[data-wallpaper]){--muted:#4b4b47;--faint:#50504c}
+  :root[data-theme="dark"]:has(.workspace[data-wallpaper]){--muted:#b8b8b8;--faint:#b0b0b0;--ds-info:color-mix(in srgb,var(--info) 70%,white);--ds-danger:color-mix(in srgb,var(--danger) 65%,white);--ds-success:color-mix(in srgb,var(--success) 80%,white)}
+}
+/* Dark: the reference's values on the #151515 page — outer card +2% text, inner +2.5% over it, hairlines
+ * white 7% / 12%, a toggle track darker than its card, and shadows that darken the page below an edge. */
+html[data-theme="dark"]{
+  --ds-card:color-mix(in srgb,var(--text) 2%,transparent);
+  --ds-card-inner:color-mix(in srgb,var(--text) 2.5%,transparent);
+  --ds-raised:color-mix(in srgb,var(--text) 4.2%,transparent);
+  --ds-border:color-mix(in srgb,var(--text) 7%,transparent);
+  --ds-border-strong:color-mix(in srgb,var(--text) 16%,transparent);
+  --ds-border-inner:color-mix(in srgb,var(--text) 1%,transparent);
+  --ds-title-ink:color-mix(in srgb,var(--text) 25%,white);
+  --ds-glyph-faint:color-mix(in srgb,var(--text) 34%,var(--bg));
+  --ds-primary-bg:color-mix(in srgb,var(--text) 60%,white);
+  --ds-primary-hover:color-mix(in srgb,var(--text) 88%,var(--bg));
+  --ds-shadow-card:0 1px 2px rgb(0 0 0 / .3),0 2px 6px rgb(0 0 0 / .25);
+  --ds-shadow-raised:0 1px 2px rgb(0 0 0 / .45),0 1px 1px rgb(0 0 0 / .25);
+  --ds-primary-shadow:0 1px 2px rgb(0 0 0 / .35);
+  --ds-fill:color-mix(in srgb,var(--text) 5.5%,transparent);
+  --ds-fill-hover:color-mix(in srgb,var(--text) 9%,transparent);
+  --ds-track:rgb(0 0 0 / .1);
+  --ds-seg-edge-top:rgb(0 0 0 / .62);
+  --ds-thumb:color-mix(in srgb,var(--text) 2.5%,transparent);
+  --ds-seg-edge-bottom:color-mix(in srgb,var(--text) 18%,transparent);
+  --ds-seg-shadow:inset 0 1px 1px rgb(0 0 0 / .12),0 1px 2px rgb(0 0 0 / .3);
+  /* The thumb's lit edge is on top only: its sides are near invisible and its bottom falls into a shadow. */
+  --ds-thumb-shadow:inset 0 1px 0 color-mix(in srgb,var(--text) 20%,transparent),inset 0 0 0 1px color-mix(in srgb,var(--text) 3%,transparent),0 1px 2px rgb(0 0 0 / .4);
+  --ds-toggle-off:rgb(0 0 0 / .2);
+  --ds-toggle-knob-off:var(--muted);
+  --ds-toggle-knob-shadow:none;
+  --ds-hue-plan:#85aeff;--ds-hue-edit:#2fcfb4;--ds-hue-full:#f5a524;--ds-hue-team:#b897fb;--ds-hue-saver:#5ccc6c;--ds-hue-remote:#45bff0;--ds-hue-worktree:#f27fb2;
+  --ds-tone-fill-amount:14%;
+}
+/* Over a wallpaper the panels are 78% page colour; cards take a slightly larger step so they hold up over a busy scene. */
+.workspace[data-wallpaper]{--ds-card:color-mix(in srgb,var(--text) 4%,transparent);--ds-track:color-mix(in srgb,var(--text) 4%,transparent)}
+html[data-theme="dark"] .workspace[data-wallpaper]{--ds-card:color-mix(in srgb,var(--text) 3.5%,transparent);--ds-border:color-mix(in srgb,var(--text) 9%,transparent);--ds-track:rgb(0 0 0 / .14)}
+/* Imported VS Code themes bring their own raised surface. */
+html[data-vsix]{--ds-raised:var(--raised);--ds-thumb:var(--raised);--ds-border:color-mix(in srgb,var(--text) 10%,transparent)}
+/* The info blue is fixed, so an imported page (Dracula, Catppuccin Frappé, Tokyo Night Light) needs a step toward its text to clear 4.5:1. */
+html[data-vsix]{--ds-info:color-mix(in srgb,var(--info) 70%,var(--text))}
+/* State tones take the same kind of step: over a wallpaper's frost, and toward an imported theme's own text. */
+@media not (prefers-contrast:more){
+  :root[data-theme="dark"]:not([data-vsix]):has(.workspace[data-wallpaper]){--ds-tone-keep:70%;--ds-tone-toward:white}
+  :root:not([data-theme="dark"],[data-vsix]):has(.workspace[data-wallpaper]){--ds-tone-keep:90%}
+}
+html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
+@media(prefers-reduced-transparency:reduce){
+  :root,html[data-theme],.workspace[data-wallpaper],html[data-theme] .workspace[data-wallpaper]{
+    --ds-card:color-mix(in srgb,var(--text) 3%,var(--bg));--ds-card-inner:color-mix(in srgb,var(--text) 5.5%,var(--bg));
+    --ds-raised:color-mix(in srgb,var(--text) 6%,var(--bg));--ds-thumb:var(--ds-raised);
+    --ds-track:color-mix(in srgb,var(--text) 2%,var(--bg));--ds-fill:color-mix(in srgb,var(--text) 7%,var(--bg))}
+  :root:not([data-theme="dark"]){--ds-card-inner:var(--bg);--ds-raised:var(--bg)}
+}
+@media(prefers-contrast:more){
+  :root,html[data-theme]{--ds-border:var(--border);--ds-border-strong:var(--text);--ds-chip-border:var(--border);--ds-glyph-faint:var(--text);--ds-toggle-knob-off:var(--text);--ds-tone-keep:50%}
+}
+/* A tone by name, for a leading icon or any small mark: data-state-tone="plan|edit|full|team|saver|remote|worktree". */
+[data-state-tone="plan"]{--state-tone:var(--ds-tone-plan)}[data-state-tone="edit"]{--state-tone:var(--ds-tone-edit)}[data-state-tone="full"]{--state-tone:var(--ds-tone-full)}[data-state-tone="team"]{--state-tone:var(--ds-tone-team)}[data-state-tone="saver"]{--state-tone:var(--ds-tone-saver)}[data-state-tone="remote"]{--state-tone:var(--ds-tone-remote)}[data-state-tone="worktree"]{--state-tone:var(--ds-tone-worktree)}
+[data-state-tone]{color:var(--state-tone)}
+
+/* ---------- Startup ---------- */
+/* Nothing transitions until the first palette has painted: palette.ts sets html[data-ready] two frames
+ * after its last startup write, so first-paint colours land at once instead of fading in. */
+html:not([data-ready]) *,html:not([data-ready]) *::before,html:not([data-ready]) *::after{transition:none!important}
+/* First-paint keyframes wait for the gate too; the loading line stays out of sight and starts its delayed fade once the gate opens. */
+html:not([data-ready]) :is(.turn-change-tree,.history-loading){animation:none!important}
+html:not([data-ready]) .history-loading{opacity:0}
+
+/* ---------- Primitives ---------- */
+/* Sections. On a page: .ds-section > .ds-section-head + .ds-card. As in the reference, a section can
+ * also be one outer card: .ds-card > .ds-section-head + .ds-card-inner (rows) [+ .ds-card-foot]. */
+.ds-section{display:grid;gap:var(--ds-section-gap);min-width:0}
+.ds-section+.ds-section{margin-top:12px}
+.ds-section-head{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-head);letter-spacing:var(--ds-row-tracking);font-weight:var(--weight-regular);color:var(--muted);line-height:1.3}
+.ds-section-head>:first-child{flex:1;min-width:0;margin:0;font:inherit;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ds-section-head>.icon{--icon-size:var(--icon-md)}
+.ds-section-head .icon-button{width:28px;height:28px;margin-right:-6px}
+.ds-card>.ds-section-head{min-height:40px;padding:2px 14px 0}
+
+/* Cards: a hairline, a soft shadow, a fill one step off the surface. Inner cards nest in an outer card's padding. */
+.ds-card,.ds-card-inner,.ds-card-inset{display:flex;flex-direction:column;gap:2px;min-width:0;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.ds-card-inner,.ds-card-inset{padding:2px;border-color:var(--ds-border-inner);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.ds-card>:is(.ds-card-inner,.ds-card-inset){margin:0}
+.ds-card>:is(.ds-card-inner,.ds-card-inset)+:is(.ds-card-inner,.ds-card-inset){margin-top:4px}
+/* A footer row on the outer card's own fill, below its inner card (Context meter + a square button). */
+.ds-card-foot{display:flex;align-items:center;gap:var(--ds-row-gap);min-height:40px;padding:4px 0 0 var(--ds-row-pad-x);font-size:var(--ds-text-body);color:var(--text)}
+.ds-card-foot>.ds-meter{flex:1}
+.ds-card-foot .ds-btn-icon{color:var(--text)}
+
+.ds-row{display:flex;align-items:center;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);color:var(--text);text-align:left;text-decoration:none;font-size:var(--ds-text-ui);line-height:1.3;justify-content:flex-start;
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.ds-row:has(.ds-row-sub){min-height:var(--ds-row-h-sub)}
+:is(button,a).ds-row,.ds-row[data-interactive]{cursor:pointer}
+:is(button,a).ds-row:not(:disabled):hover,.ds-row[data-interactive]:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+:is(button,a).ds-row:not(:disabled):active,.ds-row[data-interactive]:active{background:var(--ds-row-press);scale:var(--ds-press)}
+.ds-row-icon{position:relative;flex:none;display:inline-grid;place-items:center;width:24px;height:24px;color:var(--muted)}
+.ds-row-icon>.icon{--icon-size:24px;--icon-stroke:var(--icon-stroke-lg)}
+/* A status dot riding the icon's top-right corner (running/scheduled), ringed in the card's colour. */
+.ds-row-icon>.ds-dot{position:absolute;top:-1px;right:-1px;width:8px;height:8px;box-shadow:0 0 0 2px var(--panel-surface,var(--bg))}
+.ds-row-main{display:flex;flex-direction:column;flex:1;min-width:0;gap:1px}
+.ds-row-title{font-size:var(--ds-text-body);font-weight:450;letter-spacing:var(--ds-row-tracking);color:var(--ds-row-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-row-sub{font-size:var(--ds-text-sub);letter-spacing:var(--ds-row-tracking);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-row>.ds-row-title{flex:none}
+.ds-card-inner .ds-row-title{font-size:var(--ds-text-row-lg)}
+.ds-row-meta{flex:none;font-size:var(--ds-text-sub);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ds-row-trail{flex:none;display:inline-flex;align-items:center;gap:10px;margin-left:auto;color:var(--muted)}
+.ds-row-trail>.icon,.ds-row-trail .icon-button>.icon{--icon-size:22px;--icon-stroke:1.85}
+/* The small chevron after a meta ("4 of 4 ›") is the quietest ink; the reference's other trailing glyphs stay muted. */
+.ds-row-trail>.ds-row-meta+.icon{--icon-size:16px;color:var(--ds-glyph-faint)}
+.ds-row-trail .icon-button{width:28px;height:28px;color:var(--muted)}
+.ds-row-dim :is(.ds-row-title,.ds-row-sub){color:var(--faint)}
+.ds-row-dim :is(.ds-row-icon,.ds-row-trail>.icon,.ds-row-trail .icon-button){color:var(--ds-glyph-faint)}
+/* A red/blue trailing text action ("Fix ↗"). */
+.ds-link{display:inline-flex;align-items:center;gap:4px;font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--ds-danger)}
+.ds-link>.icon{--icon-size:16px}
+
+/* Segmented control. Mount with trackSegment(group, selected) (src/motion.ts): it adds the .segment-thumb.
+ * The track is recessed (dark top edge, lit bottom edge); the thumb is a raised pill with a lit top edge and a soft shadow. */
+.ds-seg{display:flex;align-items:stretch;gap:2px;padding:3px;border:1px solid var(--ds-border);border-top-color:var(--ds-seg-edge-top);border-bottom-color:var(--ds-seg-edge-bottom);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-card);box-shadow:var(--ds-seg-shadow);position:relative;isolation:isolate}
+.ds-seg>:is(button,a){flex:1 1 0;min-width:0;height:36px;padding:0 12px;border-radius:var(--ds-radius-inner);font-size:var(--ds-text-lead);letter-spacing:var(--ds-row-tracking);font-weight:var(--weight-regular);color:var(--muted);position:relative;z-index:1;white-space:nowrap;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
+.ds-seg>:is(button,a):hover{color:var(--text);transition-duration:var(--ds-ease-in)}
+.ds-seg>:is([aria-selected="true"],[aria-pressed="true"],[aria-checked="true"],.selected){color:var(--text)}
+.ds-seg>.segment-thumb{border-radius:var(--ds-radius-inner);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+/* Before trackSegment runs (or without JS) the selected segment paints its own thumb. */
+.ds-seg:not([data-segmented])>:is([aria-selected="true"],[aria-pressed="true"],[aria-checked="true"],.selected){background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+
+/* Buttons: one solid neutral primary; secondaries are raised hairline buttons (.ds-btn-icon: the square one). */
+.ds-btn-primary,.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:0;border-radius:var(--ds-radius-inner);white-space:nowrap;font-weight:var(--weight-medium);
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.ds-btn-primary{height:var(--ds-btn-primary-h);padding:0 18px;background:var(--ds-primary-bg);color:var(--ds-primary-fg);font-size:var(--ds-text-body);box-shadow:var(--ds-primary-shadow)}
+.ds-btn-primary>.icon{--icon-size:var(--icon-md)}
+html[data-theme] .ds-btn-primary:not(:disabled):hover{background:var(--ds-primary-hover);color:var(--ds-primary-fg);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.ds-btn{height:var(--ds-btn-h);padding:0 14px;background:var(--ds-raised);color:var(--text);font-size:var(--ds-text-ui);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
+.ds-btn:not(:disabled):hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.ds-btn.ds-btn-icon{width:var(--ds-btn-h);padding:0;color:var(--muted)}
+.ds-btn.ds-btn-icon:not(:disabled):hover{color:var(--text)}
+.ds-btn-icon>.icon{--icon-size:var(--icon-md)}
+:is(.ds-btn-primary,.ds-btn):not(:disabled,[aria-haspopup]):active{scale:var(--ds-press)}
+.ds-btn-split{display:flex;gap:5px;min-width:0}
+/* One button in two parts: near-square where they meet, 8px outside. */
+.ds-btn-split>.ds-btn-primary:first-child:has(+.ds-btn-primary){border-radius:var(--ds-radius-control) 2px 2px var(--ds-radius-control)}
+.ds-btn-split>.ds-btn-primary+.ds-btn-primary{border-radius:2px var(--ds-radius-control) var(--ds-radius-control) 2px}
+.ds-btn-split>:first-child{flex:1}
+.ds-btn-split>:not(:first-child){flex:none;width:calc(var(--ds-btn-primary-h) - 2px);padding:0}
+.ds-btn-split>.ds-btn:not(:first-child){width:var(--ds-btn-h)}
+
+/* Pill toggle: <input type="checkbox" role="switch" class="ds-toggle">. ON is the primary pair (text-coloured
+ * track, page-coloured knob); OFF is a recessed track with a muted knob. No accent. */
+.ds-toggle,input[type=checkbox][role=switch]:not([class]){appearance:none;-webkit-appearance:none;position:relative;flex:none;display:inline-block;width:var(--ds-toggle-w);height:var(--ds-toggle-h);margin:0;padding:0;border:0;border-radius:var(--radius-full);background:var(--ds-toggle-off);box-shadow:inset 0 0 0 1px var(--ds-border);cursor:pointer;vertical-align:middle;
+  transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+.ds-toggle::before,input[type=checkbox][role=switch]:not([class])::before{content:"";position:absolute;left:3px;top:3px;width:calc(var(--ds-toggle-h) - 6px);height:calc(var(--ds-toggle-h) - 6px);border-radius:50%;background:var(--ds-toggle-knob-off);box-shadow:var(--ds-toggle-knob-shadow);
+  transition:translate var(--spring-fast-duration) var(--spring-fast),background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.ds-toggle:checked,input[type=checkbox][role=switch]:not([class]):checked{background:var(--ds-primary-bg);box-shadow:none}
+.ds-toggle:checked::before,input[type=checkbox][role=switch]:not([class]):checked::before{background:var(--ds-primary-fg);box-shadow:none;translate:calc(var(--ds-toggle-w) - var(--ds-toggle-h)) 0}
+.ds-toggle:not(:disabled):active::before{scale:1.12 1}
+/* A switch only slides after the user touches it (palette.ts arms it on pointerdown/keydown), so a
+ * state set during render never animates. */
+.ds-toggle:not([data-armed]),.ds-toggle:not([data-armed])::before,
+input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=checkbox][role=switch]:not([class]):not([data-armed])::before{transition:none}
+.ds-toggle:disabled{opacity:.45;cursor:not-allowed}
+.ds-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+/* Chips, dots, avatars. */
+.ds-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;height:24px;padding:0 8px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--faint);font-family:var(--mono);font-size:var(--ds-text-chip);line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-chip>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+.ds-chip.ds-chip-text{font-family:inherit}
+:is(button,a).ds-chip:hover{background:var(--ds-fill-hover);color:var(--text)}
+.ds-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:currentColor;color:var(--muted)}
+.ds-dot:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:currentColor}
+/* A small coloured circle with a letter: <span class="ds-avatar" style="--ds-avatar:<colour>">M</span>. */
+.ds-avatar{display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--ds-avatar,var(--muted));color:#fff;font-size:var(--text-xs);font-weight:var(--weight-strong);line-height:1}
+
+/* Meter: a 5px track; each child <span style="--ds-value:42%"> is one square segment, 1px from the next, in the reference's three tones. */
+.ds-meter{display:flex;gap:1px;width:100%;min-width:40px;height:5px;border-radius:2px;background:var(--ds-track-strong);overflow:hidden;color:var(--text)}
+.ds-meter>span{flex:none;width:var(--ds-value,0%);height:100%;background:currentColor;opacity:.94}
+.ds-meter>span:nth-child(2){opacity:.58}
+.ds-meter>span:nth-child(n+3){opacity:.37}
+/* Dot meter (turn summary): small rounded squares; a child takes .ds-success/.ds-danger, else the track tone. */
+.ds-dots{display:inline-flex;gap:3px;align-items:center}
+.ds-dots>span{width:10px;height:10px;border-radius:3px;background:var(--ds-track-strong)}
+.ds-dots>span:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:currentColor}
+
+/* Status text. */
+.ds-success{color:var(--ds-success)}
+.ds-danger{color:var(--ds-danger)}
+.ds-info{color:var(--ds-info)}
+.ds-warn{color:var(--ds-warn)}
+.ds-row-sub.ds-success,.ds-row-meta.ds-success{color:var(--ds-success)}
+.ds-row-sub.ds-danger,.ds-row-meta.ds-danger{color:var(--ds-danger)}
+.ds-row-sub.ds-info,.ds-row-meta.ds-info{color:var(--ds-info)}
+.ds-row-sub.ds-warn,.ds-row-meta.ds-warn{color:var(--ds-warn)}
+
+.ds-title{margin:0;font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:var(--ds-row-tracking);line-height:1.3;color:var(--ds-title-ink)}
+
+@media(prefers-contrast:more){
+  .ds-card,.ds-card-inner,.ds-card-inset,.ds-seg{border-color:var(--text);box-shadow:none}
+  .ds-toggle:not(:checked),.ds-chip,.ds-btn{box-shadow:inset 0 0 0 1px var(--text)}
+  .ds-row-title,.ds-row-sub,.ds-row-meta,.ds-chip,.ds-section-head{color:var(--text)}
+}
+@media(forced-colors:active){.ds-toggle{border:1px solid CanvasText}.ds-toggle::before{background:CanvasText}.ds-meter>span{background:Highlight}
+  .ds-dots>span{forced-color-adjust:none;box-sizing:border-box;border:1px solid CanvasText;background:Canvas}.ds-dots>span:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:CanvasText}}
+
+/* ---------- Global base: moves every page toward the look ---------- */
+/* Accent-tinted glyphs read as text in light mode, where the bright accent itself is too faint on a light surface. */
+html:not([data-theme="dark"]) body :is(.sidebar .new-task-button>.icon,.sidebar .group-heading>.icon,.task-pin,.activity-heading>.icon,.goal-banner-symbol,.goal-banner-control,.header-run,.trace-glyph){color:var(--accent-ink)}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+.icon-button{border-radius:var(--ds-radius-control)}
+.icon-button:not(:disabled):hover{background:var(--ds-row-hover)}
+.icon-button:not(:disabled,[aria-haspopup]):active{scale:.94}
+
+/* Primary actions are solid neutral (text on page colour); the accent stays for selection and focus. */
+html[data-theme] .primary-button{background:var(--ds-primary-bg);color:var(--ds-primary-fg);border-radius:var(--ds-radius-inner);font-weight:var(--weight-medium);box-shadow:var(--ds-primary-shadow)}
+html[data-theme] .primary-button:not(:disabled):hover{background:var(--ds-primary-hover);color:var(--ds-primary-fg)}
+html[data-theme] .primary-button:not(:disabled):active{background:var(--ds-primary-hover);scale:var(--ds-press)}
+html[data-theme] .primary-button.danger{background:var(--danger);color:var(--bg)}
+/* Secondaries are raised: the raised fill, a hairline and a soft shadow (like .ds-btn). */
+html[data-theme] .secondary-button{background:var(--ds-raised);border-radius:var(--ds-radius-inner);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
+html[data-theme] .secondary-button:not(:disabled):hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised))}
+html[data-theme] .secondary-button:not(:disabled):active{scale:var(--ds-press)}
+
+/* Fields: tone fill, 8px radius. Selects everywhere, and fields in dialogs and
+ * Settings, carry the hairline (zero specificity, so a component that frames its own field wins). */
+input,select,textarea{border-radius:var(--ds-radius-control);transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+:where(select),:where(dialog,.settings-content) :where(input:not([type=checkbox],[type=radio],[type=range],[type=color]),textarea){background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+/* A field framed by its wrapper: focus set by script (a panel opening, ⌘F) is a hairline; the wrapper's own --focus ring needs the keyboard. */
+html[data-theme]:not([data-keyboard-focus]) :is(#inspector .search-field,.browser-address,.btw-composer,.team-model-search,.import-search,dialog .command-search):focus-within,
+html[data-theme]:not([data-keyboard-focus]) .sidebar-search:has(:focus-visible){box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
+/* Zero-specificity hover, so fields a component frames itself (menu and search boxes) keep their own look. */
+:where(input:not([type=checkbox],[type=radio],[type=range]),select,textarea):hover{background:var(--ds-fill)}
+input[type=checkbox]:not([role=switch],[class*=switch]),input[type=radio]{accent-color:var(--ds-primary-bg)}
+
+/* Scrollbars: rounded, low-contrast, darker while hovered. */
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text) 20%,transparent);border-radius:var(--radius-full)}
+::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--text) 34%,transparent)}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--text) 22%,transparent)}
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--text) 36%,transparent)}
+
+/* Menus: the glass with a hairline edge; rows like the reference — 36px, 18px muted icon, 14px label, trailing meta or check. */
+.floating-menu{border-radius:12px;padding:6px;border:1px solid var(--glass-border)}
+.choice-menu-list{gap:1px}
+.floating-menu .choice-menu-option:not(.choice-menu-segment){min-height:36px;padding:6px 10px;gap:10px;border-radius:8px}
+.choice-menu-option{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.choice-menu-option>.icon,.choice-menu-option>.provider-logo{width:18px;height:18px}
+.choice-menu-option>.icon:first-child{color:var(--muted)}
+.choice-menu-option>.icon[data-state-tone]:first-child{color:var(--state-tone)}
+.floating-menu .choice-menu-copy>.choice-menu-label{font-size:var(--ds-text-ui)}
+.choice-menu-description{font-size:var(--ds-text-meta);color:var(--muted);text-align:right}
+.choice-menu-option[aria-checked="true"]>.icon:last-child{width:16px;height:16px;color:var(--text)}
+html[data-theme="dark"] .choice-menu-option[aria-checked="true"]>.icon:last-child{color:var(--text)}
+.choice-menu-option:not(:disabled):hover,.choice-menu-option.choice-menu-active,.project-menu-option:not(:disabled):hover,.project-menu-option.project-menu-active{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.choice-menu-option:not(:disabled):active,.project-menu-option:not(:disabled):active,.project-menu-open:not(:disabled):active{background:var(--ds-row-press);scale:var(--ds-press)}
+
+/* Tooltips: the floating glass with its hairline, text colour, 8px radius. */
+.tip-bubble{padding:6px 10px;border:1px solid var(--glass-border);border-radius:var(--ds-radius-control);background:var(--glass-warm);color:var(--text);backdrop-filter:blur(26px) saturate(1.45);-webkit-backdrop-filter:blur(26px) saturate(1.45);box-shadow:0 10px 28px -10px var(--glass-shadow-deep),0 2px 8px -4px var(--glass-shadow-near);font-size:var(--text-xs)}
+
+/* Toast: the same glass with its hairline (no gradient, ring or highlight). */
+.toast{background:var(--glass-warm);border:1px solid var(--glass-border);box-shadow:0 18px 40px -16px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);border-radius:12px}
+.toast::before{background:var(--ds-primary-bg);box-shadow:none}
+
+/* Dialogs: a 16px sheet, 18px title, 10px controls. */
+.dialog-heading h2{font-size:1.2857rem;letter-spacing:var(--ds-row-tracking);color:var(--ds-title-ink)}
+dialog .primary-button{border-radius:var(--ds-radius-inner)}
+
+@media(prefers-reduced-transparency:reduce){
+  .tip-bubble,.toast{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media(prefers-contrast:more){
+  .tip-bubble,.toast{background:var(--bg);border:1px solid var(--text);backdrop-filter:none;-webkit-backdrop-filter:none}
+  html[data-theme] .secondary-button{box-shadow:inset 0 0 0 1px var(--border)}
+}

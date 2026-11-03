@@ -8,7 +8,7 @@ async function openSignedIn(page: Page, waiting: string[] = []) {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click(); await page.getByRole('tab', { name: 'Remote access' }).click();
   const panel = page.getByRole('tabpanel', { name: 'Remote access' });
   await panel.getByRole('button', { name: 'Sign in with GitHub' }).click();
   await expect(panel.getByRole('button', { name: 'Sign out' })).toBeVisible();

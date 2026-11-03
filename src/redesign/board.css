@@ -1,0 +1,3 @@
+/* Redesign: board area (board, GitHub view, wake-ups, team progress, cloud strip). Restyled in place in
+ * task-board.css, github-hub.css, schedules.css, team-progress.css and cloud-agents.css: github-hub.css loads
+ * lazily after this sheet, so overrides here would lose. Built on the --ds-* tokens of src/design-system.css. */

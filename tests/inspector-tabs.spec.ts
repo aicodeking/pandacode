@@ -22,7 +22,7 @@ test('the inspector opens on a single Changes tab in a slim strip', async ({ pag
   await open(page);
   expect(await shownViews(page)).toEqual(['changes']);
   await expect(tabButton(page, 'changes')).toHaveClass(/selected/);
-  await expect(tabButton(page, 'changes')).toHaveAttribute('aria-current', 'true');
+  await expect(tabButton(page, 'changes')).toHaveAttribute('aria-selected', 'true');
   await expect(tabButton(page, 'changes')).toHaveAccessibleName(/^Changes(, \d+ changed files?)?$/);
   await expect(tabButton(page, 'changes')).toContainText('Changes');
   await expect(page.locator('#changes-count')).toHaveText(/^\d+$/);
@@ -106,4 +106,51 @@ test('opening a view from elsewhere adds and selects its tab', async ({ page }) 
   await tabButton(page, 'changes').click();
   await expect(page.locator('#browser-panel')).toBeHidden();
   await expect(page.locator('#inspector-refresh')).toBeVisible();
+});
+
+test('the strip is one tablist with a roving Tab stop: arrows, Home/End and Delete', async ({ page }) => {
+  await open(page);
+  await addView(page, 'Files');
+  await addView(page, 'Search');
+  await expect(strip(page)).toHaveAttribute('role', 'tablist');
+  const tabs = strip(page).getByRole('tab');
+  await expect(tabs).toHaveCount(3);
+  await expect(strip(page).getByRole('tab', { selected: true })).toHaveAccessibleName('Search');
+  // One Tab stop (the selected tab); close buttons are out of the Tab order.
+  await expect(strip(page).locator('[tabindex="0"]')).toHaveCount(1);
+  await expect(tabButton(page, 'search')).toHaveAttribute('tabindex', '0');
+  for (const close of await strip(page).locator('.inspector-tab-close').all()) await expect(close).toHaveAttribute('tabindex', '-1');
+  await tabButton(page, 'search').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tabButton(page, 'changes')).toBeFocused();
+  await expect(tabButton(page, 'changes')).toHaveAttribute('tabindex', '0');
+  await expect(tabButton(page, 'search')).toHaveAttribute('tabindex', '-1');
+  await page.keyboard.press('ArrowLeft');
+  await expect(tabButton(page, 'search')).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(tabButton(page, 'changes')).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(tabButton(page, 'search')).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(tabButton(page, 'files')).toBeFocused();
+  // Arrows move focus only; Enter selects.
+  await expect(tabButton(page, 'search')).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('Enter');
+  await expect(tabButton(page, 'files')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#inspector-content .file-row').first()).toBeVisible();
+  // Tab leaves the strip in one step.
+  await page.keyboard.press('Tab');
+  await expect(page.locator('#inspector .inspector-tabs .inspector-tab-button:focus')).toHaveCount(0);
+  // Delete closes the focused tab and focus moves to its neighbour.
+  await tabButton(page, 'files').focus();
+  await page.keyboard.press('Delete');
+  expect(await shownViews(page)).toEqual(['changes', 'search']);
+  await expect(tabButton(page, 'search')).toBeFocused();
+  await page.keyboard.press('Delete');
+  expect(await shownViews(page)).toEqual(['changes']);
+  await expect(tabButton(page, 'changes')).toBeFocused();
+  await expect(tabButton(page, 'changes')).toHaveAttribute('aria-selected', 'true');
+  // The last tab cannot be closed.
+  await page.keyboard.press('Delete');
+  expect(await shownViews(page)).toEqual(['changes']);
 });
