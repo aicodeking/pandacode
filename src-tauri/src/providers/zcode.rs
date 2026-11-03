@@ -499,6 +499,17 @@ impl Protocol {
                     _ => {}
                 }
             }
+            "subagent.lifecycle" => self.zcode_subagent(payload, step),
+            "checkpoint.created" => {
+                let id = field(payload, "checkpointId");
+                if !id.is_empty() {
+                    step.events.push(self.event(
+                        "status",
+                        format!("Checkpoint {id}"),
+                        None,
+                    ));
+                }
+            }
             "turn.failed" => {
                 self.zcode.error = Some(short(field(payload, "error")));
             }
@@ -536,6 +547,43 @@ impl Protocol {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Maps `subagent.lifecycle` onto the existing Agent-tool observer so the
+    /// transcript shows the child without a second display path.
+    fn zcode_subagent(&mut self, payload: &Value, step: &mut Step) {
+        let id = field(payload, "agentId");
+        if id.is_empty() {
+            return;
+        }
+        let name = match field(payload, "agentType") {
+            "" => "Subagent",
+            other => other,
+        };
+        let (status, output) = match field(payload, "phase") {
+            "spawned" => ("running", None),
+            "stopped" if !field(payload, "errorMessage").is_empty() => {
+                ("failed", Some(field(payload, "errorMessage").to_owned()))
+            }
+            "stopped" => {
+                let status = match field(payload, "status") {
+                    "failed" | "errored" => "failed",
+                    "stopped" | "cancelled" | "killed" => "stopped",
+                    _ => "completed",
+                };
+                (status, None)
+            }
+            _ => return,
+        };
+        let input = json!({"name": name, "subagent_type": name}).to_string();
+        self.tool_update(
+            id,
+            Some("Agent"),
+            Some(status),
+            Some(limited(&input, TOOL_INPUT_LIMIT)),
+            output.as_deref().map(|text| limited(text, TOOL_OUTPUT_LIMIT)),
+            step,
+        );
     }
 
     /// First frame of the session chain: create (or resume) answers, then the
@@ -1076,6 +1124,53 @@ mod tests {
             step.write[0]["result"].get("permissionUpdates").is_none(),
             "never a standing grant",
         );
+    }
+
+    #[test]
+    fn subagent_lifecycle_becomes_an_agent_tool() {
+        let (mut p, _) = created();
+        let step = p
+            .receive(event("subagent.lifecycle", json!({
+                "phase": "spawned", "agentId": "agt_1", "agentType": "explore",
+                "childSessionId": "sess_child", "background": false,
+            })))
+            .unwrap();
+        let tool = step.events.iter().find_map(|e| e.tool.as_ref()).expect("agent tool");
+        assert_eq!(tool.name, "Agent");
+        assert_eq!(tool.status, "running");
+        assert_eq!(tool.id, "agt_1");
+        assert!(
+            step.events.iter().any(|e| e.kind == "subagent"),
+            "the existing observer publishes the child",
+        );
+        let stopped = p
+            .receive(event("subagent.lifecycle", json!({
+                "phase": "stopped", "agentId": "agt_1", "agentType": "explore",
+                "childSessionId": "sess_child", "background": false, "status": "completed",
+            })))
+            .unwrap();
+        let tool = stopped.events.iter().find_map(|e| e.tool.as_ref()).expect("completed");
+        assert_eq!(tool.status, "completed");
+        let failed = p
+            .receive(event("subagent.lifecycle", json!({
+                "phase": "stopped", "agentId": "agt_2", "errorMessage": "timed out",
+                "childSessionId": "sess_other", "background": true,
+            })))
+            .unwrap();
+        let tool = failed.events.iter().find_map(|e| e.tool.as_ref()).expect("failed");
+        assert_eq!(tool.status, "failed");
+        assert!(tool.output.contains("timed out"));
+    }
+
+    #[test]
+    fn checkpoint_created_is_a_status_line() {
+        let (mut p, _) = created();
+        let step = p
+            .receive(event("checkpoint.created", json!({"checkpointId": "cp_9"})))
+            .unwrap();
+        assert!(step.events.iter().any(|e| e.kind == "status" && e.text.contains("cp_9")));
+        let empty = p.receive(event("checkpoint.created", json!({}))).unwrap();
+        assert!(!empty.events.iter().any(|e| e.kind == "status"));
     }
 
     #[test]
