@@ -297,6 +297,8 @@ pub(super) fn catalog(session: &Value, efforts: &HashMap<String, Value>) -> Vec<
             reasoning_efforts,
             default_reasoning_effort,
             context_window: None,
+            image_input: choice["_meta"]["cognition.ai/supportsImages"] != false,
+            ..ModelInfo::default()
         });
     }
     models

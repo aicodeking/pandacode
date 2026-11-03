@@ -960,6 +960,7 @@ pub(super) fn parse_grok_models(state: &Value) -> Vec<ModelInfo> {
             reasoning_efforts: efforts,
             default_reasoning_effort: default_effort,
             context_window: meta["totalContextTokens"].as_u64().filter(|value| *value > 0 && *value <= 1_000_000_000),
+            ..ModelInfo::default()
         });
     }
     models
@@ -1017,6 +1018,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 reasoning_efforts: Vec::new(),
                 default_reasoning_effort: None,
                 context_window: None,
+                ..ModelInfo::default()
             });
         }
     } else if let Some(available) = metadata["models"]["availableModels"].as_array() {
@@ -1032,6 +1034,7 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 reasoning_efforts: Vec::new(),
                 default_reasoning_effort: None,
                 context_window: None,
+                ..ModelInfo::default()
             });
         }
     }

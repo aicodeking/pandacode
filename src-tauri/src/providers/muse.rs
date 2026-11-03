@@ -106,6 +106,7 @@ pub(super) fn parse_models(result: &Value) -> Result<Vec<ModelInfo>, String> {
             context_window: entry["contextLimit"]
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= 1_000_000_000),
+            ..ModelInfo::default()
         });
     }
     Ok(models)
