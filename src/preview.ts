@@ -995,6 +995,8 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
   throw new Error(`Unknown running-agents command: ${command}`);
 }
 
+const checkpointReviews = new Map<string, { sessionId: string; messageId: number }>();
+const checkpointSamplePatch = "diff --git a/src/App.tsx b/src/App.tsx\n--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-export const title = 'Updated workspace';\n+export const title = 'Original workspace';\n";
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
   if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
     sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),
@@ -1274,6 +1276,27 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
       else task.codexSettings.serviceTier = request.enabled ? 'fast' : null;
       task.updatedAt = Date.now(); result = task; break;
+    }
+    case 'list_checkpoints': {
+      session(args.sessionId);
+      result = (messages[args.sessionId] ?? []).filter(message => message.role === 'user' && message.id > 0).map(message => ({ messageId: message.id, createdAt: message.createdAt, skipped: 0 })); break;
+    }
+    case 'compare_checkpoints':
+    case 'preview_rewind': {
+      const task = session(args.sessionId);
+      if (task.remoteDevice || task.cloud) throw new Error('Checkpoints are available only for local checkouts.');
+      const ids = command === 'preview_rewind' ? [args.messageId] : [args.fromMessage, args.toMessage];
+      if (ids.some(id => !(messages[task.id] ?? []).some(message => message.id === id && message.role === 'user'))) throw new Error('No checkpoint is available for this message.');
+      const token = command === 'preview_rewind' ? crypto.randomUUID() : null;
+      if (token) checkpointReviews.set(token, { sessionId: task.id, messageId: args.messageId });
+      result = { patch: checkpointSamplePatch, files: ['src/App.tsx'], skipped: ['node_modules'], truncated: false, token }; break;
+    }
+    case 'discard_rewind': checkpointReviews.delete(args.token); break;
+    case 'rewind_checkpoint': {
+      const review = checkpointReviews.get(args.token);
+      if (!review || review.sessionId !== args.sessionId || review.messageId !== args.messageId) throw new Error('Reopen the rewind preview before restoring.');
+      assertIdle(session(args.sessionId)); checkpointReviews.delete(args.token);
+      result = await invoke('fork_session_at_message', { sessionId: args.sessionId, messageId: args.messageId, exclusive: true }); break;
     }
     case 'get_message_content': {
       const task = session(args.sessionId);

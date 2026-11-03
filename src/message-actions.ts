@@ -2,9 +2,9 @@ import { escape, icon } from './dom';
 import './message-actions.css';
 
 /** Keys identify saved messages or a live text buffer; never embed message text. */
-export function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false): string {
+export function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false, canCheckpoint = canEdit): string {
   const data = `data-message-session="${escape(sessionId)}" data-message-key="${escape(key)}"`;
-  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" aria-description="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" aria-description="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
+  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" aria-description="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" aria-description="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}${canCheckpoint ? `<button type="button" data-message-action="rewind" ${data} aria-label="Rewind to here" title="Rewind to here">${icon('undo')}</button><button type="button" data-message-action="compare" ${data} aria-label="Compare turns" title="Compare turns">${icon('branch')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
 }
 
 /** Clipboard APIs can be unavailable in older desktop webviews. */
@@ -50,6 +50,8 @@ export function bindMessageActions(root: HTMLElement, options: {
   content: (sessionId: string, key: string) => string | undefined | Promise<string | undefined>;
   onFork?: (sessionId: string, messageId: number) => Promise<void>;
   onEdit?: (sessionId: string, messageId: number) => Promise<void>;
+  onRewind?: (sessionId: string, messageId: number) => Promise<void>;
+  onCompare?: (sessionId: string, messageId: number) => Promise<void>;
   report: (error: unknown) => void;
 }): () => void {
   const pending = new Set<string>();
@@ -63,7 +65,7 @@ export function bindMessageActions(root: HTMLElement, options: {
     const action = button.dataset.messageAction;
     const token = JSON.stringify([sessionId, key, action]);
     if (pending.has(token)) return;
-    const handler = action === 'fork' ? options.onFork : action === 'edit' ? options.onEdit : undefined;
+    const handler = action === 'fork' ? options.onFork : action === 'edit' ? options.onEdit : action === 'rewind' ? options.onRewind : action === 'compare' ? options.onCompare : undefined;
     if (action !== 'copy' && (!handler || !Number.isSafeInteger(Number(key)) || Number(key) <= 0)) return;
     const hadFocus = document.activeElement === button;
     pending.add(token);

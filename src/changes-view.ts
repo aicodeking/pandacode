@@ -9,6 +9,7 @@ export interface ChangesViewDeps {
   commit(message: string): Promise<void>;
   openFile(path: string): void;
   refresh(): void;
+  checkpoints?(): void;
   notify(message: string): void;
   choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
@@ -89,6 +90,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   host.classList.add('changes-view');
   host.innerHTML = `
+    ${deps.checkpoints ? `<button type="button" class="ds-row cv-checkpoints" data-cv-action="checkpoints" aria-label="Checkpoints" aria-haspopup="dialog">${icon('undo', 'ds-row-icon')}<span class="ds-row-main"><span class="ds-row-title">Checkpoints</span><span class="ds-row-sub">Rewind or compare saved turns</span></span>${icon('chevron', 'ds-row-trail')}</button>` : ''}
     <div class="cv-header">
       <button type="button" class="cv-scope" data-cv-action="scope" aria-haspopup="menu">${icon('branch')}<span class="cv-scope-label"></span>${icon('down', 'cv-caret')}</button>
       <span class="cv-files"></span><span class="cv-adds"></span><span class="cv-dels"></span>
@@ -410,6 +412,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     event.stopPropagation();
     const path = target.closest<HTMLElement>('.cv-file')?.dataset.path ?? '';
     switch (target.dataset.cvAction) {
+      case 'checkpoints': deps.checkpoints?.(); break;
       case 'scope':
         deps.choose(target, 'Show', (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
           if (id === scope || !(id in SCOPES)) return;

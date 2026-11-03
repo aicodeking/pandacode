@@ -308,9 +308,7 @@ fn run_bounded(
 }
 
 /// Read-only index enumeration: no refresh, checkout, filters, refs, or index writes.
-#[cfg(test)]
 pub(crate) type TurnSnapshotPaths = (Vec<String>, Vec<String>, bool);
-#[cfg(test)]
 pub(crate) fn turn_snapshot_paths(
     root: &Path,
     deadline: Instant,
