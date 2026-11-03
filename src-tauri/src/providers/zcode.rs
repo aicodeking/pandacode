@@ -586,6 +586,7 @@ impl Protocol {
         }
         step.events
             .push(self.event("session", self.remote_id.clone(), None));
+        self.commands_changed(result, step);
         let settings = &result["settings"];
         let current = &result["session"]["model"];
         self.zcode.context_window = context_window_of(settings, current);
@@ -790,6 +791,10 @@ mod tests {
                 "thoughtLevel": {"enabled": true, "current": "max",
                                  "available": [{"value": "low"}, {"value": "high"}, {"value": "max"}]},
             },
+            "slashCommands": [
+                {"name": "goal", "description": "Set the session goal", "inputHint": "<goal>", "source": "builtin"},
+                {"name": "compact", "description": "Compact the conversation", "source": "builtin"},
+            ],
             "messages": [],
         })
     }
@@ -811,6 +816,11 @@ mod tests {
         let step = p
             .receive(json!({"id": ID_CREATE, "result": snapshot()}))
             .unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert!(
+            step.events.iter().any(|event| event.kind == "commands_changed"),
+            "create snapshot publishes slashCommands",
+        );
         (p, step)
     }
 
