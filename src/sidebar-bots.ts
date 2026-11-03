@@ -197,7 +197,7 @@ export function botsListHtml(context: BotsListContext, query: string): string {
   const channelRows = (items: SharedChannelSummary[]) => items.map(channel => `<button type="button" class="channel-row${context.selectedChannel === channel.id ? ' selected' : ''}"${context.selectedChannel === channel.id ? ' aria-current="page"' : ''} data-action="open-shared-channel" data-channel="${escape(channel.id)}" aria-label="#${escape(channel.name)}">${channelFaceCluster(channel.memberIds, context.bots)}<span>#${escape(channel.name)}</span></button>`).join('');
   const channelGroups = (activeChannels.length ? `<div class="bots-group bots-group-channels" role="group" aria-label="Channels"><h3 class="bots-group-label">Channels</h3><div role="list">${channelRows(activeChannels)}</div></div>` : '')
     + (deletedChannels.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Deleted channels"><h3 class="bots-group-label">Deleted channels</h3><div role="list">${channelRows(deletedChannels)}</div></div>` : '');
-  const empty = !bots.length && !channels.length ? `<div class="bots-panel-start"><p>No bots yet</p><button type="button" class="secondary-button" data-action="new-bot-menu">${icon('plus')}<span>Create your first bot or channel</span></button></div>` : '';
+  const empty = !bots.length && !channels.length ? `<div class="bots-panel-start"><p>No bots yet</p><button type="button" class="secondary-button" data-action="new-bot-menu">${icon('plus')}<span>New bot or channel</span></button></div>` : '';
   const noMatch = Boolean((context.bots.length || channels.length) && !bots.length && !matchingChannels.length) ? '<p class="bots-panel-empty">No bots or channels match.</p>' : '';
   return `${empty}${botGroups}${channelGroups}${noMatch}`;
 }

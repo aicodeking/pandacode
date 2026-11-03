@@ -1,0 +1,76 @@
+/* Threads tiled in the thread area (src/thread-tiles.ts). The main pane gives up its panel look and each tile takes it,
+ * so the frame shows through the gaps. Positions are inline px from tile-layout.ts; nothing here animates layout. */
+.workspace:has(.work-area[data-tiles])>.main-pane{background:transparent;outline:none;box-shadow:none;--panel-surface:transparent}
+.workspace:has(.work-area[data-tiles])>.main-pane>.thread-sky{display:none}
+.workspace:is(.sidebar-collapsed):has(.work-area[data-tiles]) .work-area{margin:0 8px 8px}
+.workspace:not(.board-view,.github-view)>.main-pane>.work-area[data-tiles]{overflow:hidden;contain:paint}
+
+.thread-tile{position:absolute;isolation:isolate;overflow:hidden;contain:strict;border-radius:var(--inset-radius,12px);
+  background:var(--bg);outline:1px solid var(--ds-border);outline-offset:-1px;box-shadow:var(--ds-shadow-card)}
+.workspace[data-scene] .thread-tile{background:transparent}
+/* WKWebView can skip a parent's rounded clip on composited children (a WebGL canvas, a backdrop blur), so they round themselves. */
+.thread-tile>.thread-sky,.thread-tile>.thread-sky>canvas{border-radius:inherit}
+.thread-tile[data-ghost]{outline-color:var(--accent);outline-style:dashed}
+
+/* The real thread, over its tile and below its bar. */
+.work-area[data-tiles]>.conversation-pane{position:absolute;z-index:1;flex:none;min-width:0;overflow:hidden;border-radius:0 0 var(--inset-radius,12px) var(--inset-radius,12px);
+  --header-under:0px!important;--header-fade-under:0px!important;--transcript-top:14px!important}
+.thread-tile-ring{position:absolute;z-index:2;pointer-events:none;border-radius:var(--inset-radius,12px);
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 60%,transparent)}
+.thread-tile-ring[hidden]{display:none}
+
+.thread-tile-bar{position:absolute;inset:0 0 auto;z-index:1;display:flex;align-items:center;gap:4px;height:38px;padding:0 6px 0 4px;border-radius:var(--inset-radius,12px) var(--inset-radius,12px) 0 0;
+  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(16px) saturate(1.15);-webkit-backdrop-filter:blur(16px) saturate(1.15);
+  box-shadow:inset 0 -1px 0 var(--ds-border);cursor:grab}
+.thread-tile-title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:30px;padding:0 6px;border:0;border-radius:var(--ds-radius-chip);background:none;
+  color:var(--muted);font:inherit;font-size:var(--ds-text-ui);letter-spacing:var(--ds-row-tracking);text-align:left;cursor:inherit;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
+.thread-tile-title:hover{color:var(--text);background:var(--ds-row-hover)}
+.thread-tile[data-focused] .thread-tile-title{color:var(--text);font-weight:500}
+.thread-tile-name{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.thread-tile-word{flex:none;font-size:var(--ds-text-meta);font-weight:450;color:var(--faint)}
+.thread-tile-word:empty{display:none}
+.thread-tile-mark{flex:none;width:6px;height:6px;border-radius:50%;background:var(--ds-glyph-faint);transition:background-color var(--ds-ease-out) ease-out}
+.thread-tile[data-focused] .thread-tile-mark{background:var(--accent)}
+.thread-tile-bar[data-status="running"] .thread-tile-mark{background:var(--ds-info)}
+.thread-tile-bar[data-status="attention"] .thread-tile-mark{background:var(--ds-warn)}
+.thread-tile-bar[data-status="attention"] .thread-tile-word{color:var(--ds-warn)}
+.thread-tile-bar[data-status="failed"] .thread-tile-mark{background:var(--ds-danger)}
+.thread-tile-bar[data-status="failed"] .thread-tile-word{color:var(--ds-danger)}
+.thread-tile-bar[data-status="limited"] .thread-tile-mark{background:none;box-shadow:inset 0 0 0 1.5px var(--ds-warn)}
+.thread-tile-close{flex:none;width:24px;height:24px;opacity:0;transition:opacity var(--ds-ease-in) ease-out}
+.thread-tile:is(:hover,:focus-within,[data-focused]) .thread-tile-close{opacity:1}
+
+/* A view of a thread that is not the focused one: the same turn cards, read-only; a click focuses it. */
+.conversation-pane.thread-mirror{position:absolute;inset:38px 0 0;z-index:0;display:flex;flex-direction:column;cursor:pointer;border-radius:0 0 var(--inset-radius,12px) var(--inset-radius,12px);
+  --header-under:0px!important;--header-fade-under:0px!important;--transcript-top:14px!important}
+.conversation-pane.thread-mirror[hidden]{display:none}
+.thread-mirror>.transcript{flex:1;min-height:0;overflow:hidden auto;outline:none}
+.thread-mirror-rows:empty::before{content:"No messages yet.";display:block;padding:16px;color:var(--muted);text-align:center}
+/* The focused tile's close stays; the others show theirs on hover, keeping the title where it is. */
+.thread-mirror-composer{flex:none;display:block;width:auto;align-self:stretch;margin:8px;min-height:44px;padding:0 14px;border:0;border-radius:var(--ds-radius-card);text-align:start;justify-content:flex-start;color:var(--muted);font:inherit;font-size:var(--ds-text-ui);cursor:text;
+  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(22px) saturate(1.25);-webkit-backdrop-filter:blur(22px) saturate(1.25);
+  box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+
+/* A tile's narrow composer and footer: the model and the file count keep their words, the branch and meter go first. */
+@container composer (max-width:400px){html .composer .branch-chip{flex:none;min-width:0;width:auto}html .composer .branch-chip-name{display:none}}
+/* A narrow tile spends its width on the thread, not on the side gutters a full pane keeps. */
+.work-area[data-tiles]>.conversation-pane,.conversation-pane.thread-mirror{container:tile/inline-size}
+@container tile (max-width:520px){
+  html .work-area .conversation-pane>.transcript{padding-inline:10px}
+  html .work-area .conversation-pane>.composer-area{padding-inline:8px}
+  html .work-area .turn-changes.turn-card-foot .change-dots{display:none}
+}
+
+@media(prefers-reduced-transparency:reduce){
+  .thread-tile-bar,.thread-mirror-composer{background:var(--panel,var(--bg));backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media(prefers-contrast:more){
+  .thread-tile{outline-color:var(--border);box-shadow:none}
+  .thread-tile-bar,.thread-mirror-composer{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media(forced-colors:active){
+  .thread-tile,.thread-tile-ring{outline:1px solid CanvasText}
+  .thread-tile-ring{outline:2px solid Highlight;outline-offset:-2px}
+  .thread-tile-bar,.thread-mirror-composer{background:Canvas;border:1px solid CanvasText}
+}
+@media(prefers-reduced-motion:reduce){.thread-tile-title,.thread-tile-mark,.thread-tile-close{transition:none}}

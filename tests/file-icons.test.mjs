@@ -32,3 +32,9 @@ test('every resolved icon points at a shipped SVG', () => {
     assert.ok(existsSync(fileURLToPath(fileIconUrl(name, isDir))), name);
   }
 });
+
+test('README files take their extension icon, never the info circle that reads as a warning', () => {
+  assert.equal(fileIconId('README.md', false), 'markdown');
+  assert.equal(fileIconId('readme.md', false, true), 'markdown');
+  assert.equal(fileIconId('README', false), 'file');
+});

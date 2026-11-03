@@ -183,7 +183,7 @@ test.describe('concurrency isolation', () => {
       }
       await selectTask(page, 5, view);
       await prompt(page).fill('An unrelated task draft survives four completions.');
-      await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+      await page.getByRole('button', { name: /^Model: / }).click();
       const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
       await menu.getByRole('combobox').fill('sol');
       await page.evaluate(() => {

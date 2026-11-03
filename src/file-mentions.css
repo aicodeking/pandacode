@@ -22,4 +22,4 @@ html[data-theme=dark] .file-mention-menu.floating-menu{box-shadow:0 16px 44px -1
 @media(prefers-contrast:more){.file-mention-option[aria-selected=true]{outline:1px solid currentColor;outline-offset:-1px}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.file-mention-option{transition:background-color 100ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.file-mention-option{transition:background-color var(--ds-ease-in) ease-out}}

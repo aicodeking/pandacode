@@ -1,0 +1,108 @@
+/* Turn card (src/turn-card.ts): one outer card per agent turn. Header (the step sentence or the turn's
+ * summary, the elapsed time) opens the trace; the inner card holds the latest reply, clamped to six
+ * lines; the footer opens the turn's diff. Tokens only. Bot threads keep their chat rows. */
+
+.turn-card{position:relative;display:flex;flex-direction:column;gap:2px;min-width:0;margin:6px auto 22px;padding:var(--ds-card-pad);
+  border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);color:var(--text)}
+html .workspace :is(#transcript,.thread-mirror-rows,#stream-region) .turn-card>.turn-activity{margin:0;padding:0}
+
+/* Blank room under the last card after its trace folds (main.ts `tailRoom`), so the thread above holds still. */
+#transcript::after{content:"";display:block;flex:none;height:var(--tail-room,0px)}
+
+/* ---------- Header ---------- */
+.turn-card>.turn-activity>.turn-activity-summary,.turn-card-head{display:flex;align-items:center;gap:8px;width:auto;max-width:none;min-height:38px;padding:2px var(--ds-row-pad-x);
+  border-radius:var(--ds-radius-inner);font-size:var(--ds-text-body);letter-spacing:var(--ds-row-tracking);line-height:20px;color:var(--muted)}
+.turn-card>.turn-activity>.turn-activity-summary{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.turn-card>.turn-activity>.turn-activity-summary:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.turn-card>.turn-activity>.turn-activity-summary:active{background:var(--ds-row-press)}
+.turn-card>.turn-activity>.turn-activity-summary:focus-visible{outline:2px solid var(--focus);outline-offset:0}
+.turn-card :is(.turn-activity-summary,.turn-card-head)>.turn-activity-label{flex:1;display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;white-space:nowrap}
+.turn-card .turn-activity-label .trace-sentence,.turn-card .turn-activity-label .trace-summary-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.turn-card-head>.turn-activity-label{color:var(--muted)}
+.turn-card>.turn-activity>.turn-activity-summary>.icon{--icon-size:16px;color:var(--muted)}
+/* The total time since the prompt: tabular, so a ticking second never moves the row. */
+.turn-card-time{flex:none;font-size:var(--ds-text-sub);font-variant-numeric:tabular-nums;color:var(--faint);white-space:nowrap}
+.turn-card-thumb{flex:none;width:30px;height:20px;object-fit:cover;border-radius:4px;box-shadow:0 0 0 1px var(--ds-border)}
+.turn-card>.turn-activity>.turn-activity-body{padding:2px var(--ds-row-pad-x) 8px}
+.turn-card>.thinking-block{margin:0 var(--ds-row-pad-x) 4px}
+/* A turn's spawned workers sit under its reply, inside the card (main.ts `workerSlot`). */
+.turn-card>.team-progress-slot>.team-progress{margin:0}
+/* The running step the header mirrors is not repeated as the trace's newest row (main.ts sets data-mirrored). */
+.turn-card.is-live details.tool-trace[data-mirrored]{display:none}
+.turn-card.is-live>.turn-activity>.turn-activity-body:not(:has(details.tool-trace:not([data-mirrored]),.live-message:not([hidden]),.activity-limit,.live-status:not([hidden]):not(:empty),.tool-group-summary)){display:none}
+
+/* ---------- Reply (inner card) ---------- */
+.turn-card>.turn-card-reply{gap:0;padding:12px 14px 4px}
+.turn-card-reply-body{font-size:var(--thread-font)}
+.turn-card-reply .message{margin:0}
+.turn-card-reply .message-content{padding-left:0}
+.turn-card-reply .markdown>:first-child{margin-top:0}
+.turn-card-reply .markdown>:last-child{margin-bottom:0}
+.turn-card-reply[data-overflow]:not([data-open])>.turn-card-reply-body{max-height:calc(1em * 1.6 * 6);overflow:clip;
+  -webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 3.2em),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 3.2em),transparent)}
+.turn-card-reply-row{display:flex;align-items:center;gap:4px;min-height:34px;margin-top:2px}
+.turn-card-reply-row>.message-actions,.turn-card-reply .live-message>.message-actions{margin:0 -6px 0 auto;padding:0}
+/* The live reply's own row sits in flow at the saved row's height, so the handoff swaps rows without a step. */
+html .turn-card-reply .live-message>.message-actions{position:static;justify-content:flex-end;min-height:34px;margin:2px -6px 0 auto}
+.turn-card-reply:not(:has(.turn-card-more:not([hidden]))) .turn-card-reply-row{margin-top:0}
+.turn-card-more{display:inline-flex;align-items:center;min-height:28px;padding:0 6px;margin-left:-6px;border:0;border-radius:var(--ds-radius-chip);background:transparent;color:var(--accent-ink);
+  font-size:var(--ds-text-ui);font-weight:var(--weight-medium);letter-spacing:var(--ds-row-tracking);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme="dark"] .turn-card-more{color:color-mix(in srgb,var(--accent) 70%,var(--text))}
+.turn-card-more:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.turn-card-more:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+
+/* Loading: three lines breathe until the first token; the text then fades in over them. */
+.turn-card-skeleton{display:flex;flex-direction:column;gap:10px;padding:4px 0 12px}
+.turn-card-skeleton>i{display:block;height:10px;border-radius:5px;background:var(--ds-track-strong)}
+.turn-card-skeleton>i:nth-child(1){width:88%}.turn-card-skeleton>i:nth-child(2){width:72%}.turn-card-skeleton>i:nth-child(3){width:46%}
+@media(prefers-reduced-motion:no-preference){.turn-card-skeleton>i{animation:state-pulse 1.6s ease-in-out infinite}}
+/* The live reply holds the skeleton's height (4 + 3×10 + 2×10 + 12 px), so the first token never shrinks the card. */
+.turn-card-reply.is-live .turn-card-reply-content{min-height:66px}
+.turn-card-reply-content:has(>.live-message:not([hidden]))>.turn-card-skeleton,.turn-card[data-done] .turn-card-skeleton{display:none}
+.turn-card[data-done]>.turn-card-reply:not(:has(.live-message:not([hidden]))){display:none}
+/* Streaming: the newest line rests a little dim and comes up as the reply grows past it (no re-animation of older text). */
+@media(prefers-reduced-motion:no-preference){
+  .turn-card:not([data-done])>.turn-card-reply .live-text{-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 1.6em),rgb(0 0 0 / .4));mask-image:linear-gradient(to bottom,#000 calc(100% - 1.6em),rgb(0 0 0 / .4))}
+}
+
+/* ---------- Errors and footer ---------- */
+.turn-card-errors:empty{display:none}
+.turn-card-errors{display:flex;flex-direction:column;gap:4px;padding:4px 0 0}
+.turn-card-errors .message-error{margin:0;border-radius:var(--ds-radius-inner);color:var(--ds-danger)}
+html .turn-changes.turn-card-foot{display:flex;flex-direction:row;align-items:center;gap:4px;min-height:40px;margin:0;padding:4px 0 0;border:0;border-radius:0;background:none;box-shadow:none;container-type:normal;font-size:var(--ds-text-body)}
+.turn-card-foot-open{flex:1;display:flex;align-items:center;gap:10px;min-width:0;min-height:36px;padding:0 var(--ds-row-pad-x);border:0;border-radius:var(--ds-radius-inner);background:transparent;color:var(--text);text-align:left;cursor:pointer;
+  transition:background-color var(--ds-ease-out) ease-out}
+.turn-card-foot-open:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.turn-card-foot-open:active{background:var(--ds-row-press)}
+.turn-card-foot-open:focus-visible{outline:2px solid var(--focus);outline-offset:0}
+.turn-card-foot-open>.icon{--icon-size:18px;--icon-stroke:var(--icon-stroke-md);flex:none;color:var(--muted)}
+.turn-card-foot-open>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:450;letter-spacing:var(--ds-row-tracking);color:var(--ds-row-ink,var(--text))}
+.turn-card-foot-open>.change-counts{margin-left:auto;gap:10px;font-size:var(--ds-text-sub)}
+/* The trailing chevron says the row opens something (the diff); it wakes with the row. */
+.turn-card-foot-chevron{display:inline-flex;flex:none;margin-left:-2px;color:var(--muted);transition:color var(--ds-ease-out) ease-out}
+.turn-card-foot-chevron>.icon{--icon-size:16px;--icon-stroke:var(--icon-stroke-sm)}
+.turn-card-foot-open:is(:hover,:focus-visible)>.turn-card-foot-chevron{color:var(--text);transition-duration:var(--ds-ease-in)}
+.turn-card-foot>.info-mark{flex:none;color:var(--muted)}
+.turn-card-foot>.turn-changes-run{flex:none;min-height:32px;margin-right:2px;border-radius:var(--ds-radius-control);background:transparent;color:var(--ds-success)}
+.turn-card-foot>.turn-changes-run:hover{background:var(--ds-row-hover)}
+
+/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ---------- */
+html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:color-mix(in srgb,var(--bg) 92%,transparent);
+  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);text-shadow:none}
+html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .icon{filter:none}
+html[data-theme] .workspace[data-scene] .conversation-pane .turn-card :is(.message,.turn-activity,.turn-activity-summary,.message-content){background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;text-shadow:none}
+html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .turn-activity-summary:hover{background:var(--ds-row-hover)}
+
+@media(prefers-reduced-transparency:reduce){
+  html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+@media(prefers-contrast:more){
+  .turn-card,.turn-card>.turn-card-reply{border-color:var(--border);box-shadow:none}
+  html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .turn-card-time{color:var(--muted)}
+}
+@media(forced-colors:active){.turn-card,.turn-card>.turn-card-reply{border:1px solid CanvasText}.turn-card-skeleton>i{background:GrayText}.turn-card-more{color:LinkText}
+  /* System colours carry no fade: the clamped reply's last line and the streaming line stay at full ink. */
+  .turn-card-reply-body,.turn-card-reply .live-text{-webkit-mask-image:none!important;mask-image:none!important}}
+@media(prefers-reduced-motion:reduce){.turn-card :is(.turn-activity-summary,.turn-card-more,.turn-card-foot-open){transition:none}}
+@media(max-width:650px){.turn-card>.turn-card-reply{padding:10px 12px 4px}}

@@ -68,7 +68,7 @@ test.describe('thread panels', () => {
   test('files expand as a tree in place and collapse back', async ({ page }) => {
     await open(page);
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     const entry = (name: string) => page.locator('.file-row').getByRole('button', { name, exact: true });
     await entry('src').click();
     await entry('components').click();
@@ -95,13 +95,13 @@ test.describe('thread panels', () => {
     await transcript.evaluate(element => { element.scrollTop = 40; });
     const scrolled = await transcript.evaluate(element => element.scrollTop);
     await openInspectorTab(page, 'Files');
-    const files = page.getByRole('button', { name: 'Files', exact: true });
+    const files = page.getByRole('tab', { name: 'Files', exact: true });
     await files.click();
     await page.locator('.file-row').getByRole('button', { name: 'README.md', exact: true }).click();
     const openFiles = page.locator('.file-panel-tab .inspector-tab-button');
-    await expect(openFiles).toHaveAttribute('aria-current', 'true');
+    await expect(openFiles).toHaveAttribute('aria-selected', 'true');
     await files.click();
-    await expect(openFiles).not.toHaveAttribute('aria-current', 'true');
+    await expect(openFiles).not.toHaveAttribute('aria-selected', 'true');
     await page.locator('.file-row').getByRole('button', { name: 'package.json', exact: true }).click();
     const tab = (name: string) => page.locator('#inspector #file-tabs').getByRole('tab', { name, exact: true });
     await expect(tab('package.json')).toHaveAttribute('aria-selected', 'true');
@@ -131,7 +131,7 @@ test.describe('thread panels', () => {
   test('closing the Open files tab closes every file tab', async ({ page }) => {
     await open(page);
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'README.md', exact: true }).click();
     await expect(page.locator('#inspector .file-view-path')).toHaveText('README.md');
     await page.getByRole('button', { name: 'Close open files', exact: true }).click();
@@ -144,16 +144,16 @@ test.describe('thread panels', () => {
     await open(page);
     await expect(inspector(page)).toBeVisible();
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'src', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'main.ts', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await select(page, 'session-2');
     await expect(page.locator('#file-tabs')).toBeHidden();
     await expect(inspector(page)).toBeVisible();
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'package.json', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('package.json');
     await page.locator('#inspector-toggle').click();
@@ -162,7 +162,7 @@ test.describe('thread panels', () => {
     expect((await calls(page, 'read_file')).at(-1).args).toMatchObject({sessionId:'session-1',path:'src/main.ts'});
     await page.locator('.file-panel-tab .inspector-tab-button').click();
     await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await expect(page.locator('.file-row').getByRole('button', { name: 'src', exact: true })).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('.file-row').getByRole('button', { name: 'main.ts', exact: true })).toBeVisible();
     await select(page, 'session-2');
@@ -234,11 +234,11 @@ test.describe('thread panels', () => {
   test('late selected-file restoration cannot replace another task selection', async ({ page }) => {
     await open(page);
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name:'Files',exact:true }).click();
+    await page.getByRole('tab', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'README.md',exact:true }).click();
     await select(page, 'session-2');
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name:'Files',exact:true }).click();
+    await page.getByRole('tab', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'package.json',exact:true }).click();
     await page.evaluate(() => { (window as any).__holdPanelFile = 'session-1'; });
     await select(page, 'session-1');
@@ -281,7 +281,7 @@ test.describe('thread panels', () => {
   test('hiding and reselecting a task does not strand a restored file in its loading state', async ({ page }) => {
     await open(page);
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name:'Files',exact:true }).click();
+    await page.getByRole('tab', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'README.md',exact:true }).click();
     await select(page, 'session-2');
     await page.evaluate(() => { (window as any).__holdPanelFile = 'session-1'; });
@@ -298,11 +298,11 @@ test.describe('thread panels', () => {
   test('a project change completed in the background discards the old workspace file context', async ({ page }) => {
     await open(page); await select(page, 'session-2');
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name:'Files',exact:true }).click();
+    await page.getByRole('tab', { name:'Files',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'src',exact:true }).click();
     await page.locator('.file-row').getByRole('button', { name:'main.ts',exact:true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
-    await page.getByRole('button', { name:'Files',exact:true }).click();
+    await page.getByRole('tab', { name:'Files',exact:true }).click();
     await page.evaluate(() => { (window as any).__holdPanelProject = true; });
     await page.getByRole('button', { name:'Change task project',exact:true }).first().click();
     await page.getByRole('dialog', { name:'Choose project',exact:true }).getByRole('option', {name:/^pandacode — /}).click();

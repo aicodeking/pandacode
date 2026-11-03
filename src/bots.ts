@@ -1,6 +1,6 @@
 import './bots.css';
 import './bots-settings.css';
-import { escape, icon } from './dom';
+import { escape, icon, morph } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { Provider, ProviderId, ProviderModel, ReasoningEffort } from './types';
@@ -111,6 +111,8 @@ const navFor = (section: Section): Nav => section === 'conversations' || section
 /** One labelled row, like a Settings row: title and hint on the left, the control on the right. */
 const row = (title: string, hint: string, control: string, stacked = false) => `<label class="bs-row ${stacked ? 'stacked' : ''}"><span class="bs-row-text"><strong>${title}</strong>${hint ? `<small>${escape(hint)}</small>` : ''}</span>${control}</label>`;
 const heading = (title: string, more = '') => `<h3 class="bs-heading">${escape(title)}${more}</h3>`;
+/** One outer card: its section head, then the inner card of rows (as in the design system's `.ds-card`). */
+const card = (title: string, body: string, more = '') => `<section class="bs-card">${heading(title, more)}<div class="bs-group">${body}</div></section>`;
 /** OpenBot-style permission levels over the harness modes; Plan only stays for bots that already use it. */
 const PERMISSIONS = [{ id: 'auto', label: 'Workspace only', hint: 'Edits files in its workspace without asking' }, { id: 'ask', label: 'Ask first', hint: 'Asks before edits and commands' }, { id: 'review', label: 'Approve for me', hint: 'A reviewer model approves safe steps and asks you about the rest' }, { id: 'full', label: 'Full access', hint: 'Runs anything without asking' }, { id: 'plan', label: 'Plan only', hint: 'Reads and plans, never changes anything' }];
 const permissionChoices = (provider: ProviderId, current: string) => PERMISSIONS.filter(item => (item.id !== 'plan' || current === 'plan')
@@ -349,35 +351,27 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     return `<form class="bots-form bots-profile" novalidate aria-label="Profile">
       <div class="bp-identity"><span class="bp-avatar-wrap"><button type="button" class="bp-avatar-button" data-bots-action="avatar" aria-haspopup="dialog" aria-expanded="${avatarOpen}" aria-label="Change icon">${avatar(bot, 'bp-avatar')}<span class="bp-avatar-badge">${icon('edit')}</span></button>${pop}</span>
         <div class="bp-identity-fields"><input name="name" maxlength="60" required value="${escape(bot.name)}" placeholder="Name" aria-label="Name" autocomplete="off"><input name="role" maxlength="200" value="${escape(bot.role)}" placeholder="Title, like Research assistant" aria-label="Title" autocomplete="off"><p class="bc-error" id="bp-name-error" hidden></p></div></div>
-      <div class="bs-group">${row('Instructions', 'How it should work, what to always or never do', `<textarea name="instructions" rows="4" maxlength="16000" aria-label="Instructions">${escape(bot.instructions)}</textarea>`, true)}</div>
-      ${heading('Personality', infoMark('Optional. Tone, values and conversational style, kept apart from the instructions. Importing copies the file once; later changes to the file do not change the bot. Personality never grants tools or permissions.', 'About personality'))}
-      <div class="bs-group">
+      ${card('Instructions', `<label class="bs-row stacked bots-instructions"><span class="bs-row-text"><small>How it should work, what to always or never do</small></span><textarea name="instructions" rows="4" maxlength="16000" aria-label="Instructions">${escape(bot.instructions)}</textarea></label>`)}
+      ${card('Personality', `
         <div class="bs-row stacked bots-soul"><span class="bs-row-text"><strong>Soul</strong><small>Markdown, up to 64 KB</small></span>
           <textarea name="soul" rows="4" aria-label="Soul" placeholder="# Leo&#10;Dry wit, fiercely loyal, blunt under pressure.">${escape(bot.soul ?? '')}</textarea>
           <span class="bots-soul-actions"><button type="button" class="secondary-button" data-bots-action="soul-import">Import soul.md…</button><button type="button" class="secondary-button" data-bots-action="soul-remove" ${bot.soul ? '' : 'hidden'}>Remove</button><input type="file" data-soul-file accept=".md,.markdown,.txt,text/markdown,text/plain" hidden></span>
           <p class="bots-error bots-soul-error" role="alert" hidden></p>
-        </div>
-      </div>
-      ${heading('Brain')}
-      <div class="bs-group">
+        </div>`, infoMark('Optional. Tone, values and conversational style, kept apart from the instructions. Importing copies the file once; later changes to the file do not change the bot. Personality never grants tools or permissions.', 'About personality'))}
+      ${card('Brain', `
         ${row('Harness', '', harness)}${row('Model', '', model)}${row('Reasoning', '', provider ? effortSelect(provider.id, bot.model, bot.reasoningEffort ?? '') : '')}
-        ${backupsRow(bot)}
-      </div>
-      ${heading('Rules')}
-      <div class="bs-group">
+        ${backupsRow(bot)}`)}
+      ${card('Rules', `
         <input type="hidden" name="mode" value="${escape(mode)}">
         <div class="bp-rules-row"><div class="bs-row-text"><strong>How it can work</strong><small>Choose when PandaCode asks before a change.</small></div><div class="bp-rule-options" role="radiogroup" aria-label="Rules">${permissionOptions(bot.provider, mode)}</div></div>
         ${row('Notifications', 'Message you when it finishes work you were not watching', toggle('notify', bot.notify !== false, 'Notifications'))}
         <details class="bs-advanced" ${advancedOpen ? 'open' : ''}><summary>Advanced</summary>
           ${row('While working', 'What a new message does while the bot is busy', `<select name="whileWorking" aria-label="While working"><option value="queue" ${bot.whileWorking !== 'steer' ? 'selected' : ''}>Queue it</option><option value="steer" ${bot.whileWorking === 'steer' ? 'selected' : ''}>Steer the current work</option></select>`)}
           ${row('Show the plan before long tasks', '', toggle('showPlan', bot.showPlan === true, 'Show the plan before long tasks'))}
-        </details>
-      </div>
-      ${heading('Check-ins', infoMark('On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.', 'About check-ins'))}
-      <div class="bs-group">
+        </details>`)}
+      ${card('Check-ins', `
         ${row('Check in', '', checkIns)}
-        ${row('Standing goals', 'One per line. Check-ins work toward these.', `<textarea name="goals" rows="2" maxlength="16000" aria-label="Standing goals">${escape(bot.goals)}</textarea>`, true)}
-      </div>
+        ${row('Standing goals', 'One per line. Check-ins work toward these.', `<textarea name="goals" rows="2" maxlength="16000" aria-label="Standing goals">${escape(bot.goals)}</textarea>`, true)}`, infoMark('On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.', 'About check-ins'))}
     </form>`;
   }
 
@@ -515,7 +509,8 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
         : section === 'activity' ? `${heading('Conversations')}${renderPanel('conversations', detail, context)}${heading('Rules', infoMark('Answer the bot\'s requests for you. Deny wins over allow, and * matches anything, as in npm test*. Risky actions such as sudo, force pushes, deleting files or anything about passwords always ask, whatever the rules say.', 'About rules'))}${renderPanel('rules', detail, context)}${heading('Activity log')}${renderPanel('activity', detail, context)}`
         : renderPanel(section, detail, context);
       const saved = section === 'profile' ? `<span class="bs-saved" role="status" aria-live="polite" data-state="${saveState}"></span>` : '';
-      pane.innerHTML = `${renderHeader(detail.bot)}${confirm}${alert}<div class="bs-body">${nav}<div class="bots-panel" id="bs-panel" role="tabpanel" aria-labelledby="bs-tab-${section}"><div class="bs-panel-head"><h2>${current.label}${saved}</h2><p>${escape(current.text)}</p></div>${body}</div></div>`;
+      morph(pane, `${renderHeader(detail.bot)}${confirm}${alert}<div class="bs-body">${nav}<div class="bots-panel" id="bs-panel" role="tabpanel" aria-labelledby="bs-tab-${section}"><div class="bs-panel-head"><h2>${current.label}${saved}</h2><p>${escape(current.text)}</p></div>${body}</div></div>`, 9);
+      resetFields(pane);
       setSaved(saveState);
     }
     hydrateFormModels();
@@ -525,6 +520,14 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     } else if (focusAt >= 0) {
       const again = pane.querySelectorAll<HTMLElement>(FOCUSABLE)[focusAt];
       if (again?.tagName === focusTag) again.focus();
+    }
+  }
+  /** Fields morph kept show the markup they were just given, not another bot's typed or clicked state. */
+  function resetFields(root: HTMLElement): void {
+    for (const field of root.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input,textarea,select')) {
+      if (field instanceof HTMLSelectElement) { for (const option of field.options) option.selected = option.defaultSelected; continue; }
+      if (field.value !== field.defaultValue) field.value = field.defaultValue;
+      if (field instanceof HTMLInputElement) field.checked = field.defaultChecked;
     }
   }
   /** Edge fades show only where the carousel has more to scroll to. */
@@ -701,6 +704,13 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       if (target.matches('input[name=name],input[name=role],textarea')) queueSave(600);
     }
   };
+  // Bot switches slide only after the user touches them, so a state set during render never animates.
+  const arm = (event: Event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const control = target instanceof HTMLLabelElement ? target.control : target?.closest('label')?.control ?? target;
+    if (control instanceof HTMLInputElement && control.classList.contains('bots-switch')) control.dataset.armed = '';
+  };
+  for (const type of ['pointerdown', 'keydown']) host.addEventListener(type, arm, { capture: true, passive: true });
   host.addEventListener('click', click);
   host.addEventListener('submit', submit);
   host.addEventListener('change', change);
@@ -741,6 +751,6 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
       if (kind === 'done') { void load(); return; }
       if (kind === 'turn_start' || kind === 'status') renderList();
     },
-    dispose: () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); },
+    dispose: () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('change', change); host.removeEventListener('input', typed); host.removeEventListener('toggle', toggled, true); host.removeEventListener('scroll', scrolled, true); void flushSave(); host.removeEventListener('keydown', keys); for (const type of ['pointerdown', 'keydown']) host.removeEventListener(type, arm, { capture: true }); },
   };
 }

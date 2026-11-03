@@ -1,0 +1,244 @@
+/* Redesign: bots area. Owned by the bots area worker; built on src/design-system.css.
+ * bots-settings.css and sidebar-bots.css arrive later in the cascade (lazy modules), so every rule
+ * here is scoped under html[data-theme] to win without !important. Markup is unchanged: existing
+ * classes are mapped onto the --ds-* tokens (section heads, cards of rows, toggles, segmented choices). */
+
+/* ---------- Bot settings + the Bots window ---------- */
+html[data-theme] .bots{--bots-card:var(--ds-card);--bots-inset:var(--ds-fill);--bots-hover:var(--ds-row-hover)}
+
+/* Header: identity, state chip, actions. */
+html[data-theme] .bp-name{font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;color:var(--ds-title-ink)}
+html[data-theme] .bp-meta{font-size:var(--ds-text-meta)}
+html[data-theme] .bp-state{height:22px;padding:0 8px;display:inline-flex;align-items:center;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font-size:var(--text-xs);font-weight:var(--weight-medium)}
+html[data-theme] .bp-state[data-state=working]{background:var(--ds-fill);color:var(--ds-success)}
+html[data-theme] .bp-state[data-state=paused]{background:var(--ds-fill);color:var(--ds-warn)}
+html[data-theme] .bp-actions .icon-button{border-radius:var(--ds-radius-control)}
+html[data-theme] .bp-menu{padding:6px;border-radius:12px;background:var(--glass-warm)}
+html[data-theme] .bp-menu>button{min-height:36px;padding:6px 10px;border-radius:var(--ds-radius-control);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bp-menu>button:is(:hover,:focus-visible){background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bp-menu>button .icon{width:18px;height:18px}
+
+/* Section nav: neutral selection, rows like the cards'. */
+html[data-theme] .bs-nav{gap:2px}
+html[data-theme] .bs-nav>button{min-height:36px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+html[data-theme] .bs-nav>button:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bs-nav>button:active{background:var(--ds-row-press)}
+html[data-theme] .bs-nav>button[aria-selected=true]{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow);color:var(--text);font-weight:var(--weight-medium)}
+html[data-theme] .bs-nav>button[aria-selected=true] .icon{color:var(--text)}
+/* In the Bots window (and narrow modals) the sections are one segmented track. */
+html[data-theme] .bots:not(.bots-single) .bs-nav{padding:3px;gap:2px;border:1px solid var(--ds-border);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-track)}
+html[data-theme] .bots:not(.bots-single) .bs-nav>button{flex:none;min-height:32px;border-radius:var(--ds-radius-inner)}
+html[data-theme] .bots:not(.bots-single) .bs-nav>button:hover{background:none}
+html[data-theme] .bots:not(.bots-single) .bs-nav>button[aria-selected=true]{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+@media(max-width:700px){
+  html[data-theme] .bots-single .bs-nav{padding:3px;border:1px solid var(--ds-border);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-track)}
+  html[data-theme] .bots-single .bs-nav>button{flex:none;min-height:32px;border-radius:var(--ds-radius-inner)}
+  html[data-theme] .bots-single .bs-nav>button[aria-selected=true]{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+}
+
+/* Panel title, section heads. The panel's 14px gap less the head's margin leaves 8px above a card. */
+html[data-theme] .bs-panel-head h2{font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;line-height:1.3;color:var(--ds-title-ink)}
+html[data-theme] .bs-panel-head p{font-size:var(--ds-text-meta)}
+html[data-theme] .bots .bs-heading,html[data-theme] .bots-detail .bots-panel h4{display:flex;align-items:center;gap:6px;min-height:32px;margin:4px 0 -6px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);letter-spacing:0;text-transform:none;color:var(--muted)}
+/* An outer card: the head row on the card's own fill, the rows in an inner card below it (the reference's
+ * "Automations" card). */
+html[data-theme] .bots .bs-card{display:flex;flex-direction:column;gap:2px;min-width:0;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bots .bs-card>.bs-heading{min-height:40px;margin:0;padding:2px 14px 0}
+html[data-theme] .bots-lede,html[data-theme] .bots-detail .bots-lede{font-size:var(--ds-text-meta);padding:0 2px}
+
+/* Inner cards of rows: a hairline, the inner fill and a soft shadow. Lists outside an outer card (the panels'
+ * h4 sections) are the same inner card on the page. */
+html[data-theme] .bs-group,html[data-theme] .bots-items,html[data-theme] .bots-detail .bots-items,html[data-theme] .bots-activity{display:flex;flex-direction:column;gap:2px;padding:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);overflow:visible}
+html[data-theme] .workspace[data-wallpaper] .bots .bs-group{background:var(--ds-card-inner);backdrop-filter:none;-webkit-backdrop-filter:none}
+html[data-theme] .bs-row{min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);background:none}
+html[data-theme] .bs-row:has(.bs-row-text small){min-height:var(--ds-row-h-sub)}
+/* Title over subtitle, as the reference's two-line rows. */
+html[data-theme] .bs-row-text{flex-direction:column;align-items:flex-start;gap:1px}
+html[data-theme] .bs-row-text small{max-width:100%;white-space:normal}
+html[data-theme] .bs-row-text strong{font-size:var(--ds-text-body);font-weight:var(--weight-regular);color:var(--text)}
+html[data-theme] .bs-row-text small{font-size:var(--ds-text-sub);color:var(--muted)}
+html[data-theme] .bs-advanced>summary{padding:10px var(--ds-row-pad-x);font-size:var(--ds-text-meta);border-radius:var(--ds-radius-inner)}
+html[data-theme] .bs-advanced>summary:hover{color:var(--text)}
+html[data-theme] .bots-items>li,html[data-theme] .bots-detail .bots-items>li{min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) 8px var(--ds-row-pad-y) var(--ds-row-pad-x);gap:var(--ds-row-gap);border-radius:calc(var(--ds-radius-inner) - 2px);background:none;transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bots-items>li:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bots-items>li.off .bots-item-main{opacity:1}
+html[data-theme] .bots-items>li.off .bots-item-main>b{color:var(--muted)}
+html[data-theme] .bots-items>li.off .bots-item-main>small{color:var(--faint)}
+html[data-theme] .bots-item-main,html[data-theme] .bots-detail .bots-item-main{font-size:var(--ds-text-body);line-height:1.35}
+html[data-theme] .bots-item-main>b{font-weight:var(--weight-regular)}
+html[data-theme] .bots-item-main>small,html[data-theme] .bots-detail .bots-item-main>small{font-size:var(--ds-text-sub);color:var(--muted)}
+html[data-theme] .bots-detail .bots-items .icon-button{border-radius:var(--ds-radius-control)}
+html[data-theme] .bots-detail .bots-items .icon-button:hover{background:var(--ds-row-hover)}
+html[data-theme] .bots-activity>li,html[data-theme] .bots-detail .bots-activity>li{padding:10px var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);background:none;font-size:var(--ds-text-ui)}
+html[data-theme] .bots-activity time{font-size:var(--ds-text-meta)}
+html[data-theme] .bots-activity>li[data-kind=error] .icon{color:var(--ds-danger)}
+html[data-theme] .bots-activity>li:is([data-kind=reply],[data-kind=notify]) .icon{color:var(--ds-success)}
+html[data-theme] .bots-detail .bots-empty-note{padding:20px var(--ds-row-pad-x);border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);color:var(--muted);font-size:var(--ds-text-meta)}
+html[data-theme] .bots-pairing.pending{background:var(--ds-card-inset)}
+
+/* Pill toggles: .bots-switch is the .ds-toggle look in bots.css (armed by bots.ts). */
+html[data-theme] .bots-detail .bs-row>.bots-switch{width:var(--ds-toggle-w);margin:0 0 0 4px}
+html[data-theme] .bots-switch-row .bots-switch{margin-top:0}
+
+/* Fields: tone fill, control radius. Selects keep their drawn chevron. */
+html[data-theme] .bots-detail :is(input:not([type=checkbox],[type=radio]),textarea){border:0;border-radius:var(--ds-radius-control);background-color:var(--ds-track);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-ui)}
+html[data-theme] .bots-detail :is(input:not([type=checkbox],[type=radio]),textarea):focus{box-shadow:inset 0 0 0 1px var(--ds-border-strong),0 0 0 3px rgb(var(--accent-rgb) / .18)}
+/* Every native select in the bot surfaces wears the .settings-select look: tone fill, 8px radius, a muted chevron. */
+html[data-theme] :is(.bots,.bc-create-form,.bc-settings-form) select{appearance:none;-webkit-appearance:none;min-height:32px;padding:0 30px 0 10px;border:0;border-radius:var(--ds-radius-control);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);background-color:var(--ds-raised);background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:calc(100% - 11px) 50%;color:var(--text);font-size:var(--ds-text-ui);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] :is(.bots,.bc-create-form,.bc-settings-form) select:not(:disabled):hover{background-color:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in)}
+html[data-theme] :is(.bots,.bc-create-form,.bc-settings-form) select:focus{box-shadow:inset 0 0 0 1px var(--ds-border-strong),0 0 0 3px rgb(var(--accent-rgb) / .18)}
+html[data-theme] :is(.bots,.bc-create-form,.bc-settings-form) select:disabled{opacity:.5;cursor:default}
+html[data-theme] .bots-field>span{font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+html[data-theme] .bots-detail :is(.dialog-footer,.bots-inline-form) :is(.secondary-button,.primary-button){min-height:var(--ds-btn-h);border-radius:var(--ds-radius-inner)}
+
+/* Rules: the permission choices are one segmented group. */
+html[data-theme] .bp-rules-row{padding:var(--ds-row-pad-y) var(--ds-row-pad-x)}
+html[data-theme] .bp-rule-options{gap:2px;padding:3px;border:1px solid var(--ds-border);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-track)}
+html[data-theme] .bp-rule-options>button{min-height:56px;border-radius:var(--ds-radius-inner);background:none;color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+html[data-theme] .bp-rule-options>button:hover{color:var(--text);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bp-rule-options>button[aria-checked=true]{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow);color:var(--text)}
+html[data-theme] .bp-rule-options strong{font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+html[data-theme] .bp-rule-options small{font-size:var(--text-xs)}
+html[data-theme] .bots-chip{height:20px;display:inline-flex;align-items:center;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font-size:var(--text-xs);font-weight:var(--weight-medium)}
+html[data-theme] .bots-chip.allow{background:var(--ds-fill);color:var(--ds-success)}
+html[data-theme] .bots-chip.deny{background:var(--ds-fill);color:var(--ds-danger)}
+html[data-theme] .bots code{border-radius:var(--ds-radius-chip);background:var(--ds-fill)}
+
+/* Profile: avatar badge without a border; backups as an inset card. */
+html[data-theme] .bp-avatar-badge{border:0;background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+html[data-theme] .bp-avatar-pop{border-radius:12px;background:var(--glass-warm)}
+html[data-theme] .bp-backups{gap:2px;padding:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-track)}
+html[data-theme] .bp-backups li{min-height:36px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui)}
+html[data-theme] .bp-backups li+li{margin-top:0}
+
+/* Callouts, connect steps, kinds and templates. */
+html[data-theme] :is(.bots-callout,.bots-connect,.bots-detail .bots-connect,.bots-confirm){border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bots-callout{padding:var(--ds-row-pad-y) var(--ds-row-pad-x);font-size:var(--ds-text-ui)}
+html[data-theme] .bots-step-number{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
+html[data-theme] .bots-guide ol>li::before{background:var(--ds-fill)}
+html[data-theme] .bots-check{border-radius:var(--ds-radius-inner)}
+html[data-theme] :is(.bots-templates,.bots-kinds)>button{border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+html[data-theme] :is(.bots-templates,.bots-kinds)>button:hover{background:var(--ds-fill-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] :is(.bots-templates,.bots-kinds)>button[aria-pressed=true]{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
+html[data-theme] .bots-kind-grid>button{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+html[data-theme] .bots-kind-grid>button:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bots-kind-grid>button[aria-pressed=true]{border-color:var(--ds-border-strong);background:var(--ds-thumb);box-shadow:var(--ds-shadow-raised)}
+html[data-theme] .bots-kind{border-radius:var(--ds-radius-control)}
+html[data-theme] .bots-banner,html[data-theme] .bots-warning{border-radius:var(--ds-radius-inner)}
+html[data-theme] .bots-error{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card);color:var(--ds-danger)}
+
+/* The Bots window's list and the at-a-glance stats. */
+html[data-theme] .bots-list-head{min-height:28px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);font-weight:var(--weight-medium);letter-spacing:0}
+html[data-theme] .bots-row{min-height:var(--ds-row-h);padding:6px 10px;border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+html[data-theme] .bots-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in),var(--spring-fast-duration)}
+html[data-theme] .bots-row:active{background:var(--ds-row-press);scale:var(--ds-press)}
+html[data-theme] .bots-row[aria-current=true]{background:var(--ds-fill-hover)}
+html[data-theme] .bots-row-text b{font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+html[data-theme] .bots-row-text small{font-size:var(--ds-text-meta)}
+html[data-theme] .bots-dot.working{background:var(--ds-info)}
+html[data-theme] .bots-stats>span{border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-meta)}
+
+/* New bot: suggestion cards and the create button. */
+html[data-theme] .bc-card{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+html[data-theme] .bc-card:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bc-card[aria-pressed=true]{border-color:var(--ds-border-strong);background:var(--ds-thumb);box-shadow:var(--ds-shadow-raised)}
+html[data-theme] .bc-card b{font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+html[data-theme] .bc-card small{font-size:var(--ds-text-meta)}
+html[data-theme] .bc-suggestions h4{font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+html[data-theme] .bc-actions>.primary-button{min-height:var(--ds-btn-primary-h);border-radius:var(--ds-radius-inner);font-size:var(--ds-text-body);font-weight:var(--weight-medium)}
+
+/* Failover hold card in a bot conversation. */
+html[data-theme] .bot-failover{border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bot-failover-icon{color:var(--ds-warn)}
+
+/* ---------- Bot conversation: header crumb and welcome ---------- */
+html[data-theme] .bot-crumb-who{transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bot-crumb-who:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bot-crumb strong{font-size:var(--ds-text-ui);font-weight:var(--weight-strong)}
+html[data-theme] .bot-crumb-where{font-size:var(--ds-text-meta)}
+html[data-theme] .bot-next-model{height:22px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font-size:var(--text-xs)}
+html[data-theme] .breadcrumb :is(.bot-crumb-action,.bot-crumb-settings){border-radius:var(--ds-radius-control)}
+html[data-theme] .breadcrumb :is(.bot-crumb-action,.bot-crumb-settings):hover,html[data-theme] .breadcrumb .bot-crumb-action[aria-pressed=true]{background:var(--ds-row-hover)}
+html[data-theme] .bot-welcome>h1{font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;color:var(--ds-title-ink)}
+html[data-theme] .bot-welcome>p{font-size:var(--ds-text-ui)}
+html[data-theme] .bot-avatar.bot-welcome-avatar{box-shadow:none}
+html[data-theme] .bot-suggestion{min-height:var(--ds-btn-h);padding:0 14px;border-radius:var(--ds-radius-inner);background:var(--ds-raised);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);font-size:var(--ds-text-ui);transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+html[data-theme] .bot-suggestion:hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in),var(--spring-fast-duration)}
+html[data-theme] .bot-suggestion:active{scale:var(--ds-press)}
+html[data-theme] .bot-welcome-setup button{min-height:32px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-meta);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+html[data-theme] .bot-welcome-setup button:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+
+/* ---------- Sidebar: Bots bar and panel ---------- */
+html[data-theme] .sidebar-bots-bar{height:36px;border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .sidebar-bots-bar:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .sidebar-bots-bar[aria-pressed="true"]{background:var(--ds-fill)}
+html[data-theme] .bots-panel-head{padding:6px 8px 8px 12px}
+html[data-theme] .bots-panel-search{height:32px;padding:0 8px;border-radius:var(--ds-radius-control);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+html[data-theme] .bots-panel-head>.icon-button{border-radius:var(--ds-radius-control)}
+html[data-theme] .bots-mark-read{border-radius:var(--ds-radius-chip);color:var(--muted);font-size:var(--text-xs)}
+html[data-theme] .bots-mark-read:hover{background:var(--ds-row-hover);color:var(--text)}
+html[data-theme] .bots-panel-list{gap:10px}
+html[data-theme] .bots-group-label{min-height:24px;margin:0;padding:0 10px;font-size:var(--ds-text-meta);font-weight:var(--weight-medium);letter-spacing:0;text-transform:none}
+html[data-theme] .bots-group-toggle{width:100%;gap:6px}
+html[data-theme] .bots-group-toggle>.icon{transition:rotate var(--spring-fast-duration) var(--spring-fast)}
+html[data-theme] .bots-group-channels .bots-group-label{margin-top:0}
+html[data-theme] .bot-card{border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bot-row.bot-card:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+/* The open bot: a neutral fill plus the slim accent bar inside the leading edge, like a selected .task-row. */
+html[data-theme] .bot-row.bot-card.selected,html[data-theme] .workspace[data-wallpaper] .bot-row.bot-card.selected{background:var(--ds-fill-hover)}
+html[data-theme] .bot-card.selected .bot-badge{box-shadow:0 0 0 2px var(--sidebar)}
+html[data-theme] .bot-card::before{content:"";position:absolute;z-index:1;left:2px;top:14px;bottom:14px;width:3px;border-radius:2px;background:var(--accent);opacity:0;scale:1 .4;pointer-events:none;transition:opacity var(--ds-ease-out) ease-out,scale var(--ds-ease-out) var(--spring-fast,ease-out)}
+html[data-theme] .bot-card.selected::before{opacity:1;scale:1}
+@media(max-width:650px){html[data-theme] .bot-card::before{display:none}}
+@media(prefers-reduced-motion:reduce){html[data-theme] .bot-card::before{scale:1}}
+html[data-theme] .bot-row.bot-card .bot-row-open{border-radius:var(--ds-radius-inner)}
+html[data-theme] .bot-row.bot-card .bot-row-open:active{scale:var(--ds-press)}
+html[data-theme] .bot-card .bot-row-name{font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+html[data-theme] .bot-card-preview{font-size:var(--ds-text-meta)}
+html[data-theme] .bot-role-tag{border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border)}
+html[data-theme] .bot-chip{border-radius:var(--ds-radius-chip)}
+html[data-theme] .bot-chip.limited{background:var(--ds-fill)}
+html[data-theme] .bot-row-skeleton i{background:var(--ds-fill)}
+
+/* ---------- Shared channels ---------- */
+html[data-theme] .bots-group-channels .channel-row{min-height:40px;padding:6px 10px;border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bots-group-channels .channel-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bc-header{min-height:var(--ds-row-h-sub)}
+html[data-theme] .bc-member-names{font-size:var(--ds-text-meta)}
+html[data-theme] .bc-settings{border-radius:var(--ds-radius-control)}
+html[data-theme] .bc-message-main header{font-size:var(--ds-text-meta)}
+html[data-theme] .bc-message-status,html[data-theme] .bc-assigned small{font-size:var(--text-xs)}
+html[data-theme] .bc-message-text{border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bc-assigned,html[data-theme] .bc-channel-actions{font-size:var(--ds-text-meta)}
+html[data-theme] .bc-archived{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card);font-size:var(--ds-text-meta)}
+html[data-theme] .bc-reassign-menu{padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bc-reassign-menu button{min-height:36px;border-radius:var(--ds-radius-control)}
+html[data-theme] .bc-reassign-menu button:hover{background:var(--ds-row-hover)}
+html[data-theme] :is(.bc-create-form,.bc-settings-form) input[name=name]{min-height:var(--ds-btn-h);border-radius:var(--ds-radius-control);background:var(--ds-track);box-shadow:inset 0 0 0 1px var(--ds-border)}
+html[data-theme] :is(.bc-create-form,.bc-settings-form) select{min-height:var(--ds-btn-h)}
+html[data-theme] .bc-member-list{gap:2px;padding:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .bc-member-list legend{float:left;width:100%;padding:6px var(--ds-row-pad-x) 6px;font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+html[data-theme] .bc-member-list label{min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bc-member-list label:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .bot-create-menu{padding:6px;border-radius:12px}
+html[data-theme] .bot-create-menu button{min-height:36px;padding:6px 10px;border-radius:var(--ds-radius-control)}
+html[data-theme] .bot-create-menu button:is(:hover,:focus-visible){background:var(--ds-row-hover)}
+html[data-theme] .bot-create-menu .icon{color:var(--muted)}
+html[data-theme] .channel-back:hover{background:var(--ds-row-hover)}
+
+@media(prefers-contrast:more){
+  html[data-theme] :is(.bs-card,.bs-group,.bots-items,.bots-activity,.bp-rule-options,.bc-member-list,.bots-kind-grid>button,.bc-card){border-color:var(--text);box-shadow:none}
+  html[data-theme] .bots-switch:not(:checked){box-shadow:inset 0 0 0 1px var(--text)}
+  html[data-theme] .bots-switch:not(:checked)::before{background:var(--text)}
+}
+@media(forced-colors:active){html[data-theme] .bots-switch{border:1px solid CanvasText}html[data-theme] .bots-switch::before{background:CanvasText}}
+
+
+/* Sidebar empty state: a section head ("No bots yet") over a raised hairline button with a leading +. */
+html[data-theme] .bots-panel-start{align-items:stretch;gap:var(--ds-section-gap,8px);margin:12px 0;text-align:start}
+html[data-theme] .bots-panel-start p{padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);color:var(--muted)}
+html[data-theme] .bots-panel-start button{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:var(--ds-btn-h);padding:0 12px;border:0;border-radius:var(--ds-radius-inner);background:var(--ds-raised);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);color:var(--text);font-size:var(--ds-text-ui);font-weight:var(--weight-medium);text-align:start;white-space:nowrap;overflow:hidden;transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .bots-panel-start button>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+html[data-theme] .bots-panel-start button .icon{--icon-size:16px;width:16px;height:16px;flex:none;color:var(--muted)}
+html[data-theme] .bots-panel-start button:hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in)}
+html[data-theme] .bots-panel-start button:active{scale:var(--ds-press)}

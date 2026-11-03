@@ -39,8 +39,8 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   host.innerHTML = `<div class="browser-toolbar">
     ${tool('back', 'Go back', 'back')}${tool('forward', 'Go forward', 'forward')}${tool('reload', 'Reload page', 'refresh')}
     <form class="browser-address"><span>${icon('globe')}</span><input aria-label="Browser URL" placeholder="Enter URL or localhost port" autocomplete="off" spellcheck="false" inputmode="url"><button type="submit" aria-label="Open URL">${icon('arrow')}</button></form>
-    ${tool('pick', 'Attach an element', 'select')}${tool('capture', 'Attach screenshot', 'camera')}
-  </div><div class="browser-location"><button type="button" data-browser-action="home">${icon('server')}Local servers</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}Watch Jev</button>${options.test ? tool('test', 'Test with Jev', 'spark') : ''}${tool('close', 'Close browser', 'close')}</div>
+    ${tool('pick', 'Attach an element', 'select')}${tool('capture', 'Attach screenshot', 'camera')}${options.test ? tool('test', 'Test with Jev', 'spark') : ''}${tool('close', 'Close browser', 'close')}
+  </div><div class="browser-location"><button type="button" data-browser-action="home">${icon('server')}Local servers</button><span class="browser-page-title"></span><button type="button" class="browser-watch-jev" data-browser-action="watch-jev" hidden>${icon('spark')}Watch Jev</button></div>
   <div class="browser-notice" role="status" hidden></div><div class="browser-viewport"><section class="browser-home"><div class="browser-home-heading"><h2>Local servers</h2>${tool('refresh-ports', 'Refresh local servers', 'refresh')}</div><div class="browser-servers" aria-label="Local servers"></div><p class="browser-home-hint">Open a server, or enter any website above.</p></section><div class="browser-guest-placeholder" hidden></div></div>`;
   const query = <T extends HTMLElement = HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const address = query<HTMLInputElement>('.browser-address input'), viewport = query('.browser-viewport');
@@ -59,8 +59,11 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     query('.browser-page-title').title = watching ? '' : status.url;
     query('.browser-home').hidden = watching || !home;
     placeholder.hidden = watching || home;
-    query('.browser-toolbar').hidden = watching;
+    // While Jev drives, only the navigation hides: Test with Jev and Close browser stay in the row.
+    query('.browser-toolbar').toggleAttribute('data-watching', watching);
     button('watch-jev').hidden = watching || !jevAvailable;
+    // The home view's own heading names it; the way back only shows away from it.
+    button('home').hidden = watching || home;
     host.classList.toggle('browser-loading', !watching && status.loading);
     if (document.activeElement !== address) address.value = home ? '' : status.url;
     if (status.picking) tell('Click an element to attach it. Press Esc to cancel.');

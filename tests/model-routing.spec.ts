@@ -28,7 +28,7 @@ async function install(page: Page, init?: () => void): Promise<void> {
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => (window as any).__routing.calls.filter((entry: any) => entry.command === command), command);
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Model routing', exact: true }).click();
 }
 async function closeSettings(page: Page): Promise<void> {
   await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
@@ -129,7 +129,7 @@ async function pickTeam(page: Page, name: string): Promise<void> {
 
 test('Team opens a menu of team kinds, turns the team on with the uncapped catalog and prepares routing', async ({ page }) => {
   await install(page);
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
   await teamButton(page).click();
@@ -137,7 +137,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   await expect(page.getByRole('menuitemradio')).toHaveText([/No team/, /Cheap team/, /Balanced team/, /Best team/]);
   await expect(kind(page, 'No team')).toHaveAttribute('aria-checked', 'true');
   await kind(page, 'Cheap team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   const { config } = (await calls(page, 'architect_configure')).at(-1).args;
@@ -151,7 +151,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   await expect(kind(page, 'Cheap team')).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('ArrowDown');
   await kind(page, 'Best team').press('Enter');
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   expect(await calls(page, 'architect_configure')).toHaveLength(configures);
   // Picking the current kind only closes the menu.
   const modes = (await calls(page, 'model_routing_configure')).length;
@@ -159,7 +159,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   expect(await calls(page, 'model_routing_configure')).toHaveLength(modes);
   // No team turns the team off and leaves the mode for next time.
   await pickTeam(page, 'No team');
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
   expect((await calls(page, 'architect_configure')).at(-1).args.config).toBeNull();
   expect(await calls(page, 'model_routing_configure')).toHaveLength(modes);
@@ -169,14 +169,14 @@ test('the last team kind is remembered for new tasks and across reloads, and fol
   await install(page);
   await pickTeam(page, 'Best team');
   await page.locator('.task-item[data-id="session-1"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await teamButton(page).click();
   await expect(kind(page, 'Best team')).toHaveAttribute('aria-checked', 'false');
   await expect(page.getByRole('menuitemradio', { checked: true })).toHaveText(/No team/);
   await page.keyboard.press('Escape');
   await page.reload();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   await openAgents(page);
   await expect(settings(page).getByRole('radio', { name: 'Best' })).toHaveAttribute('aria-checked', 'true');
   // A change in Settings reaches the button without a reload; the modal makes the composer inert, so read its text.
@@ -190,7 +190,7 @@ test('the last team kind is remembered for new tasks and across reloads, and fol
   await expect(kind(page, 'Team')).toHaveAttribute('aria-checked', 'true');
   // A kind turns routing back on.
   await kind(page, 'Cheap team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   await openAgents(page);
   await expect(settings(page).getByRole('checkbox', { name: 'Pick worker models with Panda Router', exact: true })).toBeChecked();
@@ -235,7 +235,7 @@ test('a team that cannot turn on leaves the global mode alone', async ({ page })
   await kind(page, 'Best team').click();
   await expect(page.locator('.choice-menu-error')).toHaveText('The team could not be saved.');
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
 });
 
@@ -251,12 +251,12 @@ test('with routing off the menu offers a lead-picks team, and kinds say they tur
   // The lead-picks team leaves routing off.
   await kind(page, 'Team').click();
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: on');
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
   // A kind turns routing on, keeping the team.
   const configures = (await calls(page, 'architect_configure')).length;
   await pickTeam(page, 'Cheap team');
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   expect(await calls(page, 'architect_configure')).toHaveLength(configures);
   await teamButton(page).click();
@@ -272,11 +272,11 @@ test('a status read during a pending change never overrides it', async ({ page }
   await kind(page, 'Balanced team').click();
   // The read starts after the change and answers first, with the old mode.
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   await page.waitForTimeout(300);
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   await page.evaluate(() => { delete (window as any).__routingDelay; window.dispatchEvent(new Event('focus')); });
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
 });
 
 test('without a routing status the menu still offers every choice, and recovers on the next render or focus', async ({ page }) => {
@@ -285,12 +285,12 @@ test('without a routing status the menu still offers every choice, and recovers 
   await expect(page.getByRole('menuitemradio')).toHaveText([/No team/, /Team/, /Cheap team/, /Balanced team/, /Best team/]);
   await expect(page.getByRole('group', { name: 'Worker models for every team · turns routing on' })).toBeVisible();
   await kind(page, 'Team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: on');
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
   expect((await calls(page, 'architect_configure')).at(-1).args.config.auto).toBe(true);
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
   await page.evaluate(() => { delete (window as any).__routingFail; window.dispatchEvent(new Event('focus')); });
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   // A render recovers too, and once loaded renders ask nothing.
   await page.evaluate(() => { (window as any).__routingFail = { model_routing_status: 'Router unavailable.' }; });
   await page.reload();
@@ -301,11 +301,11 @@ test('without a routing status the menu still offers every choice, and recovers 
   await page.waitForTimeout(3100);
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   const loads = (await calls(page, 'model_routing_status')).length;
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   expect(await calls(page, 'model_routing_status')).toHaveLength(loads);
 });
 
@@ -316,11 +316,11 @@ test('a routing change keeps the prompt focus and caret', async ({ page }) => {
   await prompt.fill('hello world'); await prompt.focus();
   await prompt.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(5, 5));
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('pandacode:routing', { detail: { enabled: true, mode: 'quality', minP: 0.5, profiler: 'ready', error: null } })));
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   expect(await prompt.evaluate((el: HTMLTextAreaElement) => [document.activeElement === el, el.selectionStart, el.value])).toEqual([true, 5, 'hello world']);
 });
 
-test('the Team button keeps its label and fits the toolbar from wide to the narrowest window', async ({ page }) => {
+test('the Team button keeps its accessible label and fits the toolbar from wide to the narrowest window', async ({ page }) => {
   await install(page);
   await pickTeam(page, 'Balanced team');
   for (const theme of ['light', 'dark']) {
@@ -332,11 +332,13 @@ test('the Team button keeps its label and fits the toolbar from wide to the narr
       const layout = await page.evaluate(() => {
         const toolbar = document.querySelector('.composer-toolbar')!, tools = document.querySelector('.composer-tools')!.getBoundingClientRect();
         const button = document.querySelector('#team-trigger')!, box = button.getBoundingClientRect(), mode = document.querySelector('#mode-picker-trigger')!.getBoundingClientRect();
-        const label = button.querySelector('span')!;
-        return { toolsRight: tools.right, right: box.right, overflow: toolbar.scrollWidth - toolbar.clientWidth, center: box.top + box.height / 2, modeCenter: mode.top + mode.height / 2, shown: label.offsetWidth > 0, fits: label.scrollWidth <= label.clientWidth };
+        const label = button.querySelector('.sr-only')!;
+        return { toolsRight: tools.right, right: box.right, width: box.width, overflow: toolbar.scrollWidth - toolbar.clientWidth, center: box.top + box.height / 2, modeCenter: mode.top + mode.height / 2, label: label.textContent };
       });
-      expect(layout.shown).toBe(width > 650);
-      expect(layout.fits).toBe(true);
+      // The tray is icons at every width; the label stays in the DOM, clipped, as the accessible name.
+      expect(layout.label).toBe('Balanced team');
+      await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
+      expect(layout.width).toBeLessThan(44);
       expect(layout.right).toBeLessThanOrEqual(layout.toolsRight);
       expect(layout.overflow).toBeLessThanOrEqual(0);
       expect(Math.abs(layout.center - layout.modeCenter)).toBeLessThanOrEqual(2);

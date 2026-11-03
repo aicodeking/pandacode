@@ -37,6 +37,12 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).has(
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions,
   { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
+// Turn cards (src/turn-card.ts): opt in with ?cards for a thread with a short reply and a long one with changes.
+const slowTurn = typeof location !== 'undefined' && new URLSearchParams(location.search).has('slowturn');
+/** ?shortreply: the command finishes, then a one-line reply too short to fill the space its folded trace gave up. */
+const shortReply = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shortreply');
+const showCards = typeof location !== 'undefined' && new URLSearchParams(location.search).has('cards');
+if (showCards) sessions = [{ id: 'session-cards', projectId: 'project-1', title: 'Turn cards', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 30000, updatedAt: now + 4000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 1000 }, ...sessions];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -182,8 +188,18 @@ const traceMessages: Message[] = [
   { id: 130, sessionId: 'session-5', role: 'assistant', content: 'Search now compares a normalized form of the query and each title, so case and accents no longer matter.\n\n- Added `normalize()` in `src/lib/normalize.ts`.\n- The tests pass; lint flags the new regex and needs the `u` flag follow-up.', createdAt: now - 604000000 },
 ];
 // Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
+const cardTool = (id: string, name: string, input: string, output: string) => encodeTool({ id, name, status: 'completed', input, output });
+const cardMessages: Message[] = [
+  { id: 9001, sessionId: 'session-cards', role: 'user', content: 'Which file owns the search index?', createdAt: now - 30000, turnDurationMs: 4000 },
+  { id: 9002, sessionId: 'session-cards', role: 'assistant', content: 'The index lives in `src/search-index.ts`; `createSearchIndex()` builds it once per data set.', createdAt: now - 26000 },
+  { id: 9003, sessionId: 'session-cards', role: 'user', content: 'Make the results update instantly and keep keyboard navigation working.', createdAt: now - 20000, turnDurationMs: 5_410_000 },
+  { id: 9004, sessionId: 'session-cards', role: 'tool', content: cardTool('card-read', 'Read', 'src/components/search.ts', sampleSource), createdAt: now - 19000 },
+  { id: 9005, sessionId: 'session-cards', role: 'tool', content: cardTool('card-shot', 'Read', 'design/search-results.png', 'Image read'), createdAt: now - 18000 },
+  { id: 9006, sessionId: 'session-cards', role: 'tool', content: cardTool('card-test', 'Bash', 'npm test -- search', sampleTestOutput), createdAt: now - 15000 },
+  { id: 9007, sessionId: 'session-cards', role: 'assistant', content: 'Search now responds as you type.\n\n- **The index is built once.** `createSearchIndex()` moved out of the input handler, so a keystroke only queries it.\n- **Rendering is limited to the visible rows.** `renderResults()` draws the first 50 matches and the list virtualizes the rest.\n- **Keyboard navigation is unchanged.** ↑/↓ still move the selection and Enter opens the result; the existing tests cover both.\n\nI also added a test that types ten characters in a row and checks the index is built only once. Every search test passes.\n\nOne follow-up worth considering: the index is rebuilt when the data set changes, which happens on every sync. If syncs get frequent, an incremental update would avoid the rebuild entirely.', createdAt: now - 1000 },
+];
 const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
-const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
+const messages: Record<string, Message[]> = { ...(showCards ? { 'session-cards': cardMessages } : {}), ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },
@@ -1576,19 +1592,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       messages[s.id].push(toolMessage);
       activeTools.set(s.id, { activity: tool, message: toolMessage });
       agent({ sessionId: s.id, kind: 'tool', text: 'Bash', tool: { ...tool } });
-      const output = 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
+      const output = shortReply ? 'All tests pass in the preview.' : 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
       let cursor = 0;
       const tick = () => {
         const next = output.slice(cursor, cursor + 13); cursor += 13;
         if (next.trim()) s.lastResponseAt = Date.now();
         agent({ sessionId: s.id, kind: 'text', text: next });
-        if (tool.status === 'running' && cursor >= 130) {
+        if (tool.status === 'running' && cursor >= (shortReply ? 13 : slowTurn ? 26 : 130)) {
           tool.status = 'completed'; tool.output = sampleTestOutput;
           toolMessage.content = encodeTool(tool);
           agent({ sessionId: s.id, kind: 'tool', text: 'Bash completed', tool: { ...tool } });
           activeTools.delete(s.id);
         }
-        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, 24)); else finish(s.id, output);
+        // ?slowturn streams at a real agent's pace: the command runs ~2 s, then the reply arrives a few words at a time.
+        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, shortReply ? 600 : slowTurn ? (cursor === 13 ? 2000 : 70) : 24)); else finish(s.id, output);
       };
       timers.set(s.id, window.setTimeout(tick, 200)); break;
     }

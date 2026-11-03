@@ -24,7 +24,10 @@ for (const [platform, modifier, key] of [['MacIntel', '⌘', 'Meta'], ['Win32', 
     await open(page);
     await expect(page.locator('.new-task-button kbd')).toHaveText(`${modifier} N`);
     await expect(page.locator('.search-trigger kbd')).toHaveText(`${modifier} K`);
-    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-label', `Toggle terminal (${modifier} J)`);
+    // The shortcut is in the tip and aria-keyshortcuts, never the name.
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-label', 'Toggle terminal');
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('data-dock-tip', `Toggle terminal (${modifier} J)`);
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-keyshortcuts', 'Meta+J Control+J');
     await expect(page.locator('.send-button')).toHaveAttribute('title', `Send message (${modifier} Enter)`);
     await page.keyboard.press(`${key}+b`);
     await expect(page.locator('.workspace')).toHaveClass(/sidebar-collapsed/);
@@ -42,7 +45,7 @@ for (const [platform, modifier, key] of [['MacIntel', '⌘', 'Meta'], ['Win32', 
     const settings = page.getByRole('region', {name:'Settings', exact:true});
     await expect(settings).toBeVisible();
     await expect(page.locator('.text-size-setting')).toContainText(`${modifier} + / −`);
-    await settings.getByRole('tab', {name:'About & updates', exact:true}).click();
+    await settings.getByRole('tab', {name:'About', exact:true}).click();
     await expect(page.locator('.settings-about')).toContainText('Releases');
   });
 }
@@ -221,7 +224,7 @@ test('layout preferences offer text size controls in Settings without replacing 
 test('layout preferences leave an open model menu and its search focus stable when text grows', async ({ page }) => {
   await open(page);
   await prompt(page).fill('Do not lose this draft.');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = menu.locator('.model-menu-search input');
   await search.fill('Claude');
@@ -266,7 +269,7 @@ test('layout preferences resize focused terminal text without restarting the PTY
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep the agent draft while resizing terminal text.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   const screen = page.locator('#terminal-host .xterm-screen');
   const row = screen.locator('.xterm-rows > div').first();
   const input = page.locator('#terminal-host .xterm-helper-textarea');
@@ -316,7 +319,7 @@ test('layout preferences keep controls readable at 160 percent in wide and narro
     const inspector = page.getByRole('complementary', { name: 'Project inspector', exact: true });
     // The narrow-window media callback closes the inspector asynchronously in WebKit.
     if (width <= 920) await expect(inspector).toBeHidden();
-    if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+    if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Toggle inspector', exact: true }).click();
     await expect(inspector).toBeVisible();
     await expect.poll(() => rootSize(page)).toBeCloseTo(22.4, 2);
     await expect.poll(() => sidebarWidth(page)).toBe(190);
@@ -458,7 +461,7 @@ test('layout preferences collapse the sidebar without replacing the draft or liv
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep my composer and terminal while toggling the sidebar.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   const terminal = page.locator('#terminal-host .xterm-screen');
   const terminalInput = page.locator('#terminal-host .xterm-helper-textarea');
   await expect(terminal).toBeVisible();
@@ -787,7 +790,7 @@ test('the title bar row keeps its on-screen height under interface zoom so it st
 for (const wallpaper of [false, true]) {
   test(`layout preferences draw the conversation and inspector as inset panels on one frame${wallpaper ? ' over a wallpaper' : ''}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.addInitScript(on => localStorage.setItem('pandacode.wallpapers', String(on)), wallpaper);
+    await page.addInitScript(on => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: on, visibility: 20, blur: 0, set: 'automatic', pinned: null })), wallpaper);
     await open(page);
     await openInspector(page);
     // Geometry is read once the panel's entrance slide has finished.
@@ -814,7 +817,10 @@ for (const wallpaper of [false, true]) {
     expect(open_.sidebarBlur).toBe('none');
     expect(open_.frame).not.toBe('rgba(0, 0, 0, 0)');
     expect(open_.main).not.toBe(open_.frame);
-    expect(open_.inspector).toBe(open_.main);
+    // The thread is a window: the main pane is clear over its scene (the sky, or the wallpaper); the inspector stays solid.
+    expect(open_.main).toBe('rgba(0, 0, 0, 0)');
+    expect(open_.inspector).not.toBe('rgba(0, 0, 0, 0)');
+    await expect(page.locator('.workspace')).toHaveAttribute('data-scene', wallpaper ? 'wallpaper' : 'sky');
     if (wallpaper) await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper');
 
     // Closed, the inspector fades out where it stood (out of the grid at once) and the pane takes the right inset.

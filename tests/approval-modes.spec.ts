@@ -23,7 +23,7 @@ test('offers Approve for me to Claude Code and keeps it with the task', async ({
   await expect(menu.getByRole('menuitemradio')).toHaveCount(5);
   await menu.getByRole('menuitemradio', { name: 'Approve for me', exact: true }).click();
   await expect(trigger).toHaveText('Approve for me');
-  await expect(trigger).toHaveAttribute('title', /auto mode/);
+  await expect(trigger).toHaveAttribute('data-tip', /auto mode/);
   await expect.poll(() => savedPermission(page)).toBe('review');
   await page.locator('.task-item[data-id="session-4"]').click();
   await page.locator('.task-item[data-id="session-1"]').click();
@@ -57,6 +57,6 @@ test('shows Approve for me as unavailable instead of another mode on a harness w
 test('describes Plan mode investigation for Claude Code', async ({ page }) => {
   await page.locator('#mode-picker-trigger').click();
   await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Plan mode', exact: true }).click();
-  await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('title', /web lookups run, even outside this project/);
+  await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('data-tip', /web lookups run, even outside this project/);
   await expect.poll(() => savedPermission(page)).toBe('plan');
 });

@@ -9,7 +9,8 @@ html[data-theme] .sidebar .sidebar-actions>.new-task-button{height:var(--tree-ro
 html[data-theme] .sidebar .sidebar-actions>.new-task-button:hover{background:var(--raised);box-shadow:none;color:var(--text)}
 html[data-theme] .sidebar .sidebar-actions>.new-task-button:not(:disabled):active{background:var(--raised);scale:.98}
 .sidebar .sidebar-actions>button>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);flex:none;color:var(--muted)}
-html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
+html[data-theme] .sidebar .new-task-button>.icon{color:var(--accent-ink)}
+html[data-theme=dark] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .sidebar-actions kbd,html[data-theme] .sidebar .new-task-button kbd{margin-left:auto;color:var(--faint);font-size:var(--text-2xs);background:none;border:0;padding:0}
 
 /* "All projects" doubles as the section label and the project filter. */
@@ -67,8 +68,8 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .folder-new-task,.folder-actions{position:absolute;z-index:1;right:3px;display:grid;place-items:center;width:24px;height:24px;border-radius:var(--radius-sm);color:var(--muted);opacity:0}
 .folder-new-task{right:27px}
 .folder-new-task .icon,.folder-actions .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
-/* The chevron says whether the folder is open; it turns without a transition. */
-.folder-heading>.folder-chevron{width:10px;height:10px;margin-right:-3px;color:var(--faint);opacity:1}
+/* The chevron says whether the folder is open; it turns on the fast spring. */
+.folder-heading>.folder-chevron{width:10px;height:10px;margin-right:-3px;color:var(--faint);opacity:1;transition:rotate var(--spring-fast-duration) var(--spring-fast)}
 .folder-heading[aria-expanded=true]>.folder-chevron{rotate:90deg}
 .folder-heading[draggable=true]{cursor:grab}
 .folder-heading.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
@@ -97,7 +98,7 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .task-top .task-title{flex:1 1 auto}
 .sidebar .task-top .task-provider{margin-left:0;width:14px;height:14px}
 .sidebar .task-top .task-age{margin-left:0;min-width:2ch;text-align:right}
-.sidebar .task-title{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm);font-weight:var(--weight-medium);letter-spacing:-.005em;color:var(--text)}
+.sidebar .task-title{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--text-sm);font-weight:450;letter-spacing:var(--ds-row-tracking);color:var(--ds-row-ink)}
 .sidebar .task-item[data-activity=inactive] .task-title{color:color-mix(in srgb,var(--text) 82%,var(--muted))}
 .sidebar .task-item:hover .task-title,.sidebar .task-item.selected .task-title{color:var(--text)}
 .sidebar .task-item.unread .task-title{font-weight:var(--weight-strong);color:var(--text)}
@@ -108,10 +109,10 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .task-branch-tail{flex:none;white-space:nowrap}
 .sidebar .task-branch .icon{flex:none;--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);opacity:.8}
 .sidebar .task-branch .task-worktree .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
-.sidebar .task-link{flex:none;font-size:var(--text-2xs);font-weight:var(--weight-strong);font-variant-numeric:tabular-nums}
-.sidebar .task-link.pull{color:#a78bfa}
-.sidebar .task-link.issue{color:var(--success)}
-html:not([data-theme=dark]) .sidebar .task-link.pull{color:#7c3aed}
+.sidebar .task-link{flex:none;font-size:var(--ds-text-chip);font-weight:var(--weight-medium);font-variant-numeric:tabular-nums;color:var(--muted)}
+.sidebar .task-link.issue{color:var(--ds-success)}
+/* On the wallpaper frame the meta text steps toward the text colour so it keeps 4.5:1 over a light scene. */
+.workspace[data-wallpaper]>.sidebar :is(.task-link.pull,.task-age:not(.task-runtime)){color:color-mix(in srgb,var(--muted) 70%,var(--text))}
 .sidebar .task-provider{width:14px;height:14px;margin-left:auto;flex:none;opacity:.8}
 .sidebar .task-item:hover .task-provider,.sidebar .task-item.selected .task-provider{opacity:1}
 .sidebar .task-pin .icon,.sidebar .task-worktree .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
@@ -119,15 +120,10 @@ html:not([data-theme=dark]) .sidebar .task-link.pull{color:#7c3aed}
 .sidebar .pinned-group .task-pin{display:none}
 .sidebar .task-worktree{display:inline-flex;color:var(--muted);flex:none}
 .sidebar .task-indicator{width:6px;height:6px}
-.sidebar .task-indicator.failed{background:var(--danger)}
-.sidebar .task-indicator.unread{width:6px;height:6px;margin-left:auto;background:var(--accent-ink)}
-html[data-theme=dark] .sidebar .task-indicator.unread{background:var(--accent)}
-.sidebar .task-indicator.unread+.task-age{margin-left:0}
 /* States that need you say so in one word beside their dot. */
 .sidebar .task-status{flex:none;font-size:var(--text-2xs);font-weight:var(--weight-strong);color:var(--accent-ink)}
 .sidebar .task-status.failed{color:var(--danger)}
-.sidebar .task-status.limited{font-weight:var(--weight-medium);color:var(--muted)}
-.sidebar .task-indicator:is(.attention,.failed,.limited){margin-left:auto}
+.sidebar .task-status.limited{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:var(--weight-medium);color:var(--muted)}
 .sidebar .task-age{margin-left:auto;flex:none;font-size:var(--text-2xs);color:var(--faint);font-variant-numeric:tabular-nums}
 .sidebar .task-runtime{color:var(--accent-ink)}
 .sidebar .task-item.selected .task-age{color:var(--muted)}
@@ -152,16 +148,16 @@ html[data-theme=dark] .sidebar .task-indicator.unread{background:var(--accent)}
 .sidebar .section-heading>.section-count{margin-left:auto}
 .sidebar .section-toggle{width:100%;border-radius:var(--radius-sm);justify-content:flex-start;--press:1}
 .sidebar .section-toggle:hover{color:var(--text);background:var(--raised)}
-.sidebar .section-toggle>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);rotate:90deg}
+.sidebar .section-toggle>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);rotate:90deg;transition:rotate var(--spring-fast-duration) var(--spring-fast)}
 .sidebar .section-toggle[aria-expanded=false]>.icon{rotate:0deg}
 /* Active and Finished fold from a plain heading: a line runs from the label to the count, which sits at the
    row's right edge like every other heading; on hover or focus the chevron takes the count's place. */
 .sidebar .section-fold{position:relative;width:100%;--press:1}
 .sidebar .section-fold>.section-rule{flex:1;min-width:12px;height:1px;background:var(--tree-guide)}
-.sidebar .section-fold>.section-count{margin-left:0}
-.sidebar .section-fold>.icon{position:absolute;right:9px;--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);rotate:90deg;opacity:0}
+.sidebar .section-fold>.section-count{margin-left:0;transition:opacity var(--ds-ease-in) ease-out}
+.sidebar .section-fold>.icon{position:absolute;right:9px;--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);rotate:90deg;opacity:0;transition:rotate var(--spring-fast-duration) var(--spring-fast),opacity var(--ds-ease-in) ease-out}
 .sidebar .section-fold:is(:hover,:focus-visible)>.icon{opacity:1}
-.sidebar .section-fold:is(:hover,:focus-visible)>.section-count{visibility:hidden}
+.sidebar .section-fold:is(:hover,:focus-visible)>.section-count{opacity:0}
 .sidebar .section-fold[aria-expanded=false]>.icon{rotate:0deg}
 .sidebar .section-fold:hover{color:var(--text)}
 
@@ -260,15 +256,15 @@ html[data-theme=dark] .toast-undo{color:var(--accent)}
 /* Feel: hover and selection ease (never layout), row actions fade in, and the selected
    task carries a slim accent bar at its leading edge. */
 /* Colours ease in quickly (120ms) and out softly (180ms); press scale keeps its own spring. */
-.sidebar .task-item,.folder-more,.sidebar .sidebar-actions>button,.bot-row,.bot-row-add{transition:background-color 180ms ease-out,color 180ms ease-out,box-shadow 180ms ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
-.sidebar .task-row:is(:hover,:focus-within)>.task-item,.sidebar .task-item.selected,.folder-more:hover,.sidebar .sidebar-actions>button:hover,.bot-row:hover,.bot-row-add:hover{transition-duration:120ms,120ms,120ms,var(--spring-fast-duration,200ms)}
-.sidebar .task-title,.sidebar .task-provider,.sidebar .task-age,.sidebar .task-indicator{transition:color 140ms ease-out,opacity 140ms ease-out,background-color 200ms}
-.sidebar .task-actions,.bot-row-settings{transition:opacity 140ms ease-out}
-.sidebar .task-action{transition:background-color 120ms,color 120ms,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
+.sidebar .task-item,.folder-more,.sidebar .sidebar-actions>button,.bot-row,.bot-row-add{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
+.sidebar .task-row:is(:hover,:focus-within)>.task-item,.sidebar .task-item.selected,.folder-more:hover,.sidebar .sidebar-actions>button:hover,.bot-row:hover,.bot-row-add:hover{transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration,200ms)}
+.sidebar .task-title,.sidebar .task-provider,.sidebar .task-age,.sidebar .task-indicator{transition:color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
+.sidebar .task-actions,.bot-row-settings{transition:opacity var(--ds-ease-in) ease-out}
+.sidebar .task-action{transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
 .sidebar .task-item:focus-visible,.folder-more:focus-visible,.bot-row-open:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
-.sidebar .task-row::before{content:"";position:absolute;z-index:1;left:0;top:9px;bottom:9px;width:2px;border-radius:1px;background:var(--accent);opacity:0;scale:1 .4;pointer-events:none;transition:opacity 180ms ease-out,scale 180ms var(--spring-fast,ease-out)}
+.sidebar .task-row::before{content:"";position:absolute;z-index:1;left:0;top:9px;bottom:9px;width:2px;border-radius:1px;background:var(--accent);opacity:0;scale:1 .4;pointer-events:none;transition:opacity var(--ds-ease-out) ease-out,scale var(--ds-ease-out) var(--spring-fast,ease-out)}
 .sidebar .task-row-oneline::before{top:6px;bottom:6px}
 .sidebar .task-row:has(>.task-item.selected)::before{opacity:1;scale:1}
-.sidebar .task-item.task-dragging{transition:opacity 120ms ease-out}
+.sidebar .task-item.task-dragging{transition:opacity var(--ds-ease-in) ease-out}
 @media(max-width:650px){.sidebar .task-row::before{display:none}}
 @media(prefers-reduced-motion:reduce){.sidebar .task-row::before{scale:1}}

@@ -120,7 +120,7 @@ test('Settings shows an About section with the version and GitHub links', async 
   await open(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'About & updates', exact: true }).click();
+  await settings.getByRole('tab', { name: 'About', exact: true }).click();
   const about = settings.locator('.settings-about');
   await expect(about).toBeVisible();
   await expect(about.locator('.settings-about-version')).toHaveText('Version Preview');

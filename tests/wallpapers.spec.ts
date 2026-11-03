@@ -1,9 +1,18 @@
 import { expect, test, type Page } from '@playwright/test';
 
 test.use({ timezoneId: 'America/New_York' });
+
+/** Wallpapers are off by default (the thread shows the sky); these specs start with them on unless a test saves its own choice. */
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    if (localStorage.getItem('pandacode.wallpaperPreferences') === null && localStorage.getItem('pandacode.wallpapers') === null) {
+      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
+    }
+  });
+});
 const scene = (page: Page) => page.locator('.workspace');
 const images = (page: Page) => page.locator('.workspace-wallpaper img');
-/** Daily wallpapers live in Settings → Appearance. */
+/** Wallpapers live in Settings → Appearance (off by default; the thread shows the sky). */
 async function appearance(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Appearance', exact: true }).click();
@@ -28,16 +37,17 @@ async function expectClearBars(page: Page) {
   }
 }
 
+/** The scene fills the main pane (the thread is a window); the sidebar sits on the frame and never shows it. */
 async function expectSceneCoversBars(page: Page) {
   await expectClearBars(page);
   const backdrop = await page.locator('.workspace-wallpaper').boundingBox();
-  const main = await scene(page).boundingBox();
+  const main = await page.locator('.main-pane').boundingBox();
   expect(backdrop).not.toBeNull();
   expect(main).not.toBeNull();
   for (const edge of ['x', 'y', 'width', 'height'] as const) {
     expect(backdrop![edge]).toBeCloseTo(main![edge], 1);
   }
-  for (const selector of ['.sidebar', '.workspace-header']) {
+  for (const selector of ['.workspace-header']) {
     if (!await page.locator(selector).isVisible()) continue;
     const bounds = await page.locator(selector).boundingBox();
     expect(bounds).not.toBeNull();
@@ -97,7 +107,7 @@ for (const theme of ['light', 'dark']) {
     const highContrast = await barStyles(page);
     await page.emulateMedia({ contrast: 'no-preference' });
     await appearance(page);
-    const toggle = page.getByRole('checkbox', { name: 'Daily wallpapers', exact: true });
+    const toggle = page.getByRole('checkbox', { name: 'Wallpapers', exact: true });
     await toggle.check();
     await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
     await expectClearBars(page);
@@ -119,7 +129,7 @@ test('wallpapers change at noon without replacing the composer, draft, or open d
   await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
   const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });
   await prompt.fill('Keep my draft through the wallpaper transition');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(menu).toBeVisible();
   await page.evaluate(() => { (window as any).__wallpaperControls = [document.querySelector('#prompt'), document.querySelector('.model-menu')]; });
@@ -148,7 +158,7 @@ test('wallpapers can be disabled and the preference survives reopening the app',
   await open(page);
   await expect(images(page)).toHaveCount(1);
   await appearance(page);
-  const toggle = page.getByRole('checkbox', { name: 'Daily wallpapers', exact: true });
+  const toggle = page.getByRole('checkbox', { name: 'Wallpapers', exact: true });
   await toggle.uncheck();
   await expect(images(page)).toHaveCount(0);
   await expect(scene(page)).not.toHaveAttribute('data-wallpaper');
@@ -195,24 +205,25 @@ test('wallpapers ignore a stale decode after being disabled', async ({ page }) =
   await open(page);
   await expect.poll(() => Boolean(release)).toBe(true);
   await appearance(page);
-  await page.getByRole('checkbox', { name: 'Daily wallpapers', exact: true }).uncheck();
+  await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).uncheck();
   release!();
   await page.clock.runFor(1000);
   await expect(scene(page)).not.toHaveAttribute('data-wallpaper');
   await expect(images(page)).toHaveCount(0);
 });
 
-test('wallpapers match the sidebar frost in rounded board task details without a divider', async ({ page }) => {
+test('wallpapers give rounded board task details the frost material without a divider', async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 940 });
   await open(page);
   await expect(scene(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
-  // The sidebar has no fill of its own: it sits on the window frame (.workspace::after), the one
-  // blur layer, tinted a step toward the text. The drawer is that frost material without the step.
+  // The drawer is the wallpaper frost material (--workspace-frost-surface over --workspace-frost).
   const sidebarMaterial = await page.locator('.workspace').evaluate(el => {
-    const style = getComputedStyle(el, '::after');
-    const probe = document.createElement('div'); probe.style.background = 'var(--workspace-frost-surface)'; el.append(probe);
-    const surface = getComputedStyle(probe).backgroundColor; probe.remove();
-    return { background: surface, frost: style.backdropFilter };
+    const probe = document.createElement('div');
+    probe.style.background = 'var(--workspace-frost-surface)'; probe.style.backdropFilter = 'var(--workspace-frost)';
+    el.append(probe);
+    const style = getComputedStyle(probe), material = { background: style.backgroundColor, frost: style.backdropFilter };
+    probe.remove();
+    return material;
   });
   await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
   await page.getByRole('button', { name: 'Open task: Make search feel instant', exact: true }).click();

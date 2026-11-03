@@ -1,0 +1,165 @@
+/* Redesign: settings area. Owned by the settings area worker; built on src/design-system.css.
+ * The settings files themselves (src/settings.css and the panels' own sheets) carry the look; this
+ * file restyles the pieces whose sheets belong to other modules (OpenCode models, the quick
+ * launcher, Connect diagnostics, machine links, model tiers, dialogs). Those sheets load lazily,
+ * after this one, so every rule here is raised by `html[data-theme]` to win at equal specificity. */
+
+/* About → Resource usage: values read as muted row meta, not code. */
+html[data-theme] .settings-page-root .settings-metric{font-family:inherit;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* General → Quick launcher: one card, the shortcut field on the inset tone. */
+html[data-theme] .settings-page-root .overlay-settings{margin-top:0}
+html[data-theme] .settings-page-root .overlay-shortcut-form{padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 10px}
+html[data-theme] .overlay-shortcut-heading>label{font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+html[data-theme] .overlay-shortcut-controls{gap:6px}
+html[data-theme] .overlay-shortcut-controls>input{min-height:32px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);font-size:var(--ds-text-chip)}
+html[data-theme] .overlay-shortcut-form>small,html[data-theme] .overlay-settings-status{font-size:var(--ds-text-meta)}
+html[data-theme] .overlay-settings-status.error{color:var(--ds-danger)}
+
+/* Agents → OpenCode models: a search field, then a card of selectable rows. */
+html[data-theme] .opencode-model-settings{gap:10px}
+html[data-theme] .opencode-model-settings>.dialog-description{padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta)}
+html[data-theme] .opencode-model-search{min-height:var(--ds-btn-h);padding:0 12px;border-radius:var(--ds-radius-inner);background:var(--ds-card)}
+html[data-theme] .opencode-model-search:focus-within{box-shadow:0 0 0 2px var(--focus)}
+html[data-theme] .opencode-model-search input{padding:0;height:var(--ds-btn-h);font-size:var(--ds-text-ui)}
+html[data-theme] .opencode-model-toolbar button{width:var(--ds-btn-h);height:var(--ds-btn-h);padding:0;border-radius:var(--ds-radius-inner)}
+html[data-theme] .opencode-model-list{gap:2px;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
+html[data-theme] .opencode-model-row{gap:var(--ds-row-gap);min-height:var(--ds-row-h-sub);padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .opencode-model-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .opencode-model-row.selected{background:var(--ds-fill-hover)}
+html[data-theme] .opencode-model-row:focus-within{outline:2px solid var(--focus)}
+html[data-theme] .opencode-model-row input{accent-color:var(--ds-primary-bg)}
+html[data-theme] .opencode-model-copy{gap:1px}
+html[data-theme] .opencode-model-copy strong{font-size:var(--ds-text-ui)}
+html[data-theme] .opencode-model-copy small,html[data-theme] .opencode-model-context{font-size:var(--ds-text-meta)}
+html[data-theme] .opencode-model-context{font-variant-numeric:tabular-nums}
+html[data-theme] .opencode-model-status.error{color:var(--ds-danger)}
+html[data-theme] .opencode-model-footer{padding:0 0 0 var(--ds-row-pad-x)}
+html[data-theme] :is(.opencode-model-count,.opencode-model-note){font-size:var(--ds-text-meta)}
+html[data-theme] .opencode-model-note{padding:0 var(--ds-row-pad-x)}
+
+/* Remote access → Diagnostics: cards of rows with status dots; no stripes. */
+html[data-theme] .remote-diagnostics{gap:18px;font-size:var(--ds-text-ui)}
+html[data-theme] .remote-diagnostics h4{margin:0 0 8px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+html[data-theme] .diag-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-height:var(--ds-row-h-sub);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:var(--ds-radius-card);background:var(--ds-card)}
+html[data-theme] .diag-actions-text{display:grid;flex:1 1 180px;min-width:0;margin-inline-end:auto}
+html[data-theme] .diag-actions-text strong{font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text)}
+html[data-theme] .diag-actions-text small{font-size:var(--ds-text-meta);color:var(--muted)}
+html[data-theme] .diag-actions .diag-note{flex-basis:100%;order:1}
+html[data-theme] .diag-actions .diag-note:empty{display:none}
+@media(prefers-contrast:more){html[data-theme] .diag-actions{outline:1px solid var(--border);outline-offset:-1px}}
+html[data-theme] :is(.diag-stages,.diag-events){padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
+html[data-theme] .diag-stages{gap:2px}
+html[data-theme] .diag-stages li{min-height:36px;padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-radius-inner)}
+html[data-theme] .diag-stages li:nth-child(even),html[data-theme] .diag-routes tr:nth-child(even) td{background:none}
+html[data-theme] .diag-stages li>strong{font-weight:var(--weight-medium)}
+html[data-theme] .diag-stages small,html[data-theme] .diag-meta{font-size:var(--ds-text-meta)}
+html[data-theme] .diag-dot{background:var(--ds-danger)}
+html[data-theme] .diag-state{font-size:var(--ds-text-meta);color:var(--ds-danger)}
+html[data-theme] .diag-stages li[data-ok="true"] .diag-dot{background:var(--ds-success)}
+html[data-theme] .diag-stages li[data-ok="true"] .diag-state{color:var(--ds-success)}
+html[data-theme] .diag-meta{padding:0 var(--ds-row-pad-x)}
+html[data-theme] .diag-error{color:var(--ds-danger)}
+html[data-theme] .diag-routes{border-collapse:separate;border-spacing:0;border-radius:var(--ds-radius-card);background:var(--ds-card);overflow:hidden}
+html[data-theme] .diag-routes th{padding:10px var(--ds-row-pad-x) 4px;background:none;font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+html[data-theme] .diag-routes td{padding:8px var(--ds-row-pad-x);font-variant-numeric:tabular-nums}
+html[data-theme] .diag-chip{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);color:var(--muted);font-size:var(--ds-text-chip)}
+html[data-theme] .diag-chip:is([data-state="connected"],[data-state="direct"]){background:var(--ds-fill);color:var(--ds-success)}
+html[data-theme] .diag-chip[data-state="failed"]{color:var(--ds-danger)}
+html[data-theme] .diag-events{font-size:var(--ds-text-chip)}
+html[data-theme] .diag-event{min-height:28px;align-items:center;padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
+html[data-theme] .diag-event b{font-weight:var(--weight-medium)}
+
+/* Remote access → machine links: steps as a segmented track, machines as a card of rows. */
+html[data-theme] .machine-steps{padding:3px;border-radius:calc(var(--ds-radius-control) + 3px);background:var(--ds-track)}
+html[data-theme] .machine-steps li{border-radius:var(--ds-radius-control);font-size:var(--ds-text-meta)}
+html[data-theme] .machine-steps li[aria-current]{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow);color:var(--text)}
+html[data-theme] .machine-steps li>span{background:var(--ds-fill-hover)}
+html[data-theme] .machine-steps li:first-child:not([aria-current])>span{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
+html[data-theme] .machine-list{display:flex;flex-direction:column;gap:2px;padding:var(--ds-card-pad);border:0;border-radius:var(--ds-radius-card);background:var(--ds-card)}
+html[data-theme] .machine-row{min-height:var(--ds-row-h);padding:0 calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-radius-inner);font-size:var(--ds-text-ui);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .machine-row+.machine-row{border-top:0}
+html[data-theme] .machine-row:hover:not(.is-disabled){background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .machine-row input{accent-color:var(--ds-primary-bg)}
+html[data-theme] .machine-name{font-weight:var(--weight-medium)}
+html[data-theme] :is(.machine-platform,.machine-why,.machine-access-help){font-size:var(--ds-text-meta)}
+html[data-theme] .machine-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);font-size:var(--ds-text-chip)}
+
+/* Agent teams → Rank models: tier rows on the card's inset tone, chips on the fill. */
+html[data-theme] .settings-page-root .model-tiers{--tier-row:var(--ds-card-inset)}
+html[data-theme] .tier-list{padding:2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 12px}
+html[data-theme] .tier-label{border-radius:var(--ds-radius-inner) 0 0 var(--ds-radius-inner);font-size:var(--ds-text-body)}
+html[data-theme] .tier-body{border-radius:0 var(--ds-radius-inner) var(--ds-radius-inner) 0}
+html[data-theme] .tier-unranked .tier-body{border-radius:var(--ds-radius-inner)}
+html[data-theme] .tier-tray-title{font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+html[data-theme] .tier-chip-wrap{border-radius:var(--ds-radius-chip);background:var(--ds-fill)}
+html[data-theme] .tier-chip{border-radius:var(--ds-radius-chip) 0 0 var(--ds-radius-chip);font-size:var(--ds-text-meta)}
+html[data-theme] .tier-chip-menu{border-radius:0 var(--ds-radius-chip) var(--ds-radius-chip) 0}
+html[data-theme] :is(.tier-chip,.tier-chip-menu):hover{background:var(--ds-fill-hover)}
+html[data-theme] .tier-empty{font-size:var(--ds-text-meta)}
+
+/* Agents → Agent updates (dialog and popup): rows without stripes. */
+html[data-theme] .agent-update-row:nth-child(even){background:none}
+html[data-theme] .agent-update-row{padding:10px 0}
+
+/* Add model… for teams: the same search field and rows as the OpenCode list. */
+html[data-theme] .team-model-search{min-height:var(--ds-btn-h);border-radius:var(--ds-radius-inner);background:var(--ds-fill)}
+html[data-theme] .team-model-row{min-height:36px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui);transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme] .team-model-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .team-model-dialog .team-model-row input{accent-color:var(--ds-primary-bg)}
+
+/* Conversation import: segmented source picker, neutral selection. */
+html[data-theme] .import-sources{padding:3px;border-radius:calc(var(--ds-radius-control) + 3px);background:var(--ds-track)}
+html[data-theme] .import-sources>button{border-radius:var(--ds-radius-control)}
+html[data-theme] .import-sources>.segment-thumb{border-radius:var(--ds-radius-control);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+html[data-theme] .import-search{border-radius:var(--ds-radius-inner);background:var(--ds-fill)}
+html[data-theme] .import-row{border-radius:var(--ds-radius-control)}
+html[data-theme] .import-row:has(input:checked){background:var(--ds-fill-hover)}
+html[data-theme] :is(.import-all,.import-row) input{accent-color:var(--ds-primary-bg)}
+
+/* Recipes: picker rows like menu rows. */
+html[data-theme] .recipe-pick{border-radius:var(--ds-radius-control)}
+
+@media(prefers-reduced-motion:reduce){
+  html[data-theme] :is(.opencode-model-row,.machine-row,.team-model-row){transition:none}
+}
+@media(prefers-contrast:more){
+  html[data-theme] :is(.opencode-model-list,.diag-stages,.diag-events,.diag-routes,.machine-list){outline:1px solid var(--border);outline-offset:-1px}
+}
+
+/* Text on the wallpaper frame (Back, nav icons, any muted label beside the nav) clears 4.5:1: the frame
+ * is a thin frost, so the nav's muted tone leans on the text colour over a wallpaper. */
+html[data-theme] .workspace[data-wallpaper] .settings-nav{--muted:color-mix(in srgb,var(--text) 90%,var(--bg));--faint:var(--muted)}
+
+/* Pass 2: every card here carries the reference's hairline and soft shadow; lists of rows sit on the
+   inner card fill, like the Automations card's rows. */
+html[data-theme] .settings-page-root :is(.diag-actions,.diag-stages,.diag-events,.diag-routes,.machine-list,.opencode-model-list){border:1px solid var(--ds-border);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .settings-page-root :is(.diag-stages,.diag-events,.diag-routes,.machine-list,.opencode-model-list){background:var(--ds-card-inner);border-radius:var(--ds-radius-card)}
+html[data-theme] .remote-diagnostics h4+:is(.diag-stages,.diag-events,.diag-routes),html[data-theme] .diag-meta+.diag-error{margin-top:0}
+html[data-theme] .remote-diagnostics :is(.diag-stages,.diag-routes)+:is(p,h4){margin-top:10px}
+html[data-theme] :is(.opencode-model-copy strong,.machine-name){font-size:var(--ds-text-body);font-weight:var(--weight-medium)}
+html[data-theme] .opencode-model-search{border:1px solid var(--ds-border);background:var(--ds-card-inner)}
+@media(prefers-contrast:more){html[data-theme] .settings-page-root :is(.diag-actions,.diag-stages,.diag-events,.diag-routes,.machine-list,.opencode-model-list){border-color:var(--border);box-shadow:none;outline:0}}
+
+/* Go to anything (command palette): a bordered search field and neutral rows like menu rows; the
+   accent stays for the focus ring only. */
+html[data-theme] dialog .command-search{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-raised)}
+html[data-theme] dialog .command-search:focus-within{border-color:var(--ds-border-strong);box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .18)}
+html[data-theme] dialog .command-results>button{min-height:36px;border-radius:var(--ds-radius-control)}
+html[data-theme] dialog .command-results>button>span{font-size:var(--ds-text-ui)}
+html[data-theme] dialog .command-results>button:hover{background:var(--ds-row-hover)}
+html[data-theme] dialog .command-results>button.command-selected{background:var(--ds-fill-hover);box-shadow:none}
+@media(prefers-contrast:more){html[data-theme] dialog .command-search{border-color:var(--text);box-shadow:none}html[data-theme] dialog .command-results>button.command-selected{outline:1px solid var(--text)}}
+
+/* One text inset: a card's row titles, subtitles, notes and forms all start 12px inside its inner card. The group's
+   content box sits 2px inside that card and rows keep --ds-row-pad-x (10px). The panels' `row-pad-x - card-pad`
+   formulas (from when a group's own padding was the card pad) resolve to the same 10px, because the pad is zero
+   inside a group; cards nested in a group put theirs back. */
+html[data-theme] .settings-page-root :is(.settings-group,.colors-card,.schedules-activity){--ds-card-pad:0px;padding-inline:calc(var(--settings-pad) + 2px)}
+html[data-theme] .settings-page-root :is(.settings-group,.colors-card,.schedules-activity) :is(.diag-stages,.diag-events,.machine-list,.opencode-model-list,.skills-matrix-wrap,.skills-unmanaged){--ds-card-pad:var(--settings-pad)}
+
+/* A narrow window: the cards keep an inset from the content panel's right edge. */
+@media(max-width:760px){html[data-theme] .settings-page-root .settings-panel{box-sizing:border-box;width:100%;padding-inline:12px}}
+
+/* The sidebar filter's clear button: a 24px hit area that does not grow the field. */
+html[data-theme] .sidebar-search-clear{width:24px;height:24px;margin-block:-2px}

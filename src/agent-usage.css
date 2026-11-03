@@ -24,13 +24,13 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 
 /* Headline numbers: cost and average limit share one row. */
 .usage-heroes{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:12px;margin-bottom:18px}
-.usage-hero{min-width:0;padding:16px 18px;border-radius:var(--radius-md);background:color-mix(in srgb,var(--text) 5%,transparent)}
+.usage-hero{min-width:0;padding:16px 18px;border-radius:var(--ds-radius-card);background:var(--ds-card)}
 .usage-hero-label{display:flex;align-items:center;gap:5px;font-size:var(--text-xs);color:var(--muted)}
 .usage-hero-value{display:block;margin:4px 0 2px;font-size:2.15rem;line-height:1.05;font-weight:650;letter-spacing:-.025em;font-variant-numeric:tabular-nums;color:var(--text)}
 .usage-hero-pending{color:var(--muted);opacity:.6}
 .usage-hero small{display:block;font-size:var(--text-xs);line-height:1.45;color:var(--muted)}
 .usage-limit-hero{display:flex;align-items:center;gap:14px;--usage-color:var(--accent)}
-.usage-limit-hero[data-tone=high]{--usage-color:var(--warning)}.usage-limit-hero[data-tone=exhausted]{--usage-color:var(--danger)}
+.usage-limit-hero[data-tone=high]{--usage-color:var(--ds-warn)}.usage-limit-hero[data-tone=exhausted]{--usage-color:var(--ds-danger)}
 .usage-limit-hero .usage-hero-value{font-size:1.7rem}
 .usage-ring{width:62px;height:62px;flex:none}
 .usage-ring circle{fill:none;stroke-width:6.5}
@@ -98,7 +98,8 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 .usage-breakdown-scroll{max-height:320px;overflow:auto;overscroll-behavior:contain}
 .usage-breakdown{width:100%;border-collapse:collapse;font-size:var(--text-sm);font-variant-numeric:tabular-nums}
 .usage-breakdown th,.usage-breakdown td{padding:9px 0;text-align:right;font-weight:400}
-.usage-breakdown tbody tr:nth-child(even){background:color-mix(in srgb,var(--text) 3.5%,transparent)}
+.usage-breakdown tbody tr{transition:background-color var(--ds-ease-out) ease-out}
+.usage-breakdown tbody tr:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 .usage-breakdown thead th{position:sticky;top:0;font-size:var(--text-xs);color:var(--muted);background:var(--panel);padding-top:4px}
 .usage-breakdown th:first-child{text-align:left}
 .usage-breakdown tbody th{display:flex;align-items:center;gap:8px;min-width:0}

@@ -1,0 +1,93 @@
+/* Redesign: inspector area. Owned by the inspector area worker; built on src/design-system.css. */
+
+/* ---------- Every inspector view on the design system's card/row language ---------- */
+/* Rows: 10px inner radius, the shared hover/press tones, colour easing in 120ms and out 180ms. */
+#inspector :is(.file-row,.change-row,.search-row,.design-comment,.cv-file-header){border-radius:var(--ds-radius-inner);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+#inspector :is(.file-row,.change-row,.search-row):hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+#inspector .search-row:active{background:var(--ds-row-press)}
+#inspector .file-row>button:first-child{min-height:32px;font-size:var(--ds-text-ui)}
+#inspector .file-list,#inspector .search-results{padding:0 8px 12px}
+/* Section heads: the small muted label above a group. */
+#inspector :is(.file-folder-path,.change-group-title,.search-section>h3){min-height:28px;padding:0 var(--ds-row-pad-x) 0 14px;font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+#inspector .file-folder-path{display:flex;align-items:center;justify-content:space-between;margin:6px 0 2px}
+/* Empty states: title 15px, body 13px. */
+#inspector .inspector-empty{line-height:1.55}
+#inspector .inspector-empty h3{font-size:var(--ds-text-body);font-weight:var(--weight-strong)}
+#inspector .inspector-empty p{font-size:var(--ds-text-meta)}
+
+/* Search: a 36px tone-filled field, chip-radius toggles, rows 32px. */
+#inspector .search-form{padding:10px 12px 8px;background:var(--panel-surface,var(--panel))}
+#inspector .search-field{min-height:var(--ds-btn-h);padding:0 4px 0 10px;border-radius:var(--ds-radius-control);background:var(--ds-fill)}
+#inspector .search-field:focus-within{box-shadow:0 0 0 2px var(--focus)}
+#inspector .search-input{font-size:var(--ds-text-ui)}
+#inspector .search-toggle{width:28px;height:26px;border-radius:var(--ds-radius-chip)}
+#inspector .search-toggle[aria-pressed="true"]{color:var(--text);background:var(--ds-fill-hover)}
+#inspector .search-row{min-height:32px;padding:5px 10px;font-size:var(--ds-text-ui)}
+#inspector .search-row>small{font-size:var(--ds-text-meta)}
+#inspector .search-count{border-radius:var(--radius-full);background:var(--ds-fill)}
+#inspector .search-hint,#inspector .search-error{margin:10px 14px;font-size:var(--ds-text-meta)}
+
+/* Changes: the toolbar and per-file headers as rows; commit is the solid neutral primary. */
+#inspector .cv-header{height:40px}
+#inspector .cv-scope{height:28px;padding:0 8px;border-radius:var(--ds-radius-control)}
+#inspector :is(.cv-scope,.cv-icon,.cv-toggle):hover:not(:disabled){background:var(--ds-row-hover)}
+#inspector .cv-icon{border-radius:var(--ds-radius-control)}
+#inspector .cv-commit-input{height:30px;padding:0 10px;background:var(--ds-fill)}
+#inspector .cv-commit-submit{height:30px;padding:0 12px;border-radius:var(--ds-radius-control);background:var(--ds-primary-bg);color:var(--ds-primary-fg)!important;transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+#inspector .cv-commit-submit:hover:not(:disabled){background:var(--ds-primary-hover)}
+#inspector .cv-file-header{height:34px;margin:2px 8px 0 4px;padding:0 4px 0 4px;font-size:var(--ds-text-meta)}
+#inspector .cv-file-header:hover{background:color-mix(in srgb,var(--text) 5%,var(--panel-surface,var(--panel)))}
+
+/* Design: one-line send, the comments as a card. */
+#inspector .design-toolbar{flex-wrap:wrap;gap:4px;padding:8px 10px}
+#inspector .design-toolbar .icon-button{width:30px;height:30px;border-radius:var(--ds-radius-control)}
+#inspector .design-toolbar .icon-button[aria-pressed="true"]{background:var(--ds-fill-hover);color:var(--text)}
+#inspector .design-send{min-height:30px;padding:0 12px;white-space:nowrap}
+#inspector .design-viewport{margin:0 8px;border-radius:var(--ds-radius-card)}
+#inspector .design-comments{margin:8px;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card);font-size:var(--ds-text-ui)}
+#inspector .design-comments ol{padding:0;display:flex;flex-direction:column;gap:2px}
+#inspector .design-comment{padding:10px 10px 10px 12px}
+#inspector .design-comment:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+#inspector .design-comment small{font-size:var(--ds-text-meta)}
+#inspector .design-new{padding:8px 10px}
+
+/* VMs and simulators: image choices as rows in a card. */
+#inspector .vm-images{gap:2px;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
+#inspector .vm-images .secondary-button{min-height:var(--ds-row-h);padding:0 var(--ds-row-pad-x);border-radius:var(--ds-radius-inner);background:transparent;font-size:var(--ds-text-ui)}
+#inspector .vm-images .secondary-button:not(:disabled):hover{background:var(--ds-row-hover)}
+#inspector .vm-empty{font-size:var(--ds-text-meta)}
+#inspector .vm-empty strong{font-size:var(--ds-text-body)}
+#inspector .vm-actions .icon-button,#inspector .vm-select{border-radius:var(--ds-radius-control)}
+
+/* ---------- Pass 2: the reference's bordered cards ----------
+ * Outer cards (hairline, soft shadow, 6px padding) hold an inner card or rows; fields are inner cards. */
+#inspector :is(.file-list,.search-section,.design-comments,.vm-images,.browser-servers){border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+#inspector .file-list{margin:4px 8px 12px;padding:var(--ds-card-pad)}
+#inspector .file-list:empty{display:none}
+#inspector .search-results{padding:0 8px 12px}
+#inspector .search-section{padding:2px var(--ds-card-pad) var(--ds-card-pad)}
+#inspector .search-section+.search-section{margin-top:10px}
+#inspector .search-section>h3{margin:4px 0 2px;padding:0 8px}
+/* Fields: the inner-card fill with a hairline, the focus ring outside it. */
+#inspector .search-field{background:var(--ds-card-inner);border-radius:var(--ds-radius-inner);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
+#inspector .search-field:focus-within{box-shadow:inset 0 0 0 1px var(--ds-border-strong),0 0 0 2px var(--focus)}
+#inspector .search-input:is(:focus,:hover){background:transparent;box-shadow:none;outline:none}
+#inspector .cv-commit-input{background:var(--ds-card-inner);border-radius:var(--ds-radius-control);box-shadow:inset 0 0 0 1px var(--ds-border)}
+/* Changes: each file is an outer card, its diff the inner card. */
+#inspector .cv-list{display:flex;flex-direction:column;gap:8px;padding:2px 8px 12px}
+#inspector .cv-file{border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+#inspector .cv-file-header{margin:0;padding:0 6px 0 8px;height:38px;border-radius:var(--ds-radius-card) var(--ds-radius-card) 0 0;background:var(--panel-surface,var(--panel))}
+#inspector .cv-file.collapsed .cv-file-header{border-radius:var(--ds-radius-card)}
+#inspector .cv-file-body{margin:0 var(--ds-card-pad) var(--ds-card-pad);border:1px solid var(--ds-border)}
+/* Design and VM cards. */
+#inspector .design-viewport{border:1px solid var(--ds-border);box-shadow:var(--ds-shadow-card)}
+#inspector .design-comments{padding:var(--ds-card-pad)}
+#inspector .vm-images{padding:var(--ds-card-pad)}
+/* The browser's address field and the local servers list. */
+#inspector .browser-servers{padding:var(--ds-card-pad)}
+
+@media(prefers-reduced-transparency:reduce){#inspector .search-form{background:var(--panel)}}
+@media(prefers-contrast:more){#inspector :is(.file-list,.search-section,.design-comments,.vm-images,.browser-servers,.cv-file,.cv-file-body,.design-viewport){border-color:var(--border);box-shadow:none}#inspector .search-field{box-shadow:inset 0 0 0 1px var(--border)}}
+
+/* jj's file status letter, on the design-system tone that clears 4.5:1. */
+#inspector .file-status{color:var(--ds-warn)}

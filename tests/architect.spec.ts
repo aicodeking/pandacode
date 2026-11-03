@@ -361,14 +361,14 @@ test.describe('architect teams', () => {
 
   test('turns on an automatic team led by the selected model and explains it in a tooltip', async ({ page }) => {
     await installArchitect(page);
-    const picker = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+    const picker = page.getByRole('button', { name: /^Model: / });
     const lead = (await picker.textContent())!;
     await trigger(page).hover();
     const tip = page.getByRole('tooltip');
-    await expect(tip).toContainText('your selected model becomes the lead');
-    await expect(tip).toContainText('picks a model for each worker on its own');
-    await expect(tip).toContainText('use Sonnet 5.5 workers');
-    await expect(trigger(page)).toHaveAttribute('aria-description', /picks a model for each worker/);
+    await expect(tip).toContainText('Team: off.');
+    await expect(tip).toContainText('Your model leads');
+    await expect(tip).toContainText('Name workers in your prompt');
+    await expect(trigger(page)).toHaveAttribute('aria-description', /^Team: off\. Your model leads/);
     await saveDefaultTeam(page);
     await expect(setup(page)).toHaveCount(0);
     const args = (await calls(page, 'architect_configure')).at(-1).args;
@@ -476,9 +476,9 @@ test.describe('architect teams', () => {
         await expect(status.nth(1)).toBeVisible(); await expect(status.nth(1)).toContainText('Reviewing worker results');
         expect(await status.evaluateAll(rows => rows.every(el => !el.closest('.user-message, .agent-message')))).toBe(true);
         await expect(status.locator('.provider-logo, .message-avatar')).toHaveCount(0);
-        // The status sits in the conversation column, aligned with the replies.
+        // The status sits in the conversation column, aligned with the turn cards' edge (replies now sit inside the cards).
         if (view === 'conversation') {
-          const [line, reply] = [(await status.nth(0).boundingBox())!, (await transcript(page).locator('.agent-message .message-content').first().boundingBox())!];
+          const [line, reply] = [(await status.nth(0).boundingBox())!, (await transcript(page).locator('.turn-card').first().boundingBox())!];
           expect(Math.abs(line.x - reply.x)).toBeLessThan(2);
         }
         await expect(transcript(page).locator('.user-message')).toHaveCount(1);
@@ -489,7 +489,8 @@ test.describe('architect teams', () => {
         await expect(responses.nth(1)).toBeVisible(); await expect(responses.nth(1)).toHaveText('The worker completed the search implementation.');
         await expect(responses.nth(2)).toBeVisible(); await expect(responses.nth(2)).toHaveText('The review passed and the task is ready.');
         const cards = transcript(page).locator('.turn-changes:visible');
-        await expect(cards).toHaveCount(2); await expect(cards.nth(0)).toContainText('search.ts'); await expect(cards.nth(1)).toContainText('search.test.ts');
+        // The turn card's footer names the count and line counts; the per-turn file tree it replaced listed paths.
+        await expect(cards).toHaveCount(2); await expect(cards.nth(0)).toContainText('1 changed file+12'); await expect(cards.nth(1)).toContainText('1 changed file+5');
       };
       await verify();
       await page.reload();
@@ -526,7 +527,7 @@ test.describe('architect teams', () => {
       await expect(builder.locator('small')).toHaveText('Builder · GPT-6-Astra');
       // A working worker shows a spinning ring in place of the separator dot.
       await expect(builder.locator('.team-progress-spinner')).toBeVisible();
-      expect(await builder.locator('.team-progress-spinner').evaluate(el => getComputedStyle(el).animationName)).toBe('team-progress-spin');
+      expect(await builder.locator('.team-progress-spinner').evaluate(el => getComputedStyle(el).animationName)).toBe('state-pulse');
       // The line sits in the turn that spawned it, right after what the architect said there.
       expect(await builder.evaluate(row => {
         const slot = row.closest('.team-progress-slot');
@@ -537,7 +538,8 @@ test.describe('architect teams', () => {
       await expect(reviewer.locator('.provider-logo[data-provider="claude"]')).toBeAttached(); await expect(reviewer).toContainText(/working/i);
       await expect(transcript(page).getByText('No files changed', { exact: true })).toBeHidden();
       await expect(transcript(page).locator('.turn-changes:visible')).toHaveCount(1);
-      await expect(transcript(page).locator('.turn-changes:visible')).toContainText('README.md');
+      // The turn card's footer (`1 changed file`) replaced the per-turn file tree that listed README.md.
+      await expect(transcript(page).locator('.turn-changes:visible')).toContainText('1 changed file+1');
       await progress.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/private/tmp/pandacode-team-progress-${view}.png`, animations: 'disabled' });
       await page.evaluate(() => { (window as any).__progressNodes = { host: document.querySelector('.team-progress'), build: document.querySelector('.team-progress-worker[data-worker-id="build"]'), review: document.querySelector('.team-progress-worker[data-worker-id="review"]') }; });

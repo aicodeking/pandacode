@@ -26,7 +26,7 @@ async function open(page: Page, url = '/?teams'): Promise<void> {
 test('the harness picker hides harnesses that are not installed', async ({ page }) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   await expect(picker(page).getByRole('tab', { name: 'Grok Build' })).toBeVisible();
   await expect(picker(page).locator('[data-provider="antigravity"], [data-provider="omp"]')).toHaveCount(0);
   await expect(picker(page)).not.toContainText('Antigravity');

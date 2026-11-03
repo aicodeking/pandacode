@@ -249,7 +249,7 @@ test.describe('thread order', () => {
     };
     await choose('Sort tasks', 'Recent activity');
     await expect.poll(() => orbit(page)).toEqual(['session-1', 'session-2', 'session-3']);
-    await expect(row(page, 'session-1')).toHaveAttribute('draggable', 'false');
+    await expect(row(page, 'session-1')).toHaveAttribute('data-reorderable', 'false');
     await row(page, 'session-1').click({ button: 'right' });
     await expect(menu(page).getByRole('menuitem', { name: 'Move down', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
@@ -265,7 +265,7 @@ test.describe('thread order', () => {
     await expect(dialog.getByRole('group', { name: 'Show per section', exact: true }).getByRole('menuitemradio', { name: '3 tasks', exact: true })).toHaveAttribute('aria-checked', 'true');
     await dialog.getByRole('group', { name: 'Sort tasks', exact: true }).getByRole('menuitemradio', { name: 'Manual', exact: true }).click();
     await expect.poll(() => orbit(page)).toEqual(['session-3', 'session-1', 'session-2']);
-    await expect(row(page, 'session-1')).toHaveAttribute('draggable', 'true');
+    await expect(row(page, 'session-1')).toHaveAttribute('data-reorderable', 'true');
   });
 
   test('All projects lists unpinned tasks in Finished, each naming its project; selected options show a trailing check', async ({ page }) => {
@@ -312,8 +312,8 @@ test.describe('thread order', () => {
     const actions = page.locator('#task-row-session-2 .task-actions');
     await row(page, 'session-2').hover();
     const area = (await actions.boundingBox())!;
-    // The padding gap before the tick: the actions span itself, not a button.
-    await actions.click({ button: 'right', position: { x: 4, y: area.height / 2 } });
+    // The padding gap before the tick: the span takes no pointer, so this lands on the row, whose menu is the same.
+    await page.mouse.click(area.x + 4, area.y + area.height / 2, { button: 'right' });
     await expect(menu(page)).toBeVisible();
     await expect(menu(page).getByRole('menuitem', { name: 'Pin task', exact: true })).toBeVisible();
     await page.keyboard.press('Escape');

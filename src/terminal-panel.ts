@@ -145,6 +145,7 @@ export class TerminalPanel {
     if (group.active === tab.id) group.active = group.tabs[Math.min(index, group.tabs.length - 1)]?.id;
     if (!group.tabs.length) group.open = false;
     tab.host.remove(); this.paint();
+    window.dispatchEvent(new Event('pandacode:terminal-exit'));
     await tab.controller?.dispose();
   }
   forget(sessionIds: string[]): void {

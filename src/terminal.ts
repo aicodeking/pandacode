@@ -84,7 +84,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     }
     if (event.terminalId !== terminalId || disposed) return;
     terminal.write(event.data); hasOutput ||= event.data.length > 0;
-    if (event.exit) { exited = true; terminal.write('\r\n\x1b[90mProcess exited. Close and reopen the terminal to start again.\x1b[0m\r\n'); }
+    if (event.exit) { exited = true; terminal.write('\r\n\x1b[90mProcess exited. Close and reopen the terminal to start again.\x1b[0m\r\n'); window.dispatchEvent(new Event('pandacode:terminal-exit')); }
     if (insertButton) insertButton.disabled = !hasOutput || exited || inserted;
   };
   let unlisten: () => void;

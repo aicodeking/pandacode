@@ -55,6 +55,20 @@ export function springEasing(spring: Spring): { easing: string; duration: number
   return { easing: `linear(${points.map(value => value.toFixed(4).replace(/\.?0+$/, '') || '0').join(', ')})`, duration };
 }
 
+/** Every `state-pulse` (styles.css) breathes in one phase: each starts on the document timeline's zero, so a
+ * pulse mounted later lands mid-breath with the others instead of starting its own. Pseudo-element pulses
+ * (a sidebar dot's ::before) are found through `subtree`. Reduced motion has no pulses to align. */
+export function syncPulses(): void {
+  document.addEventListener('animationstart', event => {
+    if (event.animationName !== 'state-pulse' || reducedMotion() || !(event.target instanceof Element)) return;
+    for (const animation of event.target.getAnimations({ subtree: true })) {
+      if ((animation as CSSAnimation).animationName !== 'state-pulse' || animation.startTime === 0) continue;
+      const effect = animation.effect as KeyframeEffect | null;
+      if (effect?.target === event.target && (effect.pseudoElement ?? '') === event.pseudoElement) animation.startTime = 0;
+    }
+  }, true);
+}
+
 /** Publishes spring curves for stylesheet transitions (segmented pills, switches, hover). */
 export function publishSpringEasings(root: HTMLElement = document.documentElement): void {
   const curves: Record<string, Spring> = {
@@ -74,38 +88,13 @@ const opacityLead = (progress: number): number => Math.max(0, Math.min(1, progre
 const px = (value: number): string => `${Math.round(value * 100) / 100}px`;
 const fixed = (value: number): string => value.toFixed(4);
 
-/** The identity of a filter list, so a material can form from clear glass. */
-function clearFilter(filter: string): string | undefined {
-  if (!filter || filter === 'none') return undefined;
-  const identities: Record<string, string> = { blur: '0px', saturate: '1', brightness: '1', contrast: '1', opacity: '1', grayscale: '0', sepia: '0', invert: '0', 'hue-rotate': '0deg' };
-  let valid = true;
-  const cleared = filter.replace(/([a-z-]+)\(([^)]*)\)/g, (_, name: string) => {
-    const identity = identities[name];
-    if (identity === undefined) valid = false;
-    return `${name}(${identity})`;
-  });
-  return valid ? cleared : undefined;
-}
-/** Interpolates two filter lists that share the same functions in the same order. */
-function mixFilter(from: string, to: string, progress: number): string {
-  const numbers = (value: string): number[] => (value.match(/-?[\d.]+/g) ?? []).map(Number);
-  const a = numbers(from), b = numbers(to);
-  let index = 0;
-  return to.replace(/-?[\d.]+/g, () => { const i = index++; const start = a[i] ?? 0, end = b[i] ?? 0; return String(Math.round((start + (end - start) * progress) * 1000) / 1000); });
-}
-const filterShape = (filter: string): string => filter.replace(/\([^)]*\)/g, '');
-function backdropOf(element: HTMLElement, style = getComputedStyle(element)): string {
-  return style.backdropFilter || style.getPropertyValue('-webkit-backdrop-filter') || 'none';
-}
-const backdropFrame = (filter: string): Keyframe => ({ backdropFilter: filter, webkitBackdropFilter: filter });
-
-type Presentation = { opacity: number; scale: number; x: number; y: number; backdrop: string };
+type Presentation = { opacity: number; scale: number; x: number; y: number };
 /** What is on screen right now, including any animation in flight. */
 function presentation(element: HTMLElement): Presentation {
   const style = getComputedStyle(element);
   const matrix = style.transform.match(/matrix\(([^)]+)\)/);
   const [a = 1, , , d = 1, e = 0, f = 0] = matrix ? matrix[1].split(',').map(Number) : [];
-  return { opacity: Number(style.opacity), scale: (a + d) / 2, x: e, y: f, backdrop: backdropOf(element, style) };
+  return { opacity: Number(style.opacity), scale: (a + d) / 2, x: e, y: f };
 }
 
 const running = new WeakMap<Element, Animation>();
@@ -140,7 +129,7 @@ function settle(animation: Animation | undefined, duration: number): Promise<voi
 
 type Materialize = { scale?: number; x?: number; y?: number; spring?: Spring; origin?: string };
 
-/** Glass arrives as a material: its blur condenses while it scales and rises into place.
+/** Glass arrives as a material: it fades, scales and rises into place (its blur is static).
  *  Interrupting a departure continues from wherever the surface currently is. */
 export function materializeIn(element: HTMLElement, { scale = 0.97, x = 0, y = 6, spring = { response: 0.24 }, origin }: Materialize = {}): Animation | undefined {
   if (!canAnimate(element)) return undefined;
@@ -148,17 +137,11 @@ export function materializeIn(element: HTMLElement, { scale = 0.97, x = 0, y = 6
   const live = running.has(element) ? presentation(element) : undefined;
   running.get(element)?.cancel();
   if (reducedMotion()) return play(element, [{ opacity: live?.opacity ?? 0 }, { opacity: 1 }], 120, 'ease-out');
-  const target = backdropOf(element), clear = clearFilter(target);
-  const start = {
-    opacity: live?.opacity ?? 0, scale: live?.scale ?? scale, x: live?.x ?? x, y: live?.y ?? y,
-    backdrop: clear ? (live && filterShape(live.backdrop) === filterShape(target) ? live.backdrop : clear) : undefined,
-  };
-  // Opacity leads the spring and blur leads it harder, so nothing bleeds through mid-flight.
-  const blurLead = (progress: number): number => Math.max(0, Math.min(1, progress * 2.2));
+  const start = { opacity: live?.opacity ?? 0, scale: live?.scale ?? scale, x: live?.x ?? x, y: live?.y ?? y };
+  // Only opacity and transform move: an animated backdrop-filter re-blurs every frame. Opacity leads the spring.
   const { keyframes, duration } = springKeyframes(spring, progress => ({
     opacity: start.opacity + (1 - start.opacity) * opacityLead(progress),
     transform: `translate(${px(start.x * (1 - progress))}, ${px(start.y * (1 - progress))}) scale(${fixed(start.scale + (1 - start.scale) * progress)})`,
-    ...(start.backdrop ? backdropFrame(progress >= 1 ? target : mixFilter(start.backdrop, target, blurLead(progress))) : {}),
   }));
   return play(element, keyframes, duration);
 }
@@ -171,8 +154,6 @@ export function materializeOut(element: HTMLElement, { scale = 0.98, x = 0, y = 
   const from: Keyframe = { opacity: live.opacity, transform: `translate(${px(live.x)}, ${px(live.y)}) scale(${fixed(live.scale)})` };
   const to: Keyframe = { opacity: 0, transform: `translate(${px(x)}, ${px(y)}) scale(${fixed(scale)})` };
   if (reducedMotion()) return settle(play(element, [{ opacity: live.opacity }, { opacity: 0 }], duration, 'ease-in'), duration);
-  const clear = clearFilter(live.backdrop);
-  if (clear) { Object.assign(from, backdropFrame(live.backdrop)); Object.assign(to, backdropFrame(clear)); }
   return settle(play(element, [from, to], duration, 'cubic-bezier(.4, 0, .9, .6)'), duration);
 }
 
@@ -212,10 +193,22 @@ export function glideOut(element: HTMLElement, side: Side, distance = 10): Promi
   return settle(play(element, frames, duration, 'cubic-bezier(.4, 0, .9, .6)'), duration);
 }
 
+// Text fields match :focus-visible however they got focus, so the field ring keys off real keyboard
+// navigation: Tab turns it on; a pointer press or a shortcut (which may focus a field by script) turns it off.
+if (typeof document !== 'undefined') {
+  const root = document.documentElement;
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Tab') root.setAttribute('data-keyboard-focus', '');
+    else if (event.metaKey || event.ctrlKey) root.removeAttribute('data-keyboard-focus');
+  }, { capture: true, passive: true });
+  document.addEventListener('pointerdown', () => root.removeAttribute('data-keyboard-focus'), { capture: true, passive: true });
+}
+
 /** A view that just became current rises softly into place. */
-export function enterView(element: HTMLElement, distance = 6, spring: Spring = { response: 0.26 }): void {
+export function enterView(element: HTMLElement, distance = 6, spring: Spring = { response: 0.24 }): void {
   if (!canAnimate(element) || element.hidden) return;
-  if (reducedMotion()) { play(element, [{ opacity: 0 }, { opacity: 1 }], 150, 'ease-out'); return; }
+  // Reduced motion: the view simply appears (a send or a thread switch plays nothing).
+  if (reducedMotion()) return;
   const { keyframes, duration } = springKeyframes(spring, progress => ({ opacity: opacityLead(progress), transform: `translateY(${px(distance * (1 - progress))}) scale(${fixed(0.99 + 0.01 * progress)})` }));
   play(element, keyframes, duration);
 }
@@ -225,14 +218,17 @@ export function enterView(element: HTMLElement, distance = 6, spring: Spring = {
  *  thread switches never dims the transcript again; a nearly opaque start skips the rise. */
 export function settleIn(element: HTMLElement, distance = 4, spring: Spring = { response: 0.22 }, start = SETTLE_FROM): void {
   if (!canAnimate(element) || element.hidden) return;
-  const live = running.has(element) ? presentation(element) : undefined;
-  running.get(element)?.cancel();
+  const current = running.get(element);
+  const live = current ? presentation(element) : undefined;
+  const rate = current ? opacityRate(current) : 0;
+  current?.cancel();
   const from = live?.opacity ?? start;
   if (from >= 0.99) return;
-  if (reducedMotion()) { play(element, [{ opacity: from }, { opacity: 1 }], 120, 'ease-out'); return; }
+  if (reducedMotion()) return;
   const rise = !distance ? 0 : live ? live.y : from > 0.85 ? 0 : distance;
   const moving = Math.abs(rise) >= 0.5;
-  const { keyframes, duration } = springKeyframes(spring, progress => {
+  // Carries the running fade's speed over, so a burst of switches rises smoothly instead of in steps.
+  const { keyframes, duration } = springKeyframes({ ...spring, velocity: Math.max(0, rate) / (1 - from) }, progress => {
     const y = rise * (1 - progress);
     // Opacity follows the spring itself (no lead): the cross-fade is the soothing part, ~200 ms.
     // The tail ends on an explicit translateY(0) (never `none`), and the finished animation clears it.
@@ -241,6 +237,13 @@ export function settleIn(element: HTMLElement, distance = 4, spring: Spring = { 
   play(element, keyframes, duration);
 }
 const SETTLE_FROM = 0.7;
+/** Opacity per second of a spring animation right now (its keyframes are one frame apart). */
+function opacityRate(animation: Animation): number {
+  const frames = (animation.effect as KeyframeEffect | null)?.getKeyframes() ?? [];
+  const at = Math.floor(Number(animation.currentTime ?? 0) / FRAME);
+  const [a, b] = [frames[at]?.opacity, frames[at + 1]?.opacity];
+  return a === undefined || b === undefined ? 0 : ((Number(b) - Number(a)) / FRAME) * 1000;
+}
 
 /** The previous thread's rows, held while a first-visit page loads: inert, dimmed to 0.7 from what is
  *  on screen (~120 ms), so a fast load never blinks through an empty pane. False when motion is off
@@ -255,7 +258,10 @@ export function holdDim(element: HTMLElement): boolean {
 /** Ends a hold: the new content settles in from the live opacity, or the dim simply ends. */
 export function releaseHold(element: HTMLElement, settle: boolean): void {
   element.inert = false;
-  if (settle) settleIn(element); else running.get(element)?.cancel();
+  // A fast page lands before the dim shows: nothing to settle from, so it gets a soft fade of its own instead of a hard cut.
+  const current = running.get(element);
+  if (settle && current && presentation(element).opacity > 0.9) { current.cancel(); settleIn(element, 0, undefined, 0.85); }
+  else if (settle) settleIn(element); else current?.cancel();
   element.style.removeProperty('opacity');
 }
 
@@ -442,10 +448,12 @@ export function installDialogMotion(dialog: HTMLDialogElement): () => void {
     departed = false;
     // Mirror any stylesheet that arrived since the last open, so the exit copy is styled on time.
     stage();
+    // A hidden scrim computes opacity 1, so a first open fades from 0; a reopen mid-exit continues from what is on screen.
+    const wasHidden = scrim.hidden;
     scrim.hidden = false; plate.hidden = false;
     rect = fitPlate(plate, dialog);
     if (!canAnimate(dialog)) return;
-    play(scrim, [{ opacity: presentation(scrim).opacity }, { opacity: 1 }], reducedMotion() ? 120 : 180, 'ease-out');
+    play(scrim, [{ opacity: wasHidden ? 0 : presentation(scrim).opacity }, { opacity: 1 }], reducedMotion() ? 120 : 180, 'ease-out');
     materializeIn(plate, { scale: 0.97, y: 8, spring: { response: 0.26 }, origin: '50% 45%' });
     contentArrives(dialog, 0, 20);
   }
@@ -511,17 +519,24 @@ export function trackSegment(group: HTMLElement, selected: HTMLElement | null): 
   group.dataset.segmentSelected = selected.hasAttribute('aria-pressed') ? '[aria-pressed="true"]' : selected.hasAttribute('aria-selected') ? '[aria-selected="true"]' : '.selected';
   place(group, selected);
 }
+// A thumb whose stylesheet turns its transition off jumps to the new spot, so a size FLIP
+// would play in the wrong place; it then lands at once instead.
+function slides(thumb: HTMLElement): boolean {
+  return getComputedStyle(thumb).transitionDuration.split(',').some(value => Number.parseFloat(value) > 0);
+}
+
 function place(group: HTMLElement, selected: HTMLElement): void {
   // The pill's size snaps and a `scale` FLIP carries it from the old size, alongside the
   // stylesheet's translate transition: no layout property ever animates.
   const thumb = group.querySelector<HTMLElement>(':scope > .segment-thumb');
   const width = Number.parseFloat(group.style.getPropertyValue('--seg-w')) || 0, height = Number.parseFloat(group.style.getPropertyValue('--seg-h')) || 0;
   if (thumb && group.dataset.segmentReady !== undefined && width && height && selected.offsetWidth && selected.offsetHeight && canAnimate(thumb) && !reducedMotion()
-    && (Math.abs(width - selected.offsetWidth) > 0.5 || Math.abs(height - selected.offsetHeight) > 0.5)) {
+    && group.dataset.segmentLast !== selected.textContent && slides(thumb) && (Math.abs(width - selected.offsetWidth) > 0.5 || Math.abs(height - selected.offsetHeight) > 0.5)) {
     const sx = width / selected.offsetWidth, sy = height / selected.offsetHeight;
-    const { keyframes, duration } = springKeyframes({ damping: 1, response: 0.28 }, progress => ({ scale: `${fixed(sx + (1 - sx) * progress)} ${fixed(sy + (1 - sy) * progress)}` }));
+    const { keyframes, duration } = springKeyframes({ damping: 1, response: 0.2 }, progress => ({ scale: `${fixed(sx + (1 - sx) * progress)} ${fixed(sy + (1 - sy) * progress)}` }));
     play(thumb, keyframes, duration);
   }
+  group.dataset.segmentLast = selected.textContent ?? '';
   group.style.setProperty('--seg-x', px(selected.offsetLeft));
   group.style.setProperty('--seg-y', px(selected.offsetTop));
   group.style.setProperty('--seg-w', px(selected.offsetWidth));

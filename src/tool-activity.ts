@@ -52,7 +52,7 @@ function rawRecord(tool: ToolActivity, preview: string): string {
   // A running call without a card has nothing to show yet, and a PandaCode row with no card and no output already says it all.
   if (preview ? !preview.includes(PARTIAL) : tool.status === 'running' || pandacodeTool(tool.name) && !tool.output.trim()) return '';
   const sections = (tool.input.trim() ? section('input', tool.input) : '') + (tool.output.trim() ? section('output', tool.output) : '');
-  return sections ? `<details class="tool-trace-raw"${preview ? '' : ' open'}><summary aria-label="${RAW_LABEL}" title="${RAW_LABEL}">${CODE_ICON}</summary><div class="tool-trace-raw-body">${sections}</div></details>` : '';
+  return sections ? `<details class="tool-trace-raw"${preview ? '' : ' open'}><summary aria-label="${RAW_LABEL}">${CODE_ICON}</summary><div class="tool-trace-raw-body">${sections}</div></details>` : '';
 }
 
 /** Caller owns the stable key and restores native details.open when replacing activity rows. */
@@ -71,8 +71,8 @@ export function renderToolActivity(content: string | ToolActivity, key: string):
   // A launched machine thread is named on the row, so the transcript can group launches into one card.
   const thread = tool.status === 'completed' && tool.name.endsWith('machine_launch') ? machineResult(tool.output).thread : undefined;
   // Nothing beyond the row: a plain line, not an empty disclosure.
-  if (!body) return `<div class="tool-activity tool-trace" ${attrs} data-static><div class="tool-trace-summary" title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}</div></div>`;
-  return `<details class="tool-activity tool-trace" ${attrs}${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary title="${escape(named.name || 'Tool')}">${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div></details>`;
+  if (!body) return `<div class="tool-activity tool-trace" ${attrs} data-static><div class="tool-trace-summary">${lead}${traceRowHtml(trace)}</div></div>`;
+  return `<details class="tool-activity tool-trace" ${attrs}${thread ? ` data-machine-thread="${escape(thread)}"` : ''}><summary>${lead}${traceRowHtml(trace)}${icon('chevron', 'tool-trace-chevron')}</summary><div class="tool-activity-body">${visible ? body : `<div class="tool-trace-frame">${body}</div>`}</div></details>`;
 }
 
 function renderLegacyTool(content: string, key: string): string {

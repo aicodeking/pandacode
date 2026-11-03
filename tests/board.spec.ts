@@ -359,3 +359,13 @@ test('the sidebar view menu switches views, marks the current one and stays reac
   await expect(page.locator('.sidebar .brand #view-menu')).toBeVisible();
 });
 
+test('board cards say what needs you, in the sidebar\'s words', async ({ page }) => {
+  await page.goto('/?sections');
+  await showView(page, 'Board');
+  const state = (title: string) => board(page).locator('.board-card', { hasText: title }).locator('.board-state');
+  await expect(state('Migrate settings storage')).toHaveText('Approval');
+  await expect(state('Migrate settings storage')).toHaveAttribute('data-state', 'attention');
+  await expect(state('Upgrade the build toolchain')).toHaveText('Failed');
+  await expect(state('Profile startup time')).toHaveText(/^Limited/);
+  await expect(card(page, 'Migrate settings storage')).toHaveAttribute('aria-description', 'Needs approval');
+});

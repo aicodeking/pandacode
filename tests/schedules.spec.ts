@@ -61,6 +61,16 @@ test('expands, runs now with a scheduled marker and folded trace', async ({ page
   await expect(toggle(page)).toBeFocused();
 });
 
+test('the strip rides inside the prompt box, and Enter on a switch does not send the prompt', async ({ page }) => {
+  await expect(page.locator('#composer #wake-strip')).toBeVisible();
+  await prompt(page).fill('Do not send me');
+  await toggle(page).click();
+  await row(page, 'Check the CI run').getByRole('switch').focus();
+  await page.keyboard.press('Enter');
+  await expect(prompt(page)).toHaveValue('Do not send me');
+  await expect(page.locator('#transcript .user-message', { hasText: 'Do not send me' })).toHaveCount(0);
+});
+
 test('snoozes and pauses a schedule', async ({ page }) => {
   await toggle(page).click();
   // A row shows only Run now; the rest lives in its ⋯ menu.

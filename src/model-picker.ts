@@ -213,7 +213,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   }
 
   function heading(logo: string, name: string, status = ''): string {
-    return `<div class="model-menu-group-heading">${logo}<h3>${escape(name)}</h3>${status}</div>`;
+    return `<div class="model-menu-group-heading" role="presentation">${logo}<span class="model-menu-group-name">${escape(name)}</span>${status}</div>`;
   }
 
   function railItem(key: string, logo: string, name: string, count: string, classes: string, selected: boolean, label = name, tip = ''): string {
@@ -241,7 +241,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const inUse = (key: string) => !teamSelected && key === (currentConnection ? `c:${currentConnection}` : `h:${current.provider}`);
     let railHtml = '';
     if (recent.length) railHtml += railItem('recent', icon('undo'), 'Recent', '', query ? ' is-dim' : '', !query && view === 'recent');
-    if (teams.length) railHtml += railItem('teams', icon('worktree'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
+    if (teams.length) railHtml += railItem('teams', icon('team'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
     if (all.length) railHtml += '<div class="model-menu-rail-heading" role="presentation">Harnesses</div>';
     railHtml += all.map(group => {
       const count = query ? hits.get(group.key)!.length : 0;
@@ -274,7 +274,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       markup = heading(icon('undo'), 'Recent') + recent.map(row => modelRow(row, true, '')).join('');
     } else if (view === 'teams') {
       total = teams.length;
-      markup = heading(icon('worktree'), 'Agent teams', '<span>Lead and workers</span>') + teams.map(teamRow).join('');
+      markup = heading(icon('team'), 'Agent teams', '<span>Lead and workers</span>') + teams.map(teamRow).join('');
     } else {
       const group = all.find(group => group.key === view);
       if (group) {

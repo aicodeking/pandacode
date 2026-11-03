@@ -66,7 +66,7 @@ test('/btw while the main thread runs opens a side thread without queueing or st
   expect(await calls(page, 'send_message')).toHaveLength(2);
   // By the way is an ordinary inspector tab: selected while open, and closable.
   const tab = page.locator('#inspector .inspector-tab[data-view="btw"]');
-  await expect(tab.locator('.inspector-tab-button')).toHaveAttribute('aria-current', 'true');
+  await expect(tab.locator('.inspector-tab-button')).toHaveAttribute('aria-selected', 'true');
   await tab.getByRole('button', { name: 'Close By the way', exact: true }).click();
   await expect(tab).toBeHidden();
   await expect(page.locator('#inspector-title')).not.toHaveText('By the way');

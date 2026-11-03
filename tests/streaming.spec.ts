@@ -314,7 +314,8 @@ test.describe('streamed responses', () => {
       await expect(live(page)).toBeVisible();
       if (view === 'board') {
         // Narration lines up with the turn header the step rail hangs from.
-        const groupLeft = (await page.locator('#stream-region .turn-activity-summary').boundingBox())!.x;
+        // In the turn card the header row is padded, so the line to meet is its label's start, not the row's edge.
+        const groupLeft = (await page.locator('#stream-region .turn-activity-summary .turn-activity-label').boundingBox())!.x;
         for (const text of [page.locator('#stream-region [data-commentary] p').first(), live(page).locator('p').first()]) {
           expect(Math.abs((await text.boundingBox())!.x - groupLeft)).toBeLessThanOrEqual(1);
         }

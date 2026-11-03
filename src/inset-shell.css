@@ -1,7 +1,8 @@
 /* Inset shell. One frame tone (--frame) fills the window; the sidebar and the Settings nav have no
  * fill of their own and sit on it. The conversation (.main-pane), the inspector and the Settings
- * content are inset panels (--panel-surface, 12px radius, 8px from the window edges) told apart by
- * tone only (Flat); Increase Contrast restores an outline. The frame gaps are a window drag region
+ * content are inset panels (--panel-surface, 12px radius, 8px from the window edges) with a hairline
+ * edge (--ds-border, drawn as an inset outline above the content) and the soft card shadow; Increase
+ * Contrast makes the edge solid. The frame gaps are a window drag region
  * (`data-tauri-drag-region` on .workspace). Base rules (styles.css, settings.css, inspector-bar.css)
  * paint with these tokens; this file holds the tokens and the inset geometry.
  *
@@ -19,7 +20,10 @@
   background:var(--frame);
 }
 .workspace:is(.sidebar-collapsed,.board-view,.github-view){--pane-top:0px}
-html[data-vsix] .workspace{--frame:var(--sidebar)}
+/* Dark: the frame sits a step below the #151515 panels, as the reference's page sits below its cards. */
+html[data-theme="dark"] .workspace{--frame:var(--sidebar)}
+html[data-vsix] .workspace{--frame:color-mix(in srgb,var(--sidebar) 82%,black)}
+html[data-vsix][data-theme="light"] .workspace{--frame:color-mix(in srgb,var(--sidebar) 92%,black)}
 
 .workspace>.main-pane{margin:var(--inset) var(--inset) var(--inset) 0;border-radius:var(--inset-radius);overflow:hidden}
 .workspace:not(.inspector-closed)>.main-pane{margin-right:0}
@@ -27,16 +31,14 @@ html[data-vsix] .workspace{--frame:var(--sidebar)}
 /* The inspector keeps its own grid column; the panel sits inside it with the gap on its left. */
 .workspace>.inspector{margin:var(--inset);border-radius:var(--inset-radius);overflow:hidden}
 .workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{margin:0 0 0 var(--inset);border-radius:0}
+/* Panel edges: a hairline over the content and the soft card shadow. Full-bleed main panes have none. */
+.workspace>:is(.main-pane,.inspector),.workspace .settings-content{outline:1px solid var(--ds-border);outline-offset:-1px;box-shadow:var(--ds-shadow-card)}
+.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.main-pane{outline:none;box-shadow:none}
 /* A closing inspector keeps its column for its ~130 ms fade (hidePanel in src/motion.ts); it takes no input. */
 .workspace>.inspector[data-leaving]{pointer-events:none}
 
-/* Over a wallpaper the frame is the frost (one blur layer for the whole window) with the same step
- * toward the text; panels are a denser tint of the page colour with no second blur. */
-.workspace[data-wallpaper]{
-  --frame-tint:color-mix(in srgb,var(--workspace-frost-surface),var(--text) 6%);
-  --panel-surface:color-mix(in srgb,var(--bg) 78%,transparent);
-}
-.workspace[data-wallpaper]::after{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;background:var(--frame-tint);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost)}
+/* A scene (the sky, src/sky-window.ts, or a wallpaper) shows only inside the main pane, which turns transparent
+ * over it (sky-window.css); the frame, the inspector and Settings keep their own tones and never show it. */
 
 /* Inspector diffs keep an 8px gutter at the panel's end instead of running into its edge. */
 .workspace>.inspector :is(.cv-body,.diff-viewer-content){margin-inline-end:var(--inset)}
@@ -46,13 +48,17 @@ html[data-vsix] .workspace{--frame:var(--sidebar)}
 .workspace>.sidebar{container:sidebar / inline-size}
 @container sidebar (max-width:279px){html[data-native-platform=macos] .sidebar>.brand>.brand-name{display:none}}
 
-/* AppKit material (not under an imported VS Code theme, whose colours stay solid): the frame is the
- * material with a light tint; panels stay solid. */
-html:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--bg) 8%,transparent)}
-html[data-theme="dark"]:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--sidebar) 50%,transparent)}
+/* AppKit material (the default on macOS; not under an imported VS Code theme, whose colours stay solid): the frame
+ * is one fixed tint, the solid frame tone at 80%, over the window's behind-window blur, so what is behind the window
+ * shows through softly while sidebar text keeps 4.5:1 whatever is behind it. It never follows the wallpaper. */
+html:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,color-mix(in srgb,var(--sidebar),var(--text) 4%) 80%,transparent)}
+html[data-theme="dark"]:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--sidebar) 80%,transparent)}
 
 /* Overlay inspector (651–920px): a floating inset over the conversation's right side. */
 @media(max-width:920px){
+  /* The overlay inspector floats over the thread, with an edge that reads in dark. */
+  html[data-theme="dark"] .workspace>.inspector{box-shadow:-20px 0 40px rgb(0 0 0 / .35)}
+
   .workspace>.main-pane,.workspace:not(.inspector-closed)>.main-pane{margin-right:var(--inset)}
   .workspace>.inspector,.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{margin:0 var(--inset) 0 0;border-radius:var(--inset-radius)}
   .workspace:is(.sidebar-collapsed,.board-view,.github-view)>.main-pane{margin:0}
@@ -64,9 +70,8 @@ html[data-theme="dark"]:not([data-vsix]):is([data-native-material="liquidGlass"]
 }
 
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
-  .workspace[data-wallpaper]::after{content:none}
-  .workspace[data-wallpaper]{--panel-surface:var(--bg)}
+  .workspace[data-scene]>.main-pane{--panel-surface:var(--bg)}
   html:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace,
   html[data-theme]:not([data-vsix]):is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .workspace{--frame:color-mix(in srgb,var(--sidebar),var(--text) 4%)}
 }
-@media(prefers-contrast:more){.workspace>:is(.main-pane,.inspector),.settings-content{outline:1px solid var(--border);outline-offset:-1px}}
+@media(prefers-contrast:more){.workspace>:is(.main-pane,.inspector),.workspace .settings-content{outline:1px solid var(--border);outline-offset:-1px;box-shadow:none}}

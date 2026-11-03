@@ -80,24 +80,25 @@ function stepsInOrder(steps: TaskSchedule[]): TaskSchedule[] {
   return [...out, ...steps.filter(step => !out.includes(step))];
 }
 
+/** The page's description, behind the Upcoming heading's mark. */
+const SCHEDULES_ABOUT = 'Agents can wake their own thread later and send messages to other threads, and you can set the same up here. A schedule sends a message to a thread once, on repeat, or after another thread finishes. A workflow chains threads: each step starts when the previous one ends. Agent-created schedules are tinted.';
 const field = (label: string, control: string, cls = '') => `<label class="schedules-field ${cls}"><span>${label}</span>${control}</label>`;
 const switchRow = (key: string, title: string, detail: string) =>
-  `<div class="setting-row"><div><strong>${title}</strong>${infoMark(detail)}</div><input type="checkbox" class="settings-switch" data-setting="${key}" aria-label="${title}"></div>`;
+  `<div class="setting-row"><div><strong>${title}</strong><span class="sr-only">${detail}</span></div><input type="checkbox" class="settings-switch" data-setting="${key}" aria-label="${title}">${infoMark(detail, `About ${title}`)}</div>`;
 const segmented = (cls: string, label: string, items: [string, string][], attr: string) =>
   `<div class="${cls} schedules-segmented" role="group" aria-label="${label}">${items.map(([id, text]) => `<button type="button" data-${attr}="${id}" aria-pressed="false">${text}</button>`).join('')}</div>`;
 
 export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSettingsOptions): () => void {
   host.innerHTML = `<div class="schedules">
-    <p class="schedules-intro">Agents can wake their own thread later and send messages to other threads. You can set the same up here.${infoMark('A schedule sends a message to a thread once, on repeat, or after another thread finishes. A workflow chains threads: each step starts when the previous one ends. Agent-created schedules are tinted.', 'About schedules')}</p>
     <div class="settings-group">
       ${switchRow('agentsMaySchedule', 'Let agents schedule wake-ups', 'Agents get tools to wake their own thread later or send a timed message.')}
       ${switchRow('askBeforeMessagingOtherTasks', 'Ask before agents message other threads', 'An agent scheduling a message for another thread asks you first. Self wake-ups never ask.')}
       ${switchRow('paused', 'Pause all schedules', 'Holds every schedule without deleting it. Due runs and triggers wait until you resume.')}
-      <div class="setting-row"><div><strong>Agent limit per thread</strong>${infoMark('Active agent-created schedules allowed on one thread.')}</div><input type="number" class="schedules-limit" min="${LIMIT_MIN}" max="${LIMIT_MAX}" step="1" aria-label="Agent limit per thread"></div>
+      <div class="setting-row"><div><strong>Agent limit per thread</strong><span class="sr-only">Active agent-created schedules allowed on one thread.</span></div><input type="number" class="schedules-limit" min="${LIMIT_MIN}" max="${LIMIT_MAX}" step="1" aria-label="Agent limit per thread">${infoMark('Active agent-created schedules allowed on one thread.', 'About Agent limit per thread')}</div>
     </div>
     <p class="schedules-paused" role="status" hidden>${icon('pause')}<span>Schedules are on hold. Nothing is lost: anything due, and any thread that finishes meanwhile, waits here and runs when you resume.</span><button type="button" class="secondary-button" data-resume-all>Resume all</button></p>
     <span id="schedules-held-note" hidden>Paused for all schedules</span>
-    <div class="settings-heading schedules-heading"><h3>Upcoming</h3>${segmented('schedules-filter', 'Show schedules', FILTERS, 'filter')}<button type="button" class="secondary-button schedules-new-workflow">${icon('branch')}New workflow</button><button type="button" class="secondary-button schedules-new">${icon('plus')}New schedule</button></div>
+    <div class="settings-heading schedules-heading"><h3>Upcoming</h3>${infoMark(SCHEDULES_ABOUT, 'About schedules')}<span class="sr-only">${SCHEDULES_ABOUT}</span>${segmented('schedules-filter', 'Show schedules', FILTERS, 'filter')}<button type="button" class="secondary-button schedules-new-workflow">${icon('branch')}New workflow</button><button type="button" class="secondary-button schedules-new">${icon('plus')}New schedule</button></div>
     <form class="schedules-editor schedules-card" aria-label="Schedule" novalidate hidden>
       ${field('Thread', '<select class="schedules-thread" aria-label="Thread"></select>')}
       ${field('Title', '<input type="text" class="schedules-title" maxlength="120" autocomplete="off" aria-label="Title" placeholder="Optional; the message’s first words otherwise">')}
