@@ -904,6 +904,27 @@ a permission round-trip, mode/thought switches, usage and resume). The recorded
 frames back the unit tests in `providers/zcode.rs`, and an ignored smoke test
 (`installed_zcode_lists_models`) reads the real catalog without sending a prompt.
 
+Re-verified without a prompt against the CLI bundled with ZCode.app 3.17.2 on
+2026-11-03 (`installed_zcode_snapshot_capabilities`, also ignored): the create
+snapshot now also carries `slashCommands` (name, description, input hint,
+source; builtins include `/goal` and `/compact`), `todos` and a `projection`
+(live context use against the window, pending permissions, active tool calls).
+Catalog entries carry `description`, `maxOutputTokens`, a `disabledReason` and
+`properties.inputFormat` (`supportsText`/`supportsImage`/`supportsVideo`/
+`supportsAudio`/`supportsPdf`); image support is per model (GLM-5.3-Flash
+reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
+service-tier field: the GLM Coding Plan sells speed per plan (Pro advertises
+faster generation speeds, Max dedicated resources at peak times; Lite is
+10,000 credits a week, Pro 6x that, Max 14x), never per model, so there is no
+ZCode equivalent of Codex's per-model speed tiers to select. `session/create`
+also accepts `mcpServers` (stdio or http/sse entries), `additionalDirectories`
+and tool allow/deny lists, and `session/usage` answers session token totals
+(input, output, reasoning, cache creation and read, request and error counts);
+a fresh deferred session may answer session-not-found there until its first
+send. Coding Plan quota itself is the desktop app's account state and is not
+exposed on this protocol. Event names during a real turn were not re-recorded
+(no prompt was sent), so streaming frames stay pinned to the 3.16.3 recordings.
+
 ## Hermes Agent
 
 Hermes Agent (`hermes`; install with `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash`
