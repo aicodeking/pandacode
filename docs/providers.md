@@ -1113,8 +1113,13 @@ is a status line with the checkpoint id. Compaction is the discovered `/compact`
 command (see slash-command discovery). Extra folders (`additionalDirectories` on
 create) wait on a task having extra roots to pass; this checkout has none yet.
 
-**Not yet.** Screenshots are refused (the composer offers documents and folders
-with a note); interactive questions (`interaction/requestUserInput`) decline with a
+**Images.** Image input is per model (`properties.inputFormat.supportsImage` on
+the catalog entry). GLM-5.3-Flash reports it; GLM-5.3 does not. The composer
+refuses images on a text-only model with a note, and `session/send` carries
+accepted captures as `attachments` (`kind: image`, PNG `dataBase64`). Disabled
+catalog entries stay in the picker, greyed out, with their `disabledReason`.
+
+**Not yet.** Interactive questions (`interaction/requestUserInput`) decline with a
 note so the turn continues; slash-command discovery and the harness console are not
 offered. The protocol is ZCode's private surface and evolves with the CLI — frames
 are parsed defensively (unknown events ignored, unknown reverse requests answered

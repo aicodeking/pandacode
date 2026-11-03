@@ -54,6 +54,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             context_window: entry["limit"]["context"]
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= 1_000_000_000),
+            ..ModelInfo::default()
         });
     }
     if !remaining.is_empty() {
@@ -83,6 +84,7 @@ fn parse_plain(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
                 reasoning_efforts: Vec::new(),
                 default_reasoning_effort: None,
                 context_window: None,
+                ..ModelInfo::default()
             });
         }
     }
