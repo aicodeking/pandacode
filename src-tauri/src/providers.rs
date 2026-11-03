@@ -3507,7 +3507,8 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse"
+            | "devin" | "zcode" | "hermes",
             Some(host),
         ) => (
             None,
@@ -3519,9 +3520,6 @@ async fn run_process_with_tools(
             )
             .await?,
         ),
-        // ZCode bridging does not pass `mcpServers` in session/create yet, so a
-        // started server would sit unconsumed; drop host tools until it does.
-        ("zcode", Some(_)) => (None, None),
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
