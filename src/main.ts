@@ -43,7 +43,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
-import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, holdLiveCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -1826,8 +1826,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const saved = card.getBoundingClientRect(), target = Math.max(0, transcriptScroller.scrollTop + saved.top - live.top);
   const room = target + transcriptScroller.clientHeight - (transcriptScroller.scrollHeight - tailRoom);
   tailSession = state.sessionId;
-  // The footer (what the saved card adds to the live one), less any height the held live card gives back (a short reply,
-  // holdLiveCard), eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
+  // The footer eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
   // scroll end holds and nothing above moves; what runs past the window the follow takes.
   const delta = Math.round(saved.height - live.height);
   const timing = bridgeCard(card, delta ? live.height : saved.height + Math.min(0, room));
@@ -2190,7 +2189,6 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   setHidden(message, !current.text);
   if (appeared && message.parentElement?.classList.contains('turn-card-reply-content')) fadeInReply(message);
   const card = region.querySelector<HTMLElement>('.turn-card.is-live');
-  if (card) holdLiveCard(card, current.turnKey);
   if (card && card.hasAttribute('data-done') !== Boolean(finishing)) card.toggleAttribute('data-done', Boolean(finishing));
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
   setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
@@ -2420,8 +2418,6 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   else if (changed && (mode === 'folded' || mode === 'summary')) enterText(label);
   // A card's trace does not fold when the run ends: the saved card replaces it folded, and its bridge eases the height (handOffCard).
   if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity) && !(carded && workedMs !== undefined)) foldTurn(activity, carded);
-  // A live card holds its height while its trace folds (`holdLiveCard`): the reply grows into the space the trace gave
-  // up, and what a short reply leaves is given back once at the end of the run (handOffCard's bridge).
 }
 /** What the agent is doing before its first step (or while it waits); the elapsed time is the header's tooltip. */
 // Startup and generic statuses read as the reference's `Working on it…` until the first step or a real wait.
