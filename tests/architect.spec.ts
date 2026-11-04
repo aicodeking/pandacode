@@ -159,7 +159,7 @@ test.describe('architect teams', () => {
       await page.setViewportSize({ width: 1280, height: 820 });
       await page.addInitScript(theme => {
         localStorage.setItem('pandacode.theme', theme);
-        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ enabled: true, visibility: 35, pinned: 'mon-morning' }));
+        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 35, pinned: 'mon-morning' }));
       }, theme);
       await installArchitect(page, { 'session-2': team('session-2') });
       await seedHistory(page, 'session-2', 'build', '**Search is ready.** The index now reuses its cached entries.\n\n```ts\nconst index = cachedIndex;\n```');

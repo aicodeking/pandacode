@@ -790,7 +790,7 @@ test('the title bar row keeps its on-screen height under interface zoom so it st
 for (const wallpaper of [false, true]) {
   test(`layout preferences draw the conversation and inspector as inset panels on one frame${wallpaper ? ' over a wallpaper' : ''}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.addInitScript(on => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: on, visibility: 20, blur: 0, set: 'automatic', pinned: null })), wallpaper);
+    await page.addInitScript(on => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: on, visibility: 20, blur: 0, set: 'automatic', pinned: null })), wallpaper);
     await open(page);
     await openInspector(page);
     // Geometry is read once the panel's entrance slide has finished.

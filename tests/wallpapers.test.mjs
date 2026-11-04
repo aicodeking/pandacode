@@ -106,16 +106,15 @@ test('ships 21 distinct local WebP scenes within a five MiB collection budget', 
   assert.ok(bytes < 5 * 1024 * 1024);
 });
 
-test('wallpapers are off by default; version 1 saves at the untouched defaults turn off, customised ones keep their choice', () => {
-  assert.equal(WALLPAPER_PREFERENCES_VERSION, 2);
+test('wallpapers are off by default, and an older save starts off with its choices kept', () => {
+  assert.equal(WALLPAPER_PREFERENCES_VERSION, 3);
   assert.equal(migrateWallpaperPreferences(null).enabled, false);
-  assert.equal(migrateWallpaperPreferences({}).enabled, false, 'an empty v1 save was on by default, untouched');
-  assert.equal(migrateWallpaperPreferences({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }).enabled, false);
-  for (const custom of [{ visibility: 45 }, { blur: 6 }, { set: 'fri' }, { pinned: 'tue-night' }]) {
-    const migrated = migrateWallpaperPreferences({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null, ...custom });
-    assert.equal(migrated.enabled, true, JSON.stringify(custom));
+  // An older save starts off whatever it held, and keeps its choices for when the switch is turned on again.
+  for (const version of [undefined, 1, 2]) {
+    const migrated = migrateWallpaperPreferences({ version, enabled: true, visibility: 45, blur: 6, set: 'fri', pinned: 'tue-night' });
+    assert.deepEqual(migrated, { enabled: false, visibility: 45, blur: 6, set: 'fri', pinned: 'tue-night' }, String(version));
   }
-  assert.equal(migrateWallpaperPreferences({ enabled: false, visibility: 60 }).enabled, false, 'a customised save that was off stays off');
-  assert.equal(migrateWallpaperPreferences({ version: 2, enabled: true, visibility: 20 }).enabled, true, 'a v2 save is taken as it is');
-  assert.equal(migrateWallpaperPreferences({ version: 2, visibility: 20 }).enabled, false);
+  assert.equal(migrateWallpaperPreferences({}).enabled, false);
+  assert.equal(migrateWallpaperPreferences({ version: 3, enabled: true, visibility: 20 }).enabled, true, 'a current save is taken as it is');
+  assert.equal(migrateWallpaperPreferences({ version: 3, visibility: 20 }).enabled, false);
 });

@@ -127,7 +127,7 @@ test.describe('thread tiles', () => {
   });
 
   test('a wallpaper is cut to the tiles, so the frame shows between them and at their corners', async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 60, blur: 0, set: 'automatic', pinned: null })));
+    await page.addInitScript(() => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 60, blur: 0, set: 'automatic', pinned: null })));
     await open(page);
     await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'wallpaper');
     const clip = () => page.locator('.workspace-wallpaper').evaluate(node => (node as HTMLElement).style.clipPath);

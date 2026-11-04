@@ -51,6 +51,11 @@ test.describe('sidebar sections', () => {
     await page.addInitScript(() => localStorage.setItem('pandacode.sidebar.sort', JSON.stringify({ perProject: 3 })));
     await open(page);
     await expect(section(page, 'review').locator('.task-item')).toHaveCount(3);
+    // Its text starts where the section's heading does.
+    const textLeft = (node: Element) => { const range = document.createRange(); range.selectNodeContents(node); return range.getBoundingClientRect().left; };
+    const headingLeft = await section(page, 'review').locator('.group-heading').evaluate(textLeft);
+    const moreLeft = await section(page, 'review').getByRole('button', { name: 'Show 15 more', exact: true }).evaluate(textLeft);
+    expect(Math.abs(moreLeft - headingLeft)).toBeLessThan(1);
     await section(page, 'review').getByRole('button', { name: 'Show 15 more', exact: true }).click();
     await expect(section(page, 'review').locator('.task-item')).toHaveCount(18);
     await section(page, 'review').getByRole('button', { name: 'Show less', exact: true }).click();
@@ -377,7 +382,7 @@ $&`);
 
   for (const [theme, wallpaper] of [['light', false], ['dark', false], ['light', true], ['dark', true]] as const) {
     test(`Settled shows the sidebar's own surface and rows never pass under it (${theme}${wallpaper ? ', wallpaper' : ''})`, async ({ page }) => {
-      await page.addInitScript(([theme, wallpaper]) => { localStorage.setItem('pandacode.theme', theme); localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: wallpaper, visibility: 20, blur: 0, set: 'automatic', pinned: null })); }, [theme, wallpaper] as const);
+      await page.addInitScript(([theme, wallpaper]) => { localStorage.setItem('pandacode.theme', theme); localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: wallpaper, visibility: 20, blur: 0, set: 'automatic', pinned: null })); }, [theme, wallpaper] as const);
       await page.setViewportSize({ width: 1280, height: 640 });
       await open(page);
       expect(await page.locator('.workspace').evaluate(node => node.hasAttribute('data-wallpaper'))).toBe(wallpaper);
