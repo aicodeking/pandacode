@@ -3892,6 +3892,12 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
 /// Run-loop events shared by the desktop and serve: an exit request stops local agents
 /// (cloud runs keep going on their machines) within a deadline, then the process exits.
 fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
+    // A Dock click: other PandaCode windows can be up while the main one is hidden, so always show it.
+    #[cfg(target_os = "macos")]
+    if matches!(event, tauri::RunEvent::Reopen { .. }) {
+        tray::show(app);
+        return;
+    }
     if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
         // A headless host outlives its (immediately closed) window; only an explicit exit stops it.
         if headless::active() && code.is_none() {
@@ -3989,6 +3995,7 @@ pub fn run() {
                 if let Err(error) = appearance::setup(&window) {
                     eprintln!("Native appearance setup failed: {error}");
                 }
+                tray::hide_on_close(&window);
             }
             Ok(())
         })
