@@ -1624,7 +1624,7 @@ function contextBarHtml(s: Session, fresh: boolean): string {
   let markup = worktrees.contextBar(s, fresh).replace('<div class="composer-context', '<div id="composer-context" class="composer-context');
   // While git status loads, a quiet placeholder holds the branch chip's place so nothing shifts when it arrives.
   if (!s.remoteDevice && !s.worktreePath && !state.git && state.inspectorLoading && !markup.includes('branch-chip')) {
-    markup = markup.replace(/(<span class="composer-local"[\s\S]*?<\/span><\/span>)/, `$1<span class="branch-chip branch-chip-pending" aria-hidden="true">${icon('branch')}<span class="branch-chip-name"></span></span>`);
+    markup = markup.replace(/(<(?:span|button)\b[^>]*\bclass="composer-local"[\s\S]*?<\/span><\/(?:span|button)>)/, `$1<span class="branch-chip branch-chip-pending" aria-hidden="true">${icon('branch')}<span class="branch-chip-name"></span></span>`);
   }
   if (!markup.includes('link-chip-state')) return markup;
   const template = document.createElement('template'); template.innerHTML = markup;
@@ -5089,6 +5089,7 @@ async function changeTaskProject(projectId: string): Promise<void> {
     terminalPanel.minimize();
     if (currentGeneration !== state.generation) return;
     await refreshInspector();
+    if (currentGeneration === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
     if (hadAttachments) notify('Attachments cleared for the new project.');
   } finally { configuringSessions.delete(selected.id); }
 }

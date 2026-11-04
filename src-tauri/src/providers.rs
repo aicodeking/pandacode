@@ -3134,7 +3134,9 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
     match config.provider.as_str() {
         "codex" => {
             // Process-local override: never alter the user's Codex config.
-            command.args(["app-server", "--enable", "goals"]);
+            // Normal tasks need the same structured question tool as Plan mode;
+            // otherwise Codex can only ask in prose and may keep working.
+            command.args(["app-server", "--enable", "goals", "--enable", "default_mode_request_user_input"]);
         }
         "pi" | "omp" => pi::configure(command, config),
         "zcode" => zcode::configure(command),

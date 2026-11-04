@@ -195,7 +195,7 @@ html[data-theme] .conversation-pane .approval-allow:hover:not(:disabled){backgro
   .composer-tray .composer-context>.link-chip>span:not(.link-chip-state){display:none}
 }
 @container composer (max-width:460px){
-  .composer-tray .composer-context>.composer-local[data-checkout="local"]{display:none}
+  .composer-tray .composer-context>span.composer-local[data-checkout="local"]{display:none}
 }
 
 /* ---------- The composer's segmented controls hand their highlight to the gliding thumb (trackSegment) ---------- */

@@ -406,8 +406,15 @@ from the legacy Python Kimi CLI and its Wire protocol. See
 [prompt turns](https://agentclientprotocol.com/protocol/v1/prompt-turn), and
 [permission requests](https://agentclientprotocol.com/protocol/v1/tool-calls).
 
-The first release supports boolean tool approvals. Structured provider questions
-and custom elicitation forms are not implemented. Kimi's multiple-choice questions
+Codex's structured questions and MCP elicitation forms use PandaCode's reply form.
+PandaCode enables `default_mode_request_user_input` for its Codex task processes
+so questions are available in normal tasks as well as Plan mode, without changing
+the user's Codex configuration. Requests stay pending until the user submits or
+cancels; permission modes never choose an answer. The app instructions tell the
+agent to ask through the blocking question tool and wait, or end its turn if the
+tool is unavailable. Muse questions also use the shared reply form.
+
+Kimi's multiple-choice questions
 are cancelled rather than selecting an answer through a generic Approve button.
 Other unsupported reverse requests receive explicit errors; Claude is asked to put
 questions in its text response so the user can answer in the next turn. Existing CLI hooks, MCP configuration, and

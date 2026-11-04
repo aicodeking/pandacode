@@ -931,6 +931,9 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread","turn":{
         })
         .await
         .unwrap();
+        // The provider cannot move past the question until the user submits.
+        assert!(tokio::time::timeout(Duration::from_millis(100), events.recv()).await.is_err());
+        assert!(!task.is_finished());
         for (response, valid) in [
             (json!({"answers":{"q":["wrong"]}}), false),
             (json!({"answers":{"q":["A"]}}), true),
@@ -948,6 +951,10 @@ printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread","turn":{
                 .unwrap()
                 .unwrap();
             assert_eq!(result.is_ok(), valid);
+            if !valid {
+                assert!(tokio::time::timeout(Duration::from_millis(100), events.recv()).await.is_err());
+                assert!(!task.is_finished(), "an invalid answer must leave the provider waiting");
+            }
         }
         tokio::time::timeout(Duration::from_secs(3), task)
             .await
