@@ -1620,6 +1620,8 @@ fn a_slow_help_probe_is_not_remembered_but_an_answer_is() {
     assert!(!super::hook_events_answer(key(), || None), "timed out");
     assert!(super::hook_events_answer(key(), || Some("--include-hook-events".into())), "asked again");
     assert!(super::hook_events_answer(key(), || panic!("remembered")));
+}
+
 fn can_use(id: &str, tool: &str, input: Value) -> Value {
     json!({"type":"control_request","request_id":id,"request":{"subtype":"can_use_tool","tool_name":tool,"input":input}})
 }
