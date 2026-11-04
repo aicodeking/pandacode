@@ -5,13 +5,18 @@
 mod mac {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use serde::{Deserialize, Serialize};
-    use std::{process::Command, time::Duration};
+    use std::{
+        process::Command,
+        sync::{Mutex, PoisonError},
+        time::Duration,
+    };
 
     const FLAG: &str = "--pandacode-usage-keychain";
     const CHILD: &str = "PANDACODE_USAGE_KEYCHAIN_CHILD";
     const TARGET: &str = "PANDACODE_USAGE_KEYCHAIN_TARGET";
     const MARKER: &[u8] = b"PANDACODE_USAGE_KEYCHAIN:";
     const LIMIT: usize = 32 * 1024;
+    const ERR_INTERACTION_NOT_ALLOWED: i32 = -25308;
 
     #[derive(Serialize, Deserialize)]
     #[serde(tag = "status", content = "data", rename_all = "camelCase")]
@@ -19,8 +24,16 @@ mod mac {
         Found(String),
         Missing,
         Blocked,
+        /// The unlocked Keychain refused this process; asking would need a prompt.
+        Refused,
         #[cfg(test)]
         Probe(bool),
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Failure {
+        Refused,
+        Other,
     }
 
     fn valid_target(target: &str) -> bool {
@@ -86,23 +99,24 @@ mod mac {
             .map(str::to_owned)
     }
 
-    fn decode(bytes: &[u8]) -> Result<Option<Vec<u8>>, ()> {
+    fn decode(bytes: &[u8]) -> Result<Option<Vec<u8>>, Failure> {
         let mut frames = bytes
             .split(|b| *b == b'\n')
             .filter_map(|line| line.strip_prefix(MARKER));
-        let frame = frames.next().ok_or(())?;
+        let frame = frames.next().ok_or(Failure::Other)?;
         if frames.next().is_some() {
-            return Err(());
+            return Err(Failure::Other);
         }
-        match serde_json::from_slice(frame).map_err(|_| ())? {
+        match serde_json::from_slice(frame).map_err(|_| Failure::Other)? {
             Reply::Found(data) => {
-                let result = STANDARD.decode(&data).map(Some).map_err(|_| ());
+                let result = STANDARD.decode(&data).map(Some).map_err(|_| Failure::Other);
                 let mut bytes = data.into_bytes();
                 bytes.fill(0);
                 result
             }
             Reply::Missing => Ok(None),
-            _ => Err(()),
+            Reply::Refused => Err(Failure::Refused),
+            _ => Err(Failure::Other),
         }
     }
 
@@ -139,21 +153,104 @@ mod mac {
         Ok(output.stdout.bytes)
     }
 
-    fn read(target: &str) -> Result<Option<Vec<u8>>, ()> {
+    fn read(target: &str) -> Result<Option<Vec<u8>>, Failure> {
         if !valid_target(target) {
-            return Err(());
+            return Err(Failure::Other);
         }
-        let mut bytes = capture(target, Duration::from_secs(3))?;
+        let mut bytes = capture(target, Duration::from_secs(3)).map_err(|()| Failure::Other)?;
         let result = decode(&bytes);
         bytes.fill(0);
         result
     }
 
     pub(crate) fn read_claude(service: &str) -> Result<Option<Vec<u8>>, ()> {
-        read(service)
+        static TOOL_FAILED: Mutex<bool> = Mutex::new(false);
+        match read(service) {
+            Err(Failure::Refused) if service != "glm" => {
+                until_first_failure(&TOOL_FAILED, || read_with_security_tool(service))
+            }
+            result => result.map_err(|_| ()),
+        }
     }
+
+    /// `security` runs without our disabled-interaction flag, so an item whose
+    /// access list does not trust it may raise a dialog. The first failure
+    /// (denied, or killed at the deadline) therefore stops it for this launch,
+    /// and the lock is held across the read so concurrent checks cannot stack
+    /// dialogs. Every tray open re-reads usage, so this must not repeat.
+    // ponytail: one latch for all Claude profiles, per-service if anyone needs a retry without a restart.
+    fn until_first_failure(
+        failed: &Mutex<bool>,
+        read: impl FnOnce() -> Result<Option<Vec<u8>>, ()>,
+    ) -> Result<Option<Vec<u8>>, ()> {
+        let mut failed = failed.lock().unwrap_or_else(PoisonError::into_inner);
+        if *failed {
+            return Err(());
+        }
+        let result = read();
+        *failed = result.is_err();
+        result
+    }
+
+    /// Claude Code writes its login with Apple's `security` tool, so the
+    /// item's access list trusts `/usr/bin/security` and not PandaCode. The
+    /// direct read is then refused without a prompt; asking the trusted tool
+    /// for the same exact item succeeds without one.
+    fn read_with_security_tool(service: &str) -> Result<Option<Vec<u8>>, ()> {
+        let account = account_name().ok_or(())?;
+        let mut command = Command::new("/usr/bin/security");
+        command.args(["find-generic-password", "-s", service, "-a", &account, "-w"]);
+        let mut output = crate::workspace::run_process(
+            command,
+            "Usage credential reader",
+            LIMIT,
+            Duration::from_secs(3),
+        )
+        .map_err(|_| ())?;
+        output.stderr.bytes.fill(0);
+        security_output(
+            output.status.code(),
+            output.stdout.truncated,
+            std::mem::take(&mut output.stdout.bytes),
+        )
+    }
+
+    fn security_output(
+        code: Option<i32>,
+        truncated: bool,
+        mut stdout: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, ()> {
+        if truncated || code != Some(0) {
+            stdout.fill(0);
+            // 44: the item does not exist.
+            return if !truncated && code == Some(44) { Ok(None) } else { Err(()) };
+        }
+        while stdout.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
+            stdout.pop();
+        }
+        Ok((!stdout.is_empty()).then_some(stdout))
+    }
+
     pub(crate) fn read_glm() -> Result<Option<Vec<u8>>, ()> {
-        read("glm")
+        read("glm").map_err(|_| ())
+    }
+
+    /// Only an access-list refusal may go on to `security`. A locked Keychain
+    /// answers with the same code, but there the tool would ask for the
+    /// Keychain password.
+    fn may_ask_security_tool(code: i32, unlocked: impl FnOnce() -> bool) -> bool {
+        code == ERR_INTERACTION_NOT_ALLOWED && unlocked()
+    }
+
+    fn default_keychain_unlocked() -> bool {
+        #[link(name = "Security", kind = "framework")]
+        extern "C" {
+            fn SecKeychainGetStatus(keychain: *const std::ffi::c_void, status: *mut u32) -> i32;
+        }
+        const UNLOCKED: u32 = 1; // kSecUnlockStateStatus
+        let mut status = 0;
+        // Null is the default keychain; this reads a state flag, never an item.
+        unsafe { SecKeychainGetStatus(std::ptr::null(), &mut status) == 0 && status & UNLOCKED != 0 }
     }
 
     fn reply(target: &str) -> Reply {
@@ -198,6 +295,9 @@ mod mac {
                 Reply::Found(STANDARD.encode(password.as_ref()))
             }
             Err(error) if error.code() == -25300 => Reply::Missing,
+            Err(error) if may_ask_security_tool(error.code(), default_keychain_unlocked) => {
+                Reply::Refused
+            }
             _ => Reply::Blocked,
         }
     }
@@ -249,6 +349,48 @@ mod mac {
             assert!(decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"blocked\"}").is_err());
             assert_eq!(decode(b"\nrunning 1 test\nPANDACODE_USAGE_KEYCHAIN:{\"status\":\"found\",\"data\":\"dGVzdA==\"}\n").ok().flatten(), Some(b"test".to_vec()));
             assert!(decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"missing\"}\nPANDACODE_USAGE_KEYCHAIN:{\"status\":\"missing\"}").is_err());
+        }
+
+        #[test]
+        fn only_an_unlocked_keychain_refusal_reaches_the_security_tool() {
+            assert_eq!(
+                decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"refused\"}"),
+                Err(Failure::Refused)
+            );
+            assert_eq!(
+                decode(b"PANDACODE_USAGE_KEYCHAIN:{\"status\":\"blocked\"}"),
+                Err(Failure::Other)
+            );
+            assert!(may_ask_security_tool(-25308, || true));
+            assert!(!may_ask_security_tool(-25308, || false), "locked keychain");
+            assert!(!may_ask_security_tool(-25293, || true));
+        }
+
+        #[test]
+        fn security_tool_output_is_parsed_and_failures_keep_nothing() {
+            let parse = |code, truncated, out: &[u8]| security_output(code, truncated, out.to_vec());
+            assert_eq!(parse(Some(0), false, b"{\"a\":1}\r\n"), Ok(Some(b"{\"a\":1}".to_vec())));
+            assert_eq!(parse(Some(0), false, b"\n"), Ok(None));
+            assert_eq!(parse(Some(44), false, b""), Ok(None));
+            assert_eq!(parse(Some(51), false, b"secret"), Err(()));
+            assert_eq!(parse(None, false, b"secret"), Err(()));
+            assert_eq!(parse(Some(0), true, b"sec"), Err(()));
+            assert_eq!(parse(Some(44), true, b"sec"), Err(()));
+        }
+
+        #[test]
+        fn a_failed_security_read_never_runs_again() {
+            let failed = Mutex::new(false);
+            assert_eq!(until_first_failure(&failed, || Ok(None)), Ok(None));
+            assert_eq!(until_first_failure(&failed, || Ok(Some(vec![1]))), Ok(Some(vec![1])));
+            assert_eq!(until_first_failure(&failed, || Err(())), Err(()));
+            let mut ran = false;
+            let again = until_first_failure(&failed, || {
+                ran = true;
+                Ok(None)
+            });
+            assert_eq!(again, Err(()));
+            assert!(!ran);
         }
 
         #[test]
