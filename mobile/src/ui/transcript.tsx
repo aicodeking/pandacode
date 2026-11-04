@@ -2,7 +2,7 @@
 // each; the live run is its own component reading useLive, so streamed deltas re-render only it.
 import * as Clipboard from 'expo-clipboard';
 import * as Haptics from 'expo-haptics';
-import { memo, useCallback, useEffect, useMemo, useState, type Ref } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { markPaint } from '../connect/perf.ts';
 import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import type { Message } from '../connect/types.ts';
@@ -26,9 +26,8 @@ import { mono, useColors } from './theme.ts';
 const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
 /** How far from the newest message (pt) before the jump-to-latest button shows. */
 const AWAY = 240;
-/** Fabric can stop painting an inverted list at rest on iOS 27, so subview clipping is off there:
- * https://github.com/facebook/react-native/issues/59731. That report says clipping alone doesn't
- * cause it, so this may not cure it; RN 0.88 has no option for the inverted path itself. */
+/** Fabric stops painting an inverted list at rest on iOS 27 (facebook/react-native#59731), so there
+ * the transcript runs oldest first, with subview clipping off. Remove once RN fixes the inverted path. */
 const IOS_27 = Platform.OS === 'ios' && parseInt(Platform.Version, 10) >= 27;
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -273,44 +272,77 @@ function Older({ deviceId, sessionId }: { deviceId: string; sessionId: string })
 
 const key = (row: TurnRow) => row.id;
 const ANCHOR = { minIndexForVisible: 0, autoscrollToTopThreshold: AWAY };
+// autoscrollToTopThreshold scrolls to offset 0, the oldest row in the chronological list; following
+// the newest is done by hand there (Transcript). minIndexForVisible skips the Older header by itself.
+const CHRONOLOGICAL_ANCHOR = { minIndexForVisible: 0 };
 const render = ({ item }: { item: TurnRow }) => <Row row={item} />;
 
-/** Inverted list: newest at the bottom, the live run and unsent messages below the last stored message.
- * `onAway` hears only when the list crosses AWAY from the newest message. */
+/** Jumps to the newest message: offset 0 in the inverted list, the end of the chronological one.
+ * The scroll view's own scrollToEnd, because FlatList's leaves out the padding that clears the composer. */
+export function scrollToNewest(list: FlatList<TurnRow> | null, animated = true) {
+  if (IOS_27) list?.getNativeScrollRef()?.scrollToEnd({ animated });
+  else list?.scrollToOffset({ offset: 0, animated });
+}
+
+/** Newest at the bottom, the live run and unsent messages below the last stored message: an inverted
+ * list, or on iOS 27 a chronological one (IOS_27). `onAway` hears only when the list crosses AWAY from the newest message. */
 export const Transcript = memo(function Transcript({ deviceId, sessionId, top, bottom, listRef, onAway }: {
-  deviceId: string; sessionId: string; top: number; bottom: number; listRef?: Ref<FlatList<TurnRow>>; onAway?: (away: boolean) => void;
+  deviceId: string; sessionId: string; top: number; bottom: number; listRef?: RefObject<FlatList<TurnRow> | null>; onAway?: (away: boolean) => void;
 }) {
   const messages = useMessages(deviceId, sessionId);
-  const data = useMemo(() => turnRows(messages).reverse(), [messages]);
+  const ownRef = useRef<FlatList<TurnRow>>(null);
+  const list = listRef ?? ownRef;
+  // What an inverted list gets for free, on iOS 27's chronological one: it opens at the newest message
+  // and stays there as rows, the live run or the composer inset change, until the reader scrolls away.
+  const following = useRef(true);
+  const held = useRef(false); // A finger or momentum owns the scroll: don't pull it back.
+  const wasAway = useRef(false);
+  const data = useMemo(() => IOS_27 ? turnRows(messages) : turnRows(messages).reverse(), [messages]);
   useEffect(() => { if (data.length) markPaint(taskKey(deviceId, sessionId), data.length); }, [data.length, deviceId, sessionId]);
-  // Inverted: the end is the top, so this asks for older history as the user nears it.
-  const onEndReached = useCallback(() => void connect.loadOlder(deviceId, sessionId), [deviceId, sessionId]);
-  const onScroll = useMemo(() => {
-    if (!onAway) return undefined;
-    let away = false;
-    return (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const next = e.nativeEvent.contentOffset.y > AWAY;
-      if (next !== away) onAway((away = next));
-    };
+  // Asks for older history as the user nears the top: the inverted list's end, the other's start.
+  const onOlder = useCallback(() => void connect.loadOlder(deviceId, sessionId), [deviceId, sessionId]);
+  const onScroll = useCallback(({ nativeEvent: { contentOffset, contentSize, layoutMeasurement } }: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const away = IOS_27 ? contentOffset.y < contentSize.height - layoutMeasurement.height - AWAY : contentOffset.y > AWAY;
+    following.current = !away;
+    if (away === wasAway.current) return;
+    wasAway.current = away;
+    onAway?.(away);
   }, [onAway]);
   const thread = useMemo(() => ({ deviceId, sessionId }), [deviceId, sessionId]);
+  const older = <Older deviceId={deviceId} sessionId={sessionId} />;
+  const newest = <><History deviceId={deviceId} sessionId={sessionId} empty={!messages.length} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before /><LiveRun deviceId={deviceId} sessionId={sessionId} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before={false} /><Pending deviceId={deviceId} sessionId={sessionId} /></>;
+  const direction = IOS_27 ? {
+    ListHeaderComponent: older,
+    ListFooterComponent: newest,
+    onStartReached: onOlder,
+    onStartReachedThreshold: 1,
+    maintainVisibleContentPosition: CHRONOLOGICAL_ANCHOR,
+    contentContainerStyle: [styles.list, { paddingTop: top, paddingBottom: bottom }],
+    onContentSizeChange: () => { if (following.current && !held.current) scrollToNewest(list.current, false); },
+    onScrollBeginDrag: () => { held.current = true; },
+    onScrollEndDrag: () => { held.current = false; },
+    onMomentumScrollBegin: () => { held.current = true; },
+    onMomentumScrollEnd: () => { held.current = false; },
+  } : {
+    inverted: true,
+    ListHeaderComponent: newest,
+    ListFooterComponent: older,
+    onEndReached: onOlder,
+    onEndReachedThreshold: 1,
+    // New messages arriving while the user reads further up don't move what they read; near the
+    // newest message the list follows it.
+    maintainVisibleContentPosition: ANCHOR,
+    contentContainerStyle: [styles.list, { paddingTop: bottom, paddingBottom: top }],
+  };
   return (
     <ThreadContext.Provider value={thread}>
     <ImageViewerHost />
     <FlatList
-      ref={listRef}
-      inverted
+      ref={list}
       data={data}
       keyExtractor={key}
       renderItem={render}
-      ListHeaderComponent={<><History deviceId={deviceId} sessionId={sessionId} empty={!messages.length} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before /><LiveRun deviceId={deviceId} sessionId={sessionId} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before={false} /><Pending deviceId={deviceId} sessionId={sessionId} /></>}
-      ListFooterComponent={<Older deviceId={deviceId} sessionId={sessionId} />}
-      onEndReached={onEndReached}
-      onEndReachedThreshold={1}
-      // New messages arriving while the user reads further up don't move what they read; near the
-      // newest message the list follows it.
-      maintainVisibleContentPosition={ANCHOR}
-      contentContainerStyle={[styles.list, { paddingTop: bottom, paddingBottom: top }]}
+      {...direction}
       keyboardDismissMode="interactive"
       keyboardShouldPersistTaps="handled"
       onScroll={onScroll}
