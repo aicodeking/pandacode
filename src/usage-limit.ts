@@ -11,10 +11,13 @@ export function limitActive(task: Pick<Session, 'limitedAt' | 'limitedUntil'>, n
   return Boolean(task.limitedAt) && (task.limitedUntil == null || task.limitedUntil > now);
 }
 
-export function resetLabel(until: number | null | undefined, now = Date.now()): string {
-  if (!until) return t('Reset time not reported');
+export function resetTime(until: number, now = Date.now()): string {
   const sameDay = new Date(until).toDateString() === new Date(now).toDateString();
-  return t`Resets ${(sameDay ? time : day).format(until)}`;
+  return (sameDay ? time : day).format(until);
+}
+
+export function resetLabel(until: number | null | undefined, now = Date.now()): string {
+  return until ? t`Resets ${resetTime(until, now)}` : t('Reset time not reported');
 }
 
 /** Banner above the composer for a limited task that is not running. `alternatives` are the
@@ -24,8 +27,8 @@ export function limitBanner(task: Session, now = Date.now(), alternatives: { id:
   if (!task.limitedAt) return '';
   const passed = task.limitedUntil != null && task.limitedUntil <= now;
   const status = passed ? t('The usage limit has reset') : t`Usage limit reached · ${resetLabel(task.limitedUntil, now)}`;
-  const toggle = task.limitedUntil && !passed
+  const toggle = task.limitedUntil && !passed && !held
     ? `<label class="limit-resume"><input type="checkbox" class="limit-resume-switch" ${task.resumeAtReset ? 'checked' : ''}><span>${t('Resume at reset')}</span></label>` : '';
   return `<section class="limit-banner" aria-label="${t('Usage limit')}" data-passed="${passed}">${icon('alert')}<span class="limit-status" role="status">${escape(status)}</span>${toggle}
-    <button type="button" class="limit-continue" data-action="limit-continue">${t('Continue now')}</button>${passed ? '' : alternatives.map(c => `<button type="button" class="limit-continue" data-action="limit-switch" data-connection="${escape(c.id)}">${t`Continue on ${escape(c.name)}`}</button>`).join('')}<button type="button" class="icon-button" data-action="limit-dismiss" aria-label="${t('Dismiss usage limit')}" title="${t('Dismiss')}">${icon('close')}</button></section>`;
+    <button type="button" class="limit-continue" data-action="limit-continue">${t('Continue now')}</button>${passed ? '' : alternatives.map(c => `<button type="button" class="limit-continue" data-action="limit-switch" data-connection="${escape(c.id)}">Continue on ${escape(c.name)}</button>`).join('')}<button type="button" class="icon-button" data-action="limit-dismiss" aria-label="${t('Dismiss usage limit')}" title="${t('Dismiss')}">${icon('close')}</button></section>`;
 }

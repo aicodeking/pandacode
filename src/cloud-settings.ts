@@ -3,8 +3,8 @@
  * Vercel, Railway, Netlify and Google Cloud for deploys. Keys go straight to the OS keychain natively;
  * this view never reads them back. */
 import './cloud-settings.css';
-import { escape } from './dom';
 import { t } from './i18n.ts';
+import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 
 export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
@@ -65,8 +65,8 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
   netlify: {
     name: 'Netlify', summary: 'Deploys by agents, draft and production.',
     key: { name: 'key', label: 'Personal access token', placeholder: 'Netlify user settings / Applications', secret: true },
-    fields: [{ name: 'siteId', label: 'Project ID', placeholder: 'Optional; from Project configuration', optional: true }],
-    note: 'Create a personal access token in Netlify user settings. The optional project ID selects an existing project; otherwise the CLI uses this checkout. Tokens never enter agent prompts.', connect: 'Connect',
+    fields: [{ name: 'siteId', label: t('Project ID'), placeholder: 'Optional; from Project configuration', optional: true }],
+    note: 'Create a personal access token in Netlify user settings. The optional project ID selects an existing project; otherwise the CLI uses this checkout. Tokens never enter agent prompts.', connect: t('Connect'),
   },
   gcloud: {
     name: 'Google Cloud', summary: t('Deploys by agents: Cloud Run and Cloud Storage.'),
@@ -75,59 +75,52 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
   },
   docker: {
     name: 'Docker', summary: 'Containers on this machine or any Docker host.',
-    fields: [{ name: 'engine', label: 'Engine', placeholder: 'Optional; docker (default), podman, apple or lxc', optional: true }, { name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
-    note: 'Runs each task in its own container (label or name prefix pandacode) — Docker, Podman, Apple Containers, or the lxc client (LXD/Incus, which uses its own configured remotes; Podman remote hosts take ssh://). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: 'Connect',
+    fields: [{ name: 'engine', label: 'Engine', placeholder: 'Optional; docker (default), podman, apple or lxc', optional: true }, { name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: t('Image'), placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
+    note: 'Runs each task in its own container (label or name prefix pandacode) — Docker, Podman, Apple Containers, or the lxc client (LXD/Incus, which uses its own configured remotes; Podman remote hosts take ssh://). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: t('Connect'),
   },
   ...Object.fromEntries(Object.entries(KEYED).map(([id, provider]) => [id, {
     name: provider.name, summary: t('Cloud machines for agents.'),
     key: { name: 'key', label: provider.key, placeholder: provider.docs, secret: true }, fields: provider.fields,
-    note: t`Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: t('Connect'),
+    note: `Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: t('Connect'),
   }])) as Record<KeyedProvider, { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }>,
 };
 /** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
 type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
 const IMAGE_HELP = t('New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.');
 const CLAUDE_TOKEN_HELP = t('Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.');
-const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
+const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Agents → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
 
 export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost): () => void {
-  host.innerHTML = `<div class="settings-group cloud-settings" aria-label="${t('Cloud sandboxes')}"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>${t('Claude login for cloud agents')}</strong>${infoMark(CLAUDE_TOKEN_HELP, t('About the Claude login'))}<small class="cloud-detail">${t('Optional long-lived token')}</small></div></div>
-      <form class="cloud-form cloud-claude-form" novalidate aria-label="${t('Claude login for cloud agents')}">
-        <label><span>${t('Token')}</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="${t('From claude setup-token')}" aria-label="${t('Claude token for cloud agents')}" required></label>
-        <p class="cloud-progress" role="status" hidden></p>
-        <p class="cloud-error" role="alert" hidden></p>
-        <div class="cloud-actions"><button type="submit" class="primary-button">${t('Save token')}</button></div>
-      </form>
-    </div>${(Object.keys(PROVIDERS) as CloudConnection['provider'][]).map(id => {
+  const ids = Object.keys(PROVIDERS) as CloudConnection['provider'][];
+  const providerRow = (id: CloudConnection['provider']) => {
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
     return `<div class="cloud-provider" data-provider="${id}">
-      <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? `<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>${t('Set up sandboxes')}</button>` : ''}<button type="button" class="secondary-button" data-cloud="toggle">${t('Connect')}</button></div></div>
+      <div class="setting-row"><div><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success"></small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}</div>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
-      <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'instabox' ? `
+      <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, t('About inheriting environment variables'))}</div>${id === 'instabox' ? `
       <div class="cloud-image" hidden>
-        <div class="cloud-image-row"><label><span>${t('Machine image')}</span><select aria-label="${t('InstaBox machine image')}" disabled></select></label>${infoMark(IMAGE_HELP, t('About machine images'))}</div>
+        <div class="cloud-image-row"><label><span>Machine image</span><select aria-label=t("InstaBox machine image") disabled></select></label>${infoMark(IMAGE_HELP, t('About machine images'))}</div>
         <p class="cloud-image-status" role="status" hidden></p>
         <p class="cloud-image-error" role="alert" hidden></p>
-        <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">${t('Try again')}</button></div>
+        <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">Try again</button></div>
       </div>` : ''}
-      <form class="cloud-form" hidden novalidate aria-label="${escape(t`Connect ${provider.name}`)}">
+      <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
         ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
-        <div class="cloud-actions"><button type="button" class="secondary-button" data-cloud="cancel">${t('Cancel')}</button><button type="submit" class="primary-button">${escape(provider.connect)}</button></div>
+        <div class="cloud-actions"><button type="button" class="secondary-button" data-cloud="cancel">Cancel</button><button type="submit" class="primary-button">${escape(provider.connect)}</button></div>
       </form>
     </div>`;
   };
   // The keyed long tail folds away; the fold opens by itself once one of them is connected.
-  host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud providers">${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
-    <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
-    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}</div></div>
-      <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
-        <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
+  host.innerHTML = `<div class="settings-group cloud-settings" aria-label=t("Cloud providers")>${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
+    <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label=t("More cloud machines")>${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
+    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label=t("Cloud sandboxes")><div class="cloud-provider cloud-claude">
+      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, t('About the Claude login'))}</div></div>
+      <form class="cloud-form cloud-claude-form" novalidate aria-label=t("Claude login for cloud agents")>
+        <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder=t("From claude setup-token") aria-label=t("Claude token for cloud agents") required></label>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
         <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
@@ -163,8 +156,8 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const connection = connections.find(c => c.provider === id), root = section(id);
       const toggle = root.querySelector<HTMLButtonElement>('[data-cloud="toggle"]')!;
       const form = root.querySelector<HTMLFormElement>('form')!;
-      const sandboxes = id === 'cloudflare' && connection?.connected ? (connection.sandboxes ? ` · ${t('sandboxes ready')}` : ` · ${t('sandboxes not set up')}`) : '';
-      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `${t('Connected')}${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : PROVIDERS[id].summary;
+      const sandboxes = id === 'cloudflare' && connection?.connected ? (connection.sandboxes ? ' · sandboxes ready' : ' · sandboxes not set up') : '';
+      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : '';
       const setup = root.querySelector<HTMLButtonElement>('[data-cloud="sandboxes"]');
       if (setup) { setup.hidden = !connection?.connected || Boolean(connection.sandboxes); setup.disabled = Boolean(busy); }
       toggle.textContent = connection?.connected ? t('Disconnect') : form.hidden ? t('Connect') : t('Close');
@@ -204,7 +197,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   async function loadImages(): Promise<void> {
     imagesLoading = true; imagesError = ''; renderImages();
     try { images = await options.call<InstaboxImages>('cloud_instabox_images'); }
-    catch (error) { images = null; imagesError = t`Could not load machine images: ${error instanceof Error ? error.message : String(error)}`; }
+    catch (error) { images = null; imagesError = `Could not load machine images: ${error instanceof Error ? error.message : String(error)}`; }
     finally { imagesLoading = false; if (!disposed) renderImages(); }
   }
   function syncImages(): void {
@@ -218,7 +211,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     select.value = value;
     try {
       images = await options.call<InstaboxImages>('cloud_instabox_set_image', { image: value });
-      status.textContent = t`Saved. New machines start from ${images.images.find(image => image.value === images!.selected)?.label ?? images.selected}.`;
+      status.textContent = `Saved. New machines start from ${images.images.find(image => image.value === images!.selected)?.label ?? images.selected}.`;
     } catch (error) {
       status.hidden = true;
       imagesError = error instanceof Error ? error.message : String(error);
@@ -232,7 +225,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const root = section(id), data = new FormData(form);
     const value = (name: string) => String(data.get(name) ?? '').trim();
     const missing = [...(PROVIDERS[id].key ? [PROVIDERS[id].key!] : []), ...PROVIDERS[id].fields].find(field => !field.optional && !value(field.name));
-    if (missing) { say(root, 'error', t`Enter the ${missing.label.toLowerCase()}.`); return; }
+    if (missing) { say(root, 'error', `Enter the ${missing.label.toLowerCase()}.`); return; }
     busy = id; say(root, 'error', ''); say(root, 'progress', id === 'cloudflare' ? t('Preparing the deploy…') : t('Checking…')); render();
     try {
       const fields = Object.fromEntries(PROVIDERS[id].fields.filter(field => !field.sparse || value(field.name)).map(field => [field.name, value(field.name)]));
