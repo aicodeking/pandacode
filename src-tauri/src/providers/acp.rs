@@ -73,10 +73,21 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
         "hermes" => super::hermes::configure(command, config),
+        "antigravity" => antigravity_args(command),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
         }
+    }
+}
+
+/// The standalone server takes no subcommand; the `agy` CLI fallback serves ACP from `acp`.
+pub(crate) fn antigravity_args(command: &mut Command) {
+    let program = Path::new(command.as_std().get_program());
+    if program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("agy")) {
+        command.arg("acp");
+    } else if cfg!(target_os = "linux") {
+        command.arg("--uid=");
     }
 }
 
@@ -971,8 +982,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
     let mut command = super::provider_command("antigravity", path)?;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
@@ -1173,15 +1183,14 @@ fn connection_status(result: Result<(Value, Option<Value>), DiscoveryFailure>) -
 pub async fn provider_check_connection(provider: String) -> Result<ConnectionStatus, String> {
     if provider != "antigravity" { return Err("Connection checks are supported for Antigravity ACP.".into()); }
     let Some(path) = super::executable(&provider).filter(|path| path.is_file()) else {
-        return Ok(ConnectionStatus { installed: false, acp_ready: false, session_ready: false, state: "missing", message: "Select the installed official Antigravity ACP server executable.".into() });
+        return Ok(ConnectionStatus { installed: false, acp_ready: false, session_ready: false, state: "missing", message: "Install the agy CLI or select the official Antigravity ACP server executable.".into() });
     };
     let command = match super::provider_command(&provider, &path) {
         Ok(command) => command,
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };
     let mut command = command;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let discovery = super::acp_catalog::begin("antigravity", &path);
     let _temp = super::AgentTemp::redirect(&mut command);
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
@@ -1309,6 +1318,26 @@ impl Protocol {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn antigravity_args_give_acp_only_to_the_agy_cli() {
+        let args = |program: &str| {
+            let mut command = tokio::process::Command::new(program);
+            super::antigravity_args(&mut command);
+            command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let mut agy = vec!["agy", "agy.exe", "AGY.EXE", "/usr/local/bin/agy", "/custom/dir/agy"];
+        if cfg!(windows) {
+            agy.push(r"C:\Program Files\Antigravity\agy.exe");
+        }
+        for program in agy {
+            assert_eq!(args(program), ["acp"], "{program}");
+        }
+        let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
+        for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
+            assert_eq!(args(program), server, "{program}");
+        }
+    }
+
     use super::super::tests::config;
     use super::*;
 
@@ -2306,6 +2335,9 @@ mod tests {
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
+        let mut c = Command::new("/usr/local/bin/agy");
+        configure(&mut c, &config("antigravity"));
+        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp"]);
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));
