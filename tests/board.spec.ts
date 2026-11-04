@@ -326,6 +326,8 @@ test.describe('project board', () => {
     await page.unroute('**/src/preview.ts*');
     await installPreviewProbe(page, `sessions.push({ ...sessions[1], id: 'old-archived', title: 'Archived long ago', taskStage: 'completed', completedAt: now - 604800001, archived: true, taskDescription: 'Saved task details', pinned: false, sidebarOrder: null, lastResponseAt: null });`);
     await page.reload();
+    await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
+    await expect(prompt(page)).toBeEnabled();
     await openBoard(page);
     await expect(board(page)).not.toContainText('archive after');
     await column(page, 'Settled').getByRole('button', { name: 'Open task: Archived long ago', exact: true }).click();

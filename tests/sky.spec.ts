@@ -36,15 +36,15 @@ test('the sky is the default scene and the Wallpapers switch starts off', async 
   // The Custom swatch is a hue wheel until a custom colour is picked, never a copy of Blue.
   await expect(page.locator('.accent-custom .accent-swatch')).toHaveClass(/accent-swatch-pick/);
   const builtIn = page.locator('.vsix-choice[data-theme-id=""] small');
-  await expect(builtIn).toHaveText('Built in · your accent, over the sky');
+  await expect(builtIn).toHaveText('System palette · accent and wallpaper apply');
   await toggle.check();
   await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'wallpaper');
   await expect(sky(page)).toBeHidden();
-  // The theme and accent rows follow the switch at once.
-  await expect(builtIn).toHaveText('Built in · accent and wallpaper apply');
+  // The built-in palette keeps its identity when switching the scene behind it.
+  await expect(builtIn).toHaveText('System palette · accent and wallpaper apply');
   await toggle.uncheck();
   await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'sky');
-  await expect(builtIn).toHaveText('Built in · your accent, over the sky');
+  await expect(builtIn).toHaveText('System palette · accent and wallpaper apply');
 });
 
 test('a running agent raises the wind smoothly and lets it fall again', async ({ page }) => {
