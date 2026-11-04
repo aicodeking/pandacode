@@ -69,6 +69,7 @@ mod task_deletion;
 mod terminal;
 mod terminal_preferences;
 mod turn_changes;
+mod checkpoints;
 mod usage_keychain;
 mod usage_ledger;
 mod workspace;
@@ -2133,6 +2134,13 @@ async fn launch_operation_admitted(
     }
     tauri::async_runtime::spawn(async move {
         let changes_root = config.cwd.clone();
+        if !cloud && !cloud_attach && turn_message_id > 0 {
+            let root = config.cwd.clone();
+            let sid = session_id.clone();
+            if let Err(error) = blocking(move || checkpoints::capture(&root, &sid, turn_message_id)).await {
+                eprintln!("PandaCode: checkpoint unavailable: {error}");
+            }
+        }
         let changes_cache = app
             .path()
             .app_cache_dir()
@@ -4229,6 +4237,11 @@ pub fn run() {
                 chats::chat_create,
                 chats::chat_cleanup,
                 get_messages,
+                checkpoints::list_checkpoints,
+                checkpoints::compare_checkpoints,
+                checkpoints::preview_rewind,
+                checkpoints::rewind_checkpoint,
+                checkpoints::discard_rewind,
                 turn_changes::turn_change_diff,
                 turn_changes::turn_change_summary,
                 list_subagents,

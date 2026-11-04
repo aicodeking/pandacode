@@ -37,6 +37,13 @@ test('every published asset is named once', () => {
   }
 });
 
+test('fork release notes do not send users to the upstream npm installer', () => {
+  const notes = installNotes({ repository: 'SUP3RMASS1VE/pandacode' });
+  assert.doesNotMatch(notes, /npx pandacode/);
+  assert.match(notes, /PandaCode-macOS-arm64.dmg/);
+  assert.match(notes, /xattr/);
+});
+
 test('the macOS note names the same command the uninstaller uses', () => {
   assert.equal(UNQUARANTINE, 'xattr -dr com.apple.quarantine /Applications/PandaCode.app');
   assert.ok(macosNote(false).includes(UNQUARANTINE));

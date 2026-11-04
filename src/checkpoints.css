@@ -1,0 +1,11 @@
+.checkpoint-dialog{width:min(900px,calc(100vw - 32px));max-height:calc(100vh - 32px)}
+.checkpoint-review,.checkpoint-picker{min-width:0}
+.checkpoint-review details{margin-block:8px;padding:10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.checkpoint-review ul{max-height:160px;overflow:auto;padding-left:22px;font-family:var(--mono);font-size:var(--ds-text-meta);overflow-wrap:anywhere}
+.checkpoint-diff{max-height:45vh;overflow:auto}
+.checkpoint-limits{color:var(--muted);font-size:var(--ds-text-meta)}
+.checkpoint-error{color:var(--ds-danger);overflow-wrap:anywhere}
+.checkpoint-picker select{width:100%;margin-bottom:12px}
+.checkpoint-list{max-height:50vh;overflow:auto}
+.checkpoint-row{gap:12px;padding:10px;margin-bottom:6px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.checkpoint-row .ds-btn{flex:none}
