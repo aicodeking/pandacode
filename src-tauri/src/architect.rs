@@ -529,6 +529,19 @@ fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
     let _ = app.emit("architect-event", redact_team(team));
     let _ = app.emit("sessions-changed", ());
 }
+/// A team as events carried it before redaction took over: the tests still pin its
+/// lean shape (catalog, objective and pending prompt dropped from the payload).
+#[cfg(test)]
+fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
+    let mut lean = team.clone();
+    lean.config.catalog = Vec::new();
+    lean.objective = String::new();
+    lean.pending_turn = None;
+    if let Some(setup) = &mut lean.pending_setup {
+        setup.config.catalog = Vec::new();
+    }
+    lean
+}
 /// The webview's view of a team snapshot: environment values stay on this
 /// computer. Storage keeps the values (`save` serializes the snapshot whole), so
 /// only the copy that leaves the process is redacted. The variable names ride at
