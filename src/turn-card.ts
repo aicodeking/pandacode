@@ -132,17 +132,28 @@ export function keepReplyOpen(reply: HTMLElement): void {
  * shown (kept by turn key, so a rebuilt live card keeps it). It is read once a frame, before layout, so it sees the
  * animated heights; a frame where a reply grew but its grow animation has not started yet (the observer starts it
  * after layout) is skipped, so the hold never runs ahead of the reply. The saved card's bridge gives back what is
- * left, once, at the end of the run. */
+ * left, once, at the end of the run; the reader collapsing something gives it back at once (`releaseLiveCard`). */
+const READER_RELEASE_MS = 400;
+/** Past GROW_MS and under CARD_TRACE_FOLD_MS: the old reply's height eases out, and a final reply's fold is still held. */
+export const REPLY_SWAP_RELEASE_MS = 190;
 const liveHeights = new Map<string, number>();
 const liveCards = new Set<HTMLElement>();
+const released = new WeakMap<HTMLElement, number>();
 let holdFrame = 0;
 function holdLiveCards(): void {
   holdFrame = 0;
   for (const card of liveCards) {
     if (!card.isConnected) { liveCards.delete(card); continue; }
+    const key = card.dataset.liveKey ?? '';
+    // Released: the card follows its real height, then holds again from wherever it lands.
+    if (performance.now() < (released.get(card) ?? 0)) {
+      card.style.minHeight = '';
+      liveHeights.set(key, card.getBoundingClientRect().height);
+      continue;
+    }
     if ([...card.querySelectorAll<HTMLElement>('.turn-card-reply-content')].some(content => sizes.get(content) !== content.offsetHeight)) continue;
-    const key = card.dataset.liveKey ?? '', height = card.getBoundingClientRect().height;
-    if (height <= (liveHeights.get(key) ?? 0) + 0.5) continue;
+    const height = card.getBoundingClientRect().height;
+    if (card.style.minHeight && height <= (liveHeights.get(key) ?? 0) + 0.5) continue;
     liveHeights.set(key, height);
     card.style.minHeight = `${height}px`;
   }
@@ -157,6 +168,16 @@ export function holdLiveCard(card: HTMLElement, key: string): void {
   liveCards.add(card);
   if (!holdFrame) holdFrame = requestAnimationFrame(holdLiveCards);
 }
+
+/** A height the reader or a new reply gave up is theirs, not the fold's: the hold lets go for `ms`, long enough for what
+ * is closing to land, so no blank band stays under the card. */
+export function releaseLiveCard(card: HTMLElement | null | undefined, ms = READER_RELEASE_MS): void {
+  if (card) released.set(card, performance.now() + ms);
+}
+document.addEventListener('click', event => {
+  const control = (event.target as Element | null)?.closest?.('summary, .team-progress-toggle');
+  releaseLiveCard(control?.closest<HTMLElement>('.turn-card.is-live'));
+}, true);
 
 /** At the end of a run the saved card replaces the live one in the same task: it eases from the live card's
  * height (`from`) to its own, so the footer folds in under the reply and nothing above it jumps. */

@@ -1,20 +1,25 @@
-/* Spawned workers: the reference's Lineage card in the thread. An outer card (hairline, soft shadow) with a
-   muted "Workers" head ("N running" and a … menu), then an inner card of rows: harness logo, worker name, muted role · model, status
-   and a trailing chevron. A row opens its worker in the Architect & workers panel; any beyond the first six
-   are one more row away. Rows stay one 32px line (the architect spec caps a worker line at 32px). */
-.team-progress{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:2px 0 12px;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
-/* The head row: muted label, muted "N running" meta and a … that opens the team panel. */
-.team-progress-head{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 4px 0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);color:var(--muted)}
-.team-progress-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.team-progress-count{flex:none;font-variant-numeric:tabular-nums;white-space:nowrap}
-.team-progress-menu{width:28px;height:28px;color:var(--muted)}
+/* Spawned workers: quiet lines in the thread with no surface of their own, folded to one "Workers" line by default.
+   Its count says what needs the reader, and a … opens the team panel. Open, each row is the harness logo, worker name,
+   muted role · model, status and a trailing chevron; a row opens its worker in the Architect & workers panel, and any
+   beyond the first six are one more row away. Rows stay one 32px line (the architect spec caps a worker line at 32px). */
+.team-progress{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:2px 0 12px}
+.team-progress:not([data-open])>:not(.team-progress-head){display:none}
+.team-progress-head{display:flex;align-items:center;gap:4px;min-height:32px;color:var(--muted)}
+.team-progress-toggle{flex:1;min-width:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:32px;padding:0 var(--ds-row-pad-x) 0 4px;border:0;border-radius:var(--ds-radius-control);background:none;color:inherit;font:inherit;font-size:var(--ds-text-sub);text-align:left;cursor:pointer}
+.team-progress-toggle:hover{background:var(--ds-row-hover);color:var(--text)}
+.team-progress-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.team-progress-toggle>.icon{flex:none;width:16px;height:16px;color:var(--ds-glyph-faint);transition:rotate var(--spring-fast-duration) var(--spring-fast)}
+.team-progress[data-open] .team-progress-toggle>.icon{rotate:90deg}
+.team-progress-label{flex:none}
+.team-progress-count{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-variant-numeric:tabular-nums}
+.team-progress[data-count-tone=team] .team-progress-count{color:var(--ds-tone-team)}
+.team-progress[data-count-tone=warn] .team-progress-count{color:var(--ds-warn)}
+.team-progress[data-count-tone=danger] .team-progress-count{color:var(--ds-danger)}
+.team-progress-menu{flex:none;width:28px;height:28px;color:var(--muted)}
 .team-progress-menu .icon{width:18px;height:18px}
-/* The rows' inner card: the row after the head opens it, the last closes it, so no wrapper is needed. */
-.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:32px;padding:2px var(--ds-row-pad-x);border:solid var(--ds-border);border-width:0 1px;border-radius:0;background:var(--ds-card-inner);text-align:left;color:var(--muted)}
-.team-progress-head+*{border-top-width:1px;border-top-left-radius:var(--ds-radius-inner);border-top-right-radius:var(--ds-radius-inner)}
-.team-progress>:last-child,.team-progress>:has(+.team-progress-more[hidden]){border-bottom-width:1px;border-bottom-left-radius:var(--ds-radius-inner);border-bottom-right-radius:var(--ds-radius-inner);box-shadow:0 2px 4px -2px rgb(0 0 0 / .25)}
+.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:32px;padding:2px var(--ds-row-pad-x) 2px 4px;border:0;border-radius:var(--ds-radius-control);background:none;text-align:left;color:var(--muted)}
 .team-progress-worker{font-size:var(--ds-text-ui);line-height:1.3}
-.team-progress-worker:hover,.team-progress-more:hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-card-inner));color:var(--text)}
+.team-progress-worker:hover,.team-progress-more:hover{background:var(--ds-row-hover);color:var(--text)}
 .team-progress-worker:hover .team-progress-description small{color:var(--text)}
 .team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:var(--ds-radius-control)}
 .team-progress-logo{display:flex;flex:none;width:20px;justify-content:center}
@@ -33,7 +38,8 @@
 .team-progress-worker>.icon{width:var(--icon-md);height:var(--icon-md);flex:none;color:var(--muted)}
 .team-progress-more{font-size:var(--ds-text-ui)}
 .team-progress-more[hidden]{display:none}
-@media(prefers-contrast:more){.team-progress,.team-progress>*{box-shadow:none}.team-progress-description small{color:var(--text)}}
+@media(prefers-contrast:more){.team-progress-description small{color:var(--text)}}
+@media(prefers-reduced-motion:reduce){.team-progress-toggle>.icon{transition:none}}
 
 /* Micro-interactions: only without reduced motion. */
 @media(prefers-reduced-motion:no-preference){.team-progress-worker,.team-progress-more,.team-progress-description small,.team-progress-status{transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}.team-progress-worker:hover,.team-progress-more:hover{transition-duration:var(--ds-ease-in)}}

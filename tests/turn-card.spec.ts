@@ -108,6 +108,63 @@ test('a live turn shows a loading state, ticks its time and freezes it at the en
   await expect(time).toHaveText(frozen!);
 });
 
+const liveEvent = (page: Page, event: Record<string, unknown>) => page.evaluate(async event => {
+  const sessionId = document.querySelector<HTMLElement>('.task-item.selected')!.dataset.id;
+  (window as any).__previewEmit('agent-event', { sessionId, text: '', ...event });
+}, event);
+const step = (id: string, status: string, output = '') => ({ kind: 'tool', tool: { id, name: 'Bash', status, input: `run ${id}`, output } });
+
+test('the reply loads only until the first text, then keeps the latest text, even between steps', async ({ page }) => {
+  await open(page);
+  const live = page.locator('#stream-region .turn-card.is-live'), skeleton = live.locator('.turn-card-skeleton');
+  const reply = live.locator('.turn-card-reply .live-text');
+  await liveEvent(page, step('one', 'running'));
+  await expect(skeleton).toBeVisible();
+  await liveEvent(page, { kind: 'text', text: 'Reading the config first.' });
+  await expect(reply).toHaveText('Reading the config first.');
+  await expect(skeleton).toBeHidden();
+  // A step after the text never hands the reply back to the skeleton, nor repeats the text in the trace.
+  await liveEvent(page, step('one', 'completed', 'done'));
+  await liveEvent(page, { kind: 'message_start' });
+  await liveEvent(page, step('two', 'running'));
+  await expect(live.locator('[data-tool-key$="two"]')).toBeAttached();
+  await expect(reply).toHaveText('Reading the config first.');
+  await expect(skeleton).toBeHidden();
+  await expect(live.locator('.live-tools .activity-commentary')).toHaveCount(0);
+  // Newer text takes the reply, and the earlier text joins the trace in order.
+  await liveEvent(page, { kind: 'text', text: 'Now running the tests.' });
+  await expect(reply).toHaveText('Now running the tests.');
+  await expect(skeleton).toBeHidden();
+  await expect(live.locator('.live-tools .activity-commentary')).toHaveText('Reading the config first.');
+});
+
+test('collapsing a step while the turn runs gives its height back, with no blank band under the card', async ({ page }) => {
+  await open(page);
+  const live = page.locator('#stream-region .turn-card.is-live');
+  const output = Array.from({ length: 40 }, (_, line) => `line ${line}`).join('\n');
+  await liveEvent(page, { kind: 'text', text: 'Working on it.' });
+  await liveEvent(page, step('long', 'completed', output));
+  const row = live.locator('details[data-tool-key$="long"]'), summary = row.locator(':scope > summary');
+  await expect(summary).toBeVisible();
+  const height = async () => (await live.boundingBox())!.height;
+  // Closed first (a finished step may unfold by itself), then measured once it has landed.
+  await expect(async () => {
+    if (await row.evaluate(node => (node as HTMLDetailsElement).open)) await summary.click();
+    await expect(row).not.toHaveAttribute('open', '', { timeout: 500 });
+  }).toPass();
+  await page.waitForTimeout(500);
+  const closed = await height();
+  await summary.click();
+  await expect(row).toHaveAttribute('open', '');
+  await expect.poll(height).toBeGreaterThan(closed + 40);
+  await summary.click();
+  await expect(row).not.toHaveAttribute('open', '');
+  await expect.poll(height).toBeLessThan(closed + 4);
+  // It holds from there: it does not spring back to the tallest height it reached.
+  await page.waitForTimeout(600);
+  expect(await height()).toBeLessThan(closed + 4);
+});
+
 test('the live time ticks while the turn runs', async ({ page }) => {
   await page.clock.install();
   await page.goto('/?trace');

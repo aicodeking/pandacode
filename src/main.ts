@@ -43,7 +43,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
-import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, holdLiveCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { REPLY_SWAP_RELEASE_MS, SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, holdLiveCard, keepReplyOpen, onReplyCollapse, releaseLiveCard, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -902,7 +902,7 @@ transcriptScroller.addEventListener('scroll', () => {
   lastTranscriptTop = top;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false; }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
 transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
@@ -2252,7 +2252,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   for (const run of runs) {
     if (!run) { next.push(workers!); continue; }
     if (run.kind === 'message') {
-      if (run.item.key === current.retainedMessageKey) { next.push(liveMessage); continue; }
+      // In a card the latest text stays in the reply, even between steps; it joins the trace when newer text replaces it.
+      if (run.item.key === current.retainedMessageKey) { if (!region.querySelector('.turn-card-reply-content')) next.push(liveMessage); continue; }
       const key = run.item.key;
       let node = previous.get(key);
       if (!node) {
@@ -4323,6 +4324,8 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'text') {
     if (event.text && current.retainedMessageKey) {
       current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
+      // A shorter text takes the place of the last one: the card follows it down rather than leaving a blank band.
+      if (event.sessionId === state.sessionId) releaseLiveCard(document.querySelector<HTMLElement>('#stream-region .turn-card.is-live'), REPLY_SWAP_RELEASE_MS);
     }
     current.body.append(event.text);
     if (event.text.trim()) {

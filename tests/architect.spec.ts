@@ -488,6 +488,7 @@ test.describe('architect teams', () => {
       const index = (selector: string) => all.indexOf(root.querySelector(selector)!);
       return ['[data-tool-key="tool:read-plan"]', '[data-tool-key="tool:dispatch"]', '.team-progress-worker[data-worker-id="build"]', '.team-progress-worker[data-worker-id="review"]', '[data-tool-key="tool:verify"]'].map(index);
     });
+    await transcript(page).locator('.team-progress-toggle').click();
     await expect(transcript(page).locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
     await expect(transcript(page).locator('[data-tool-key="tool:verify"]')).toBeAttached();
     // In order and all present; the sample thread's rows may still sit above them for a moment.
@@ -503,12 +504,34 @@ test.describe('architect teams', () => {
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build search and review it.', createdAt: 2000 },
       { id: 302, sessionId: 'session-2', role: 'assistant', content: 'Delegated to the workers.', createdAt: 3000 },
     ] as Message[] });
-    await expect(transcript(page).locator('.team-progress-worker[data-worker-id="build"]')).toBeVisible();
+    await expect(transcript(page).locator('.team-progress-worker[data-worker-id="build"]')).toBeAttached();
     // Workers settled; PandaCode resumes the architect before the coordination message loads.
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'tool', text: '', tool: { id: 'review-diff', name: 'Bash', status: 'running', input: 'git diff', output: '' } }));
     const later = transcript(page).locator('[data-tool-key="tool:review-diff"]');
     await expect(later).toBeAttached();
     expect(await transcript(page).locator('.team-progress-worker[data-worker-id="review"]').evaluate((row, tool) => Boolean(row.compareDocumentPosition(tool!) & Node.DOCUMENT_POSITION_FOLLOWING), await later.elementHandle())).toBe(true);
+  });
+
+  test('workers in the thread have no surface of their own and stay collapsed until opened', async ({ page }) => {
+    const workers = [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })];
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
+    ] as Message[] });
+    const list = transcript(page).locator('.team-progress'), toggle = list.locator('.team-progress-toggle');
+    const row = list.locator('.team-progress-worker[data-worker-id="build"]');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(row).toBeHidden();
+    // Collapsed, the count says what needs the reader.
+    await expect(list.locator('.team-progress-count')).toHaveText('1 failed');
+    for (const [property, value] of [['background-color', 'rgba(0, 0, 0, 0)'], ['border-top-width', '0px'], ['box-shadow', 'none'], ['padding-left', '0px']] as const) await expect(list).toHaveCSS(property, value);
+    // The line starts at the list's left edge, as the rows do.
+    expect((await list.locator('.team-progress-label').boundingBox())!.x - (await toggle.boundingBox())!.x).toBeLessThan(30);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(row).toBeVisible();
+    await expect(row).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await toggle.click();
+    await expect(row).toBeHidden();
   });
 
   test('a long worker line never makes a narrow thread scroll sideways', async ({ page }) => {
@@ -518,6 +541,7 @@ test.describe('architect teams', () => {
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
     ] as Message[] });
     const row = transcript(page).locator('.team-progress-worker[data-worker-id="build"]');
+    await transcript(page).locator('.team-progress-toggle').click();
     await expect(row).toBeVisible();
     const fit = await transcript(page).evaluate(root => {
       const line = root.querySelector('.team-progress-worker')!.getBoundingClientRect();
@@ -581,6 +605,7 @@ test.describe('architect teams', () => {
       const builder = progress.locator('.team-progress-worker[data-worker-id="build"]');
       const reviewer = progress.locator('.team-progress-worker[data-worker-id="review"]');
       await expect(progress).toBeVisible();
+      await progress.locator('.team-progress-toggle').click();
       // One inline line per spawned worker, no card or team heading.
       await expect(builder).toContainText('Spawned Search indexing'); await expect(reviewer).toContainText('Spawned Accessibility audit');
       await expect(progress.locator('.team-progress-heading')).toHaveCount(0);
@@ -624,6 +649,7 @@ test.describe('architect teams', () => {
       await expect(builder).toContainText(/completed/i); await expect(reviewer).toContainText(/needs attention/i);
       expect(await page.evaluate(() => { const nodes = (window as any).__progressNodes; return nodes.host === document.querySelector('.team-progress') && nodes.build === document.querySelector('.team-progress-worker[data-worker-id="build"]') && nodes.review === document.querySelector('.team-progress-worker[data-worker-id="review"]'); })).toBe(true);
       // A text line does not shrink while pressed (that read as a flicker).
+      await reviewer.scrollIntoViewIfNeeded();
       const reviewerBox = (await reviewer.boundingBox())!;
       await page.mouse.move(reviewerBox.x + 20, reviewerBox.y + reviewerBox.height / 2); await page.mouse.down();
       expect(await reviewer.evaluate(el => getComputedStyle(el).scale)).toMatch(/^(1|none)$/);
