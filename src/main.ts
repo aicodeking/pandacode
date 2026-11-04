@@ -43,7 +43,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
-import { REPLY_SWAP_RELEASE_MS, SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, holdLiveCard, keepReplyOpen, onReplyCollapse, releaseLiveCard, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -811,7 +811,30 @@ transcriptScroller.tabIndex = 0;
 let stickToBottom = true, lastTranscriptTop = 0;
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+/** The live card shrinking (a result card or the trace folding) would clamp the scroll and slide everything above it down:
+ * the height it gave up becomes blank room under it, which new content grows back into. Only while the card's top is in
+ * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
+let liveCardSeen: { card: Element; height: number } | undefined;
+function keepTopOnShrink(): void {
+  const card = document.querySelector('#stream-region .turn-card.is-live'), before = liveCardSeen;
+  if (!card) { liveCardSeen = undefined; return; }
+  const box = card.getBoundingClientRect();
+  liveCardSeen = { card, height: box.height };
+  if (before?.card !== card || box.height >= before.height - 0.5 || tailBridging) return;
+  // At the end, the scroll has already lost what the card gave up (a clamp or scroll anchoring, in layout, before this runs).
+  const end = transcriptScroller.scrollHeight - transcriptScroller.clientHeight, top = transcriptScroller.scrollTop;
+  if (top < end - 1) return;
+  const clear = transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
+  const aim = Math.min(top + before.height - box.height, top + box.top - clear);
+  if (aim <= top) return;
+  tailSession = state.sessionId;
+  setTailRoom(tailRoom + aim - end);
+  transcriptScroller.scrollTop = aim;
+  // Where it landed, not where it was aimed: the room is whole pixels, and a fraction short would read as the reader scrolling up.
+  lastTranscriptTop = transcriptScroller.scrollTop;
+}
 function followTranscript(): void {
+  keepTopOnShrink();
   if (!stickToBottom) return;
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
   // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
@@ -888,8 +911,10 @@ transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
   // window goes, so nothing on screen moves and the scroll follows the wheel; the reader has left the bottom (a later
-  // scroll back down to the end pins again). A clamp (the old top past the end) is not the reader moving.
-  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= transcriptScroller.scrollHeight - transcriptScroller.clientHeight + 1) {
+  // scroll back down to the end pins again). A clamp (the old top past the end, or the scroll still at the end after a
+  // pixel's shrink) is not the reader moving.
+  const scrollEnd = transcriptScroller.scrollHeight - transcriptScroller.clientHeight;
+  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= scrollEnd + 1 && top < scrollEnd - 1) {
     absorbTailRoom(); stickToBottom = false; lastTranscriptTop = transcriptScroller.scrollTop;
     void loadOlderMessages(); return;
   }
@@ -1834,8 +1859,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const saved = card.getBoundingClientRect(), target = Math.max(0, transcriptScroller.scrollTop + saved.top - live.top);
   const room = target + transcriptScroller.clientHeight - (transcriptScroller.scrollHeight - tailRoom);
   tailSession = state.sessionId;
-  // The footer (what the saved card adds to the live one), less any height the held live card gives back (a short reply,
-  // holdLiveCard), eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
+  // The footer (what the saved card adds to the live one) eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
   // scroll end holds and nothing above moves; what runs past the window the follow takes.
   const delta = Math.round(saved.height - live.height);
   const timing = bridgeCard(card, delta ? live.height : saved.height + Math.min(0, room));
@@ -2199,7 +2223,6 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   setHidden(message, !current.text);
   if (appeared && message.parentElement?.classList.contains('turn-card-reply-content')) fadeInReply(message);
   const card = region.querySelector<HTMLElement>('.turn-card.is-live');
-  if (card) holdLiveCard(card, current.turnKey);
   if (card && card.hasAttribute('data-done') !== Boolean(finishing)) card.toggleAttribute('data-done', Boolean(finishing));
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
   setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
@@ -2237,6 +2260,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   const previous = new Map([...host.children].map(node => [(node as HTMLElement).dataset.streamKey, node as HTMLElement]));
   const next: HTMLElement[] = [];
   const commentary: { node: HTMLElement; content: string }[] = [];
+  /** Where the latest text falls among the steps, though it shows in the card's reply. */
+  let narratedAt = -1;
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
   const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
@@ -2253,7 +2278,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     if (!run) { next.push(workers!); continue; }
     if (run.kind === 'message') {
       // In a card the latest text stays in the reply, even between steps; it joins the trace when newer text replaces it.
-      if (run.item.key === current.retainedMessageKey) { if (!region.querySelector('.turn-card-reply-content')) next.push(liveMessage); continue; }
+      if (run.item.key === current.retainedMessageKey) { if (region.querySelector('.turn-card-reply-content')) narratedAt = next.length; else next.push(liveMessage); continue; }
       const key = run.item.key;
       let node = previous.get(key);
       if (!node) {
@@ -2290,7 +2315,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
   // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
   const newestGroup = next.map(node => node.classList.contains('tool-group')).lastIndexOf(true);
-  const narratedPast = next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true);
+  const narratedPast = Math.max(next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true), narratedAt <= newestGroup ? narratedAt : -1);
   next.slice(0, Math.max(narratedPast, 0)).forEach(node => {
     if (!node.classList.contains('tool-group') || node.dataset.earlier !== undefined) return;
     node.dataset.earlier = '';
@@ -2430,8 +2455,6 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   else if (changed && (mode === 'folded' || mode === 'summary')) enterText(label);
   // A card's trace does not fold when the run ends: the saved card replaces it folded, and its bridge eases the height (handOffCard).
   if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity) && !(carded && workedMs !== undefined)) foldTurn(activity, carded);
-  // A live card holds its height while its trace folds (`holdLiveCard`): the reply grows into the space the trace gave
-  // up, and what a short reply leaves is given back once at the end of the run (handOffCard's bridge).
 }
 /** What the agent is doing before its first step (or while it waits); the elapsed time is the header's tooltip. */
 // Startup and generic statuses read as the reference's `Working on it…` until the first step or a real wait.
@@ -4324,8 +4347,6 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'text') {
     if (event.text && current.retainedMessageKey) {
       current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
-      // A shorter text takes the place of the last one: the card follows it down rather than leaving a blank band.
-      if (event.sessionId === state.sessionId) releaseLiveCard(document.querySelector<HTMLElement>('#stream-region .turn-card.is-live'), REPLY_SWAP_RELEASE_MS);
     }
     current.body.append(event.text);
     if (event.text.trim()) {

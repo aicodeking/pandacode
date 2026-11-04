@@ -165,6 +165,78 @@ test('collapsing a step while the turn runs gives its height back, with no blank
   expect(await height()).toBeLessThan(closed + 4);
 });
 
+test('the live card shrinks back as a long output folds by itself, leaving no blank band', async ({ page }) => {
+  await open(page);
+  const live = page.locator('#stream-region .turn-card.is-live');
+  const output = Array.from({ length: 400 }, (_, line) => `output line ${line}`).join('\n');
+  await liveEvent(page, { kind: 'text', text: 'Looking into it.' });
+  await liveEvent(page, step('long', 'running'));
+  await liveEvent(page, step('long', 'completed', output));
+  const long = live.locator('details[data-tool-key$="long"]');
+  await expect(long).toHaveAttribute('open', '');
+  await page.waitForTimeout(500);
+  const tallest = (await live.boundingBox())!.height;
+  // Newer steps take its place among the open result cards, so the long one folds.
+  for (const id of ['b', 'c']) {
+    await liveEvent(page, step(id, 'running'));
+    await page.waitForTimeout(150);
+    await liveEvent(page, step(id, 'completed', 'short'));
+    await page.waitForTimeout(350);
+  }
+  await expect(long).not.toHaveAttribute('open', '');
+  await expect.poll(async () => (await live.boundingBox())!.height).toBeLessThan(tallest - 60);
+  await page.waitForTimeout(400);
+  // The card is exactly its content: nothing props it open.
+  const { height, content } = await live.evaluate(card => {
+    const last = [...card.children].filter(child => child.getClientRects().length).at(-1)!;
+    return { height: card.getBoundingClientRect().bottom, content: last.getBoundingClientRect().bottom };
+  });
+  expect(height - content).toBeLessThan(16);
+  expect(await live.evaluate(card => (card as HTMLElement).style.minHeight)).toBe('');
+});
+
+test('what sits above the live card stays still as it shrinks', async ({ page }) => {
+  await open(page);
+  const live = page.locator('#stream-region .turn-card.is-live');
+  const output = Array.from({ length: 400 }, (_, line) => `output line ${line}`).join('\n');
+  const cardTop = () => live.evaluate(card => card.getBoundingClientRect().top);
+  await liveEvent(page, { kind: 'text', text: 'Looking into it.' });
+  // Pinned to the end of a thread that overflows, with the card's top in view.
+  await liveEvent(page, step('long', 'completed', output));
+  await page.waitForTimeout(500);
+  await page.locator('#transcript').evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(100);
+  const long = live.locator('details[data-tool-key$="long"]');
+  await expect(long).toHaveAttribute('open', '');
+  const held = await cardTop();
+  expect(held).toBeGreaterThan(60);
+  const before = (await live.boundingBox())!.height;
+  await long.locator(':scope > summary').evaluate(node => (node as HTMLElement).click());
+  await expect.poll(async () => (await live.boundingBox())!.height).toBeLessThan(before - 60);
+  await page.waitForTimeout(400);
+  expect(Math.abs(await cardTop() - held)).toBeLessThan(2);
+
+});
+
+test('a card taller than the window folds down into view, never leaving the window empty', async ({ page }) => {
+  await open(page);
+  await page.setViewportSize({ width: 1440, height: 620 });
+  const live = page.locator('#stream-region .turn-card.is-live');
+  const output = Array.from({ length: 400 }, (_, line) => `output line ${line}`).join('\n');
+  await liveEvent(page, { kind: 'text', text: 'Looking into it.' });
+  for (const id of ['a', 'b', 'c']) await liveEvent(page, step(id, 'completed', output));
+  await page.waitForTimeout(700);
+  await page.locator('#transcript').evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.waitForTimeout(100);
+  expect(await live.evaluate(card => card.getBoundingClientRect().top)).toBeLessThan(0);
+  await liveEvent(page, { kind: 'text', text: 'Here is the answer.' });
+  await expect.poll(() => live.locator('details.turn-activity').evaluate(node => (node as HTMLElement).dataset.folded !== undefined), { timeout: 3000 }).toBe(true);
+  await page.waitForTimeout(500);
+  const shown = await live.evaluate(card => { const box = card.getBoundingClientRect(), view = document.querySelector('#transcript')!.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, viewTop: view.top, viewBottom: view.bottom }; });
+  expect(shown.top).toBeGreaterThanOrEqual(shown.viewTop);
+  expect(shown.top).toBeLessThan(shown.viewBottom - 40);
+});
+
 test('the live time ticks while the turn runs', async ({ page }) => {
   await page.clock.install();
   await page.goto('/?trace');
@@ -196,7 +268,7 @@ test('reduced motion leaves no card animations', async ({ page }) => {
   expect(await animations()).toBe(0);
 });
 
-test('the live card hands off to the saved card in one frame, never shrinks while live, eases once at the end, and the prompt does not jump', async ({ page }) => {
+test('the live card hands off to the saved card in one frame, eases once at the end, and the prompt does not jump', async ({ page }) => {
   const errors = await open(page);
   // Sampled every frame from the send until well after the saved card took over.
   await page.evaluate(() => {
@@ -208,7 +280,8 @@ test('the live card hands off to the saved card in one frame, never shrinks whil
       const bubble = [...document.querySelectorAll<HTMLElement>('#transcript .user-message')].at(-1);
       frames.push({ cards: shown.length, live: shown.filter(card => card.classList.contains('is-live')).length, liveHeight: live?.getClientRects().length ? live.getBoundingClientRect().height : null, lastHeight: shown.at(-1)?.getBoundingClientRect().height ?? null,
         text: Boolean(live?.querySelector('.live-message:not([hidden])')), done: Boolean(live?.hasAttribute('data-done')), folded: Boolean(live?.querySelector('.turn-activity[data-folded]')), bubble: bubble ? bubble.getBoundingClientRect().top : null, height: document.querySelector('#transcript')!.scrollHeight });
-      if (frames.length < 900) requestAnimationFrame(loop);
+      // Read after the frame has painted: an animation frame runs before the transcript's observer settles the scroll, so it would see a position nobody does.
+      if (frames.length < 900) requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = loop; channel.port2.postMessage(0); });
     };
     loop();
   });
@@ -222,9 +295,6 @@ test('the live card hands off to the saved card in one frame, never shrinks whil
   expect(liveFrames.length).toBeGreaterThan(5);
   // Never two cards for one turn: two saved turns plus either the live card or the new saved one.
   expect(Math.max(...frames.map(frame => frame.cards))).toBe(3);
-  // While the run lasts the card never shrinks: the skeleton's height is held until the reply passes it, and when the
-  // trace folds as the final reply starts the card holds its height (holdLiveCard) while the reply grows into it.
-  for (let i = 1; i < liveFrames.length; i++) expect(liveFrames[i].liveHeight!, `live card shrank at frame ${liveFrames[i].index}`).toBeGreaterThanOrEqual(liveFrames[i - 1].liveHeight! - 0.5);
   const folded = liveFrames.findIndex(frame => frame.folded);
   expect(folded, 'the trace folds while the reply streams').toBeGreaterThan(-1);
   expect(liveFrames[folded].done, 'the trace folded before the run ended').toBe(false);
@@ -238,7 +308,7 @@ test('the live card hands off to the saved card in one frame, never shrinks whil
     if (i < swap) expect(step, `prompt slid down ${step}px at frame ${i}`).toBeLessThanOrEqual(1);
   }
   expect(frames.length - swap, 'sampled a second after the run').toBeGreaterThan(40);
-  // The handoff is one ease (the footer, and whatever height the held card gives back): one direction, gently.
+  // The handoff is one ease (the footer): one direction, gently.
   const after = frames.slice(swap - 1).map(frame => frame.lastHeight!), direction = Math.sign(after.at(-1)! - after[0]);
   for (let i = 1; i < after.length; i++) {
     const step = after[i] - after[i - 1];
