@@ -625,7 +625,7 @@ fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
     lean
 }
 pub(crate) fn emit_snapshot(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    let _ = app.emit("architect-event", redact_team(team));
+    let _ = app.emit("architect-event", redact_team(&event_payload(team)));
 }
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
     emit_snapshot(app, team);
