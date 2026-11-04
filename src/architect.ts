@@ -283,7 +283,7 @@ export class ArchitectView {
   private assistEnabled = false;
   private childAgents?: Subagents;
   private teamMessages?: TeamMessages;
-  constructor(private options: { setup: (anchor: HTMLElement) => void; loadModels: (provider: ProviderId) => Promise<ProviderModel[]>; updated: (team: TeamSnapshot) => void; report: (error: unknown) => void; onFork?: (sessionId: string, messageId: number) => Promise<void>; fileContext?: (sessionId: string) => FileLinkContext | undefined; assist?: (sessionId: string, kind: 'review' | 'route') => void; remote?: (sessionId: string) => boolean }) {
+  constructor(private options: { setup: (anchor: HTMLElement) => void; loadModels: (provider: ProviderId) => Promise<ProviderModel[]>; updated: (team: TeamSnapshot) => void; report: (error: unknown) => void; onFork?: (sessionId: string, messageId: number) => Promise<void>; onRewind?: (sessionId: string, messageId: number) => Promise<void>; onCompare?: (sessionId: string, messageId: number) => Promise<void>; fileContext?: (sessionId: string) => FileLinkContext | undefined; assist?: (sessionId: string, kind: 'review' | 'route') => void; remote?: (sessionId: string) => boolean }) {
     this.host.className = 'architect-host'; this.host.hidden = true;
     this.trigger.className = 'architect-trigger'; this.trigger.type = 'button'; this.trigger.setAttribute('aria-label', 'Open workers'); this.trigger.setAttribute('aria-expanded', 'false');
     this.trigger.addEventListener('click', () => this.panel ? this.close() : this.open()); this.host.append(this.trigger);
@@ -291,7 +291,7 @@ export class ArchitectView {
     bindMessageActions(this.host, {
       // A team on another computer has its workers' messages only as loaded from the host.
       content: (sessionId, key) => key === 'live' ? this.live.get(sessionId)?.text : this.options.remote?.(this.taskId) ? (this.historyWorker === sessionId ? this.historyMessages.get(Number(key))?.content : undefined) : call<string>('get_message_content', {sessionId, messageId: Number(key)}),
-      onFork: options.onFork, report: options.report,
+      onFork: options.onFork, onRewind: options.onRewind, onCompare: options.onCompare, report: options.report,
     });
   }
   setAssistEnabled(enabled: boolean): void { this.assistEnabled = enabled; this.paintAssist(); }
@@ -575,7 +575,7 @@ export class ArchitectView {
             article.dataset.savedToolId = tool.id; article.innerHTML = renderToolActivity(tool, 'tool:' + tool.id); } else article.textContent = message.content; }
         else { const label = document.createElement('small'); label.textContent = message.role === 'assistant' ? worker.name : message.role === 'user' ? 'Assignment' : 'Activity'; const body = document.createElement('div'); article.append(label, body); bindFileLinkContext(body, fileContext); void markdown(body, message.content, scroll);
           if (message.role === 'user' || message.role === 'assistant') {
-            article.insertAdjacentHTML('beforeend', messageActionsHtml(worker.sessionId, message.id, Boolean(this.options.onFork) && message.id > 0 && !this.options.remote?.(taskId)));
+            article.insertAdjacentHTML('beforeend', messageActionsHtml(worker.sessionId, message.id, Boolean(this.options.onFork) && message.id > 0 && !this.options.remote?.(taskId), false, message.role === 'user' && message.id > 0 && Boolean(this.options.onRewind) && !this.options.remote?.(taskId)));
           }
         }
         fragment.append(article);

@@ -58,6 +58,7 @@ import * as botThread from './bot-thread';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
+import type { CheckpointComparison } from './checkpoints';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
@@ -223,7 +224,7 @@ void call<import('./jev').JevConfiguration>('jev_configuration').then(config => 
 window.addEventListener('pandacode:jev-settings', event => setJevAvailability(Boolean((event as CustomEvent<import('./jev').JevConfiguration>).detail.decisionsEnabled)));
 async function ensureArchitectView(): Promise<ArchitectView> {
   return architectLoading ??= import('./architect').then(({ ArchitectView }) => {
-    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice) });
+    architectView = new ArchitectView({ setup: anchor => run(showArchitectSetup(anchor)), loadModels, updated: onArchitect, report, onFork: forkAtMessage, onRewind: rewindAtMessage, onCompare: compareAtMessage, fileContext: sessionId => ({ projectId: state.projectId, sessionId }), assist: (sessionId, kind) => run(openJevAssist(kind, sessionId)), remote: sessionId => Boolean(state.sessions.find(task => task.id === sessionId)?.remoteDevice) });
     architectView.setAssistEnabled(jevDecisionsEnabled);
     $('#subagents-host').before(architectView.host);
     architectView.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
@@ -801,7 +802,7 @@ const disposeMessageActions = bindMessageActions($('#transcript'), {
     const saved = state.messages.find(message => String(message.id) === key);
     return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role)
       ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
-  }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
+  }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, onRewind: rewindAtMessage, onCompare: compareAtMessage, report,
 });
 const transcriptScroller = $('#transcript');
 transcriptScroller.tabIndex = 0;
@@ -3091,6 +3092,41 @@ async function forkAtMessage(sessionId: string, messageId: number, draft?: strin
     }
   } finally { pendingMessageForks.delete(key); }
 }
+let checkpointDiff: { sessionId: string; label: string; result: CheckpointComparison } | undefined;
+async function showSavedCheckpoints(): Promise<void> {
+  const sessionId = state.sessionId, generation = state.generation;
+  if (!sessionId) return;
+  const { showCheckpoints } = await import('./checkpoints');
+  if (generation !== state.generation) return;
+  await showCheckpoints(sessionId, {
+    modal, close: closeModal,
+    rewind: messageId => rewindAtMessage(sessionId, messageId),
+    compare: messageId => compareAtMessage(sessionId, messageId),
+  });
+}
+async function rewindAtMessage(sessionId: string, messageId: number): Promise<void> {
+  if (isRunning(sessionId)) throw new Error('Stop the agent before rewinding files.');
+  const generation = state.generation;
+  const content = await call<string>('get_message_content', { sessionId, messageId });
+  if (generation !== state.generation) return;
+  await (await import('./checkpoints')).showRewind(sessionId, messageId, { modal, close: closeModal, restored: async fork => {
+    state.sessions = [fork, ...state.sessions.filter(task => task.id !== fork.id)];
+    state.drafts.set(fork.id, contextBlocks(content).typed);
+    checkpointDiff = undefined;
+    if (generation === state.generation) await selectSession(fork.id, true);
+    else scheduleNavigation();
+    notify('Files restored. Your new conversation is ready.');
+  } });
+}
+async function compareAtMessage(sessionId: string, messageId: number): Promise<void> {
+  const generation = state.generation;
+  await (await import('./checkpoints')).showCheckpointComparison(sessionId, messageId, { modal, close: closeModal, compared: (result, label) => {
+    if (generation !== state.generation) return;
+    checkpointDiff = { sessionId: state.sessionId, label, result };
+    state.selectedKind = ''; state.inspectorTab = 'changes'; state.inspector = true;
+    inspectorArmed = true; renderInspector();
+  } });
+}
 async function editAtMessage(sessionId: string, messageId: number): Promise<void> {
   if (isRunning(sessionId)) throw new Error('Stop the agent before editing a message.');
   const content = await call<string>('get_message_content', { sessionId, messageId });
@@ -3999,7 +4035,7 @@ const btwPanel = new BtwPanel({
       if (key === 'live') return live?.text;
       const saved = btwPanel.message(Number(key));
       return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
-    }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
+    }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, onRewind: rewindAtMessage, onCompare: compareAtMessage, report,
   }); },
   send: text => sendBtw(text),
   queue: (side, text) => btwPanelQueue(side, text),
@@ -4668,6 +4704,7 @@ function showChangesView(target: HTMLElement, key: string): void {
       commit: async message => { const result = await call<string>('git_commit', { ...context, message }); await refreshInspector(); notify(result || 'Changes committed'); },
       openFile: path => { state.inspectorTab = 'files'; run(openFile(path, 'file')); },
       refresh: () => run(refreshInspector()),
+      checkpoints: session() && !session()?.cloud ? () => run(showSavedCheckpoints()) : undefined,
       notify,
       choose: (anchor, title, items, onSelect) => void showChoices(anchor, { title, width: 260, actions: !items.some(item => item.selected !== undefined), items, onSelect: id => { closeChoiceMenu(); onSelect(id); } }),
       worktree: () => worktrees.openDialog(newTaskView() ? 'attach' : 'new'),
@@ -4756,6 +4793,18 @@ function renderInspector(): void {
   const remote = session()?.remoteDevice;
   if (remote) { $('#changes-count').textContent = ''; target.innerHTML = `<div class="inspector-empty">${icon('monitor')}<h3>Runs on ${escape(remote.name)}</h3><p>Its changes and files are on that computer, so review and commit them there.</p></div>`; return; }
   if (state.inspectorTab === 'search' && !state.selectedKind) { searchPanel.show(target); return; }
+  if (checkpointDiff?.sessionId === state.sessionId && state.inspectorTab === 'changes') {
+    disposeChangesView();
+    const { label, result } = checkpointDiff;
+    target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button></div><div class="file-preview-title">${escape(label)}</div><p class="inspector-hint">${result.files.length} files differ.${result.skipped.length ? ` ${result.skipped.length} excluded paths were not compared.` : ''}</p><div class="inspector-diff-host"></div>`;
+    const host = target.querySelector<HTMLElement>('.inspector-diff-host')!;
+    if (!result.patch) { host.textContent = 'No file differences between these checkpoints.'; return; }
+    void import('./diff-viewer').then(({ mountDiffViewer }) => {
+      if (diffEpoch !== inspectorDiffEpoch || !host.isConnected) return;
+      inspectorDiff = mountDiffViewer(host, { patch: result.patch, truncated: result.truncated });
+    }).catch(error => { if (host.isConnected) host.textContent = errorText(error); });
+    return;
+  }
   // A refresh keeps the mounted Changes view on screen until the new status arrives.
   if (state.inspectorLoading && changesView) return;
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
@@ -6652,7 +6701,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'open-message-attachment': await openMessageAttachment(element); break;
     case 'view-source': await openFile(element.dataset.path!, 'file', false, workspaceContext(), true); break;
     case 'open-diff': await openFile(element.dataset.path!, 'diff', element.dataset.staged === 'true'); break;
-    case 'back-inspector': state.selectedKind = ''; renderInspector(); break;
+    case 'back-inspector': checkpointDiff = undefined; state.selectedKind = ''; renderInspector(); break;
     case 'attach': await attachments.openMenu(element); break;
     case 'attach-file': attachFile(element.dataset.path!); break;
     case 'detach': state.attachments = state.attachments.filter(p => p !== element.dataset.path); renderComposer(); break;

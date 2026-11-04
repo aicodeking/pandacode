@@ -15,7 +15,7 @@ const history = [
 const errors = new WeakMap<Page, string[]>();
 const transcript = (page: Page) => page.getByRole('log', { name: 'Conversation', exact: true });
 const prompt = (page: Page) => page.locator('#prompt');
-const action = (page: Page, key: number | string, kind: 'copy' | 'fork' | 'edit', task = sessionId) => transcript(page)
+const action = (page: Page, key: number | string, kind: 'copy' | 'fork' | 'edit' | 'rewind' | 'compare', task = sessionId) => transcript(page)
   .locator(`[data-message-action="${kind}"][data-message-session="${task}"][data-message-key="${key}"]`);
 
 async function install(page: Page): Promise<void> {
@@ -53,6 +53,8 @@ async function install(page: Page): Promise<void> {
       }
       const fixture = window.__messageActionsTest;
       fixture.calls.push({ command, args: structuredClone(args) });
+      if (command === 'list_checkpoints' && fixture.noCheckpoints) return [];
+      if (command === 'rewind_checkpoint' && fixture.failRewind) throw new Error('Files changed after the preview. Review the rewind again; no files were restored.');
       if (command === 'get_message_content' && fixture.holdContent) {
         await new Promise(resolve => { fixture.releaseContent = resolve; });
       }
@@ -96,6 +98,88 @@ async function selectedFork(page: Page): Promise<string> {
 }
 
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
+
+test('Changes exposes checkpoints without hovering and opens rewind or compare', async ({ page }) => {
+  await install(page);
+  await page.locator('[data-action="tab-changes"]').click();
+  const checkpoints = page.getByRole('button', { name: 'Checkpoints', exact: true });
+  await prompt(page).hover();
+  await expect(checkpoints).toBeVisible();
+  await expect(checkpoints).toHaveCSS('opacity', '1');
+  await expect(checkpoints).toContainText('Rewind or compare saved turns');
+  await checkpoints.click();
+  const list = page.getByRole('dialog', { name: 'Checkpoints', exact: true });
+  await expect(list.locator('.checkpoint-row').first()).toContainText('Checkpoint 2');
+  await list.getByRole('button', { name: 'Rewind to checkpoint 1', exact: true }).click();
+  const rewind = page.getByRole('dialog', { name: 'Rewind to here', exact: true });
+  await expect(rewind.getByRole('button', { name: 'Restore files and fork' })).toBeEnabled();
+  expect((await calls(page, 'preview_rewind')).at(-1).args).toEqual({ sessionId, messageId: 201 });
+  await rewind.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await calls(page, 'rewind_checkpoint')).toHaveLength(0);
+  await checkpoints.click();
+  await list.getByRole('button', { name: 'Compare turns', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Compare turns', exact: true }).getByRole('button', { name: 'Compare in inspector' }).click();
+  await expect(page.locator('#inspector-content')).toContainText('Checkpoint 1 → 2');
+});
+
+test('checkpoint list explains an empty history', async ({ page }) => {
+  await install(page);
+  await page.evaluate(() => { (window as any).__messageActionsTest.noCheckpoints = true; });
+  await page.locator('[data-action="tab-changes"]').click();
+  await page.getByRole('button', { name: 'Checkpoints', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Checkpoints', exact: true });
+  await expect(dialog).toContainText('No checkpoints yet.');
+  await expect(dialog.getByRole('button', { name: 'Compare turns', exact: true })).toBeDisabled();
+  await expect(dialog.locator('[data-checkpoint-rewind]')).toHaveCount(0);
+});
+
+test('rewind previews files, cancels without restoring, then forks before the selected prompt', async ({ page }) => {
+  await install(page);
+  await action(page, 205, 'rewind').click();
+  const dialog = page.getByRole('dialog', { name: 'Rewind to here', exact: true });
+  await expect(dialog).toContainText('including your own and other tasks’ edits');
+  await expect(dialog.getByRole('button', { name: 'Restore files and fork' })).toBeEnabled();
+  await expect(dialog).toContainText('src/App.tsx');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(await calls(page, 'rewind_checkpoint')).toHaveLength(0);
+  await action(page, 205, 'rewind').click();
+  await dialog.getByRole('button', { name: 'Restore files and fork' }).click();
+  const forkId = await selectedFork(page), fork = await snapshot(page, forkId);
+  expect(fork.messages.some(message => message.content === history[4].content)).toBe(false);
+  expect(fork.messages.some(message => message.content === history[3].content)).toBe(true);
+  await expect(prompt(page)).toHaveValue(history[4].content);
+  expect((await snapshot(page)).messages).toHaveLength(history.length);
+  expect(await calls(page, 'rewind_checkpoint')).toHaveLength(1);
+});
+
+test('checkpoint comparison opens a read-only inspector with both selected boundaries', async ({ page }) => {
+  await install(page);
+  await action(page, 205, 'compare').click();
+  const dialog = page.getByRole('dialog', { name: 'Compare turns', exact: true });
+  await expect(dialog.getByLabel('From', { exact: true })).toHaveValue('201');
+  await expect(dialog.getByLabel('To', { exact: true })).toHaveValue('205');
+  await dialog.getByRole('button', { name: 'Compare in inspector' }).click();
+  await expect(page.locator('#inspector-content')).toContainText('Checkpoint 1 → 2');
+  await expect(page.locator('#inspector-content [data-action="toggle-diff-stage"]')).toHaveCount(0);
+  await expect(page.locator('#inspector-content .inspector-diff-host')).toContainText('Original workspace');
+  expect((await calls(page, 'compare_checkpoints'))[0].args).toEqual({ sessionId, fromMessage: 201, toMessage: 205 });
+  await page.locator('#inspector-content').getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.locator('#inspector-content')).not.toContainText('Checkpoint 1 → 2');
+  expect(await calls(page, 'rewind_checkpoint')).toHaveLength(0);
+});
+
+test('a stale rewind stays open, reports the error, and requires a refreshed preview', async ({ page }) => {
+  await install(page);
+  await page.evaluate(() => { (window as any).__messageActionsTest.failRewind = true; });
+  await action(page, 205, 'rewind').click();
+  const dialog = page.getByRole('dialog', { name: 'Rewind to here', exact: true });
+  await dialog.getByRole('button', { name: 'Restore files and fork' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('no files were restored');
+  await expect(dialog.getByRole('button', { name: 'Restore files and fork' })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Refresh preview' }).click();
+  await expect(dialog.getByRole('button', { name: 'Restore files and fork' })).toBeEnabled();
+  await expect(prompt(page)).toHaveAttribute('data-session-id', sessionId);
+});
 
 test('older history and forks preserve authors when the later harness switch is outside the page', async ({page}) => {
   const oldResponse = {id:202,sessionId,role:'assistant',content:'Saved Claude answer\n\n```cpp\n#include <iostream>\nint main() { std::cout << "Hello, world!"; }\n```',createdAt:200};
