@@ -57,16 +57,18 @@ export function buildTeamCatalog(harnesses: readonly CatalogHarness[]): { roster
 export const TEAM_LIMIT = 10;
 /** Models a user may add for teams per harness. */
 export const ADDED_MAX = 50;
-export interface TeamLimit { recent: readonly string[]; added: readonly string[]; unlimited?: boolean }
+export interface TeamLimit { recent: readonly string[]; added: readonly string[]; excluded?: readonly string[]; unlimited?: boolean }
 export interface LimitedModels<M> { models: M[]; recent: Set<string>; total: number; limited: boolean }
 
 /** Long catalogs shrink to the `TEAM_LIMIT` most recent models in the catalog (`recent` is newest first)
- * plus every added model; `default` always stays. Short catalogs and `unlimited` ones pass through. */
-export function limitTeamModels<M extends { id: string }>(models: readonly M[], { recent, added, unlimited = false }: TeamLimit): LimitedModels<M> {
+ * plus every added model; `default` always stays. A model the user dropped from teams (`excluded`) is
+ * neither recent nor kept until it is added again. Short catalogs and `unlimited` ones pass through. */
+export function limitTeamModels<M extends { id: string }>(models: readonly M[], { recent, added, excluded = [], unlimited = false }: TeamLimit): LimitedModels<M> {
   const ids = new Set(models.map(m => m.id).filter(id => id && id !== 'default'));
   if (unlimited || ids.size <= TEAM_LIMIT) return { models: [...models], recent: new Set(), total: ids.size, limited: false };
-  const latest = new Set([...new Set(recent)].filter(id => ids.has(id)).slice(0, TEAM_LIMIT));
-  const keep = new Set([...latest, ...added]);
+  const off = new Set(excluded);
+  const latest = new Set([...new Set(recent)].filter(id => ids.has(id) && !off.has(id)).slice(0, TEAM_LIMIT));
+  const keep = new Set([...latest, ...added.filter(id => !off.has(id))]);
   return { models: models.filter(m => m.id === 'default' || keep.has(m.id)), recent: latest, total: ids.size, limited: true };
 }
 
@@ -82,14 +84,45 @@ function storedIds(key: string): string[] {
   } catch { return []; }
 }
 const addedKey = (id: ProviderId) => `pandacode.team-models.added.${id}`;
+const excludedKey = (id: ProviderId) => `pandacode.team-models.excluded.${id}`;
 export const addedTeamModels = (id: ProviderId): string[] => storedIds(addedKey(id)).slice(0, ADDED_MAX);
+/** Recently used models the user dropped from teams; they stay out until added again. */
+export const excludedTeamModels = (id: ProviderId): string[] => storedIds(excludedKey(id));
+function emit(id: ProviderId): void {
+  window.dispatchEvent(new CustomEvent(TEAM_MODELS_EVENT, { detail: id }));
+}
 export function setAddedTeamModels(id: ProviderId, models: readonly string[]): void {
   localStorage.setItem(addedKey(id), JSON.stringify([...new Set(models)].slice(0, ADDED_MAX)));
-  window.dispatchEvent(new CustomEvent(TEAM_MODELS_EVENT, { detail: id }));
+  emit(id);
+}
+export function setExcludedTeamModels(id: ProviderId, models: readonly string[]): void {
+  localStorage.setItem(excludedKey(id), JSON.stringify([...new Set(models)]));
+  emit(id);
 }
 /** The models of `id` teams may use: recent tasks first, then the model picker's recent list. */
 export function teamModels<M extends { id: string }>(id: ProviderId, models: readonly M[]): LimitedModels<M> {
-  return limitTeamModels(models, { recent: [...recency.used(id), ...storedIds(`pandacode.recent-models.${id}`)], added: addedTeamModels(id), unlimited: recency.unlimited(id) });
+  return limitTeamModels(models, {
+    recent: [...recency.used(id), ...storedIds(`pandacode.recent-models.${id}`)],
+    added: addedTeamModels(id),
+    excluded: excludedTeamModels(id),
+    unlimited: recency.unlimited(id),
+  });
+}
+
+/** The ids of `id`'s recently used models, newest first, before any exclusion — what the dialogs badge. */
+export function recentTeamModelIds(id: ProviderId): string[] {
+  return [...new Set([...recency.used(id), ...storedIds(`pandacode.recent-models.${id}`)])].filter(model => model && model !== 'default');
+}
+
+/** The display names that `models` uses more than once: duplicate names hide which model (or endpoint)
+ * a row is, so those rows show their id beside the name. */
+export function dupModelNames(models: readonly Pick<ProviderModel, 'id' | 'name'>[]): Set<string> {
+  const seen = new Set<string>(), dupes = new Set<string>();
+  for (const m of models) {
+    if (seen.has(m.name)) dupes.add(m.name);
+    seen.add(m.name);
+  }
+  return dupes;
 }
 
 /** Installed harnesses with their discovered models (falling back to the built-in list), limited by `teamModels`. */

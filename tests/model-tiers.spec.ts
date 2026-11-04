@@ -212,3 +212,20 @@ test('Add model… picks a limited harness and its added model joins the tray', 
   await expect(add).toBeFocused();
   await expect(row(page, 'Unranked').locator('.tier-chip').filter({ hasText: 'Nous Sample 3' })).toHaveCount(1);
 });
+
+test('chips with a shared display name say which harnesses they run on (issue #315)', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Two unrated rows that differ only by their ids, as deepseek/deepseek-flash and opencode-go/deepseek-v4.1-flash do.
+    (window as any).__tiersResult = { model_routing_tier_models: [
+      { key: 'deepseek/deepseek-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['deepseek'], rated: false },
+      { key: 'opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['opencode'], rated: false },
+    ] };
+  });
+  await install(page);
+  await openTeams(page);
+  const unranked = row(page, 'Unranked');
+  await expect(unranked.locator('.tier-chip')).toHaveCount(2);
+  await expect(unranked.locator('.tier-providers')).toHaveText(['DeepSeek', 'OpenCode']);
+  await expect(group(page).getByRole('button', { name: 'Move DeepSeek V4.1 Flash (DeepSeek) to…', exact: true })).toHaveCount(1);
+  await expect(group(page).getByRole('button', { name: 'Move DeepSeek V4.1 Flash (OpenCode) to…', exact: true })).toHaveCount(1);
+});

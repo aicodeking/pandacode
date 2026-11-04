@@ -61,14 +61,20 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
 
   const placeOf = (key: string): Tier | null => held?.key === key ? held.at : shown[key] ?? null;
   const nameOf = (key: string) => models.find(m => m.key === key)?.name ?? key;
+  const harnessName = (id: string) => options.providers.find(p => p.id === id)?.name ?? id;
+  // Two tier rows can share a display name (issue #315): those chips say which providers they run on.
+  let dupeNames = new Set<string>();
   const announce = (text: string) => { live.textContent = text; };
   const chip = (m: TierModel) => {
     const tier = placeOf(m.key), unrated = m.rated ? '' : ', unrated';
+    const providers = m.providers.map(harnessName).join(', ');
+    const dupe = dupeNames.has(m.name), label = dupe ? `${m.name} (${providers})` : m.name;
     return `<span class="tier-chip-wrap" data-key="${escape(m.key)}"${held?.key === m.key ? ' data-held' : ''}>`
-      + `<button type="button" class="tier-chip" data-key="${escape(m.key)}" aria-pressed="${held?.key === m.key}" aria-label="${escape(m.name)}, ${rowName(tier)}${unrated}"${loaded ? '' : ' disabled'}>`
+      + `<button type="button" class="tier-chip" data-key="${escape(m.key)}" aria-pressed="${held?.key === m.key}" aria-label="${escape(label)}, ${rowName(tier)}${unrated}" title="${escape(`${m.name} · ${providers}`)}"${loaded ? '' : ' disabled'}>`
       + `<span class="tier-logos">${m.providers.map(p => providerLogo(p, 'tier-logo')).join('')}</span><span class="tier-name">${escape(m.name)}</span>`
+      + (dupe ? `<span class="tier-providers">${escape(providers)}</span>` : '')
       + (m.rated ? '' : `<span class="tier-unrated" data-tip="${escape(UNRATED)}" aria-hidden="true"></span>`) + '</button>'
-      + `<button type="button" class="tier-chip-menu" data-key="${escape(m.key)}" aria-haspopup="menu" aria-label="Move ${escape(m.name)} to…"${loaded ? '' : ' disabled'}>${icon('more')}</button></span>`;
+      + `<button type="button" class="tier-chip-menu" data-key="${escape(m.key)}" aria-haspopup="menu" aria-label="Move ${escape(label)} to…"${loaded ? '' : ' disabled'}>${icon('more')}</button></span>`;
   };
   const render = () => {
     if (dragging) { renderLater = true; return; }
@@ -214,6 +220,9 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
         const [rows, tiers] = await Promise.all([options.call<TierModel[]>('model_routing_tier_models', { pool }), loaded ? null : options.call<Tiers>('model_routing_tiers')]);
         if (disposed || ticket !== poolTicket) return;
         models = rows; held = null; loadError = '';
+        const names = new Map<string, number>();
+        rows.forEach(m => names.set(m.name, (names.get(m.name) ?? 0) + 1));
+        dupeNames = new Set([...names].filter(([, n]) => n > 1).map(([name]) => name));
         if (tiers) { saved = shown = tiers; loaded = true; }
         render();
         if (document.activeElement === group) (list.querySelector<HTMLElement>('.tier-chip') ?? group).focus();

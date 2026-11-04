@@ -34,7 +34,9 @@
 .settings-page-root .routing-pool-models>.setting-row{min-height:36px;padding-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad) + 44px)}
 .routing-pool-models>p,.routing-pool-warning{margin:0;padding:6px var(--ds-row-pad-x) 6px calc(var(--ds-row-pad-x) - var(--ds-card-pad) + 44px);font-size:var(--ds-text-meta);color:var(--muted)}
 .routing-pool-warning{padding-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--ds-warn)}
-.routing-pool-model-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.routing-pool-model-row>span{display:flex;align-items:baseline;gap:4px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+/* A model id shown beside a duplicate display name (issue #315); the name takes any ellipsis. */
+.routing-pool-model-id{flex:none;max-width:46%;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:var(--ds-text-meta)}
 /* Dark-ink marks get a light backing on dark surfaces so they stay visible. */
 html[data-theme=dark] img.routing-logo:is([data-provider=glm],[data-provider=mimo],[data-provider=commandcode],[data-provider=hermes]){box-sizing:border-box;padding:1px;border-radius:4px;background:rgb(255 255 255 / .9)}
 .routing-pool-models>p.routing-pool-limit{display:flex;align-items:center;gap:4px}
