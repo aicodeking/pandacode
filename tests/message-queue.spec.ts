@@ -147,3 +147,13 @@ test('Steer sends a queued entry into a steerable running turn', async ({ page }
   await expect(rows(page).locator('.queue-text')).toHaveText(['Keep']);
   expect(await calls(page, 'stop_session')).toEqual([]);
 });
+
+test('queue ignores the Enter that commits an IME composition', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Enter', keyCode: 229 });
+  await expect(prompt(page)).toHaveValue('変換');
+  await expect(rows(page)).toHaveCount(0);
+  await prompt(page).press('Enter');
+  await expect(rows(page).locator('.queue-text')).toHaveText(['変換']);
+});

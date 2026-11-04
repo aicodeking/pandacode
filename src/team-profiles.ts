@@ -90,7 +90,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
   }
   confirm.addEventListener('click', saveNamed);
   name.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); saveNamed(); }
+    if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); event.stopPropagation(); saveNamed(); }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor(); create.focus(); }
   });
   update.addEventListener('click', () => {

@@ -6773,13 +6773,13 @@ document.addEventListener('keydown', event => {
   else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
   else if (command && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !event.isComposing) {
+  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
     if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !event.isComposing) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
+  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey)) { event.preventDefault(); run(saveQueueEdit(actionTask(event.target as HTMLElement))); }
   else if (event.key === 'Escape' && settingsView && !event.defaultPrevented && !document.querySelector<HTMLDialogElement>('#dialog')?.open && !document.querySelector('.floating-menu')) { event.preventDefault(); closeSettings(); }
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }

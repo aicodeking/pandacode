@@ -200,7 +200,7 @@ list.addEventListener('keydown', event => {
 window.addEventListener('keydown',event => {
   if (event.defaultPrevented) return;
   if (event.key === 'Escape') { event.preventDefault(); if (pickerCleanup || pickerLoading) { closeModelPicker(); return; } if (selectedTask) backToAgents(); else void hide(); }
-  if (event.key === 'Enter' && event.target === prompt && !event.shiftKey && !event.isComposing) { event.preventDefault(); void submit(); }
+  if (event.key === 'Enter' && event.target === prompt && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); void submit(); }
   if (event.key === 'ArrowDown' && event.target === search) { event.preventDefault(); list.querySelector<HTMLButtonElement>('[data-task]')?.focus(); }
 });
 window.addEventListener('pagehide',() => { setVisible(false); fileMentions.dispose(); });
