@@ -938,9 +938,7 @@ Catalog entries carry `description`, `maxOutputTokens`, a `disabledReason` and
 `properties.inputFormat` (`supportsText`/`supportsImage`/`supportsVideo`/
 `supportsAudio`/`supportsPdf`); image support is per model (GLM-5.3-Flash
 reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
-service-tier field: the GLM Coding Plan sells speed per plan (Pro advertises
-faster generation speeds, Max dedicated resources at peak times; Lite is
-10,000 credits a week, Pro 6x that, Max 14x), never per model, so there is no
+service-tier field: the GLM Coding Plan sells speed per plan, never per model, so there is no
 ZCode equivalent of Codex's per-model speed tiers to select. `session/create`
 also accepts `mcpServers` (stdio or http/sse entries), `additionalDirectories`
 and tool allow/deny lists, and `session/usage` answers session token totals
