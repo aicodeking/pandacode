@@ -1,13 +1,15 @@
 /* Cloud task status strip (src/cloud-agents.ts). Imported by main.ts so it is loaded before
  * the composer first renders it. */
-.cloud-strip{display:flex;align-items:center;gap:8px;min-width:0;margin:0 0 6px;padding:4px 4px 4px 10px;border-radius:var(--radius-md);background:rgb(var(--accent-rgb) / .08);color:var(--text);font-size:var(--text-sm)}
-.cloud-strip-status{display:inline-flex;align-items:center;gap:7px;min-width:0;flex:1}
-.cloud-strip-status>.icon{width:14px;height:14px;flex-shrink:0;color:var(--muted)}
-.cloud-strip-status>.support-spinner{width:12px;height:12px;color:var(--accent)}
+.cloud-strip{display:flex;align-items:center;gap:10px;min-width:0;margin:0 0 8px;min-height:var(--ds-row-h);padding:4px 6px 4px var(--ds-row-pad-x);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:color-mix(in srgb,var(--text) 2%,var(--panel-surface,var(--bg)));box-shadow:var(--ds-shadow-card);color:var(--text);font-size:var(--ds-text-body)}
+.cloud-strip-status{display:inline-flex;align-items:center;gap:var(--ds-row-gap);min-width:0;flex:1}
+.cloud-strip-status>.icon{width:20px;height:20px;--icon-size:var(--icon-lg);flex-shrink:0;color:var(--muted)}
+.cloud-strip-status>.support-spinner{width:14px;height:14px;color:var(--ds-info)}
 .cloud-strip-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cloud-strip[data-stage="error"]{background:color-mix(in srgb, var(--danger) 12%, transparent)}
-.cloud-strip-menu{--press:1;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:var(--radius-sm);color:var(--muted)}
-.cloud-strip-menu:hover{background:var(--raised);color:var(--text)}
-.cloud-strip-menu .icon{width:14px;height:14px}
+.cloud-strip[data-stage="error"]{background:color-mix(in srgb,var(--ds-danger) 10%,var(--panel-surface,var(--bg)));border-color:color-mix(in srgb,var(--ds-danger) 30%,transparent)}
+.cloud-strip[data-stage="error"] .cloud-strip-status>.icon{color:var(--ds-danger)}
+.cloud-strip-menu{--press:1;display:inline-grid;place-items:center;width:28px;height:28px;border-radius:var(--ds-radius-control);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.cloud-strip-menu:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.cloud-strip-menu .icon{width:16px;height:16px}
+@media(prefers-contrast:more){.cloud-strip{box-shadow:none}}
 .task-cloud{display:inline-flex;flex-shrink:0;color:var(--muted)}
 .task-cloud .icon{width:12px;height:12px}

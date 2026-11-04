@@ -5,7 +5,7 @@
   min-height: 0;
   height: 100%;
   color: var(--text);
-  font-size: var(--text-xs);
+  font-size: var(--ds-text-meta);
   container-type: inline-size;
 }
 .changes-view button { color: inherit; font: inherit; }
@@ -22,20 +22,26 @@
   white-space: nowrap;
 }
 .cv-scope {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
   height: 24px;
   gap: 5px;
   padding: 0 6px;
   border-radius: var(--radius-sm);
   font-weight: var(--weight-medium) !important;
 }
-.cv-scope .icon { width: var(--icon-sm); height: var(--icon-sm); color: var(--muted); }
+.cv-scope .icon { flex: none; width: var(--icon-sm); height: var(--icon-sm); color: var(--muted); }
+.cv-scope-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cv-scope .cv-caret { width: 12px; height: 12px; }
-.cv-scope:hover, .cv-icon:hover:not(:disabled) { background: var(--raised); }
-.cv-files { color: var(--muted); }
+.cv-scope:hover, .cv-icon:hover:not(:disabled) { background: var(--ds-row-hover); }
+.cv-files { color: var(--faint); }
+@container (max-width: 280px) { .cv-files { display: none; } }
 .cv-adds, .cv-add { color: var(--success); font-family: var(--mono); font-size: var(--text-2xs); }
 .cv-dels, .cv-del { color: var(--danger); font-family: var(--mono); font-size: var(--text-2xs); }
 .cv-spacer { flex: 1 1 0; }
-.cv-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: var(--text-2xs); }
+.cv-branch { min-width: 4em; overflow: hidden; text-overflow: ellipsis; color: var(--faint); font-size: var(--ds-text-meta); }
 .cv-icon {
   width: 24px;
   height: 24px;
@@ -92,13 +98,13 @@
   gap: 6px;
   height: 30px;
   padding: 0 4px 0 2px;
-  background: var(--panel);
+  background: var(--panel-surface, var(--bg));
   white-space: nowrap;
 }
 .cv-file.collapsed .cv-file-header { }
-.cv-toggle { width: 20px; height: 20px; flex: 0 0 auto; border-radius: var(--radius-sm); color: var(--muted) !important; }
-.cv-toggle:hover { background: var(--raised); }
-.cv-chevron { width: 13px; height: 13px; rotate: 90deg; }
+.cv-toggle { width: 24px; height: 24px; flex: 0 0 auto; border-radius: var(--radius-sm); color: var(--muted) !important; }
+.cv-toggle:hover { background: var(--ds-row-hover); }
+.cv-chevron { width: 13px; height: 13px; rotate: 90deg; transition: rotate var(--spring-fast-duration) var(--spring-fast); }
 .cv-file.collapsed .cv-chevron { rotate: 0deg; }
 .cv-file-icon { display: inline-flex; flex: 0 0 auto; }
 .cv-file-icon :is(img, svg) { width: 14px; height: 14px; }
@@ -108,32 +114,40 @@
   justify-content: flex-start;
   gap: 6px;
   min-width: 0;
+  min-height: 24px;
+  align-items: center;
   flex: 0 1 auto;
   overflow: hidden;
 }
-.cv-name { font-weight: var(--weight-regular); flex: 0 0 auto; }
-.cv-dir { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.cv-copy { width: 20px; height: 20px; visibility: hidden; }
+.cv-name { font-weight: var(--weight-regular); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name keeps its room: the folder gives way first (fitDir trims it from the left). */
+.cv-dir { flex: 0 1000 auto; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cv-copy { width: 24px; height: 24px; visibility: hidden; }
 .cv-file-header:hover .cv-copy, .cv-copy:focus-visible { visibility: visible; }
 .cv-copy .icon { width: 13px; height: 13px; }
-/* Narrow panels give the folder the copy button's room; Copy path stays in the file menu. */
-@container (max-width: 380px) { .cv-copy { display: none; } }
+/* Narrow panels give the file name the copy button's and the status word's room: Copy path stays in the file
+   menu, and the status reads as a dot in its colour (the word stays in the DOM for assistive tech). */
+@container (max-width: 480px) {
+  .cv-copy, .cv-branch { display: none; }
+  .cv-file-header .cv-pill { width: 7px; height: 7px; margin: 0 4px; padding: 0; overflow: hidden; border-radius: 50%; background: currentColor; font-size: 0; line-height: 0; }
+}
 .cv-stat { display: inline-flex; gap: 6px; margin-left: auto; flex: 0 0 auto; }
 .cv-pill {
   flex: 0 0 auto;
-  padding: 0 6px;
-  border-radius: var(--radius-sm);
+  padding: 0 2px;
   font-size: var(--text-2xs);
-  line-height: 17px;
+  font-weight: var(--weight-medium);
+  line-height: 20px;
   color: var(--muted);
-  background: var(--fill-active);
+  background: none;
 }
-.cv-pill[data-status="added"], .cv-pill[data-status="untracked"] { color: var(--success); background: var(--tone-success-bg); }
-.cv-pill[data-status="deleted"], .cv-pill[data-status="conflict"] { color: var(--danger); background: var(--tone-danger-bg); }
-.cv-pill[data-status="modified"], .cv-pill[data-status="renamed"], .cv-pill[data-status="copied"] { color: var(--info); background: var(--tone-info-bg); }
-.cv-file-header > .cv-icon { width: 22px; height: 22px; }
+.cv-pill[data-status="added"], .cv-pill[data-status="untracked"] { color: var(--ds-success); }
+.cv-pill[data-status="deleted"], .cv-pill[data-status="conflict"] { color: var(--ds-danger); }
+.cv-pill[data-status="modified"], .cv-pill[data-status="renamed"], .cv-pill[data-status="copied"] { color: var(--ds-info); }
+.cv-file-header > .cv-icon { width: 24px; height: 24px; }
 
-.cv-file-body { position: relative; }
+/* Each diff is an inset card on the panel: its own tone, inner radius and the 8px end gutter, so it reads in every theme. */
+.cv-file-body { position: relative; margin: 2px 8px 6px 4px; border-radius: var(--ds-radius-inner); background: var(--ds-card-inset); overflow: hidden; }
 .cv-file-body[hidden] { display: none; }
 .cv-diff-next { position: absolute; inset: 0 0 auto; visibility: hidden; pointer-events: none; }
 .cv-placeholder {
@@ -160,7 +174,15 @@
   --diffs-gap-inline: 6px;
   --diffs-gap-block: 0px;
   --diffs-min-number-column-width-default: 3ch;
+  /* The panel's tones, not the syntax theme's near-black page: the card behind shows through. */
+  --diffs-bg: transparent;
+  --diffs-light-bg: transparent;
+  --diffs-dark-bg: transparent;
+  --diffs-bg-separator-override: color-mix(in srgb, var(--text) 5%, transparent);
+  --diffs-bg-context-gutter-override: transparent;
 }
+@media (prefers-reduced-transparency: reduce) { .cv-file-body { background: color-mix(in srgb, var(--text) 6%, var(--bg)); } }
+@media (prefers-contrast: more) { .cv-file-body { outline: 1px solid var(--border); outline-offset: -1px; } }
 
 .cv-state {
   display: flex;
@@ -176,3 +198,8 @@
 .cv-state .icon { width: 18px; height: 18px; }
 .cv-state-clean .icon { color: var(--success); }
 .cv-state-error .icon { color: var(--danger); }
+/* The diff's tab stops (the content strip, and the code scroller inside the diff's shadow root, which Chrome
+   focuses only from the keyboard and which reports focus on its host but never :focus-visible) get the shared
+   ring, drawn inside the body's clip at its inner radius. */
+.cv-file-body :is(.diff-viewer-content, diffs-container):focus { outline: none; }
+.cv-file-body:has(.diff-viewer-content:focus-visible, diffs-container:focus) { outline: 2px solid var(--focus); outline-offset: -2px; }

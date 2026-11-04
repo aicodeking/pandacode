@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { wallpaperAt, nextWallpaperChange, normalizeWallpaperPreferences } from '../src/wallpapers.ts';
+import { wallpaperAt, nextWallpaperChange, normalizeWallpaperPreferences, migrateWallpaperPreferences, WALLPAPER_PREFERENCES_VERSION } from '../src/wallpapers.ts';
 
 test('wallpaper preferences default safely and validate persisted fields independently', () => {
-  const defaults = { enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null };
+  const defaults = { enabled: false, visibility: 20, blur: 0, set: 'automatic', pinned: null };
   for (const invalid of [undefined, null, false, 'mon', 10, [], { visibility: '60', enabled: 'false', set: 'Monday', pinned: '../mon-night' }]) {
     assert.deepEqual(normalizeWallpaperPreferences(invalid), defaults);
   }
@@ -34,7 +34,7 @@ test('wallpaper preferences accept only the bundled scene identifiers', () => {
   for (const set of ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']) {
     for (const period of ['morning', 'afternoon', 'night']) {
       const pinned = `${set}-${period}`;
-      assert.deepEqual(normalizeWallpaperPreferences({ set, pinned }), { enabled: true, visibility: 20, blur: 0, set, pinned });
+      assert.deepEqual(normalizeWallpaperPreferences({ set, pinned }), { enabled: false, visibility: 20, blur: 0, set, pinned });
     }
   }
   for (const pinned of ['mon-noon', 'mon-night.webp', 'MON-night', '/wallpapers/mon-night', 'mon-night?x=1', 1, {}, []]) {
@@ -104,4 +104,18 @@ test('ships 21 distinct local WebP scenes within a five MiB collection budget', 
   }
   assert.equal(hashes.size, 21);
   assert.ok(bytes < 5 * 1024 * 1024);
+});
+
+test('wallpapers are off by default; version 1 saves at the untouched defaults turn off, customised ones keep their choice', () => {
+  assert.equal(WALLPAPER_PREFERENCES_VERSION, 2);
+  assert.equal(migrateWallpaperPreferences(null).enabled, false);
+  assert.equal(migrateWallpaperPreferences({}).enabled, false, 'an empty v1 save was on by default, untouched');
+  assert.equal(migrateWallpaperPreferences({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }).enabled, false);
+  for (const custom of [{ visibility: 45 }, { blur: 6 }, { set: 'fri' }, { pinned: 'tue-night' }]) {
+    const migrated = migrateWallpaperPreferences({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null, ...custom });
+    assert.equal(migrated.enabled, true, JSON.stringify(custom));
+  }
+  assert.equal(migrateWallpaperPreferences({ enabled: false, visibility: 60 }).enabled, false, 'a customised save that was off stays off');
+  assert.equal(migrateWallpaperPreferences({ version: 2, enabled: true, visibility: 20 }).enabled, true, 'a v2 save is taken as it is');
+  assert.equal(migrateWallpaperPreferences({ version: 2, visibility: 20 }).enabled, false);
 });

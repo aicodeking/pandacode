@@ -38,18 +38,21 @@ pub(crate) fn create(store: &Store, root: &Path, provider: &str, model: &str, mo
     crate::architect::profiles::create_user_task(store, &project.id, provider, model, mode, None)
 }
 
+/// The folder of a chat project no task uses any more.
+fn unused_folder(store: &Store, root: &Path, project_id: &str) -> Result<Option<PathBuf>> {
+    let Ok(project) = store.project(project_id) else { return Ok(None) };
+    let folder = PathBuf::from(&project.path);
+    if !in_root(&folder, root) {
+        return Ok(None);
+    }
+    let used: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1)", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    Ok((!used).then_some(folder))
+}
+
 /// Forgets a chat project once no task uses it, and removes its folder when
 /// only PandaCode's own files are left. Other projects are never touched.
 pub(crate) fn cleanup(store: &Store, root: &Path, project_id: &str) -> Result<bool> {
-    let Ok(project) = store.project(project_id) else { return Ok(false) };
-    let folder = PathBuf::from(&project.path);
-    if !in_root(&folder, root) {
-        return Ok(false);
-    }
-    let used: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1)", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if used {
-        return Ok(false);
-    }
+    let Some(folder) = unused_folder(store, root, project_id)? else { return Ok(false) };
     store.remove_project(project_id)?;
     let only_ours = std::fs::read_dir(&folder)
         .map(|entries| entries.flatten().all(|entry| OWN_FILES.iter().any(|name| entry.file_name() == *name)))
@@ -70,6 +73,11 @@ pub async fn chat_create(app: tauri::AppHandle, state: State<'_, AppState>, prov
 /// Called after a chat's task is deleted or moved to a real project.
 #[tauri::command]
 pub async fn chat_cleanup(state: State<'_, AppState>, project_id: String) -> Result<bool> {
+    let folder = unused_folder(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &project_id)?;
+    // A task moved out of the chat can leave its agent lingering here, which on Windows blocks removal.
+    if let Some(folder) = folder {
+        crate::providers::end_lingering_in(&folder).await;
+    }
     cleanup(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &project_id)
 }
 

@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use threads::Child;
 
 const APPROVAL: [&str; 2] = ["pandacode_machine_launch", "pandacode_machine_message"];
@@ -65,21 +65,21 @@ fn catalog() -> &'static [Value] {
         let machine = json!({"type":"string","maxLength":200,"description":"Computer id or name from machine_list (case-insensitive)."});
         let thread = json!({"type":"string","maxLength":200,"description":"Thread id from machine_launch."});
         vec![
-            spec("machine_list", "List the user's other computers on PandaCode Connect: id, name, platform, online, hosting, and access (read, ask, full, or null when not linked). Spread independent work across linked computers: launch one thread per independent piece, end your turn, and PandaCode starts your next turn when they finish.", json!({}), &[]),
+            spec("machine_list", "List the user's other computers on PandaCode Connect: id, name, platform, online, hosting, access (read, ask, full, or null when not linked), lastSeen, runningThreads (this task's running threads there) and harnesses (installed harness ids, or null when not known yet; machine_capabilities asks). Spread independent work across linked computers: launch one thread per independent piece with machine_launch and machine \"auto\", end your turn, and PandaCode starts your next turn when they finish.", json!({}), &[]),
             spec("machine_link", "Ask the user to link a computer so you can use it. Shows the user a card; the user picks the computer and the access. Returns at once if the named computer is already linked; otherwise waits up to 40 seconds. The request stays open for the user for 10 minutes: if it is still open you get {linked:false, pending:true, requestId}; then call machine_link again (it joins the same request) or end your turn, and PandaCode starts your next turn when the user answers. Returns {linked, machine?, access?, reason?, pending?, requestId?}.", json!({"machine":machine,"reason":{"type":"string","maxLength":500,"description":"One sentence for the user: why you need another computer."}}), &["reason"]),
             spec("machine_capabilities", "The harnesses installed on a linked computer and their models, for machine_launch.", json!({"machine":machine}), &["machine"]),
-            spec("machine_launch", "Start a thread on a linked computer (ask or full access) for this task's GitHub project: it clones or finds the repository there and runs the prompt with the harness and model you pick (see machine_capabilities). The thread runs in Full access only when the link is full and this task is in Full access; otherwise its approvals come to the user here. A task in plan mode cannot launch. It returns at once with {thread, machine, mode, status:\"starting\"} while the other computer starts the thread; a thread that fails to start is reported like one that finished. After launching, end your turn: PandaCode wakes you when your threads finish. machine_launch and machine_message ask for approval unless the task runs in Full access, like every PandaCode host tool; the link's access still caps the child thread's mode, and a Read-only link refuses them.", json!({
-                "machine":machine,
+            spec("machine_launch", "Start a thread on a linked computer (ask or full access) for this task's GitHub project: it clones or finds the repository there and runs the prompt with the harness and model you pick (see machine_capabilities). Pass machine \"auto\" unless the work needs one computer: PandaCode picks the online linked computer with that harness and the fewest running threads, and the result names it; use model \"default\" with auto, since computers list different models. The thread runs in Full access only when the link is full and this task is in Full access; otherwise its approvals come to the user here. A task in plan mode cannot launch. It returns at once with {thread, machine, mode, status:\"starting\"} while the other computer starts the thread; a thread that fails to start is reported like one that finished. After launching, end your turn: PandaCode wakes you when your threads finish. machine_launch and machine_message ask for approval unless the task runs in Full access, like every PandaCode host tool; the link's access still caps the child thread's mode, and a Read-only link refuses them.", json!({
+                "machine":{"type":"string","maxLength":200,"description":"\"auto\" to let PandaCode pick, or a computer id or name from machine_list (case-insensitive)."},
                 "prompt":{"type":"string","maxLength":MACHINE_TEXT,"description":"The complete, self-contained assignment."},
                 "provider":{"type":"string","enum":host::PROVIDERS},
                 "model":{"type":"string","maxLength":128},
                 "title":{"type":"string","maxLength":120,"description":"Short sidebar title."},
                 "effort":{"type":"string","maxLength":32},
                 "worktree":{"type":"boolean","description":"Run in a new worktree there (default true)."}}), &["machine","prompt","provider","model"]),
-            spec("machine_wait", &format!("Wait (at most timeoutSeconds, default 30, max 40) until the listed threads (default: all running threads of this task) are no longer running or need the user. Returns each thread's status and final reply; one cut short has replyTruncated, so read the rest with machine_read. {UNTRUSTED}"), json!({
+            spec("machine_wait", &format!("Wait (at most timeoutSeconds, default 30, max 40) until the listed threads (default: all running threads of this task) are no longer running, need the user, or are on a computer that has been offline for over 5 minutes (those come back with hostOffline:true and their stored status, so you can decide). Returns each thread's status and final reply; one cut short has replyTruncated, so read the rest with machine_read. {UNTRUSTED}"), json!({
                 "threads":{"type":"array","items":{"type":"string","maxLength":200},"maxItems":20},
                 "timeoutSeconds":{"type":"integer","description":"1–40, default 30"}}), &[]),
-            spec("machine_read", &format!("Read a page of a thread's messages, newest last. Pass beforeId from the previous page for older ones. A message cut short has nextOffset: pass its id as messageId with that offset for the rest, and repeat while nextOffset is set. {UNTRUSTED}"), json!({"thread":thread,"beforeId":{"type":"integer"},"messageId":{"type":"integer"},"offset":{"type":"integer"}}), &["thread"]),
+            spec("machine_read", &format!("Read a page of a thread's messages, newest last. Pass beforeId from the previous page for older ones. A message cut short has nextOffset: pass its id as messageId with that offset for the rest, and repeat while nextOffset is set. hostOffline:true means its computer has been offline for over 5 minutes. {UNTRUSTED}"), json!({"thread":thread,"beforeId":{"type":"integer"},"messageId":{"type":"integer"},"offset":{"type":"integer"}}), &["thread"]),
             spec("machine_message", "Message a thread this task launched (ask or full access; a Full access thread needs a full link): send a new prompt when it is idle, or steer it while it runs. machine_launch and machine_message ask for approval unless the task runs in Full access, like every PandaCode host tool; the link's access still caps the child thread's mode, and a Read-only link refuses them.", json!({
                 "thread":thread,
                 "action":{"type":"string","enum":["send","steer"]},
@@ -139,7 +139,12 @@ fn linked(app: &tauri::AppHandle, device: &str) -> Result<(String, Option<Access
     Ok((label(&inner, device), access))
 }
 
-fn list(app: &tauri::AppHandle) -> Result<Value> {
+fn list(app: &tauri::AppHandle, session: &str) -> Result<Value> {
+    let mut running: std::collections::HashMap<String, usize> = Default::default();
+    for child in threads::active_children(&*store(app)?, session)?.into_iter().filter(|child| child.status == "running") {
+        *running.entry(child.device).or_default() += 1;
+    }
+    let now = std::time::Instant::now();
     let state = remote(app);
     let inner = state.lock();
     links::ready(&inner)?;
@@ -148,7 +153,7 @@ fn list(app: &tauri::AppHandle) -> Result<Value> {
         .iter()
         .filter(|d| d.id != inner.settings.device_id)
         .take(50)
-        .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "online": d.online, "hosting": d.host, "access": links::access(&inner, d)}))
+        .map(|d| json!({"id": d.id, "name": d.name, "platform": d.platform, "online": d.online, "hosting": d.host, "access": links::access(&inner, d), "lastSeen": d.last_seen, "runningThreads": running.get(&d.id).copied().unwrap_or(0), "harnesses": inner.catalog.harnesses(&d.id, now)}))
         .collect();
     let guidance = if machines.iter().any(|m| !m["access"].is_null()) {
         "Spread independent work across linked computers with machine_launch, then end your turn; PandaCode wakes you when the threads finish."
@@ -166,6 +171,99 @@ fn machine(app: &tauri::AppHandle, args: &Value) -> Result<(String, String, Opti
     let device = links::resolve(&inner, string(args, "machine").unwrap_or_default())?;
     let name = if device.name.is_empty() { super::device_label(&device.id) } else { device.name.clone() };
     Ok((device.id.clone(), name, links::access(&inner, device)))
+}
+
+/// A linked computer `machine: "auto"` may pick.
+struct Candidate {
+    id: String,
+    name: String,
+    online: bool,
+    access: Access,
+    /// Installed harnesses; None when the computer could not say.
+    harnesses: Option<Vec<String>>,
+    /// Whether it lists the requested model; None when it could not say.
+    model: Option<bool>,
+    /// Running threads there, across the whole app.
+    running: usize,
+}
+
+const AUTO: &str = "auto";
+/// How long `machine: "auto"` waits for each round of lists (harnesses, then models), so it
+/// and the launch's own checks end before the tool deadline. A late answer still fills the cache.
+const AUTO_ASK: Duration = Duration::from_secs(10);
+
+/// The online computer with ask or full access, `provider` and `model` that runs the fewest
+/// threads, tie-broken by name; else why none qualifies. One known to list the model goes before
+/// one that could not say (the launch still checks that one).
+fn pick_machine<'a>(machines: &'a [Candidate], provider: &str, model: &str) -> Result<&'a Candidate> {
+    let names = |list: &[&Candidate]| list.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
+    let linked: Vec<&Candidate> = machines.iter().filter(|m| m.access >= Access::Ask).collect();
+    if linked.is_empty() {
+        return Err("No computer is linked with ask or full access. Ask the user with pandacode_machine_link.".into());
+    }
+    let online: Vec<&Candidate> = linked.iter().copied().filter(|m| m.online).collect();
+    if online.is_empty() {
+        return Err(format!("Every linked computer is offline: {}.", names(&linked)));
+    }
+    let has = |m: &&Candidate| m.harnesses.as_ref().is_some_and(|list| list.iter().any(|id| id == provider));
+    let installed: Vec<&Candidate> = online.iter().copied().filter(has).collect();
+    if installed.is_empty() {
+        return Err(format!("No online linked computer has {provider} installed: {}.", names(&online)));
+    }
+    installed.iter().copied().filter(|m| m.model != Some(false)).min_by_key(|m| (m.model.is_none(), m.running, m.name.to_lowercase(), m.id.clone())).ok_or_else(|| format!("No online linked computer has {model} for {provider}: {}.", names(&installed)))
+}
+
+/// Waits at most [`AUTO_ASK`] for one round of list fetches, each on its own task.
+async fn ask_within<F>(fetches: Vec<F>)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let tasks: Vec<_> = fetches.into_iter().map(tauri::async_runtime::spawn).collect();
+    let _ = tokio::time::timeout(AUTO_ASK, futures_util::future::join_all(tasks)).await;
+}
+
+/// The online computers `machine: "auto"` may use, by what `lacks` says of their cached lists.
+fn auto_unknown(app: &tauri::AppHandle, lacks: impl Fn(&super::catalog::Cache, &str, std::time::Instant) -> bool) -> Result<Vec<String>> {
+    let state = remote(app);
+    let inner = state.lock();
+    links::ready(&inner)?;
+    let now = std::time::Instant::now();
+    Ok(inner.devices.iter().filter(|d| d.online && links::access(&inner, d).is_some_and(|access| access >= Access::Ask) && lacks(&inner.catalog, &d.id, now)).map(|d| d.id.clone()).collect())
+}
+
+/// `machine: "auto"`: asks any candidate whose harnesses or models aren't cached, then picks.
+async fn auto_machine(app: &tauri::AppHandle, args: &Value) -> Result<(String, String, Option<Access>)> {
+    let provider = string(args, "provider").unwrap_or_default().to_owned();
+    let model = string(args, "model").unwrap_or_default().to_owned();
+    // One that can't answer stays unknown here, so it doesn't qualify.
+    let unknown = auto_unknown(app, |catalog, id, now| catalog.harnesses(id, now).is_none())?;
+    ask_within(unknown.into_iter().map(|id| {
+        let app = app.clone();
+        async move {
+            let _ = super::catalog::providers(&app, Some(id), false).await;
+        }
+    }).collect()).await;
+    let cold = auto_unknown(app, |catalog, id, now| catalog.harnesses(id, now).is_some_and(|list| list.contains(&provider)) && catalog.has_model(id, &provider, &model, now).is_none())?;
+    ask_within(cold.into_iter().map(|id| {
+        let (app, provider) = (app.clone(), provider.clone());
+        async move {
+            let _ = super::catalog::models(&app, Some(id), &provider, false).await;
+        }
+    }).collect()).await;
+    let running = threads::running_by_device(&*store(app)?)?;
+    let state = remote(app);
+    let inner = state.lock();
+    let now = std::time::Instant::now();
+    let machines: Vec<Candidate> = inner
+        .devices
+        .iter()
+        .filter_map(|d| {
+            let access = links::access(&inner, d)?;
+            Some(Candidate { id: d.id.clone(), name: label(&inner, &d.id), online: d.online, access, harnesses: inner.catalog.harnesses(&d.id, now), model: inner.catalog.has_model(&d.id, &provider, &model, now), running: running.get(&d.id).copied().unwrap_or(0) })
+        })
+        .collect();
+    let picked = pick_machine(&machines, &provider, &model)?;
+    Ok((picked.id.clone(), picked.name.clone(), Some(picked.access)))
 }
 
 async fn capabilities(app: &tauri::AppHandle, args: &Value) -> Result<Value> {
@@ -187,8 +285,8 @@ async fn capabilities(app: &tauri::AppHandle, args: &Value) -> Result<Value> {
 }
 
 async fn launch(app: &tauri::AppHandle, session: &str, args: &Value) -> Result<Value> {
-    let (device, name, access) = machine(app, args)?;
-    let access = links::need(access, Access::Ask, &name)?;
+    let (device, name, access) = if string(args, "machine").is_some_and(|m| m.eq_ignore_ascii_case(AUTO)) { auto_machine(app, args).await? } else { machine(app, args)? };
+    let access = links::launchable(&remote(app).lock(), &device, access, &name)?;
     let parent = store(app)?.session(session)?;
     if parent.remote_device.is_some() {
         return Err("This task runs on another computer.".into());
@@ -227,7 +325,19 @@ fn thread(app: &tauri::AppHandle, session: &str, id: &str, least: impl Fn(&Child
     Ok((child, name))
 }
 
-const READ: fn(&Child) -> Access = |_| Access::Read;
+/// One of this task's threads for the read-only tools: a thread on a computer that left the
+/// account stays readable (its local copy) while its stored link does.
+fn readable(app: &tauri::AppHandle, session: &str, id: &str) -> Result<(Child, String)> {
+    host::valid_id(id).map_err(|_| "Invalid argument: thread")?;
+    let child = threads::own(&*store(app)?, session, id)?;
+    let state = remote(app);
+    let inner = state.lock();
+    links::ready(&inner)?;
+    let name = label(&inner, &child.device);
+    links::need(links::read_access(&inner, &child.device), Access::Read, &name)?;
+    drop(inner);
+    Ok((child, name))
+}
 
 /// What messaging a thread needs: Ask, or Full for a thread in Full access.
 fn to_message(child: &Child) -> Access {
@@ -262,7 +372,7 @@ fn reply_share(threads: usize) -> usize {
 
 fn thread_view(app: &tauri::AppHandle, child: &Child, name: &str, bytes: usize) -> Value {
     let reply = (child.status != "running").then(|| store(app).ok().and_then(|db| threads::final_reply(&db, &child.id, bytes))).flatten();
-    thread_row(child, name, reply)
+    with_host_state(thread_row(child, name, reply), child)
 }
 
 fn thread_row(child: &Child, name: &str, reply: Option<threads::Reply>) -> Value {
@@ -273,6 +383,14 @@ fn thread_row(child: &Child, name: &str, reply: Option<threads::Reply>) -> Value
         row["replyTruncated"] = json!(reply.truncated);
     }
     row
+}
+
+/// Marks the view of a thread still running on a computer offline past the limit.
+fn with_host_state(mut view: Value, child: &Child) -> Value {
+    if threads::active(&child.status) && links::host_offline(&child.device) {
+        view["hostOffline"] = json!(true);
+    }
+    view
 }
 
 async fn wait(app: &tauri::AppHandle, session: &str, stopped: &AtomicBool, args: &Value) -> Result<Value> {
@@ -296,8 +414,8 @@ async fn wait(app: &tauri::AppHandle, session: &str, stopped: &AtomicBool, args:
             return Err("Task has stopped.".into());
         }
         // A thread that can't be read (unlinked meanwhile, say) reports its error alone.
-        let current: Vec<(&String, Result<(Child, String)>)> = ids.iter().map(|id| (id, thread(app, session, id, READ))).collect();
-        if timed_out || settled(current.iter().map(|(_, c)| c)) {
+        let current: Vec<(&String, Result<(Child, String)>)> = ids.iter().map(|id| (id, readable(app, session, id))).collect();
+        if timed_out || settled(current.iter().map(|(_, c)| c), links::host_offline) {
             return Ok(fitted(reply_share(current.len()), timed_out, |share| {
                 current.iter().map(|(id, c)| match c {
                     Ok((c, name)) => thread_view(app, c, name, share),
@@ -313,13 +431,14 @@ async fn wait(app: &tauri::AppHandle, session: &str, stopped: &AtomicBool, args:
     }
 }
 
-/// A wait ends once no readable thread runs; a thread in error doesn't hold it.
-fn settled<'a>(mut threads: impl Iterator<Item = &'a Result<(Child, String)>>) -> bool {
-    !threads.any(|c| c.as_ref().is_ok_and(|(c, _)| c.status == "running"))
+/// A wait ends once no readable thread runs; a thread in error, or on a computer `offline`
+/// names, doesn't hold it.
+fn settled<'a>(mut threads: impl Iterator<Item = &'a Result<(Child, String)>>, offline: impl Fn(&str) -> bool) -> bool {
+    !threads.any(|c| c.as_ref().is_ok_and(|(c, _)| c.status == "running" && !offline(&c.device)))
 }
 
 fn read(app: &tauri::AppHandle, session: &str, args: &Value) -> Result<Value> {
-    let (child, name) = thread(app, session, string(args, "thread").unwrap_or_default(), READ)?;
+    let (child, name) = readable(app, session, string(args, "thread").unwrap_or_default())?;
     if let Some(id) = args["messageId"].as_i64() {
         return read_message(&*store(app)?, &child.id, id, args["offset"].as_u64().unwrap_or(0) as usize);
     }
@@ -330,7 +449,7 @@ fn read(app: &tauri::AppHandle, session: &str, args: &Value) -> Result<Value> {
     let rows = rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     let view = |messages: Vec<Value>, more: bool| {
         let oldest = messages.first().map(|m| m["id"].clone());
-        json!({"thread": child.id, "title": child.title, "machine": {"id": child.device, "name": name}, "status": child.status, "messages": messages, "hasMore": more, "beforeId": oldest, "note": UNTRUSTED})
+        with_host_state(json!({"thread": child.id, "title": child.title, "machine": {"id": child.device, "name": name}, "status": child.status, "messages": messages, "hasMore": more, "beforeId": oldest, "note": UNTRUSTED}), &child)
     };
     // 32 covers the oldest row's id in beforeId, which the empty view has as null.
     let envelope = serde_json::to_vec(&view(Vec::new(), true)).map_or(0, |bytes| bytes.len()) + 32;
@@ -401,7 +520,7 @@ async fn dispatch(app: &tauri::AppHandle, session: &str, stopped: &AtomicBool, n
 
 async fn run(app: &tauri::AppHandle, session: &str, stopped: &AtomicBool, name: &str, args: &Value) -> Result<Value> {
     match name {
-        "pandacode_machine_list" => list(app),
+        "pandacode_machine_list" => list(app, session),
         "pandacode_machine_link" => links::request(app, session, string(args, "machine"), args["reason"].as_str().unwrap_or_default(), stopped).await,
         "pandacode_machine_capabilities" => capabilities(app, args).await,
         "pandacode_machine_launch" => launch(app, session, args).await,
@@ -460,7 +579,7 @@ pub async fn orchestration_children(app: tauri::AppHandle, session_id: String) -
     }
     host::valid_id(&session_id).map_err(|_| "Unknown task.")?;
     let children = threads::lineage(&*store(&app)?, &session_id)?;
-    Ok(threads::children_view(&children, super::device_label))
+    Ok(threads::children_view(&children, super::device_label, links::host_offline))
 }
 
 /// The named threads of `parent` (at most 64; others' ids are skipped), oldest first, in the
@@ -475,7 +594,7 @@ pub async fn orchestration_threads(app: tauri::AppHandle, session_id: String, id
         return Err("Ask for at most 64 thread ids.".into());
     }
     let children = threads::some_children(&*store(&app)?, &session_id, &ids)?;
-    Ok(threads::children_view(&children, super::device_label))
+    Ok(threads::children_view(&children, super::device_label, links::host_offline))
 }
 
 /// A mirror's status changed: wakes its parent's `pandacode_machine_wait`.
@@ -490,7 +609,7 @@ pub(crate) fn child_changed(store: &Store, child: &str) {
 
 /// The wake message and the threads it reports, if `parent` should be woken now.
 pub(crate) fn claim(store: &Store, parent: &str) -> Result<Option<(String, Vec<String>)>> {
-    threads::claim(store, parent, super::device_label)
+    threads::claim(store, parent, super::device_label, links::host_offline)
 }
 
 /// A task was stopped: its link request and waits end.
@@ -532,6 +651,53 @@ pub(crate) fn reconcile(app: &tauri::AppHandle) {
             parents.into_iter().for_each(|parent| wake(app, parent));
         }
         Err(error) => eprintln!("Machine orchestration: could not check threads: {error}"),
+    }
+}
+
+/// Presence changed or orchestration was toggled: acts on where hosts stand now and re-aims the
+/// one sleeper at the next host to pass the offline limit (presence only says when one left).
+/// No sleeper runs while orchestration is off or nothing is due.
+pub(super) fn watch_offline(app: &tauri::AppHandle) {
+    static SLEEPER: OnceLock<std::sync::Mutex<links::Sleeper>> = OnceLock::new();
+    let sleeper = SLEEPER.get_or_init(Default::default);
+    let due = || links::next_host_due().filter(|_| links::on()).map(|left| left + Duration::from_secs(1));
+    offline_tick(app);
+    if links::Sleeper::aim(sleeper, due()) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move { links::Sleeper::run(sleeper, due, || offline_tick(&app)).await });
+    }
+}
+
+/// Tells the window when a host crossed the limit, ends the waits of threads on dead hosts and
+/// wakes their parents if that is now due.
+fn offline_tick(app: &tauri::AppHandle) {
+    static SEEN: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    if !links::on() {
+        return;
+    }
+    let no_links = remote(app).lock().settings.links.is_empty();
+    if links::tick_idle(no_links, threads::known_none()) {
+        return;
+    }
+    let checked = store(app).and_then(|db| {
+        if no_links && threads::check_none(&db)? {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let devices = threads::active_devices(&db)?;
+        let parents = if devices.is_empty() { Vec::new() } else { threads::parents_on(&db, links::host_offline)? };
+        Ok((devices, parents))
+    });
+    let (devices, parents) = match checked {
+        Ok(checked) => checked,
+        Err(error) => return eprintln!("Machine orchestration: could not check offline threads: {error}"),
+    };
+    let crossed = links::hosts_crossed(&mut SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner()), &devices, links::host_offline);
+    if crossed {
+        let _ = app.emit("sessions-changed", ());
+    }
+    for parent in parents {
+        threads::notify_changed(&parent);
+        wake(app, parent);
     }
 }
 
@@ -611,7 +777,7 @@ pub(super) fn recover_wakes(store: &Store, running: &std::collections::HashSet<S
         let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
         rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
     };
-    for (parent, message) in collect("SELECT DISTINCT parent_session_id,reported_by FROM machine_threads WHERE reported=1 AND reported_by IS NOT NULL")? {
+    for (parent, message) in collect("SELECT DISTINCT parent_session_id,reported_by FROM machine_threads WHERE reported_by IS NOT NULL")? {
         if !running.contains(&parent) {
             restore_wake(store, &parent, message)?;
         }

@@ -26,7 +26,7 @@ async function open(page: Page): Promise<void> {
 }
 async function connect(page: Page, provider: string, fields: Record<string, string>): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Connections', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
   await settings(page).getByRole('button', { name: `Connect ${provider}`, exact: true }).click();
   const form = settings(page).getByRole('form', { name: `Connect ${provider}` });
   for (const [label, value] of Object.entries(fields)) await form.getByLabel(`${provider} ${label}`).fill(value);
@@ -80,7 +80,7 @@ test('Netlify connects a project, starts a deploy task and disconnects', async (
   expect(sent.text).toContain('deploy --prod');
   expect(sent.text).not.toContain('netlify-test-token');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Connections', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
   await settings(page).getByRole('button', { name: 'Disconnect Netlify', exact: true }).click();
   await expect(settings(page).getByRole('button', { name: 'Connect Netlify', exact: true })).toBeVisible();
 });

@@ -299,9 +299,10 @@ whole interface scales, not just text).
 On macOS, if folder access is denied, use **Browse** to select the folder, or
 allow PandaCode under **System Settings → Privacy & Security → Files & Folders**.
 
-PandaCode includes [21 anime scenery wallpapers](docs/wallpapers.md), a
-different morning, afternoon and night scene for each weekday. **Settings →
-Daily wallpapers** turns them off. You can also import VS Code color themes.
+The thread shows a live sky that follows the time of day, and PandaCode also
+includes [21 anime scenery wallpapers](docs/wallpapers.md), a different morning,
+afternoon and night scene for each weekday: turn them on in **Settings →
+Appearance → Wallpapers**. You can also import VS Code color themes.
 
 The [optional Jev add-on](docs/jev.md) adds work review, project-rule checks and
 app testing in isolated Chrome profiles. It is off by default and PandaCode works

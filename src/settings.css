@@ -1,134 +1,231 @@
 /* Settings is a full page over the workspace: the sidebar's place lists the groups, and the
-   chosen group fills the rest. Sections read like grouped lists, the way system settings do. */
+   chosen group fills the rest. Each group reads as section headings over grouped cards of rows
+   (the design system in src/design-system.css: --ds-card, 44/52px rows, pill toggles). */
 .settings-page-root{display:grid;grid-template-columns:var(--sidebar-width,var(--sidebar-default-width)) minmax(0,1fr)}
-.settings-nav{display:flex;flex-direction:column;min-height:0;padding:10px 8px 12px;background:var(--panel)}
-.workspace[data-wallpaper] .settings-nav{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);border-color:transparent}
+/* Same shell as the workspace: the nav sits on the window frame like the sidebar, the content is an inset panel. */
+.settings-nav{display:flex;flex-direction:column;min-height:0;padding:10px 8px 12px;background:transparent}
 .settings-nav-head{display:flex;align-items:center;min-height:32px;padding:0 2px}
 html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
-.settings-back{display:inline-flex;align-items:center;gap:var(--space-1);min-height:var(--control);padding:0 8px 0 4px;border-radius:var(--radius-sm);color:var(--muted);font-size:var(--text-sm);font-weight:var(--weight-medium)}
-.settings-back:hover{background:color-mix(in srgb,var(--text) 6%,transparent);color:var(--text)}
-.settings-back:active{scale:.97}
+.settings-back{display:inline-flex;align-items:center;gap:var(--space-1);min-height:var(--control);padding:0 8px 0 4px;border-radius:var(--ds-radius-control);color:var(--muted);font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+.settings-back:hover{background:var(--ds-row-hover);color:var(--text)}
+.settings-back:active{scale:var(--ds-press)}
 .settings-back .icon{width:var(--icon-sm);height:var(--icon-sm)}
-.settings-nav-title{margin:var(--space-3) var(--space-2) var(--space-2);font-size:var(--text-lg);font-weight:var(--weight-strong);letter-spacing:-.01em}
-.settings-nav-list{display:flex;flex-direction:column;gap:1px;min-height:0;overflow-y:auto}
-.settings-nav-list>button{display:flex;align-items:center;gap:var(--space-2);min-height:var(--row-lg);padding:0 var(--space-2);border-radius:var(--radius-sm);text-align:left;font-size:var(--text-sm);color:var(--text)}
-.settings-nav-list>button:hover{background:color-mix(in srgb,var(--text) 6%,transparent)}
-.settings-nav-list>button:active{background:color-mix(in srgb,var(--text) 9%,transparent)}
-.settings-nav-list>button[aria-selected="true"]{background:var(--fill-selected);color:var(--text);font-weight:var(--weight-medium)}
-.settings-nav-list>button .icon{flex:none;width:var(--icon-sm);height:var(--icon-sm);color:var(--muted)}
-.settings-nav-list>button[aria-selected="true"] .icon{color:var(--accent-ink)}
+.settings-nav-title{margin:var(--space-3) 10px 10px;font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;color:var(--ds-title-ink)}
+.settings-nav-list{display:flex;flex-direction:column;gap:2px;min-height:0;overflow-y:auto}
+.settings-nav-list>button{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-height:36px;padding:0 10px;border-radius:var(--ds-radius-control);text-align:left;font-size:var(--ds-text-ui);color:var(--text)}
+.settings-nav-list>button:hover{background:var(--ds-row-hover)}
+.settings-nav-list>button:active{background:var(--ds-row-press);scale:var(--ds-press)}
+.settings-nav-list>button[aria-selected="true"]{background:var(--ds-fill-hover);color:var(--text);font-weight:var(--weight-medium)}
+.settings-nav-list>button>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.settings-nav-list>button .icon{flex:none;--icon-size:var(--icon-md);width:var(--icon-md);height:var(--icon-md);color:var(--muted)}
+.settings-nav-list>button[aria-selected="true"] .icon{color:var(--text)}
 .settings-nav-list>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .settings-nav-list>button:focus:not(:focus-visible){outline:0}
-.settings-content{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;background:var(--bg)}
-.workspace[data-wallpaper] .settings-content{background:transparent}
-.settings-panel{width:min(760px,calc(100% - 64px));margin:0 auto;padding:44px 0 72px}
-.settings-panel-head{margin:0 0 22px}
-.settings-panel-head h2{margin:0;font-size:var(--text-xl);font-weight:var(--weight-strong);letter-spacing:-.01em;line-height:var(--leading-tight)}
-.settings-panel-head p{margin:var(--space-1) 0 0;font-size:var(--text-sm);color:var(--muted)}
-.settings-panel-body>*+*{margin-top:14px}
-.settings-heading{display:flex;align-items:baseline;gap:10px;margin:var(--space-6) 0 var(--space-2) !important;font-size:var(--text-sm);font-weight:var(--weight-strong);color:var(--muted)}
-.settings-heading small{font-weight:400}
+.settings-content{min-width:0;min-height:0;overflow-y:auto;scrollbar-gutter:stable;margin:var(--inset,0px) var(--inset,0px) var(--inset,0px) 0;border-radius:var(--inset-radius,0px);background:var(--panel-surface,var(--bg))}
+.settings-panel{width:min(720px,calc(100% - 64px));margin:0 auto;padding:44px 0 72px}
+.settings-panel-head{margin:0 0 24px;padding:0 var(--ds-row-pad-x)}
+.settings-panel-head h2{margin:0;font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:0;line-height:1.3;color:var(--ds-title-ink)}
+/* A section's pages: the segmented control takes the title's place (each page keeps an sr-only heading). */
+.settings-subnav{width:min(720px,calc(100% - 64px));margin:0 auto;padding-top:36px}
+.settings-subnav .ds-seg{width:fit-content;max-width:100%}
+.settings-subnav .ds-seg>button{flex:0 1 auto;height:32px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:var(--ds-text-ui)}
+.settings-panel-paged{padding-top:16px}
+.settings-panel-paged .settings-panel-head{margin:0}
+/* A fold for rarely used options: a quiet heading row, closed by default. */
+.settings-fold>summary{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:36px;margin-top:20px;padding:0 var(--ds-row-pad-x);border-radius:var(--ds-radius-control);color:var(--muted);font-size:var(--ds-text-sub);list-style:none;cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.settings-fold>summary::-webkit-details-marker{display:none}
+.settings-fold>summary:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.settings-fold>summary:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.settings-fold>summary h3{margin:0;font-size:inherit;font-weight:inherit}
+.settings-fold>summary>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--spring-fast-duration) var(--spring-fast)}
+.settings-fold[open]>summary>.icon{rotate:90deg}
+.settings-fold>:not(summary)+:not(summary){margin-top:12px}
+.settings-fold>:nth-child(2):not(.settings-heading){margin-top:8px}
+@media(prefers-reduced-motion:reduce){.settings-fold>summary,.settings-fold>summary>.icon{transition:none}}
+/* Status words in a row's subtitle, and an update waiting on the About row. */
+.settings-page-root .setting-row>div>small.ds-success,.settings-page-root .setting-row>div>small .ds-success{color:var(--ds-success)}
+.settings-page-root .setting-row>div>small.ds-warn,.settings-page-root .setting-row>div>small .ds-warn{color:var(--ds-warn)}
+.settings-page-root .setting-row>div>small.ds-danger,.settings-page-root .setting-row>div>small .ds-danger{color:var(--ds-danger)}
+.settings-page-root[data-update-tone=info] .settings-update-status{color:var(--ds-info)}
+.settings-page-root[data-update-tone=danger] .settings-update-status{color:var(--ds-danger)}
+.settings-page-root[data-update-tone=info] #settings-tab-about::after{content:"";flex:none;width:7px;height:7px;margin-left:auto;border-radius:50%;background:var(--ds-info)}
+.settings-panel-body>*+*{margin-top:12px}
+/* Section heading over a card: small muted label, optional trailing action. */
+.settings-heading{display:flex;align-items:center;gap:8px;min-height:28px;margin:24px 0 6px !important;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);color:var(--muted)}
+.settings-heading small{font-weight:400;color:var(--faint)}
 .settings-heading h3{margin:0;font-size:inherit;font-weight:inherit}
 .settings-embed{min-width:0}
-.settings-embed-error{font-size:var(--text-sm);color:var(--danger)}
-.workspace[data-wallpaper] .settings-page-root .settings-group{background:var(--workspace-frost-surface);backdrop-filter:var(--workspace-frost);-webkit-backdrop-filter:var(--workspace-frost);}
-@media (max-width:760px){.settings-page-root{grid-template-columns:180px minmax(0,1fr)}.settings-panel{width:calc(100% - 32px);padding-top:24px}}
-@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .settings-nav,.workspace[data-wallpaper] .settings-page-root .settings-group{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}.workspace[data-wallpaper] .settings-content{background:var(--bg)}}
-.settings-group{border-radius:var(--radius-md);overflow:hidden;background:var(--panel)}
-.settings-page-root .setting-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:1rem;align-items:center;padding:.7rem 1rem;margin:0;border:0;min-height:3rem}
-.settings-page-root .setting-row+.setting-row{}
-.settings-page-root .setting-row>div{min-width:0;gap:.5rem}
-.settings-page-root .setting-row strong{font-size:var(--text-sm);font-weight:var(--weight-medium);line-height:1.4}
-.settings-page-root .setting-row small{font-size:var(--text-xs);line-height:1.4}
-.settings-page-root .setting-row .settings-row-actions{display:flex;flex-direction:row;align-items:center;gap:.9rem;flex-wrap:wrap;justify-content:flex-end}
-.settings-page-root .secondary-button{font-size:var(--text-sm);min-height:var(--control);padding:0 var(--space-2);white-space:nowrap}
-.settings-page-root .secondary-button>.icon{width:.7rem;height:.7rem}
-.settings-page-root .settings-select{width:auto;max-width:100%;min-width:10.5rem;font-size:var(--text-sm);min-height:var(--control);padding:0 var(--space-2);background:color-mix(in srgb,var(--text) 6%,transparent);}
+.settings-embed-error{font-size:var(--ds-text-meta);color:var(--ds-danger)}
+@media (max-width:760px){.settings-page-root{grid-template-columns:180px minmax(0,1fr)}.settings-panel{width:calc(100% - 32px);padding-top:24px}.settings-panel-paged{padding-top:12px}.settings-subnav{width:calc(100% - 32px);padding-top:24px}}
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.workspace[data-wallpaper] .settings-content{background:var(--bg)}}
+
+/* Card, as the reference's Automations card: an outer card (hairline, outer fill, soft shadow, 6px
+   padding) holding an inner card of rows (its own hairline, the inner fill, a soft shadow). The inner
+   card is the group's ::before, so every panel that renders a `:is(.settings-group,.colors-card,.schedules-activity)` (often re-rendered by
+   innerHTML) gets it without wrapper markup. A `.settings-heading` right above a group joins it as the
+   outer card's header row: muted label first, trailing action last. */
+.settings-page-root{--settings-pad:var(--ds-card-pad)}
+.settings-page-root :is(.settings-group,.colors-card,.schedules-activity){position:relative;isolation:isolate;display:flex;flex-direction:column;gap:0;padding:calc(var(--settings-pad) * 2 + 1px);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.settings-page-root :is(.settings-group,.colors-card,.schedules-activity)::before{content:"";position:absolute;inset:var(--settings-pad);z-index:-1;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);pointer-events:none}
+.settings-page-root :is(.settings-group,.colors-card,.schedules-activity)>:is(small,p,.settings-embed-error){padding:6px var(--ds-row-pad-x)}
+.settings-page-root :is(.settings-heading,.colors-section>h3):is(:has(+:is(.settings-group,.colors-card,.schedules-activity)),:has(+.settings-provider-status[hidden]+:is(.settings-group,.colors-card,.schedules-activity)),:has(+:not(:is(.settings-group,.colors-card,.schedules-activity))>:is(.settings-group,.colors-card,.schedules-activity):first-child)){min-height:44px;margin-bottom:0 !important;padding:2px 14px 0;border:1px solid var(--ds-border);border-bottom:0;border-radius:var(--ds-radius-card) var(--ds-radius-card) 0 0;background:var(--ds-card)}
+.settings-page-root :is(.settings-heading+:is(.settings-group,.colors-card,.schedules-activity),.colors-section>h3+:is(.settings-group,.colors-card,.schedules-activity),.settings-heading+.settings-provider-status[hidden]+:is(.settings-group,.colors-card,.schedules-activity),.settings-heading+:not(:is(.settings-group,.colors-card,.schedules-activity))>:is(.settings-group,.colors-card,.schedules-activity):first-child){margin-top:0 !important;padding-top:calc(var(--settings-pad) + 1px);border-top:0;border-radius:0 0 var(--ds-radius-card) var(--ds-radius-card);clip-path:inset(0 -12px -12px -12px)}
+.settings-page-root :is(.settings-heading+:is(.settings-group,.colors-card,.schedules-activity),.colors-section>h3+:is(.settings-group,.colors-card,.schedules-activity),.settings-heading+.settings-provider-status[hidden]+:is(.settings-group,.colors-card,.schedules-activity),.settings-heading+:not(:is(.settings-group,.colors-card,.schedules-activity))>:is(.settings-group,.colors-card,.schedules-activity):first-child)::before{top:0}
+.settings-page-root .settings-heading+:not(:is(.settings-group,.colors-card,.schedules-activity)):has(>:is(.settings-group,.colors-card,.schedules-activity):first-child){margin-top:0 !important}
+/* Colors → VS Code theme: its own h3 heads the card. */
+.settings-page-root .colors-section:has(>h3+.colors-card){gap:0}
+/* Cards without rows (accent swatches, wallpaper previews and sets, schedule editors, usage) carry the
+   outer card's hairline and shadow. */
+.settings-page-root :is(.accent-choices,.wallpaper-card,.wallpaper-set-grid,.wallpaper-period-grid,.wallpaper-settings-preview,.schedules-card,.schedules-paused,.usage-hero){border:1px solid var(--ds-border);box-shadow:var(--ds-shadow-card)}
+.settings-page-root .settings-heading:has(+:is(.accent-choices,.wallpaper-card,.wallpaper-set-grid,.wallpaper-period-grid,.schedules-card)){margin-bottom:8px !important}
+@media(prefers-contrast:more){.settings-page-root :is(.accent-choices,.wallpaper-card,.wallpaper-set-grid,.wallpaper-period-grid,.wallpaper-settings-preview,.schedules-card,.schedules-paused,.usage-hero){border-color:var(--border);box-shadow:none}}
+/* Row: leading copy (title over a muted subtitle), trailing control. */
+.settings-page-root .setting-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--ds-row-gap);align-items:center;min-height:var(--ds-row-h);margin:0;padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border:0;border-radius:calc(var(--ds-radius-inner) - 2px);background:transparent}
+/* A row's info mark trails its control (and follows it in Tab order). */
+.settings-page-root .setting-row:has(>.info-mark){grid-template-columns:minmax(0,1fr) auto auto}
+.settings-page-root .setting-row>.info-mark{margin-left:0}
+.settings-page-root .setting-row:has(>div>small:not(:empty)){min-height:var(--ds-row-h-sub)}
+.settings-page-root .setting-row>div{min-width:0;flex-wrap:wrap;align-items:center;column-gap:6px;row-gap:1px}
+.settings-page-root .setting-row strong{font-size:var(--ds-text-body);font-weight:450;letter-spacing:var(--ds-row-tracking);line-height:1.3;color:var(--ds-row-ink)}
+.settings-page-root .setting-row>div>small{flex:1 1 100%;font-size:var(--ds-text-sub);letter-spacing:var(--ds-row-tracking);line-height:1.3;color:var(--muted)}
+.settings-page-root .setting-row .settings-row-actions{display:flex;flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+/* Controls: the design system's raised hairline secondaries, solid primary, bordered selects, pill toggles. */
+.settings-page-root .secondary-button{display:inline-flex;align-items:center;gap:6px;min-height:var(--ds-btn-h);padding:0 14px;border-radius:var(--ds-radius-inner);font-size:var(--ds-text-ui);font-weight:var(--weight-medium);white-space:nowrap}
+.settings-page-root .secondary-button>.icon{--icon-size:var(--icon-sm);width:var(--icon-sm);height:var(--icon-sm)}
+.settings-page-root .primary-button{min-height:var(--ds-btn-h);padding:0 16px;border-radius:var(--ds-radius-inner);font-size:var(--ds-text-ui)}
+.settings-page-root .settings-select{width:auto;max-width:100%;min-width:10.5rem;min-height:var(--ds-btn-h);padding:0 12px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+.settings-page-root .settings-select:not(:disabled):hover{background:var(--ds-fill-hover)}
 .settings-page-root .settings-select>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .settings-page-root .settings-default-row{grid-template-columns:minmax(0,1fr) minmax(10.5rem,20rem)}
 .settings-page-root .settings-default-row .settings-select{justify-self:end}
-.settings-page-root .settings-switch{appearance:none;-webkit-appearance:none;display:block;position:relative;flex-shrink:0;width:var(--switch-w);height:var(--switch-h);padding:0;margin:0;border-radius:var(--radius-full);background:color-mix(in srgb,var(--text) 18%,transparent);cursor:pointer;transition:background-color 220ms,border-color 220ms,box-shadow 220ms}
-/* The knob carries momentum: it stretches while held and lands with a spring. */
-.settings-page-root .settings-switch::before{content:"";position:absolute;left:2px;top:2px;width:calc(var(--switch-h) - 6px);height:calc(var(--switch-h) - 6px);border-radius:var(--radius-full);background:#fff;box-shadow:0 1px 3px rgb(0 0 0 / .25);transform-origin:left center;transition:transform var(--spring-bounce-duration,380ms) var(--spring-bounce,cubic-bezier(.34,1.4,.64,1)),scale var(--spring-fast-duration,240ms) var(--spring-fast,ease)}
-.settings-page-root .settings-switch:not(:checked):hover{}
-.settings-page-root .settings-switch:active::before{scale:1.3 1}
-.settings-page-root .settings-switch:checked{background:var(--accent);}
-.settings-page-root .settings-switch:checked::before{transform:translateX(calc(var(--switch-w) - var(--switch-h)));transform-origin:right center}
-.settings-page-root .settings-switch:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
-.settings-page-root .text-size-controls{gap:.1rem}
-.settings-page-root .text-size-controls button{min-height:var(--control);padding:0 var(--space-2);font-size:var(--text-sm)}
-.settings-page-root .text-size-controls output{min-width:3.3rem;font-size:var(--text-sm)}
+/* Switches are the design system's toggle (.ds-toggle): same track, knob, motion and arming. */
+.settings-page-root .settings-switch{appearance:none;-webkit-appearance:none;display:block;position:relative;flex:none;width:var(--ds-toggle-w);height:var(--ds-toggle-h);padding:0;margin:0;border:0;border-radius:var(--radius-full);background:var(--ds-toggle-off);box-shadow:inset 0 0 0 1px var(--ds-border);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+.settings-page-root .settings-switch::before{content:"";position:absolute;left:3px;top:3px;width:calc(var(--ds-toggle-h) - 6px);height:calc(var(--ds-toggle-h) - 6px);border-radius:50%;background:var(--ds-toggle-knob-off);box-shadow:var(--ds-toggle-knob-shadow);transition:translate var(--spring-fast-duration) var(--spring-fast),background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.settings-page-root .settings-switch:checked{background:var(--ds-primary-bg);box-shadow:none}
+.settings-page-root .settings-switch:checked::before{background:var(--ds-primary-fg);box-shadow:none;translate:calc(var(--ds-toggle-w) - var(--ds-toggle-h)) 0}
+.settings-page-root .settings-switch:not(:disabled):active::before{scale:1.12 1}
+.settings-page-root .settings-switch:disabled{opacity:.45;cursor:not-allowed}
+.settings-page-root .settings-switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+/* Interface size: a small segmented-looking cluster on the track tone. */
+.settings-page-root .text-size-setting>.text-size-controls{gap:2px;padding:3px;border-radius:calc(var(--ds-radius-control) + 2px);background:var(--ds-track)}
+.settings-page-root .text-size-controls button{min-width:32px;min-height:28px;padding:0 9px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+.settings-page-root .text-size-controls button:hover:not(:disabled){background:var(--ds-fill-hover);color:var(--text)}
+.settings-page-root .text-size-controls output{min-width:3.3rem;text-align:center;font-size:var(--ds-text-meta);font-variant-numeric:tabular-nums;color:var(--text)}
 .settings-agents-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}
-.settings-agents-heading h3{margin:0;font-size:var(--text-sm);font-weight:var(--weight-strong);color:var(--muted)}
-.settings-refresh{display:flex;align-items:center;gap:.35rem;border-radius:var(--radius-sm);color:var(--muted);font-size:var(--text-xs);padding:.25rem .35rem;white-space:nowrap}
-.settings-refresh>.icon{width:.9rem;height:.9rem}
-.settings-refresh:not(:disabled):hover{background:var(--raised)}
-.settings-provider-status{font-size:var(--text-xs);color:var(--muted);margin:0 .2rem .65rem}
-.settings-page-root .provider-diagnostic{padding:0;border:0}
-.settings-page-root .provider-diagnostic+.provider-diagnostic{}
-.settings-page-root .provider-diagnostic summary{display:flex;align-items:center;gap:.6rem;list-style:none;padding:.85rem 1rem;cursor:pointer;border-radius:var(--radius-sm)}
+.settings-agents-heading h3{margin:0;font-size:inherit;font-weight:inherit;color:inherit}
+.settings-refresh{display:flex;align-items:center;justify-content:center;width:28px;min-height:28px;margin-right:-6px;border-radius:var(--ds-radius-control);color:var(--muted);font-size:var(--ds-text-meta);white-space:nowrap}
+.settings-refresh>.icon{width:var(--icon-sm);height:var(--icon-sm)}
+.settings-refresh:not(:disabled):hover{background:var(--ds-row-hover);color:var(--text)}
+.settings-provider-status{font-size:var(--ds-text-meta);color:var(--muted);margin:0 var(--ds-row-pad-x) 8px}
+/* Installed agents: one row per harness; the row opens its details. */
+.settings-page-root .provider-diagnostic{padding:0;border:0;border-radius:var(--ds-radius-inner)}
+.settings-page-root .provider-diagnostic summary{display:flex;align-items:center;gap:var(--ds-row-gap);min-height:var(--ds-row-h);list-style:none;padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad));cursor:pointer;border-radius:var(--ds-radius-inner)}
 .settings-page-root .provider-diagnostic summary::-webkit-details-marker{display:none}
-.settings-page-root .provider-diagnostic summary:hover{background:color-mix(in srgb,var(--text) 3%,transparent)}
-.settings-page-root .provider-diagnostic summary:focus-visible{outline:2px solid var(--focus);outline-offset:-3px}
-.settings-page-root .provider-diagnostic summary>strong{font-size:var(--text-sm);font-weight:var(--weight-medium);min-width:0}
-.settings-page-root .provider-diagnostic summary>.icon{width:.8rem;height:.8rem;color:var(--muted);transition:transform 130ms}
-.settings-page-root .provider-diagnostic[open] summary>.icon{transform:rotate(90deg)}
-.settings-page-root .provider-availability{font-size:var(--text-xs);gap:.4rem;white-space:nowrap}
-.settings-page-root .provider-availability .status-dot{width:.35rem;height:.35rem}
-.settings-provider-details{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.4rem 1rem;padding:.15rem 1rem 1rem 3.35rem;font-size:var(--text-xs);line-height:1.6;color:var(--muted)}
-.settings-provider-details code{font-family:var(--mono);font-size:var(--text-xs);overflow-wrap:anywhere;white-space:pre-wrap}
+.settings-page-root .provider-diagnostic summary:hover{background:var(--ds-row-hover)}
+.settings-page-root .provider-diagnostic summary:active{background:var(--ds-row-press)}
+.settings-page-root .provider-diagnostic summary:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.settings-page-root .provider-diagnostic summary{min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px)}
+.settings-page-root .provider-diagnostic summary>strong{flex:1;font-size:var(--ds-text-body);font-weight:var(--weight-medium);min-width:0}
+.settings-page-root .provider-diagnostic summary>.icon{width:var(--icon-sm);height:var(--icon-sm);color:var(--muted);transition:rotate var(--ds-ease-out) ease-out}
+.settings-page-root .provider-diagnostic[open] summary>.icon{rotate:90deg}
+.settings-page-root .provider-diagnostic .provider-avatar{flex:none;display:inline-grid;place-items:center;width:20px;height:20px}
+.settings-page-root .provider-availability{display:inline-flex;align-items:center;font-size:var(--ds-text-sub);gap:6px;white-space:nowrap;color:var(--muted)}
+.settings-page-root .provider-availability .status-dot{width:7px;height:7px;background:currentColor}
+.settings-page-root .provider-availability:not(.available) .status-dot{opacity:.45}
+.settings-provider-details{display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 16px;padding:2px var(--ds-row-pad-x) 12px calc(var(--ds-row-pad-x) + 32px - var(--ds-card-pad));font-size:var(--ds-text-meta);line-height:1.55;color:var(--muted)}
+.settings-provider-details code{font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere;white-space:pre-wrap}
 .settings-provider-version{overflow-wrap:anywhere;white-space:pre-wrap}
-.settings-preview-note{font-size:var(--text-xs);color:var(--muted);margin:.75rem .15rem 0}
-.settings-support{margin-top:1rem}
-.support-details{padding:.75rem 1.05rem}
-.support-details summary{cursor:pointer;color:var(--muted);font-size:var(--text-xs);padding:.15rem 0}
-.support-details summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px;border-radius:var(--radius-xs)}
-.support-details p{color:var(--muted);font-size:var(--text-xs);line-height:1.5;margin:.6rem 0}
+.settings-preview-note{font-size:var(--ds-text-meta);color:var(--faint);margin:10px var(--ds-row-pad-x) 0}
+.settings-support{margin-top:12px}
+.support-details{padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 10px}
+.support-details summary{display:inline-flex;align-items:center;min-height:28px;cursor:pointer;color:var(--muted);font-size:var(--ds-text-meta);border-radius:var(--ds-radius-chip)}
+.support-details summary:hover{color:var(--text)}
+.support-details summary{gap:6px;list-style:none}
+.support-details summary::-webkit-details-marker{display:none}
+.support-details summary>.icon{width:var(--icon-sm);height:var(--icon-sm);transition:rotate var(--spring-fast-duration) var(--spring-fast)}
+.support-details[open] summary>.icon{rotate:90deg}
+@media(prefers-reduced-motion:reduce){.support-details summary>.icon{transition:none}}
+.support-details summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.support-details p{color:var(--muted);font-size:var(--ds-text-meta);line-height:1.5;margin:6px 0}
 .support-details p:empty{display:none}
-.support-details textarea{width:100%;min-width:0;resize:none;font: var(--text-xs)/1.6 var(--mono);margin-bottom:.6rem}
-.support-details-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.support-details textarea{width:100%;min-width:0;resize:none;border:0;padding:10px 12px;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);font:var(--ds-text-chip)/1.6 var(--mono);margin-bottom:8px}
+.support-details-actions{display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:600px){
-  .settings-page-root .setting-row{gap:.75rem;padding:.9rem}
-  .settings-page-root .text-size-setting,.settings-page-root .settings-default-row,.settings-page-root .settings-wallpaper-row{grid-template-columns:minmax(0,1fr)}
-  .settings-page-root .text-size-controls{justify-self:start}
-  .settings-page-root .settings-select{width:100%}
-  .settings-page-root .setting-row .settings-row-actions{justify-content:flex-start}
-  .settings-provider-details{padding-left:1rem;grid-template-columns:minmax(0,1fr);gap:.1rem}
+  .settings-provider-details{padding-left:var(--ds-row-pad-x);grid-template-columns:minmax(0,1fr);gap:.1rem}
   .settings-provider-details :is(code,.settings-provider-version){margin-bottom:.5rem}
 }
-@media(prefers-reduced-motion:reduce){.settings-page-root :is(button,input,summary>.icon),.settings-page-root input::before{transition:none}}
-@media(prefers-contrast:more){.settings-page-root .settings-switch{border-color:var(--text)}.settings-nav-list [aria-selected="true"]{outline:1px solid var(--text)}}
+@media(prefers-reduced-motion:reduce){.settings-page-root :is(button,input,summary,summary>.icon),.settings-page-root input::before{transition:none}}
+@media(prefers-contrast:more){
+  .settings-page-root :is(.settings-group,.colors-card,.schedules-activity)::before,.settings-page-root :is(:is(.settings-group,.colors-card,.schedules-activity),.settings-heading:has(+:is(.settings-group,.colors-card,.schedules-activity)),.settings-heading:has(+*>:is(.settings-group,.colors-card,.schedules-activity):first-child)){border-color:var(--border);box-shadow:none}
+  .settings-page-root .settings-switch:not(:checked){box-shadow:inset 0 0 0 1px var(--text)}
+  .settings-page-root .setting-row>div>small,.settings-heading{color:var(--text)}
+  .settings-nav-list [aria-selected="true"]{outline:1px solid var(--text)}
+}
+@media(forced-colors:active){.settings-page-root .settings-switch{border:1px solid CanvasText}.settings-page-root .settings-switch::before{background:CanvasText}}
 
-.provider-readiness{padding:.6rem 1rem .9rem;font-size:var(--text-xs);color:var(--muted)}.provider-readiness>div{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}.provider-readiness p{margin:.5rem 0 0;overflow-wrap:anywhere;line-height:1.5}.provider-readiness button{font-size:var(--text-xs);min-height:30px;padding:5px 10px}
-.settings-nav-list>button{justify-content:flex-start}
+.provider-readiness{padding:4px var(--ds-row-pad-x) 12px calc(var(--ds-row-pad-x) + 32px - var(--ds-card-pad));font-size:var(--ds-text-meta);color:var(--muted)}.provider-readiness>div{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}.provider-readiness p{margin:.5rem 0 0;overflow-wrap:anywhere;line-height:1.5}.provider-readiness button{font-size:var(--ds-text-meta);min-height:30px;padding:0 10px}
 /* Embedded panels were dialogs; their rows stretch to the column here. */
 .settings-page-root .vsix-row{width:100%}
 .settings-page-root .vsix-choice{flex:1;justify-content:flex-start;text-align:left}
 .settings-page-root .project-path{overflow-wrap:anywhere}
-.settings-page-root .project-row-actions{display:flex;gap:.5rem}
+.settings-page-root .project-row-actions{display:flex;gap:8px}
 /* Settings → Agents → Privacy: one row per harness with what the telemetry switch does there. */
-.harness-privacy-list{list-style:none;margin:8px 0 0;padding:0}
-.harness-privacy-list .setting-row>div{display:flex;align-items:center;gap:.7rem}
+.harness-privacy-list{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
+.harness-privacy-list .setting-row>div{display:flex;align-items:center;flex-wrap:nowrap;gap:12px}
 .harness-privacy-list .setting-row>div>span{display:flex;flex-direction:column;min-width:0}
-.harness-privacy-list .setting-row svg,.harness-privacy-list .setting-row img{flex:none;width:18px;height:18px}
-.harness-privacy-list em{font-style:normal;font-size:.8rem;color:var(--muted);white-space:nowrap}
-.harness-privacy-list [data-active=true] em{color:var(--text);font-weight:520}
-.harness-privacy-list small{white-space:normal}
+.harness-privacy-list .setting-row svg,.harness-privacy-list .setting-row img{flex:none;width:20px;height:20px}
+.harness-privacy-list em{font-style:normal;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap}
+.harness-privacy-list [data-active=true] em{color:var(--text);font-weight:var(--weight-medium)}
+.harness-privacy-list small{white-space:normal;font-size:var(--ds-text-meta);color:var(--muted)}
 /* The live region stays rendered (empty = no height) so screen readers announce new text. */
-.harness-privacy-feedback{display:flex;align-items:center;gap:.6rem;padding:0 1rem}
-.harness-privacy-status{margin:8px 0 0;font-size:.82rem;color:var(--muted)}
+.harness-privacy-feedback{display:flex;align-items:center;gap:.6rem;padding:0 var(--ds-row-pad-x)}
+.harness-privacy-status{margin:8px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
 .harness-privacy-status:empty{margin:0}
 .harness-privacy-feedback button{margin-top:8px}
 
-/* Narrow windows: the nav narrows, rows wrap their control under the label, the shortcut field fills its row. */
+/* Narrow windows: the nav narrows and rows stay two columns: the copy wraps beside its trailing
+   control (a toggle, a button, a select). Only a control wider than the room left for a readable
+   label (the interface size cluster at large text sizes) wraps under it, still end-aligned. */
 @media(max-width:700px){
   .settings-page-root{grid-template-columns:150px minmax(0,1fr)}
-  .settings-page-root .setting-row{grid-template-columns:minmax(0,1fr)}
-  .settings-page-root .setting-row>:is(.text-size-controls,.settings-row-actions,.settings-select){justify-self:start}
+  .settings-nav{padding-inline:6px}
+  .settings-nav-list>button{gap:8px;padding:0 8px}
+  .settings-nav-list>button>.icon{display:none}
+  .settings-panel-head,.settings-heading{padding-inline:calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
+  .settings-page-root .setting-row{display:flex;flex-wrap:wrap;align-items:center;column-gap:var(--ds-row-gap);row-gap:6px}
+  .settings-page-root .setting-row>div:first-child{flex:1 1 9rem}
+  .settings-page-root .setting-row>:not(:first-child){flex:0 1 auto;max-width:100%;margin-left:auto}
+  .settings-page-root .setting-row>div>small,.settings-page-root .setting-row strong{white-space:normal;overflow-wrap:anywhere}
+  .settings-page-root .settings-select{min-width:0}
+  .settings-page-root .overlay-shortcut-controls{flex-wrap:wrap}
   .settings-page-root .overlay-shortcut-controls>input{min-width:0;width:100%;flex:1 1 100%}
 }
-.settings-page-root .setting-row:nth-child(even),.settings-page-root .provider-diagnostic:nth-child(even){background:color-mix(in srgb,var(--text) 3.5%,transparent)}
-.support-details{margin-top:.5rem}
 
-/* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.settings-back,.settings-nav-list>button,.settings-refresh,.settings-page-root .provider-diagnostic summary{transition:background-color 140ms ease-out,color 140ms ease-out}.settings-page-root .provider-diagnostic[open]>*:not(summary){animation:mi-fade 160ms ease-out}@keyframes mi-fade{from{opacity:0}}}
+/* Micro-interactions: colour eases in 120ms and out 180ms; only without reduced motion. */
+@media(prefers-reduced-motion:no-preference){
+  .settings-back,.settings-nav-list>button,.settings-refresh,.settings-page-root :is(.provider-diagnostic summary,.secondary-button,.settings-select){transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+  .settings-back:hover,.settings-nav-list>button:hover,.settings-refresh:hover,.settings-page-root :is(.provider-diagnostic summary,.secondary-button,.settings-select):hover{transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+  .settings-page-root .provider-diagnostic[open]>*:not(summary){animation:mi-fade 160ms ease-out}
+  @keyframes mi-fade{from{opacity:0}}
+}
+
+/* A switch slides only once the user touches it (palette.ts arms it on pointerdown/keydown, as for
+   .ds-toggle). A state set while rendering — a preference arriving after mount, a refresh — lands at once. */
+.settings-page-root .settings-switch:not([data-armed]),.settings-page-root .settings-switch:not([data-armed])::before{transition:none}
+
+/* Every native select in Settings reads like .settings-select: the fill, an 8px radius and a muted
+   chevron (light and dark variants; the popup's options keep the panel colours). */
+html[data-theme] .settings-page-root select:not([multiple]){appearance:none;-webkit-appearance:none;min-height:32px;height:auto;padding:0 30px 0 10px;border:0;border-radius:var(--ds-radius-control);color:var(--text);font:inherit;font-size:var(--ds-text-ui);cursor:pointer;
+  background:var(--ds-fill) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23000' stroke-opacity='.5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 11px center;
+  transition:background-color var(--ds-ease-out) ease-out}
+html[data-theme="dark"] .settings-page-root select:not([multiple]){background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23fff' stroke-opacity='.55' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+html[data-theme] .settings-page-root select:not([multiple]):not(:disabled):hover{background-color:var(--ds-fill-hover);transition-duration:var(--ds-ease-in)}
+html[data-theme] .settings-page-root select:not([multiple]):focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+html[data-theme] .settings-page-root select:disabled{opacity:.5;cursor:default}
+.settings-page-root select option{background:var(--panel);color:var(--text)}
+@media(prefers-contrast:more){html[data-theme] .settings-page-root select:not([multiple]){box-shadow:inset 0 0 0 1px var(--border)}}
+/* Stacked cards keep the page rhythm, whichever panel rendered them. */
+.settings-page-root :is(.settings-group,.colors-card,.schedules-activity)+:is(.settings-group,.colors-card,.schedules-activity){margin-top:12px}
+/* Over a wallpaper the content panel is a frost and the inner cards sit a step lighter on it, so muted
+   text there leans further toward the text colour to keep 4.5:1 (subtitles, statuses, meta). */
+.workspace[data-wallpaper] .settings-content{--muted:color-mix(in srgb,var(--text) 78%,var(--bg));--faint:var(--muted)}

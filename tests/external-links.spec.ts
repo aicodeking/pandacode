@@ -4,7 +4,7 @@ test('main window opens provider and Markdown web links in the system browser', 
   await recordWindowOpens(page);
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   await page.getByRole('link', { name: /Get the official ACP server/ }).click();
   await expect.poll(() => page.evaluate(() => (window as any).__externalUrlOpens)).toEqual(['https://antigravity.google/docs/ide/extensions']);
 

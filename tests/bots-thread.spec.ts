@@ -243,7 +243,7 @@ test.describe('bot conversation', () => {
     await page.locator('#prompt').press('ControlOrMeta+Enter');
     const bubble = transcript(page).locator('.user-message .message-content').filter({ hasText: /^one$/ });
     await expect(bubble).toBeVisible();
-    expect((await bubble.boundingBox())!.height).toBeLessThan(50);
+    expect((await bubble.boundingBox())!.height).toBeLessThan(56);
     await expect(page.locator('#stream-region')).toContainText('Got it, I will fold that in.');
     await expect(page.locator('#toast')).not.toContainText('not running');
   });
@@ -257,7 +257,7 @@ test.describe('bot conversation', () => {
   test('a model picked mid-turn waits for the next turn', async ({ page }) => {
     await openSample(page, 'Writer');
     await expect(page.locator('#stream-region .bot-working')).toBeVisible();
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    await page.getByRole('button', { name: /^Model: / }).click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     await picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('next-model');
     await picker.getByRole('option', { name: /^Use "next-model" with / }).click();

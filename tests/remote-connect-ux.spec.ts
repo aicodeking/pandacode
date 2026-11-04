@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function showRemoteSettings(page: Page) {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click(); await page.getByRole('tab', { name: 'Remote access' }).click();
   return page.getByRole('tabpanel', { name: 'Remote access' });
 }
 async function openRemoteSettings(page: Page) {

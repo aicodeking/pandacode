@@ -165,18 +165,37 @@ test('a missing worktree folder is named in the chip and can be recreated', asyn
   await expect(page.locator('#inspector-content')).toContainText('pandacode/vanish');
 });
 
-test('the context bar stays on one line in a narrow conversation', async ({ page }) => {
+test('the checkout items share one row with the model, the branch and PR at its far right', async ({ page }) => {
   await page.goto('/');
   await page.locator('#navigation .task-item', { hasText: 'Add keyboard shortcuts' }).click();
-  const bar = page.locator('#composer-area .composer-context');
-  await expect(bar.locator('.link-chip')).toBeVisible();
-  await expect(bar.locator('#branch-chip')).toBeVisible();
-  const measure = () => page.evaluate(() => document.querySelector('#composer-area .composer-context')!.getBoundingClientRect().height);
-  const height = await measure();
+  const tray = page.locator('#composer-area .composer-tray');
+  const branch = tray.locator('#branch-chip'), pull = tray.locator('.link-chip');
+  await expect(branch).toBeVisible();
+  await expect(pull).toBeVisible();
+  await expect(tray.locator('.composer-local')).toBeVisible();
+  // No directory name, no context meter, and nothing below the tray.
+  await expect(page.locator('#composer .composer-project')).toHaveCount(0);
+  await expect(page.locator('#composer').getByRole('meter')).toHaveCount(0);
+  expect(await page.locator('#composer').evaluate(form => form.lastElementChild!.classList.contains('composer-tray'))).toBe(true);
+  const fits = () => tray.evaluate(el => {
+    const edge = el.getBoundingClientRect().right, items = [...el.querySelectorAll<HTMLElement>('button,.composer-local,.branch-chip,.link-chip')].filter(item => item.offsetWidth);
+    return { overflow: el.scrollWidth - el.clientWidth, past: items.filter(item => item.getBoundingClientRect().right > edge + 1).length, tops: new Set(items.map(item => Math.round(item.getBoundingClientRect().top + item.offsetHeight / 2))).size };
+  });
+  const last = (await pull.boundingBox())!, box = (await tray.boundingBox())!;
+  expect(box.x + box.width - (last.x + last.width)).toBeLessThan(8);
+  expect((await branch.boundingBox())!.x).toBeLessThan(last.x);
+  expect(await fits()).toEqual({ overflow: 0, past: 0, tops: 1 });
   await page.locator('#composer-area').evaluate(el => { el.style.maxWidth = '420px'; });
-  await expect(bar.locator('.composer-local')).toBeHidden();
-  await expect(bar.locator('.link-chip')).toBeVisible();
-  expect(Math.abs(await measure() - height)).toBeLessThan(1);
+  await expect(tray.locator('.composer-local')).toBeHidden();
+  await expect(pull).toBeVisible();
+  expect(await fits()).toEqual({ overflow: 0, past: 0, tops: 1 });
+});
+
+test('the prompt box is one card with no fold button', async ({ page }) => {
+  await page.goto('/');
+  const box = page.locator('#composer-area .composer');
+  await expect(box.locator('.composer-local')).toBeVisible();
+  await expect(page.locator('#composer-area').getByRole('button', { name: /checkout details/ })).toHaveCount(0);
 });
 
 test('the branch menu switches the checkout to main or another local branch', async ({ page }) => {
@@ -198,16 +217,21 @@ test('the branch menu switches the checkout to main or another local branch', as
 });
 
 for (const theme of ['dark', 'light'] as const) {
-  test(`the prompt box and its context bar have no border in ${theme} mode, except under increased contrast`, async ({ page }) => {
+  // One box: the composer and its input's inner card carry the reference's hairline; the context line has none.
+  test(`the prompt box and its input carry a hairline in ${theme} mode, solid under increased contrast`, async ({ page }) => {
     await page.emulateMedia({ colorScheme: theme });
     await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
     await probe(page);
     await page.locator('#prompt').focus();
     const border = (selector: string) => page.locator(selector).evaluate(el => getComputedStyle(el).borderTopColor);
-    await expect.poll(() => border('#composer-area .composer')).toBe('rgba(0, 0, 0, 0)');
-    await expect.poll(() => border('#composer-area .composer-context')).toBe('rgba(0, 0, 0, 0)');
+    // A hairline: visible but faint (alpha well under the solid border).
+    const alpha = (value: string) => Number(/\/\s*([\d.]+)\)$/.exec(value)?.[1] ?? (value.startsWith('rgba(0, 0, 0, 0)') ? 0 : 1));
+    for (const selector of ['#composer-area .composer', '#composer-area .composer-input']) {
+      await expect.poll(async () => alpha(await border(selector))).toBeGreaterThan(0);
+      await expect.poll(async () => alpha(await border(selector))).toBeLessThan(0.2);
+    }
     await page.emulateMedia({ colorScheme: theme, contrast: 'more' });
-    await expect.poll(() => border('#composer-area .composer')).not.toBe('rgba(0, 0, 0, 0)');
+    await expect.poll(async () => alpha(await border('#composer-area .composer'))).toBe(1);
   });
 }
 

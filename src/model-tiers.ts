@@ -1,4 +1,4 @@
-/* Settings → Agent teams → Model routing → Rank models: a tier list that Panda Router weighs most. */
+/* Settings → Agents → Model routing → Rank models: a tier list that Panda Router weighs most. */
 import './model-tiers.css';
 import { escape, icon } from './dom';
 import { openChoiceMenu } from './choice-menu';

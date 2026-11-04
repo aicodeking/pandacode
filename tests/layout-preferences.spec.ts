@@ -8,7 +8,8 @@ const storedWidth = (page: Page) => page.evaluate(() => localStorage.getItem('pa
 const storedScale = (page: Page) => page.evaluate(() => localStorage.getItem('pandacode.uiScale'));
 const rootSize = (page: Page) => page.locator('html').evaluate(node => parseFloat(getComputedStyle(node).fontSize));
 const inspectorSeparator = (page: Page) => page.getByRole('separator', { name: 'Resize right sidebar', exact: true });
-const inspectorWidth = (page: Page) => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().width);
+/** The inspector's grid track: the inset panel plus its margins (an overlay inspector is just its box). */
+const inspectorWidth = (page: Page) => page.locator('#inspector').evaluate(node => { const style = getComputedStyle(node), box = (node as HTMLElement).offsetWidth; return style.position === 'absolute' ? box : box + parseFloat(style.marginLeft) + parseFloat(style.marginRight); });
 const storedInspectorWidth = (page: Page) => page.evaluate(() => localStorage.getItem('pandacode.inspectorWidth'));
 
 async function open(page: Page): Promise<void> {
@@ -23,7 +24,10 @@ for (const [platform, modifier, key] of [['MacIntel', '⌘', 'Meta'], ['Win32', 
     await open(page);
     await expect(page.locator('.new-task-button kbd')).toHaveText(`${modifier} N`);
     await expect(page.locator('.search-trigger kbd')).toHaveText(`${modifier} K`);
-    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-label', `Toggle terminal (${modifier} J)`);
+    // The shortcut is in the tip and aria-keyshortcuts, never the name.
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-label', 'Toggle terminal');
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('data-dock-tip', `Toggle terminal (${modifier} J)`);
+    await expect(page.locator('[data-action="terminal"]').first()).toHaveAttribute('aria-keyshortcuts', 'Meta+J Control+J');
     await expect(page.locator('.send-button')).toHaveAttribute('title', `Send message (${modifier} Enter)`);
     await page.keyboard.press(`${key}+b`);
     await expect(page.locator('.workspace')).toHaveClass(/sidebar-collapsed/);
@@ -41,7 +45,7 @@ for (const [platform, modifier, key] of [['MacIntel', '⌘', 'Meta'], ['Win32', 
     const settings = page.getByRole('region', {name:'Settings', exact:true});
     await expect(settings).toBeVisible();
     await expect(page.locator('.text-size-setting')).toContainText(`${modifier} + / −`);
-    await settings.getByRole('tab', {name:'About & updates', exact:true}).click();
+    await settings.getByRole('tab', {name:'About', exact:true}).click();
     await expect(page.locator('.settings-about')).toContainText('Releases');
   });
 }
@@ -220,7 +224,7 @@ test('layout preferences offer text size controls in Settings without replacing 
 test('layout preferences leave an open model menu and its search focus stable when text grows', async ({ page }) => {
   await open(page);
   await prompt(page).fill('Do not lose this draft.');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = menu.locator('.model-menu-search input');
   await search.fill('Claude');
@@ -265,7 +269,7 @@ test('layout preferences resize focused terminal text without restarting the PTY
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep the agent draft while resizing terminal text.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   const screen = page.locator('#terminal-host .xterm-screen');
   const row = screen.locator('.xterm-rows > div').first();
   const input = page.locator('#terminal-host .xterm-helper-textarea');
@@ -315,7 +319,7 @@ test('layout preferences keep controls readable at 160 percent in wide and narro
     const inspector = page.getByRole('complementary', { name: 'Project inspector', exact: true });
     // The narrow-window media callback closes the inspector asynchronously in WebKit.
     if (width <= 920) await expect(inspector).toBeHidden();
-    if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Toggle inspector (⌘ ⇧ B)', exact: true }).click();
+    if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Toggle inspector', exact: true }).click();
     await expect(inspector).toBeVisible();
     await expect.poll(() => rootSize(page)).toBeCloseTo(22.4, 2);
     await expect.poll(() => sidebarWidth(page)).toBe(190);
@@ -403,7 +407,7 @@ test('layout preferences collapse the sidebar, reclaim its width, and restore bo
   await expect(toggle).toBeFocused();
   expect(await toggleNode!.evaluate(node => node === document.querySelector('#sidebar-toggle'))).toBe(true);
   await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-  await expect.poll(async () => (await page.locator('.main-pane').boundingBox())!.width).toBeCloseTo(mainBefore.width + 350, 0);
+  await expect.poll(async () => (await page.locator('.main-pane').boundingBox())!.width).toBeCloseTo(mainBefore.width + 350, 0); // the collapsed pane runs full-bleed to the left edge
   expect(await page.evaluate(() => localStorage.getItem('pandacode.sidebarCollapsed'))).toBe('true');
   expect(await storedWidth(page)).toBe(chosenWidth);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -457,7 +461,7 @@ test('layout preferences collapse the sidebar without replacing the draft or liv
   await recordTerminalCalls(page);
   await open(page);
   await prompt(page).fill('Keep my composer and terminal while toggling the sidebar.');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   const terminal = page.locator('#terminal-host .xterm-screen');
   const terminalInput = page.locator('#terminal-host .xterm-helper-textarea');
   await expect(terminal).toBeVisible();
@@ -522,11 +526,17 @@ test('layout preferences keep the left sidebar button clear of Mac controls and 
     await dragSidebar(page, width);
     await expect.poll(() => sidebarWidth(page)).toBe(width);
     const button = (await toggle.boundingBox())!;
-    const brand = (await page.locator('.brand-name').boundingBox())!;
     const sidebar = (await page.locator('.sidebar').boundingBox())!;
     expect(button.x - sidebar.x).toBeGreaterThanOrEqual(104);
-    expect(button.x + button.width).toBeLessThanOrEqual(brand.x);
-    expect(brand.x + brand.width).toBeLessThanOrEqual(sidebar.x + sidebar.width);
+    // The wordmark is whole or absent, never ellipsized: a sidebar too narrow for it hides it.
+    const name = page.locator('.brand-name');
+    if (width < 280) await expect(name).toBeHidden();
+    else {
+      const brand = (await name.boundingBox())!;
+      expect(button.x + button.width).toBeLessThanOrEqual(brand.x);
+      expect(brand.x + brand.width).toBeLessThanOrEqual(sidebar.x + sidebar.width);
+    }
+    if (await name.isVisible()) expect(await name.evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
   }
   await toggle.focus();
   await page.keyboard.press('Enter');
@@ -546,7 +556,7 @@ test('layout preferences constrain a saved wide sidebar when browser styles firs
   await expect.poll(() => sidebarWidth(page)).toBe(440);
   await page.getByRole('button', { name: 'Open browser', exact: true }).click();
   await expect(page.getByRole('textbox', { name: 'Browser URL', exact: true })).toBeVisible();
-  const inspectorRight = () => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().right);
+  const inspectorRight = () => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().right + parseFloat(getComputedStyle(node).marginRight));
   await expect.poll(inspectorRight).toBeCloseTo(1100, 0);
   expect(await sidebarWidth(page)).toBeLessThan(440);
   expect(await storedWidth(page)).toBe('440');
@@ -656,9 +666,11 @@ test('layout preferences keep a resized right sidebar within collapsed, board, a
   const checkGeometry = async () => {
     await expect.poll(() => page.evaluate(() => {
       const workspace = document.querySelector<HTMLElement>('.workspace')!;
-      const main = document.querySelector<HTMLElement>('.main-pane')!.getBoundingClientRect();
+      // Panels are insets inside their tracks; their margin boxes tile the window.
+      const outer = (node: Element) => { const box = node.getBoundingClientRect(), style = getComputedStyle(node); return { left: box.left - parseFloat(style.marginLeft), right: box.right + parseFloat(style.marginRight) }; };
+      const main = outer(document.querySelector<HTMLElement>('.main-pane')!);
       const inspector = document.querySelector<HTMLElement>('#inspector')!;
-      const panel = inspector.getBoundingClientRect();
+      const panel = outer(inspector);
       const bounds = workspace.getBoundingClientRect();
       const overlay = getComputedStyle(inspector).position === 'absolute';
       return Math.max(Math.abs(panel.right - bounds.right), bounds.left - panel.left,
@@ -722,9 +734,11 @@ for (const width of [2048, 1440, 1100, 960, 760, 620]) {
           const sidebar = document.querySelector<HTMLElement>('.sidebar')!;
           const inspector = document.querySelector<HTMLElement>('#inspector')!;
           const bounds = workspace.getBoundingClientRect();
-          const mainBounds = main.getBoundingClientRect();
+          // Panels are insets inside their tracks; their margin boxes tile the window.
+          const outer = (node: Element) => { const box = node.getBoundingClientRect(), style = getComputedStyle(node); return { left: box.left - parseFloat(style.marginLeft), right: box.right + parseFloat(style.marginRight) }; };
+          const mainBounds = outer(main);
           const sidebarBounds = sidebar.getBoundingClientRect();
-          const inspectorBounds = inspector.getBoundingClientRect();
+          const inspectorBounds = outer(inspector);
           const overlay = getComputedStyle(inspector).position === 'absolute';
           const left = sidebar.hidden ? bounds.left : sidebarBounds.right;
           const right = inspector.hidden || overlay ? bounds.right : inspectorBounds.left;
@@ -762,8 +776,159 @@ test('the title bar row keeps its on-screen height under interface zoom so it st
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   const heights = () => page.evaluate(() => ['.workspace-header', '.sidebar>.brand'].map(selector => Math.round(document.querySelector(selector)!.getBoundingClientRect().height * 10) / 10));
-  expect(await heights()).toEqual([55, 55]);
+  // The conversation panel is inset 8px from the window's top, so its header is the title bar less
+  // 8px above and below: both rows centre on the same line as the window buttons.
+  const middles = () => page.evaluate(() => ['.workspace-header', '.sidebar>.brand'].map(selector => { const box = document.querySelector(selector)!.getBoundingClientRect(); return Math.round((box.top + box.height / 2) * 10) / 10; }));
+  expect(await heights()).toEqual([39, 55]);
+  expect(await middles()).toEqual([27.5, 27.5]);
   // In the app, ⌘+ zooms the webview by --page-zoom; the row shrinks in CSS pixels by the same factor.
   await page.evaluate(() => document.documentElement.style.setProperty('--page-zoom', '1.25'));
-  expect(await heights()).toEqual([44, 44]);
+  expect(await heights()).toEqual([28, 44]);
+  expect(await middles()).toEqual([22, 22]);
+});
+
+for (const wallpaper of [false, true]) {
+  test(`layout preferences draw the conversation and inspector as inset panels on one frame${wallpaper ? ' over a wallpaper' : ''}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.addInitScript(on => localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: on, visibility: 20, blur: 0, set: 'automatic', pinned: null })), wallpaper);
+    await open(page);
+    await openInspector(page);
+    // Geometry is read once the panel's entrance slide has finished.
+    await page.locator('#inspector').evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => undefined))));
+    const shell = () => page.evaluate(() => {
+      const css = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+      const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+      const main = css('.main-pane'), inspector = css('#inspector'), sidebar = css('.sidebar'), frame = css('.workspace');
+      const mainBox = rect('.main-pane'), inspectorBox = rect('#inspector'), sidebarBox = rect('.sidebar');
+      return {
+        mainRadius: main.borderTopLeftRadius, mainBorder: main.borderTopWidth, inspectorRadius: inspector.borderTopRightRadius,
+        mainTop: mainBox.top, mainBottom: innerHeight - mainBox.bottom, mainLeft: mainBox.left - sidebarBox.right, mainRight: innerWidth - mainBox.right,
+        gap: inspectorBox.left - mainBox.right, inspectorTop: inspectorBox.top, inspectorRight: innerWidth - inspectorBox.right, inspectorBottom: innerHeight - inspectorBox.bottom,
+        sidebar: sidebar.backgroundColor, sidebarBlur: sidebar.backdropFilter, frame: frame.backgroundColor, main: main.backgroundColor, inspector: inspector.backgroundColor,
+        overflow: main.overflow,
+      };
+    });
+    const open_ = await shell();
+    expect(open_).toMatchObject({ mainRadius: '12px', mainBorder: '0px', inspectorRadius: '12px', mainTop: 8, mainBottom: 8, mainLeft: 0, inspectorTop: 8, inspectorRight: 8, inspectorBottom: 8, overflow: 'hidden' });
+    // The inspector is its own inset panel, a gap to the right of the main pane.
+    expect(open_.gap).toBe(8);
+    // The sidebar has no fill: it is the window frame's tone, which the panels sit on.
+    expect(open_.sidebar).toBe('rgba(0, 0, 0, 0)');
+    expect(open_.sidebarBlur).toBe('none');
+    expect(open_.frame).not.toBe('rgba(0, 0, 0, 0)');
+    expect(open_.main).not.toBe(open_.frame);
+    // The thread is a window: the main pane is clear over its scene (the sky, or the wallpaper); the inspector stays solid.
+    expect(open_.main).toBe('rgba(0, 0, 0, 0)');
+    expect(open_.inspector).not.toBe('rgba(0, 0, 0, 0)');
+    await expect(page.locator('.workspace')).toHaveAttribute('data-scene', wallpaper ? 'wallpaper' : 'sky');
+    if (wallpaper) await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper');
+
+    // Closed, the inspector fades out where it stood (out of the grid at once) and the pane takes the right inset.
+    await page.locator('#inspector-toggle').click();
+    await expect(page.locator('#inspector')).toBeHidden();
+    await expect(page.locator('#inspector')).not.toHaveAttribute('data-leaving');
+    await expect.poll(async () => (await shell()).mainRight).toBe(8);
+    expect((await shell()).mainTop).toBe(8);
+  });
+}
+
+test('layout preferences run the main pane full-bleed at the top left while the sidebar is hidden, clear of the traffic lights', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open(page);
+  await page.evaluate(async () => {
+    const { initializeNativeAppearance } = await import('/src/appearance.ts');
+    initializeNativeAppearance(async () => ({ platform: 'macos', material: 'solid' }));
+  });
+  await expect(page.locator('html')).toHaveAttribute('data-native-platform', 'macos');
+  await openInspector(page);
+  await page.locator('#sidebar-toggle').click();
+  await expect(page.locator('.sidebar')).toBeHidden();
+  const geometry = () => page.evaluate(() => {
+    const main = document.querySelector<HTMLElement>('.main-pane')!, style = getComputedStyle(main), box = main.getBoundingClientRect();
+    const inspector = document.querySelector<HTMLElement>('#inspector')!.getBoundingClientRect();
+    const header = document.querySelector<HTMLElement>('.workspace-header')!;
+    const toggle = document.querySelector<HTMLElement>('#sidebar-toggle')!.getBoundingClientRect();
+    return {
+      left: box.left, top: box.top, bottom: innerHeight - box.bottom,
+      radii: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius],
+      inspectorTop: inspector.top, inspectorRight: innerWidth - inspector.right, gap: Math.round(inspector.left - box.right),
+      gutter: parseFloat(getComputedStyle(header).paddingLeft), toggleLeft: toggle.left, toggleMiddle: toggle.top + toggle.height / 2,
+      headerHeight: header.getBoundingClientRect().height,
+    };
+  });
+  await expect.poll(async () => (await geometry()).top).toBe(0);
+  await page.locator('#inspector').evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => undefined))));
+  const collapsed = await geometry();
+  // Fully full-bleed and square; the open inspector is a flat full-height pane past an 8px frame gutter.
+  expect(collapsed).toMatchObject({ left: 0, top: 0, bottom: 0, radii: ['0px', '0px', '0px', '0px'], inspectorTop: 0, inspectorRight: 0, gap: 8, headerHeight: 55 });
+  expect(await page.locator('#inspector').evaluate(node => [getComputedStyle(node).borderTopLeftRadius, Math.round((node.querySelector('.inspector-strip') as HTMLElement).getBoundingClientRect().height)])).toEqual(['0px', 55]);
+  // The header keeps the traffic-light gutter, and the leading toggle sits past the lights on their centre line.
+  expect(collapsed.gutter).toBeGreaterThanOrEqual(100);
+  expect(collapsed.toggleLeft).toBeGreaterThanOrEqual(collapsed.gutter - 1);
+  expect(collapsed.toggleMiddle).toBeCloseTo(27.5, 0);
+  // Showing the sidebar again restores the inset.
+  await page.locator('#sidebar-toggle').click();
+  await expect(page.locator('.sidebar')).toBeVisible();
+  await expect.poll(async () => (await geometry()).top).toBe(8);
+  expect((await geometry()).radii).toEqual(['12px', '12px', '12px', '12px']);
+});
+
+test('layout preferences hand focus to the inspector toggle when the inspector is closed from inside it', async ({ page }) => {
+  await open(page);
+  await openInspector(page);
+  const hide = page.locator('#inspector .inspector-hide');
+  await hide.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#inspector-toggle')).toBeFocused();
+  await expect(page.locator('#inspector')).toBeHidden();
+  await expect(page.locator('#inspector-toggle')).toBeFocused();
+});
+
+// A window drag restyles and reflows every transcript row per step; rows off screen skip that
+// work only while the size changes, then the thread lays out once at the settled width.
+test.describe('window resize in a long thread', () => {
+  const rows = Array.from({ length: 80 }, (_, index) => [
+    { id: 5000 + index * 2, sessionId: 'session-1', role: 'user', content: `Question ${index}`, createdAt: index },
+    { id: 5001 + index * 2, sessionId: 'session-1', role: 'assistant', content: 'A reply that wraps across the column. '.repeat(30), createdAt: index },
+  ]).flat();
+  async function openLong(page: Page): Promise<void> {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch(), source = await response.text();
+      await route.fulfill({ response, body: source.replace(/async function invoke\(command, args\) \{/, `async function invoke(command, args) {
+        if (!window.__longThread) { window.__longThread = true; messages['session-1'] = ${JSON.stringify(rows)}; id = Math.max(id, 6000); }`) });
+    });
+    await open(page);
+    await expect(page.locator('#transcript [data-message-id="5159"]')).toBeAttached();
+  }
+  const skipped = (page: Page) => page.locator('#transcript').evaluate(node => getComputedStyle(node.firstElementChild!).contentVisibility);
+  const settled = (page: Page) => expect(page.locator('#transcript')).not.toHaveAttribute('data-window-resizing');
+
+  test('rows skip work only while the size changes, and a following thread stays pinned', async ({ page }) => {
+    await openLong(page);
+    expect(await skipped(page)).toBe('visible');
+    await page.locator('#transcript').evaluate(node => {
+      const seen: string[] = (window as any).__rowStates = [];
+      new MutationObserver(() => seen.push(getComputedStyle(node.firstElementChild!).contentVisibility)).observe(node, { attributes: true, attributeFilter: ['data-window-resizing'] });
+    });
+    await page.setViewportSize({ width: 1200, height: 900 });
+    await expect.poll(() => page.evaluate(() => (window as any).__rowStates)).toEqual(['auto', 'visible']);
+    await settled(page);
+    const gap = await page.locator('#transcript').evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight);
+    expect(gap).toBeLessThanOrEqual(2);
+    // A resize event with no size change (the sidebar's layout notification) is not a window drag.
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    await expect(page.locator('#transcript')).not.toHaveAttribute('data-window-resizing');
+  });
+
+  test('a reader scrolled up keeps their place when the width settles', async ({ page }) => {
+    await openLong(page);
+    const row = page.locator('#transcript [data-message-id="5081"]');
+    await row.evaluate(node => { const scroller = document.querySelector('#transcript')!; scroller.scrollTop += node.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 120; });
+    await page.locator('#transcript').dispatchEvent('wheel', { deltaY: -10 });
+    const before = await row.evaluate(node => node.getBoundingClientRect().top);
+    for (const width of [1300, 1100, 1000]) await page.setViewportSize({ width, height: 940 });
+    await settled(page);
+    const after = await row.evaluate(node => node.getBoundingClientRect().top);
+    expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+  });
 });

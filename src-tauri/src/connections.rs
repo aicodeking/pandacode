@@ -356,14 +356,15 @@ pub async fn connection_assign(
             fresh_context(&store, &session_id)?;
         }
     }
-    crate::blocking(move || {
-        let mut runtime = runtime()?;
-        let mut next = runtime.data.clone();
-        assign(&mut next, session_id, connection_id)?;
-        persist(&mut runtime, next)?;
-        Ok(runtime.data.clone())
-    })
-    .await
+    crate::blocking(move || save_assignment(session_id, connection_id)).await
+}
+
+fn save_assignment(session_id: String, connection_id: Option<String>) -> Result<Snapshot> {
+    let mut runtime = runtime()?;
+    let mut next = runtime.data.clone();
+    assign(&mut next, session_id, connection_id)?;
+    persist(&mut runtime, next)?;
+    Ok(runtime.data.clone())
 }
 
 /// A harness session lives in its connection's config folder and cannot be resumed
@@ -496,6 +497,72 @@ mod tests {
         let (prompt, through) = crate::context_recovery::prepare(&store, &task, "Continue where you left off.").unwrap();
         assert!(through.is_some());
         assert!(prompt.contains("Earlier answer") && prompt.contains("Continue where you left off."));
+    }
+
+    /// Issue 252, end to end: the binding is saved in connections.json, and the agent's
+    /// real launch (here a script standing in for `claude`) carries the config folder.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_bound_task_persists_its_connection_and_spawns_with_its_config_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("pandacode-connection-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        setup(&dir).unwrap();
+        let marker = dir.join("env.txt");
+        let script = dir.join("claude-stand-in");
+        std::fs::write(&script, format!("#!/bin/sh\nenv > '{}.tmp'\nmv '{0}.tmp' '{0}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config_dir = dir.join("claude-work").display().to_string();
+        let connection = Connection {
+            id: "work".into(),
+            provider: "claude".into(),
+            name: "Claude Work".into(),
+            executable: Some(script.display().to_string()),
+            config_dir: Some(config_dir.clone()),
+            revision: 1,
+            ..Default::default()
+        };
+        {
+            let mut runtime = runtime().unwrap();
+            let next = Snapshot { connections: vec![connection], ..runtime.data.clone() };
+            persist(&mut runtime, next).unwrap();
+        }
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&dir).unwrap();
+        let task = store.create_session(&project.id, "claude", "default", "auto").unwrap();
+        let other = store.create_session(&project.id, "claude", "default", "auto").unwrap();
+
+        save_assignment(task.id.clone(), Some("work".into())).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("connections.json")).unwrap()).unwrap();
+        assert_eq!(saved["tasks"][&task.id], "work");
+        assert_eq!(for_task(&other.id, "claude"), None, "only the bound task uses it");
+        assert_eq!(warm_key(&task.id, "claude"), "work#1");
+        assert_eq!(warm_key(&other.id, "claude"), "", "a warm agent never crosses connections");
+
+        let config = crate::providers::RunConfig {
+            session_id: task.id.clone(),
+            provider: "claude".into(),
+            model: "default".into(),
+            reasoning_effort: None,
+            mode: "full".into(),
+            cwd: dir.clone(),
+            resume_id: None,
+            prompt: "hello".into(),
+            instructions: String::new(),
+            skill: None,
+            goal: None,
+            codex_settings: None,
+            images: Vec::new(),
+        };
+        let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let sink: crate::providers::Sink = std::sync::Arc::new(move |_| {
+            let _ = &input; // A closed input channel means Stop.
+        });
+        // The stand-in speaks no protocol, so how the run ends does not matter here.
+        let _ = crate::providers::run(config, sink, receiver).await;
+        let env = std::fs::read_to_string(&marker).expect("the connection's executable was launched");
+        assert!(env.lines().any(|line| line == format!("CLAUDE_CONFIG_DIR={config_dir}")), "{env}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

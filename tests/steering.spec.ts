@@ -80,3 +80,27 @@ test('a steer the agent could not take goes back to the queue', async ({ page })
   await expect(rows(page).locator('.queue-text')).toHaveText(['Lost? [steer-fails]']);
   await expect(lastUser(page).locator('.steer-state')).toContainText('moved to the queue');
 });
+
+test('the steer row and Stop never drop focus to the page, and Esc in the row keeps the run going', async ({ page }) => {
+  await startRun(page);
+  const steer = page.getByRole('button', { name: 'Steer the running turn' });
+  await expect(steer).toHaveAttribute('aria-disabled', 'true');
+  await prompt(page).fill('Use the new API');
+  await expect(steer).toHaveAttribute('aria-disabled', 'false');
+  await steer.focus();
+  await page.keyboard.press('Enter');
+  await expect(prompt(page)).toBeFocused();
+  await expect(prompt(page)).toHaveValue('');
+
+  await prompt(page).fill('Draft');
+  await page.getByRole('button', { name: 'Clear draft' }).focus();
+  await page.keyboard.press('Escape');
+  await expect(prompt(page)).toBeFocused();
+  expect(await calls(page, 'stop_session')).toEqual([]);
+
+  await page.getByRole('button', { name: 'Stop task', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => calls(page, 'stop_session')).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
+  await expect(prompt(page)).toBeFocused();
+});

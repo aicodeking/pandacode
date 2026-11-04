@@ -9,6 +9,7 @@ const row = (page: Page, provider: string) => privacy(page).locator(`li[data-pro
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings(page).locator('#settings-panel-agents details.settings-fold>summary').click();
   await expect(settings(page).getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
 }
 

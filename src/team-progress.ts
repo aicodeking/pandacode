@@ -35,7 +35,8 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
     list = document.createElement('section');
     list.className = 'team-progress'; list.setAttribute('aria-label', 'Team progress');
     list.dataset.sessionId = team.sessionId;
-    list.innerHTML = '<button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>';
+    // The source's Lineage head: a muted label, a running count and a … that opens the team panel.
+    list.innerHTML = `<div class="team-progress-head"><span class="team-progress-label">Workers</span><span class="team-progress-count"></span><button type="button" class="icon-button team-progress-menu" data-action="open-team-progress" aria-label="Open team" title="Open team">${icon('more')}</button></div><button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>`;
     host.replaceChildren(list);
   }
   list.dataset.status = team.status;
@@ -54,7 +55,8 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
       row.dataset.action = 'open-team-worker'; row.dataset.workerId = worker.id;
       row.innerHTML = `<span class="team-progress-logo"></span><span class="team-progress-description"><span class="team-progress-verb">Spawned</span> <strong></strong> <small></small></span><span class="team-progress-spinner" aria-hidden="true"></span><span class="team-progress-status"></span>${icon('chevron')}`;
     }
-    if (row !== list!.children[index]) list!.insertBefore(row, list!.children[index] ?? null);
+    // Child 0 is the head.
+    if (row !== list!.children[index + 1]) list!.insertBefore(row, list!.children[index + 1] ?? null);
     const profile = team.config.workers.find(profile => profile.id === worker.profileId);
     const provider = providers.find(provider => provider.id === worker.provider);
     const model = provider?.models.find(model => model.id === worker.model)?.name ?? fallbackModel(worker.provider, worker.model).name;
@@ -75,6 +77,8 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
       row.dataset.provider = worker.provider;
     }
   });
+  const running = spawned.filter(worker => worker.status === 'running' && !worker.abandoned && teamActive(team)).length;
+  text(list, '.team-progress-count', running ? `${running} running` : `${spawned.length} ${spawned.length === 1 ? 'worker' : 'workers'}`);
   const more = list.querySelector<HTMLButtonElement>('.team-progress-more')!;
   const remaining = spawned.length - workers.length;
   more.hidden = remaining === 0;

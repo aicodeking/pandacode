@@ -15,8 +15,7 @@ dialog.bots-dialog{width:min(960px,calc(100vw - 32px));max-height:90dvh}
 .bots-row-text small{font-size:var(--text-xs);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bots-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
 .bots-dot.working{background:var(--success);}
-@media(prefers-reduced-motion:no-preference){.bots-dot.working{animation:bots-pulse 1.6s ease-in-out infinite}}
-@keyframes bots-pulse{50%{opacity:.45}}
+@media(prefers-reduced-motion:no-preference){.bots-dot.working{animation:state-pulse 1.6s ease-in-out infinite}}
 .bot-avatar{display:grid;place-items:center;flex:none;width:var(--control);height:var(--control);border-radius:50%;background:color-mix(in srgb,var(--accent) 55%,var(--raised));color:var(--bots-on-accent);font-weight:650;font-size:var(--text-md);line-height:1}
 .bot-avatar.large{width:46px;height:46px;font-size:var(--text-xl)}
 
@@ -24,7 +23,7 @@ dialog.bots-dialog{width:min(960px,calc(100vw - 32px));max-height:90dvh}
 .bots-detail{display:flex;flex-direction:column;min-width:0;overflow-y:auto;padding-right:2px}
 .bots-head{display:flex;align-items:center;gap:14px;margin-bottom:14px}
 .bots-title{flex:1;min-width:0}
-.bots-title h3{margin:0;font-size:var(--text-lg);font-weight:650;letter-spacing:-.01em}
+.bots-title h3{margin:0;font-size:var(--text-lg);font-weight:650;letter-spacing:0}
 .bots-title p{margin:1px 0 0;color:var(--muted);font-size:var(--text-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bots-meta{display:flex;flex-wrap:wrap;gap:12px;margin-top:4px;font-size:var(--text-xs);color:var(--muted)}
 .bots-meta span{display:inline-flex;align-items:center;gap:4px}
@@ -99,10 +98,16 @@ html[data-theme=dark] .bots-kind:not([data-kind=web]){background:var(--raised);c
 .bots-copy-row{display:flex;align-items:center;gap:8px;margin:6px 0;min-width:0;max-width:100%}
 .bots-copy-row code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 8px}
 .bots-pairing.pending{background:color-mix(in srgb,var(--accent) 10%,transparent)}
-.bots-switch{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:2.1rem;height:1.25rem;padding:0;margin:0 4px;border-radius:.4rem;background:color-mix(in srgb,var(--text) 18%,transparent);cursor:pointer;transition:background-color 200ms,border-color 200ms}
-.bots-switch::before{content:"";position:absolute;left:.11rem;top:.11rem;width:.9rem;height:.9rem;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgb(0 0 0 / .2);transition:transform var(--spring-bounce-duration,380ms) var(--spring-bounce,cubic-bezier(.34,1.4,.64,1))}
-.bots-switch:checked{background:var(--success);border-color:transparent}
-.bots-switch:checked::before{transform:translateX(.85rem)}
+/* The pill toggle (the .ds-toggle look): ON is the primary pair, OFF a recessed track with a muted knob. It slides
+ * on the foundation's critically damped spring only once armed (bots.ts sets data-armed on pointerdown/keydown),
+ * so a state set during render never animates. */
+.bots-switch{appearance:none;-webkit-appearance:none;position:relative;flex:none;width:var(--ds-toggle-w,40px);height:var(--ds-toggle-h,24px);padding:0;margin:0 4px;border:0;border-radius:var(--radius-full);background:var(--ds-toggle-off);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+.bots-switch::before{content:"";position:absolute;left:3px;top:3px;width:calc(var(--ds-toggle-h,24px) - 6px);height:calc(var(--ds-toggle-h,24px) - 6px);border-radius:50%;background:var(--ds-toggle-knob-off);box-shadow:var(--ds-toggle-knob-shadow);transition:translate var(--spring-fast-duration) var(--spring-fast),background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.bots-switch:checked{background:var(--ds-primary-bg)}
+.bots-switch:checked::before{background:var(--ds-primary-fg);box-shadow:none;translate:calc(var(--ds-toggle-w,40px) - var(--ds-toggle-h,24px)) 0}
+.bots-switch:not(:disabled):active::before{scale:1.12 1}
+.bots-switch:not([data-armed]),.bots-switch:not([data-armed])::before{transition:none}
+.bots-switch:disabled{opacity:.45;cursor:not-allowed}
 .bots-switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px;}
 
 /* Activity */
@@ -121,7 +126,7 @@ html[data-theme=dark] .bots-kind:not([data-kind=web]){background:var(--raised);c
 
 /* Header: a living avatar and an at-a-glance strip */
 .bots-ring{position:relative;display:grid;place-items:center;flex:none;width:54px;height:54px;border-radius:50%}
-.bots-ring::before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--accent);opacity:.35;transition:opacity 300ms}
+.bots-ring::before{content:"";position:absolute;inset:0;border-radius:50%;background:var(--accent);opacity:.35;transition:opacity var(--ds-ease-out) ease-out}
 .bots-ring::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--panel)}
 .bots-ring>.bot-avatar{position:relative;z-index:1}
 .bots-head.is-working .bots-ring::before{opacity:1}
@@ -186,7 +191,6 @@ html[data-theme=dark] .bots-kind:not([data-kind=web]){background:var(--raised);c
 .bots-identity{font-weight:450;color:var(--muted);font-size:var(--text-xs)}
 .bots-copy-caption{flex:none;min-width:84px;font-size:var(--text-xs);color:var(--muted)}
 .bots-copy-row code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:5px 8px}
-.bots-items>li:nth-child(even),.bots-activity>li:nth-child(even){background:color-mix(in srgb,var(--text) 3.5%,transparent)}
 .bots-items,.bots-stats>span,.bots-confirm,.bots-connect,.bots-templates>button,.bots-kinds>button,.bots-kind-grid>button{background-color:color-mix(in srgb,var(--text) 3.5%,transparent)}
 .bots-templates>button[aria-pressed=true],.bots-kinds>button[aria-pressed=true],.bots-kind-grid>button[aria-pressed=true]{background-color:var(--accent-dim)}
 /* New bot: one centered column (live icon, color, face, name, purpose, brain), then suggestions. */

@@ -25,6 +25,20 @@ const still = (): boolean => document.hidden || reducedMotion();
  * first press or key is animated. */
 let interacted = false;
 for (const type of ['pointerdown', 'keydown']) addEventListener(type, () => { interacted = true; }, { capture: true, once: true });
+/** A thread switch is not a change inside a thread: items land at once while it loads and just after,
+ * since the thread's team and subagents arrive with its page. */
+const SWITCH_TAIL = 150;
+let switching = 0;
+/** `data-snap` on the dock says items land at once (the specs wait for it to clear before timing motion). */
+const markSnap = () => document.getElementById('action-dock')?.toggleAttribute('data-snap', switching > 0);
+export function snapDockDuring<T>(work: () => Promise<T>): Promise<T> {
+  switching++; markSnap();
+  const end = () => { window.setTimeout(() => { switching--; markSnap(); }, SWITCH_TAIL); };
+  const result = work();
+  result.then(end, end);
+  return result;
+}
+const snap = (): boolean => switching > 0 || still();
 const running = new WeakMap<Element, Map<string, Animation>>();
 function track(element: Element, animation: Animation, pseudo = ''): Animation {
   const map = running.get(element) ?? new Map<string, Animation>();
@@ -58,8 +72,9 @@ const labelOf = (item: HTMLElement) => item.dataset.dockTip || item.getAttribute
 function rove(dock: HTMLElement, focus?: HTMLElement): void {
   const items = dockItems(dock);
   const current = focus && items.includes(focus as HTMLButtonElement) ? focus : items.find(item => item.tabIndex === 0) ?? items[0];
-  for (const item of buttons(dock)) item.tabIndex = item === current ? 0 : -1;
-  dock.setAttribute('aria-orientation', vertical(dock) ? 'vertical' : 'horizontal');
+  for (const item of buttons(dock)) { const index = item === current ? '0' : '-1'; if (item.getAttribute('tabindex') !== index) item.setAttribute('tabindex', index); }
+  const orientation = vertical(dock) ? 'vertical' : 'horizontal';
+  if (dock.getAttribute('aria-orientation') !== orientation) dock.setAttribute('aria-orientation', orientation);
 }
 
 /** The shared hover pill: slides to the item under the pointer or focus, fades out on leave. */
@@ -76,9 +91,9 @@ function indicator(dock: HTMLElement) {
       pill.style.translate = `${item.offsetLeft}px ${item.offsetTop}px`; pill.style.height = `${item.offsetHeight}px`;
       pill.setAttribute('data-on', ''); pill.toggleAttribute('data-muted', item.classList.contains('active'));
     };
-    // From nothing it appears in place; while shown (even dissolved over an active item, or still
-    // fading out) it glides along.
-    if (!pill.hasAttribute('data-on') && Number(getComputedStyle(pill).opacity) < 0.05) { cancel(pill); place(); pill.removeAttribute('data-on'); }
+    // From nothing (or dissolved over an active item) it appears in place, so it never travels while
+    // invisible; while it shows (even still fading out) it glides along.
+    if (Number(getComputedStyle(pill).opacity) < 0.05) { const on = pill.hasAttribute('data-on'), muted = pill.hasAttribute('data-muted'); cancel(pill); place(); pill.toggleAttribute('data-on', on); pill.toggleAttribute('data-muted', muted); }
     morph(pill, ['translate', 'height', 'opacity', 'scale'], place, PILL_SPRING);
   };
   return { to, get target() { return target; } };
@@ -166,14 +181,14 @@ const LEAVE = 'cubic-bezier(.4,0,.6,1)';
 function appear(dock: HTMLElement, item: HTMLButtonElement): void {
   cancel(item);
   item.removeAttribute('data-leaving'); item.removeAttribute('aria-hidden'); item.inert = false;
-  if (still() || typeof item.animate !== 'function') return;
+  if (snap() || typeof item.animate !== 'function') { cancel(item.parentElement!, '::before'); return; }
   const { easing, duration } = curve();
   track(item, item.animate([{ opacity: 0, scale: 0.5, ...slot(dock), offset: 0 }], { duration, easing }));
   const group = lone(item);
   if (group) track(group, group.animate([{ ...rule(dock), offset: 0 }], { duration, easing, pseudoElement: '::before' }), '::before');
 }
 function disappear(dock: HTMLElement, item: HTMLButtonElement): void {
-  if (still() || typeof item.animate !== 'function') return;
+  if (snap() || typeof item.animate !== 'function') { cancel(item); cancel(item.parentElement!, '::before'); return; }
   item.setAttribute('data-leaving', ''); item.setAttribute('aria-hidden', 'true'); item.inert = true;
   const duration = curve().duration * 0.7, group = lone(item);
   const animation = track(item, item.animate([{ opacity: 0, scale: 0.5, ...slot(dock) }], { duration, easing: LEAVE, fill: 'forwards' }));
@@ -183,6 +198,8 @@ function disappear(dock: HTMLElement, item: HTMLButtonElement): void {
 }
 
 /** The staggered entrance, once per app session (a remount or reload in the same window skips it). */
+/** Pixels per wheel line, for a wheel that reports lines rather than pixels. */
+const WHEEL_LINE = 16;
 const ENTERED = 'pandacode.actionDock.entered';
 export function enterDock(dock: HTMLElement): void {
   try { if (sessionStorage.getItem(ENTERED)) return; sessionStorage.setItem(ENTERED, '1'); } catch { /* storage off: play it */ }
@@ -195,6 +212,17 @@ export function enterDock(dock: HTMLElement): void {
   });
 }
 
+/** A narrow window's inspector overlays the pane and its width varies (the Browser's is far wider
+ * than the stored width), so the dock sits left of where it really is. Layout offsets, not the
+ * rect: the panel's opening slide must not move the dock. */
+function clearOverlay(dock: HTMLElement, header: HTMLElement): void {
+  const inspector = document.querySelector<HTMLElement>('#inspector');
+  if (!matchMedia('(max-width:920px)').matches || !inspector?.offsetWidth || inspector.closest('.inspector-closed')) { dock.style.right = ''; return; }
+  const frame = header.getBoundingClientRect();
+  const left = (inspector.offsetParent?.getBoundingClientRect().left ?? 0) + inspector.offsetLeft;
+  dock.style.right = `${Math.min(frame.right - left + 10, frame.width - dock.offsetWidth - 20)}px`;
+}
+
 /** Centres a floating dock in the free space between the header (and any file tabs) and the
  * composer, clamped `GAP` from both; a short pane pins it under the header. */
 function placement(dock: HTMLElement, ready: () => void) {
@@ -203,14 +231,16 @@ function placement(dock: HTMLElement, ready: () => void) {
   const place = () => {
     frame = 0;
     const following = follow; follow = false;
-    if (!floating(dock)) { dock.style.top = ''; placed = false; ready(); return; }
+    if (!floating(dock)) { dock.style.top = ''; dock.style.right = ''; placed = false; dock.style.visibility = ''; ready(); return; }
+    clearOverlay(dock, header);
     const pane = document.querySelector<HTMLElement>('.conversation-pane');
     const composer = document.querySelector<HTMLElement>('#composer-area');
     const top = header.getBoundingClientRect(), height = dock.offsetHeight;
     const start = top.bottom + GAP;
-    const composerTop = composer && composer.getClientRects().length ? composer.getBoundingClientRect().top : pane?.getBoundingClientRect().bottom ?? innerHeight;
+    const tiled = document.querySelector<HTMLElement>('.work-area[data-tiles]');
+    const composerTop = tiled ? tiled.getBoundingClientRect().bottom : composer && composer.getClientRects().length ? composer.getBoundingClientRect().top : pane?.getBoundingClientRect().bottom ?? innerHeight;
     // The entrance waits for the composer, so the dock arrives where it stays.
-    if (composer?.offsetHeight) ready();
+    if (composer?.querySelector<HTMLElement>('#composer')?.offsetHeight) { dock.style.visibility = ''; ready(); }
     const end = composerTop - GAP;
     const y = Math.round(Math.max(start, Math.min((start + end - height) / 2, end - height)));
     const next = `${y - top.top}px`, previous = dock.style.top;
@@ -221,13 +251,16 @@ function placement(dock: HTMLElement, ready: () => void) {
     if (following) cancel(dock, 'move');
     if (shift && !following && interacted && !still() && typeof dock.animate === 'function') { const { easing, duration } = curve(); track(dock, dock.animate([{ translate: `0 ${shift}px`, offset: 0 }], { duration, easing }), 'move'); }
   };
+  // Hidden until its first real placement, so startup never paints it in the wrong spot; a page with no composer shows it anyway.
+  dock.style.visibility = 'hidden';
+  window.setTimeout(() => { dock.style.visibility = ''; }, 800);
   const schedule = () => { if (!frame) frame = requestAnimationFrame(place); };
   // While the dock itself grows or shrinks (an item springing in or out) the centring follows it
   // frame by frame, so it needs no spring of its own.
   const observer = new ResizeObserver(entries => { if (entries.some(entry => entry.target === dock)) follow = true; schedule(); });
   const watch = () => {
     observer.disconnect();
-    for (const selector of ['.conversation-pane', '#composer-area', '.main-pane']) { const node = document.querySelector(selector); if (node) observer.observe(node); }
+    for (const selector of ['.conversation-pane', '#composer-area', '.main-pane', '#inspector']) { const node = document.querySelector(selector); if (node) observer.observe(node); }
     observer.observe(dock);
   };
   watch();
@@ -240,10 +273,17 @@ export function mountActionDock(dock: HTMLElement): void {
   const tip = tooltip(dock), pill = indicator(dock), place = placement(dock, () => { if (!entered) { entered = true; enterDock(dock); } });
   const takeTitle = (item: HTMLElement) => { if (item.title) { item.dataset.dockTip = item.title; item.removeAttribute('title'); } };
   for (const item of buttons(dock)) takeTitle(item);
+  // Panel toggles say whether their panel is on; a disclosure (aria-expanded) or popup trigger already says it its own way.
+  const pressable = (item: HTMLElement) => item.closest('[data-group="panels"]') && !item.hasAttribute('aria-expanded') && !item.hasAttribute('aria-haspopup');
+  const syncPressed = (item: HTMLElement) => { if (!pressable(item)) return; const on = String(item.classList.contains('active')); if (item.getAttribute('aria-pressed') !== on) item.setAttribute('aria-pressed', on); };
+  for (const item of buttons(dock)) syncPressed(item);
+  // Icon tints ease only once the user has pressed or typed, so a panel opened while the app starts never fades its tint in.
+  const arm = () => { dock.dataset.armed = ''; removeEventListener('pointerdown', arm, true); removeEventListener('keydown', arm, true); };
+  addEventListener('pointerdown', arm, true); addEventListener('keydown', arm, true);
   new MutationObserver(records => {
     let structure = false;
     for (const record of records) {
-      if (record.type === 'childList') { structure = true; for (const node of record.addedNodes) if (node instanceof HTMLElement && node.matches('button')) takeTitle(node); continue; }
+      if (record.type === 'childList') { structure = true; for (const node of record.addedNodes) if (node instanceof HTMLElement && node.matches('button')) { takeTitle(node); syncPressed(node); } continue; }
       const item = record.target as HTMLElement;
       if (!(item instanceof HTMLButtonElement)) continue;
       if (record.attributeName === 'title') { takeTitle(item); continue; }
@@ -253,10 +293,11 @@ export function mountActionDock(dock: HTMLElement): void {
         else if (!was && item.hidden) { disappear(dock, item); if (tip.anchor === item) tip.hide(); if (pill.target === item) pill.to(); }
         structure = true;
       } else if (record.attributeName === 'class') {
+        syncPressed(item);
         const was = ` ${record.oldValue ?? ''} `.includes(' active '), now = item.classList.contains('active');
         // The accent fill grows in with the spring and fades out from full.
         if (was !== now && pill.target === item) pill.to(item, true);
-        if (was === now || !interacted || still() || typeof item.animate !== 'function') continue;
+        if (was === now || !interacted || snap() || typeof item.animate !== 'function') continue;
         if (now) track(item, item.animate([{ opacity: 0, scale: 0.6, offset: 0 }], { ...curve(), pseudoElement: '::before' }), '::before');
         else track(item, item.animate([{ opacity: 1, scale: 1, offset: 0 }], { duration: 150, easing: 'ease-out', pseudoElement: '::before' }), '::before');
       }
@@ -269,12 +310,24 @@ export function mountActionDock(dock: HTMLElement): void {
   document.addEventListener('pointerdown', () => { keyboard = false; }, true);
   const itemOf = (target: EventTarget | null) => target instanceof Element ? target.closest<HTMLButtonElement>('#action-dock button') : null;
   const focused = () => { const active = document.activeElement; return active instanceof HTMLButtonElement && dock.contains(active) && keyboard ? active : undefined; };
+  // An item that slides under a resting pointer (the dock's own height springing) gets a pointerover at the
+  // pointer's old position: that is not the reader pointing, so only real movement opens its label.
+  let pointer = { x: NaN, y: NaN }, pointed: HTMLElement | undefined;
+  const resting = (event: PointerEvent) => event.clientX === pointer.x && event.clientY === pointer.y;
   dock.addEventListener('pointerover', event => {
     const item = itemOf(event.target); if (!item || item.hasAttribute('data-leaving')) return;
     for (const other of buttons(dock)) if (other !== item) { hover(other, false); press(other, false); }
-    hover(item, true); pill.to(item); tip.hover(item);
+    hover(item, true); pill.to(item);
+    if (!resting(event)) { pointed = item; tip.hover(item); } else if (tip.anchor && tip.anchor !== item) tip.hide();
   });
+  dock.addEventListener('pointermove', event => {
+    const moved = !resting(event);
+    pointer = { x: event.clientX, y: event.clientY };
+    const item = itemOf(event.target);
+    if (moved && item && pointed !== item && !item.hasAttribute('data-leaving')) { pointed = item; tip.hover(item); }
+  }, { passive: true });
   dock.addEventListener('pointerleave', () => {
+    pointed = undefined;
     for (const item of buttons(dock)) { hover(item, false); press(item, false); }
     const still = focused();
     pill.to(still); if (still) tip.show(still); else tip.hide();
@@ -294,18 +347,27 @@ export function mountActionDock(dock: HTMLElement): void {
     const next = items[(steps[event.key] + items.length) % items.length];
     rove(dock, next); next.focus();
   });
+  // The floating card sits outside the transcript, so the browser would not chain a wheel to it. The event is
+  // re-sent too, because the transcript's own wheel listener releases the bottom pin and fetches older history.
+  dock.addEventListener('wheel', event => {
+    const transcript = document.querySelector<HTMLElement>('#transcript');
+    if (!transcript || event.ctrlKey || !floating(dock) || transcript.closest('[inert]')) return;
+    transcript.dispatchEvent(new WheelEvent('wheel', event));
+    transcript.scrollTop += event.deltaY * [1, WHEEL_LINE, transcript.clientHeight][event.deltaMode];
+  }, { passive: true });
   rove(dock);
   requestAnimationFrame(() => { rove(dock); place(); });
 }
 
-/** What the Agents item reads from the team and subagent views (the architect view loads lazily). */
+/** What the Agents item reads from the team, subagent and lineage views (the architect view loads lazily). */
 export type AgentSource = { present: boolean; running: number; isOpen: boolean; open(focus: boolean): void; close(focus?: boolean): void };
 const AGENTS_OPEN = 150, AGENTS_CLOSE = 300;
 
-/** The Agents item: shown while the task has a team or subagents, badged with how many run.
- * Hovering opens `flyout` (both views' panels) left of the dock; it stays while the pointer is
+/** The Agents item: shown while the task has a team, subagents or machine threads, badged with how
+ * many run. Hovering opens `flyout` (every view's panel) left of the dock; it stays while the pointer is
  * on the item or the panel and closes `AGENTS_CLOSE` ms after it leaves both, which also carries
  * it across the gap. A click (Enter/Space) pins or unpins it; Escape closes it. */
+const AGENT_PANELS = '.architect-panel, .subagents-panel, .lineage-panel';
 export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, sources: () => AgentSource[]): void {
   const badge = item.querySelector<HTMLElement>('.dock-badge')!;
   let pinned = false, openTimer = 0, closeTimer = 0, shown = -1, focusedInside = false;
@@ -323,11 +385,11 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
       Object.assign(flyout.style, { right: `${Math.round(Math.max(8, header.right - box.right))}px`, top: `${Math.round(box.bottom - header.top + 8)}px`, maxHeight: `${Math.round(innerHeight - box.bottom - 20)}px` });
     }
   };
-  const focusFirst = () => flyout.querySelector<HTMLElement>('.architect-close, [data-subagent-id], .subagents-close')?.focus();
+  const focusFirst = () => flyout.querySelector<HTMLElement>('.architect-close, [data-subagent-id], .subagents-close, .lineage-open')?.focus();
   const show = (focus: boolean) => {
     clearTimeout(openTimer); clearTimeout(closeTimer);
     for (const source of sources()) if (source.present && !source.isOpen) source.open(false);
-    if (!flyout.querySelector('.architect-panel, .subagents-panel')) return;
+    if (!flyout.querySelector(AGENT_PANELS)) return;
     flyout.hidden = false; item.setAttribute('aria-expanded', 'true'); place();
     if (focus) focusFirst();
   };
@@ -346,7 +408,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
     if (was === count > 0) return;
     cancel(badge);
     if (count) badge.hidden = false;
-    if (still() || !interacted || typeof badge.animate !== 'function') { badge.hidden = !count; return; }
+    if (snap() || !interacted || typeof badge.animate !== 'function') { badge.hidden = !count; return; }
     const { easing, duration } = curve();
     const animation = track(badge, badge.animate(count ? [{ opacity: 0, scale: 0.3, offset: 0 }] : [{ opacity: 0, scale: 0.3 }], count ? { duration, easing } : { duration: duration * 0.7, easing: LEAVE, fill: 'forwards' }));
     if (!count) animation.onfinish = () => { badge.hidden = true; animation.cancel(); };
@@ -354,8 +416,9 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   const refresh = () => {
     const present = sources().filter(source => source.present);
     const running = present.reduce((sum, source) => sum + source.running, 0);
-    item.hidden = !present.length;
-    item.setAttribute('aria-label', running ? `Agents: ${running} running` : 'Agents');
+    if (item.hidden !== !present.length) item.hidden = !present.length;
+    const label = running ? `Agents: ${running} running` : 'Agents';
+    if (item.getAttribute('aria-label') !== label) item.setAttribute('aria-label', label);
     badgeTo(running);
     if (!present.length && isOpen()) hide(); else place();
   };
@@ -364,7 +427,7 @@ export function mountAgents(item: HTMLButtonElement, flyout: HTMLElement, source
   // Panels opened elsewhere (a transcript link, the command palette) show the flyout; closing the
   // last panel from inside it hides the flyout.
   new MutationObserver(() => {
-    const panel = flyout.querySelector('.architect-panel, .subagents-panel');
+    const panel = flyout.querySelector(AGENT_PANELS);
     if (panel && !isOpen()) { pinned = true; flyout.hidden = false; item.setAttribute('aria-expanded', 'true'); place(); }
     else if (!panel && isOpen()) hide();
     else place();

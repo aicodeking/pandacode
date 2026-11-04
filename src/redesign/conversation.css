@@ -1,0 +1,202 @@
+/* Redesign: conversation area. Owned by the conversation area worker; built on src/design-system.css.
+ * Selectors are scoped under .conversation-pane so they win over the component sheets (worktrees.css,
+ * model-picker.css, wallpapers.css) that load later or carry more specificity. */
+
+/* ---------- Composer (the reference's left column): an outer card holding the input's inner card and a tray ---------- */
+.conversation-pane .composer-area .composer{display:flex;flex-direction:column;gap:4px;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);transition:border-color var(--ds-ease-out) ease-out}
+.workspace .conversation-pane .composer-area .composer:focus-within,.workspace[data-scene] .conversation-pane .composer-area .composer:focus-within{border-color:var(--ds-border);box-shadow:var(--ds-shadow-card)}
+.workspace[data-scene] .conversation-pane .composer-area .composer{border-color:var(--ds-border);background:var(--ds-card)}
+/* The input is the nested card: its own hairline, the inner fill and a soft shadow. Typing strengthens its hairline. */
+.composer-input{display:flex;align-items:flex-end;gap:8px;min-width:0;padding:0 10px 10px 0;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card);transition:border-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+/* Typing strengthens the hairline; the --focus ring (hairline plus 1px outside) needs the keyboard, because text fields match :focus-visible however they got focus. */
+.conversation-pane .composer-area .composer-input:has(#prompt:focus){border-color:var(--ds-border-strong);transition-duration:var(--ds-ease-in)}
+:root[data-keyboard-focus] .conversation-pane .composer-area .composer-input:has(#prompt:focus-visible){border-color:var(--focus);box-shadow:0 0 0 1px var(--focus),var(--ds-shadow-card)}
+.conversation-pane .composer-input textarea{flex:1;min-width:0;min-height:60px;padding:16px 0 6px 16px;font-size:var(--ds-text-body)}
+.conversation-pane .composer-input textarea::placeholder{color:var(--faint)}
+/* Empty holders take no flex gap, so nothing sits between the box's edge and the input. */
+.composer>:is(.attachments,.browser-context-attachments):empty{display:none}
+.composer-actions{display:flex;align-items:center;gap:10px;flex:none}
+/* The paperclip sits outside the pill, muted, as in the reference. */
+.conversation-pane .composer-actions>[data-action="attach"]{flex:none;width:36px;height:36px;color:var(--muted)}
+.conversation-pane .composer-actions>[data-action="attach"]:not(:disabled):hover{color:var(--text)}
+.composer-actions>[data-action="attach"] .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg)}
+/* The send pill: a quiet rounded pill (dark: below the page; light: page-coloured) with a hairline, holding the arrow or the red stop square. Press scales the button inside, never the pill's anchor. */
+.composer-pill{display:inline-flex;align-items:center;justify-content:center;min-width:62px;height:36px;border-radius:11px;background:var(--bg);box-shadow:inset 0 0 0 1px var(--ds-border-strong),var(--ds-shadow-raised)}
+html[data-theme="dark"] .composer-pill{background:color-mix(in srgb,var(--bg) 60%,black)}
+html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.send-button{width:62px;height:36px;border-radius:inherit;background:transparent;color:var(--text);box-shadow:none;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.send-button:not(:disabled):hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.send-button:not(:disabled):active{background:var(--ds-row-press);scale:var(--ds-press)}
+html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.send-button.stop-button{color:var(--ds-danger)}
+.composer-pill>.send-button .icon{--icon-size:18px;--icon-stroke:var(--icon-stroke-md)}
+.composer-pill>.stop-button .icon{--icon-size:32px;width:32px;height:32px;fill:currentColor;stroke-width:0}
+.composer-pill>:is(.remote-checking,.remote-composer-retry){height:36px;border-radius:inherit}
+/* The steer bar (the reference's row above the input): pencil, the plain muted steer arrow, ✕, at the card's end. It holds its height for the whole run, so the first keystroke never moves the prompt; with nothing typed only a dim arrow shows. */
+.composer-steer-bar{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-height:36px;padding:0 6px}
+.composer-steer-bar>.icon-button{flex:none;width:32px;height:32px;border-radius:var(--ds-radius-control);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,opacity var(--ds-ease-in) ease-out}
+.composer-steer-bar>.icon-button:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.composer-steer-bar>.icon-button .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg)}
+.composer-steer-bar:has(~.composer-input #prompt:placeholder-shown)>.icon-button{visibility:hidden;opacity:0}
+.composer-steer-bar:has(~.composer-input #prompt:placeholder-shown)>.steer-button{color:var(--faint)}
+.conversation-pane .composer-steer-bar>.steer-button{position:relative;justify-content:center;width:32px;height:32px;margin:0;padding:0;gap:6px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-lead);font-weight:var(--weight-regular);
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.conversation-pane .composer-steer-bar>.steer-button:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.conversation-pane .composer-steer-bar>.steer-button .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg)}
+
+/* The tray: the model (logo + name) and branch keep their text; mode, Team, Saver, computer and checkout are icons with the label in .sr-only and a tooltip. No fills at rest. */
+.conversation-pane .composer-tray{padding:0 4px;gap:2px}
+.conversation-pane .composer-tray .composer-tools{flex:0 1 auto;gap:6px}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button){height:36px;padding:0 8px;gap:7px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-lead);font-weight:var(--weight-medium);box-shadow:none;
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button):not(:disabled):hover,
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button)[aria-expanded="true"]{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+/* Open or pressed is neutral, never the accent: the id in :is() outranks the accent rules in styles.css and wallpapers.css, which carry #team-trigger. */
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#model-picker-trigger,.model-picker,.mode-picker,.composer-team-button,.composer-saver-button):is([aria-expanded="true"],:not(:disabled):active){background:var(--ds-row-press);color:var(--text);box-shadow:none}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button) .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg);color:inherit}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker)>.icon:last-child,.conversation-pane .composer-tray .composer-team-button>.icon:last-child:not(:first-child){display:none}
+.conversation-pane .composer-tray .model-picker>.provider-small{display:inline-grid;place-items:center}
+/* Locked during a run, the tray still reads as the reference's muted labels; only the pointer and the hover go. */
+html[data-theme] .workspace .conversation-pane .composer-tray :is(.model-picker,.mode-picker):disabled{opacity:1;color:var(--muted)}
+/* Access mode: the icon says it. Standard stays neutral; Approve for me carries the same trust as Accept edits. */
+.conversation-pane .composer-tray .mode-picker[data-mode="plan"]{--mode-tone:var(--ds-tone-plan)}
+.conversation-pane .composer-tray .mode-picker:is([data-mode="auto"],[data-mode="review"]){--mode-tone:var(--ds-tone-edit)}
+.conversation-pane .composer-tray .mode-picker[data-mode="full"]{--mode-tone:var(--ds-tone-full)}
+.conversation-pane .composer-tray .mode-picker .icon{color:var(--mode-tone,inherit);transition:color var(--ds-ease-out) ease-out}
+/* Its only visible ink is the icon, so the icon alone carries the colour (120 ms in, 180 ms out); the button's own
+ * colour would run a second, differently timed transition the icon inherits mid-way. */
+.conversation-pane .composer-tray .mode-picker{transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.conversation-pane .composer-tray .mode-picker:is(:not(:disabled):hover,[aria-expanded="true"]){transition-duration:var(--ds-ease-in),var(--spring-fast-duration)}
+.conversation-pane .composer-tray .mode-picker:is(:not(:disabled):hover,[aria-expanded="true"]) .icon{transition-duration:var(--ds-ease-in)}
+/* Team and Saver, on: tone and fill. The id in :is() matches the neutral open and press rule above, so an open menu keeps the state. */
+.conversation-pane .composer-tray .composer-team-button{--tray-tone:var(--ds-tone-team);--tray-fill:var(--ds-tone-team-fill)}
+.conversation-pane .composer-tray .composer-saver-button{--tray-tone:var(--ds-tone-saver);--tray-fill:var(--ds-tone-saver-fill)}
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button):is([data-on],[aria-pressed=true]){color:var(--tray-tone);background:var(--tray-fill)}
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button):is([data-on],[aria-pressed=true]):is(:not(:disabled):hover,:not(:disabled):active,[aria-expanded="true"]){background:color-mix(in srgb,var(--tray-tone) 20%,transparent)}
+.conversation-pane .composer-tray .composer-saver-button{gap:4px}
+.conversation-pane .composer-tray .composer-saver-button b{min-width:0;height:auto;padding:0;background:none;color:inherit;font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
+/* Icon-only items keep their label in the DOM, whatever the ≤650px window rules in styles.css say about spans. */
+.conversation-pane .composer-tray :is(.mode-picker,.composer-team-button)>.sr-only{display:block}
+.conversation-pane .composer-tray :is(.mode-picker,.composer-team-button,.composer-saver-button){position:relative;flex:none;justify-content:center;min-width:36px}
+.model-effort-pill{display:inline-flex;align-items:center;gap:7px;margin-left:18px}
+.model-effort-pill[hidden]{display:none}
+.conversation-pane .composer-tray .model-picker .model-effort{color:inherit}
+.conversation-pane .composer-tray .composer-team-button:is([aria-pressed=true],[data-on],[aria-busy=true]){color:var(--text)}
+
+/* The model item always keeps its name, truncating last; a narrow composer drops the effort's label. */
+.conversation-pane .composer-tray .model-picker{flex:0 1 auto;min-width:0}
+.conversation-pane .composer-tray .model-detail{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@container composer (max-width:980px){
+  .conversation-pane .composer-tray :is(.model-effort,.team-model-count){display:none}
+  .conversation-pane .composer-tray .model-effort-pill{margin-left:8px}
+}
+
+/* ---------- The tray's checkout items: computer and checkout kind after Saver, the branch and any PR at the far right. The bar is display:contents, so they are the tray's own flex items. ---------- */
+.workspace .conversation-pane .composer-area .composer-tray>.composer-context{display:contents}
+.workspace .conversation-pane .composer-area .composer-tray>.composer-context:is(.bot-thread *){display:none}
+.composer-tray .composer-context>:is(.composer-computer,.composer-local,.branch-chip,.link-chip){display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:none;height:36px;min-height:0;padding:0 8px;border:0;border-radius:var(--ds-radius-control);background:none;box-shadow:none;color:var(--muted);font-family:inherit;font-size:var(--ds-text-lead);font-weight:var(--weight-medium);
+  transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.composer-tray .composer-context>.composer-local+*{margin-left:auto}
+.composer-tray .composer-context .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg);color:inherit}
+/* Menus are in each item's aria-haspopup; a quiet tray draws no chevrons. */
+.composer-tray .composer-context>*>.icon:last-child:not(:first-child){display:none}
+.composer-tray .composer-context .branch-chip-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:inherit;font-size:inherit;font-weight:inherit}
+.composer-tray .composer-context>button:not(:disabled):hover,.composer-tray .composer-context>button[aria-expanded="true"]{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.workspace .conversation-pane .composer-tray .composer-context>button:not(:disabled):active{background:var(--ds-row-press);scale:var(--ds-press)}
+.composer-tray .composer-context .branch-chip-missing{color:var(--ds-danger)}
+.composer-tray .composer-context>:is(.composer-computer-fixed,.composer-local):focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+/* Not this computer, or a worktree: the icon says so. Plain Local and This computer stay muted. */
+.composer-tray .composer-context>.composer-computer[data-remote]>:is(.icon,svg){color:var(--ds-tone-remote)}
+.composer-tray .composer-context>.composer-computer[data-remote="offline"]>:is(.icon,svg){color:var(--ds-warn)}
+.composer-tray .composer-context>.composer-local[data-checkout="worktree"]>.icon{color:var(--ds-tone-worktree)}
+.composer-tray .composer-context>:is(.composer-computer,.composer-local){position:relative;justify-content:center;min-width:36px}
+/* A linked PR or issue: its icon takes the state colour (green open, blue merged, red closed, muted draft); the state is in its tooltip and name. */
+.composer-tray .composer-context>.link-chip{position:relative;flex:none;white-space:nowrap}
+.composer-tray .composer-context>.link-chip>span:not(.link-chip-state){min-width:0;overflow:hidden;text-overflow:ellipsis}
+.composer-tray .composer-context>.link-chip>.icon{color:var(--ds-success)}
+.composer-tray .composer-context>.link-chip-merged>.icon{color:var(--ds-info)}
+.composer-tray .composer-context>.link-chip-closed>.icon{color:var(--ds-danger)}
+.composer-tray .composer-context>.link-chip-draft>.icon{color:var(--muted)}
+.composer-tray .composer-context>.link-chip>.link-chip-state{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+/* While git status loads, the branch chip's place is held by a faint bar. */
+.composer-tray .composer-context>.branch-chip-pending{pointer-events:none}
+.composer-tray .composer-context>.branch-chip-pending>.branch-chip-name{display:block;width:8rem;height:10px;border-radius:var(--radius-full);background:var(--ds-fill)}
+
+@media(prefers-contrast:more){
+  html[data-theme] .workspace .conversation-pane :is(.composer,.composer-input){border-color:var(--border);box-shadow:none}
+  html[data-theme] .workspace .composer-pill{box-shadow:inset 0 0 0 1px var(--border)}
+}
+@media(forced-colors:active){
+  .composer-pill{outline:1px solid ButtonText;outline-offset:-1px}
+  /* The bubble's fill is erased by system colours; its edge keeps it a bubble. */
+  .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-content{border:1px solid CanvasText}
+  /* System colours erase the tones, so an on state keeps an outline. */
+  .composer-tray :is(.composer-team-button[data-on],.composer-team-button[aria-pressed=true],.composer-saver-button[aria-pressed=true]){outline:1px solid Highlight;outline-offset:-1px}
+}
+
+/* ---------- Transcript: messages, trace rows and cards on the design-system tones ---------- */
+/* It is a Tab stop, so keyboard focus shows inside its edge. */
+.conversation-pane .transcript:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+/* User bubbles keep their 16px radius (bots-thread.spec). */
+.conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-content{padding:14px 18px;border-radius:16px;background:var(--ds-fill);line-height:1.55}
+.conversation-pane :is(#transcript,.thread-mirror-rows)>.agent-message>.message-content{line-height:1.6}
+/* Changed files: a card; its tree rows are ds rows. */
+.conversation-pane .turn-changes{padding:8px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.conversation-pane .turn-changes-actions{top:8px;right:8px}
+/* The summary line: "+84 −22" in status colours, then the 5-cell dot meter. */
+.turn-change-list>summary>.change-counts{gap:8px;font-size:var(--ds-text-body);font-weight:var(--weight-regular)}
+.turn-change-list>summary .change-dots{margin-left:6px}
+.change-counts .change-additions{color:var(--ds-success)}
+.change-counts .change-deletions{color:var(--ds-danger)}
+.conversation-pane :is(.turn-change-file,.turn-change-folder>summary){border-radius:var(--ds-radius-inner);padding-inline:10px}
+.conversation-pane .turn-change-file{padding-left:30px}
+.conversation-pane :is(.turn-change-file,.turn-change-folder>summary):hover{background:var(--ds-row-hover)}
+.conversation-pane :is(.turn-changes-open,.turn-changes-run){height:32px;padding:0 12px;gap:6px;border-radius:var(--ds-radius-control);background:var(--ds-raised);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);color:var(--text);font-size:var(--ds-text-ui)}
+.conversation-pane :is(.turn-changes-open,.turn-changes-run):hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised))}
+/* Tool trace: each step a row (hover fill, inner radius); result cards a flat card; chips on the fill tone. */
+.conversation-pane .tool-trace>summary{border-radius:var(--ds-radius-control);margin-inline:-8px;padding-inline:8px;transition:background-color var(--ds-ease-out) ease-out}
+.conversation-pane .tool-trace>summary:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.conversation-pane .tool-trace-chip{border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted)}
+.conversation-pane{--trace-card-fill:var(--ds-card)}
+.conversation-pane .tool-trace-card{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.workspace[data-scene] .conversation-pane .tool-trace-card{background:var(--ds-card)}
+/* Approvals and agent questions: cards, with the neutral primary for the answer and a tone fill for the rest. */
+.conversation-pane .approval-bar{padding:6px 6px 6px 14px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.workspace[data-scene] .conversation-pane .approval-bar{background:var(--thread-surface)}
+.conversation-pane .approval-actions button{height:28px;padding:0 12px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-meta)}
+.conversation-pane .approval-allow{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
+html[data-theme] .conversation-pane .approval-allow:hover:not(:disabled){background:var(--ds-primary-hover);color:var(--ds-primary-fg)}
+.conversation-pane .approval-deny{background:var(--ds-raised);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised);color:var(--text)}
+.conversation-pane .approval-deny:hover:not(:disabled){background:color-mix(in srgb,var(--text) 4%,var(--ds-raised))}
+.conversation-pane .approval-full{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.conversation-pane .agent-input{padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);font-size:var(--ds-text-ui)}
+.workspace[data-scene] .conversation-pane .agent-input{background:var(--ds-card)}
+.conversation-pane .agent-input>:not(.agent-input-actions){margin-inline:12px}
+.conversation-pane .agent-input>:first-child{margin-top:12px}
+.conversation-pane .agent-input h3{font-size:var(--ds-text-body)}
+.conversation-pane .agent-input-option{min-height:var(--ds-row-h);align-items:center;padding:10px 14px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.conversation-pane .agent-input-option:hover{background:var(--ds-row-hover)}
+.conversation-pane .agent-input-option:has(input:checked){background:var(--ds-fill-hover)}
+.conversation-pane .agent-input :is(input:not([type=radio],[type=checkbox]),select){border-radius:var(--ds-radius-control);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+.conversation-pane .agent-input-actions{margin:12px 8px 8px}
+.conversation-pane .agent-input-actions :is(button,.primary-button,.secondary-button){height:var(--ds-btn-h);padding:0 14px;border-radius:var(--ds-radius-inner)}
+/* Subagent and team panels: cards of rows. */
+.subagents-list,.architect-worker-list{gap:2px}
+.subagent-row,.architect-worker-row{min-height:var(--ds-row-h-sub);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:var(--ds-radius-inner)}
+.subagent-row:hover,.architect-worker-row:hover{background:var(--ds-row-hover)}
+.subagent-row:active,.architect-worker-row:active{background:var(--ds-row-press)}
+.subagent-row-copy strong{font-size:var(--ds-text-ui);font-weight:var(--weight-medium)}
+.subagent-row-copy small,.subagent-row-status{font-size:var(--ds-text-meta)}
+@media(prefers-reduced-motion:reduce){.composer-tray *,.conversation-pane .tool-trace>summary{transition:none}}
+/* In a tight tray the branch truncates first (to its floor; its shrink outweighs the model's tools 10000:1, so they give up nothing until it is there), and the model last. */
+.composer-tray .composer-context>.composer-computer{flex:none;white-space:nowrap}
+.composer-tray .composer-context>.branch-chip{flex:0 10000 auto;min-width:min(7rem,25%)}
+.composer-tray .composer-context>.composer-local{flex:none;white-space:nowrap}
+/* Narrowing leaves the PR only its icon (its name stays in aria-label). */
+@container composer (max-width:520px){
+  .composer-tray .composer-context>.link-chip>span:not(.link-chip-state){display:none}
+}
+@container composer (max-width:460px){
+  .composer-tray .composer-context>.composer-local[data-checkout="local"]{display:none}
+}
+
+/* ---------- The composer's segmented controls hand their highlight to the gliding thumb (trackSegment) ---------- */
+html[data-theme] :is(.saver-levels,.choice-menu-segment-list)>.segment-thumb{border-radius:var(--radius-xs);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}

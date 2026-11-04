@@ -81,7 +81,7 @@ pub(crate) struct Start {
     pub image_ids: Vec<String>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Target {
     Repo(String),
     ProjectId(String),
@@ -181,6 +181,12 @@ pub(crate) fn origins(projects: Vec<Project>) -> Vec<(Project, Option<String>)> 
         direct.iter().zip(asked).map(|(direct, asked)| direct.clone().unwrap_or_else(|| asked.and_then(|handle| handle.join().ok()).flatten())).collect()
     });
     projects.into_iter().zip(found).collect()
+}
+
+/// The GitHub repository `root`'s origin names, from its config file when that can answer.
+pub(crate) fn origin_repo(root: &Path) -> Option<String> {
+    let direct = config_path(root).and_then(|path| std::fs::read_to_string(path).ok()).and_then(|config| config_repo(&config));
+    direct.unwrap_or_else(|| github_hub::project_repo(root))
 }
 
 fn find_project_id(projects: Vec<Project>, id: &str) -> Option<Project> {
@@ -648,6 +654,15 @@ fn attach(store: &Mutex<crate::storage::Store>, root: &Path, branch: &str, made:
     Ok(made.keep().expect("just made"))
 }
 
+/// The host task a start makes.
+pub(super) fn create_task(store: &crate::storage::Store, project: &str, start: &Start) -> Result<crate::storage::Session> {
+    let task = crate::architect::profiles::create_user_task(store, project, &start.provider, &start.model, start.mode.as_deref(), None)?;
+    if start.effort.is_some() {
+        store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
+    }
+    Ok(task)
+}
+
 async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: &Arc<Progress>, cancel: &Arc<Cancel>) -> Result<Value> {
     check(cancel)?;
     progress.report("finding", None, None);
@@ -656,7 +671,7 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
     require_installed(&start.provider).await?;
     check(cancel)?;
     let handle = app.clone();
-    let (target, wanted, worktree, reporter, flag) = (start.target, start.branch.clone(), start.worktree, progress.clone(), cancel.clone());
+    let (target, wanted, worktree, reporter, flag) = (start.target.clone(), start.branch.clone(), start.worktree, progress.clone(), cancel.clone());
     let (project, (branch, made, mut note, reserved)) = tauri::async_runtime::spawn_blocking(move || -> Result<(Project, Prepared)> {
         let state = handle.state::<AppState>();
         // A worktree start never uses the clone's own checkout, so a fresh clone defers it.
@@ -674,16 +689,7 @@ async fn start_task(app: &tauri::AppHandle, from: &str, start: Start, progress: 
     // From here the task is made, so a cancel arriving now is answered "too late".
     cancel.commit()?;
     let state = app.state::<AppState>();
-    let created = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        crate::architect::profiles::create_user_task(&store, &project.id, &start.provider, &start.model, start.mode.as_deref(), None).and_then(|task| {
-            if start.effort.is_some() {
-                store.set_reasoning_effort(&task.id, start.effort.as_deref())?;
-            }
-            Ok(task)
-        })
-    };
-    let task = created?;
+    let task = create_task(&*state.store.lock().map_err(|e| e.to_string())?, &project.id, &start)?;
     // A local run may have started in the main checkout since the reservation was taken.
     // ponytail: local runs don't consult the reservation, so a run starting between this check
     // and `send_message` registering the agent still shares it; gate local admission if it bites.

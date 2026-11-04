@@ -1,33 +1,38 @@
-/* The floating action dock (src/action-dock.ts). A vertical glass pill at the conversation's right
+/* The floating action dock (src/action-dock.ts). A vertical design-system card at the conversation's right
  * edge, centred in the free space between the header and the composer (the script sets `top`): the
  * main pane's edge, so it sits left of an open inspector and at the window edge when it is closed.
+ * It hovers over the thread and takes no layout: only the card takes the pointer, and a wheel over it scrolls
+ * the transcript (action-dock.ts).
  * Narrow windows, the board and the GitHub view put it back in the header as a plain row. Motion is
- * @keyframes and the Web Animations API only (never transitions); reduced motion turns both off and
+ * @keyframes and the Web Animations API only (never transitions, but for an icon's state colour); reduced motion turns both off and
  * the end states below apply at once. */
-.workspace{--dock-clear:58px;--dock-item:38px;--dock-pad:5px;--dock-rule:5px}
-.action-dock{position:absolute;top:calc(100% + 12px);right:10px;z-index:7;display:flex;flex-direction:column;align-items:center;padding:var(--dock-pad);border-radius:calc(var(--dock-item) / 2 + var(--dock-pad));
-  background:var(--glass-warm);backdrop-filter:var(--header-blur);-webkit-backdrop-filter:var(--header-blur);box-shadow:var(--floating-bar-shadow)}
-.workspace[data-wallpaper] .action-dock{background:var(--header-glass)}
+/* The card language of the inset panels (16px card radius, 6px padding, a --ds-border hairline, --ds-shadow-card); as a
+ * floating surface its fill is the frame tone (the sidebar's ground), dense, over a blur, so it reads over the sky and wallpapers. The label
+ * bubble and the Agents flyout are the same card. */
+.workspace{--dock-item:38px;--dock-pad:6px;--dock-rule:5px;
+  --dock-fill:color-mix(in srgb,var(--frame,var(--bg)) 90%,transparent);--dock-blur:blur(16px) saturate(1.15);
+  --dock-edge:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+.action-dock,.action-dock-tip,.agents-flyout{background:var(--dock-fill);backdrop-filter:var(--dock-blur);-webkit-backdrop-filter:var(--dock-blur);box-shadow:var(--dock-edge)}
+.action-dock{position:absolute;top:calc(100% + 12px);right:10px;z-index:7;display:flex;flex-direction:column;align-items:center;padding:var(--dock-pad);border-radius:var(--ds-radius-card)}
 .action-dock-group{display:flex;flex-direction:inherit;align-items:center;gap:2px}
 .action-dock-group:not(:has(>button:not([hidden]),>button[data-leaving])){display:none}
-/* Groups are told apart by spacing and a short rounded bar (a fill, not a border). */
-.action-dock-group+.action-dock-group::before{content:"";flex:none;width:20px;height:2px;margin:var(--dock-rule) 0;border-radius:1px;background:color-mix(in srgb,var(--text) 20%,transparent)}
+/* Groups are told apart by spacing and a short --ds-border hairline. */
+.action-dock-group+.action-dock-group::before{content:"";flex:none;width:22px;height:1px;margin:var(--dock-rule) 0;background:var(--ds-border-strong)}
 
-/* The shared hover pill: one tinted shape that springs along the dock to the item under the
- * pointer or keyboard focus. Active panels keep their own accent fill (::before). */
-.action-dock-indicator{position:absolute;top:0;left:0;z-index:0;width:var(--dock-item);height:var(--dock-item);border-radius:calc(var(--dock-item) / 2 - 4px);background:var(--fill-active);pointer-events:none;opacity:0;scale:.8}
+/* The shared hover pill: one neutral row-hover shape that springs along the dock to the item under the
+ * pointer or keyboard focus. Active panels keep their own neutral fill (::before). */
+.action-dock-indicator{position:absolute;top:0;left:0;z-index:0;width:var(--dock-item);height:var(--dock-item);border-radius:var(--ds-radius-inner);background:var(--ds-row-hover);pointer-events:none;opacity:0;scale:.8}
 .action-dock-indicator[data-on]{opacity:1;scale:1}
-/* Over an active item's accent fill the pill dissolves as it arrives (it would hide under it). */
+/* Over an active item's fill the pill dissolves as it arrives (it would hide under it). */
 .action-dock-indicator[data-on][data-muted]{opacity:0}
 
-/* Items: 38px tiles over the pill. ::before is the active fill. */
-html .workspace .action-dock button{position:relative;z-index:1;display:inline-grid;place-items:center;width:var(--dock-item);height:var(--dock-item);padding:0;border-radius:calc(var(--dock-item) / 2 - 4px);background:transparent;color:var(--muted);font-size:0;flex-shrink:0;--press:1}
-.action-dock button::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;background:rgb(var(--accent-rgb) / .22)}
+/* Items: 38px rows over the pill. ::before is the active item's inner card, as the sidebar's selected thread row. */
+html .workspace .action-dock button{position:relative;z-index:1;display:inline-grid;place-items:center;width:var(--dock-item);height:var(--dock-item);padding:0;border-radius:var(--ds-radius-inner);background:transparent;color:var(--muted);font-size:0;flex-shrink:0;--press:1}
+.action-dock button::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;opacity:0;background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
 .action-dock button>.icon{position:relative;z-index:1;--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md)}
 .action-dock button>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 html .workspace .action-dock button:is([data-hover],:focus-visible){color:var(--text)}
-html .workspace .action-dock button.active{color:var(--accent-ink)}
-html[data-theme="dark"] .workspace .action-dock button.active{color:var(--accent)}
+html .workspace .action-dock button.active{color:var(--text)}
 .action-dock button.active::before{opacity:1}
 .action-dock button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .action-dock button:disabled{opacity:.55}
@@ -40,42 +45,34 @@ html[data-theme="dark"] .workspace .action-dock button.active{color:var(--accent
 /* An item leaving keeps its box while the animation collapses it. */
 .action-dock button[hidden][data-leaving]{display:inline-grid!important;pointer-events:none}
 
-/* The update prompt: an accent tile; Later is a small close tile beneath it. */
-html .workspace .action-dock .update-status{color:var(--accent-ink);background:var(--accent-dim)}
+/* The update prompt: a neutral inner card with an info-toned icon; Later is a small close tile beneath it. */
+html .workspace .action-dock .update-status{color:var(--text)}
+.action-dock .update-status::before{opacity:1}
+.action-dock .update-status>.icon{color:var(--ds-info)}
 html .workspace .action-dock .update-later{height:calc(var(--dock-item) - 10px)}
-.action-dock .update-later::before{opacity:1;inset:50% auto auto 50%;width:12px;height:12px;translate:-50% -50%;background:currentColor;border-radius:0;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center/contain no-repeat}
+.action-dock .update-later::before{opacity:1;inset:50% auto auto 50%;width:12px;height:12px;translate:-50% -50%;background:currentColor;border-radius:0;box-shadow:none;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center/contain no-repeat;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E") center/contain no-repeat}
 
-/* Label bubbles: the same glass, beside the dock (below the row). They live in the header, outside
+/* Label bubbles: the same card, beside the dock (below the row). They live in the header, outside
  * the dock, so their own backdrop blur sees the thread. */
-.action-dock-tip{position:absolute;z-index:8;box-sizing:border-box;overflow:hidden;padding:5px 10px;border-radius:var(--radius-md);background:var(--glass-warm);backdrop-filter:var(--header-blur);-webkit-backdrop-filter:var(--header-blur);box-shadow:var(--floating-bar-shadow);color:var(--text);font-size:var(--text-xs);line-height:1.35;white-space:nowrap;pointer-events:none}
-.workspace[data-wallpaper] .action-dock-tip{background:var(--header-glass)}
+.action-dock-tip{position:absolute;z-index:8;box-sizing:border-box;overflow:hidden;padding:5px 10px;border-radius:var(--ds-radius-control);color:var(--text);font-size:var(--text-xs);line-height:1.35;white-space:nowrap;pointer-events:none}
 .action-dock-tip[data-side="left"]{transform:translateY(-50%);transform-origin:right center}
 .action-dock-tip[data-side="below"]{transform:translateX(-50%);transform-origin:center top}
 .action-dock-tip[hidden]{display:none}
 
-/* Nothing clickable sits under the floating dock: the transcript, the in-flow rows above it and
- * the file view stop at `--dock-clear`. */
-.workspace:not(.board-view,.github-view) .conversation-pane:not(.new-task-page)>:is(.transcript,.file-tabs,.task-details-heading,.jev-activity){margin-right:var(--dock-clear)}
-/* The composer centres on the same column as the transcript. A new task's page keeps both centred:
- * its heading and composer sit clear of the dock. */
-.workspace:not(.board-view,.github-view) .conversation-pane:not(.new-task-page)>.composer-area{width:calc(100% - var(--dock-clear));margin-left:max(0px,(100% - var(--dock-clear) - 950px) / 2);margin-right:auto}
-.workspace:not(.board-view,.github-view) .conversation-pane>.file-view{right:var(--dock-clear)}
-
-/* The Agents item's running count: a small accent badge on the icon's corner. */
-.action-dock .dock-badge{position:absolute;z-index:2;top:3px;right:3px;min-width:15px;height:15px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--accent);color:var(--on-accent);font:600 10px/15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;text-align:center;pointer-events:none}
+/* The Agents item's running count: a small team-toned badge on the icon's corner. */
+.action-dock .dock-badge{position:absolute;z-index:2;top:3px;right:3px;min-width:15px;height:15px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:var(--ds-tone-team);color:var(--bg);font:600 10px/15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-variant-numeric:tabular-nums;text-align:center;pointer-events:none}
 .action-dock .dock-badge[hidden]{display:none}
 @media(max-height:640px){.action-dock .dock-badge{top:-2px;right:-3px}}
 
-/* The Agents flyout: the team and subagent panels in one glass, left of the dock and aligned with
+/* The Agents flyout: the team, subagent and lineage panels in one glass, left of the dock and aligned with
  * its Agents item (below it when the dock is a row); src/action-dock.ts places it. Their old
  * floating triggers are gone; the dock item replaces them. */
-.agents-flyout{position:absolute;z-index:8;width:min(400px,calc(100vw - 96px));display:flex;flex-direction:column;overflow:hidden;border-radius:var(--radius-lg,14px);background:var(--glass-warm);backdrop-filter:var(--header-blur);-webkit-backdrop-filter:var(--header-blur);box-shadow:var(--floating-bar-shadow);color:var(--text);text-align:left;cursor:auto}
-.workspace[data-wallpaper] .agents-flyout{background:var(--header-glass)}
+.agents-flyout{position:absolute;z-index:8;width:min(400px,calc(100vw - 96px));display:flex;flex-direction:column;overflow:hidden;border-radius:var(--ds-radius-card);color:var(--text);text-align:left;cursor:auto}
 .agents-flyout[hidden]{display:none}
-.agents-flyout>:is(.architect-host,.subagents-host){display:flex;flex-direction:column;min-height:0;flex:0 1 auto}
-.agents-flyout>:is(.architect-host,.subagents-host)[hidden],.agents-flyout>:is(.architect-host,.subagents-host):not(:has(>.architect-panel,>.subagents-panel)){display:none}
+.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host){display:flex;flex-direction:column;min-height:0;flex:0 1 auto}
+.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host)[hidden],.agents-flyout>:is(.architect-host,.subagents-host,.lineage-host):not(:has(>.architect-panel,>.subagents-panel,>.lineage-panel)){display:none}
 .agents-flyout>*+*:not([hidden]){margin-top:2px}
-html .workspace .agents-flyout :is(.architect-panel,.subagents-panel){position:static;z-index:auto;flex:0 1 auto;width:auto;min-height:0;max-height:none;padding:0;border:0 solid transparent;border-radius:0;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+html .workspace .agents-flyout :is(.architect-panel,.subagents-panel,.lineage-panel){position:static;z-index:auto;flex:0 1 auto;width:auto;min-height:0;max-height:none;padding:0;border:0 solid transparent;border-radius:0;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
 .architect-trigger,.subagents-trigger{display:none!important}
 
 /* Short windows: smaller tiles and gaps. */
@@ -87,20 +84,57 @@ html .workspace .agents-flyout :is(.architect-panel,.subagents-panel){position:s
 /* Header row: narrow windows, the board and the GitHub view. Relative, so the pill and the
  * bubbles still measure from it. */
 @media(max-width:650px){
-  .workspace{--dock-clear:0px;--dock-item:28px;--dock-pad:0px;--dock-rule:0px}
-  .action-dock{position:relative;top:auto;right:auto;flex-direction:row;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;border-radius:0}
-  .action-dock-group+.action-dock-group::before{width:2px;height:20px;margin:0 5px}
+  .workspace{--dock-item:28px;--dock-pad:0px;--dock-rule:0px}
+  .action-dock{position:relative;top:auto;right:auto;flex-direction:row;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;border-radius:var(--ds-radius-control)}
+  .action-dock-group+.action-dock-group::before{width:1px;height:20px;margin:0 6px}
+  html .workspace .action-dock button{border-radius:var(--ds-radius-control)}
 }
-.workspace:is(.board-view,.github-view){--dock-clear:0px;--dock-item:28px;--dock-pad:0px;--dock-rule:0px}
+.workspace:is(.board-view,.github-view){--dock-item:28px;--dock-pad:0px;--dock-rule:0px}
 .workspace:is(.board-view,.github-view) .action-dock{position:relative;top:auto;right:auto;flex-direction:row;background:none;backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;border-radius:0}
-.workspace:is(.board-view,.github-view) .action-dock-group+.action-dock-group::before{width:2px;height:20px;margin:0 5px}
+.workspace:is(.board-view,.github-view) .action-dock-group+.action-dock-group::before{width:1px;height:20px;margin:0 6px}
+html .workspace:is(.board-view,.github-view) .action-dock button,.workspace:is(.board-view,.github-view) .action-dock-indicator{border-radius:var(--ds-radius-control)}
 
 @media(prefers-reduced-transparency:reduce){
   html .workspace .action-dock:not(:is(.board-view,.github-view) *),html .workspace :is(.action-dock-tip,.agents-flyout){background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media(prefers-contrast:more){
-  html .workspace .action-dock:not(:is(.board-view,.github-view) *),html .workspace :is(.action-dock-tip,.agents-flyout){background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none;outline:1px solid var(--text)}
-  .action-dock button.active::before{background:rgb(var(--accent-rgb) / .45)}
+  html .workspace .action-dock:not(:is(.board-view,.github-view) *),html .workspace :is(.action-dock-tip,.agents-flyout){background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;outline:1px solid var(--text)}
+  .action-dock button:is(.active,.update-status)::before{box-shadow:inset 0 0 0 1px var(--text)}
 }
 @media(max-width:650px){@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){html .workspace .action-dock{background:none;outline:0}}}
-@media(forced-colors:active){.action-dock,.action-dock-tip,.agents-flyout{border:1px solid CanvasText}.action-dock button.active{outline:2px solid Highlight}}
+@media(forced-colors:active){.action-dock,.action-dock-tip,.agents-flyout{border:1px solid CanvasText;background:Canvas}.action-dock button.active{outline:2px solid Highlight}}
+
+/* The header's running-agents trigger (agents-dock.css) is neutral like the dock: no accent ring or badge. */
+html[data-theme] .agents-dock-trigger.is-working{background:var(--ds-fill-hover)}
+html[data-theme] .agents-dock-trigger.is-working>.icon{color:var(--text)}
+html[data-theme] .agents-dock-trigger.is-working::after{border-color:transparent}
+/* It is a control over a header content scrolls under, so it is a raised button (as the reference's square
+ * icon buttons): `--ds-raised` over a near-solid page tone, hairline, raised shadow. Plain header text stays bare. */
+html[data-theme] .workspace-header .agents-dock-trigger,html[data-theme] .workspace-header .agents-dock-trigger.is-working{
+  background:linear-gradient(var(--ds-raised) 0 0),color-mix(in srgb,var(--bg) 92%,transparent);border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);
+  box-shadow:var(--ds-shadow-raised);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px)}
+html[data-theme] .workspace-header .agents-dock-trigger:hover{background:linear-gradient(var(--ds-row-hover) 0 0),linear-gradient(var(--ds-raised) 0 0),color-mix(in srgb,var(--bg) 92%,transparent)}
+@media(prefers-reduced-transparency:reduce){html[data-theme] .workspace-header .agents-dock-trigger{background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}}
+@media(prefers-contrast:more){html[data-theme] .workspace-header .agents-dock-trigger{background:var(--bg);border-color:var(--border);box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}}
+@media(forced-colors:active){html[data-theme] .workspace-header .agents-dock-trigger{border-color:ButtonText;background:ButtonFace}}
+
+/* At ≤650px the dock is a row in the header, so the transcript no longer runs under the header:
+ * it starts below it and nothing scrolls behind the row's icons and badge. */
+@media(max-width:650px){
+  html .workspace:not(.board-view,.github-view) .conversation-pane:not(.new-task-page,.channel-thread):not(:has(>:is(.task-details-heading,.jev-activity):not([hidden]))){--header-under:0px;--header-fade-under:0px;--transcript-top:12px}
+}
+html[data-theme] .agents-dock-count{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
+
+/* State: an open panel keeps the neutral fill and its icon takes the panel's tint (the inspector tabs use the same set);
+ * Agents is team-toned while anything runs, Run green while its script runs, with a soft pulse while it starts. Deploy has no state of its own. */
+#inspector-toggle{--dock-tint:var(--ds-tone-plan)}
+#terminal-toggle{--dock-tint:var(--ds-tone-saver)}
+#browser-toggle{--dock-tint:var(--ds-tone-remote)}
+.action-dock [data-action="moodboards"]{--dock-tint:var(--ds-tone-worktree)}
+.action-dock #agents-toggle{--dock-tint:var(--ds-tone-team)}
+/* Armed by the first press or key (action-dock.ts), so a tint set while the app starts lands at once. */
+.action-dock[data-armed] button>.icon{transition:color var(--ds-ease-out) ease-out}
+.action-dock button:is(.active,#agents-toggle:has(>.dock-badge:not([hidden])))>.icon{color:var(--dock-tint,currentColor)}
+.action-dock [data-action="run-project"][aria-busy="true"]:disabled{opacity:1}
+.action-dock [data-action="run-project"]:is([aria-busy="true"],[data-running])>.icon{color:var(--ds-success)}
+@media(prefers-reduced-motion:no-preference){.action-dock [data-action="run-project"][aria-busy="true"]>.icon{animation:state-pulse 1.6s ease-in-out infinite}}

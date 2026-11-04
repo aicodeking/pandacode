@@ -10,7 +10,8 @@ const patch = (path = 'src/feature.ts', text = 'updated') => `diff --git a/${pat
 
 async function install(page: Page, config: { messages?: any[]; details?: Record<string, any> } = {}): Promise<void> {
   const runtimeErrors: string[] = []; errors.set(page, runtimeErrors);
-  page.on('pageerror', error => runtimeErrors.push(error.message));
+  // WebKit reports a height change made before paint (a live reply growing) as an error; nothing is lost, the rest arrive next frame.
+  page.on('pageerror', error => { if (!error.message.startsWith('ResizeObserver loop')) runtimeErrors.push(error.message); });
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(), source = await response.text();
     const marker = /async function invoke\(command, args\) \{/;
@@ -47,6 +48,7 @@ async function selectFixture(page: Page): Promise<void> {
   await page.locator('.task-item[data-id="session-2"]').click();
   await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
 }
+/** A worker's history keeps the card with its file tree; open every fold. */
 async function expand(card: ReturnType<Page['locator']>): Promise<void> {
   const list = card.locator('.turn-change-list');
   if (await list.getAttribute('open') === null) await list.locator(':scope > summary').click();
@@ -55,6 +57,13 @@ async function expand(card: ReturnType<Page['locator']>): Promise<void> {
     const folder = folders.nth(index);
     if (await folder.getAttribute('open') === null) await folder.locator(':scope > summary').click();
   }
+}
+
+/** A turn card's footer opens the review; the file is chosen in its list. */
+async function openChanged(page: Page, name: RegExp): Promise<void> {
+  await transcript(page).locator('.turn-card-foot-open').last().click();
+  await expect(review(page)).toBeVisible();
+  await review(page).getByRole('button', { name }).first().click();
 }
 
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
@@ -83,7 +92,10 @@ test.describe('turn changes', () => {
     const card = transcript(page).locator('.turn-changes');
     await expect(card).toHaveCount(1); await expect(card).toContainText('3 changed files');
     await expect(card).toContainText('+6'); await expect(card).toContainText('−2');
-    await expect(card.locator('.turn-change-folder[open]')).toHaveCount(0);
+    // The footer's 5-cell meter: +6 −2 floors to three green, one red and one grey cell.
+    const dots = card.locator('.change-dots>span');
+    await expect(dots).toHaveCount(5);
+    expect(await dots.evaluateAll(cells => cells.map(cell => cell.className || 'grey'))).toEqual(['ds-success', 'ds-success', 'ds-success', 'ds-danger', 'grey']);
     await expect(transcript(page).locator('.agent-message .message-content')).toContainText('browser preview');
   });
 
@@ -112,8 +124,8 @@ test.describe('turn changes', () => {
       fixture.emit({ sessionId: 'session-2', kind: 'turn_changes', text: '', data: { messageId: 303, turnChanges: changes } });
     }, { response, changes, older });
     await expect(transcript(page)).toContainText('FULL_RESPONSE_TAIL');
-    await expect(transcript(page)).toContainText('Earlier history stays readable.');
-    await expect(transcript(page).locator('.turn-changes')).toHaveCount(1);
+    // The boundary waits in the live card until the next turn starts (or the run ends), so the saved card replaces it once.
+    await expect(transcript(page).locator('.turn-changes')).toHaveCount(0);
     const final = transcript(page).locator('.agent-message .message-content').filter({ hasText: 'FULL_RESPONSE_TAIL' });
     expect((await final.textContent())!.length).toBeGreaterThan(19000);
     await page.evaluate(() => {
@@ -132,12 +144,8 @@ test.describe('turn changes', () => {
     await install(page);
     const card = transcript(page).locator('.turn-changes');
     await expect(card).toContainText('3 changed files');
-    await expand(card);
-    await expect(card.locator('.turn-change-file')).toHaveCount(3);
-    await expect(card.locator('.turn-change-folder')).not.toHaveCount(0);
     await card.screenshot({ path: '/private/tmp/pandacode-turn-changes-card.png', animations: 'disabled' });
-    await card.locator('.turn-change-file').filter({ hasText: 'search.ts' }).click();
-    await expect(review(page)).toBeVisible();
+    await openChanged(page, /search\.ts/);
     await expect(review(page)).toContainText('src/components/search.ts');
     await expect(review(page).getByText('normalized', { exact: true }).first()).toBeVisible();
     await review(page).getByRole('button', { name: 'Split diff', exact: true }).click();
@@ -151,14 +159,13 @@ test.describe('turn changes', () => {
     const before = await page.evaluate(() => (window as any).__turnChangesTest.calls.filter((call: any) => call.command === 'turn_change_diff').at(-1).args);
     await review(page).getByRole('button', { name: 'Close dialog', exact: true }).click();
     await page.reload();
-    await expand(transcript(page).locator('.turn-changes'));
-    await transcript(page).locator('.turn-change-file').filter({ hasText: 'search.ts' }).click();
+    await openChanged(page, /search\.ts/);
     await expect(review(page).getByText('normalized', { exact: true }).first()).toBeVisible();
     const after = await page.evaluate(() => (window as any).__turnChangesTest.calls.filter((call: any) => call.command === 'turn_change_diff').at(-1).args);
     expect(after).toEqual(before);
     await expect(review(page).getByText('normalized', { exact: true }).first()).toBeVisible();
     await review(page).getByRole('button', { name: 'Close dialog', exact: true }).click();
-    await transcript(page).getByRole('button', { name: 'Open diff', exact: true }).click();
+    await transcript(page).getByRole('button', { name: /3 changed files/ }).click();
     await expect(review(page)).toBeVisible();
   });
 
@@ -168,8 +175,9 @@ test.describe('turn changes', () => {
     await selectFixture(page);
     // The reply already says nothing changed; an empty card would only repeat it.
     await expect(transcript(page).locator('.turn-changes')).toHaveCount(1);
-    // No empty row is left behind either (the team-progress host is the only other row).
-    await expect(transcript(page).locator('.turn-changes-row:not(#team-progress-host)')).toHaveCount(1);
+    // The changes are the card's footer; no separate or empty row is left behind (the team-progress host is the only one).
+    await expect(transcript(page).locator('.turn-card-foot')).toHaveCount(1);
+    await expect(transcript(page).locator('.turn-changes-row:not(#team-progress-host)')).toHaveCount(0);
     await expect(transcript(page)).not.toContainText('No files changed');
     await expect(transcript(page).locator('.turn-changes')).toContainText('1 changed file');
     await expect(transcript(page)).toContainText('The goal turn is ready');
@@ -203,7 +211,7 @@ test.describe('turn changes', () => {
     await expect(card).toContainText('1 changed file');
     await expect(card.locator('.turn-change-notice')).toContainText('Change tracking is limited');
     await expect(card.locator('.turn-change-notice')).toContainText('Some files were not inspected.');
-    await expect(card.locator('.turn-change-list > summary .info-mark')).toHaveAttribute('data-tip', /Change tracking is limited/);
+    await expect(card.locator('.info-mark')).toHaveAttribute('data-tip', /Change tracking is limited/);
   });
 
   test('keeps the newest selected file when an older detail request resolves late', async ({ page }) => {
@@ -214,9 +222,7 @@ test.describe('turn changes', () => {
     } });
     await selectFixture(page);
     await page.evaluate(() => { (window as any).__turnChangesTest.hold['fixture-change:src/feature.ts'] = true; });
-    await expand(transcript(page).locator('.turn-changes'));
-    await transcript(page).locator('.turn-change-file').filter({ hasText: 'feature.ts' }).click();
-    await expect(review(page)).toBeVisible();
+    await openChanged(page, /feature\.ts/);
     await review(page).getByRole('button', { name: /src\/new.ts/ }).click();
     await expect(review(page).getByText('newestSelection', { exact: true }).first()).toBeVisible();
     await page.evaluate(() => (window as any).__turnChangesTest.release['fixture-change:src/feature.ts']());
@@ -236,9 +242,9 @@ test.describe('turn changes', () => {
       'fixture-change:src/large.ts': { path: 'src/large.ts', patch: patch('src/large.ts', malicious), binary: false, truncated: true },
       'fixture-change:src/error.ts': { path: 'src/error.ts', patch: '', binary: false, truncated: false, error: 'Saved content is unavailable.' },
     } });
-    await selectFixture(page); const card = transcript(page).locator('.turn-changes'); await expand(card);
+    await selectFixture(page); const card = transcript(page).locator('.turn-changes');
     await expect(card).toContainText(/concurrent|overlap|shared/i);
-    await card.locator('.turn-change-file').filter({ hasText: 'logo.png' }).click();
+    await openChanged(page, /logo\.png/);
     await expect(review(page)).toContainText(/binary/i);
     await review(page).getByRole('button', { name: /src\/large.ts/ }).click();
     await expect(review(page)).toContainText(/truncated|partial|limited|shortened/i);

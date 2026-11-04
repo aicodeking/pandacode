@@ -1,18 +1,20 @@
 /* Multi-machine orchestration (docs/machine-orchestration.md): the link card and Link a machine
- * dialog for an agent's `pandacode_machine_link` request, the lineage strip of threads a task
- * launched on other computers, the transcript's threads card, and the Settings → Remote access
- * orchestration controls. Imported statically by main.ts, so its stylesheet is always loaded
- * before the composer renders. */
+ * dialog for an agent's `pandacode_machine_link` request, the Lineage panel in the dock's Agents
+ * flyout, the one-line waiting state above the composer, the transcript's threads card, and the
+ * Settings → Remote access orchestration controls. Imported statically by main.ts, so its
+ * stylesheet is always loaded before the composer renders. */
 import './machine-orchestration.css';
 import { escape, icon } from './dom';
+import { enterView, reducedMotion, type Spring } from './motion';
+import { showPopover, hidePopover } from './popover-motion';
 import { infoMark } from './tooltip';
 import type { RemoteDevice, RemoteHost } from './remote-types';
 
 export type Access = 'read' | 'ask' | 'full';
-export interface OrchestrationLink { deviceId: string; name: string; platform: string; online: boolean; access: Access }
+export interface OrchestrationLink { deviceId: string; name: string; platform: string; online: boolean; access: Access; departed?: boolean }
 export interface OrchestrationStatus { enabled: boolean; links: OrchestrationLink[] }
 export interface LinkRequest { requestId: string; sessionId: string; machine: string | null; reason: string }
-export interface MachineChild { sessionId: string; title: string; provider: string; model: string; status: string; machine: { id: string; name: string }; createdAt: number }
+export interface MachineChild { sessionId: string; title: string; provider: string; model: string; status: string; machine: { id: string; name: string }; createdAt: number; hostOffline?: boolean }
 
 export interface OrchestrationHost {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
@@ -24,6 +26,8 @@ export interface OrchestrationHost {
   sessionId(): string;
   /** Whether the visible task's own agent is running. */
   running(): boolean;
+  /** Whether the visible task's conversation pane is on screen (not the board or GitHub view). */
+  visible(): boolean;
   /** A task's title, for notices about tasks that aren't visible. */
   title(id: string): string | undefined;
 }
@@ -48,16 +52,28 @@ const settled = new Set<string>();
 const children = new Map<string, MachineChild[]>();
 /** One request per task in flight; `again` asks for one more after it, `generation` drops stale replies. */
 const inflight = new Set<string>(), again = new Set<string>(), generation = new Map<string, number>();
-/** Expanded lineage strips and transcript cards, per task and per card. */
+/** Expanded transcript cards. */
 const expanded = new Set<string>();
 /** Launched threads the lineage cap dropped, fetched once by id (`orchestration_threads`). */
 const older = new Map<string, MachineChild>(), asked = new Set<string>();
 const THREADS_PER_CALL = 64;
 let ticker = 0;
+/** Which threads each drawn transcript card holds, and the card of each thread: a status change
+ * goes straight to its card, with no transcript scan. Rebuilt by `decorateTranscript`. */
+const cards = new Map<HTMLElement, string[]>(), threadCards = new Map<string, HTMLElement>();
+/** What each row last drew, so an unchanged row costs one string compare and no DOM reads. */
+const painted = new WeakMap<Element, string>();
+let panel: HTMLElement | undefined, panelTask = '', lastTask = '', agentsSignal = '';
+/** The short spring rows and the waiting line arrive on. */
+const ROW_SPRING: Spring = { response: 0.2 };
+const arrive = (element: HTMLElement, distance: number) => { if (!reducedMotion()) enterView(element, distance, ROW_SPRING); };
 
 const message = (e: unknown) => e instanceof Error ? e.message : String(e);
-const running = (child: MachineChild) => RUNNING.has(child.status);
 const live = (child: MachineChild) => RUNNING.has(child.status) || NEEDS_YOU.has(child.status);
+/** A live thread whose computer is unreachable: nobody can say it is working, or that it stopped. */
+const away = (child: MachineChild) => Boolean(child.hostOffline) && live(child);
+const running = (child: MachineChild) => RUNNING.has(child.status) && !child.hostOffline;
+const needsYou = (child: MachineChild) => NEEDS_YOU.has(child.status) && !child.hostOffline;
 export const initials = (provider: string) => INITIALS[provider] ?? provider.slice(0, 2).toUpperCase();
 export function childState(status: string): string {
   if (NEEDS_YOU.has(status)) return 'Needs you';
@@ -65,6 +81,8 @@ export function childState(status: string): string {
   if (status === 'error' || status === 'failed') return 'Failed';
   return status === 'interrupted' || status === 'stopped' ? 'Stopped' : 'Done';
 }
+const threadState = (child: MachineChild) => away(child) ? 'Offline' : childState(child.status);
+const whereText = (child: MachineChild) => `on ${child.machine.name} · ${threadState(child)}`;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 function elapsed(since: number): string {
   const s = Math.max(0, Math.round((Date.now() - since) / 1000));
@@ -140,10 +158,15 @@ function refresh(id: string): void {
   generation.set(id, mine);
   void h.call<MachineChild[]>('orchestration_children', { sessionId: id }).then(list => {
     if (generation.get(id) !== mine) return;
-    const changed = JSON.stringify(children.get(id) ?? []) !== JSON.stringify(list);
+    if (id === reopenFor && !list.length) reopenFor = '';
+    const before = children.get(id) ?? [];
+    if (JSON.stringify(before) === JSON.stringify(list)) return;
     if (list.length) children.set(id, list); else children.delete(id);
     render();
-    if (changed && id === h.sessionId()) decorateTranscript();
+    if (id !== h.sessionId()) return;
+    // Only a new or dropped thread can change which cards exist; a status change patches its own.
+    if (before.length === list.length && before.every((child, index) => child.sessionId === list[index].sessionId)) patchCards(before, list);
+    else decorateTranscript();
   }, () => undefined).finally(() => {
     inflight.delete(id);
     if (again.delete(id)) refresh(id);
@@ -156,28 +179,109 @@ function linkCard(request: LinkRequest): string {
 }
 
 const faces = (list: MachineChild[]) => [...new Set(list.map(child => initials(child.provider)))].slice(0, 3).map(face => `<span>${escape(face)}</span>`).join('');
-function threadRows(list: MachineChild[], stop: boolean): string {
-  return `<ul class="lineage-rows">${list.map(child => `<li class="lineage-row" data-thread="${escape(child.sessionId)}"><span class="lineage-face" aria-hidden="true">${escape(initials(child.provider))}</span><button type="button" class="lineage-open" data-mo="open" data-session="${escape(child.sessionId)}" title="Open ${escape(child.title)}">${escape(child.title)}</button><span class="lineage-where">on ${escape(child.machine.name)} · ${childState(child.status)}</span>${stop && live(child) ? `<button type="button" class="machine-quiet" data-mo="stop" data-session="${escape(child.sessionId)}" aria-label="Stop ${escape(child.title)}">Stop</button>` : ''}</li>`).join('')}</ul>`;
-}
-function counts(list: MachineChild[]): string {
-  const working = list.filter(running).length, needs = list.filter(child => NEEDS_YOU.has(child.status)).length;
-  return [`${working} running`, needs ? `${needs} need${needs === 1 ? 's' : ''} you` : ''].filter(Boolean).join(' · ');
+const rowHtml = (child: MachineChild, stop: boolean) => `<li class="lineage-row" data-thread="${escape(child.sessionId)}" data-state="${threadState(child)}"><span class="lineage-face" aria-hidden="true">${escape(initials(child.provider))}</span><button type="button" class="lineage-open" data-mo="open" data-session="${escape(child.sessionId)}" title="Open ${escape(child.title)}">${escape(child.title)}</button><span class="lineage-where">${escape(whereText(child))}</span>${stop ? `<button type="button" class="machine-quiet lineage-stop" data-mo="stop" data-session="${escape(child.sessionId)}" aria-label="Stop ${escape(child.title)}" ${live(child) ? '' : 'hidden'}>Stop</button>` : ''}</li>`;
+const rowKey = (child: MachineChild) => [child.title, child.provider, child.machine.name, child.status, child.hostOffline ? 1 : 0].join('\n');
+function setText(node: Element | null | undefined, text: string): void { if (node && node.textContent !== text) node.textContent = text; }
+function fromHtml(html: string): HTMLElement {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  return template.content.firstElementChild as HTMLElement;
 }
 
-export function lineageHtml(list: MachineChild[], parentRunning: boolean, open: boolean): string {
-  if (!list.length) return '';
-  const working = list.filter(running), machines = [...new Set(list.map(child => child.machine.name))];
-  const where = machines.length === 1 ? machines[0] : plural(machines.length, 'machine');
-  const waiting = !parentRunning && working.length
-    ? `<div class="lineage-wait" role="status"><span class="lineage-spinner" aria-hidden="true"></span><strong>Waiting on ${plural(working.length, 'thread')}</strong><span class="lineage-titles">${escape(working.map(child => child.title).join(', '))}</span><button type="button" class="machine-quiet" data-mo="stop-all">Stop all</button></div>` : '';
-  return `<section class="lineage${open ? ' is-open' : ''}" aria-label="Threads on other machines"><div class="lineage-line"><span class="lineage-faces" aria-hidden="true">${faces(list)}</span><button type="button" class="lineage-summary" data-mo="toggle" aria-expanded="${open}"><strong>${plural(list.length, 'thread')} on ${escape(where)}</strong><span>${counts(list)}</span>${icon('chevron', 'lineage-chevron')}</button></div>${open ? threadRows(list, true) : ''}</section>${waiting}`;
+/** Updates one row where it stands, touching only what changed, so focus and hover survive. */
+function patchRow(row: HTMLElement, child: MachineChild): void {
+  const key = rowKey(child);
+  if (painted.get(row) === key) return;
+  painted.set(row, key);
+  const state = threadState(child), open = row.querySelector<HTMLElement>('.lineage-open')!, stop = row.querySelector<HTMLButtonElement>('.lineage-stop');
+  if (row.dataset.state !== state) row.dataset.state = state;
+  setText(row.querySelector('.lineage-face'), initials(child.provider));
+  setText(open, child.title);
+  const tip = `Open ${child.title}`;
+  if (open.title !== tip) open.title = tip;
+  setText(row.querySelector('.lineage-where'), whereText(child));
+  if (stop) {
+    if (stop.hidden === live(child)) stop.hidden = !live(child);
+    if (stop.getAttribute('aria-label') !== `Stop ${child.title}`) stop.setAttribute('aria-label', `Stop ${child.title}`);
+  }
 }
+
+/** Keyed: rows are made once, patched in place and moved only when out of order. */
+function syncRows(list: HTMLElement, threads: MachineChild[], stop: boolean, animate = false): void {
+  const rows = new Map([...list.children].map(row => [(row as HTMLElement).dataset.thread!, row as HTMLElement]));
+  const wanted = new Set(threads.map(child => child.sessionId));
+  for (const [id, row] of rows) if (!wanted.has(id)) row.remove();
+  let at = list.firstElementChild;
+  for (const child of threads) {
+    let row = rows.get(child.sessionId);
+    if (!row) {
+      row = fromHtml(rowHtml(child, stop));
+      painted.set(row, rowKey(child));
+      list.insertBefore(row, at);
+      if (animate) arrive(row, 3);
+    } else {
+      patchRow(row, child);
+      if (row === at) at = at.nextElementSibling; else list.insertBefore(row, at);
+    }
+  }
+}
+
+/** `Lineage · 2 running · 1 needs you · 1 offline`. */
+export function lineageHeading(list: MachineChild[]): string {
+  const needs = list.filter(needsYou).length, gone = list.filter(away).length;
+  return ['Lineage', `${list.filter(running).length} running`, needs ? `${needs} need${needs === 1 ? 's' : ''} you` : '', gone ? `${gone} offline` : ''].filter(Boolean).join(' · ');
+}
+
+let reopenFor = '';
+const flyoutOpen = () => document.querySelector<HTMLElement>('#agents-flyout')?.hidden === false;
+const visibleThreads = () => host?.visible() ? children.get(host.sessionId()) ?? [] : [];
+function paintPanel(animate: boolean): void {
+  if (!panel) return;
+  const list = visibleThreads();
+  setText(panel.querySelector('.lineage-count'), lineageHeading(list));
+  const stopAll = panel.querySelector<HTMLButtonElement>('[data-mo="stop-all"]')!;
+  if (stopAll.hidden === list.some(live)) stopAll.hidden = !stopAll.hidden;
+  syncRows(panel.querySelector<HTMLElement>('.lineage-rows')!, list, true, animate);
+}
+function openPanel(): void {
+  const root = document.querySelector<HTMLElement>('#lineage-host'), item = document.querySelector<HTMLElement>('#agents-toggle');
+  if (panel || !root || !item || !host || !visibleThreads().length) return;
+  panel = document.createElement('section');
+  panel.className = 'lineage-panel'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Lineage');
+  panel.innerHTML = '<header class="lineage-heading"><strong class="lineage-count"></strong><button type="button" class="machine-quiet" data-mo="stop-all">Stop all</button></header><ul class="lineage-rows"></ul>';
+  root.append(panel);
+  panelTask = host.sessionId();
+  paintPanel(false);
+  showPopover(panel, item);
+}
+function closePanel(): void {
+  if (panel) {
+    // Switching to a task whose threads aren't loaded yet must not lose a Lineage panel left open;
+    // the dock hides it first, seeing nothing to show, so this is the one place both paths share.
+    const id = host?.sessionId();
+    if (id && panelTask !== id && !children.has(id)) reopenFor = id;
+    hidePopover(panel);
+  }
+  panel = undefined;
+}
+/** The third source of the dock's Agents item (`mountAgents`), beside the team and subagents. */
+export const lineageSource = {
+  get present() { return visibleThreads().length > 0; },
+  get running() { return visibleThreads().filter(running).length; },
+  get isOpen() { return Boolean(panel); },
+  open: openPanel,
+  close: closePanel,
+};
 
 /** The transcript card for one turn's launches, like a subagents card: `2 threads · 2 working`. */
 export function threadsCardHtml(list: MachineChild[], key: string, open: boolean): string {
-  const working = list.filter(live);
-  const since = Math.min(...list.map(child => child.createdAt));
-  return `<div class="machine-threads${open ? ' is-open' : ''}" data-card="${escape(key)}"><button type="button" class="machine-threads-summary" data-mo="card" data-card="${escape(key)}" aria-expanded="${open}"><span class="lineage-faces" aria-hidden="true">${faces(list)}</span><span class="machine-threads-copy"><strong>${plural(list.length, 'thread')}</strong><small>${working.length ? `${working.length} working` : 'all settled'}</small></span>${working.length ? `<span class="machine-threads-time" data-since="${since}">${elapsed(since)}</span>` : ''}${icon('chevron', 'lineage-chevron')}</button>${open ? threadRows(list, false) : ''}</div>`;
+  return `<div class="machine-threads${open ? ' is-open' : ''}" data-card="${escape(key)}"><button type="button" class="machine-threads-summary" data-mo="card" data-card="${escape(key)}" aria-expanded="${open}"><span class="lineage-faces" aria-hidden="true">${faces(list)}</span><span class="machine-threads-copy"><strong>${plural(list.length, 'thread')}</strong><small>${cardState(list)}</small></span><span class="machine-threads-time" data-since="${cardSince(list)}" ${list.some(working) ? '' : 'hidden'}>${elapsed(cardSince(list))}</span>${icon('chevron', 'lineage-chevron')}</button>${open ? `<ul class="lineage-rows">${list.map(child => rowHtml(child, false)).join('')}</ul>` : ''}</div>`;
+}
+const working = (child: MachineChild) => live(child) && !child.hostOffline;
+const cardSince = (list: MachineChild[]) => Math.min(...list.map(child => child.createdAt));
+function cardState(list: MachineChild[]): string {
+  const busy = list.filter(working).length, gone = list.filter(away).length;
+  return [busy ? `${busy} working` : '', gone ? `${gone} offline` : ''].filter(Boolean).join(' · ') || 'all settled';
 }
 
 /** Puts one threads card after each turn (or live tool group) whose launch calls named threads.
@@ -187,6 +291,7 @@ export function decorateTranscript(): void {
   const root = document.querySelector<HTMLElement>('#transcript');
   if (!root || !host) return;
   const id = host.sessionId(), rows = root.querySelectorAll<HTMLElement>('[data-machine-thread]');
+  cards.clear(); threadCards.clear();
   if (!rows.length) {
     for (const card of root.querySelectorAll('.machine-threads')) card.remove();
     syncTicker();
@@ -205,9 +310,11 @@ export function decorateTranscript(): void {
   for (const [anchor, list] of groups) {
     const key = `card:${list[0].sessionId}`;
     let card = anchor.nextElementSibling as HTMLElement | null;
-    if (card?.classList.contains('machine-threads')) patchCard(card, list, key);
+    if (card?.classList.contains('machine-threads')) paintCard(card, list, key);
     else { anchor.insertAdjacentHTML('afterend', threadsCardHtml(list, key, expanded.has(key))); card = anchor.nextElementSibling as HTMLElement; }
     keep.add(card);
+    cards.set(card, list.map(child => child.sessionId));
+    for (const child of list) threadCards.set(child.sessionId, card);
   }
   for (const card of root.querySelectorAll('.machine-threads')) if (!keep.has(card)) card.remove();
   syncTicker();
@@ -227,64 +334,113 @@ function fetchOlder(sessionId: string, ids: string[]): void {
   }
 }
 
-/** Updates a card where it stands, so a focused summary or row keeps focus. */
-function patchCard(card: HTMLElement, list: MachineChild[], key: string): void {
-  const template = document.createElement('template');
-  template.innerHTML = threadsCardHtml(list, key, expanded.has(key));
-  const fresh = template.content.firstElementChild as HTMLElement;
-  if (card.className !== fresh.className) card.className = fresh.className;
-  card.dataset.card = key;
-  const button = card.querySelector<HTMLElement>('.machine-threads-summary')!, next = fresh.querySelector<HTMLElement>('.machine-threads-summary')!;
-  button.dataset.card = key;
-  button.setAttribute('aria-expanded', next.getAttribute('aria-expanded')!);
-  if (button.innerHTML !== next.innerHTML) button.innerHTML = next.innerHTML;
-  const rows = card.querySelector('.lineage-rows'), nextRows = fresh.querySelector('.lineage-rows');
-  if (!nextRows) rows?.remove();
-  else if (!rows) card.append(nextRows);
+/** Updates a card where it stands, field by field, so a focused summary or row keeps focus. */
+function paintCard(card: HTMLElement, list: MachineChild[], key: string): void {
+  const open = expanded.has(key);
+  if (card.classList.contains('is-open') !== open) card.classList.toggle('is-open', open);
+  if (card.dataset.card !== key) card.dataset.card = key;
+  const button = card.querySelector<HTMLElement>('.machine-threads-summary')!;
+  if (button.dataset.card !== key) button.dataset.card = key;
+  if (button.getAttribute('aria-expanded') !== String(open)) button.setAttribute('aria-expanded', String(open));
+  const face = button.querySelector<HTMLElement>('.lineage-faces')!, nextFaces = faces(list);
+  if (face.innerHTML !== nextFaces) face.innerHTML = nextFaces;
+  setText(button.querySelector('strong'), plural(list.length, 'thread'));
+  setText(button.querySelector('small'), cardState(list));
+  const time = button.querySelector<HTMLElement>('.machine-threads-time')!, since = String(cardSince(list));
+  if (time.dataset.since !== since) { time.dataset.since = since; time.textContent = elapsed(Number(since)); }
+  if (time.hidden === list.some(working)) time.hidden = !time.hidden;
+  let rows = card.querySelector<HTMLElement>('.lineage-rows');
+  if (!open) rows?.remove();
   else {
-    const old = new Map([...rows.children].map(item => [(item as HTMLElement).dataset.thread, item]));
-    const items = [...nextRows.children].map(item => { const kept = old.get((item as HTMLElement).dataset.thread); return kept?.outerHTML === item.outerHTML ? kept : item; });
-    if (items.length !== rows.children.length || items.some((item, index) => rows.children[index] !== item)) rows.replaceChildren(...items);
+    if (!rows) { rows = document.createElement('ul'); rows.className = 'lineage-rows'; card.append(rows); }
+    syncRows(rows, list, false);
   }
 }
 
+/** A status change: repaints only the cards of the threads that changed. */
+function patchCards(before: MachineChild[], list: MachineChild[]): void {
+  const byId = new Map(list.map(child => [child.sessionId, child]));
+  const touched = new Set(list.filter((child, index) => rowKey(child) !== rowKey(before[index])).flatMap(child => threadCards.get(child.sessionId) ?? []));
+  for (const card of touched) {
+    const threads = (cards.get(card) ?? []).flatMap(id => byId.get(id) ?? older.get(id) ?? []);
+    if (card.isConnected && threads.length) paintCard(card, threads, card.dataset.card!);
+  }
+  syncTicker();
+}
+
 /** One shared 1 s tick for the elapsed time on working cards; off when none is shown. */
+const shownTimes = () => [...cards.keys()].flatMap(card => card.isConnected ? [...card.querySelectorAll<HTMLElement>('.machine-threads-time:not([hidden])')] : []);
 function syncTicker(): void {
-  const any = document.querySelector('#transcript .machine-threads-time');
+  const any = shownTimes().length > 0;
   if (any && !ticker) ticker = window.setInterval(tick, 1000);
   else if (!any && ticker) { window.clearInterval(ticker); ticker = 0; }
 }
 function tick(): void {
-  const times = document.querySelectorAll<HTMLElement>('#transcript .machine-threads-time[data-since]');
+  const times = shownTimes();
   if (!times.length) { window.clearInterval(ticker); ticker = 0; return; }
   if (document.hidden) return;
-  for (const time of times) { const text = elapsed(Number(time.dataset.since)); if (time.textContent !== text) time.textContent = text; }
+  for (const time of times) setText(time, elapsed(Number(time.dataset.since)));
+}
+
+/** One line while the parent is idle and its threads are still out: never a second list. */
+function paintWait(slot: HTMLElement, list: MachineChild[], parentRunning: boolean, sameTask: boolean): void {
+  const busy = list.filter(running), gone = list.filter(child => away(child) && RUNNING.has(child.status));
+  let line = slot.querySelector<HTMLElement>(':scope>.lineage-wait');
+  if (parentRunning || !(busy.length || gone.length)) { line?.remove(); return; }
+  if (!line) {
+    slot.insertAdjacentHTML('beforeend', '<div class="lineage-wait" role="status"><span class="lineage-spinner" aria-hidden="true"></span><strong></strong><span class="lineage-titles"></span><button type="button" class="machine-quiet" data-mo="stop-waiting" aria-label="Stop all waiting threads">Stop</button></div>');
+    line = slot.lastElementChild as HTMLElement;
+    // A line already there when a thread opens just shows; it only arrives when the state begins.
+    if (sameTask) arrive(line, 4);
+  }
+  setText(line.querySelector('strong'), `Waiting on ${busy.length ? plural(busy.length, 'thread') : plural(gone.length, 'offline thread')}`);
+  setText(line.querySelector('.lineage-titles'), [...busy.map(child => child.title), ...gone.map(child => `${child.title} ${whereText(child)}`)].join(', '));
+}
+
+/** Keyed by request, so a redraw never replaces a card whose button has focus. */
+function paintLinks(slot: HTMLElement, id: string): void {
+  const requests = pending.filter(request => request.sessionId === id), ids = new Set(requests.map(request => request.requestId));
+  const shown = new Map([...slot.querySelectorAll<HTMLElement>(':scope>.machine-link-card')].map(card => [card.dataset.request!, card]));
+  for (const [key, card] of shown) if (!ids.has(key)) card.remove();
+  const wait = slot.querySelector(':scope>.lineage-wait');
+  for (const request of requests) if (!shown.has(request.requestId)) slot.insertBefore(fromHtml(linkCard(request)), wait);
 }
 
 function render(): void {
-  const slot = document.querySelector<HTMLElement>('#machine-orchestration');
   if (!host) return;
-  const id = host.sessionId();
-  if (slot) {
-    const html = pending.filter(request => request.sessionId === id).map(linkCard).join('') + lineageHtml(children.get(id) ?? [], host.running(), expanded.has(id));
-    if (slot.innerHTML !== html) slot.innerHTML = html;
-  }
+  const id = host.sessionId(), sameTask = id === lastTask, slot = document.querySelector<HTMLElement>('#machine-orchestration'), list = children.get(id) ?? [];
+  if (slot) { paintLinks(slot, id); paintWait(slot, list, host.running(), sameTask); }
+  const threads = visibleThreads();
+  const stale = Boolean(panel) && (panelTask !== id || !threads.length);
+  if (reopenFor !== id) reopenFor = '';
+  if (stale) closePanel();
+  // A flyout that stays open shows this task's threads in this same draw, whatever it showed before
+  // (a task switch whose cached threads come back unchanged draws nothing else); with none of them
+  // its observer hides it. Rows arrive only for a thread that is new to the same task.
+  if (!panel && threads.length && (flyoutOpen() || reopenFor === id)) { reopenFor = ''; openPanel(); }
+  else paintPanel(sameTask);
+  lastTask = id;
+  const signal = `${threads.length > 0}:${threads.filter(running).length}`;
+  if (signal !== agentsSignal) { agentsSignal = signal; dispatchEvent(new Event('pandacode:agents')); }
 }
 
 function onClick(event: MouseEvent): void {
-  const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(':is(#machine-orchestration, .machine-threads) [data-mo]');
+  const target = (event.target as HTMLElement | null)?.closest<HTMLElement>(':is(#machine-orchestration, .machine-threads, .lineage-panel) [data-mo]');
   if (!target || !host) return;
   const h = host, action = target.dataset.mo, request = pending.find(item => item.requestId === target.dataset.request);
   const fail = (e: unknown) => h.notify(message(e));
   const toggle = (key: string) => { if (!expanded.delete(key)) expanded.add(key); render(); decorateTranscript(); };
   if (action === 'decline' && request) void h.call('orchestration_link_respond', { requestId: request.requestId }).then(() => settle(request.requestId), fail);
   else if (action === 'link' && request) void openLinkDialog({ request });
-  else if (action === 'toggle') toggle(h.sessionId());
   else if (action === 'card' && target.dataset.card) toggle(target.dataset.card);
   else if (action === 'open' && target.dataset.session) h.openSession(target.dataset.session);
-  else if (action === 'stop' && target.dataset.session) void h.call('stop_session', { sessionId: target.dataset.session }).then(syncOrchestration, fail);
-  else if (action === 'stop-all') {
-    const list = (children.get(h.sessionId()) ?? []).filter(live);
+  else if (action === 'stop' && target.dataset.session) {
+    // The button hides once the thread stops, so focus moves to the row first.
+    target.closest('.lineage-row')?.querySelector<HTMLElement>('.lineage-open')?.focus();
+    void h.call('stop_session', { sessionId: target.dataset.session }).then(syncOrchestration, fail);
+  } else if (action === 'stop-all' || action === 'stop-waiting') {
+    const list = (children.get(h.sessionId()) ?? []).filter(action === 'stop-all' ? live : child => RUNNING.has(child.status));
+    (action === 'stop-all' ? panel?.querySelector<HTMLElement>('.lineage-open') : document.querySelector<HTMLElement>('#prompt'))?.focus();
     void Promise.all(list.map(child => h.call('stop_session', { sessionId: child.sessionId }))).then(syncOrchestration, fail);
   }
 }
@@ -365,11 +521,13 @@ export function mountOrchestrationSettings(root: HTMLElement, remote: RemoteHost
   const fail = (e: unknown) => { error = message(e); render(); };
   const apply = (next: OrchestrationStatus) => { status = next; error = ''; render(); };
   const select = (link: OrchestrationLink) => `<select class="settings-select" data-access="${escape(link.deviceId)}" aria-label="Access: ${escape(link.name)}">${(Object.keys(ACCESS) as Access[]).map(key => `<option value="${key}" ${key === link.access ? 'selected' : ''}>${ACCESS[key].label}</option>`).join('')}</select>`;
+  /** A computer that left the account: nothing to set, but its threads stay readable until cut. */
+  const departedRow = (link: OrchestrationLink) => `<div class="setting-row machine-linked is-departed" data-link="${escape(link.deviceId)}"><div><strong>${escape(link.name)} · Left the account</strong><small>Its threads stay readable until you unlink it.</small></div><button type="button" class="secondary-button" data-unlink="${escape(link.deviceId)}" aria-label="Unlink ${escape(link.name)}">Unlink</button></div>`;
   function render(): void {
     if (disposed) return;
     if (!status) { root.innerHTML = ''; return; }
-    const links = status.links.map(link => `<div class="setting-row machine-linked" data-link="${escape(link.deviceId)}"><div><strong><span class="remote-dot" data-online="${link.online}" role="img" aria-label="${link.online ? 'Online' : 'Offline'}"></span>${escape(link.name)}</strong><small>${escape(link.platform)} · ${ACCESS[link.access].label}</small></div>${select(link)}<button type="button" class="secondary-button" data-unlink="${escape(link.deviceId)}" aria-label="Unlink ${escape(link.name)}">Unlink</button></div>`).join('');
-    root.innerHTML = `<h3 class="settings-heading">Agent orchestration</h3><div class="settings-group"><div class="setting-row"><div><strong>Agent orchestration ${infoMark(ENABLE_TIP, 'About agent orchestration')}</strong><small>Agents here can ask to link your other computers and run threads there.</small></div><input type="checkbox" class="settings-switch" id="orchestration-enabled" aria-label="Agent orchestration" ${status.enabled ? 'checked' : ''}></div>${links || '<div class="setting-row"><div><small>No linked computers.</small></div></div>'}<div class="setting-row"><div><small>Linked computers are the ones agents here may use.</small></div><button type="button" class="secondary-button" data-link-new aria-haspopup="dialog">Link a computer…</button></div></div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
+    const links = status.links.map(link => link.departed ? departedRow(link) : `<div class="setting-row machine-linked" data-link="${escape(link.deviceId)}"><div><strong><span class="remote-dot" data-online="${link.online}" role="img" aria-label="${link.online ? 'Online' : 'Offline'}"></span>${escape(link.name)}</strong><small>${escape(link.platform)} · ${ACCESS[link.access].label}</small></div>${select(link)}<button type="button" class="secondary-button" data-unlink="${escape(link.deviceId)}" aria-label="Unlink ${escape(link.name)}">Unlink</button></div>`).join('');
+    root.innerHTML = `<h3 class="settings-heading">Agent orchestration</h3><div class="settings-group"><div class="setting-row"><div><strong>Agent orchestration</strong><small>Agents here can ask to link your other computers and run threads there.</small></div><input type="checkbox" class="settings-switch" id="orchestration-enabled" aria-label="Agent orchestration" ${status.enabled ? 'checked' : ''}>${infoMark(ENABLE_TIP, 'About agent orchestration')}</div>${links || '<div class="setting-row"><div><small>No linked computers.</small></div></div>'}<div class="setting-row"><div><small>Linked computers are the ones agents here may use.</small></div><button type="button" class="secondary-button" data-link-new aria-haspopup="dialog">Link a computer…</button></div></div>${error ? `<p class="remote-error" role="alert">${escape(error)}</p>` : ''}`;
   }
   root.addEventListener('click', event => {
     const target = (event.target as HTMLElement).closest<HTMLElement>('button');

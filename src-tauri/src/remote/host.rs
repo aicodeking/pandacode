@@ -1360,19 +1360,8 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             Ok(models)
         }
         Call::Start(request) => start_once(app, from, request).await,
-        Call::StartStatus { start_id } => Ok(start_status(host_starts().lock().unwrap_or_else(|e| e.into_inner()).get(&start_id).filter(|start| start.from == from).map(Arc::as_ref))),
-        Call::CancelStart { start_id } => {
-            let mut starts = host_starts().lock().unwrap_or_else(|e| e.into_inner());
-            Ok(match starts.get(&start_id) {
-                Some(start) if start.from == from => cancel_start(start),
-                Some(_) => json!({"cancelled": true}),
-                // Not claimed yet (still waiting for a start slot): leave it cancelled so it never runs.
-                None => {
-                    let (entry, _) = claim_start(&mut starts, &start_id, from, Instant::now())?;
-                    cancel_start(&entry)
-                }
-            })
-        }
+        Call::StartStatus { start_id } => Ok(start_status_of(from, &start_id)),
+        Call::CancelStart { start_id } => cancel_start_of(from, &start_id),
         Call::Messages { session_id, page, budget } => {
             let handle = app.clone();
             crate::blocking(move || {
@@ -1649,15 +1638,25 @@ fn claim_start(starts: &mut HashMap<String, Arc<HostStart>>, id: &str, from: &st
 /// cancelled caller never stops it halfway; every caller waits for its one result.
 async fn start_once(app: &tauri::AppHandle, from: &str, request: start::Start) -> Result<Value> {
     let Some(id) = request.start_id.clone() else { return start::run(app, from, request).await };
-    let (entry, fresh) = claim_start(&mut host_starts().lock().unwrap_or_else(|e| e.into_inner()), &id, from, Instant::now())?;
+    let (app, viewer) = (app.clone(), from.to_owned());
+    start_keyed(from, &id, move |cancel| async move { start::run_cancellable(&app, &viewer, request, cancel).await }).await
+}
+
+/// [`start_once`] with what a start does handed in.
+pub(super) async fn start_keyed<F, Run>(from: &str, id: &str, run: F) -> Result<Value>
+where
+    F: FnOnce(Arc<start::Cancel>) -> Run + Send + 'static,
+    Run: std::future::Future<Output = Result<Value>> + Send + 'static,
+{
+    let (entry, fresh) = claim_start(&mut host_starts().lock().unwrap_or_else(|e| e.into_inner()), id, from, Instant::now())?;
     let mut done = entry.result.subscribe();
     if fresh {
-        let (app, from, entry) = (app.clone(), from.to_owned(), entry.clone());
+        let entry = entry.clone();
         tauri::async_runtime::spawn(async move {
             // A panic (or the task being dropped) below still settles the start.
             let settle = Settle(entry.clone());
             // A cancel is refused once the task is being made, so a made task is never unseen.
-            let result = start::run_cancellable(&app, &from, request, entry.cancel.clone()).await;
+            let result = run(entry.cancel.clone()).await;
             if let Err(error) = &result {
                 super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
             }
@@ -1687,6 +1686,25 @@ impl Drop for Settle {
             self.0.result.send_if_modified(|slot| slot.is_none() && slot.replace(Err(START_ENDED.into())).is_none());
         }
     }
+}
+
+/// `task.startStatus` from `from`: another device's start reads as unknown.
+pub(super) fn start_status_of(from: &str, id: &str) -> Value {
+    start_status(host_starts().lock().unwrap_or_else(|e| e.into_inner()).get(id).filter(|start| start.from == from).map(Arc::as_ref))
+}
+
+/// `task.cancelStart` from `from`.
+pub(super) fn cancel_start_of(from: &str, id: &str) -> Result<Value> {
+    let mut starts = host_starts().lock().unwrap_or_else(|e| e.into_inner());
+    Ok(match starts.get(id) {
+        Some(start) if start.from == from => cancel_start(start),
+        Some(_) => json!({"cancelled": true}),
+        // Not claimed yet (still waiting for a start slot): leave it cancelled so it never runs.
+        None => {
+            let (entry, _) = claim_start(&mut starts, id, from, Instant::now())?;
+            cancel_start(&entry)
+        }
+    })
 }
 
 /// `task.startStatus`: running, done (with the host task), failed, or unknown here.

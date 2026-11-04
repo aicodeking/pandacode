@@ -183,7 +183,7 @@ test.describe('concurrency isolation', () => {
       }
       await selectTask(page, 5, view);
       await prompt(page).fill('An unrelated task draft survives four completions.');
-      await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+      await page.getByRole('button', { name: /^Model: / }).click();
       const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
       await menu.getByRole('combobox').fill('sol');
       await page.evaluate(() => {
@@ -404,9 +404,9 @@ test('concurrency rejects a duplicate composer send while Board Start is waiting
   expect(await page.evaluate(() => (window as any).__concurrent.calls.filter((call: any) => call.command === 'send_message' || call.command === 'start_task'))).toEqual([]);
   await page.evaluate(() => (window as any).__concurrent.releaseInspector['session-2']());
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
-  const calls = await page.evaluate(() => (window as any).__concurrent.calls.filter((call: any) => call.command === 'send_message'));
-  expect(calls).toHaveLength(1);
-  expect(calls[0]).toMatchObject({ sessionId: 'session-2', text: 'Prompt for task 2' });
+  const sends = () => page.evaluate(() => (window as any).__concurrent.calls.filter((call: any) => call.command === 'send_message'));
+  await expect.poll(async () => (await sends()).length).toBe(1);
+  expect((await sends())[0]).toMatchObject({ sessionId: 'session-2', text: 'Prompt for task 2' });
 });
 
 test('concurrency keeps a completed response visible when an older task-selection snapshot arrives during the final history handoff', async ({ page }) => {

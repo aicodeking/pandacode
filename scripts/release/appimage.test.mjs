@@ -94,6 +94,7 @@ test('the GTK hook keeps a GDK_BACKEND the user set, defaulting to x11', () => {
   assert.throws(() => respectGdkBackend('#!/bin/bash\nexport GTK_THEME=Adwaita\n'), /no longer contains/);
   assert.match(respectGdkBackend(HOOK), /^export GDK_BACKEND="\$\{GDK_BACKEND:-x11\}" # Crash with Wayland backend on Wayland$/m, 'keeps the plugin comment');
   assert.throws(() => respectGdkBackend('export GDK_BACKEND=x11wayland\n'), /no longer contains/);
+  assert.match(respectGdkBackend('# export GDK_BACKEND=x11 # Monitor this closely. AppImage used to crash on Wayland!\n'), /^export GDK_BACKEND="\$\{GDK_BACKEND:-x11\}" # Monitor/m, 'Tauri 2.12 comments the line out');
 });
 
 test('rewrites the GTK hook even when there are no Wayland libraries to remove', async () => {

@@ -4,11 +4,16 @@ export interface ApprovalMode { id: Mode; label: string; description: string; ic
 
 const CLAUDE_FAMILY: ProviderId[] = ['claude', 'glm', 'mimo'];
 
+/** A mode's state tone (`--ds-tone-*`); Standard stays neutral. Harness labels differ, the risk class does not. */
+export const MODE_TONES: Record<Mode, string> = { ask: '', auto: 'edit', review: 'edit', plan: 'plan', full: 'full' };
+/** An icon's markup carrying a state tone, for a menu row's `leading`. */
+export const toned = (svg: string, tone: string): string => tone ? svg.replace('<svg ', `<svg data-state-tone="${tone}" `) : svg;
+
 /** Labels describe the native policy for each harness, not a simulated approval layer. */
 export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMode[] {
   // omp is a Pi fork driven through the same bridge, so it shares Pi's policy.
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
-  const standard: ApprovalMode = { id: 'ask', label: 'Standard', icon: 'check', description: provider === 'codex'
+  const standard: ApprovalMode = { id: 'ask', label: 'Standard', icon: 'shield', description: provider === 'codex'
     ? 'Work in this project. Ask you when an action needs extra permission.'
     : provider === 'github-copilot'
     ? 'Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.'

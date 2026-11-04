@@ -427,7 +427,7 @@ export class ArchitectView {
     const done = team.workers.filter(w => w.status === 'completed' || w.abandoned).length;
     const asking = team.workers.some(w => this.needsInput(w.sessionId));
     const progress = asking ? 'Needs input' : team.workers.length ? `${done}/${team.workers.length}` : 'Ready';
-    const trigger = `${icon('worktree')}<span>Architect & workers</span><small>${progress}</small>${icon('chevron')}`;
+    const trigger = `${icon('team')}<span>Architect & workers</span><small>${progress}</small>${icon('chevron')}`;
     if (this.trigger.dataset.painted !== trigger) { this.trigger.innerHTML = trigger; this.trigger.dataset.painted = trigger; }
     this.trigger.dataset.status = asking ? 'waiting' : team.status;
     if (!this.panel) return;

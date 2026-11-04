@@ -1,10 +1,10 @@
 //! Links (docs/machine-orchestration.md): which of the user's computers agents here may
 //! use, the switch that allows it, and agents' requests for the user to link one.
-use super::super::{config::{Access, Link}, remote, valid_device_id, Device, Inner};
+use super::super::{catalog, config::{Access, Link}, remote, valid_device_id, Device, Inner};
 use super::threads;
 use crate::Result;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -17,6 +17,8 @@ pub(super) const LINK_TTL: Duration = Duration::from_secs(10 * 60);
 pub(super) const LINK_CALL: Duration = Duration::from_secs(40);
 const STILL_PENDING: &str = "Ask the user to answer the Link a machine card; call machine_link again or end your turn";
 const OFF: &str = "Agent orchestration is off. The user can turn it on in Settings → Remote access.";
+/// A computer that left the account, linked before links kept names.
+const REMOVED: &str = "Removed computer";
 
 /// `settings.orchestration`, readable without the remote lock.
 static ON: AtomicBool = AtomicBool::new(false);
@@ -40,9 +42,127 @@ pub(super) fn ready(inner: &Inner) -> Result<()> {
     Ok(())
 }
 
-/// A link counts only while its device is a target (hosting) with the key it was linked under.
+/// A link counts only while its device has the key it was linked under and is a target
+/// (hosting). Presence reports every offline device as not hosting, so an offline device keeps
+/// its link until it comes back with remote control off.
 pub(super) fn access(inner: &Inner, device: &Device) -> Option<Access> {
-    inner.settings.links.get(&device.id).filter(|link| super::super::is_target(inner, device) && link.counts_for(&device.public_key)).map(|link| link.access)
+    let target = super::super::is_target(inner, device) || (device.id != inner.settings.device_id && !device.online);
+    inner.settings.links.get(&device.id).filter(|link| target && link.counts_for(&device.public_key)).map(|link| link.access)
+}
+
+/// How long a host stays offline before its threads report `hostOffline`.
+pub(super) const HOST_OFFLINE_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// What presence last said, readable without the remote lock (the wake claim holds the store
+/// lock, and the commit point takes them the other way round): device → offline since (ms).
+/// None until the first presence frame.
+type Presence = Option<HashMap<String, Option<i64>>>;
+
+fn presence() -> std::sync::MutexGuard<'static, Presence> {
+    static PRESENCE: Mutex<Presence> = Mutex::new(None);
+    PRESENCE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub(crate) fn remember_presence(devices: &[Device]) {
+    *presence() = Some(devices.iter().map(|d| (d.id.clone(), if d.online { None } else { d.last_seen.as_i64() })).collect());
+}
+
+/// Whether `device` has been offline past the limit at `now` (ms). A device presence no longer
+/// lists left the account, so it counts; before any presence nothing is known, so none does.
+pub(super) fn offline_past(known: &Presence, device: &str, now: i64) -> bool {
+    let Some(known) = known else { return false };
+    match known.get(device) {
+        None => true,
+        Some(since) => since.is_some_and(|since| now.saturating_sub(since) > HOST_OFFLINE_AFTER.as_millis() as i64),
+    }
+}
+
+/// When the next offline device passes the limit, if one has yet to.
+pub(super) fn next_past(known: &Presence, now: i64) -> Option<Duration> {
+    let limit = HOST_OFFLINE_AFTER.as_millis() as i64;
+    let left = known.as_ref()?.values().flatten().map(|since| since.saturating_add(limit).saturating_sub(now)).filter(|left| *left >= 0).min()?;
+    Some(Duration::from_millis(left as u64))
+}
+
+pub(super) fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// [`offline_past`] now.
+pub(super) fn host_offline(device: &str) -> bool {
+    offline_past(&presence(), device, now_ms())
+}
+
+/// [`next_past`] now.
+pub(super) fn next_host_due() -> Option<Duration> {
+    next_past(&presence(), now_ms())
+}
+
+/// Whether a tick should tell the UI: a host with threads on it passed the limit, or one it had
+/// counted as past the limit came back. `seen` holds those past it at the last tick; a host
+/// whose threads all ended meanwhile just leaves it (their end said so already).
+pub(super) fn hosts_crossed(seen: &mut HashSet<String>, with_threads: &[String], offline: impl Fn(&str) -> bool) -> bool {
+    let now: HashSet<String> = with_threads.iter().filter(|device| offline(device)).cloned().collect();
+    let crossed = now.difference(seen).next().is_some() || seen.iter().any(|device| !now.contains(device) && with_threads.contains(device));
+    *seen = now;
+    crossed
+}
+
+/// A tick has nothing to look at, so a presence burst touches no database: nothing is linked and
+/// no machine thread exists. Threads outlive their link, so links alone can't say.
+pub(super) fn tick_idle(no_links: bool, no_threads: bool) -> bool {
+    no_links && no_threads
+}
+
+/// The one sleeper waiting for the next host to pass the limit.
+#[derive(Default)]
+pub(super) struct Sleeper {
+    running: bool,
+    wake: Arc<Notify>,
+}
+
+impl Sleeper {
+    /// Presence changed: re-aims a running sleeper at the earliest deadline. True when none is
+    /// running and something is `due`, so the caller starts [`Sleeper::run`].
+    pub(super) fn aim(this: &Mutex<Self>, due: Option<Duration>) -> bool {
+        let mut sleeper = this.lock().unwrap_or_else(|e| e.into_inner());
+        if sleeper.running {
+            sleeper.wake.notify_one();
+            return false;
+        }
+        sleeper.running = due.is_some();
+        sleeper.running
+    }
+
+    /// Sleeps until `due` says, ticking each time one passes, and ends when nothing is due. The
+    /// last look and the flag clearing share the lock [`Sleeper::aim`] takes, so an aim either
+    /// reaches this loop or sees it gone and starts another.
+    pub(super) async fn run(this: &Mutex<Self>, due: impl Fn() -> Option<Duration>, tick: impl Fn()) {
+        let wake = this.lock().unwrap_or_else(|e| e.into_inner()).wake.clone();
+        loop {
+            let left = {
+                let mut sleeper = this.lock().unwrap_or_else(|e| e.into_inner());
+                let left = due();
+                sleeper.running = left.is_some();
+                left
+            };
+            let Some(left) = left else { return };
+            tokio::select! {
+                _ = tokio::time::sleep(left) => tick(),
+                _ = wake.notified() => {}
+            }
+        }
+    }
+}
+
+/// What `machine_wait` and `machine_read` may read. A device gone from presence can't be checked
+/// any more: its thread's local copy stays readable until the user unlinks it. Before the first
+/// presence frame nothing is known, so nothing counts.
+pub(super) fn read_access(inner: &Inner, device: &str) -> Option<Access> {
+    match inner.devices.iter().find(|d| d.id == device) {
+        Some(known) => access(inner, known),
+        None => inner.presence.then(|| inner.settings.links.get(device).map(|link| link.access)).flatten(),
+    }
 }
 
 /// Another computer on the account, by id or by name (case-insensitive).
@@ -71,13 +191,26 @@ pub(super) fn need(access: Option<Access>, least: Access, name: &str) -> Result<
     }
 }
 
+/// What `machine_launch` needs of `device`: a link of ask or more, and the computer online, since
+/// a start on an offline one would commit a mirror row that stays `starting`.
+pub(super) fn launchable(inner: &Inner, device: &str, access: Option<Access>, name: &str) -> Result<Access> {
+    let access = need(access, Access::Ask, name)?;
+    if inner.devices.iter().any(|d| d.id == device && !d.online) {
+        return Err(format!("{name} is offline."));
+    }
+    Ok(access)
+}
+
+/// Links that count, then stored links whose device left the account: those still serve
+/// [`read_access`], so the user must be able to see and cut them. Same rule as there: before the
+/// first presence frame nothing is known, so none has left.
 pub(super) fn status_of(inner: &Inner) -> Value {
-    let links: Vec<Value> = inner
-        .devices
-        .iter()
-        .filter_map(|d| access(inner, d).map(|access| json!({"deviceId": d.id, "name": d.name, "platform": d.platform, "online": d.online, "access": access})))
-        .collect();
-    json!({"enabled": inner.settings.orchestration, "links": links})
+    let current = inner.devices.iter().filter_map(|d| access(inner, d).map(|access| json!({"deviceId": d.id, "name": d.name, "platform": d.platform, "online": d.online, "access": access})));
+    let departed = inner.settings.links.iter().filter(|(id, _)| inner.presence && !inner.devices.iter().any(|d| &d.id == *id)).map(|(id, link)| {
+        let name = if link.name.is_empty() { REMOVED } else { &link.name };
+        json!({"deviceId": id, "name": name, "platform": "", "online": false, "access": link.access, "departed": true})
+    });
+    json!({"enabled": inner.settings.orchestration, "links": current.chain(departed).collect::<Vec<Value>>()})
 }
 
 fn status(app: &tauri::AppHandle) -> Value {
@@ -92,41 +225,84 @@ pub(crate) fn emit_status(app: &tauri::AppHandle) {
 const PRESENCE_COALESCE: Duration = Duration::from_millis(250);
 
 /// Presence changed (online, offline, trust): linked computers' rows may have changed.
-/// Emits status once per burst, and only while orchestration is on with links.
+/// Emits status once per burst, and only while orchestration is on with links; threads whose
+/// link is gone still follow their host.
 pub(crate) fn presence_changed(app: &tauri::AppHandle) {
     static SCHEDULED: AtomicBool = AtomicBool::new(false);
-    if !on() || remote(app).lock().settings.links.is_empty() || SCHEDULED.swap(true, Ordering::SeqCst) {
+    if !on() || SCHEDULED.swap(true, Ordering::SeqCst) {
         return;
     }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(PRESENCE_COALESCE).await;
         SCHEDULED.store(false, Ordering::SeqCst);
-        emit_status(&app);
+        // Turned off during the wait: nothing goes out.
+        if on() {
+            if !remote(&app).lock().settings.links.is_empty() {
+                emit_status(&app);
+            }
+            warm_linked(&app);
+            super::watch_offline(&app);
+        }
     });
 }
 
-/// Links (`Some`) or unlinks a computer. Only a current target can be linked.
+/// The online devices whose link counts, for warming.
+pub(super) fn warm_targets(inner: &Inner) -> Vec<String> {
+    inner.devices.iter().filter(|d| d.online && access(inner, d).is_some()).map(|d| d.id.clone()).collect()
+}
+
+/// Refuses a catalog fetch for a warm: orchestration went off, the user signed out or the link
+/// no longer counts. Asked right before the call goes out.
+pub(crate) fn may_warm(inner: &Inner, device: &str) -> Result<()> {
+    ready(inner)?;
+    if !warm_targets(inner).iter().any(|target| target == device) {
+        return Err("That computer is no longer linked.".into());
+    }
+    Ok(())
+}
+
+/// Fills linked computers' catalogs in the background, so a launch never waits on the relay.
+fn warm_linked(app: &tauri::AppHandle) {
+    let targets = warm_targets(&remote(app).lock());
+    for device in targets {
+        catalog::warm(app, &device);
+    }
+}
+
+/// Links (`Some`) or unlinks a computer. Only a current target can be linked; anything stored can
+/// be unlinked, including a computer that left the account.
+pub(super) fn apply_link(inner: &mut Inner, device_id: &str, access: Option<Access>) -> Result<()> {
+    let Some(access) = access else {
+        inner.settings.links.remove(device_id);
+        return Ok(());
+    };
+    // A linked computer that is offline keeps its link, so its access can still change; it
+    // can't be linked anew, and a changed key is never accepted here.
+    let asleep = inner.devices.iter().find(|d| d.id == device_id && !d.online).map(|d| d.public_key.clone());
+    if let (Some(key), Some(link)) = (asleep, inner.settings.links.get_mut(device_id)) {
+        if link.key == key {
+            link.access = access;
+            return Ok(());
+        }
+    }
+    let target = inner.devices.iter().find(|d| d.id == device_id && super::super::is_target(inner, d)).filter(|d| !d.public_key.is_empty()).map(|d| (d.public_key.clone(), d.name.clone()));
+    let Some((key, name)) = target else {
+        return Err("Turn on remote control on that computer before linking it.".into());
+    };
+    inner.settings.links.insert(device_id.to_owned(), Link { access, at: chrono::Utc::now().timestamp_millis(), key, name });
+    Ok(())
+}
+
 fn set_link(app: &tauri::AppHandle, device_id: &str, access: Option<Access>) -> Result<()> {
     valid_device_id(device_id)?;
     let state = remote(app);
-    {
-        let mut inner = state.lock();
-        match access {
-            Some(access) => {
-                let key = inner.devices.iter().find(|d| d.id == device_id && super::super::is_target(&inner, d)).map(|d| d.public_key.clone()).filter(|key| !key.is_empty());
-                let Some(key) = key else {
-                    return Err("Turn on remote control on that computer before linking it.".into());
-                };
-                inner.settings.links.insert(device_id.to_owned(), Link { access, at: chrono::Utc::now().timestamp_millis(), key });
-            }
-            None => {
-                inner.settings.links.remove(device_id);
-            }
-        }
-    }
+    apply_link(&mut state.lock(), device_id, access)?;
     state.save();
     emit_status(app);
+    if on() {
+        warm_linked(app);
+    }
     Ok(())
 }
 
@@ -189,6 +365,8 @@ pub(super) fn cancel_for(session: &str) -> Vec<String> {
 
 /// Signing out cancels every link request.
 pub(crate) fn signed_out(app: &tauri::AppHandle) {
+    *presence() = None;
+    super::watch_offline(app);
     settled(app, &cancel_all());
 }
 
@@ -431,6 +609,11 @@ pub async fn orchestration_set_enabled(app: tauri::AppHandle, enabled: bool) -> 
     state.save();
     toggled(enabled, || super::reconcile(&app), || settled(&app, &cancel_all()));
     emit_status(&app);
+    if enabled {
+        warm_linked(&app);
+    }
+    // Turned off, this ends the sleeper.
+    super::watch_offline(&app);
     Ok(status(&app))
 }
 

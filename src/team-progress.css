@@ -1,31 +1,39 @@
-/* Spawned workers: quiet inline lines in the thread, like tool lines. A line opens its worker
-   in the Architect & workers panel; any beyond the first six are one more line away. */
-.team-progress{display:grid;grid-template-columns:minmax(0,1fr);justify-items:start;gap:0;margin:2px 0 12px}
-/* Just a line of text, like "Worked for…": as wide as its words, brighter on hover. */
-.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:7px;width:fit-content;max-width:100%;min-width:0;min-height:30px;padding:2px 0;border-radius:var(--radius-xs);background:none;text-align:left;color:var(--muted)}
-.team-progress-worker{font-size:var(--text-xs);line-height:1.5}
-.team-progress-worker:hover,.team-progress-more:hover,.team-progress-worker:hover .team-progress-description small{background:none;color:var(--text)}
-.team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
-.team-progress-logo{display:flex;flex:none}
-.team-progress-logo .provider-logo{width:15px;height:15px}
-.team-progress-description{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.team-progress-description strong{font-weight:550;color:var(--text)}
-.team-progress-description small{margin-left:2px;font-size:var(--text-xs);color:var(--muted)}
-.team-progress-status{flex:none;font-size:var(--text-xs);white-space:nowrap;color:var(--muted)}
-.team-progress-status::before{content:"·";margin-right:7px;color:var(--muted)}
-.team-progress-worker[data-status=Working] .team-progress-status{color:var(--accent-ink)}
-html[data-theme="dark"] .team-progress-worker[data-status=Working] .team-progress-status{color:var(--accent)}
-.team-progress-worker[data-status=Completed] .team-progress-status{color:var(--success)}
-.team-progress-worker[data-status=Failed] .team-progress-status,.team-progress-worker[data-status="Needs attention"] .team-progress-status{color:var(--danger)}
-/* A working worker swaps the "·" separator for a small spinning ring. */
-.team-progress-spinner{display:none;flex:none;width:11px;height:11px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%}
-.team-progress-worker[data-status=Working] .team-progress-spinner{display:block;color:var(--accent-ink)}
-html[data-theme="dark"] .team-progress-worker[data-status=Working] .team-progress-spinner{color:var(--accent)}
-.team-progress-worker[data-status=Working] .team-progress-status::before{content:none}
-@media(prefers-reduced-motion:no-preference){.team-progress-spinner{animation:team-progress-spin .8s linear infinite}}
-@keyframes team-progress-spin{to{transform:rotate(360deg)}}
-.team-progress-worker>.icon{width:11px;height:11px;flex:none;color:var(--muted)}
-.team-progress-more{font-size:var(--text-xs)}
+/* Spawned workers: the reference's Lineage card in the thread. An outer card (hairline, soft shadow) with a
+   muted "Workers" head ("N running" and a … menu), then an inner card of rows: harness logo, worker name, muted role · model, status
+   and a trailing chevron. A row opens its worker in the Architect & workers panel; any beyond the first six
+   are one more row away. Rows stay one 32px line (the architect spec caps a worker line at 32px). */
+.team-progress{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:2px 0 12px;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+/* The head row: muted label, muted "N running" meta and a … that opens the team panel. */
+.team-progress-head{display:flex;align-items:center;gap:8px;min-height:40px;padding:0 4px 0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);color:var(--muted)}
+.team-progress-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.team-progress-count{flex:none;font-variant-numeric:tabular-nums;white-space:nowrap}
+.team-progress-menu{width:28px;height:28px;color:var(--muted)}
+.team-progress-menu .icon{width:18px;height:18px}
+/* The rows' inner card: the row after the head opens it, the last closes it, so no wrapper is needed. */
+.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:32px;padding:2px var(--ds-row-pad-x);border:solid var(--ds-border);border-width:0 1px;border-radius:0;background:var(--ds-card-inner);text-align:left;color:var(--muted)}
+.team-progress-head+*{border-top-width:1px;border-top-left-radius:var(--ds-radius-inner);border-top-right-radius:var(--ds-radius-inner)}
+.team-progress>:last-child,.team-progress>:has(+.team-progress-more[hidden]){border-bottom-width:1px;border-bottom-left-radius:var(--ds-radius-inner);border-bottom-right-radius:var(--ds-radius-inner);box-shadow:0 2px 4px -2px rgb(0 0 0 / .25)}
+.team-progress-worker{font-size:var(--ds-text-ui);line-height:1.3}
+.team-progress-worker:hover,.team-progress-more:hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-card-inner));color:var(--text)}
+.team-progress-worker:hover .team-progress-description small{color:var(--text)}
+.team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:var(--ds-radius-control)}
+.team-progress-logo{display:flex;flex:none;width:20px;justify-content:center}
+.team-progress-logo .provider-logo{width:16px;height:16px}
+.team-progress-description{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.team-progress-description strong{font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--text)}
+.team-progress-description small{margin-left:4px;font-size:var(--ds-text-ui);color:var(--muted)}
+.team-progress-status{flex:none;font-size:var(--ds-text-ui);white-space:nowrap;color:var(--muted)}
+.team-progress-worker[data-status=Working] .team-progress-status{color:var(--ds-tone-team)}
+.team-progress-worker[data-status=Completed] .team-progress-status{color:var(--ds-success)}
+.team-progress-worker[data-status=Failed] .team-progress-status,.team-progress-worker[data-status="Needs attention"] .team-progress-status{color:var(--ds-danger)}
+/* A working worker shows a softly pulsing dot before its status (opacity only). */
+.team-progress-spinner{display:none;flex:none;width:7px;height:7px;margin-right:-6px;border-radius:50%;background:var(--ds-tone-team)}
+.team-progress-worker[data-status=Working] .team-progress-spinner{display:block}
+@media(prefers-reduced-motion:no-preference){.team-progress-spinner{animation:state-pulse 1.6s ease-in-out infinite}}
+.team-progress-worker>.icon{width:var(--icon-md);height:var(--icon-md);flex:none;color:var(--muted)}
+.team-progress-more{font-size:var(--ds-text-ui)}
+.team-progress-more[hidden]{display:none}
+@media(prefers-contrast:more){.team-progress,.team-progress>*{box-shadow:none}.team-progress-description small{color:var(--text)}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.team-progress-worker,.team-progress-more,.team-progress-description small,.team-progress-status{transition:color 140ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.team-progress-worker,.team-progress-more,.team-progress-description small,.team-progress-status{transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}.team-progress-worker:hover,.team-progress-more:hover{transition-duration:var(--ds-ease-in)}}

@@ -4,6 +4,7 @@
  * (#114, #115) index GitHub repositories of skills; importing from one never activates. */
 import './skills-library.css';
 import { escape } from './dom';
+import { infoMark } from './tooltip';
 
 export type SkillKind = 'skill' | 'rule';
 export type SkillScope = 'user' | 'project';
@@ -38,6 +39,7 @@ const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-s
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const CATALOGS_HELP = 'Catalogs list skills; nothing is turned on until you choose a harness.';
 
 export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost): () => void {
   let items: SkillItem[] = [];
@@ -138,17 +140,18 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     return `<div class="settings-group">
       <form class="skills-import skills-catalog-add" aria-label="Add a skill catalog" novalidate>
         <div class="skills-import-row"><input name="catalogRepo" aria-label="Catalog repository" placeholder="owner/name" spellcheck="false" autocomplete="off"><input name="catalogRef" aria-label="Catalog branch, tag or commit" placeholder="Default branch" spellcheck="false" autocomplete="off"><button type="submit" class="secondary-button" ${busy ? 'disabled' : ''}>Scan</button></div>
-        <div class="skills-import-row skills-import-actions"><p class="skills-message">Catalogs list skills; nothing is turned on until you choose a harness.</p><button type="button" class="secondary-button" data-action="discover" ${busy ? 'disabled' : ''}>Find my skill repositories</button></div>
+        <div class="skills-import-row skills-import-actions"><button type="button" class="secondary-button" data-action="discover" ${busy ? 'disabled' : ''}>Find my skill repositories</button></div>
       </form>
+      ${shown.length ? '' : '<p class="skills-empty">No catalogs yet. Scan a repository, or find the skill repositories in your GitHub account.</p>'}
     </div>${summary}
-    ${shown.length ? `<ul class="settings-group skills-list" aria-label="Catalog sources">${shown.map(sourceHtml).join('')}</ul>` : '<p class="skills-empty">No catalogs yet. Scan a repository, or find the skill repositories in your GitHub account.</p>'}
+    ${shown.length ? `<ul class="settings-group skills-list" aria-label="Catalog sources">${shown.map(sourceHtml).join('')}</ul>` : ''}
     ${ignored.length ? `<ul class="skills-unmanaged" aria-label="Ignored sources">${ignored.map(s => `<li><code>${escape(s.repo)}</code> <button type="button" class="secondary-button" data-action="catalog-state" data-state="enabled" data-repo="${escape(s.repo)}" aria-label="${escape(`Stop ignoring ${s.repo}`)}" ${busy ? 'disabled' : ''}>Stop ignoring</button></li>`).join('')}</ul>` : ''}`;
   }
 
   function draw(): void {
     const list = projects();
     const values = clearFields ? {} : Object.fromEntries([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('form [name]')].map(field => [field.name, field.value]));
-    host.innerHTML = `<div class="settings-group skills-library" aria-label="Skills and rules">
+    host.innerHTML = `<h3 class="settings-heading">Import</h3><div class="settings-group skills-library" aria-label="Skills and rules">
       <form class="skills-import" aria-label="Import a skill or rule" novalidate>
         <div class="skills-import-row">
           <select name="kind" aria-label="Kind"><option value="skill">Skill</option><option value="rule">Rule</option></select>
@@ -162,7 +165,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         <p class="skills-error" role="alert" ${error ? '' : 'hidden'}>${escape(error)}</p>
       </form>
     </div>
-    <h3 class="settings-heading">Catalogs</h3>${catalogsHtml()}
+    <div class="settings-heading"><h3>Catalogs</h3>${infoMark(CATALOGS_HELP, 'About catalogs')}<span class="sr-only">${CATALOGS_HELP}</span></div>${catalogsHtml()}
     <h3 class="settings-heading">Library</h3>
     ${items.length ? `<ul class="settings-group skills-list" aria-label="Library">${items.map(itemHtml).join('')}</ul>` : '<p class="skills-empty">The library is empty. Import a skill folder (with a SKILL.md) or a rule (one Markdown file).</p>'}
     <h3 class="settings-heading">By harness</h3>${matrixHtml()}`;

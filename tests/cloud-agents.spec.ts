@@ -5,8 +5,14 @@ import { expect, test, type Page } from '@playwright/test';
 const settingsRegion = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 async function openCloudSettings(page: Page) {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settingsRegion(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
-  return settingsRegion(page);
+  await settingsRegion(page).getByRole('tab', { name: 'Connections', exact: true }).click(); await settingsRegion(page).getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  const settings = settingsRegion(page);
+  // The keyed providers sit in the "More cloud machines" fold, which opens by itself once one is connected.
+  await expect(settings.getByRole('button', { name: 'Connect Daytona', exact: true }).or(settings.getByRole('button', { name: 'Disconnect Daytona', exact: true }))).toBeVisible();
+  const fold = settings.locator('details.cloud-more');
+  if (!(await fold.evaluate(node => (node as HTMLDetailsElement).open))) await fold.locator('summary').click();
+  await expect(fold).toHaveAttribute('open', '');
+  return settings;
 }
 async function connectE2b(page: Page) {
   const settings = await openCloudSettings(page);
@@ -69,6 +75,8 @@ test('a new task on E2B becomes a cloud task with a fixed chip and live stages',
 test('the cloud machine menu syncs, stops and deletes after confirming', async ({ page }) => {
   await startOnE2b(page, 'Cloud chores');
   await expect(strip(page)).toContainText('E2B · Ready');
+  // The run's end redraws the composer, which closes menus anchored in it.
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   const actions = () => page.evaluate(() => (window as any).__cloudActions ?? []);
   const menuButton = page.getByRole('button', { name: 'Cloud machine actions' });
 
@@ -109,6 +117,8 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await modal.getByLabel('Modal Environment').fill('main');
   await modal.locator('[type="submit"]').click();
   await expect(settings.getByRole('button', { name: 'Disconnect Modal', exact: true })).toBeVisible();
+  // A connected provider leaves the fold for the first group.
+  await expect(settings.locator('details.cloud-more .cloud-provider[data-provider="modal"]')).toHaveCount(0);
   await expect(settings.locator('.cloud-provider[data-provider="modal"] .cloud-detail')).toHaveText('Connected · main');
 
   await settings.getByRole('button', { name: 'Connect Vercel', exact: true }).click();
@@ -117,6 +127,7 @@ test('Settings → Cloud connects keyed providers and saves a Claude token', asy
   await settings.getByRole('button', { name: 'Connect Google Cloud', exact: true }).click();
   await expect(settings.getByLabel('Google Cloud Zone')).toBeVisible();
 
+  await settings.locator('#settings-panel-cloud details.settings-fold:not(.cloud-more)>summary').click();
   const claude = settings.getByRole('form', { name: 'Claude login for cloud agents' });
   await claude.getByRole('button', { name: 'Save token' }).click();
   await expect(claude.getByRole('alert')).toHaveText('Paste the token from claude setup-token.');
@@ -222,6 +233,7 @@ test('a failed machine action shows the provider error', async ({ page }) => {
   await page.addInitScript(() => { (window as any).__cloudActionFail = 'stop'; });
   await startOnE2b(page, 'Stop fails');
   await expect(strip(page)).toContainText('E2B · Ready');
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Cloud machine actions' }).click();
   await page.getByRole('menu', { name: 'Cloud machine' }).getByText('Stop machine').click();
   await expect(page.locator('#toast')).toHaveText('E2B could not stop the machine (HTTP 503).');

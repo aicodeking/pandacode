@@ -4,6 +4,7 @@ import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
+import './design-system.css';
 import './model-picker.css';
 import './smooth.css';
 import './wallpapers.css';
@@ -22,25 +23,36 @@ import './tool-trace.css';
 import './tool-cards.css';
 import './trace-motion.css';
 import './action-dock.css';
-import { mountActionDock, mountAgents } from './action-dock';
+import './inset-shell.css';
+import './redesign/sidebar.css';
+import './redesign/conversation.css';
+import './redesign/inspector.css';
+import './redesign/settings.css';
+import './redesign/board.css';
+import './redesign/bots.css';
+import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
 import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
-import { cascade, enterView, glideIn, glideOut, hideToast, installDialogMotion, publishSpringEasings, revealIn, showToast } from './motion';
+import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
-import { renderTurnChanges, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
+import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, holdLiveCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges } from './types';
+import { mountSky } from './sky-window';
+import { mountThreadTiles } from './thread-tiles';
+import { parseSkyTime } from './sky-math';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
-import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, morph } from './dom';
+import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
@@ -49,14 +61,16 @@ import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
-import { choreograph, enterHeader, enterText, foldTurn, readingTrace } from './trace-motion';
-import { groupTurns, formatDuration, turnLabel } from './turn-activity';
+import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
+import { groupTurns, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
-import { palette } from './palette';
-import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
+import { palette, SKY_SCENE } from './palette';
+import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
-import { approvalMode, approvalModes } from './approval-modes';
+import { SECTIONS } from './settings-sections';
+import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
+import { syncTrayState } from './tray-motion';
 import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
 import { TerminalPanel } from './terminal-panel';
@@ -67,7 +81,7 @@ import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
-import { decorateTranscript, initOrchestration, syncOrchestration } from './machine-orchestration';
+import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import type { RemoteStart } from './remote-progress';
@@ -86,6 +100,7 @@ import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFile
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
 import { mountUpdatePill, startAppUpdates } from './app-updates';
+import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
@@ -114,7 +129,7 @@ import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage };
+type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
 const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view === 'simulator' ? isMac || isWindows : view === 'vm' ? isMac : true);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
@@ -145,6 +160,8 @@ const state = {
   sharedChannelDrafts: new Map<string, string>(), sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
 };
 let renderFrame = 0;
+/** Shows the open thread's scene behind the conversation (set once the sky mounts; `renderTranscript` calls it). */
+let showThreadScene: (id: string | null) => void = () => {};
 let navigationFrame = 0;
 let settledDock: HTMLElement | null = null;
 const settledResize = new ResizeObserver(() => { if (settledDock) $('#navigation').style.setProperty('--settled-height', `${settledDock.offsetHeight}px`); });
@@ -292,7 +309,7 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   }, () => { architectSetupCleanup = undefined; });
 }
 /** Team mode needs no setup: the task's selected model leads, and the lead (or the user's prompt) picks worker models. */
-const TEAM_TIP = 'Team mode: your selected model becomes the lead. It plans the work, starts other agents in parallel and reviews their results. Cheap, Balanced and Best set how Panda Router picks each worker\'s model; with routing off the lead picks a model for each worker on its own. To choose the workers yourself, just say so in your prompt, like "use Sonnet 5.5 workers" or "have Codex review it".';
+const TEAM_TIP = 'Your model leads and starts agents. Name workers in your prompt to pick them.';
 const routeIcon = (path: string) => `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 /** The Team menu's team kinds. Each one is Panda Router's global mode, so the next task pre-checks the kind used last. */
 /** The kinds are one global setting: every automatic team follows it, and new tasks start with it. */
@@ -310,14 +327,23 @@ function teamState(s: Session): { id: string; label: string } {
   const kind = team.config.auto && routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
   return kind ?? { id: 'lead', label: 'Team' };
 }
-const teamButtonHtml = (s: Session) => `${teamToggles.has(s.id) ? '<span class="support-spinner" aria-hidden="true"></span>' : icon('worktree')}<span>${escape(teamState(s).label)}</span>${icon('down')}`;
+const teamButtonHtml = (s: Session) => `${teamToggles.has(s.id) ? '<span class="support-spinner" aria-hidden="true"></span>' : icon('team')}<span class="sr-only">${escape(teamState(s).label)}</span>${icon('down')}`;
+/** The Team button's tooltip leads with its state, since the button is only an icon. */
+const teamName = (s: Session) => teams.get(s.id) ? `${teamState(s).label}: on` : 'Team: off';
+const teamTip = (s: Session) => `${teamName(s)}. ${TEAM_TIP}`;
+/** A tray icon's one tip, state first; the description also reaches assistive tech. */
+const modeTip = (mode: ApprovalMode) => `${mode.label}: ${mode.description}`;
+/** The mode button's name says what it is; its visible (sr-only) label stays the mode alone. */
+const modeName = (mode: ApprovalMode) => `Mode: ${mode.label}`;
+const modeFaceHtml = (mode: ApprovalMode) => `${icon(mode.icon)}<span class="sr-only">${escape(mode.label)}</span>${icon('down')}`;
+const trayStateChanged = () => { const id = state.sessionId; if (id) syncTrayState(id, teams.has(id)); };
 /** Team opens the team menu, or with Settings → Classic team setup opens Architect & workers. */
 function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} title="Architect & workers">${icon('worktree')}<span>Team</span></button>`
-    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(TEAM_TIP)}" data-tip="${escape(TEAM_TIP)}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
+    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
 let routing: RoutingStatus | null = null;
@@ -334,8 +360,11 @@ function syncTeamButton(): void {
   const trigger = document.querySelector<HTMLElement>('#team-trigger'), s = session(); if (!trigger || !s) return;
   const html = teamButtonHtml(s);
   if (trigger.innerHTML !== html) trigger.innerHTML = html;
+  trigger.setAttribute('aria-label', teamName(s));
   trigger.toggleAttribute('data-on', Boolean(teams.get(s.id)));
   trigger.setAttribute('aria-busy', String(teamToggles.has(s.id)));
+  trigger.dataset.tip = teamTip(s); trigger.setAttribute('aria-description', teamTip(s));
+  trayStateChanged();
 }
 function applyRouting(ticket: number, next: RoutingStatus): boolean {
   if (ticket !== routingTicket) return false;
@@ -394,9 +423,9 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
   const note = current === 'named' ? `Replaces ${label}` : '';
   const items = [
     { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
-    ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: icon('worktree') }] : []),
-    ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: icon('worktree') }] : []),
-    ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: k.leading, heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
+    ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
+    ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
+    ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: toned(k.leading, 'team'), heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
   ].map(item => ({ ...item, selected: item.id === current }));
   // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
   let turnedOn = false;
@@ -462,7 +491,7 @@ const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
 /** Sort arrows for the sidebar's sort and view menu. */
 const SORT_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16m-3-3 3 3 3-3M17 20V4m-3 3 3-3 3 3"/></svg>';
 const $app = document.querySelector<HTMLDivElement>('#app')!;
-$app.innerHTML = `<div class="workspace">
+$app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
     <div class="brand" data-tauri-drag-region><span class="brand-name" data-tauri-drag-region>PandaCode</span>${button('view-menu', 'Workspace view: Conversation', 'thread', 'view-menu', 'id="view-menu" aria-haspopup="menu" aria-expanded="false"')}</div>
     <div class="sidebar-actions"><button class="new-task-button" data-action="new-task">${icon('plus')}<span>New task</span><kbd>${shortcut('N')}</kbd></button><button class="new-chat-button" data-action="new-chat" title="New chat (no project)">${icon('chat')}<span>New chat</span></button><button class="search-trigger" data-action="search">${icon('search')}<span>Search</span><kbd>${shortcut('K')}</kbd></button></div>
@@ -474,15 +503,18 @@ $app.innerHTML = `<div class="workspace">
     <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button><button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
-    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', `Toggle inspector (${shortcut('B', true)})`, 'panel', 'active', 'id="inspector-toggle"')}${button('terminal', `Toggle terminal (${shortcut('J')})`, 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false"')}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('worktree')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div></div></header>
+    <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
     <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
-  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
+  <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views"><div class="inspector-tab file-panel-tab" data-view="file" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="tab-open-files" aria-label="Open files" title="Open files">${icon('file')}<span class="inspector-tab-label">Open files</span></button>${button('close-inspector-tab', 'Close open files', 'close', 'inspector-tab-close', 'data-view="file" tabindex="-1"')}</div>${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
+// Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
+if (preview && new URLSearchParams(location.search).has('ds')) void import('./redesign/gallery').then(gallery => gallery.mountGallery());
 mountAgentsDock(document.querySelector<HTMLElement>('#agents-dock-host')!, { openTask: id => run((async () => { await reloadSessions(); await selectSession(id, true); })()) });
 publishSpringEasings();
+syncPulses();
 mountActionDock($('#action-dock'));
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
 const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report);
@@ -494,6 +526,10 @@ const projectRunner = new ProjectRunner({
 });
 let sidebarDragging = false, orderingBusy = false;
 /** The open thread stays in the section it was opened from, so its row does not jump from under the click. */
+/** False until the first list_projects settles: neither empty state draws before it, so startup never flashes "Choose a project". */
+let projectsListed = false;
+/** Startup still running: a New task pressed now waits for it, or it would find no projects and boot would then select another thread over it. */
+let bootPending: Promise<void> | undefined;
 let sectionHold: { id: string; section: HeldSection } | undefined, completedOpen = readOpen(localStorage, COMPLETED_OPEN_KEY);
 const collapsedSections = readCollapsed(localStorage, COLLAPSED_SECTIONS_KEY);
 /** Settled lists its newest rows first, then pages in more on request. */
@@ -547,23 +583,10 @@ const tokenSaver = createTokenSaver({
   changed: sessionId => {
     if (sessionId !== state.sessionId) return;
     const current = document.querySelector<HTMLElement>('.composer-saver-button');
-    if (current) current.outerHTML = tokenSaver.button(sessionId);
+    if (current) { current.outerHTML = tokenSaver.button(sessionId); trayStateChanged(); }
   },
 });
 void tokenSaver.loadTools();
-/* Per-task token totals from the agents' own logs; one fetch per session, refetched when a run ends. */
-const taskUsage = new Map<string, TaskTokenUsage | null>();
-function usageLine(usage: TaskTokenUsage): string {
-  return `This task so far: ${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out, ${tokenCount(usage.cacheRead)} cache reads.`;
-}
-function ensureTaskUsage(sessionId: string): void {
-  if (taskUsage.has(sessionId)) return;
-  taskUsage.set(sessionId, null);
-  void call<TaskTokenUsage | null>('task_token_usage', { sessionId }).then(usage => {
-    taskUsage.set(sessionId, usage ?? null);
-    if (state.sessionId === sessionId) renderContextUsage();
-  }).catch(() => taskUsage.delete(sessionId));
-}
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
@@ -791,7 +814,63 @@ const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.clo
 function followTranscript(): void {
   if (!stickToBottom) return;
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
+  // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
+  if (tailBridging && !tailFollows) return;
+  absorbTailRoom();
+  const height = transcriptScroller.clientHeight, grew = (height === followedHeight || sendFollow) && transcriptGap() > 2;
+  followedHeight = height;
+  // A live trace's result card unfolding (a scripted animation in .live-tools) is followed on a short spring, so the
+  // thread never lurches by the card's per-frame growth; a send (the bubble and the skeleton card) on a slower one
+  // (SEND_RESPONSE); text, a switch or the composer still pin at once.
+  if (grew && (state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && (followFrame !== 0 || sendFollow || traceUnfolding()) && transcriptGap() < FOLLOW_EASE_LIMIT && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (!followFrame) { followVelocity = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
+    // The spring steps before layout; this runs after it (the observer), so the frame's own growth is held to the cap too.
+    const gap = transcriptGap();
+    if (!sendFollow && gap > FOLLOW_MAX_LAG) transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG;
+    return;
+  }
+  cancelAnimationFrame(followFrame); followFrame = 0; sendFollow = false;
   transcriptScroller.scrollTop = transcriptScroller.scrollHeight;
+}
+/** A result card's height animation (trace-motion.ts `expand`) is running in the live trace. */
+const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-region .live-tools')?.getAnimations({ subtree: true })
+  .some(animation => animation.playState === 'running' && ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.matches?.('.tool-activity-body')));
+/** The follow is a critically damped spring on the distance to the bottom (time-based, FOLLOW_RESPONSE s), so it
+ * eases in, tracks a growing card without stepping and lands without overshoot. */
+const FOLLOW_RESPONSE = 0.1, SEND_RESPONSE = 0.26, FOLLOW_EASE_LIMIT = 480, FOLLOW_MAX_LAG = 24;
+let followFrame = 0, followedHeight = 0, followVelocity = 0, followAt = 0, sendFollow = false;
+/** The next follow (a send's new bubble and card) eases on SEND_RESPONSE until it lands. */
+function followSend(): void {
+  sendFollow = true;
+  cancelAnimationFrame(followFrame); followFrame = 0;
+}
+function easeFollow(now: number): void {
+  followFrame = 0;
+  const gap = transcriptGap();
+  if (!stickToBottom || gap <= 0.5) { sendFollow = false; return; }
+  if (gap >= FOLLOW_EASE_LIMIT) { sendFollow = false; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; return; }
+  const dt = Math.min(0.05, Math.max(0, (now - followAt) / 1000)), omega = 2 * Math.PI / (sendFollow ? SEND_RESPONSE : FOLLOW_RESPONSE), decay = Math.exp(-omega * dt);
+  followAt = now;
+  // Position relative to the target is -gap; the closed-form critically damped step. The bottom never runs more than
+  // FOLLOW_MAX_LAG ahead of the follow (a result card unfolding; a send eases all the way), so the spring only shapes
+  // the start and the end.
+  const y = -gap, base = followVelocity + omega * y, next = Math.max(sendFollow ? -Infinity : -FOLLOW_MAX_LAG, (y + base * dt) * decay);
+  followVelocity = (followVelocity - omega * base * dt) * decay;
+  transcriptScroller.scrollTop += next - y;
+  followFrame = requestAnimationFrame(easeFollow);
+}
+/** Blank room under the last card after the handoff (handOffCard, foldInPlace) or a Show less: the card's top stays where it
+ * was, and the room is given back only as new content grows into it (the reply, the next send) or the reader scrolls
+ * up, so nothing above it moves and nothing moves on its own after a run. */
+let tailRoom = 0, tailSession = '', tailBridging = false, tailFollows = false;
+function setTailRoom(px: number): void {
+  tailRoom = Math.max(0, Math.round(px));
+  if (tailRoom) transcriptScroller.style.setProperty('--tail-room', `${tailRoom}px`); else transcriptScroller.style.removeProperty('--tail-room');
+}
+function absorbTailRoom(): void {
+  if (!tailRoom || tailBridging) return;
+  const gap = transcriptGap();
+  if (gap > 0.5) setTailRoom(tailRoom - gap);
 }
 function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
 const transcriptResize = new ResizeObserver(followTranscript);
@@ -807,6 +886,13 @@ new MutationObserver(records => { if (records.some(record => !transcriptScroller
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
+  // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
+  // window goes, so nothing on screen moves and the scroll follows the wheel; the reader has left the bottom (a later
+  // scroll back down to the end pins again). A clamp (the old top past the end) is not the reader moving.
+  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= transcriptScroller.scrollHeight - transcriptScroller.clientHeight + 1) {
+    absorbTailRoom(); stickToBottom = false; lastTranscriptTop = transcriptScroller.scrollTop;
+    void loadOlderMessages(); return;
+  }
   // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
   if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
   if (transcriptGap() <= 2) stickToBottom = true;
@@ -816,20 +902,69 @@ transcriptScroller.addEventListener('scroll', () => {
   lastTranscriptTop = top;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more')) stickToBottom = false; }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
 transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
 transcriptScroller.addEventListener('keydown', event => {
   if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
 });
+/* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
+ * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
+ * when it settles, since those rows only reach their new heights then. */
+const WINDOW_SETTLE_MS = 150;
+let windowSize = `${innerWidth}x${innerHeight}`, windowSettle = 0, restoreWindowReader: (() => void) | undefined, windowReaderTask = '';
+addEventListener('resize', () => {
+  const size = `${innerWidth}x${innerHeight}`;
+  if (size === windowSize) return; // Layout notifications (sidebar, UI size) dispatch resize too.
+  windowSize = size;
+  if (!windowSettle) {
+    transcriptScroller.toggleAttribute('data-window-resizing', true);
+    restoreWindowReader = stickToBottom ? undefined : captureTranscriptAnchor(transcriptScroller);
+    windowReaderTask = state.sessionId;
+  }
+  clearTimeout(windowSettle);
+  windowSettle = window.setTimeout(() => {
+    windowSettle = 0;
+    transcriptScroller.removeAttribute('data-window-resizing');
+    if (windowReaderTask === state.sessionId) restoreWindowReader?.();
+    restoreWindowReader = undefined;
+  }, WINDOW_SETTLE_MS);
+});
 const subagents = new Subagents($('#subagents-host'), 'subagents-panel', sessionId => ({ projectId: state.projectId, sessionId }));
 const jevActivity = new JevActivity();
 $('#transcript').before(jevActivity.host);
-mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents] : [subagents]);
-const wallpapers = mountWallpapers($('.workspace'));
+mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents, lineageSource] : [subagents, lineageSource]);
+// The thread is a window: the wallpaper (when the Wallpapers switch is on) or the sky shows inside the main pane.
+const wallpapers = mountWallpapers($('.workspace'), $('.main-pane'));
+const sky = mountSky($('.main-pane'), $('.workspace'), {
+  wanted: () => !wallpapers.preferences.enabled,
+  fixedMinutes: preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null,
+  expose: preview,
+  pinnedScene: preview ? new URLSearchParams(location.search).get('scene') : null,
+});
+const skyTime = preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null;
+/** Threads tiled beside the open one (src/thread-tiles.ts); `tilePages` holds what the read-only views show. */
+const tilePages = new Map<string, MessagePage>();
+const tiles = mountThreadTiles({
+  area: $('.work-area'), pane: $('.conversation-pane'), workspace: $('.workspace'),
+  title: id => state.sessions.find(s => s.id === id)?.title || 'New task',
+  signal: id => { const s = state.sessions.find(item => item.id === id); if (!s) return { status: '', label: '', word: '' }; const { status, statusLabel, word } = taskSignal(s, Date.now()); return { status, label: statusLabel, word }; },
+  exists: id => state.sessions.some(s => s.id === id) && !deletedSessions.has(id),
+  running: id => isRunning(id),
+  open: async (id, scrollTop) => { await selectSession(id); if (scrollTop !== undefined) { transcriptScroller.scrollTop = scrollTop; releaseTranscript(); } },
+  focusPrompt: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
+  draw: (id, rows, scroller) => drawTile(id, rows, scroller),
+  scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
+  notify,
+});
+wallpapers.subscribe(() => tiles.refreshScenes());
+showThreadScene = id => { sky.setThread(id); tiles.sync(id); };
+showThreadScene(session()?.draft ? null : session()?.id ?? null);
+wallpapers.subscribe(() => sky.refresh());
 // The accent follows the scene on screen; a VS Code theme keeps its own colors.
-const syncPaletteWallpaper = () => palette.setWallpaper(wallpapers.enabled ? wallpapers.currentId : undefined);
+// With Wallpapers off the scene is the sky, and the scene accent is its calm blue.
+const syncPaletteWallpaper = () => palette.setWallpaper(wallpapers.enabled ? wallpapers.currentId : SKY_SCENE);
 wallpapers.subscribe(syncPaletteWallpaper); syncPaletteWallpaper();
 window.addEventListener('pandacode-theme-change', () => palette.refresh());
 const disposeSidebarResizing = initializeSidebarResizing($('.workspace'), $('.sidebar'));
@@ -933,6 +1068,9 @@ function teamHeld(id = state.sessionId): boolean {
   const team = teams.get(id), task = state.sessions.find(s => s.id === id);
   return Boolean(team && teamHeldUntil(team) && task && limitActive(task) && !state.streams.has(id) && !team.workers.some(w => w.status === 'running' || w.status === 'waiting'));
 }
+/** The empty-thread layout (no header underlap) changes only once the thread's page is known, in the
+ * frame that draws it: a switch never moves the transcript 39px while it loads or mid-settle. */
+function syncNewTaskPage(): void { if (!state.messagesLoading) $('.conversation-pane').classList.toggle('new-task-page', newTaskView()); }
 function newTaskView(): boolean { const s = session(); return Boolean(s && !s.resumeId && !isRunning() && !state.messagesLoading && !state.messagesError && state.messages.length === 0); }
 function stream(id: string): Stream {
   let s = state.streams.get(id);
@@ -1005,45 +1143,35 @@ function teamModelLabel(s?: Session): string {
   const count = team?.config.workers.length ?? 0;
   return count ? `+${count} ${count === 1 ? 'model' : 'models'}${team?.pendingSetup ? ' · queued' : ''}` : '';
 }
+/** The model pill's tooltip names the model and effort, which an icon-only tray no longer shows. */
+function modelTitle(s: Session): string {
+  const team = teams.get(s.id), effort = effortLabel(s);
+  return `${modelLabel(s, false)}${effort ? ` · ${effort}` : ''} — ${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}`;
+}
 function refreshModelLabels(): void {
   const s = session(); if (!s) return;
   const name = modelLabel(s, false), effort = effortLabel(s);
   document.querySelectorAll<HTMLElement>('[data-model-label]').forEach(label => { if (label.textContent !== name) label.textContent = name; });
-  document.querySelectorAll<HTMLElement>('[data-effort-label]').forEach(label => { if (label.textContent !== effort) label.textContent = effort; label.hidden = !effort; });
+  document.querySelectorAll<HTMLElement>('[data-effort-label]').forEach(label => { if (label.textContent !== effort) label.textContent = effort; label.hidden = !effort; label.closest<HTMLElement>('.model-effort-pill')?.toggleAttribute('hidden', !effort); });
   const teamLabel = teamModelLabel(s);
   document.querySelectorAll<HTMLElement>('[data-team-model-label]').forEach(label => {
     if (label.textContent !== teamLabel) label.textContent = teamLabel;
     label.hidden = !teamLabel;
   });
   const modelTrigger = document.querySelector('#model-picker-trigger');
-  modelTrigger?.setAttribute('aria-description', [modelLabel(s), teamLabel].filter(Boolean).join(' '));
+  modelTrigger?.setAttribute('aria-label', `Model: ${modelLabel(s)}`);
+  modelTrigger?.setAttribute('aria-description', ['Choose harness and model', teamLabel].filter(Boolean).join('. '));
+  modelTrigger?.setAttribute('data-tip', modelTitle(s));
   const logo = modelTrigger?.querySelector<HTMLElement>('[data-logo]'), nextLogo = triggerLogo(s);
   if (logo && logo.dataset.logo !== /data-logo="([^"]*)"/.exec(nextLogo)?.[1]) logo.outerHTML = nextLogo;
   const modeTrigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
   const mode = approvalMode(s.provider, s.mode);
   if (modeTrigger && modeTrigger.dataset.mode !== mode.id) {
-    modeTrigger.dataset.mode = mode.id; modeTrigger.title = mode.description;
-    modeTrigger.innerHTML = `${icon(mode.icon)}<span>${escape(mode.label)}</span>${icon('down')}`;
+    modeTrigger.dataset.mode = mode.id; modeTrigger.dataset.tip = modeTip(mode); modeTrigger.setAttribute('aria-label', modeName(mode)); modeTrigger.setAttribute('aria-description', mode.description);
+    modeTrigger.innerHTML = modeFaceHtml(mode);
+    trayStateChanged();
   }
   refreshTeamProgress();
-  renderContextUsage();
-}
-function renderContextUsage(): void {
-  const s = session(), indicator = document.querySelector<HTMLElement>('.context-indicator');
-  if (!s || !indicator) return;
-  const context = contextSummary(s.contextUsage, selectedModel(s).contextWindow);
-  indicator.hidden = !context;
-  const label = context?.label ?? '';
-  if (indicator.textContent !== label) indicator.textContent = label;
-  indicator.title = context?.detail ?? '';
-  const usage = taskUsage.get(s.id);
-  if (usage && context) {
-    const line = usageLine(usage);
-    if (!indicator.title.includes(line)) indicator.title += `\n${line}`;
-  }
-  ensureTaskUsage(s.id);
-  // The line keeps its place when empty, so the prompt never moves between threads.
-  indicator.parentElement!.classList.toggle('is-empty', !context);
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
 /** The toast's Undo, while it shows; ⌘Z runs it too. */
@@ -1111,17 +1239,19 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
-  // Header/browser controls and the GitHub view's row menus survive transcript and composer updates.
+  // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
-  if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
+  if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
 }
 function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
   cancelPendingMenu();
-  const epoch = menuEpoch;
+  const epoch = menuEpoch, ownBusy = anchor.getAttribute('aria-busy');
+  anchor.setAttribute('aria-busy', 'true');
   let released = false;
   function release(): void {
     if (released) return;
     released = true;
+    if (ownBusy === null) anchor.removeAttribute('aria-busy'); else anchor.setAttribute('aria-busy', ownBusy);
     document.removeEventListener('keydown', onEscape, true);
     document.removeEventListener('pointerdown', onOutside, true);
     document.removeEventListener('focusin', onOutside, true);
@@ -1234,7 +1364,17 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
   if (notice) notify(notice);
 }
 
+/** Whether a task needs you, as its sidebar row and board card say it: a state, its full label, and the word shown. */
+function taskSignal(s: Session, now: number): { status: string; statusLabel: string; word: string } {
+  const live = state.streams.get(s.id), answer = Boolean(live?.inputs.size);
+  const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) && !teamHeld(s.id) ? 'running' : limitActive(s, now) ? 'limited' : FAILED_STATUS.has(s.status) ? 'failed' : '';
+  const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
+  // States that need you say so in a word; running shows its clock, the rest their age.
+  const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
+  return { status, statusLabel, word };
+}
 function renderNavigation(): void {
+  queueMicrotask(() => tiles.refresh());
   // Preserve the native drag source while agent updates arrive in the background.
   if (sidebarDragging) return;
   const now = Date.now();
@@ -1280,23 +1420,20 @@ function renderNavigation(): void {
     const working = isRunning(s.id) && !teamHeld(s.id);
     const elapsed = working && startedAt != null ? formatDuration(now - startedAt) : '';
     const age = elapsed || (activityAt == null ? '' : responseAge(activityAt, now));
-    const answer = Boolean(live?.inputs.size);
-    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : working ? 'running' : limitActive(s, now) ? 'limited' : failed(s) ? 'failed' : '';
-    const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
-    // States that need you say so in a word; running shows its clock, the rest their age.
-    const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
+    const { status, statusLabel, word } = taskSignal(s, now);
     const unread = seen.has(s.id) && s.id !== state.sessionId;
     const checkout = s.worktreePath ? s.worktreePath.split(/[\\/]/).filter(Boolean).pop() ?? p?.name ?? 'Project' : p?.name ?? 'Project';
     const link = s.pullRequest ?? s.issue;
     const linkMark = link ? `<span class="task-link ${link.kind === 'pull' ? 'pull' : 'issue'}" title="${escape(`${link.kind === 'pull' ? 'Pull request' : 'Issue'} #${link.number}: ${link.title}`)}">#${link.number}</span>` : '';
     // Worktree tasks show their branch; the worktree mark keeps its accessible name either way.
     const worktreeMark = (s.worktreePath ? `<span class="task-worktree" role="img" aria-label="Worktree" title="${escape(s.worktreePath)}">${icon('worktree')}</span>` : '')
-      + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '');
-    const branch = s.worktreePath || s.cloud ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
-    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : ''}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
+      + (s.cloud ? `<span class="task-cloud" role="img" aria-label="Runs on ${escape(s.cloud.label)}" title="Runs on a ${escape(s.cloud.label)} cloud machine">${cloudIcon()}</span>` : '')
+      + (s.remoteDevice ? `<span class="task-cloud task-remote" role="img" aria-label="Runs on ${escape(s.remoteDevice.name)}" title="Runs on ${escape(s.remoteDevice.name)}">${icon('monitor')}</span>` : '');
+    const branch = s.worktreePath || s.cloud || s.remoteDevice ? `<span class="task-branch">${worktreeMark}${s.worktreeBranch ? branchLabel(s.worktreeBranch) : ''}</span>` : '';
+    const signals = `${status ? `<span class="task-indicator ${status}" role="img" aria-label="${statusLabel}" title="${statusLabel}"></span>` : unread ? '<span class="task-indicator unread" role="img" aria-label="Unread" title="Unread"></span>' : '<span class="task-indicator" aria-hidden="true"></span>'}${word ? `<span class="task-status ${status}" aria-hidden="true">${word}</span>` : ''}${age && !word ? `<span class="task-age${elapsed ? ' task-runtime' : ''}"${elapsed ? ` data-started-at="${startedAt}"` : ''} title="${elapsed ? `Working for ${elapsed}` : `Last message: ${escape(new Date(activityAt!).toLocaleString())}`}">${age}</span>` : ''}${wakeGlyph(s.id)}`;
     const stage = taskStage(s), done = stage === 'completed';
     const selected = s.id === state.sessionId;
-    const button = `<button class="task-item${card ? '' : ' task-oneline'}${selected ? ' selected' : ''}${unread ? ' unread' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="${reorderable}" data-pinned="${Boolean(s.pinned)}" tabindex="-1" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${selected ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape([s.title, showProject || card ? chatTask(s) ? 'Chat' : p?.name ?? '' : '', s.worktreeBranch ?? ''].filter(Boolean).join('\n'))}">`;
+    const button = `<button class="task-item${card ? '' : ' task-oneline'}${selected ? ' selected' : ''}${unread ? ' unread' : ''}" data-action="select-task" data-id="${escape(s.id)}" data-activity="${activeTask(s, now) ? 'active' : 'inactive'}" draggable="true" data-reorderable="${reorderable}" data-pinned="${Boolean(s.pinned)}" tabindex="-1" ${reorderable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} ${selected ? 'aria-current="page"' : ''} aria-description="${shortProvider(s.provider)}" title="${escape([s.title, showProject || card ? chatTask(s) ? 'Chat' : p?.name ?? '' : '', s.worktreeBranch ?? ''].filter(Boolean).join('\n'))}">`;
     const pin = s.pinned ? `<span class="task-pin" role="img" aria-label="Pinned">${icon('pin')}</span>` : '';
     const projectLabel = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
     // Row actions sit beside the row's button (buttons cannot nest), over its right edge. They
@@ -1371,15 +1508,15 @@ function renderNavigation(): void {
   const empty = filtering ? '<div class="no-tasks sidebar-no-match">No tasks match</div>' : '';
   // Morph rather than replace: unchanged rows keep their nodes, so nothing flickers.
   // Rows sit one level deeper than before (.task-row around .task-item), so morph one level deeper.
-  morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? '<div class="sidebar-empty">Open a project to get started.</div>'
-    : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 5);
+  morph(nav, !userProjects().length && !chats.length && !pinned.length && !sectioned ? (projectsListed ? '<div class="sidebar-empty">Open a project to get started.</div>' : '')
+    : `${pinnedGroup}${section('active', 'Active', 'Active tasks', sections.active.length, () => sections.active.map(s => row(s, !single)).join(''))}${section('review', 'Finished', 'Finished tasks', sections.review.length, () => { const { rows, more } = capped('review', sections.review, sidebarSort.perProject); return rows.map(s => row(s, !single, manual)).join('') + more; })}${chatGroup}${tasksGroup}${projectList}${filtering && !matching.length ? empty : ''}${completedSection}`, 6);
   if (retainedRow) {
     const replacement = nav.querySelector<HTMLElement>(`.task-item[data-id="${CSS.escape(retainedRow.dataset.id!)}"]`);
     if (replacement) {
       // Keep the menu's real anchor connected through background task updates.
       retainedRow.innerHTML = replacement.innerHTML; retainedRow.className = replacement.className;
       retainedRow.title = replacement.title;
-      retainedRow.dataset.pinned = replacement.dataset.pinned; retainedRow.draggable = replacement.draggable;
+      retainedRow.dataset.pinned = replacement.dataset.pinned; retainedRow.dataset.reorderable = replacement.dataset.reorderable;
       if (replacement.hasAttribute('aria-current')) retainedRow.setAttribute('aria-current', 'page'); else retainedRow.removeAttribute('aria-current');
       replacement.replaceWith(retainedRow);
       nav.dispatchEvent(new Event('scroll'));
@@ -1419,7 +1556,7 @@ function renderHeader(): void {
   terminalPanel.select(p ? workspaceContext() : undefined, p?.name ?? '');
   projectRunner.paint();
   const fresh = newTaskView(), bot = botForThread(), chat = chatTask(session());
-  $('.conversation-pane').classList.toggle('new-task-page', fresh);
+  syncNewTaskPage();
   $('.conversation-pane').classList.toggle('channel-thread', Boolean(state.sharedChannelId));
   document.body.classList.toggle('shared-channel-thread', Boolean(state.sharedChannelId));
   if (state.sharedChannelId) {
@@ -1430,16 +1567,32 @@ function renderHeader(): void {
   // A chat has no project: no project bar, deploy or run script.
   document.body.classList.toggle('chat-thread', chat);
   $('.conversation-pane').classList.toggle('bot-thread', Boolean(bot));
-  $('#breadcrumb').innerHTML = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
+  const crumb = bot ? botCrumb(bot) : chat ? `${icon('chat')}<span>Chat</span>` : p && !fresh ? `${icon('folder')}<button data-action="select-project" data-id="${escape(p.id)}">${escape(p.name)}</button>` : '';
+  if (!showsHtml($('#breadcrumb'), crumb)) $('#breadcrumb').innerHTML = crumb;
   const s = session(), bar = document.querySelector<HTMLElement>('#composer-area .composer-context');
   if (s && bar) {
-    const markup = worktrees.contextBar(s, fresh);
+    const markup = contextBarHtml(s, fresh);
     // A menu opening from the bar keeps its anchor; replacing it mid-open would cancel the menu.
-    if (bar.outerHTML !== markup && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
+    if (!showsHtml(bar, markup, true) && !bar.querySelector('[aria-expanded="true"]') && !(pendingMenuOpen && bar.contains(pendingMenuOpen.anchor))) bar.outerHTML = markup;
   }
 }
+/** The composer's context row. A linked PR or issue shows its state as a dot, so the state also goes in its tooltip. */
+function contextBarHtml(s: Session, fresh: boolean): string {
+  let markup = worktrees.contextBar(s, fresh).replace('<div class="composer-context', '<div id="composer-context" class="composer-context');
+  // While git status loads, a quiet placeholder holds the branch chip's place so nothing shifts when it arrives.
+  if (!s.remoteDevice && !s.worktreePath && !state.git && state.inspectorLoading && !markup.includes('branch-chip')) {
+    markup = markup.replace(/(<span class="composer-local"[\s\S]*?<\/span><\/span>)/, `$1<span class="branch-chip branch-chip-pending" aria-hidden="true">${icon('branch')}<span class="branch-chip-name"></span></span>`);
+  }
+  if (!markup.includes('link-chip-state')) return markup;
+  const template = document.createElement('template'); template.innerHTML = markup;
+  template.content.querySelectorAll<HTMLElement>('.link-chip').forEach(chip => {
+    const value = chip.querySelector('.link-chip-state')?.textContent ?? '';
+    if (value) chip.title = `${value[0].toUpperCase()}${value.slice(1)} · ${chip.title}`;
+  });
+  return template.innerHTML;
+}
 /** What the empty prompt invites: a task, or a message to the bot whose thread this is. */
-function composerPlaceholder(): string { const bot = botForThread(); return bot ? `Message ${escape(bot.name)}…` : chatTask(session()) ? 'Ask anything…' : 'Describe a task…'; }
+function composerPlaceholder(): string { const bot = botForThread(); return bot ? `Message ${escape(bot.name)}…` : chatTask(session()) ? 'Ask anything…' : newTaskView() ? 'Describe a task…' : 'Ask for follow-up changes…'; }
 /** A bot thread's header: who you're talking to, where the thread comes from, and its settings. */
 function botCrumb(bot: import('./bots').Bot): string {
   const s = session();
@@ -1450,9 +1603,9 @@ function botCrumb(bot: import('./bots').Bot): string {
   return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
-function workerSlot(turn: { user?: Message; coordination?: Message }): string {
+function workerSlot(turn: { user?: Message; coordination?: Message }, sessionId = state.sessionId): string {
   const start = turn.user?.createdAt ?? turn.coordination?.createdAt;
-  return teams.has(state.sessionId) && start !== undefined ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
+  return teams.has(sessionId) && start !== undefined ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
 }
 /** Each spawned worker shows in the turn it was spawned in; while that turn is still running,
  *  it follows the live activity at the end of the thread. */
@@ -1481,9 +1634,83 @@ function changesRow(sessionId: string, changes: TurnChanges | undefined): string
   const card = changes && !state.sessions.find(task => task.id === sessionId)?.remoteDevice ? renderTurnChanges(sessionId, changes, sessionId === state.sessionId && projectRunner.available()) : '';
   return card ? `<div class="turn-changes-row">${card}</div>` : '';
 }
+/** The turn card's footer, under the same rule as changesRow. */
+function changesFoot(sessionId: string, changes: TurnChanges | undefined): string {
+  return changes && !state.sessions.find(task => task.id === sessionId)?.remoteDevice ? turnChangesFoot(sessionId, changes, sessionId === state.sessionId && projectRunner.available()) : '';
+}
+/** A saved turn: the user's bubble, then one card (header and trace, the reply, the changes).
+ * Bot threads keep their chat rows (bot-thread.ts decorates direct children of the transcript). */
+/** A thread's read-only view in a tile: the same turn cards, plus what is streaming. Rows redraw only when the saved
+ *  messages change, so a stream's ticks touch just its live card. */
+function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
+  const page = tilePages.get(id) ?? threadPages.get(id);
+  if (!tilePages.has(id)) void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => { tilePages.set(id, fresh); if (rows.isConnected) drawTile(id, rows, scroller); }).catch(report);
+  if (!page) return;
+  const live = state.streams.get(id);
+  let messages = page.messages;
+  if (live) { let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; }); messages = messages.slice(0, lastUser + 1); }
+  const key = `${messages.length}:${messages.at(-1)?.id ?? ''}`;
+  if (rows.dataset.key !== key) {
+    rows.dataset.key = key;
+    rows.innerHTML = `${groupTurns(messages).map(turn => turnHtml(turn, id, false, { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider })).join('')}<div class="thread-mirror-live"></div>`;
+    rows.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
+    const byId = new Map(messages.map(message => [String(message.id), message]));
+    rows.querySelectorAll<HTMLElement>('[data-markdown]').forEach(node => { const message = byId.get(node.dataset.markdown!); if (message) void markdown(node, message.content, scroller).catch(report); });
+    watchReplies(rows);
+  }
+  const slot = rows.querySelector<HTMLElement>('.thread-mirror-live');
+  if (!slot) return;
+  if (!live) { slot.replaceChildren(); return; }
+  if (!slot.firstElementChild) slot.innerHTML = '<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div><div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div></section>';
+  const records = liveToolRecords(live);
+  slot.querySelector<HTMLElement>('.turn-activity-label')!.innerHTML = records.length ? foldedLabelHtml(records) : 'Thinking';
+  slot.querySelector<HTMLElement>('.thread-mirror-time')!.innerHTML = timeHtml(Date.now() - live.startedAt, true);
+  const reply = slot.querySelector<HTMLElement>('.turn-card-reply')!;
+  reply.hidden = !live.text;
+  if (live.text && reply.dataset.source !== live.text) { reply.dataset.source = live.text; void markdown(slot.querySelector<HTMLElement>('.markdown')!, live.text, scroller).catch(report); }
+}
+function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
+  const lead = (turn.user ? messageHtml(turn.user, false, true, thread) : '') + (turn.handoff ? messageHtml(turn.handoff, false, true, thread) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '');
+  const notes = turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
+  if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + turn.errors.map(message => messageHtml(message, false, true, thread)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
+  if (!turn.activity.length && !turn.final && !turn.errors.length) return lead + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
+  return lead + turnCardHtml(turn, sessionId, thread) + notes;
+}
+function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): string {
+  const decoded = turn.activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
+  const tools = decoded.filter((tool): tool is ToolActivity => Boolean(tool)), steps = decoded.every(Boolean);
+  const time = timeHtml(turn.durationMs);
+  const label = tools.length ? foldedLabelHtml(tools) : escape(turn.final ? 'Replied' : turn.errors.length ? 'Stopped' : 'Worked');
+  const head = turn.activity.length
+    ? activityHtml(turn.key, label, savedActivityHtml(turn.activity, steps || activityExpanded(), thread), { steps, meta: time })
+    : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
+  const final = turn.final;
+  const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0)) : '';
+  const errors = turn.errors.length ? `<div class="turn-card-errors">${turn.errors.map(message => messageHtml(message, false, true, thread)).join('')}</div>` : '';
+  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${errors}${changesFoot(sessionId, turn.changes)}</section>`;
+}
+/** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
+ *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
+const TRANSCRIPT_HOLD_MS = 150;
+let transcriptRows: string | undefined, transcriptHold: { expired: boolean; timer: number } | undefined;
+function holdTranscript(transcript: HTMLElement, id: string, rows: string | undefined): boolean {
+  if (transcriptHold) { if (transcriptHold.expired) return false; transcriptRows = rows; return true; }
+  if (!rows || rows === id || !holdDim(transcript)) return false;
+  transcriptHold = { expired: false, timer: window.setTimeout(() => { if (transcriptHold) { transcriptHold.expired = true; renderTranscript(); } }, TRANSCRIPT_HOLD_MS) };
+  transcriptRows = rows;
+  return true;
+}
+function releaseTranscriptHold(transcript: HTMLElement, settle: boolean): void {
+  if (!transcriptHold) return;
+  clearTimeout(transcriptHold.timer); transcriptHold = undefined;
+  releaseHold(transcript, settle);
+}
 function renderTranscript(preservePosition = false): void {
   closeContentMenus();
-  $('.conversation-pane').classList.toggle('new-task-page', newTaskView());
+  const open = session();
+  showThreadScene(open && !open.draft && !state.sharedChannelId ? open.id : null);
+  const heldRows = transcriptRows; transcriptRows = undefined;
+  syncNewTaskPage();
   const transcript = $('#transcript');
   const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
@@ -1492,6 +1719,7 @@ function renderTranscript(preservePosition = false): void {
   const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
   const readingTool = readingTranscriptTool();
   if (state.sharedChannelId) {
+    releaseTranscriptHold(transcript, false);
     const channel = state.sharedChannelDetail;
     transcript.innerHTML = channel ? sharedChannelThreadHtml(channel, sidebarBots) : '<p class="history-notice" role="status">Loading channel…</p>';
     if (channel) {
@@ -1509,9 +1737,20 @@ function renderTranscript(preservePosition = false): void {
     return;
   }
   const s = session();
+  if (tailRoom && s?.id !== tailSession) setTailRoom(0);
   botThread.noteThread(s?.id ?? '');
-  if (!s) { transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
-  if ((state.messagesLoading || state.messagesError) && !state.streams.has(s.id) && !finishingStreams.has(s.id)) { transcript.innerHTML = `<p class="history-notice" role="status">${state.messagesError ? 'Unable to load this task. Select it again to retry.' : 'Loading conversation…'}</p>`; return; }
+  if (!s && !projectsListed) { releaseTranscriptHold(transcript, false); transcript.innerHTML = ''; return; }
+  if (!s) { releaseTranscriptHold(transcript, false); transcript.innerHTML = `<div class="welcome"><span class="welcome-mark" aria-hidden="true">${icon('bamboo')}</span><h1>${project() ? 'No task selected' : 'Choose a project'}</h1><button class="primary-button" data-action="${project() ? 'new-task' : 'add-project'}">${icon('plus')}${project() ? 'Start a task' : 'Open a project'}</button></div>`; return; }
+  if ((state.messagesLoading || state.messagesError) && !state.streams.has(s.id) && !finishingStreams.has(s.id)) {
+    if (!state.messagesError && holdTranscript(transcript, s.id, heldRows)) return;
+    // After a hold the line shows at once (the 150 ms wait is spent); a line already up keeps its fade.
+    const afterHold = Boolean(transcriptHold?.expired);
+    releaseTranscriptHold(transcript, false);
+    if (state.messagesError) transcript.innerHTML = '<p class="history-notice" role="status"><span>Unable to load this task.</span> <button type="button" class="secondary-button" data-action="retry-task-load">Retry</button></p>';
+    else if (!(transcript.childElementCount === 1 && transcript.firstElementChild!.classList.contains('history-loading'))) transcript.innerHTML = `<p class="history-notice history-loading${afterHold ? ' after-hold' : ''}" role="status">Loading conversation…</p>`;
+    return;
+  }
+  releaseTranscriptHold(transcript, true);
   if (state.view === 'board' && newTaskView()) {
     transcript.innerHTML = '<p class="pending-comments">Start this task when you’re ready. Agent updates and your replies will appear here.</p><div id="stream-region"></div>';
     return;
@@ -1533,29 +1772,25 @@ function renderTranscript(preservePosition = false): void {
     return;
   }
   const turns = groupTurns(visibleMessages());
+  // A run that just ended hands its live card over to the saved one in place: the reply stays open and the footer folds in.
+  const liveRegion = document.getElementById('stream-region');
+  const liveCard = liveRegion?.dataset.sessionId === s.id ? liveRegion.querySelector<HTMLElement>('.turn-card.is-live') : null;
+  const shownCards = liveCard ? new Set([...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].map(card => card.dataset.turnCard)) : undefined;
+  // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
+  const liveRect = liveCard ? handoffRect ?? liveCard.getBoundingClientRect() : undefined; handoffRect = undefined;
+  const focusRole = liveCard ? focusedRole(liveCard) : undefined;
+  const liveTrace = liveCard?.querySelector<HTMLDetailsElement>(':scope > details.turn-activity'), liveTraceOpen = Boolean(liveTrace?.open && liveTrace.dataset.folded === undefined);
+  // A trace that folded as the reply started and the reader opened again stays open in the saved card.
+  const traceReopened = Boolean(liveTrace?.open && liveTrace.dataset.folded !== undefined && liveTrace.dataset.closing === undefined);
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity) : '') + turn.errors.map(message => messageHtml(message)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool')) : '') + turn.notes.map(message => messageHtml(message)).join('') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
-  const byId = new Map(state.messages.map(message => [String(message.id), message]));
-  transcript.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
-    const message = byId.get(el.dataset.markdown!);
-    if (!message) return;
-    const previous = previousMarkdown.get(el.dataset.markdown!);
-    if (previous && savedMarkdownSources.get(previous) === message.content) {
-      // Prepending history must not reparse responses the reader already loaded.
-      el.replaceWith(previous);
-      bindFileLinkContext(previous, workspaceContext());
-    } else {
-      savedMarkdownSources.set(el, message.content);
-      bindFileLinkContext(el, workspaceContext());
-      // Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap.
-      void markdown(el, message.content, transcript).then(followTranscript, report);
-    }
-  });
+  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  paintSavedMarkdown(transcript, state.messages, previousMarkdown, workspaceContext(), followTranscript);
+  watchReplies(transcript);
   renderStream();
   refreshTeamProgress();
   restoreTurns(transcript, turnViews);
-  if (unfolded) foldSavedTurn(transcript, unfolded);
+  if (unfolded && !shownCards) foldSavedTurn(transcript, unfolded);
   restoreToolGroups(transcript, groupViews);
   restoreChangeCards(transcript, changeViews);
   restoreTools(transcript, toolViews);
@@ -1563,23 +1798,160 @@ function renderTranscript(preservePosition = false): void {
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
+  // After every restore and the pin, so the saved card is measured where it will stay.
+  if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened);
   if (bot) {
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
   }
+  transcriptRows = s.id;
 }
-function savedActivityHtml(messages: Message[], expanded = activityExpanded()): string {
+/** The live card is gone and the saved one stands in its place, in the same task: its reply stays open and the
+ * footer fades in. If the live trace was still open (no reply folded it), the saved trace opens in its place and
+ * folds (foldInPlace), unless the reader is in it (then it stays open). Pinned, the card's top stays where the live
+ * card's was and blank room under it (`tailRoom`) takes any height given up, so nothing above it moves. */
+function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, live: DOMRect, pinned: boolean, traceOpen: boolean, focus?: string, reopened = false): void {
+  const card = [...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].at(-1);
+  if (!card || shown.has(card.dataset.turnCard)) return;
+  const trace = card.querySelector<HTMLDetailsElement>(':scope > details.turn-activity');
+  stopTailEase();
+  // A reader in the trace (a focused step) keeps it: the saved trace stays open, with no fold, and the same step is focused.
+  const reading = Boolean((reopened || focus?.startsWith('[data-tool-key')) && trace);
+  if (reading) trace!.open = true;
+  if (focus) refocusCard(card, focus);
+  const reply = card.querySelector<HTMLElement>(':scope > .turn-card-reply');
+  if (reply) keepReplyOpen(reply);
+  if (pinned) { cancelAnimationFrame(followFrame); followFrame = 0; }
+  if (traceOpen && trace && !trace.open) {
+    trace.open = true;
+    foldInPlace(card, trace, live, pinned);
+    fadeInFoot(card);
+    return;
+  }
+  if (!pinned) { bridgeCard(card, live.height); return; }
+  // The card's top stays where the live card's was. Blank room under it takes what the composer let go of (or a
+  // shorter saved card gives up); what a taller card (the footer) runs past the window grows in as the follow keeps up.
+  const saved = card.getBoundingClientRect(), target = Math.max(0, transcriptScroller.scrollTop + saved.top - live.top);
+  const room = target + transcriptScroller.clientHeight - (transcriptScroller.scrollHeight - tailRoom);
+  tailSession = state.sessionId;
+  // The footer (what the saved card adds to the live one), less any height the held live card gives back (a short reply,
+  // holdLiveCard), eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
+  // scroll end holds and nothing above moves; what runs past the window the follow takes.
+  const delta = Math.round(saved.height - live.height);
+  const timing = bridgeCard(card, delta ? live.height : saved.height + Math.min(0, room));
+  const end = Math.max(0, room), start = timing && delta ? Math.max(0, room + delta) : end;
+  setTailRoom(start);
+  transcriptScroller.scrollTop = target;
+  if (timing && start !== end) growTailRoom(start, end, timing, () => {}, true); else followTranscript();
+}
+/** The control in the live card that has focus, as a selector the saved card answers (header, a trace step, Read
+ * more, Copy, Fork, the footer), so the handoff gives focus back instead of dropping it to the page. */
+const CARD_CONTROLS = [':scope > details.turn-activity > .turn-activity-summary', '.turn-card-reply [data-message-action="copy"]', '.turn-card-reply [data-message-action="fork"]', '.turn-card-more', '.turn-card-foot-open'];
+function focusedRole(card: HTMLElement): string | undefined {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !card.contains(active)) return;
+  const step = active.matches('summary') ? active.parentElement?.closest<HTMLElement>('[data-tool-key]') : null;
+  if (step) return `[data-tool-key="${CSS.escape(step.dataset.toolKey!)}"] > summary`;
+  return CARD_CONTROLS.find(selector => active.matches(selector.replace(':scope > ', '.turn-card > '))) ?? CARD_CONTROLS[0];
+}
+/** Focuses that control in the saved card, else its header (a step folded out of reach has no focus to take). */
+function refocusCard(card: HTMLElement, selector: string): void {
+  // A tool the reader was in has already been restored (restoreTools); only focus the page dropped is taken back.
+  if (document.activeElement && document.activeElement !== document.body) return;
+  for (const target of [card.querySelector<HTMLElement>(selector), card.querySelector<HTMLElement>(CARD_CONTROLS[0])]) {
+    // A step inside a folded group of a narrated turn: its group opens so the step can take focus.
+    for (let group = target?.parentElement?.parentElement?.closest<HTMLDetailsElement>('details.tool-group'); group && card.contains(group); group = group.parentElement?.closest<HTMLDetailsElement>('details.tool-group')) group.open = true;
+    target?.focus({ preventScroll: true });
+    if (target && document.activeElement === target) return;
+  }
+}
+/** Folds the saved card's trace starting from the live card's height, so its bottom never steps: the card closes from
+ * there to its folded height on the fold's own timing (`holdCard`). Pinned, its top stays where the live card's was
+ * and the height it gives up (and any the composer just let go of) grows as blank room under it on the same timing
+ * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it. */
+function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect, pinned: boolean): void {
+  const open = card.offsetHeight, total = transcriptScroller.scrollHeight, from = tailRoom;
+  trace.open = false;
+  const shut = card.offsetHeight; trace.open = true;
+  foldTurn(trace, true);
+  const fold = trace.getAnimations({ subtree: true }).find(animation => ((animation.effect as KeyframeEffect | null)?.target as Element | null)?.parentElement === trace);
+  const timing = fold?.effect?.getTiming();
+  if (timing) holdCard(card, live.height, shut, timing);
+  if (!pinned) return;
+  tailSession = state.sessionId;
+  // The room must let the scroll reach the held top with the card at its starting height.
+  const shown = timing ? live.height : shut, target = transcriptScroller.scrollTop + card.getBoundingClientRect().top - live.top;
+  const start = Math.max(from, target + transcriptScroller.clientHeight - (total - open - from) - shown), end = Math.max(0, start + shown - shut);
+  setTailRoom(Math.max(start, end));
+  transcriptScroller.scrollTop = target;
+  if (!timing) { setTailRoom(end); return; }
+  growTailRoom(start, end, timing);
+}
+/** Drops a room animation in flight (one the run's end or a later change overtook): the room stands at its set height. */
+function stopTailEase(): void {
+  const ease = tailEase;
+  tailEase = undefined; tailBridging = false; tailFollows = false;
+  ease?.cancel();
+}
+/** Eases the blank room from `from` to `to` (already set as the room) on `timing`, holding the follow meanwhile. */
+let tailEase: Animation | undefined;
+function growTailRoom(from: number, to: number, timing: EffectTiming, done = () => {}, follow = false): void {
+  stopTailEase();
+  tailBridging = true; tailFollows = follow;
+  const room = transcriptScroller.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: timing.duration, easing: timing.easing, pseudoElement: '::after' });
+  tailEase = room;
+  room.onfinish = room.oncancel = () => {
+    if (tailEase !== room) return;
+    tailEase = undefined; tailBridging = false; tailFollows = false;
+    if (tailSession === state.sessionId && tailRoom) setTailRoom(to);
+    followTranscript(); done();
+  };
+}
+// Show less near the end of the thread: the height the reply gives up past what the scroll can lose becomes blank room
+// on the clamp's own timing, so the reply's top stays where it is; scrolling up or the next turn takes the room back.
+onReplyCollapse((shrink, timing) => {
+  const room = Math.max(0, Math.round(shrink - transcriptGap()));
+  if (!room) return;
+  const from = tailRoom;
+  tailSession = state.sessionId;
+  setTailRoom(from + room);
+  if (timing) growTailRoom(from, tailRoom, timing);
+});
+/** A side thread's saved turns: the By the way panel keeps the plain chat rows, since its live turn has no card to hand off to. */
+function turnRowsHtml(sessionId: string, visible: Message[], thread = shownThread()): string {
+  return groupTurns(visible).map(turn => turnHtml(turn, sessionId, true, thread)).join('');
+}
+/** Formats saved answers, reusing nodes whose source is unchanged so nothing reparses. */
+function paintSavedMarkdown(root: HTMLElement, messages: Message[], previousMarkdown: Map<string, HTMLElement>, context: FileLinkContext, follow: () => void): void {
+  const byId = new Map(messages.map(message => [String(message.id), message]));
+  root.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
+    const message = byId.get(el.dataset.markdown!);
+    if (!message) return;
+    const previous = previousMarkdown.get(el.dataset.markdown!);
+    if (previous && savedMarkdownSources.get(previous) === message.content) {
+      // Prepending history must not reparse responses the reader already loaded.
+      el.replaceWith(previous);
+      bindFileLinkContext(previous, context);
+    } else {
+      savedMarkdownSources.set(el, message.content);
+      bindFileLinkContext(el, context);
+      // Following skips the paint's own pin (the ResizeObserver pins before paint); pin now so no task sees the gap.
+      void markdown(el, message.content, root).then(follow, report);
+    }
+  });
+}
+function savedActivityHtml(messages: Message[], expanded = activityExpanded(), thread = shownThread()): string {
   return groupToolRuns(messages, message => message.role === 'tool' ? savedToolKey(message) : undefined)
     .map(run => run.kind === 'tools'
       ? renderToolGroup(run.items.map(message => ({ key: savedToolKey(message), content: message.content })), expanded)
-      : messageHtml(run.item, false, false)).join('');
+      : messageHtml(run.item, false, false, thread)).join('');
 }
 /** A turn of only tool calls folds to its summary sentence and mark stack (`Ran 2 searches and read 3 sources`),
  * opening onto the step rail; turns with narration keep `Worked for …` over their groups. */
-function savedTurnActivity(key: string, label: string, activity: Message[]): string {
+function savedTurnActivity(key: string, label: string, activity: Message[], thread = shownThread()): string {
   const tools = activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
-  if (tools.some(tool => !tool)) return activityHtml(key, escape(label), savedActivityHtml(activity));
-  return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true), { steps: true, title: label });
+  if (tools.some(tool => !tool)) return activityHtml(key, escape(label), savedActivityHtml(activity, activityExpanded(), thread));
+  return activityHtml(key, foldedLabelHtml(tools as ToolActivity[]), savedActivityHtml(activity, true, thread), { steps: true, title: label });
 }
 function foldedLabelHtml(tools: ToolActivity[]): string {
   const [sentence, failures] = summarizeTools(tools).split(' · ');
@@ -1591,9 +1963,10 @@ function savedToolKey(message: Message): string {
 }
 function activityExpanded(): boolean { return localStorage.getItem('pandacode.activityExpanded') === 'true'; }
 /** `labelHtml` is escaped by the caller. `steps` turns hang their calls straight off the rail (no group headers). */
-function activityHtml(key: string, labelHtml: string, body: string, options: { live?: boolean; steps?: boolean; title?: string } = {}): string {
-  const { live = false, steps = live, title } = options;
-  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${live || state.view === 'board' || activityExpanded() ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
+function activityHtml(key: string, labelHtml: string, body: string, options: { live?: boolean; steps?: boolean; title?: string; meta?: string } = {}): string {
+  const { live = false, steps = live, title, meta = '' } = options;
+  const open = live || state.view === 'board' || activityExpanded();
+  return `<details class="turn-activity${live ? ' live-activity' : ''}${steps ? ' is-steps' : ''}" data-turn-key="${escape(key)}"${open ? ' open' : ''}><summary class="turn-activity-summary"${title ? ` title="${escape(title)}"` : ''}><span class="turn-activity-label">${labelHtml}</span>${meta}${icon('chevron')}</summary><div class="turn-activity-body">${body}</div></details>`;
 }
 type ToolGroupView = { key: string; toolKeys: string[]; open: boolean; focused: boolean };
 function captureToolGroups(root: ParentNode): ToolGroupView[] {
@@ -1627,7 +2000,6 @@ function foldSavedTurn(root: ParentNode, live: TurnView): void {
     || [...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].some(tool => live.toolKeys.includes(tool.dataset.toolKey!)));
   if (!turn || turn.open) return;
   turn.open = true;
-  enterText(turn.querySelector('.turn-activity-label')!);
   foldTurn(turn);
 }
 function restoreTurns(root: ParentNode, views: TurnView[]): void {
@@ -1641,7 +2013,10 @@ function restoreTurns(root: ParentNode, views: TurnView[]): void {
 }
 /** `afterTrace`: an answer that follows a tool trace sits flush under it without the avatar/name row (still read out). */
 /** `actions` is false for replies between tool calls: only the turn's last reply carries copy and fork. */
-function messageHtml(m: Message, afterTrace = false, actions = true): string {
+/** `thread`: the messages and harness a row belongs to (the open thread unless the By the way panel draws its side thread). */
+interface Thread { messages: Message[]; provider: ProviderId }
+const shownThread = (): Thread => ({ messages: state.messages, provider: session()?.provider ?? state.defaultProvider });
+function messageHtml(m: Message, afterTrace = false, actions = true, thread = shownThread()): string {
   if (m.role === 'handoff') {
     const handoff = decodeHandoff(m);
     if (!handoff) return '';
@@ -1656,7 +2031,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true): string {
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
   if (m.role === 'system') return `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
-  const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
+  const author = historicalProvider(m, thread.messages, thread.provider);
   return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
@@ -1737,54 +2112,78 @@ function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
     }
   });
 }
-function visibleMessages(): Message[] {
-  if (state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) {
-    let lastUser = -1; state.messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; });
-    return state.messages.slice(0, lastUser + 1);
+function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
+  if (state.streams.has(sessionId) || finishingStreams.has(sessionId)) {
+    let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; });
+    return messages.slice(0, lastUser + 1);
   }
-  return state.messages.slice();
+  return messages.slice();
 }
 function renderStream(): void {
   if (!transcriptVisible()) { updateWorkTimer(); return; }
   const region = document.getElementById('stream-region'); if (!region) return;
-  const finishing = finishingStreams.get(state.sessionId);
-  const current = state.streams.get(state.sessionId) ?? finishing?.stream;
+  // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
+  if ((state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
+  paintStream(region, state.sessionId, transcriptScroller, true);
+}
+/** Draws a thread's live turn into `region`: the main transcript's `#stream-region`, or the By the way
+ *  panel's (`main` false: no approval bar, bot chrome or team rows of the open thread). */
+function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLElement, main = false): void {
+  const finishing = finishingStreams.get(sessionId);
+  const current = state.streams.get(sessionId) ?? finishing?.stream;
   // A final text frame can run while the saved transcript is loading. Retain
   // its tool controls until renderTranscript can transfer their reading state.
   if (!current) { updateWorkTimer(); return; }
-  // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
-  if (isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
-  const transcript = transcriptScroller;
+  const task = state.sessions.find(item => item.id === sessionId), harness = task?.provider ?? state.defaultProvider, context = workspaceContext(task);
   // The only layout read, and only while a tool is being read.
-  const readingTool = readingTranscriptTool(), scrollTop = readingTool ? transcript.scrollTop : 0;
+  const readingTool = readingTranscriptTool() && (main || transcript.contains(document.activeElement)), scrollTop = readingTool ? transcript.scrollTop : 0;
   let parts = streamParts.get(region);
-  if (region.dataset.sessionId !== state.sessionId || !parts || !region.contains(parts.output)) {
-    region.innerHTML = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>` + activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true }) + `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(session()?.provider ?? state.defaultProvider)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article><div class="live-errors"></div><div class="live-approvals"></div><div class="live-inputs"></div>`;
-    region.dataset.sessionId = state.sessionId; region.dataset.revision = '-1';
+  if (region.dataset.sessionId !== sessionId || !parts || !region.contains(parts.output)) {
+    const thinkingHtml = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>`;
+    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
+    const trace = (meta = '') => activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true, meta });
+    // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
+    region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - current.startedAt, true))}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}<div class="live-errors turn-card-errors"></div></section>`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+    watchReplies(region);
+    region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
     streamParts.set(region, parts = queryStreamParts(region));
   }
   const { activity, message, thinking, output, status } = parts;
   if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
   const answered = answerAge(current);
   paintLiveHeader(activity, current, finishing ? finishing.finishedAt - current.startedAt : undefined, answered);
-  scheduleAnswerFolds(answered);
+  scheduleAnswerFolds(answered, main ? 'main' : sessionId, main ? renderStream : () => paintStream(region, sessionId, transcript));
   if (region.dataset.revision !== String(current.revision)) {
-    paintLiveActivity(region, current, transcript);
+    paintLiveActivity(region, current, transcript, context);
     const errors = parts.errors;
     const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
     if (liveErrorHtml.get(errors) !== errorHtml) { errors.innerHTML = errorHtml; liveErrorHtml.set(errors, errorHtml); }
     // Approvals live in the bar above the prompt, not in the transcript.
     if (parts.approvals.firstChild) parts.approvals.replaceChildren();
-    renderApprovalBar();
+    if (main) renderApprovalBar();
     const inputs = parts.inputs;
     for (const input of current.inputs.values()) if (input.element.parentElement !== inputs) inputs.append(input.element);
     region.dataset.revision = String(current.revision);
   }
+  // In a card the header already reads the running step, so its own row waits until it finishes or prints (no echo).
+  // A step with output to read (a command printing) keeps its row, so it can be opened while it runs. Rows are shown
+  // before the choreography below measures them, and a row that appears grows in (revealRow), never in one step.
+  const header = activity.querySelector<HTMLElement>('.turn-activity-label'), newest = liveToolRecords(current).at(-1);
+  const mirrored = newest && activity.closest('.turn-card') && header?.dataset.mode === 'step' && newest.id === header.dataset.step && !newest.output ? newest.id : undefined;
+  for (const row of parts.tools.querySelectorAll<HTMLElement>('details.tool-trace')) {
+    const key = row.dataset.toolKey!, echo = Boolean(mirrored) && row.dataset.toolStatus === 'running' && (key === mirrored || key.endsWith(':' + mirrored));
+    // By key: a finished step's row is a fresh element (patchToolGroup), never the one that carried the attribute.
+    if (echo) { if (!row.hasAttribute('data-mirrored')) row.toggleAttribute('data-mirrored', true); mirroredRows.add(key); }
+    else if (mirroredRows.delete(key)) revealRow(activity, row);
+  }
   // The open cards fold once the answer is under way; text-only frames change neither the tools nor that.
-  const answering = answered >= CARDS_FOLD_MS, expandAll = activityExpanded(), choreographed = `${current.turnKey}:${current.revision}:${answering}:${expandAll}`;
+  // In a card the trace folds as the reply starts, so once it has begun no result card unfolds only to fold back.
+  const answering = answered >= CARDS_FOLD_MS, expandAll = activityExpanded(), hold = answered >= 0 && Boolean(activity.closest('.turn-card')) && !current.retainedMessageKey;
+  const choreographed = `${current.turnKey}:${current.revision}:${answering}:${expandAll}:${hold}`;
   if (activity.dataset.folded === undefined && activity.dataset.choreographed !== choreographed) {
     activity.dataset.choreographed = choreographed;
-    choreograph(parts.tools, current.turnKey, { answering, expandAll });
+    choreograph(parts.tools, current.turnKey, { answering, expandAll, hold });
   }
   // The answer to a traced turn hangs flush under the trace, as in the reference: no avatar/name row.
   message.classList.toggle('after-trace', liveToolRecords(current).length > 0);
@@ -1793,13 +2192,18 @@ function renderStream(): void {
   if (thinking.dataset.turnKey !== current.turnKey) { thinking.dataset.turnKey = current.turnKey; thinking.open = false; }
   setHidden(thinking, !thought);
   if (parts.thought.textContent !== thought) parts.thought.textContent = thought;
-  bindFileLinkContext(output, workspaceContext());
+  bindFileLinkContext(output, context);
   streamMarkdown(output, current.text, transcript);
   setHidden(parts.streaming, Boolean(finishing || current.retainedMessageKey));
+  const appeared = message.hidden && Boolean(current.text);
   setHidden(message, !current.text);
+  if (appeared && message.parentElement?.classList.contains('turn-card-reply-content')) fadeInReply(message);
+  const card = region.querySelector<HTMLElement>('.turn-card.is-live');
+  if (card) holdLiveCard(card, current.turnKey);
+  if (card && card.hasAttribute('data-done') !== Boolean(finishing)) card.toggleAttribute('data-done', Boolean(finishing));
   const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
   setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
-  const bot = botForThread(), sessionId = state.sessionId;
+  const bot = main ? botForThread() : undefined;
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
   // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
@@ -1811,6 +2215,9 @@ type StreamParts = {
 };
 /** renderStream's elements, kept until the region's markup is rebuilt. */
 const streamParts = new WeakMap<HTMLElement, StreamParts>();
+/** Tool keys whose row the live header mirrors (renderStream); each grows in once its step shows (revealRow). */
+// ponytail: keys of a run stopped mid-step stay in the set; a few short strings per stopped step.
+const mirroredRows = new Set<string>();
 function queryStreamParts(region: HTMLElement): StreamParts {
   const part = <T extends HTMLElement = HTMLElement>(selector: string): T => region.querySelector<T>(selector)!;
   const thinking = part<HTMLDetailsElement>('.thinking-block');
@@ -1824,7 +2231,7 @@ const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidde
 const liveGroupEntries = new WeakMap<HTMLElement, LiveTool[]>();
 const liveErrorHtml = new WeakMap<Element, string>();
 /** Patch only changed groups; text frames do not recreate tool controls or open details. */
-function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTMLElement): void {
+function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTMLElement, context: FileLinkContext): void {
   const host = region.querySelector<HTMLElement>('.live-tools')!;
   const liveMessage = region.querySelector<HTMLElement>('.live-message')!;
   const previous = new Map([...host.children].map(node => [(node as HTMLElement).dataset.streamKey, node as HTMLElement]));
@@ -1832,7 +2239,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   const commentary: { node: HTMLElement; content: string }[] = [];
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
-  const tools = current.tools.filter(tool => !tool.statusOnly), workers = document.getElementById('team-progress-host');
+  const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
   const dispatch = workers ? tools.findIndex(tool => typeof tool.content !== 'string' && /dispatch_workers/.test(tool.content.name)) : -1;
   const toolRuns = (entries: LiveTool[]) => groupToolRuns(entries, tool => tool.commentary ? undefined : tool.key);
   const runs = dispatch < 0 ? toolRuns(tools) : [...toolRuns(tools.slice(0, dispatch + 1)), null, ...toolRuns(tools.slice(dispatch + 1))];
@@ -1872,8 +2279,9 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   // The last narrative stays at its original position when tools follow it.
   // New text takes over the stable live node after the accumulated work.
   if (!next.includes(liveMessage)) {
-    const activity = region.querySelector('.turn-activity')!;
-    if (activity.nextElementSibling !== liveMessage) activity.after(liveMessage);
+    const home = region.querySelector('.turn-card-reply-content'), activity = region.querySelector('.turn-activity')!;
+    if (home) { if (liveMessage.parentElement !== home) home.append(liveMessage); }
+    else if (activity.nextElementSibling !== liveMessage) activity.after(liveMessage);
   }
   const retained = new Set(next);
   if (workers?.parentElement === host && !retained.has(workers)) region.after(workers);
@@ -1887,7 +2295,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     node.dataset.earlier = '';
     if (!liveTurnStaysOpen(node)) (node as HTMLDetailsElement).open = false;
   });
-  for (const entry of commentary) { bindFileLinkContext(entry.node, workspaceContext()); streamMarkdown(entry.node, entry.content, transcript); }
+  for (const entry of commentary) { bindFileLinkContext(entry.node, context); streamMarkdown(entry.node, entry.content, transcript); }
 }
 /** One changed call redraws its own row; the summary redraws only when a member's name or status changed. */
 function patchToolGroup(node: HTMLElement, items: LiveTool[], before: LiveTool[]): void {
@@ -1917,8 +2325,12 @@ function patchToolGroup(node: HTMLElement, items: LiveTool[], before: LiveTool[]
 // and the turn folds to its summary at 9.6-9.8 s, mid-answer for any reply longer than the reference's.
 const CARDS_FOLD_MS = 1050;
 const TURN_FOLD_MS = 2350;
+/** A card's trace folds this long into the reply, so a line of narration right before the next step does not flap it. */
+const CARD_TRACE_FOLD_MS = 200;
+let foldRestTimer = 0;
 const answerStarts = new WeakMap<Stream, { at: number; tools: number }>();
-let answerTimer = 0;
+/** One fold timer per live region ('main', or a side thread's id). */
+const answerTimers = new Map<string, number>();
 /** Milliseconds since the answer began (text after the last tool finished), or -1 while tools still run.
  * A tool that starts after narration resets it, so the trace unfolds again for the new steps. */
 function answerAge(current: Stream): number {
@@ -1929,10 +2341,11 @@ function answerAge(current: Stream): number {
   return Date.now() - mark.at;
 }
 /** Text frames may stop before a threshold passes; repaint once when the next one is due. */
-function scheduleAnswerFolds(age: number): void {
-  clearTimeout(answerTimer); answerTimer = 0;
+function scheduleAnswerFolds(age: number, key: string, repaint: () => void): void {
+  clearTimeout(answerTimers.get(key)); answerTimers.delete(key);
   if (age < 0 || age >= TURN_FOLD_MS) return;
-  answerTimer = window.setTimeout(() => { answerTimer = 0; renderStream(); }, (age < CARDS_FOLD_MS ? CARDS_FOLD_MS : TURN_FOLD_MS) - age + 16);
+  const due = [CARD_TRACE_FOLD_MS, CARDS_FOLD_MS, TURN_FOLD_MS].find(threshold => threshold > age)!;
+  answerTimers.set(key, window.setTimeout(() => { answerTimers.delete(key); repaint(); }, due - age + 16));
 }
 const toolRecords = new WeakMap<Stream, { revision: number; records: ToolActivity[] }>();
 /** Every tool change bumps the stream's revision, so text frames reuse the last scan. */
@@ -1952,21 +2365,36 @@ function traceGlyphHtml(kind: 'dots' | 'bars' | 'step', iconName = ''): string {
 /** The live header mirrors the newest step's sentence (shimmering while the turn runs); at the end it
  * becomes the turn's summary and the steps fold under it, as the saved turn will render. */
 function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs: number | undefined, answerMs: number): void {
-  const answered = answerMs >= TURN_FOLD_MS;
   const label = activity.querySelector<HTMLElement>('.turn-activity-label')!;
   const tools = liveToolRecords(current);
   const narrated = current.tools.some(tool => tool.commentary && tool.key !== current.retainedMessageKey);
   const last = tools[tools.length - 1];
   const status = current.inputs.size || current.approvals.size || current.status === 'Stopping agent';
+  const carded = Boolean(activity.closest('.turn-card'));
+  // A card folds its trace as the final reply starts (its first token after the last step), so the live card is at
+  // its saved shape by the end of the run; a step focused by the reader keeps it open.
+  const reading = Boolean(document.activeElement?.closest('.turn-activity-body') && activity.contains(document.activeElement));
+  // Narration kept above a later step (retainedMessageKey) is not the reply.
+  let early = carded ? answerMs >= CARD_TRACE_FOLD_MS && !reading && !current.retainedMessageKey : answerMs >= TURN_FOLD_MS && !narrated;
+  // A result card that unfolded just before the reply began is left in sight a moment (UNFOLD_REST_MS) before the fold.
+  const rest = early && carded && workedMs === undefined ? foldWait(activity) : 0;
+  if (rest) { early = false; clearTimeout(foldRestTimer); foldRestTimer = window.setTimeout(renderStream, rest + 16); }
   let mode: string, html: string, step = '';
-  if (workedMs !== undefined || (answered && !narrated)) {
-    // A tool-only turn folds to its summary mid-answer; a narrated one keeps its steps until it ends.
+  if (workedMs !== undefined || early) {
+    // A tool-only turn folds to its summary mid-answer (a card's as the answer starts); a narrated one keeps its steps until it ends.
     mode = 'folded';
-    html = tools.length && !narrated ? foldedLabelHtml(tools) : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+    // In a card the time stands on the right, so the label is the steps' summary; bot rows keep `Worked for`.
+    html = tools.length && (!narrated || carded) ? foldedLabelHtml(tools) : carded ? escape('Replied') : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+  } else if (last && !status && carded && (last.status !== 'running' || last.output)) {
+    // In a card, once the step the header mirrored finishes or prints, its own row shows it: the header moves on
+    // to the turn's running summary (`Ran 1 command`), so header and rows never say the same thing.
+    mode = 'summary';
+    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : ''}${foldedLabelHtml(tools)}`;
   } else if (last && !status) {
     const trace = describeTool(last);
     mode = 'step'; step = last.id;
-    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>`;
+    const thumb = carded ? stepImage(last) : '';
+    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : traceGlyphHtml('step', trace.icon ?? kindIcon(trace.kind))}<span class="trace-sentence">${traceRowHtml(trace)}</span>${thumb ? `<img class="turn-card-thumb" alt="" data-thumb="${escape(thumb)}" hidden>` : ''}`;
   } else {
     mode = 'status';
     // The first word reads dark and the rest dim, like the reference's `Working on it…`.
@@ -1974,32 +2402,70 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
     html = `${traceGlyphHtml('dots')}<span class="trace-sentence is-status"><span class="trace-status-lead">${escape(first)}</span>${rest ? `<span class="trace-status-rest">${escape(rest)}</span>` : ''}</span>`;
   }
   // New steps after an early fold (the agent went back to work) unfold the trace again.
-  if (mode !== 'folded' && activity.dataset.folded !== undefined) { delete activity.dataset.folded; activity.open = true; }
+  if (mode !== 'folded' && activity.dataset.folded !== undefined) {
+    // A fold still closing is called off, so its end does not shut the trace again.
+    delete activity.dataset.folded; delete activity.dataset.closing;
+    activity.querySelector(':scope > .turn-activity-body')?.getAnimations().forEach(animation => animation.cancel());
+    activity.open = true;
+  }
   const summary = activity.querySelector<HTMLElement>('.turn-activity-summary')!;
   const working = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
-  if (workedMs === undefined && summary.title !== working) summary.title = working;
+  // A card shows the time beside the sentence, so only a bot's trace keeps it as the tooltip.
+  if (!carded && workedMs === undefined && summary.title !== working) summary.title = working;
   const changed = label.dataset.mode !== mode || label.dataset.step !== step;
-  if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; }
+  if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; loadStepImage(label); }
+  const time = summary.querySelector<HTMLElement>('.turn-card-time');
+  if (time) {
+    const shown = formatDuration(workedMs ?? Date.now() - current.startedAt);
+    if (time.textContent !== shown) time.textContent = shown;
+    if (workedMs !== undefined && time.hasAttribute('data-live')) {
+      time.removeAttribute('data-live');
+      const lead = time.previousElementSibling;
+      if (lead?.classList.contains('turn-card-time-lead')) lead.textContent = 'took ';
+    }
+  }
   if (changed) { label.dataset.mode = mode; label.dataset.step = step; }
   if (changed && mode === 'step') enterHeader(label);
-  else if (changed && mode === 'folded') enterText(label);
-  if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity)) foldTurn(activity);
+  else if (changed && (mode === 'folded' || mode === 'summary')) enterText(label);
+  // A card's trace does not fold when the run ends: the saved card replaces it folded, and its bridge eases the height (handOffCard).
+  if (mode === 'folded' && activity.dataset.folded === undefined && !liveTurnStaysOpen(activity) && !(carded && workedMs !== undefined)) foldTurn(activity, carded);
+  // A live card holds its height while its trace folds (`holdLiveCard`): the reply grows into the space the trace gave
+  // up, and what a short reply leaves is given back once at the end of the run (handOffCard's bridge).
 }
 /** What the agent is doing before its first step (or while it waits); the elapsed time is the header's tooltip. */
 // Startup and generic statuses read as the reference's `Working on it…` until the first step or a real wait.
 const STARTUP_STATUS = new Set(['running', 'Working…', 'Starting agent', 'Waiting for response']);
+/** A workspace image the running step looks at (a Read of a .png, say), for the header's thumbnail. */
+function stepImage(tool: ToolActivity): string {
+  if (tool.status !== 'running' && tool.status !== 'completed') return '';
+  const match = /"(?:file_path|path|image_path)"\s*:\s*"([^"]+\.(?:png|jpe?g|gif|webp))"/i.exec(tool.input) ?? /^\s*(\S+\.(?:png|jpe?g|gif|webp))\s*$/i.exec(tool.input);
+  return match?.[1] ?? '';
+}
+const stepImages = new Map<string, Promise<string | null>>();
+function loadStepImage(label: HTMLElement): void {
+  const image = label.querySelector<HTMLImageElement>('img[data-thumb]'), sessionId = state.sessionId;
+  if (!image) return;
+  const path = image.dataset.thumb!, key = sessionId + '\0' + path;
+  if (!stepImages.has(key)) stepImages.set(key, call<string>('workspace_image', { sessionId, path }).then(url => url.startsWith('data:image/') ? url : null, () => null));
+  void stepImages.get(key)!.then(url => { if (url && image.isConnected) { image.src = url; image.hidden = false; } });
+}
 function workingLabel(current: Stream): string {
   let label = current.inputs.size ? 'Waiting for your answer' : current.approvals.size ? 'Waiting for approval' : current.status;
   if (current.status === 'Stopping agent') label = current.status;
-  return !label || STARTUP_STATUS.has(label) ? 'Working on it…' : label;
+  return !label || STARTUP_STATUS.has(label) ? 'Thinking' : label;
 }
 function updateWorkTimer(): void {
   if (document.hidden || ((!transcriptVisible() || !state.streams.has(state.sessionId)) && !document.querySelector('.task-runtime'))) { clearTimeout(workTimer); workTimer = 0; return; }
   if (workTimer) return;
+  // Each tick lands just past the next whole second since the prompt, so the shown time never drifts.
+  const startedAt = state.streams.get(state.sessionId)?.startedAt;
+  const wait = startedAt === undefined ? 1000 : 1000 - (Date.now() - startedAt) % 1000 + 4;
   workTimer = window.setTimeout(() => {
     workTimer = 0;
     const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
-    if (current && summary) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+    if (current && summary && !summary.closest('.turn-card')) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+    const time = document.querySelector<HTMLElement>('#stream-region .turn-card-time[data-live]');
+    if (current && time) time.textContent = formatDuration(Date.now() - current.startedAt);
     const now = Date.now();
     for (const timer of document.querySelectorAll<HTMLElement>('.task-runtime')) {
       const elapsed = formatDuration(now - Number(timer.dataset.startedAt));
@@ -2007,7 +2473,7 @@ function updateWorkTimer(): void {
       timer.title = `Working for ${elapsed}`;
     }
     updateWorkTimer();
-  }, 1000);
+  }, wait);
 }
 // Project files, moodboards and prompt attachments share one bar; refreshing it alone
 // keeps the prompt's focus and caret when something is pasted or dropped mid-sentence.
@@ -2022,27 +2488,43 @@ function renderAttachmentBar(): void {
   if (s && bar) bar.innerHTML = attachmentBar(s); else renderComposer();
 }
 /** Pending approvals for the open task, in the bar directly above the prompt. */
-let approvalGroupOpen = false;
+/** Tasks whose grouped approval bar is expanded (the main bar and the By the way panel's are separate). */
+const approvalGroupsOpen = new Set<string>();
 const approvalDetails = new Set<string>();
+/** What the bar last showed: its host is rebuilt with the composer, so "empty to filled" can't be read from the DOM. A thread switch draws at once. */
+let approvalBarShown = { sessionId: '', filled: false };
 function renderApprovalBar(): void {
   const host = document.querySelector<HTMLElement>('#approval-bar');
   if (!host) return;
-  const sessionId = state.sessionId, approvals = [...state.streams.get(sessionId)?.approvals ?? []].map(([id, text]) => ({ id, text }));
-  const html = approvalBarHtml(approvals, { busy: id => pendingApprovals.has(sessionId + id), expanded: approvalGroupOpen, details: new Set([...approvalDetails].filter(item => item.startsWith(sessionId)).map(item => item.slice(sessionId.length))) });
+  const sessionId = state.sessionId, filled = Boolean(state.streams.get(sessionId)?.approvals.size);
+  const html = taskApprovalsHtml(sessionId);
+  const appeared = filled && approvalBarShown.sessionId === sessionId && !approvalBarShown.filled;
+  approvalBarShown = { sessionId, filled };
   if (host.innerHTML === html) return;
   host.innerHTML = html;
-  if (!approvals.length) approvalGroupOpen = false;
+  if (!filled) approvalGroupsOpen.delete(sessionId);
+  if (appeared) settleUnfolded(host);
+}
+/** A task's pending approvals as the bar above its prompt. */
+function taskApprovalsHtml(sessionId: string): string {
+  const approvals = [...state.streams.get(sessionId)?.approvals ?? []].map(([id, text]) => ({ id, text }));
+  return approvalBarHtml(approvals, { busy: id => pendingApprovals.has(sessionId + id), expanded: approvalGroupsOpen.has(sessionId), details: new Set([...approvalDetails].filter(item => item.startsWith(sessionId)).map(item => item.slice(sessionId.length))) });
 }
 async function respondApproval(sessionId: string, id: string, approved: boolean): Promise<void> {
   const current = state.streams.get(sessionId), approvalKey = sessionId + id;
   if (!current?.approvals.has(id) || pendingApprovals.has(approvalKey)) return;
-  pendingApprovals.add(approvalKey); renderApprovalBar();
+  pendingApprovals.add(approvalKey); renderApprovalBar(); btwPanel.event(sessionId, 'approval');
   try {
     await call('respond_approval', { sessionId, requestId: id, approved });
     current.approvals.delete(id); approvalDetails.delete(approvalKey); current.revision++;
     if (!current.approvals.size && current.status === 'Waiting for approval') current.status = 'Continuing task';
-  } finally { pendingApprovals.delete(approvalKey); current.revision++; renderStream(); renderNavigation(); renderApprovalBar(); }
+  } finally { pendingApprovals.delete(approvalKey); current.revision++; renderStream(); renderNavigation(); renderApprovalBar(); btwPanel.event(sessionId, 'approval'); }
 }
+/** Rows that unfold snap to height, then fade up 4px over ~120 ms (settleIn keeps the MOTION and reduced-motion paths). */
+const settleUnfolded = (element: HTMLElement): void => settleIn(element, 4, { response: 0.07 }, 0);
+/** The reference's steer arrow (↳) and effort gauge; dom.ts has no such glyphs. */
+const STEER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4v7a3 3 0 0 0 3 3h10m-4-4 4 4-4 4"/></svg>';
+const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 16.5a8.5 8.5 0 1 1 15.6 0"/><path d="m12 13 3.5-4"/></svg>';
 function renderComposer(): void {
   refreshTeamProgress();
   syncProgressPip();
@@ -2056,6 +2538,9 @@ function renderComposer(): void {
   if (oldPrompt?.dataset.sessionId && !deletedSessions.has(oldPrompt.dataset.sessionId)) state.drafts.set(oldPrompt.dataset.sessionId, oldPrompt.value);
   // Re-rendering replaces the textarea; keep typing focus and the caret, since people type while agents work.
   const typing = oldPrompt && document.activeElement === oldPrompt ? { id: oldPrompt.dataset.sessionId, start: oldPrompt.selectionStart, end: oldPrompt.selectionEnd } : null;
+  // The swap below would drop focus on Steer, its ✕ and pencil, or Stop to <body>.
+  const barControl = document.activeElement?.closest<HTMLElement>('#composer-area :is(.composer-steer-bar [data-action],[data-action="stop"])')?.dataset.action;
+  const hadSteerBar = oldPrompt?.dataset.sessionId === session()?.id && Boolean(document.querySelector('#composer-area .composer-steer-bar'));
   if (state.sharedChannelId) {
     const channel = state.sharedChannelDetail;
     // Refreshes rewrite the actions; an open Reassign menu for the same message stays open.
@@ -2075,7 +2560,7 @@ function renderComposer(): void {
   syncOverlayContext({ projectId: s.projectId, provider: s.provider, model: s.model || 'default', mode: s.mode, reasoningEffort: s.reasoningEffort ?? null });
   if (taskStage(s) === 'completed') { $('#composer-area').innerHTML = `<div class="board-completed-note">This task is settled.${state.view === 'conversation' ? '<button type="button" class="secondary-button" data-action="board-reopen">Reopen task</button>' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
   const previous = state.drafts.get(s.id) ?? '';
-  const running = isRunning(), behavior = approvalMode(s.provider, s.mode);
+  const running = isRunning();
   // A bot's next model can be picked mid-turn; it applies from the next turn.
   const team = teams.get(s.id), togglingTeam = teamToggles.has(s.id), modelLocked = (running && !team && !botForThread()) || togglingTeam;
   const target = remoteTargetFor(s), offline = remoteOffline(s), checking = remoteChecks.has(s.id), retrying = target ? remoteRetries.has(target.deviceId) : false;
@@ -2084,13 +2569,28 @@ function renderComposer(): void {
     : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}<button type="button" id="model-picker-trigger" class="model-picker" data-action="model" aria-label="Choose harness and model" aria-description="${escape([modelLabel(s), teamModelLabel(s)].filter(Boolean).join(' '))}" aria-haspopup="dialog" aria-expanded="false" title="${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}" ${modelLocked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail" data-model-label>${escape(modelLabel(s, false))}</span><span class="model-effort" data-effort-label ${effortLabel(s) ? '' : 'hidden'}>${escape(effortLabel(s))}</span><span class="team-model-count" data-team-model-label ${teamModelLabel(s) ? '' : 'hidden'}>${teamModelLabel(s)}</span>${icon('down')}</button><span class="composer-separator"></span><button type="button" id="mode-picker-trigger" class="mode-picker" data-action="mode" data-mode="${behavior.id}" title="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${running || togglingTeam ? 'disabled' : ''}>${icon(behavior.icon)}<span>${escape(behavior.label)}</span>${icon('down')}</button>${teamButton(s)}${tokenSaver.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>`;
-  $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
+  // The composer redraws on every session change; the orchestration slot's nodes outlive it.
+  const orchestrationSlot = document.querySelector('#machine-orchestration');
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
+  if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
+    const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (fresh) {
+      // Every attribute the template varies across renders; extend this list when the template gains one.
+      for (const name of ['placeholder', 'aria-description', 'rows']) {
+        const value = fresh.getAttribute(name);
+        if (value === null) oldPrompt.removeAttribute(name); else oldPrompt.setAttribute(name, value);
+      }
+      fresh.replaceWith(oldPrompt);
+    }
+  }
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name }));
+  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
+  if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
+  trayStateChanged();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -2104,14 +2604,20 @@ function renderComposer(): void {
   }
   // The prompt stays open during a run: messages typed then are queued or steered.
   // A finished run whose history failed to load waits for Retry before anything else is sent.
-  if (prompt) { prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
+  // Writing an unchanged value would still clear the reused field's undo history in some engines.
+  if (prompt) { if (prompt.value !== previous) prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
   if (prompt && typing?.id === s.id && !prompt.disabled) { prompt.focus({ preventScroll: true }); prompt.setSelectionRange(typing.start, typing.end); }
+  if (barControl) {
+    // Redrawn while the run goes on: the same control keeps focus. Gone or hidden: the prompt takes it.
+    const again = document.querySelector<HTMLElement>(`#composer-area [data-action="${barControl}"]`);
+    again?.focus({ preventScroll: true });
+    if (document.activeElement !== again) prompt?.focus({ preventScroll: true });
+  }
+  syncSteerAvailability();
+  const steerBar = document.querySelector<HTMLElement>('#composer-area .composer-steer-bar');
+  if (steerBar && !hadSteerBar && oldPrompt?.dataset.sessionId === s.id) settleUnfolded(steerBar);
   if (botForThread()) botThread.paintReplyChip(s.id);
-  const footnote = document.querySelector('.composer-footnote');
-  if (footnote) footnote.insertAdjacentHTML('beforeend', '<span class="context-indicator" hidden></span>');
-  else $('#composer-area').insertAdjacentHTML('beforeend', '<div class="composer-footnote is-empty"><span class="context-indicator" hidden></span></div>');
-  renderContextUsage();
-  $('#composer').insertAdjacentHTML('afterbegin', '<div class="browser-context-attachments" aria-label="Browser attachments"></div>');
+  $('#attachments').insertAdjacentHTML('beforebegin', '<div class="browser-context-attachments" role="group" aria-label="Browser attachments"></div>');
   renderBrowserAttachments(); browserPanel?.refresh();
   if (prompt && !prompt.disabled) {
     slashPicker = mountSlashCommands(prompt, {
@@ -2138,6 +2644,21 @@ function renderComposer(): void {
   }
   syncRemoteConnection();
   renderedRemoteKey = remoteComposerKey(s);
+}
+/** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
+function syncSteerAvailability(): void {
+  const steer = document.querySelector<HTMLElement>('#composer-area .steer-button'), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  if (steer && prompt) steer.setAttribute('aria-disabled', String(!prompt.value.trim()));
+}
+document.addEventListener('input', event => { if ((event.target as Element | null)?.id === 'prompt') syncSteerAvailability(); });
+/** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
+function modelTriggerHtml(s: Session, locked: boolean, main = false): string {
+  const teamLabel = teamModelLabel(s), effort = effortLabel(s);
+  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model" aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
+}
+function modeTriggerHtml(s: Session, disabled: boolean, main = false): string {
+  const behavior = approvalMode(s.provider, s.mode);
+  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode" data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
 }
 function renderBrowserAttachments(): void {
   const target = document.querySelector('.browser-context-attachments'); if (!target) return;
@@ -2170,15 +2691,16 @@ function renderBoardView(): void {
   $('.workspace').classList.toggle('side-thread', board || (hub && state.boardPanel));
   renderSidebarVisibility();
   const viewMenu = $('#view-menu'), current = WORKSPACE_VIEWS.find(view => view.id === state.view)!;
-  viewMenu.innerHTML = `${icon(current.icon)}${icon('down')}`;
-  viewMenu.setAttribute('aria-label', `Workspace view: ${current.label}`);
-  viewMenu.title = `Workspace view: ${current.label}`;
+  const viewIcons = `${icon(current.icon)}${icon('down')}`, viewName = `Workspace view: ${current.label}`;
+  if (!showsHtml(viewMenu, viewIcons)) viewMenu.innerHTML = viewIcons;
+  if (viewMenu.getAttribute('aria-label') !== viewName) { viewMenu.setAttribute('aria-label', viewName); viewMenu.title = viewName; }
   syncGithubHub(hub);
   const pane = $('.conversation-pane');
   const paneWasHidden = pane.hidden;
   pane.hidden = (hub || board) && !state.boardPanel;
-  if (paneWasHidden !== pane.hidden) { inspectorSuppressed = board && pane.hidden; renderInspector(); }
+  if (paneWasHidden !== pane.hidden) { inspectorSuppressed = (board || hub) && pane.hidden; renderInspector(); }
   subagents.setTask(state.sessionId, !pane.hidden);
+  syncOrchestration();
   jevActivity.setTask(pane.hidden ? '' : state.sessionId);
   if (board || hub) { pane.setAttribute('role', 'region'); pane.setAttribute('aria-label', 'Task details'); }
   else { pane.removeAttribute('role'); pane.removeAttribute('aria-label'); }
@@ -2188,17 +2710,19 @@ function renderBoardView(): void {
   if (!board) return;
   const boardProject = state.projectFilter || project()?.id || state.projects[0]?.id || '';
   if (boardProject) void github.status(boardProject);
-  renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, isRunning, github.connected(boardProject));
+  const boardNow = Date.now(), boardSignal = (s: Session) => ({ ...taskSignal(s, boardNow), unread: Boolean(unreviewed?.has(s.id)) && s.id !== state.sessionId });
+  renderTaskBoard($('#project-board'), listedSessions(), state.projects, state.boardPanel ? state.sessionId : '', state.projectFilter, isRunning, github.connected(boardProject), boardSignal);
   renderTaskDetails($('#task-details-heading'), session(), project(), isRunning(), state.messagesLoading || Boolean(state.messagesError));
 }
 /** The GitHub view, mounted the first time it is shown and refreshed with the workspace. */
 let githubHub: import('./github-hub').HubView | undefined;
 let githubHubLoading = false;
 function syncGithubHub(shown: boolean): void {
-  const host = $('#github-hub');
+  const host = $('#github-hub'), entering = host.hidden;
   host.hidden = !shown;
   if (!shown) return;
-  if (githubHub) { githubHub.render(); return; }
+  // Every render lands here; only coming back to the view fades it in.
+  if (githubHub) { githubHub.render(); if (entering) settleIn(host, 0); return; }
   if (githubHubLoading) return;
   githubHubLoading = true;
   run(import('./github-hub').then(({ mountGithubHub }) => {
@@ -2210,6 +2734,8 @@ function syncGithubHub(shown: boolean): void {
       chooseFolder, notify,
       projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); },
     });
+    // The hub fades in once it has drawn (opacity only: a transform would move its full-height repository list).
+    settleIn(host, 0);
   }).finally(() => { githubHubLoading = false; }));
 }
 /** A thread opened from GitHub opens beside it; GitHub stays where it was. */
@@ -2286,7 +2812,10 @@ function toggleSidebar(): void {
   state.sidebarCollapsed = !state.sidebarCollapsed;
   try { localStorage.setItem('pandacode.sidebarCollapsed', String(state.sidebarCollapsed)); } catch { /* Keep the choice for this session. */ }
   renderSidebarVisibility();
-  if (!state.sidebarCollapsed) glideIn(sidebar, 'left', 20);
+  if (!state.sidebarCollapsed) glideIn(sidebar, 'left', 8);
+  // The pane's new width lands at once (layout is never animated); its content settles from 0.85 so the jump reads as one soft change.
+  // The content settles, never .main-pane itself: an opacity animation there would re-composite the header's and dock's backdrop blur.
+  settleIn($('.conversation-pane'), 0, undefined, 0.85);
   if (moveFocus) $('#sidebar-toggle').focus({ preventScroll: true });
   // Refits existing terminals and keeps floating menus/native browser bounds aligned.
   window.dispatchEvent(new Event('resize'));
@@ -2308,10 +2837,11 @@ function setWorkspaceView(view: WorkspaceView): void {
   inspectorSuppressed = view !== 'conversation';
   renderInspector();
   render();
-  // The chosen view rises into place; board cards arrive as a short cascade.
-  if (view === 'board') { enterView($('#project-board'), 8); cascade($('#project-board').querySelectorAll<HTMLElement>('.board-card'), 18, 160); }
-  // The GitHub view appears at once: a transform would move its full-height repository list.
-  else if (view !== 'github') enterView($('.conversation-pane'), 8);
+  // The chosen view rises into place; board cards arrive as a short cascade (the pane does not also fade, or the two multiply).
+  if (view === 'board') { cascade($('#project-board').querySelectorAll<HTMLElement>('.board-card'), 18, 160); }
+  // Conversation settles back like Settings and GitHub (opacity only); GitHub fades in once mounted.
+  else if (view === 'conversation') settleIn($('.conversation-pane'), 0);
+
 }
 async function editBoardTask(): Promise<void> {
   const task = session(), generation = state.generation;
@@ -2411,6 +2941,12 @@ async function startBoardTask(id: string): Promise<void> {
 }
 
 function render(): void { renderNavigation(); renderHeader(); renderTranscript(); renderComposer(); }
+let navigationAfterFrame = 0;
+/** Redraws the sidebar just after the next paint (one at a time), for work that need not hold up the frame. */
+function navigationAfterPaint(): void {
+  if (navigationAfterFrame) return;
+  navigationAfterFrame = requestAnimationFrame(() => setTimeout(() => { navigationAfterFrame = 0; renderNavigation(); }));
+}
 function setMessagePage(page: MessagePage): void {
   const firstId = page.messages[0]?.id;
   const earlier = firstId && page.hasOlder ? state.messages.filter(message => message.id > 0 && message.id < firstId) : [];
@@ -2562,7 +3098,10 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
-async function selectSession(id: string, focusComposer = false): Promise<void> {
+function selectSession(id: string, focusComposer = false): Promise<void> {
+  return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
+}
+async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
   closeMenus();
@@ -2592,6 +3131,10 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
   stickToBottom = true; render();
   if (remembered) stickTranscript();
+  // A thread switch settles in once, after its real content draws: here for a remembered page,
+  // below once the page arrives (never on the loading placeholder).
+  const settle = changingTask && Boolean(previousTask);
+  if (settle && remembered) settleIn($('#transcript'));
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   let page: MessagePage, details: Session;
   try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
@@ -2618,6 +3161,7 @@ async function selectSession(id: string, focusComposer = false): Promise<void> {
   // A remembered page that is still current is already on screen; leave it untouched.
   const changed = !remembered || pageSignature(state.messages) !== shown;
   renderHeader(); if (changed) renderTranscript(); renderComposer();
+  if (settle && !remembered && changed) settleIn($('#transcript'));
   // A saved team can select a harness whose catalog has not been opened this run.
   // Resolve its display name in place, without delaying the task or replacing input.
   if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
@@ -2720,6 +3264,47 @@ async function addProject(path: string): Promise<void> {
   closeModal(); render(); if (generation !== state.generation) return; await refreshInspector();
   notify(`Opened ${added.name}`);
 }
+/** A project folder renamed or moved outside PandaCode: pick its new location and repoint the project. */
+async function locateProjectFolder(): Promise<void> {
+  const p = project();
+  if (!p || isChatProject(p)) return;
+  const path = await chooseFolder(`Locate the moved "${p.name}" folder`);
+  if (!path) return;
+  try {
+    const updated = await call<Project>('relink_project', { projectId: p.id, path });
+    state.projects = await call<Project[]>('list_projects');
+    notify(`Relinked ${updated.name}`);
+  } catch (error) { report(error); return; }
+  renderNavigation(); renderHeader();
+  refreshFileLinks(workspaceContext());
+  await refreshInspector();
+}
+const SLASH_INSTRUCTIONS: Record<string, string> = {
+  init: 'Inspect this repository and create or update AGENTS.md with concise, accurate project instructions: setup, development commands, tests, architecture, and conventions. Preserve existing useful guidance.',
+  recap: 'Summarize this conversation concisely: objective, changes, important decisions, validation, and remaining work.',
+};
+function slashInstruction(action: string, argumentsText: string): string { return SLASH_INSTRUCTIONS[action] + (argumentsText ? '\n' + argumentsText : ''); }
+/** App slash commands that act only on the task they are given, so the By the way panel can run them for its side thread. */
+const SIDE_SAFE_SLASH = new Set(['usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs', 'export', 'fast', 'settings', 'theme']);
+/** Runs an app slash command typed in the By the way panel on its side thread. Returns text to send to the side
+ *  agent instead (commands that become a prompt), true when handled, false when `text` is not an app command;
+ *  commands that would act on the open thread are refused with a notice. */
+async function btwSlash(side: Session, text: string, toolbar: HTMLElement | null): Promise<boolean | string> {
+  if (!/^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(text)) return false;
+  const resolved = await call<{ action: string | null; arguments: string }>('resolve_slash_command', { sessionId: side.id, text });
+  const action = resolved.action, args = resolved.arguments;
+  if (!action || action === 'btw') return false;
+  if (action === 'init' || action === 'recap') return slashInstruction(action, args);
+  if (action === 'model' || action === 'permissions') {
+    const trigger = toolbar?.querySelector<HTMLElement>(action === 'model' ? '.model-picker' : '.mode-picker');
+    if (trigger) await (action === 'model' ? showModel(trigger, side) : showMode(trigger, side));
+    return true;
+  }
+  if (action === 'rename' && args) { await call('update_session', { sessionId: side.id, title: args }); side.title = args; renderNavigation(); btwPanel.refresh(); return true; }
+  if (SIDE_SAFE_SLASH.has(action) || (action === 'plan' && (!args || ['on', 'off'].includes(args)))) { await performSlashAction(action, args, side); return true; }
+  notify(`Open the side thread as a full thread to use ${text.split(/\s/)[0]}.`);
+  return true;
+}
 async function performSlashAction(action: string, argumentsText: string, task: Session): Promise<void> {
   if (action.startsWith('console:')) { await openHarnessConsole(task, `/${action.slice(8)}${argumentsText ? ' ' + argumentsText : ''}`); return; }
   switch (action) {
@@ -2757,8 +3342,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
       break;
     }
-    case 'init': await instruction(task, 'Inspect this repository and create or update AGENTS.md with concise, accurate project instructions: setup, development commands, tests, architecture, and conventions. Preserve existing useful guidance.' + (argumentsText ? '\n' + argumentsText : '')); break;
-    case 'recap': await instruction(task, 'Summarize this conversation concisely: objective, changes, important decisions, validation, and remaining work.' + (argumentsText ? '\n' + argumentsText : '')); break;
+    case 'init': case 'recap': await instruction(task, slashInstruction(action, argumentsText)); break;
     case 'new': await createTask(); break;
     case 'model': await showModel($('#model-picker-trigger')); break;
     case 'permissions': await showMode($('#mode-picker-trigger')); break;
@@ -2797,7 +3381,7 @@ const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
  * stopped is ending, `stopping` keeps the hold from before, so the stop does not pause the others. */
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
-function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); }
+function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); btwPanel.event(id, 'queue'); }
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
   return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
@@ -2876,6 +3460,7 @@ const steeringQueued = new Set<string>();
 async function steer(s: Session, text: string): Promise<void> {
   const message = sentPrompt(s, text, Date.now());
   if (s.id === state.sessionId) { state.messages = [...state.messages, message]; renderTranscript(true); }
+  btwPanel.sent(s.id, message);
   try {
     const result = await call<{ id?: string; mode?: SteerMode } | null>('steer_task', { sessionId: s.id, text });
     const known = result?.id ? steers.get(result.id) : undefined;
@@ -2883,6 +3468,7 @@ async function steer(s: Session, text: string): Promise<void> {
   } catch (error) {
     dropMirrorPrompt(s.id, message);
     if (s.id === state.sessionId) { state.messages = state.messages.filter(item => item !== message); renderTranscript(true); }
+    btwPanel.unsent(s.id, message);
     throw error;
   }
 }
@@ -2900,6 +3486,7 @@ function steerEvent(event: AgentEvent): void {
   steers.set(data.id, { sessionId: event.sessionId, text: event.text, ...known, ...(shown !== undefined ? { messageId: shown } : {}), mode: data.mode ?? known?.mode ?? 'live', status: data.status });
   if (data.status === 'failed') void requeueSteer(event.sessionId, event.text || known?.text || '', (event.data as { reason?: string } | undefined)?.reason || 'The agent could not take it during this turn.');
   if (event.sessionId === state.sessionId && (known?.messageId !== undefined || shown !== undefined)) renderTranscript(true);
+  btwPanel.event(event.sessionId, 'steer');
 }
 /** Queued entries whose steer did not land, with the reason (the queue shows "Not steered"). */
 const notSteered = new Map<string, string>();
@@ -2937,27 +3524,31 @@ async function steerFromComposer(): Promise<void> {
     return enqueueFromComposer();
   }
   clearComposerNote(s); clearComposer(s); renderComposer();
+  await steerOrQueue(s, text);
+}
+/** Steers `text` into the running turn of `s`; whatever cannot steer is queued, or put back in its composer. */
+async function steerOrQueue(s: Session, text: string): Promise<void> {
   // A mirror whose start has not attached has no run to steer yet: the message waits in the queue.
   const starting = remoteStart(s.id);
   if (starting && starting.stage !== 'error') {
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
     if (entry) { setQueue(s.id, [...queueOf(s.id), entry]); notify(`${starting.device} is still starting this task; your message is queued for after it.`); }
     else restoreComposer(s, text, [], []);
-    if (s.id === state.sessionId) renderComposer();
+    refreshComposer(s);
     return;
   }
   try {
     await steer(s, text);
   } catch (error) {
     // A host that has not approved this device would refuse it queued too: say so, keep the text.
-    if (remoteRefusal(s, error)) { restoreComposer(s, text, [], []); if (s.id === state.sessionId) renderComposer(); return; }
+    if (remoteRefusal(s, error)) { restoreComposer(s, text, [], []); refreshComposer(s); return; }
     // Not taken mid-turn: keep it for after the run instead of losing it.
     const reason = error instanceof Error ? error.message : String(error);
     notify(/\bqueued\b/i.test(reason) ? reason : `${reason} Queued instead.`);
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
     if (entry) notSteered.set(entry.id, reason);
     if (entry) setQueue(s.id, [...queueOf(s.id), entry]); else restoreComposer(s, text, [], []);
-    if (s.id === state.sessionId) renderComposer();
+    refreshComposer(s);
   }
 }
 /** Steers a queued entry; it leaves the queue only once the running turn has taken it. */
@@ -2966,29 +3557,31 @@ async function steerQueued(s: Session, id: string): Promise<void> {
   if (entry.attachments.length) { notify('Queued messages with attachments are sent after the run.'); return; }
   const starting = remoteStart(s.id);
   if (starting && starting.stage !== 'error') { notify(`${starting.device} is still starting this task; the message stays queued.`); return; }
-  steeringQueued.add(id); renderComposer();
+  steeringQueued.add(id); refreshComposer(s);
   try {
     await steer(s, entry.text);
     await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id));
-  } finally { steeringQueued.delete(id); if (s.id === state.sessionId) renderComposer(); }
+  } finally { steeringQueued.delete(id); refreshComposer(s); }
 }
-async function saveQueueEdit(): Promise<void> {
-  const s = session(); const entry = s && queueOf(s.id).find(item => item.id === state.queueEditing); if (!s || !entry) return;
+async function saveQueueEdit(s = session()): Promise<void> {
+  const entry = s && queueOf(s.id).find(item => item.id === state.queueEditing); if (!s || !entry) return;
   const text = document.querySelector<HTMLTextAreaElement>('.queue-edit')?.value.trim() ?? '';
   const updated = await call<QueuedMessage>('queue_update', { id: entry.id, text, attachments: entry.attachments });
-  setQueue(s.id, queueOf(s.id).map(item => item.id === entry.id ? updated : item)); state.queueEditing = ''; renderComposer();
+  setQueue(s.id, queueOf(s.id).map(item => item.id === entry.id ? updated : item)); state.queueEditing = ''; refreshComposer(s);
 }
+/** Redraws the composer that shows `s`: the main one, or the By the way panel's. */
+function refreshComposer(s: Session): void { if (s.id === state.sessionId) renderComposer(); else btwPanel.refresh(); }
 async function queueAction(action: string, element: HTMLElement): Promise<void> {
-  const s = session(); if (!s) return;
+  const s = actionTask(element); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
   if (action === 'queue-steer') return steerQueued(s, id).catch(error => { if (remoteRefusal(s, error)) return; if (!isRunning(s.id)) run(dispatchQueue(s.id)); throw error; });
   if (action === 'queue-send-now') return sendQueuedNow(s, id);
-  if (action === 'queue-edit') { state.queueEditing = id; renderComposer(); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
-  if (action === 'queue-cancel') { state.queueEditing = ''; renderComposer(); return; }
-  if (action === 'queue-save') return saveQueueEdit();
-  if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); renderComposer(); return; }
-  if (action === 'queue-up' || action === 'queue-down') { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids: moved(queueOf(s.id), id, action === 'queue-up' ? -1 : 1) })); renderComposer(); return; }
-  if (action === 'queue-resume') { state.queueHolds.delete(s.id); renderComposer(); await dispatchQueue(s.id); }
+  if (action === 'queue-edit') { state.queueEditing = id; refreshComposer(s); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
+  if (action === 'queue-cancel') { state.queueEditing = ''; refreshComposer(s); return; }
+  if (action === 'queue-save') return saveQueueEdit(s);
+  if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); refreshComposer(s); return; }
+  if (action === 'queue-up' || action === 'queue-down') { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids: moved(queueOf(s.id), id, action === 'queue-up' ? -1 : 1) })); refreshComposer(s); return; }
+  if (action === 'queue-resume') { state.queueHolds.delete(s.id); refreshComposer(s); await dispatchQueue(s.id); }
 }
 /** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
 async function sendQueuedNow(s: Session, id: string): Promise<void> {
@@ -3049,13 +3642,18 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
   let sent: Message | undefined;
   try {
     const files = await Promise.all(paths.map(async path => { const content = await projectFileText(task, path); return `\n\nFile context: ${path}\n\`\`\`\n${content.slice(0, 32768)}\n\`\`\``; }));
-    const content = entry.text + files.join('') + attachments.contextFor(promptItems);
+    // A side thread's queued follow-up carries the main thread's news like any /btw message.
+    const btw = btwMainOf(task.id), context = btw ? await btwContext(btw.main, btw.link) : undefined;
+    const content = entry.text + files.join('') + attachments.contextFor(promptItems) + (context?.text ?? '');
     const sentAt = Date.now();
     task.lastPromptAt = sentAt; task.draft = false; pendingPromptActivity.set(task.id, sentAt);
-    stream(task.id).lastPromptAt = sentAt; stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
+    stream(task.id).lastPromptAt = sentAt; stream(task.id).startedAt = Math.min(stream(task.id).startedAt, sentAt); stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
     sent = sentPrompt(task, content, sentAt);
     if (task.id === state.sessionId) { state.messages = [...state.messages, sent]; render(); } else renderNavigation();
+    btwPanel.sent(task.id, sent);
     await call(teams.get(task.id) && !task.remoteDevice ? 'architect_start' : 'send_message', { sessionId: task.id, text: content, imageIds: attachments.imageIds(promptItems), moodboardIds: [] });
+    // Recorded once sent, unless a New side thread replaced the link meanwhile.
+    if (btw && context && readLinks(localStorage)[btw.main.id]?.sideId === task.id) writeLink(localStorage, btw.main.id, { ...readLinks(localStorage)[btw.main.id], seenId: context.link.seenId });
   } catch (error) {
     // Put it back at the front and hold, so nothing is lost or sent out of order.
     pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle'; if (sent) dropMirrorPrompt(task.id, sent);
@@ -3084,7 +3682,10 @@ function scheduleLimitResumes(): void {
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (teamHeld(task.id)) return clearLimit(task);
-  if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishingStreams.has(task.id)) return;
+  // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
+  const finishing = finishingStreams.get(task.id);
+  if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
+  if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishing) return;
   const hold = state.queueHolds.get(task.id);
   if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
   task.resumeAtReset = false;
@@ -3251,7 +3852,7 @@ async function send(): Promise<void> {
   listed.lastPromptAt = sentAt; listed.draft = false;
   // Sending by hand is an explicit continue: release a held queue, which then follows this run.
   state.queueHolds.delete(s.id);
-  pendingPromptActivity.set(s.id, sentAt); renderNavigation();
+  pendingPromptActivity.set(s.id, sentAt); navigationAfterPaint();
   let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false, sent: Message | undefined;
   const isCurrent = () => state.sessionId === s.id;
   try {
@@ -3267,15 +3868,16 @@ async function send(): Promise<void> {
     const boardIds = new Set(moodboardItems.map(item => item.id));
     state.moodboardAttachments.set(s.id, (state.moodboardAttachments.get(s.id) ?? []).filter(item => !boardIds.has(item.id)));
     moodboardItemsConsumed = true;
-    stream(s.id).lastPromptAt = sentAt; stream(s.id).status = 'Starting agent'; s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null;
+    stream(s.id).lastPromptAt = sentAt; stream(s.id).startedAt = Math.min(stream(s.id).startedAt, sentAt); stream(s.id).status = 'Starting agent'; s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null;
     const currentPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
     if (currentPrompt?.dataset.sessionId === s.id && currentPrompt.value === draft) currentPrompt.value = '';
     if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
     sent = sentPrompt(s, content, Date.now());
     if (isCurrent()) {
-      stickToBottom = true;
+      stickToBottom = true; followSend();
       state.messages = [...state.messages, sent];
-      state.attachments = state.attachments.filter(path => !filePaths.includes(path)); render();
+      // The sidebar redraws after the first frame (navigationAfterPaint), so the send paints the thread first.
+      state.attachments = state.attachments.filter(path => !filePaths.includes(path)); renderHeader(); renderTranscript(); renderComposer();
       const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
       if (shown.length) enterView(shown[shown.length - 1], 12);
     } else renderNavigation();
@@ -3314,14 +3916,72 @@ async function send(): Promise<void> {
 }
 // /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
 const btwPanel = new BtwPanel({
-  call, report, userHtml: (content, id) => userContent(content, id),
+  call, report,
   side: () => { const link = btwLink(state.sessionId), side = link && state.sessions.find(task => task.id === link.sideId); return side && { session: side, hiddenThrough: link.hiddenThrough ?? 0 }; },
-  live: sideId => {
+  running: sideId => isRunning(sideId),
+  streaming: sideId => state.streams.has(sideId) || finishingStreams.has(sideId),
+  waiting: sideId => {
     const live = state.streams.get(sideId), status = state.sessions.find(task => task.id === sideId)?.status;
-    return { text: live?.text ?? '', running: isRunning(sideId), waiting: Boolean(live?.approvals.size || live?.inputs.size) || status === 'waiting' || status === 'waiting_approval' };
+    return Boolean(live?.approvals.size || live?.inputs.size) || status === 'waiting' || status === 'waiting_approval';
   },
   mainRunning: () => isRunning(),
+  draft: sideId => state.drafts.get(sideId) ?? '',
+  setDraft: (sideId, text) => { if (text) state.drafts.set(sideId, text); else state.drafts.delete(sideId); },
+  visible: (sideId, messages) => visibleMessages(sideId, messages),
+  renderRows: (log, region, side, visible, all, follow) => {
+    const toolViews = captureTools(log), groupViews = captureToolGroups(log), turnViews = captureTurns(log), changeViews = captureChangeCards(log);
+    const previous = new Map([...log.querySelectorAll<HTMLElement>('[data-markdown]')].map(node => [node.dataset.markdown!, node]));
+    for (const row of [...log.children]) if (row !== region) row.remove();
+    region.insertAdjacentHTML('beforebegin', turnRowsHtml(side.id, visible, { messages: all, provider: side.provider }));
+    paintSavedMarkdown(log, all, previous, workspaceContext(side), follow);
+    restoreTurns(log, turnViews); restoreToolGroups(log, groupViews); restoreChangeCards(log, changeViews); restoreTools(log, toolViews);
+  },
+  paintStream: (region, sideId, log) => paintStream(region, sideId, log),
+  aboveHtml: side => {
+    const running = isRunning(side.id);
+    return `<div class="btw-approvals">${taskApprovalsHtml(side.id)}</div>` + queuePanel({ entries: state.queues.get(side.id) ?? [], hold: state.queueHolds.get(side.id) ?? null, running, steerable: !teams.get(side.id), sendable: true, editingId: state.queueEditing || null, busy: state.queueBusy.has(side.id), steering: steeringQueued, notSteered, agentName: provider(side.provider)?.name });
+  },
+  toolsHtml: shown => {
+    // Before the side thread exists, the choices apply to the one /btw creates (btwDraftTask).
+    const side = shown ?? btwDraftTask();
+    if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
+    // A pick made while /btw creates the side thread could miss it, so the pickers wait.
+    const running = isRunning(side.id), busy = configuringSessions.has(side.id) || btwSending.has(state.sessionId);
+    const send = running
+      ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
+      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    return `<div class="composer-tools">${modelTriggerHtml(side, running || busy)}<span class="composer-separator"></span>${modeTriggerHtml(side, running || busy)}</div>${send}`;
+  },
+  menuBusy: root => Boolean(root.querySelector('[aria-expanded="true"]') || (pendingMenuOpen && root.contains(pendingMenuOpen.anchor))),
+  mountPickers: (textarea, side) => {
+    const draft = () => state.drafts.set(side.id, textarea.value);
+    const slash = mountSlashCommands(textarea, {
+      contextKey: () => `${side.id}:${side.provider}:${workspacePath()}`,
+      provider: () => state.sessions.find(task => task.id === side.id)?.provider ?? side.provider,
+      snapshot: () => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: side.id, cachedOnly: true }),
+      load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: side.id, force }),
+      select: draft,
+    });
+    const mentions = mountFileMentions(textarea, {
+      contextKey: () => `${side.id}:${workspacePath()}`,
+      search: query => call<MentionEntry[]>('search_files', { projectId: side.projectId, sessionId: side.id, query, limit: 40 }),
+      select: draft,
+    });
+    return () => { slash.dispose(); mentions.dispose(); };
+  },
+  bindActions: root => { bindMessageActions(root, {
+    content: (sessionId, key) => {
+      const live = state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
+      if (key === 'live') return live?.text;
+      const saved = btwPanel.message(Number(key));
+      return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
+    }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
+  }); },
   send: text => sendBtw(text),
+  queue: (side, text) => btwPanelQueue(side, text),
+  // A team takes messages between runs, as in the main composer.
+  steer: (side, text) => teams.get(side.id) ? btwPanelQueue(side, text) : steerOrQueue(side, text),
+  command: (side, text) => btwSlash(side, text, document.querySelector('.btw-panel .btw-toolbar')),
   openFull: sideId => run(selectSession(sideId, true)),
   newThread: () => { writeLink(localStorage, state.sessionId, null); renderInspector(); btwPanel.focus(); },
   close: () => { state.inspector = false; renderInspector(); },
@@ -3330,6 +3990,49 @@ const btwPanel = new BtwPanel({
     prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${text}` : text; state.drafts.set(state.sessionId, prompt.value); resizePrompt();
   },
 });
+async function btwPanelQueue(side: Session, text: string): Promise<void> {
+  const entry = await call<QueuedMessage>('queue_add', { sessionId: side.id, text, attachments: [] });
+  setQueue(side.id, [...queueOf(side.id), entry]);
+  // The run may have ended while this was saved: send it now.
+  if (!isRunning(side.id)) run(dispatchQueue(side.id));
+}
+/* Model, effort and permissions picked in the panel before a side thread exists: kept per main thread
+ * on a stand-in task and applied to the side thread createBtw makes, before its first message. */
+const BTW_DRAFT = 'btw-draft:';
+type BtwDraft = Session & { connection?: string | null };
+const btwDrafts = new Map<string, BtwDraft>();
+const isBtwDraft = (task: Session): boolean => task.id.startsWith(BTW_DRAFT);
+function btwDraftTask(): BtwDraft | undefined {
+  const main = session();
+  return main && (btwDrafts.get(main.id) ?? { ...main, id: BTW_DRAFT + main.id, status: 'idle', contextUsage: null, title: 'Side thread' });
+}
+/** Records a pick on the stand-in task; the next side thread starts with it. */
+function saveBtwDraft(task: Session, change: Partial<BtwDraft>): void {
+  const mainId = task.id.slice(BTW_DRAFT.length);
+  // createBtw is applying (then clearing) the picks; a late pick from a picker opened before the send would vanish.
+  if (btwSending.has(mainId)) throw new Error('The side thread is starting. Change it once it has started.');
+  btwDrafts.set(mainId, { ...(btwDrafts.get(mainId) ?? task), ...change });
+  btwPanel.refresh();
+}
+/** Gives a new side thread the choices made in the panel before it existed; an error names the setting that failed.
+ *  The draft stays until createBtw has finished, so a failure keeps the choices for another try. */
+async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
+  const draft = btwDrafts.get(mainId);
+  if (!draft) return side;
+  const step = async <T>(setting: string, work: () => Promise<T>): Promise<T> => {
+    try { return await work(); } catch (error) { throw new Error(`The side thread could not use the ${setting} you picked. ${errorText(error)}`); }
+  };
+  let current = side;
+  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model }));
+  if (draft.connection !== undefined && draft.connection !== (namedConnections.tasks[current.id] ?? null)) namedConnections = await step('connection', () => call<typeof namedConnections>('connection_assign', { sessionId: current.id, connectionId: draft.connection }));
+  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null }));
+  if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); current = { ...current, mode: draft.mode }; }
+  return current;
+}
+/** The side thread the By the way panel shows for the open thread. */
+function btwSideTask(): Session | undefined { const link = btwLink(state.sessionId); return link && state.sessions.find(task => task.id === link.sideId); }
+/** The task a composer control acts on: the By the way panel's side thread inside that panel, else the open thread. */
+function actionTask(element: Element): Session | undefined { return element.closest('.btw-panel') ? btwSideTask() ?? btwDraftTask() : session(); }
 /** The side thread linked to a main thread. An archived or unlisted one is not reused (the next /btw
  *  starts fresh); the link is never erased here, since a session list can briefly lag a new side thread. */
 function btwLink(mainId: string): BtwLink | undefined {
@@ -3373,14 +4076,27 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     const last = [...page.messages].reverse().find(m => m.id > 0 && (m.role === 'user' || m.role === 'assistant'));
     if (!last) throw new Error('Send a first message in this task before asking on the side.');
     side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
-    const copied = await call<MessagePage>('get_messages', { sessionId: side.id });
-    link = { sideId: side.id, seenId: last.id, hiddenThrough: Math.max(0, ...copied.messages.map(m => m.id)) };
+    link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
     side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
-  await call('update_session', { sessionId: side.id, title });
+  try {
+    if (main.worktreePath) {
+      const copied = await call<MessagePage>('get_messages', { sessionId: side.id });
+      link = { ...link, hiddenThrough: Math.max(0, ...copied.messages.map(m => m.id)) };
+    }
+    side = await applyBtwDraft(main.id, side);
+    await call('update_session', { sessionId: side.id, title });
+  } catch (error) {
+    // Never leave a half-set-up task behind; the panel keeps its picks and the /btw text comes back.
+    const created = side;
+    await call('delete_session', { sessionId: created.id }).catch(() => undefined);
+    state.sessions = state.sessions.filter(task => task.id !== created.id);
+    throw error;
+  }
+  btwDrafts.delete(main.id);
   state.sessions = [{ ...side, title }, ...state.sessions.filter(task => task.id !== side.id)];
   writeLink(localStorage, main.id, link); renderNavigation();
   return link;
@@ -3392,8 +4108,8 @@ function sendBtw(text: string): Promise<void> {
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
   const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text));
-  btwSending.set(main.id, next);
-  void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); });
+  btwSending.set(main.id, next); btwPanel.refresh();
+  void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
   return next;
 }
 /** Sends to the side thread with the main thread's news since its last message. */
@@ -3407,16 +4123,11 @@ async function deliverBtw(main: Session, text: string): Promise<void> {
   if (showing()) renderInspector();
   let sentLink: BtwLink | undefined;
   try {
-    const page = await call<MessagePage>('get_messages', { sessionId: main.id });
-    const strip = (content: string) => { const index = content.search(CONTEXT_BOUNDARY); return index < 0 ? content : content.slice(0, index); };
-    // Only the newest page came back: older unseen history is reported as left out.
-    const gap = page.hasOlder && (page.messages[0]?.id ?? 0) > link.seenId;
-    const context = mainContext({ title: main.title, status: isRunning(main.id) ? 'running' : main.status },
-      page.messages.map(m => ({ ...m, content: m.role === 'user' ? strip(m.content) : m.content })), link.seenId, state.streams.get(main.id)?.text ?? '', CONTEXT_LIMIT, gap);
+    const context = await btwContext(main, link);
     const content = text + context.text;
-    sentLink = { ...link, seenId: context.seenId };
+    sentLink = context.link;
     writeLink(localStorage, main.id, sentLink);
-    if (showing()) btwPanel.sent(side.id, content);
+    if (showing()) btwPanel.sent(side.id, sentPrompt(side, content, Date.now()));
     await call('send_message', { sessionId: side.id, text: content, imageIds: [], moodboardIds: [] });
   } catch (error) {
     state.streams.delete(side.id); side.status = 'idle';
@@ -3426,6 +4137,24 @@ async function deliverBtw(main: Session, text: string): Promise<void> {
     if (showing()) { renderInspector(); void btwPanel.reload(); }
     throw error;
   }
+}
+/** The `Main thread context:` block for the side thread's next message, and the link that records it as seen. */
+async function btwContext(main: Session, link: BtwLink): Promise<{ text: string; link: BtwLink }> {
+  const page = await call<MessagePage>('get_messages', { sessionId: main.id });
+  const strip = (content: string) => { const index = content.search(CONTEXT_BOUNDARY); return index < 0 ? content : content.slice(0, index); };
+  // Only the newest page came back: older unseen history is reported as left out.
+  const gap = page.hasOlder && (page.messages[0]?.id ?? 0) > link.seenId;
+  const context = mainContext({ title: main.title, status: isRunning(main.id) ? 'running' : main.status },
+    page.messages.map(m => ({ ...m, content: m.role === 'user' ? strip(m.content) : m.content })), link.seenId, state.streams.get(main.id)?.text ?? '', CONTEXT_LIMIT, gap);
+  return { text: context.text, link: { ...link, seenId: context.seenId } };
+}
+/** The main thread a side thread was opened beside, with its link. */
+function btwMainOf(sideId: string): { main: Session; link: BtwLink } | undefined {
+  for (const [mainId, link] of Object.entries(readLinks(localStorage))) {
+    const main = link.sideId === sideId ? state.sessions.find(task => task.id === mainId) : undefined;
+    if (main) return { main, link };
+  }
+  return undefined;
 }
 async function finishResponse(sessionId: string, finishing: FinishingStream): Promise<void> {
   const current = () => finishingStreams.get(sessionId) === finishing && !state.streams.has(sessionId);
@@ -3437,10 +4166,18 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     if (sessionId !== state.sessionId) { finishingStreams.delete(sessionId); return; }
     const saved = await latestMessagePage(sessionId);
     if (!current()) return;
+    // The saved reply draws from the cache in the swap's own task, so the card is measured as it will stay.
+    const reply = [...saved.messages].reverse().find(message => message.role === 'assistant')?.content;
+    if (reply && !markdownCache.get(reply)) await (markdownCache.settle(reply) ?? markdownHtml(reply)).catch(() => undefined);
+    if (!current()) return;
     finishingStreams.delete(sessionId);
     if (sessionId !== state.sessionId || generation !== state.generation) return;
     setMessagePage(saved); state.messagesLoading = false; state.messagesError = ''; mirrorPrompts.delete(sessionId);
-    renderTranscript(); renderComposer(); await refreshInspector();
+    // The composer lets go of the steer row's space (held since the run ended) in the task the saved card arrives,
+    // whose bridge absorbs it (handOffCard), so a pinned thread does not move at the swap.
+    handoffRect = document.querySelector('#stream-region .turn-card.is-live')?.getBoundingClientRect();
+    renderComposer(); renderTranscript();
+    await refreshInspector();
   } catch (error) {
     if (!current()) return;
     finishing.error = errorText(error); finishing.stream.revision++;
@@ -3448,30 +4185,40 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
   }
 }
 let completedHistoryRequest = 0;
+/** The live card's rect at a handoff, taken before renderComposer (renderTranscript → handOffCard). */
+let handoffRect: DOMRect | undefined;
+/** A run usually ends right after its changes arrive, so the live card stays until the saved one replaces it
+ * in one task (finishResponse → handOffCard). Only a next turn of the same run materializes them first. */
 function completeTurnChanges(event: AgentEvent): void {
   const data = event.data as { messageId?: number; turnChanges?: TurnChanges } | undefined;
   if (!data?.turnChanges) return;
   const current = state.streams.get(event.sessionId);
-  if (event.sessionId === state.sessionId && !state.messages.some(message => message.turnChanges?.id === data.turnChanges!.id)) {
+  if (current) current.pendingChanges = data.turnChanges;
+  else materializeTurn(event.sessionId, data.turnChanges);
+}
+function materializeTurn(sessionId: string, changes: TurnChanges): void {
+  const current = state.streams.get(sessionId);
+  if (current) current.pendingChanges = undefined;
+  if (sessionId === state.sessionId && !state.messages.some(message => message.turnChanges?.id === changes.id)) {
     const messages = visibleMessages();
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
-      for (const entry of current.tools) messages.push({ id: transientId--, sessionId: event.sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now() });
-      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: event.sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
+      for (const entry of current.tools) messages.push({ id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now() });
+      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
     }
-    messages.push({ id: transientId--, sessionId: event.sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: data.turnChanges });
+    messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
     state.messages = messages;
   }
   if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
-  if (event.sessionId === state.sessionId) {
+  if (sessionId === state.sessionId) {
     renderTranscript();
     // A task on another computer has its messages copied when the run ends; its `done` reloads them.
     if (session()?.remoteDevice) return;
     // Reconcile once at completion with persisted IDs and full text. This also
     // wins over an older history request made while switching to a busy task.
     const request = ++completedHistoryRequest, generation = state.generation;
-    void latestMessagePage(event.sessionId).then(page => {
-      if (request !== completedHistoryRequest || generation !== state.generation || event.sessionId !== state.sessionId || state.streams.get(event.sessionId) !== current) return;
+    void latestMessagePage(sessionId).then(page => {
+      if (request !== completedHistoryRequest || generation !== state.generation || sessionId !== state.sessionId || state.streams.get(sessionId) !== current) return;
       setMessagePage(page); state.messagesLoading = false; renderTranscript();
     }).catch(report);
   }
@@ -3483,6 +4230,8 @@ function onAgent(event: AgentEvent): void {
   queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
   if (botsView) queueMicrotask(() => botsView?.agent(event.sessionId, event.kind));
   if ((event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
+  if (event.kind === 'done') tilePages.delete(event.sessionId);
+  queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
@@ -3522,7 +4271,6 @@ function onAgent(event: AgentEvent): void {
     if (s && usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
-      if (s.id === state.sessionId) renderContextUsage();
     }
     return;
   }
@@ -3567,6 +4315,8 @@ function onAgent(event: AgentEvent): void {
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
+  const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
+  if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
   const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
   let becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
@@ -3610,6 +4360,7 @@ function onAgent(event: AgentEvent): void {
       current.inputs.get(requestId)?.dispose(); current.inputs.delete(requestId); current.revision++;
       if (!current.inputs.size && current.status === 'Waiting for your answer') updateStreamStatus(current, 'Continuing task');
       if (event.sessionId === state.sessionId) renderStream();
+      btwPanel.event(event.sessionId, 'input');
       scheduleNavigation();
     }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
@@ -3784,6 +4535,51 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   throw new Error('Unknown app action.');
 }
 /** Adds the selected view's tab when something opened it, then draws the strip in the open order. */
+/** Keeps the selected tab clear of the sticky + and of the 16px edge fades (inspector-bar.css), which end at the strip's scroll ends. */
+function revealSelectedTab(): void {
+  const nav = $('.inspector-tabs'), add = nav.querySelector<HTMLElement>('.inspector-tab-add')!;
+  const current = nav.querySelector<HTMLElement>(':scope>.inspector-tab:has(>.selected):not([hidden])');
+  if (!current || !nav.clientWidth) return;
+  const strip = nav.getBoundingClientRect(), box = current.getBoundingClientRect(), fade = 16;
+  const start = strip.left + fade, end = strip.right - fade - (add.hidden ? 0 : add.offsetWidth);
+  if (box.left < start) nav.scrollLeft -= start - box.left;
+  else if (box.right > end) nav.scrollLeft += box.right - end;
+}
+// A tab can change the panel's width after it draws (the browser view is wider).
+new ResizeObserver(revealSelectedTab).observe($('.inspector-tabs'));
+/** The strip is one Tab stop: the focused tab while focus is in the strip, else the selected one. Close buttons stay out
+ * of the Tab order (Delete closes the focused tab). */
+const stripTabs = (nav: HTMLElement): HTMLElement[] => [...nav.querySelectorAll<HTMLElement>(':scope>.inspector-tab:not([hidden])>.inspector-tab-button')];
+function rovingTabs(nav: HTMLElement, focus?: HTMLElement): void {
+  const tabs = stripTabs(nav), stop = focus ?? tabs.find(tab => tab === document.activeElement) ?? tabs.find(tab => tab.classList.contains('selected')) ?? tabs[0];
+  for (const tab of nav.querySelectorAll<HTMLElement>('.inspector-tab-button')) tab.tabIndex = tab === stop ? 0 : -1;
+}
+$('.inspector-tabs').addEventListener('keydown', event => {
+  const nav = event.currentTarget as HTMLElement, current = (event.target as HTMLElement).closest<HTMLElement>('.inspector-tab-button');
+  if (!current || event.altKey || event.metaKey || event.ctrlKey) return;
+  const tabs = stripTabs(nav), index = tabs.indexOf(current);
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    const close = current.parentElement!.querySelector<HTMLElement>('.inspector-tab-close');
+    if (!close || close.hidden) return;
+    event.preventDefault();
+    const neighbour = tabs[index + 1] ?? tabs[index - 1];
+    closeInspectorTab(close.dataset.view as PanelView);
+    const next = neighbour?.isConnected && !neighbour.closest('[hidden]') ? neighbour : stripTabs(nav).find(tab => tab.classList.contains('selected'));
+    if (next) { rovingTabs(nav, next); next.focus(); }
+    return;
+  }
+  const target = event.key === 'ArrowRight' ? tabs[(index + 1) % tabs.length] : event.key === 'ArrowLeft' ? tabs[(index - 1 + tabs.length) % tabs.length]
+    : event.key === 'Home' ? tabs[0] : event.key === 'End' ? tabs.at(-1) : undefined;
+  if (!target) return;
+  event.preventDefault();
+  rovingTabs(nav, target);
+  target.focus();
+  target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+});
+$('.inspector-tabs').addEventListener('focusout', event => {
+  const nav = event.currentTarget as HTMLElement;
+  if (!nav.contains(event.relatedTarget as Node | null)) rovingTabs(nav);
+});
 function renderInspectorTabs(pullLinked: boolean): void {
   const tabs = state.inspectorTab === 'file' ? inspectorTabs : openTab(inspectorTabs, state.inspectorTab);
   if (!sameTabs(tabs, inspectorTabs)) { inspectorTabs = tabs; saveTabs(localStorage, tabs); }
@@ -3800,16 +4596,13 @@ function renderInspectorTabs(pullLinked: boolean): void {
     }
     const tab = item.querySelector<HTMLElement>('.inspector-tab-button')!;
     tab.classList.toggle('selected', selected);
-    if (selected) tab.setAttribute('aria-current', 'true'); else tab.removeAttribute('aria-current');
+    tab.setAttribute('aria-selected', String(selected));
   }
+  rovingTabs(nav);
   // Move nodes only when the order changed, so a focused tab keeps focus.
   if (items.filter(item => !item.hidden && item !== files).map(item => item.dataset.view).join() !== shown.join()) for (const view of shown) nav.insertBefore(items.find(item => item.dataset.view === view)!, add);
   add.hidden = !closedViews(tabs, INSPECTOR_AVAILABLE.filter(view => view !== 'pull' || pullLinked)).length;
-  const current = items.find(item => item.dataset.view === state.inspectorTab);
-  if (current && !current.hidden && nav.clientWidth) {
-    if (current.offsetLeft < nav.scrollLeft) nav.scrollLeft = current.offsetLeft;
-    else if (current.offsetLeft + current.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = current.offsetLeft + current.offsetWidth - nav.clientWidth;
-  }
+  revealSelectedTab();
 }
 function openInspectorView(view: InspectorView): void {
   const tab = document.querySelector<HTMLElement>(`.inspector-tab[data-view="${view}"] .inspector-tab-button`);
@@ -3886,15 +4679,28 @@ async function toggleFolder(path: string): Promise<void> {
   }
   render();
 }
+let inspectorDrawn = false, inspectorView: WorkspaceView | undefined;
+/** Launch renders never move the inspector: it animates only after the first press or key, once the
+ * palette's startup gate (`html[data-ready]`, palette.ts) has opened. */
+let inspectorArmed = false;
+const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
+addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
 function renderInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
   const inspector = $('#inspector');
-  inspector.hidden = !visible;
-  // Keep the resize edge immediately interactive and native browser bounds stable.
-  $('.workspace').classList.toggle('inspector-closed', !visible);
+  // Opening: the column appears at once and the panel slides in. Closing: the panel fades in its
+  // column and the column snaps shut after (`inspector-closed`), so the thread never rewraps under a
+  // fading panel. state.inspector is the source of truth meanwhile; the leaving panel is inert and
+  // carries `data-leaving`. Nothing animates on the first, startup render.
+  // A view switch (Conversation, Board, GitHub) changes the layout once: the inspector then opens or
+  // closes at once with the view, never a fade and a second reflow after it.
+  const workspace = $('.workspace'), animate = inspectorDrawn && inspectorArmed && document.documentElement.hasAttribute('data-ready') && inspectorView === state.view;
+  if (visible) { showPanel(inspector, animate, ['browser', 'simulator', 'vm'].includes(state.inspectorTab)); workspace.classList.remove('inspector-closed'); }
+  else hidePanel(inspector, animate, () => { if (inspector.hidden) workspace.classList.add('inspector-closed'); }, $('#inspector-toggle'));
+  inspectorDrawn = true; inspectorView = state.view;
   $('#inspector-toggle').classList.toggle('active', visible);
   const pullTask = githubEnabled() && session()?.pullRequest ? session() : undefined;
   if (state.inspectorTab === 'pull' && !pullTask) { const shown = inspectorTabs.open.filter(view => view !== 'pull'); state.inspectorTab = shown.includes('changes') || !shown.length ? 'changes' : shown[0]; }
@@ -3931,7 +4737,9 @@ function renderInspector(): void {
   if (state.inspectorLoading) { target.innerHTML = `<div class="inspector-empty" role="status">${icon('refresh')}<p>${state.inspectorTab === 'changes' ? 'Loading changes…' : 'Loading files…'}</p></div>`; return; }
   const loadError = state.inspectorTab === 'changes' ? state.gitError : state.filesError;
   if (loadError) {
-    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button></div>`;
+    // A project folder that was renamed or moved on disk can be relinked; worktree and chat folders cannot.
+    const relocatable = loadError.startsWith('Project folder is unavailable') && !isChatProject(project());
+    target.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>${state.inspectorTab === 'changes' ? 'Unable to load changes' : 'Unable to read folder'}</h3><p>${escape(loadError)}</p><button class="secondary-button" data-action="refresh-inspector">${icon('refresh')}Retry</button>${relocatable ? `<button class="secondary-button" data-action="locate-project-folder">${icon('folder')}Locate folder…</button>` : ''}</div>`;
     target.querySelector('p')!.style.overflowWrap = 'anywhere';
     return;
   }
@@ -3950,7 +4758,10 @@ function renderInspector(): void {
     return;
   }
   if (state.inspectorTab === 'files') {
-    target.innerHTML = `<div class="file-folder-path"><span>${escape(project()?.name)}</span>${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`; return;
+    // Morphed once the tree is up, so a folder's chevron survives to turn.
+    const tree = `<div class="file-folder-path"><span>${escape(project()?.name)}</span>${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div>`;
+    if (target.querySelector(':scope>.file-list')) morph(target, tree); else target.innerHTML = tree;
+    return;
   }
   if (state.jj?.isRepo && !state.jj.colocated) {
     showJjPanel(target, state.jj, {
@@ -4131,7 +4942,8 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
     onClose: () => { projectPickerCleanup = undefined; },
     onSelect: async projectId => {
       if (selected.id !== state.sessionId || generation !== state.generation) throw new Error('Select the task again to change its project.');
-      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(); return; }
+      // createChat closes this picker, which would drop an error thrown back to it.
+      if (projectId === NO_PROJECT) { if (!chatTask(selected)) await createChat(selected).catch(report); return; }
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
@@ -4143,60 +4955,67 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
-async function showModel(anchor: HTMLElement): Promise<void> {
+/** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
+async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
-  const selected = session(); if (!selected || configuringSessions.has(selected.id)) return;
+  const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
+  // A side thread's picker acts on the side thread only, and only while the panel still shows it.
+  const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
   if (teams.get(selected.id) && !selected.remoteDevice && !teams.get(selected.id)?.config.auto) { await showArchitectSetup(anchor); return; }
-  const botNext = Boolean(botForThread());
-  if (isRunning() && !botNext) return;
+  const botNext = !inPanel && Boolean(botForThread());
+  if (isRunning(selected.id) && !botNext) return;
   closeProjectPicker();
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
-  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || (isRunning() && !botNext)) return;
-  const device = composerDevice();
-  const named = library && !device ? namedTeams(library) : [];
+  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
+  const device = inPanel ? undefined : composerDevice();
+  // A side thread not created yet has no team to configure.
+  const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (selected.id !== state.sessionId || generation !== state.generation || isRunning()) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
         onArchitect(saved ?? { sessionId: selected.id, removed: true });
         await reloadSessions();
-        if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
+        if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     },
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     // Connections are this computer's; a task on another computer uses that host's setup.
-    connections: device ? [] : namedConnections.connections, currentConnection: device ? null : taskConnection(selected)?.id ?? null,
+    connections: device ? [] : namedConnections.connections, currentConnection: device ? null : isBtwDraft(selected) ? (selected as BtwDraft).connection ?? null : taskConnection(selected)?.id ?? null,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
-      if (selected.id !== state.sessionId || generation !== state.generation || isRunning()) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (selected.id === state.sessionId) {
+        if (inPanel) btwPanel.refresh();
+        else if (selected.id === state.sessionId) {
           refreshModelLabels();
           syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
         }
       } finally { configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model, connection) => {
-      if (botNext && isRunning(selected.id) && selected.id === state.sessionId) {
+      if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
-      if (selected.id !== state.sessionId || generation !== state.generation || isRunning()) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null, connection: connection ?? null }); return; }
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named agent team, back to a single agent.
@@ -4217,7 +5036,8 @@ async function showModel(anchor: HTMLElement): Promise<void> {
           if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
           localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
         } else localChoice = undefined;
-        if (selected.id === state.sessionId && generation === state.generation) {
+        if (inPanel) { if (current()) btwPanel.harnessChanged(); }
+        else if (selected.id === state.sessionId && generation === state.generation) {
           if (providerId !== selected.provider) {
             // The harness change is already durable; a transcript refresh error
             // must not report the selection itself as failed or restore stale controls.
@@ -4252,6 +5072,7 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
   } });
 }
 async function createTask(projectId = state.projectId): Promise<void> {
+  if (bootPending) await bootPending.catch(() => undefined);
   if (creatingTask) return;
   const projects = state.projects.filter(p => !isChatProject(p));
   const active = projects.find(p => p.id === projectId)
@@ -4279,22 +5100,47 @@ async function createTask(projectId = state.projectId): Promise<void> {
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
-/** A projectless chat: its own folder, the usual harness and model. */
-async function createChat(): Promise<void> {
+/** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
+ *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
+async function createChat(from?: Session): Promise<void> {
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
+  // A chat nobody has written in yet is reopened, as New task reopens its draft.
+  const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
+  if (unused) {
+    if (state.projectFilter) setProjectFilter('');
+    state.query = ''; closeModal(); await selectSession(unused.id, true); return;
+  }
   const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
     ?? state.providers.find(p => p.installed) ?? state.providers[0];
   if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  leaveDraft('');
+  if (!from) leaveDraft('');
   creatingTask = true;
   let created: Session;
   try {
-    created = await call<Session>('chat_create', { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
+    const connection = from && taskConnection(from)?.id;
+    if (connection) namedConnections = await call<typeof namedConnections>('connection_assign', { sessionId: created.id, connectionId: connection });
     state.projects = await call<Project[]>('list_projects');
   } finally { creatingTask = false; }
-  state.sessions.unshift(created);
+  // chat_create announces the new row, so the refresh may already have listed it.
+  upsertSession(created);
+  if (from) {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
+    const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
+    if (typed) state.drafts.set(created.id, typed);
+    state.drafts.delete(from.id);
+    if (open) prompt!.value = '';
+    attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
+    const browserItems = state.browserAttachments.get(from.id);
+    if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
+    state.browserAttachments.delete(from.id);
+    // Project files and moodboards belong to the project, so a chat cannot send them.
+    if ((from.id === state.sessionId && state.attachments.length) || state.moodboardAttachments.get(from.id)?.length) notify('Project files and moodboards stay with the project, so they were not moved to the chat.');
+    state.moodboardAttachments.delete(from.id);
+  }
   if (generation !== state.generation) { renderNavigation(); return; }
   if (state.projectFilter) setProjectFilter('');
   state.query = ''; closeModal(); await selectSession(created.id, true);
@@ -4320,23 +5166,27 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
     options.afterClose?.();
   } });
 }
-async function showMode(anchor: HTMLElement): Promise<void> {
-  const s = session(); if (!s || isRunning() || configuringSessions.has(s.id)) return;
-  const generation = state.generation;
+async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
+  const s = target; if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
+  const generation = state.generation, inPanel = s.id !== state.sessionId;
+  const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
-  await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, selected: s.mode === mode.id })), onSelect: async id => {
-    if (s.id !== state.sessionId || generation !== state.generation || isRunning() || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
+  await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
+    if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
+    if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
-      const current = state.sessions.find(item => item.id === s.id); if (current) current.mode = id as Mode;
-      if (s.id === state.sessionId) {
-        if (current) syncOverlayContext({ projectId: current.projectId, provider: current.provider, model: current.model || 'default', mode: current.mode, reasoningEffort: current.reasoningEffort ?? null });
+      const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
+      if (inPanel) btwPanel.refresh();
+      else if (s.id === state.sessionId) {
+        if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });
         const trigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
         if (trigger) {
-          trigger.innerHTML = `${icon(chosen.icon)}<span>${escape(chosen.label)}</span>${icon('down')}`;
-          trigger.dataset.mode = chosen.id; trigger.title = chosen.description;
+          trigger.innerHTML = modeFaceHtml(chosen);
+          trigger.dataset.mode = chosen.id; trigger.dataset.tip = modeTip(chosen); trigger.setAttribute('aria-label', modeName(chosen)); trigger.setAttribute('aria-description', chosen.description);
+          trayStateChanged();
         }
       }
     } finally { configuringSessions.delete(s.id); }
@@ -4416,7 +5266,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
   const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
   // Active and Settled keep their own order: no Move up/down there.
   const movable = !['active', 'completed'].includes(group);
-  const fixed = !anchor.draggable, busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
+  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
   const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
   const branch = task.worktreeBranch ?? '';
   await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
@@ -4425,7 +5275,8 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
       { id: 'up', label: 'Move up', icon: 'arrow', disabled: fixed || orderingBusy || index < 1 },
       { id: 'down', label: 'Move down', leading: icon('arrow', 'icon-down'), disabled: fixed || orderingBusy || index === ids.length - 1 },
     ] : [],
-    { id: 'rename', label: 'Rename…', icon: 'edit', separator: true },
+    ...id === state.sessionId || tiles.has(id) ? [] : [{ id: 'beside', label: 'Open beside', icon: 'panel', separator: true }],
+    { id: 'rename', label: 'Rename…', icon: 'edit', separator: id === state.sessionId || tiles.has(id) },
     ...task.archived ? [] : [{ id: 'wake', label: 'Schedule a wake-up…', icon: 'clock' }],
     ...id === state.sessionId ? [] : [{ id: 'unread', label: unread ? 'Mark as read' : 'Mark as unread', icon: 'chat' }],
     ...branch && !task.archived && !task.remoteDevice ? [{ id: 'branch-task', label: `New task from ${branch}…`, icon: 'worktree' }] : [],
@@ -4436,6 +5287,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
     { id: 'delete', label: 'Delete task…', icon: 'trash', danger: true, disabled: busy || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: async choice => {
     closeChoiceMenu();
+    if (choice === 'beside') { tiles.open(id); return; }
     if (choice === 'pin') { run(pinTask(id)); return; }
     if (choice === 'wake') { openWakeComposer(anchor.isConnected ? anchor : $('#navigation'), id); return; }
     if (choice === 'stage' || choice === 'delete') { sidebarTaskAction(choice === 'stage' ? done ? 'reopen' : 'complete' : choice, id); return; }
@@ -4654,7 +5506,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
     if (host.hidden) return;
     settingsView = mountSettings(host, {
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
-      compact: document.body.classList.contains('compact'), wallpapers: wallpapers.enabled,
+      compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
       theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
       projects: { list: userProjects, remove: removeProject },
       turnChecks: turnChecksEnabled(),
@@ -4668,16 +5520,23 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
         colors: async target => (await import('./theme-settings')).mountThemeSettings(target, { call, notify, chooseVsix: () => import('./bridge').then(bridge => bridge.chooseVsix()) }),
         wallpapers: async target => {
           const cleanup = (await import('./wallpaper-settings')).mountWallpaperSettings(target, wallpapers);
-          // Choosing a scene or dragging visibility turns wallpapers on or off; keep the Daily wallpapers switch beside it in step.
-          const unsubscribe = wallpapers.subscribe(() => { const box = host.querySelector<HTMLInputElement>('#daily-wallpapers'); if (box) box.checked = wallpapers.enabled; });
+          // Keep the Wallpapers switch and the scene controls it reveals in step with the saved choice.
+          const unsubscribe = wallpapers.subscribe(() => {
+            const on = wallpapers.preferences.enabled, box = host.querySelector<HTMLInputElement>('#daily-wallpapers');
+            if (box) box.checked = on;
+            host.querySelector<HTMLElement>('.settings-wallpapers')?.toggleAttribute('hidden', !on);
+          });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections }),
+        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
       close: closeSettings,
     });
+    // Settings settles in once its content has drawn (opacity only).
+    const content = host.querySelector<HTMLElement>('.settings-content');
+    if (content) settleIn(content, 0);
   }).finally(() => { settingsOpening = undefined; });
   await settingsOpening;
 }
@@ -4687,6 +5546,8 @@ function closeSettings(): void {
   const host = $('#settings-page');
   host.hidden = true; host.replaceChildren();
   $('.workspace').classList.remove('settings-open');
+  // The thread underneath settles back in (opacity only), instead of a hard cut.
+  settleIn($('#transcript'), 0);
   (settingsReturnFocus?.isConnected ? settingsReturnFocus : $('#prompt'))?.focus({ preventScroll: true });
   settingsReturnFocus = null;
 }
@@ -4721,7 +5582,7 @@ async function showProviderConnections(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const { mountProviderSettings } = await import('./provider-settings');
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
   modelCatalogs.delete(id);
@@ -4924,10 +5785,10 @@ let taskBots = new Map<string, string>();
 const NO_BOT = 'none';
 function botTaskControl(task: Session, fresh: boolean): string {
   const bot = sidebarBots.find(item => item.id === taskBots.get(task.id));
-  if (!fresh) return bot ? `<span class="composer-computer composer-computer-fixed" aria-label="Bot: ${escape(bot.name)} (fixed for this task)">${icon('bot')}<span>with ${escape(bot.name)}</span></span>` : '';
+  if (!fresh) return bot ? `<span class="composer-computer composer-computer-fixed" role="img" tabindex="0" aria-label="Bot: ${escape(bot.name)} (fixed for this task)" data-tip="With ${escape(bot.name)}">${icon('bot')}<span class="sr-only">with ${escape(bot.name)}</span></span>` : '';
   if (!sidebarBots.length || botProjects.has(task.projectId) || chatTask(task) || task.remoteDevice || task.cloud || remoteChoice !== LOCAL) return '';
   const name = bot?.name ?? 'No bot';
-  return `<button type="button" id="composer-bot" class="composer-computer" data-action="bot-task-menu" aria-label="Bot: ${escape(name)}" aria-haspopup="dialog" aria-expanded="false" title="Start this task with a bot">${icon('bot')}<span>${escape(name)}</span>${icon('down')}</button>`;
+  return `<button type="button" id="composer-bot" class="composer-computer" data-action="bot-task-menu" aria-label="Bot: ${escape(name)}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(name)}: start this task with a bot">${icon('bot')}<span class="sr-only">${escape(name)}</span>${icon('down')}</button>`;
 }
 async function showBotTaskMenu(anchor: HTMLElement): Promise<void> {
   const task = session(); if (!task) return;
@@ -5079,7 +5940,7 @@ async function stopTask(s: Session): Promise<void> {
   if (starting && starting.stage !== 'error') return stopRemoteStart(s, starting);
   runEndings.set(s.id, 'stopped');
   const current = state.streams.get(s.id);
-  if (current) { current.status = 'Stopping agent'; current.revision++; clearAgentInputs(current); renderStream(); }
+  if (current) { current.status = 'Stopping agent'; current.revision++; clearAgentInputs(current); renderStream(); btwPanel.event(s.id, 'status'); }
   const team = teams.get(s.id) && !s.remoteDevice;
   await call(team ? 'architect_control' : 'stop_session', { sessionId: s.id, ...(team ? { action: 'stop' } : {}) });
 }
@@ -5214,12 +6075,12 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const sentAt = Date.now(), sent: Message = { id: transientId--, sessionId: s.id, role: 'user', content, createdAt: sentAt };
     const before = { status: s.status, taskStage: s.taskStage };
     addMirrorPrompt(s.id, sent, 0);
-    const live = stream(s.id); live.lastPromptAt = sentAt; live.status = `Connecting to ${target.name}…`;
+    const live = stream(s.id); live.lastPromptAt = sentAt; live.startedAt = Math.min(live.startedAt, sentAt); live.status = `Connecting to ${target.name}…`;
     s.status = 'running'; s.taskStage = 'in_progress';
     const sentField = prompt(); if (sentField?.dataset.sessionId === s.id && sentField.value === draft) sentField.value = '';
     if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
     if (state.sessionId === s.id) {
-      stickToBottom = true; state.messages = [...state.messages, sent]; render();
+      stickToBottom = true; followSend(); state.messages = [...state.messages, sent]; render();
       const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
       if (shown.length) enterView(shown[shown.length - 1], 12);
     }
@@ -5306,7 +6167,7 @@ function renderBots(): void {
   if (markRead) markRead.hidden = unread.size === 0;
   document.querySelector('.sidebar')?.classList.toggle('bots-view', sidebarView === 'bots');
   const barHtml = botsBarHtml(sidebarView, sidebarBots.length, unread.size);
-  if (bar.innerHTML !== barHtml) bar.innerHTML = barHtml;
+  if (!showsHtml(bar, barHtml)) morph(bar, barHtml);
   // The head (and its search field) is built once, so typing never loses focus.
   if (!panel.firstElementChild) {
     panel.innerHTML = botsPanelHeadHtml();
@@ -5320,10 +6181,10 @@ function renderBots(): void {
   }
   const list = panel.querySelector<HTMLElement>('.bots-panel-list')!;
   const html = botsListHtml({ bots: sidebarBots, channels: sidebarChannels, selectedProject: state.sharedChannelId ? undefined : current?.projectId, selectedChannel: state.sharedChannelId, signals: bot => botSignals(bot, unread), loaded: botsLoaded, hiddenOpen: hiddenBotsOpen }, botsQuery);
-  if (list.innerHTML !== html) {
+  if (!showsHtml(list, html)) {
     const menuAnchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
     if (menuAnchor && list.contains(menuAnchor)) botsListPendingRender = true;
-    else { list.innerHTML = html; botsListPendingRender = false; }
+    else { morph(list, html); botsListPendingRender = false; }
   }
 }
 /** Right-click (or the context-menu key) opens a row's menu; rows drag to reorder. */
@@ -5610,10 +6471,14 @@ async function showAgentUsage(): Promise<void> {
 function showCommands(): void {
   modal('Go to anything', `<div class="command-search">${icon('search')}<input id="command-query" aria-label="Search tasks and commands" placeholder="Search tasks and commands…" autocomplete="off"></div><div id="command-results" class="command-results"></div><div class="command-footer"><span>↑ ↓ to navigate</span><span>↵ to open</span><span>esc to close</span></div>`, 'command-dialog'); renderCommands('');
 }
+/** Every Settings page, findable by page or section name or a page's keywords; only listed once there is a query. */
+const settingsPageCommands = () => SECTIONS.flatMap(section => section.pages.map(item => ({ action: 'settings-page', page: item.id, label: `Settings › ${section.pages.length > 1 ? `${section.label} › ` : ''}${item.label}`, keywords: item.keywords ?? '', icon: section.icon, shortcut: '' })));
+/** Every whitespace-separated word of the query appears somewhere in the text (case-insensitive). */
+const matchesWords = (text: string, query: string): boolean => { const hay = text.toLowerCase(); return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word)); };
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : [])].filter(c => c.label.toLowerCase().includes(query.toLowerCase()));
-  const tasks = listedSessions().filter(s => s.title.toLowerCase().includes(query.toLowerCase())).slice(0, 12);
-  $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}" data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
+  const tasks = listedSessions().filter(s => matchesWords(s.title, query)).slice(0, 12);
+  $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}"${'page' in c ? ` data-id="${c.page}"` : ''} data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
 }
 async function toggleTerminal(): Promise<void> {
@@ -5686,8 +6551,9 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'ui-size-reset': setUiScale(1); break;
     case 'delete-task': showDeleteTask(); break;
     case 'search': showCommands(); break;
-    case 'retry-response': { const finishing = finishingStreams.get(state.sessionId); if (finishing) await finishResponse(state.sessionId, finishing); break; }
+    case 'retry-response': { const id = actionTask(element)?.id ?? state.sessionId, finishing = finishingStreams.get(id); if (finishing) await finishResponse(id, finishing); break; }
     case 'settings': case 'refresh-settings': await showSettings(); break;
+    case 'settings-page': await showSettings(element.dataset.id as import('./settings').SettingsSection); break;
     case 'wallpaper-settings': await showWallpaperSettings(); break;
     case 'provider-connections': await showProviderConnections(); break;
     case 'opencode-models': await showOpenCodeModels(); break;
@@ -5726,9 +6592,9 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'branch-menu': await worktrees.showMenu(element); break;
     case 'open-url': if (element.dataset.url) await call('open_external_url', { url: element.dataset.url }); break;
     case 'board-import': github.showImport(state.projectFilter || project()?.id || state.projects[0]?.id || ''); break;
-    case 'model': await showModel(element); break;
+    case 'model': await showModel(element, actionTask(element)); break;
     case 'change-task-project': await showProjectPicker(element); break;
-    case 'mode': await showMode(element); break;
+    case 'mode': await showMode(element, actionTask(element)); break;
     case 'filter-projects': await showProjectFilter(element); break;
     case 'default-provider': await showDefaultProvider(element); break;
     case 'default-model': await showDefaultModel(element); break;
@@ -5752,6 +6618,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
     case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
+    case 'locate-project-folder': await locateProjectFolder(); break;
     case 'toggle-file-folder': await toggleFolder(element.dataset.path!); break;
     case 'collapse-folders': state.openFolders = new Set(); state.folderFiles = new Map(); renderInspector(); document.querySelector<HTMLElement>('#inspector-content .file-row button')?.focus(); break;
     case 'run-project': if (!element.dataset.sessionId || element.dataset.sessionId === state.sessionId) await projectRunner.run(); break;
@@ -5782,13 +6649,22 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     }
     case 'architect-setup': await showArchitectSetup(element); break;
     case 'team-menu': await showTeamMenu(element); break;
-    case 'steer': await steerFromComposer(); break;
+    case 'retry-task-load': if (state.sessionId) await selectSession(state.sessionId, true); break;
+    case 'steer': await steerFromComposer(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }); break;
+    case 'steer-edit': document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); break;
+    case 'steer-clear': {
+      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (!prompt) break;
+      prompt.value = ''; state.drafts.set(state.sessionId, '');
+      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+      prompt.focus();
+      break;
+    }
     case 'remote-retry': await retryRemoteConnection(); break;
-    case 'stop': if (session()) { notify('Stopping task…'); await stopTask(session()!); } break;
-    case 'approval-allow': case 'approval-deny': await respondApproval(state.sessionId, element.dataset.request!, name === 'approval-allow'); break;
-    case 'approval-allow-all': case 'approval-deny-all': { const sessionId = state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }
-    case 'approval-group': approvalGroupOpen = !approvalGroupOpen; renderApprovalBar(); break;
-    case 'approval-details': { const key = state.sessionId + element.dataset.request; if (!approvalDetails.delete(key)) approvalDetails.add(key); renderApprovalBar(); break; }
+    case 'stop': { const task = actionTask(element); if (task) { notify('Stopping task…'); await stopTask(task); } break; }
+    case 'approval-allow': case 'approval-deny': await respondApproval(actionTask(element)?.id ?? state.sessionId, element.dataset.request!, name === 'approval-allow'); break;
+    case 'approval-allow-all': case 'approval-deny-all': { const sessionId = actionTask(element)?.id ?? state.sessionId; for (const id of [...state.streams.get(sessionId)?.approvals.keys() ?? []]) await respondApproval(sessionId, id, name === 'approval-allow-all'); break; }
+    case 'approval-group': { const id = actionTask(element)?.id ?? state.sessionId; if (!approvalGroupsOpen.delete(id)) approvalGroupsOpen.add(id); renderApprovalBar(); btwPanel.refresh(); break; }
+    case 'approval-details': { const key = (actionTask(element)?.id ?? state.sessionId) + element.dataset.request; if (!approvalDetails.delete(key)) approvalDetails.add(key); renderApprovalBar(); btwPanel.refresh(); break; }
     case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.focus(); } break; }
   }
 }
@@ -5885,7 +6761,7 @@ document.addEventListener('scroll', event => {
 }, true);
 document.addEventListener('change', event => {
   const input = event.target as HTMLInputElement;
-  if (input.id === 'daily-wallpapers') wallpapers.setEnabled(input.checked);
+  if (input.id === 'daily-wallpapers') { wallpapers.setEnabled(input.checked); document.querySelector('.settings-wallpapers')?.toggleAttribute('hidden', !input.checked); }
   if (input.id === 'turn-checks') turnChecksSetEnabled(input.checked);
   // A switch toggles natively (the data-action click path cancels the default), then saves.
   if (input.classList.contains('limit-resume-switch')) run(limitAction('limit-resume-at-reset', input));
@@ -5895,6 +6771,7 @@ document.addEventListener('change', event => {
     document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
   }
 });
+mountTextUndo();
 document.addEventListener('keydown', event => {
   if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing || event.defaultPrevented || event.key.toLowerCase() !== 'b' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
   event.preventDefault(); event.stopPropagation(); toggleSidebar();
@@ -5902,6 +6779,8 @@ document.addEventListener('keydown', event => {
 const threadFind = createThreadFind({
   pane: () => document.querySelector<HTMLElement>('.conversation-pane'),
   transcript: () => document.querySelector<HTMLElement>('#transcript'),
+  release: () => { stickToBottom = false; },
+  openReply: keepReplyOpen,
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
 });
 document.addEventListener('keydown', event => {
@@ -5931,9 +6810,10 @@ document.addEventListener('keydown', event => {
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !event.isComposing) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey)) { event.preventDefault(); run(saveQueueEdit()); }
+  else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey)) { event.preventDefault(); run(saveQueueEdit(actionTask(event.target as HTMLElement))); }
   else if (event.key === 'Escape' && settingsView && !event.defaultPrevented && !document.querySelector<HTMLDialogElement>('#dialog')?.open && !document.querySelector('.floating-menu')) { event.preventDefault(); closeSettings(); }
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }
+  else if (event.key === 'Escape' && (event.target as Element).closest?.('.composer-steer-bar') && !event.defaultPrevented) { event.preventDefault(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }); }
   else if (event.key === 'Escape' && isRunning() && !terminalPanel.open && !event.defaultPrevented) { event.preventDefault(); if (session()) run(stopTask(session()!)); }
 });
 let dialogBackdropPressed = false;
@@ -5971,10 +6851,7 @@ async function boot(): Promise<void> {
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
   run(subscribe('agent-event', (event: AgentEvent) => {
     if (event.kind !== 'done') return;
-    // A run can finish while another task is open; its totals refresh when next shown.
-    taskUsage.delete(event.sessionId);
     if (event.sessionId !== state.sessionId) return;
-    ensureTaskUsage(event.sessionId);
     void designPanel?.refresh();
     progressPip?.refresh(event.sessionId);
     if (document.hasFocus()) markTraySeen(event.sessionId);
@@ -5996,7 +6873,7 @@ async function boot(): Promise<void> {
   }).then(() => undefined));
   run(initRemote());
   run(initCloudAgents());
-  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), title: id => state.sessions.find(s => s.id === id)?.title }));
+  run(initOrchestration({ call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback), notify, modal, closeModal, openSession: id => run(selectSession(id, true)), sessionId: () => state.sessionId, running: () => isRunning(), visible: () => !$('.conversation-pane').hidden, title: id => state.sessions.find(s => s.id === id)?.title }));
   run(subscribe('bot-notification', event => { if (event?.text) notify(String(event.text).replace(/\s+/g, ' ').slice(0, 160)); }).then(() => undefined));
   run(subscribe('bot-failover', (ask: FailoverAsk) => {
     if (!ask?.sessionId) return;
@@ -6016,6 +6893,13 @@ async function boot(): Promise<void> {
   botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`); }).then(() => undefined));
   // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
+  // Motion only when the user opens these: a remembered thread or a redraw restores them still.
+  document.addEventListener('click', event => {
+    const target = event.target as Element;
+    target.closest('.turn-changes summary')?.parentElement?.setAttribute('data-opened', '');
+    // schedules-thread.ts paints synchronously in its own click listener, so the body exists by the next frame.
+    if (target.closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
+  });
   run(initWakeups({
     sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
     openSettings: intent => run(showSettings('schedules', intent)),
@@ -6046,6 +6930,7 @@ async function boot(): Promise<void> {
   })()));
   await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
   [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
+  projectsListed = true;
   run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
@@ -6073,7 +6958,10 @@ const agentUpdates = initializeAgentUpdates({
   providersChanged: async () => { await discoverSettingsProviders(); refreshModelLabels(); slashPicker?.refresh(true); },
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
-renderThemeToggle(); render(); renderInspector(); run(boot());
+renderThemeToggle(); render(); renderInspector();
+// A failed boot still ends in a usable empty state (its error is reported by run()).
+bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
+run(bootPending);
 // The diff engine (module, highlighter workers, themes) starts right after the first paint.
 preloadDiffsAfterPaint();
 if (!preview) initializeNativeAppearance();

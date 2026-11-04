@@ -1,44 +1,52 @@
 /* Settings → Skills & rules. */
-.skills-import{display:flex;flex-direction:column;gap:8px;padding:.9rem 1rem}
+.skills-import{display:flex;flex-direction:column;gap:8px;padding:10px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 12px}
 .skills-import-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.skills-import input,.skills-import select{flex:1;min-width:8rem;height:32px;padding:0 10px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--text) 4%,transparent);color:var(--text);font:inherit;font-size:var(--text-sm)}
+.skills-import input,.skills-import select{flex:1;min-width:8rem;height:32px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
 .skills-import select{flex:0 1 auto}
 .skills-import>input{flex:none}
 .skills-import option{background:var(--panel);color:var(--text)}
 .skills-import input:focus-visible,.skills-import select:focus-visible,.skills-toggle input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .skills-import-actions{justify-content:space-between}
-.skills-message{margin:0;font-size:var(--text-xs);color:var(--muted);min-height:1em}
-.skills-error{margin:0;font-size:var(--text-xs);color:var(--danger)}
-.skills-list{list-style:none;margin:0;padding:0}
-.skills-item{padding:.8rem 1rem;display:flex;flex-direction:column;gap:8px}
-.skills-item+.skills-item{}
+.skills-import-actions>:only-child{margin-left:auto}
+.skills-message{margin:0;font-size:var(--ds-text-meta);color:var(--muted);min-height:1em}
+.skills-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
+.skills-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.skills-item{padding:10px var(--ds-row-pad-x);display:flex;flex-direction:column;gap:8px;border-radius:var(--ds-radius-inner)}
 .skills-item-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
-.skills-item-head small{display:block;font-size:var(--text-xs);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
-.skills-kind{margin-left:8px;padding:1px 6px;border-radius:var(--radius-sm);font-size:var(--text-2xs);background:rgb(var(--accent-rgb) / .14);color:var(--text)}
+.skills-item-head strong{font-size:var(--ds-text-body);font-weight:var(--weight-medium)}
+.skills-item-head small{display:block;font-size:var(--ds-text-sub);color:var(--muted);margin-top:2px;overflow-wrap:anywhere}
+.skills-kind{display:inline-flex;align-items:center;height:20px;margin-left:8px;padding:0 7px;border-radius:var(--ds-radius-chip);font-size:var(--ds-text-chip);font-weight:400;background:var(--ds-fill);color:var(--muted);vertical-align:1px}
 .skills-source{font-family:var(--mono, ui-monospace, monospace)}
 .skills-toggles{display:flex;flex-wrap:wrap;gap:6px 14px}
-.skills-toggle{display:inline-flex;align-items:center;gap:6px;font-size:var(--text-xs)}
-.skills-findings{margin:0;padding:.5rem .7rem;list-style:none;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--danger) 9%,transparent);font-size:var(--text-xs);display:flex;flex-direction:column;gap:4px}
+.skills-toggle{display:inline-flex;align-items:center;gap:6px;font-size:var(--ds-text-meta)}
+.skills-findings{margin:0;padding:8px 10px;list-style:none;border-radius:var(--ds-radius-control);background:color-mix(in srgb,var(--ds-danger) 10%,transparent);font-size:var(--ds-text-meta);display:flex;flex-direction:column;gap:4px}
 .skills-findings span{color:var(--muted)}
-.skills-findings code,.skills-unmanaged code{display:block;overflow-wrap:anywhere;font-size:var(--text-xs)}
-.skills-confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--text-xs)}
+.skills-findings code,.skills-unmanaged code{display:block;overflow-wrap:anywhere;font-size:var(--ds-text-chip)}
+.skills-confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--ds-text-meta)}
 .skills-confirm span{flex:1;min-width:12rem}
-.skills-empty,.skills-note{margin:.2rem 0 .6rem;font-size:var(--text-xs);color:var(--muted)}
-.skills-matrix-wrap{overflow-x:auto}
-.skills-matrix{border-collapse:collapse;width:100%;font-size:var(--text-xs)}
-.skills-matrix th,.skills-matrix td{padding:6px 8px;text-align:left;white-space:nowrap}
+.skills-empty,.skills-note{margin:4px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 8px;font-size:var(--ds-text-meta);color:var(--muted)}
+.skills-matrix-wrap{overflow-x:auto;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+.skills-matrix{border-collapse:separate;border-spacing:0;width:100%;font-size:var(--ds-text-ui)}
+.skills-matrix tbody th{font-weight:var(--weight-regular);color:var(--text)}
+.skills-matrix tbody tr+tr>*{border-top:1px solid var(--ds-border)}
+.skills-matrix th,.skills-matrix td{padding:8px 10px;text-align:left;white-space:nowrap}
+.skills-matrix thead th{font-weight:var(--weight-medium);color:var(--muted)}
 .skills-matrix thead th small{display:block;font-weight:normal;color:var(--muted)}
 .skills-status[data-status="off"]{color:var(--muted)}
 .skills-status[data-status="active"],.skills-status[data-status="prompt"]{color:var(--text)}
-.skills-status[data-status="drifted"],.skills-status[data-status="missing"],.skills-status[data-status="outdated"]{color:var(--danger)}
-.skills-subheading{margin:.9rem 0 .4rem;font-size:var(--text-sm)}
-.skills-unmanaged{margin:0;padding-left:1rem;font-size:var(--text-xs);display:flex;flex-direction:column;gap:6px}
+.skills-status[data-status="drifted"],.skills-status[data-status="missing"],.skills-status[data-status="outdated"]{color:var(--ds-danger)}
+.skills-subheading{margin:14px 0 6px;font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+.skills-unmanaged{margin:0;padding:var(--ds-card-pad) var(--ds-row-pad-x);list-style:none;font-size:var(--ds-text-ui);display:flex;flex-direction:column;gap:10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.skills-unmanaged strong{font-weight:var(--weight-medium)}
 .skills-unmanaged span{color:var(--muted)}
 .skills-catalog-skills{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
-.skills-catalog-skill small{display:block;margin-left:22px;font-size:var(--text-xs);color:var(--muted);overflow-wrap:anywhere}
-.skills-catalog-skill code{font-size:var(--text-xs);color:var(--muted)}
-.skills-catalog-skill .skills-conflict{color:var(--danger)}
+.skills-catalog-skill small{display:block;margin-left:22px;font-size:var(--ds-text-meta);color:var(--muted);overflow-wrap:anywhere}
+.skills-catalog-skill code{font-size:var(--ds-text-chip);color:var(--muted)}
+.skills-catalog-skill .skills-conflict{color:var(--ds-danger)}
 .skills-item-head .skills-confirm{flex-wrap:nowrap}
-.skills-item:nth-child(even){background:color-mix(in srgb,var(--text) 3.5%,transparent)}
-.skills-import input,.skills-import select{background:color-mix(in srgb,var(--text) 6%,transparent)}
-.skills-matrix thead th{background:color-mix(in srgb,var(--text) 3.5%,transparent)}
+.skills-import input,.skills-import select{background:var(--ds-card-inset)}
+/* A global field rule sizes inputs; the harness toggles stay plain 16px checkboxes on one line. */
+.skills-toggle input[type=checkbox]{flex:none;width:16px;height:16px;min-height:0;margin:0;padding:0;accent-color:var(--ds-primary-bg)}
+.skills-toggle>span{white-space:nowrap}
+.skills-toggles{padding:2px 0}
+.skills-subheading{padding:0 var(--ds-row-pad-x)}

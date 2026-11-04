@@ -1,26 +1,46 @@
-/* The inspector's "By the way" side thread (src/btw-panel.ts). */
+/* The inspector's "By the way" side thread (src/btw-panel.ts). Its rows and composer use the main
+   transcript's and composer's own classes; this file only fits them to the panel's width. */
 .btw-panel{display:flex;flex-direction:column;height:100%;min-height:0}
-.btw-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:4px 18px 0;padding:8px 0;border-bottom:1px solid var(--border)}
+.btw-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 8px 0;padding:8px 8px 8px 14px;border-radius:var(--ds-radius-card);background:var(--ds-card)}
 .btw-head>div:first-child{display:flex;flex-direction:column;min-width:0}
-.btw-head strong{font-size:.8rem;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.btw-head small{font-size:.7rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.btw-head strong{font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btw-head small{font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .btw-actions{display:flex;gap:2px;flex:none}
-.btw-transcript{flex:1;min-height:0;overflow:auto;padding:12px 18px;display:flex;flex-direction:column;gap:10px}
-.btw-message{font-size:.8rem;color:var(--text);overflow-wrap:anywhere}
-.btw-user{align-self:flex-end;max-width:90%;padding:7px 10px;border-radius:10px;background:rgb(var(--accent-rgb) / .12)}
-.btw-user .message-content{white-space:pre-wrap}
-.btw-insert{margin-top:4px;display:inline-flex;align-items:center;gap:5px;font-size:.7rem;color:var(--muted);background:none;border:0;padding:2px 0;cursor:pointer}
-.btw-insert:hover{color:var(--accent-ink)}
-.btw-insert .icon{width:13px;height:13px}
-.btw-working{display:flex;align-items:center;gap:7px;color:var(--muted);margin:0}
-.btw-composer{display:flex;gap:6px;align-items:flex-end;margin:0 12px 12px;padding:6px;border:1px solid var(--border);border-radius:10px;background:var(--raised)}
-.btw-composer:focus-within{border-color:var(--focus)}
-.btw-input{flex:1;resize:none;border:0;outline:0;background:none;color:var(--text);font:inherit;font-size:.8rem;min-height:2.4em;max-height:9em}
-.btw-send{flex:none;width:28px;height:28px;display:grid;place-items:center;border:0;border-radius:8px;background:var(--accent);color:var(--on-accent);cursor:pointer}
-.btw-send:disabled{opacity:.45;cursor:default}
-.btw-send .icon{width:15px;height:15px}
+.btw-panel .btw-transcript{flex:1;min-height:0;padding:8px 16px 16px;scrollbar-gutter:auto;overflow-x:hidden}
+/* Nothing in the side log scrolls sideways: long tool rows ellipsize (code blocks keep their own scroll). */
+.btw-panel .tool-trace>summary{max-width:100%;min-width:0}
+.btw-panel .tool-trace>summary :is(.tool-trace-object,.tool-trace-command){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.btw-panel .btw-transcript :is(.message,.turn-activity,.tool-group,.tool-trace){min-width:0;max-width:100%}
+.btw-panel .btw-stream-region>*{max-width:830px;margin-left:auto;margin-right:auto}
+html .workspace:not(.side-thread) .btw-stream-region>:is(.turn-activity,.tool-activity,.tool-activity-status-row,.coordination-status,.turn-changes-row){padding-left:0}
+.btw-panel .btw-transcript>.inspector-hint{margin:12px auto}
+.btw-composer-area{flex-shrink:0;padding:0 12px 12px}
+.btw-above:empty,.btw-above>:empty{display:none}
+.btw-above>*{margin-bottom:8px}
+.btw-panel .btw-composer textarea{min-height:52px;padding:12px 14px 8px}
+.btw-panel .btw-composer .composer-tools{overflow:hidden}
+/* At panel width the model keeps its name: permissions and Steer show their icons only (names stay in title/aria-label). */
+.btw-panel .btw-composer .mode-picker>span{display:none}
+.btw-panel .btw-composer .steer-button{flex-shrink:0;margin-right:2px;padding:0 8px}
+.btw-panel .btw-composer .composer-separator{display:none}
+.btw-panel .btw-composer .composer-toolbar{padding-inline:8px;gap:4px}
+.btw-panel .btw-composer .steer-button>span{display:none}
+/* As the main prompt: the send button rests dim while the prompt is empty. */
+html .btw-composer:has(.btw-input:placeholder-shown) .send-button:not(.stop-button){background:var(--fill-active);color:var(--muted)}
 .btw-panel>.btw-empty{flex:1}
+/* The queue at panel width: its status line ellipsizes and the row's buttons wrap under the text. */
+.btw-panel .queue-panel{min-width:0}
+.btw-panel .queue-heading{min-width:0}
+.btw-panel .queue-next{min-width:0;overflow:hidden;text-overflow:ellipsis;display:block}
+.btw-panel .queue-row{flex-wrap:wrap}
+.btw-panel .queue-text{min-width:0;flex:1 1 60%}
+.btw-panel .queue-actions{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-end;min-width:0}
+.btw-panel .queue-row:only-child :is([data-action="queue-up"],[data-action="queue-down"]){display:none}
+/* While the side agent runs the model trigger is disabled: its chevron gives the name the room. */
+.btw-panel .btw-composer .model-picker:disabled>.icon:last-child{display:none}
 .btw-panel [hidden]{display:none!important}
-.btw-waiting{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 12px 8px;padding:8px 10px;border-radius:10px;font-size:.75rem;color:var(--text);background:rgb(var(--accent-rgb) / .1)}
-.btw-waiting>span{flex:1;white-space:nowrap}
-.btw-waiting .icon{width:15px;height:15px;color:var(--accent-ink)}
+/* The side prompt is the main prompt's inner card. */
+html[data-theme] .workspace .btw-composer{border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+html[data-theme] .workspace .btw-composer:focus-within{border-color:var(--ds-border-strong)}
+.btw-panel .btw-composer :is(.model-picker,.mode-picker){font-size:var(--ds-text-ui)}
+@media(prefers-contrast:more){.btw-head{outline:1px solid var(--border);outline-offset:-1px}html[data-theme] .workspace .btw-composer{border-color:var(--border);box-shadow:none}}

@@ -70,7 +70,7 @@ test('decisions opt in independently and missing Jev keys do not block normal ap
   await page.locator('[data-assist-close]').click();
   await expect(page.locator('#prompt')).toBeEnabled();
   await page.getByRole('button',{name:'Settings',exact:true}).click();
-  await page.getByRole('tab',{name:'Tools & add-ons',exact:true}).click();
+  await page.getByRole('tab',{name:'Tools',exact:true}).click();
   await page.getByRole('button',{name:'Set up Jev',exact:true}).click();
   await expect(page.locator('#jev-decisions-enabled')).not.toBeChecked();
   await page.locator('#jev-decisions-enabled').check(); await page.locator('[data-jev-save]').click();
@@ -98,7 +98,8 @@ test('task menu and saved-diff entry use the current task and disappear when dis
   await page.locator('[data-assist-close]').click();
   await page.evaluate(()=>{(window as any).__assistChangeFixture=true;});
   await page.locator('.task-item[data-id="session-2"]').click();
-  await page.getByRole('button',{name:'Open diff',exact:true}).click();
+  // The turn card's footer row opens the diff (it replaced the per-turn Open diff button).
+  await page.locator('[data-action="open-turn-diff"]').first().click();
   await page.getByRole('button',{name:'Review with Jev',exact:true}).click(); await prepared(page);
   expect((await calls(page,'jev_assist_prepare')).at(-1).args).toEqual({sessionId:'session-2',request:{kind:'review',changeId:'change-1'}});
   await page.locator('[data-assist-close]').click();
@@ -106,7 +107,7 @@ test('task menu and saved-diff entry use the current task and disappear when dis
   await page.getByRole('button',{name:'Task actions',exact:true}).click();
   await expect(page.getByRole('menuitem',{name:'Jev assistance',exact:true})).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await page.getByRole('button',{name:'Open diff',exact:true}).click();
+  await page.locator('[data-action="open-turn-diff"]').first().click();
   await expect(page.getByRole('button',{name:'Review with Jev',exact:true})).toHaveCount(0);
 });
 

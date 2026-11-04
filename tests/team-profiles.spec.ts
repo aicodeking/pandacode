@@ -77,7 +77,7 @@ test.describe('team inheritance', () => {
     const id = await newConversation(page);
     expect(id).not.toBe('session-2');
     await expect(trigger(page)).toHaveAttribute('data-on', '');
-    await expect(trigger(page)).toHaveAccessibleName('Balanced team');
+    await expect(trigger(page)).toHaveAccessibleName('Balanced team: on');
     const fresh = await read(page, 'get_task', { sessionId: id });
     await assertAutoDefault(page, id, fresh);
     expect(await calls(page, 'architect_start')).toHaveLength(0);

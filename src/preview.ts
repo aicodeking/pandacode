@@ -37,6 +37,12 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).has(
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions,
   { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
+// Turn cards (src/turn-card.ts): opt in with ?cards for a thread with a short reply and a long one with changes.
+const slowTurn = typeof location !== 'undefined' && new URLSearchParams(location.search).has('slowturn');
+/** ?shortreply: the command finishes, then a one-line reply too short to fill the space its folded trace gave up. */
+const shortReply = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shortreply');
+const showCards = typeof location !== 'undefined' && new URLSearchParams(location.search).has('cards');
+if (showCards) sessions = [{ id: 'session-cards', projectId: 'project-1', title: 'Turn cards', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 30000, updatedAt: now + 4000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 1000 }, ...sessions];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -182,8 +188,18 @@ const traceMessages: Message[] = [
   { id: 130, sessionId: 'session-5', role: 'assistant', content: 'Search now compares a normalized form of the query and each title, so case and accents no longer matter.\n\n- Added `normalize()` in `src/lib/normalize.ts`.\n- The tests pass; lint flags the new regex and needs the `u` flag follow-up.', createdAt: now - 604000000 },
 ];
 // Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
+const cardTool = (id: string, name: string, input: string, output: string) => encodeTool({ id, name, status: 'completed', input, output });
+const cardMessages: Message[] = [
+  { id: 9001, sessionId: 'session-cards', role: 'user', content: 'Which file owns the search index?', createdAt: now - 30000, turnDurationMs: 4000 },
+  { id: 9002, sessionId: 'session-cards', role: 'assistant', content: 'The index lives in `src/search-index.ts`; `createSearchIndex()` builds it once per data set.', createdAt: now - 26000 },
+  { id: 9003, sessionId: 'session-cards', role: 'user', content: 'Make the results update instantly and keep keyboard navigation working.', createdAt: now - 20000, turnDurationMs: 5_410_000 },
+  { id: 9004, sessionId: 'session-cards', role: 'tool', content: cardTool('card-read', 'Read', 'src/components/search.ts', sampleSource), createdAt: now - 19000 },
+  { id: 9005, sessionId: 'session-cards', role: 'tool', content: cardTool('card-shot', 'Read', 'design/search-results.png', 'Image read'), createdAt: now - 18000 },
+  { id: 9006, sessionId: 'session-cards', role: 'tool', content: cardTool('card-test', 'Bash', 'npm test -- search', sampleTestOutput), createdAt: now - 15000 },
+  { id: 9007, sessionId: 'session-cards', role: 'assistant', content: 'Search now responds as you type.\n\n- **The index is built once.** `createSearchIndex()` moved out of the input handler, so a keystroke only queries it.\n- **Rendering is limited to the visible rows.** `renderResults()` draws the first 50 matches and the list virtualizes the rest.\n- **Keyboard navigation is unchanged.** ↑/↓ still move the selection and Enter opens the result; the existing tests cover both.\n\nI also added a test that types ten characters in a row and checks the index is built only once. Every search test passes.\n\nOne follow-up worth considering: the index is rebuilt when the data set changes, which happens on every sync. If syncs get frequent, an incremental update would avoid the rebuild entirely.', createdAt: now - 1000 },
+];
 const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
-const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
+const messages: Record<string, Message[]> = { ...(showCards ? { 'session-cards': cardMessages } : {}), ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },
@@ -884,7 +900,7 @@ const architect = createPreviewArchitect({
 
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
-const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>(), machineOffline = new Set<string>();
 /** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
 const SETTLED_SHOWN = 24;
 function machineRows(parentId: string) {
@@ -892,6 +908,7 @@ function machineRows(parentId: string) {
     sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
     status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
     machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+    ...(machineOffline.has(child.id) ? { hostOffline: true } : {}),
   }));
 }
 function machineChildren(parentId: string) {
@@ -917,6 +934,8 @@ function installMachineChildren(): void {
     const at = Date.now();
     (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
   };
+  // The computer running a thread dropping off or coming back.
+  w.__machineChildOffline ??= (id: string, offline: boolean) => { if (offline) machineOffline.add(id); else machineOffline.delete(id); emit('sessions-changed', {}); };
   w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
 }
 /** Menu bar popover data; `window.__trayCalls` records what it asked for. */
@@ -996,6 +1015,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   });
   if (command === 'remote_device_grants' || command === 'remote_set_device_grant' || command.startsWith('remote_pair_')) return (await import('./preview-grants')).previewGrants(command, args) as T;
   if (command === 'remote_diagnostics' || command === 'remote_diagnostics_export') return (await import('./preview-diagnostics')).previewDiagnostics(command, args) as T;
+  if (command === 'list_files' && (window as any).__filesFail) {
+    // Test seam: `__filesFail` fails folder reads like a moved project folder; relink_project clears it.
+    throw new Error('Project folder is unavailable: No such file or directory (os error 2)');
+  }
   if (command === 'remote_reconnect') {
     // Tests steer it: `__remoteReconnectHold` waits for `__remoteReconnectRelease()`, `__remoteReconnectFail` is an error text.
     const w = window as any; w.__remoteReconnects = (w.__remoteReconnects ?? 0) + 1;
@@ -1068,7 +1091,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
     return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
   }
-  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; const wait = (window as any).__orchestrationChildrenDelay; if (wait) await new Promise(done => setTimeout(done, wait)); return machineChildren(args.sessionId) as T; }
   if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
   if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
@@ -1463,6 +1486,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
+    case 'relink_project': {
+      const project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      project.path = String(args.path ?? '');
+      // The located folder reads again, like the real relink.
+      (window as any).__filesFail = false;
+      result = { ...project, addedOrder: projects.indexOf(project) + 1 }; break;
+    }
     case 'delete_session': {
       const task = session(args.sessionId); assertIdle(task);
       if (architect.isActive(task.id)) throw new Error('Stop the team before deleting this task.');
@@ -1480,7 +1511,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
-      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode }); break;
+      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
+      emit('sessions-changed', undefined); break; // As chat_create does natively, before it returns.
     }
     case 'chat_cleanup': {
       const chat = projects.some(p => p.id === args.projectId && p.path.includes('/PandaCode Chats/')) && !sessions.some(s => s.projectId === args.projectId);
@@ -1580,19 +1612,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       messages[s.id].push(toolMessage);
       activeTools.set(s.id, { activity: tool, message: toolMessage });
       agent({ sessionId: s.id, kind: 'tool', text: 'Bash', tool: { ...tool } });
-      const output = 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
+      const output = shortReply ? 'All tests pass in the preview.' : 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
       let cursor = 0;
       const tick = () => {
         const next = output.slice(cursor, cursor + 13); cursor += 13;
         if (next.trim()) s.lastResponseAt = Date.now();
         agent({ sessionId: s.id, kind: 'text', text: next });
-        if (tool.status === 'running' && cursor >= 130) {
+        if (tool.status === 'running' && cursor >= (shortReply ? 13 : slowTurn ? 26 : 130)) {
           tool.status = 'completed'; tool.output = sampleTestOutput;
           toolMessage.content = encodeTool(tool);
           agent({ sessionId: s.id, kind: 'tool', text: 'Bash completed', tool: { ...tool } });
           activeTools.delete(s.id);
         }
-        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, 24)); else finish(s.id, output);
+        // ?slowturn streams at a real agent's pace: the command runs ~2 s, then the reply arrives a few words at a time.
+        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, shortReply ? 600 : slowTurn ? (cursor === 13 ? 2000 : 70) : 24)); else finish(s.id, output);
       };
       timers.set(s.id, window.setTimeout(tick, 200)); break;
     }
@@ -1843,6 +1876,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Any registry ID shows the yellow swatch; native reads browser-captures/<id>.png.
     case 'prompt_image': result = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(args.id)) ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' : null; break;
+    // The preview browser exposes pasted images as files, so the native fallback only
+    // matters to tests, which provide the base64 through the invoke hook.
+    case 'read_clipboard_image': result = null; break;
     case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
     case 'read_document': {
       const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';

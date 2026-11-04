@@ -717,6 +717,67 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Project not found.".into())
     }
+    /// Point a project at its folder's new location after the folder was renamed or
+    /// moved outside PandaCode. Chats, tasks and history keep their ids.
+    pub fn relink_project(&self, project_id: &str, path: &Path) -> Result<Project> {
+        let project = self.project(project_id)?;
+        if !path.is_absolute() {
+            return Err("Choose an absolute folder path.".into());
+        }
+        let path = path
+            .canonicalize()
+            .map_err(|e| format!("Cannot open folder: {e}"))?;
+        if !path.is_dir() {
+            return Err("Choose a folder.".into());
+        }
+        // Chat folders are PandaCode-managed: never relink one, nor point a project into the chats root.
+        let chats = crate::chats::root();
+        let chats = chats.canonicalize().unwrap_or(chats);
+        if crate::chats::is_chat_folder(Path::new(&project.path)) || path.starts_with(&chats) {
+            return Err("Chat folders cannot be relinked.".into());
+        }
+        let path_str = path.to_string_lossy().to_string();
+        if path_str == project.path {
+            return Ok(project);
+        }
+        let taken: bool = self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM projects WHERE path=?1 AND id<>?2)",
+                params![path_str, project_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if taken {
+            return Err("Another project already uses this folder.".into());
+        }
+        // The project's name follows its folder's, as it did when the folder was added.
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| project.name.clone());
+        self.db
+            .execute(
+                "UPDATE projects SET name=?2,path=?3 WHERE id=?1",
+                params![project_id, name, path_str],
+            )
+            .map_err(|e| e.to_string())?;
+        self.project(project_id)
+    }
+    /// Worktree checkouts of a project's local tasks (they live beside the project folder,
+    /// so a rename of the project leaves them in place but breaks their Git links).
+    pub fn project_worktrees(&self, project_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT DISTINCT worktree_path FROM sessions WHERE project_id=?1 AND worktree_path IS NOT NULL AND remote_device IS NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([project_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<String>, _>>()
+            .map_err(|e| e.to_string());
+        rows
+    }
     pub fn remove_project(&self, project_id: &str) -> Result<()> {
         self.db
             .execute("DELETE FROM projects WHERE id=?1", [project_id])
@@ -1124,6 +1185,13 @@ impl Store {
                 params![sid, data],
             )
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// A cloud run re-attached after a restart: running again, so a Stop saved before the
+    /// quit no longer counts.
+    pub fn reattach_turn(&self, sid: &str) -> Result<()> {
+        self.db.execute("UPDATE sessions SET status='running',task_stage='in_progress',completed_at=NULL,stop_requested=0 WHERE id=?1", [sid]).map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -1619,7 +1687,9 @@ impl Store {
             self.start_turn_message(sid, content)?
         };
         for child in reported {
-            self.db.execute("UPDATE machine_threads SET reported=1,reported_by=?3 WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
+            // A thread still running (its computer went offline) stays unreported: the wake told
+            // of it once (`reported_by`), and its end reports as usual.
+            self.db.execute("UPDATE machine_threads SET reported_by=?3,reported=NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND status IN ('running','waiting')) WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(message_id)
@@ -2017,6 +2087,56 @@ mod tests {
         assert_eq!(store.project(&added[2].id).unwrap().added_order, added[2].added_order);
         let json = serde_json::to_value(&listed[0]).unwrap();
         assert!(json.get("addedOrder").is_some_and(|value| value.is_i64()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relinking_points_the_project_at_its_moved_folder() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-relink-{}", id()));
+        std::fs::create_dir_all(root.join("before")).unwrap();
+        std::fs::create_dir_all(root.join("after")).unwrap();
+        let project = store.add_project(&root.join("before")).unwrap();
+        let moved = store.relink_project(&project.id, &root.join("after")).unwrap();
+        assert_eq!(moved.path, root.join("after").canonicalize().unwrap().to_string_lossy().to_string());
+        // The project's label follows the folder's new name.
+        assert_eq!(moved.name, "after");
+        assert_eq!(store.project(&project.id).unwrap().path, moved.path);
+        assert!(store.project_worktrees(&project.id).unwrap().is_empty());
+        // Picking the folder the project already points at changes nothing.
+        assert_eq!(store.relink_project(&project.id, &root.join("after")).unwrap().id, project.id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relinking_refuses_missing_taken_file_and_chat_folders() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-relink-{}", id()));
+        std::fs::create_dir_all(root.join("one")).unwrap();
+        std::fs::create_dir_all(root.join("two")).unwrap();
+        let one = store.add_project(&root.join("one")).unwrap();
+        let two = store.add_project(&root.join("two")).unwrap();
+        // The folder was renamed away, so the chosen path does not resolve.
+        assert!(store.relink_project(&one.id, &root.join("gone")).is_err());
+        // Relative paths would resolve against the app's working directory.
+        assert!(store.relink_project(&one.id, Path::new("two")).is_err());
+        // The chats root itself is PandaCode's, not a project folder.
+        assert!(store.relink_project(&one.id, &crate::chats::root()).is_err());
+        // Another project already lives at the chosen folder.
+        assert!(store.relink_project(&one.id, &root.join("two")).is_err());
+        assert_eq!(store.project(&one.id).unwrap().path, one.path, "failed relinks keep the stored path");
+        assert_eq!(store.project(&two.id).unwrap().path, two.path);
+        // A file is not a folder.
+        std::fs::write(root.join("file.txt"), "x").unwrap();
+        assert!(store.relink_project(&one.id, &root.join("file.txt")).is_err());
+        // Chat folders are PandaCode-managed and never relinked; the stored path is
+        // inserted directly because add_project would refuse the missing folder.
+        let chat_folder = crate::chats::root().join("chat-re1inktest");
+        store.db.execute("INSERT INTO projects(id,name,path) VALUES ('chat-proj','Chat',?1)",
+            params![chat_folder.to_string_lossy().to_string()]).unwrap();
+        assert!(store.relink_project("chat-proj", &root.join("one")).is_err());
+        // A project cannot be relinked into the chats root either.
+        assert!(store.relink_project(&one.id, &crate::chats::root().join("chat-new")).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

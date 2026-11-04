@@ -164,8 +164,8 @@ test.describe('streamed markdown', () => {
       const response = await route.fetch();
       const source = await response.text();
       const patches: [string, string][] = [
-        ['const output = "This is the browser preview.', 'const output = window.__markdownReply ?? "This is the browser preview.'],
-        ['cursor + 13)', 'cursor + 61)'], ['cursor += 13', 'cursor += 61'], ['setTimeout(tick, 24)', 'setTimeout(tick, 4)'],
+        ['const output = shortReply ? "All tests pass in the preview." :', 'const output = window.__markdownReply ?? (shortReply ? "All tests pass in the preview." : null) ??'],
+        ['cursor + 13)', 'cursor + 61)'], ['cursor += 13', 'cursor += 61'], [': 70 : 24)', ': 70 : 4)'], // the tick's normal pace (`?slowturn` has its own)
       ];
       for (const [from] of patches) expect(source).toContain(from);
       await route.fulfill({ response, body: patches.reduce((body, [from, to]) => body.replace(from, to), source) });
@@ -173,6 +173,8 @@ test.describe('streamed markdown', () => {
     await page.reload();
     await page.evaluate(reply => { (window as any).__markdownReply = reply; }, REPLY);
     await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    // Type only once the New task page has drawn; before that the prompt still belongs to the thread that was open.
+    await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
     const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
     await prompt.fill('Stream the Markdown reply');
     await prompt.press('Enter');

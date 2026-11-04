@@ -23,7 +23,7 @@
 .team-library-editor > div { display: flex; justify-content: flex-end; gap: 7px; margin-top: 7px; }
 .team-library-editor button { font-size: var(--text-xs); padding: 7px 11px; }
 .team-library-error { color: var(--danger); font-size: var(--text-xs); margin-bottom: 0; }
-.team-library button, .architect-model { transition: background-color 120ms ease, color 120ms ease; }
+.team-library button, .architect-model { transition: background-color var(--ds-ease-in) ease-out, color var(--ds-ease-in) ease-out; }
 .team-library button:hover:not(:disabled) { color: var(--text); }
 .team-library button:active:not(:disabled), .architect-model:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 12%, transparent); transition: none; }
 .architect-config-section { margin-bottom: .85rem; }
@@ -68,10 +68,11 @@
 .architect-panel { pointer-events: auto; display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
 .architect-worker-list { color: var(--muted); font-size: var(--text-xs); line-height: 1.6; padding: 0 5px; }
 .architect-worker-row:hover { background: color-mix(in srgb, var(--raised) 70%, transparent); }
-.architect-worker-state[data-tone=accent] { color: var(--accent-ink); }
-html[data-theme="dark"] .architect-worker-state[data-tone=accent] { color: var(--accent); }
-.architect-worker-state[data-tone=success] { color: var(--success); }
-.architect-worker-state[data-tone=danger] { color: var(--danger); }
+/* Working is the team tone; waiting or needing input (the pending glyph) is the needs-you tone. */
+.architect-worker-state[data-tone=accent] { color: var(--ds-warn); }
+.architect-worker-row:has(> [data-glyph=running]) .architect-worker-state[data-tone=accent] { color: var(--ds-tone-team); }
+.architect-worker-state[data-tone=success] { color: var(--ds-success); }
+.architect-worker-state[data-tone=danger] { color: var(--ds-danger); }
 .architect-worker-row > .icon { width: 11px; height: 11px; color: var(--muted); }
 .architect-worker-detail { padding: 6px 8px 10px; }
 .architect-worker-meta { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
@@ -102,15 +103,15 @@ html[data-theme="dark"] .architect-worker-state[data-tone=accent] { color: var(-
 
 .architect-worker-checkpoint { margin: 0 0 14px; font-size: var(--text-xs); color: var(--muted); }
 .architect-worker-checkpoint summary { display: flex; align-items: center; gap: 7px; cursor: pointer; padding: 7px 0; }
-.architect-worker-checkpoint summary::before { content: '›'; font-size: var(--text-md); transition: transform 120ms ease; }
-.architect-worker-checkpoint[open] summary::before { transform: rotate(90deg); }
+.architect-worker-checkpoint summary::before { content: '›'; font-size: var(--text-md); transition: rotate var(--ds-ease-in) ease-out; }
+.architect-worker-checkpoint[open] summary::before { rotate: 90deg; }
 .architect-worker-checkpoint summary::marker, .architect-worker-checkpoint summary::-webkit-details-marker { display: none; content: ''; }
 .architect-worker-checkpoint time { margin-left: auto; font-size: var(--text-2xs); }
 .architect-worker-checkpoint dl { margin: 4px 0 0; display: grid; gap: 7px; }
 .architect-worker-checkpoint dl > div { display: grid; grid-template-columns: 4.2em minmax(0, 1fr); gap: 9px; }
 .architect-worker-checkpoint dt { font-size: var(--text-2xs); }
 .architect-worker-checkpoint dd { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
-.architect-worker-checkpoint .architect-checkpoint-blocker dt { color: var(--accent-ink); }
+.architect-worker-checkpoint .architect-checkpoint-blocker dt { color: var(--ds-warn); }
 @media(prefers-reduced-motion:reduce) { .architect-worker-checkpoint summary::before { transition: none; } }
 
 /* The workers panel: one header line (title, task count, icon controls, close), then a tall row per worker. */
@@ -130,10 +131,10 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-row { display: flex; width: 100%; height: 64px; align-items: center; justify-content: flex-start; text-align: left; gap: 12px; padding: 0 8px; border-radius: 0; }
 .architect-worker-glyph { position: relative; display: flex; flex: none; width: 28px; height: 28px; color: var(--muted); }
 .architect-worker-glyph > svg { width: 28px; height: 28px; }
-.architect-worker-glyph[data-glyph=running] { color: var(--accent-ink); }
-html[data-theme="dark"] .architect-worker-glyph[data-glyph=running] { color: var(--accent); }
-.architect-worker-glyph[data-glyph=completed] { color: var(--success); }
-.architect-worker-glyph[data-glyph=failed] { color: var(--danger); }
+.architect-worker-glyph[data-glyph=running] { color: var(--ds-tone-team); }
+.architect-worker-row:has(.architect-worker-state[data-tone=accent]) > .architect-worker-glyph[data-glyph=pending] { color: var(--ds-warn); }
+.architect-worker-glyph[data-glyph=completed] { color: var(--ds-success); }
+.architect-worker-glyph[data-glyph=failed] { color: var(--ds-danger); }
 .architect-glyph-spin { transform-origin: 14px 14px; }
 @media (prefers-reduced-motion: no-preference) { .architect-glyph-spin { animation: architect-glyph-spin 2.4s linear infinite; } @keyframes architect-glyph-spin { to { transform: rotate(360deg); } } }
 .architect-worker-logo { position: absolute; right: -3px; bottom: -3px; display: flex; padding: 1px; border-radius: 50%; background: var(--panel); }

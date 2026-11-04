@@ -6,7 +6,8 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['General', 'Appearance', 'Agents', 'Providers', 'Agent teams', 'Schedules', 'Tools & add-ons', 'Skills & rules', 'Cloud sandboxes', 'Remote access', 'GitHub', 'About & updates'];
+const GROUPS = ['General', 'Appearance', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
+const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
 
@@ -128,7 +129,7 @@ test('support details are loaded on demand and copied only by the customer', asy
   });
   await open(page);
   await settings(page);
-  await tab(page, 'About & updates').click();
+  await tab(page, 'About').click();
   expect(await page.evaluate(() => (window as any).__settingsSupport.calls)).toBe(0);
   const details = page.locator('.support-details');
   await expect(details.getByRole('textbox')).toBeHidden();
@@ -148,7 +149,7 @@ test('support details recover from a fetch error and offer manual copying when c
   await page.addInitScript(() => Object.defineProperty(navigator, 'clipboard', { value: { writeText: async () => { throw new Error('Clipboard denied'); } }, configurable: true }));
   await open(page);
   await settings(page);
-  await tab(page, 'About & updates').click();
+  await tab(page, 'About').click();
   await page.evaluate(() => { (window as any).__settingsSupport.fail = true; });
   const details = page.locator('.support-details');
   await details.locator('summary').click();
@@ -204,7 +205,7 @@ for (const pending of [false, true]) {
     await page.locator('.new-task-button').click();
     const calls = () => page.evaluate(() => (window as any).__refreshModels.calls);
     await expect.poll(calls).toBe(1);
-    const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+    const trigger = page.getByRole('button', { name: /^Model: / });
     if (!pending) await expect(trigger).toContainText('Old model name');
     await settings(page);
     await tab(page, 'Agents').click();
@@ -253,7 +254,7 @@ test('settings organization opens General immediately and supports keyboard grou
   await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Agents')).toBeFocused();
   await expect(tab(page, 'Agents')).toHaveAttribute('aria-selected', 'true');
-  await expect(panel(page, 'Agents')).toBeVisible();
+  await expect(panel(page, 'Harnesses')).toBeVisible();
   await expect.poll(() => providerCalls(page)).toBe(startupCalls + 1);
   await expect(page.getByRole('button', { name: 'Refresh agents', exact: true })).toBeDisabled();
   await page.keyboard.press('ArrowUp');
@@ -266,8 +267,8 @@ test('settings organization opens General immediately and supports keyboard grou
   await expect(tab(page, 'General')).toHaveAttribute('aria-selected', 'true');
   expect(await retainedGeneral!.evaluate(node => node.isConnected)).toBe(true);
   await page.keyboard.press('End');
-  await expect(tab(page, 'About & updates')).toBeFocused();
-  await expect(tab(page, 'About & updates')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab(page, 'About')).toBeFocused();
+  await expect(tab(page, 'About')).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Home');
   await expect(tab(page, 'General')).toBeFocused();
   await expect(tab(page, 'General')).toHaveAttribute('aria-selected', 'true');
@@ -320,6 +321,7 @@ test('settings organization does not let a late provider refresh replace wallpap
   await expect.poll(() => page.evaluate(() => (window as any).__settingsProviders.pending)).toBe(true);
   await expect(refresh).toBeDisabled();
   await tab(page, 'Appearance').click();
+  await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).check();
   const blur = page.getByRole('slider', { name: 'Wallpaper blur', exact: true });
   await expect(blur).toBeVisible();
   await blur.focus();
@@ -356,12 +358,12 @@ test('settings organization lists groups in order, moves between them by keyboar
     await page.keyboard.press('ArrowDown');
     await expect(tab(page, name)).toBeFocused();
     await expect(tab(page, name)).toHaveAttribute('aria-selected', 'true');
-    await expect(panel(page, name)).toBeVisible();
+    await expect(panel(page, FIRST[name] ?? name)).toBeVisible();
   }
   await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'General')).toBeFocused();
   await page.keyboard.press('ArrowUp');
-  await expect(tab(page, 'About & updates')).toBeFocused();
+  await expect(tab(page, 'About')).toBeFocused();
   await page.keyboard.press('Home');
   await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Appearance')).toHaveAttribute('aria-selected', 'true');
@@ -370,9 +372,13 @@ test('settings organization lists groups in order, moves between them by keyboar
   const appearance = panel(page, 'Appearance');
   await expect(appearance.getByRole('heading', { name: /^Colors/ })).toBeVisible();
   await expect(appearance.getByRole('radio', { name: 'Classic', exact: true })).toBeVisible();
+  // Wallpapers is a switch, off by default; its scene controls appear once it is on.
+  const wallpapers = appearance.getByRole('checkbox', { name: 'Wallpapers', exact: true });
+  await expect(wallpapers).not.toBeChecked();
+  await expect(appearance.getByRole('slider', { name: 'Wallpaper visibility', exact: true })).toBeHidden();
+  await wallpapers.check();
   await expect(appearance.getByRole('heading', { name: 'Wallpapers', exact: true })).toBeVisible();
   await expect(appearance.getByRole('slider', { name: 'Wallpaper visibility', exact: true })).toBeVisible();
-  await expect(appearance.getByRole('checkbox', { name: 'Daily wallpapers', exact: true })).toBeVisible();
   await expect(page.locator('#dialog')).not.toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog(page)).toBeHidden();
@@ -418,6 +424,7 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
     }
     await page.screenshot({ path: testInfo.outputPath(`settings-${layout.width}-${layout.scale}.png`), animations: 'disabled' });
     await tab(page, 'Appearance').click();
+    await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).check();
     await expect(page.getByRole('slider', { name: 'Wallpaper blur', exact: true })).toBeVisible();
     expect(await dialog(page).locator('.settings-content').evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
     await back(page).click();
@@ -460,11 +467,50 @@ test('resource usage lives in Settings → About, not in a bottom status bar', a
   await expect(page.locator('.statusbar')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Resource usage', exact: true })).toHaveCount(0);
   await page.keyboard.press(process.platform === 'darwin' ? 'Meta+,' : 'Control+,');
-  await tab(page, 'About & updates').click();
-  const usage = panel(page, 'About & updates').locator('.settings-resources');
+  await tab(page, 'About').click();
+  const usage = panel(page, 'About').locator('.settings-resources');
   await expect(usage).toContainText('Resource usage');
   await expect(usage.locator('[data-metric="activeAgents"]')).toHaveText('0');
   await expect(usage.locator('[data-metric="coreRssBytes"]')).toHaveText('—');
   await usage.getByRole('button', { name: 'Refresh', exact: true }).click();
   await expect(usage.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
+});
+
+test('the command palette opens Settings pages by name', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#prompt').waitFor();
+  const shortcut = process.platform === 'darwin' ? 'Meta+K' : 'Control+K';
+  await page.keyboard.press(shortcut);
+  const query = page.getByRole('textbox', { name: 'Search tasks and commands' });
+  await expect(page.locator('#command-results button', { hasText: 'Providers' })).toHaveCount(0);
+  await query.fill('providers');
+  await page.locator('#command-results button', { hasText: 'Settings › Agents › Providers' }).click();
+  await expect(page.locator('#settings-panel-providers')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Providers', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('the command palette finds Settings pages by what they hold', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('#prompt').waitFor();
+  const shortcut = process.platform === 'darwin' ? 'Meta+K' : 'Control+K';
+  for (const [words, label, panelId] of [['wallpaper', 'Settings › Appearance', 'appearance'], ['api key', 'Settings › Agents › Providers', 'providers'], ['github token', 'Settings › Connections › GitHub', 'github']] as const) {
+    await page.keyboard.press('Escape');
+    await page.keyboard.press(shortcut);
+    await page.getByRole('textbox', { name: 'Search tasks and commands' }).fill(words);
+    const hit = page.locator('#command-results button[data-action="settings-page"]');
+    await expect(hit.first()).toHaveText(label);
+    await hit.first().click();
+    await expect(page.locator(`#settings-panel-${panelId}`)).toBeVisible();
+  }
+});
+
+test('Model routing is its own Agents page and mounts only when shown', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await page.getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await expect(page.locator('#settings-panel-teams #agent-teams-settings')).not.toBeEmpty();
+  await expect(page.locator('#model-routing-settings')).toBeEmpty();
+  await page.getByRole('tab', { name: 'Model routing', exact: true }).click();
+  await expect(page.locator('#model-routing-settings .model-routing')).toBeVisible();
 });

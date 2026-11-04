@@ -60,14 +60,14 @@ test.describe('browser workspace', () => {
 
   test('HTML previews in the browser with a separate source action, and images open in a tab that can preview them', async ({ page }) => {
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.getByRole('button', { name: 'View source of index.html', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('index.html');
     await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/index\.html$/);
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).at(-1)?.args).toMatchObject({ projectId: 'project-1', sessionId: 'session-1', path: 'index.html' });
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'public', exact: true }).click();
     await page.locator('.file-row').getByRole('button', { name: 'favicon.svg', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('public/favicon.svg');
@@ -76,7 +76,7 @@ test.describe('browser workspace', () => {
     await page.getByRole('button', { name: 'Preview in browser', exact: true }).click();
     await expect(browserUrl(page)).toHaveValue(/\/public\/favicon\.svg$/);
     // View source shows the SVG's text, not the image.
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.getByRole('button', { name: 'View source of favicon.svg', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('public/favicon.svg');
     await expect(page.locator('.office-viewer[data-kind="image"]')).toHaveCount(0);
@@ -86,7 +86,7 @@ test.describe('browser workspace', () => {
 
   test('file preview errors keep the file list usable', async ({ page }) => {
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__failFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
     await expect(page.locator('#toast')).toContainText('File no longer exists');
@@ -112,7 +112,7 @@ test.describe('browser workspace', () => {
 
   test('a delayed file preview does not take over a different task', async ({ page }) => {
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__delayFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).length).toBe(1);
@@ -125,11 +125,11 @@ test.describe('browser workspace', () => {
 
   test('changing inspector tabs cancels a pending file preview', async ({ page }) => {
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.evaluate(() => { (window as any).__delayFilePreview = true; });
     await page.locator('.file-row').getByRole('button', { name: 'index.html', exact: true }).click();
     await expect.poll(async () => (await commandCalls(page, 'prepare_file_preview')).length).toBe(1);
-    await page.getByRole('button', { name: /^Changes/ }).click();
+    await page.getByRole('tab', { name: /^Changes/ }).click();
     await page.evaluate(() => { (window as any).__releaseFilePreview(); });
     await expect(page.locator('#inspector-content .changes-view')).toBeVisible();
     expect(await commandCalls(page, 'browser_open')).toEqual([]);
@@ -137,7 +137,7 @@ test.describe('browser workspace', () => {
 
   test('opens local servers from both browser entry points and refreshes on demand', async ({ page }) => {
     await openInspectorTab(page, 'Browser');
-    await page.getByRole('button', { name: 'Browser', exact: true }).click();
+    await page.getByRole('tab', { name: 'Browser', exact: true }).click();
     await expect(browserPanel(page).getByRole('heading', { name: 'Local servers', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Attach an element', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Attach screenshot', exact: true })).toBeDisabled();
@@ -262,7 +262,7 @@ test.describe('browser workspace', () => {
 
   test('consumes sent screenshots after switching tasks during file loading and preserves newer attachments', async ({ page }) => {
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await page.getByRole('button', { name: 'Attach README.md', exact: true }).click();
     await openBrowser(page);
     await navigate(page, 'localhost:3000');
@@ -309,14 +309,14 @@ test.describe('browser workspace', () => {
     const lifecycle = await Promise.all(['browser_open', 'browser_close'].map(command => commandCalls(page, command)));
     await separator.focus();
     await page.keyboard.press('Home');
-    await expect.poll(() => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().width)).toBe(270);
+    await expect.poll(() => page.locator('#inspector').evaluate(node => (node as HTMLElement).offsetWidth + 16)).toBe(270); // the inset panel sits 8px inside each side of its track;
     await checkNativeBounds();
     const small = (await browserPanel(page).locator('.browser-viewport').boundingBox())!;
     const handle = (await separator.boundingBox())!;
     await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
     await page.mouse.down();
     await page.mouse.move(handle.x + handle.width / 2 - 210, handle.y + handle.height / 2, { steps: 6 });
-    await expect.poll(() => page.locator('#inspector').evaluate(node => node.getBoundingClientRect().width)).toBe(480);
+    await expect.poll(() => page.locator('#inspector').evaluate(node => (node as HTMLElement).offsetWidth + 16)).toBe(480);
     await checkNativeBounds();
     const large = (await browserPanel(page).locator('.browser-viewport').boundingBox())!;
     expect(large.width - small.width).toBeCloseTo(210, 0);
@@ -387,7 +387,7 @@ test.describe('browser workspace', () => {
     const settings = page.getByRole('region', { name: 'Settings', exact: true });
     await expect(settings).toBeVisible();
     await expect.poll(async () => (await commandCalls(page, 'browser_bounds')).at(-1)?.args.visible).toBe(false);
-    await settings.getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+    await settings.getByRole('tab', { name: 'Tools', exact: true }).click();
     await settings.getByRole('button', { name: 'Manage', exact: true }).click();
     await expect(page.locator('dialog[open]')).toBeVisible();
     await page.keyboard.press('Escape');
@@ -399,7 +399,7 @@ test.describe('browser workspace', () => {
     await expect.poll(async () => (await commandCalls(page, 'browser_bounds')).at(-1)?.args.visible).toBe(true);
     const closes = (await commandCalls(page, 'browser_close')).length;
     await openInspectorTab(page, 'Files');
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await page.getByRole('tab', { name: 'Files', exact: true }).click();
     await expect(browserPanel(page)).toBeHidden();
     await expect.poll(async () => (await commandCalls(page, 'browser_close')).length).toBe(closes + 1);
   });
@@ -417,7 +417,7 @@ test.describe('browser workspace', () => {
     });
     await openBrowser(page);
     await navigate(page, 'localhost:3000');
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    await page.getByRole('button', { name: /^Model: / }).click();
     await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).toBeVisible();
     const guest = await browserPanel(page).locator('.browser-viewport').boundingBox();
     await page.getByRole('dialog', { name: 'Harness and model', exact: true }).evaluate((menu, guest) => {

@@ -8,6 +8,9 @@ use std::{
 struct Launch {
     program: PathBuf,
     args: Vec<OsString>,
+    /// One environment override the launch choice itself implies (`ELECTRON_RUN_AS_NODE`
+    /// when a desktop app's own runtime runs its bundled CLI).
+    env: Option<(&'static str, &'static str)>,
 }
 
 /// Canonical Windows paths are useful for native file operations, but Node and
@@ -66,10 +69,42 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     let batch = path.extension().is_some_and(|extension| {
         extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
     });
+    let node_script = path.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("js")
+            || extension.eq_ignore_ascii_case("mjs")
+            || extension.eq_ignore_ascii_case("cjs")
+    });
+    if node_script {
+        // ZCode's bundled CLI (`glm/zcode.cjs`) is built for the app's own Electron
+        // runtime, which exists even where no system node does. Nothing else gets
+        // ELECTRON_RUN_AS_NODE, however it sits inside an app bundle.
+        let bundled_zcode = path.file_name().is_some_and(|name| name == "zcode.cjs")
+            && path.parent().and_then(Path::file_name).is_some_and(|name| name == "glm");
+        if let Some(runtime) = bundled_zcode.then(|| electron_runtime(path)).flatten() {
+            return Ok(Launch {
+                program: external_path_for(&runtime, windows),
+                args: vec![external_path_for(path, windows).into_os_string()],
+                env: Some(("ELECTRON_RUN_AS_NODE", "1")),
+            });
+        }
+        if !windows {
+            // Unix: an executable shebang script runs directly.
+            return Ok(Launch {
+                program: external_path_for(path, windows),
+                args: Vec::new(),
+                env: None,
+            });
+        }
+        // Windows cannot exec a Node script directly; start it under node.
+        let directory =
+            path.parent().ok_or("The Node script has no installation folder.")?;
+        return node_launch(path, directory);
+    }
     if !windows || !batch {
         return Ok(Launch {
             program: external_path_for(path, windows),
             args: Vec::new(),
+            env: None,
         });
     }
     // npm shims forward arguments through cmd.exe. Launch their declared bin
@@ -125,16 +160,65 @@ fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
         return Ok(Launch {
             program: external_path_for(&script, windows),
             args: Vec::new(),
+            env: None,
         });
     }
+    node_launch(&script, directory)
+}
+
+/// A Node script next to its own runtime, else any node on the searched PATH.
+fn node_launch(script: &Path, directory: &Path) -> Result<Launch, String> {
     let adjacent_node = directory.join("node.exe");
     let node = adjacent_node.is_file().then_some(adjacent_node)
         .or_else(|| find_native_node(search_directories(true, &|key| std::env::var_os(key))))
-        .ok_or("Node.js is required by this npm-installed harness. Install Node.js or use the native harness installer.")?;
+        .ok_or("Node.js is required by this harness. Install Node.js or use the native harness installer.")?;
     Ok(Launch {
-        program: external_path_for(&node, windows),
-        args: vec![external_path_for(&script, windows).into_os_string()],
+        program: external_path_for(&node, true),
+        args: vec![external_path_for(script, true).into_os_string()],
+        env: None,
     })
+}
+
+/// The Electron binary a desktop app bundles beside a Node script. Run-as-node is
+/// a plain node, and the bundled CLIs (ZCode) are built for exactly that runtime,
+/// which is there even where no system node is.
+#[cfg(target_os = "macos")]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // …/ZCode.app/Contents/Resources/<…>/cli.cjs runs on …/Contents/MacOS/ZCode.
+    let contents = script.ancestors().nth(3)?;
+    if contents.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let app = contents.parent()?;
+    let name = app.file_name()?.to_str()?.strip_suffix(".app")?;
+    let binary = contents.join("MacOS").join(name);
+    binary.is_file().then_some(binary)
+}
+
+#[cfg(target_os = "windows")]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // <root>\resources\<…>\cli.cjs runs on <root>\<name>.exe.
+    let resources = script.ancestors().nth(2)?;
+    if !resources.file_name()?.to_str()?.eq_ignore_ascii_case("resources") {
+        return None;
+    }
+    let root = resources.parent()?;
+    let name = root.file_name()?.to_str()?;
+    [name, &name.to_lowercase()].into_iter().map(|name| root.join(format!("{name}.exe")))
+        .find(|binary| binary.is_file())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub(super) fn electron_runtime(script: &Path) -> Option<PathBuf> {
+    // <root>/resources/<…>/cli.cjs runs on <root>/<executable name>.
+    let resources = script.ancestors().nth(2)?;
+    if resources.file_name()?.to_str()? != "resources" {
+        return None;
+    }
+    let root = resources.parent()?;
+    let name = root.file_name()?.to_str()?;
+    [name, &name.to_lowercase()].into_iter().map(|name| root.join(name))
+        .find(|binary| binary.is_file())
 }
 
 /// The executable a package declares in `package.json` `bin`, kept inside the package.
@@ -253,6 +337,9 @@ pub(crate) fn command(path: &Path) -> Result<tokio::process::Command, String> {
     let launch = resolve(path, cfg!(windows))?;
     let mut command = tokio::process::Command::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -267,6 +354,9 @@ pub(super) fn std_command(path: &Path) -> Result<std::process::Command, String> 
     let launch = resolve(path, cfg!(windows))?;
     let mut command = std::process::Command::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -284,6 +374,9 @@ pub(crate) fn pty_command(path: &Path) -> Result<portable_pty::CommandBuilder, S
     let launch = resolve(path, cfg!(windows))?;
     let mut command = portable_pty::CommandBuilder::new(launch.program);
     command.args(launch.args);
+    if let Some((key, value)) = launch.env {
+        command.env(key, value);
+    }
     crate::child_env::sanitize(&mut command);
     command.args(super::privacy::arguments(&harness_name(path)));
     for (name, value) in super::privacy::environment() {
@@ -366,6 +459,7 @@ fn search_directories(windows: bool, env: &impl Fn(&str) -> Option<OsString>) ->
     }
     let npm = npm_global_bin(windows, env, home.as_deref(), &dirs);
     dirs.extend(npm);
+    dirs.extend(pnpm_global_dir(windows, env, home.as_deref()));
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|dir| seen.insert(dir.clone()));
     dirs
@@ -478,6 +572,35 @@ fn npm_global_bin(
         Some(node.parent()?.parent()?.to_path_buf())
     })?;
     Some(prefix.join("bin"))
+}
+
+/// Where `pnpm add -g` puts CLIs: `$PNPM_HOME` when `pnpm setup` configured the shell, else
+/// that command's own default. The rc file that exports PNPM_HOME never runs for an app
+/// opened from Finder or the Dock, so the default is searched too.
+fn pnpm_global_dir(
+    windows: bool,
+    env: &impl Fn(&str) -> Option<OsString>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    env("PNPM_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .or_else(|| {
+        if windows {
+            let local = env("LOCALAPPDATA")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .or_else(|| home.map(|home| home.join("AppData/Local")))?;
+            Some(local.join("pnpm"))
+        } else {
+            home.map(|home| if cfg!(target_os = "macos") {
+                home.join("Library/pnpm")
+            } else {
+                home.join(".local/share/pnpm")
+            })
+        }
+    })
 }
 
 /// GUI launches inherit a minimal PATH. Use the same ordered locations as CLI
@@ -631,6 +754,40 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pnpm_global_shims_are_searched() {
+        let f = Fixture::new();
+        // The store sits where `pnpm setup` left it, reached through the default location,
+        // itself a symlink (`~/Library/pnpm` points across volumes on some machines).
+        let cli = "pandacode-fixture-pnpm-cli";
+        let pinned = executable(&f, &format!("store/pnpm/{cli}"));
+        let default = if cfg!(target_os = "macos") {
+            "home/Library/pnpm"
+        } else {
+            "home/.local/share/pnpm"
+        };
+        fs::create_dir_all(f.0.join(default).parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(f.0.join("store/pnpm"), f.0.join(default)).unwrap();
+        let home = f.0.join("home").into_os_string();
+        let env = |name: &str| (name == "HOME").then(|| home.clone());
+        assert_eq!(
+            find_in_directories(cli, search_directories(false, &env), false),
+            Some(f.0.join(default).join(cli))
+        );
+        // An explicit PNPM_HOME wins over the default and can sit anywhere.
+        let pnpm = f.0.join("store/pnpm").into_os_string();
+        let env = |name: &str| match name {
+            "HOME" => Some(home.clone()),
+            "PNPM_HOME" => Some(pnpm.clone()),
+            _ => None,
+        };
+        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), Some(pinned));
+        // A relative PNPM_HOME is ignored, like npm's configured prefix.
+        let env = |name: &str| (name == "PNPM_HOME").then(|| OsString::from("store/pnpm"));
+        assert_eq!(find_in_directories(cli, search_directories(false, &env), false), None);
+    }
+
     #[test]
     fn windows_npm_launches_node_entry_without_a_batch_shell() {
         let f = Fixture::new();
@@ -647,6 +804,84 @@ mod tests {
         let launch = resolve(&shim, true).unwrap();
         assert_eq!(launch.program, external_path_for(&node, true));
         assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn windows_node_scripts_launch_under_adjacent_node() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let node = f.file("ZCode/resources/glm/node.exe", "");
+        let launch = resolve(&script, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&node, true));
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
+    }
+
+    #[test]
+    fn unix_node_scripts_launch_directly() {
+        let f = Fixture::new();
+        let script = f.file("glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&script, false));
+        assert!(launch.args.is_empty());
+        assert_eq!(launch.env, None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode.app/Contents/Resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode.app/Contents/MacOS/ZCode", "");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, false));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode/zcode", "");
+        let launch = resolve(&script, false).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, false));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn bundled_app_scripts_run_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let script = f.file("ZCode/resources/glm/zcode.cjs", "#!/usr/bin/env node\n");
+        let binary = f.file("ZCode/ZCode.exe", "");
+        let launch = resolve(&script, true).unwrap();
+        assert_eq!(launch.program, external_path_for(&binary, true));
+        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
+    }
+
+    /// Any other script at the bundled CLI's depth stays out of the app's runtime,
+    /// even with a runtime binary right there for it to find.
+    #[test]
+    fn only_glm_zcode_cjs_runs_on_the_apps_electron_runtime() {
+        let f = Fixture::new();
+        let (resources, binary) = if cfg!(target_os = "macos") {
+            ("ZCode.app/Contents/Resources", "ZCode.app/Contents/MacOS/ZCode")
+        } else if cfg!(windows) {
+            ("ZCode/resources", "ZCode/ZCode.exe")
+        } else {
+            ("ZCode/resources", "ZCode/zcode")
+        };
+        f.file(binary, "");
+        for name in ["glm/other.cjs", "glm/zcode.js", "tools/zcode.cjs"] {
+            let script = f.file(&format!("{resources}/{name}"), "#!/usr/bin/env node\n");
+            fs::write(script.with_file_name("node.exe"), "").unwrap();
+            let launch = resolve(&script, cfg!(windows)).unwrap();
+            assert_eq!(launch.env, None, "{name}");
+            assert_ne!(launch.program, f.0.join(binary), "{name}");
+        }
     }
 
     #[test]
@@ -930,6 +1165,7 @@ mod tests {
             "C:/Users/Person/.kilo/bin",
             "C:/Users/Person/.kimi-code/Scripts",
             "D:/Roaming Data/npm",
+            "D:/Local Data/pnpm",
             "D:/Local Data/Microsoft/WinGet/Links",
             "C:/Program Files/nodejs",
             "C:/Windows/System32/WindowsPowerShell/v1.0",
