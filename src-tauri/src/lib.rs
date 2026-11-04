@@ -3172,6 +3172,12 @@ async fn read_document(path: String) -> Result<prompt_attachments::DocumentText>
     blocking(move || prompt_attachments::read_document(std::path::Path::new(&path))).await
 }
 
+/// Synchronous on purpose: AppKit's drag pasteboard is read on the main thread.
+#[tauri::command]
+fn dragged_file_paths() -> Vec<String> {
+    prompt_attachments::dragged_file_paths()
+}
+
 #[tauri::command]
 async fn describe_folder(path: String) -> Result<prompt_attachments::FolderSummary> {
     blocking(move || prompt_attachments::describe_folder(std::path::Path::new(&path))).await
@@ -3960,7 +3966,17 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
 /// The app context, expanded once: each `generate_context!` embeds an Info.plist static,
 /// and a second expansion (serve mode) would define the same symbol twice.
 fn app_context() -> tauri::Context<tauri::Wry> {
-    tauri::generate_context!()
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    // On macOS the webview takes drags as HTML5 events, so text can be dropped at the
+    // caret and thread and moodboard drags work; `dragged_file_paths` keeps real paths.
+    // Tauri's handler swallows every drag on macOS and Windows; Windows keeps it, since
+    // it is the only source of paths there.
+    #[cfg(target_os = "macos")]
+    for window in &mut context.config_mut().app.windows {
+        window.drag_drop_enabled = false;
+    }
+    context
 }
 
 pub fn run() {
@@ -4379,6 +4395,7 @@ pub fn run() {
                 prompt_image,
                 reveal_path,
                 read_document,
+                dragged_file_paths,
                 describe_folder,
                 list_files,
                 search_files,

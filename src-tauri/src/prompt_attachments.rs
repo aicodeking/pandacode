@@ -551,8 +551,71 @@ impl Listing {
     }
 }
 
+/// The files in the current drag. HTML5 drops carry no paths, but AppKit's shared drag
+/// pasteboard still holds them when the drop event arrives.
+#[cfg(target_os = "macos")]
+pub fn dragged_file_paths() -> Vec<String> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {
+        static NSPasteboardNameDrag: &'static NSString;
+    }
+    // SAFETY: a class method taking a valid NSString, returning a shared pasteboard.
+    let board: Retained<AnyObject> = unsafe { msg_send![class!(NSPasteboard), pasteboardWithName: NSPasteboardNameDrag] };
+    file_paths_on(&board)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn dragged_file_paths() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn file_paths_on(board: &objc2::runtime::AnyObject) -> Vec<String> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSURL;
+    // SAFETY: documented NSPasteboard and NSArray calls; asking for NSURL objects means
+    // every returned item is an NSURL.
+    unsafe {
+        let classes: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: class!(NSURL)];
+        let none: *const AnyObject = std::ptr::null();
+        let items: Option<Retained<AnyObject>> = msg_send![board, readObjectsForClasses: &*classes, options: none];
+        let Some(items) = items else { return Vec::new() };
+        let count: usize = msg_send![&*items, count];
+        (0..count)
+            .filter_map(|index| {
+                let url: Retained<NSURL> = msg_send![&*items, objectAtIndex: index];
+                // `filePathURL` resolves the file reference URLs Finder publishes.
+                Some(url.filePathURL()?.path()?.to_string())
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dragged_paths_keep_file_urls_and_skip_web_links() {
+        use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+        use objc2_foundation::{NSString, NSURL};
+        // SAFETY: a private pasteboard, written and read with documented calls.
+        unsafe {
+            let board: Retained<AnyObject> = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
+            let file = NSURL::fileURLWithPath(&NSString::from_str("/tmp/My Folder"));
+            let web = NSURL::URLWithString(&NSString::from_str("https://example.com/page")).unwrap();
+            let items: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
+            let _: () = msg_send![&*items, addObject: &*file];
+            let _: () = msg_send![&*items, addObject: &*web];
+            let _: isize = msg_send![&*board, clearContents];
+            let written: bool = msg_send![&*board, writeObjects: &*items];
+            assert!(written);
+            assert_eq!(super::file_paths_on(&board), ["/tmp/My Folder"]);
+            let _: () = msg_send![&*board, releaseGlobally];
+        }
+    }
+
     use super::*;
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";

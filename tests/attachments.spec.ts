@@ -241,6 +241,59 @@ test('dropped items that cannot be attached go into the prompt as paths', async 
   await expect(page.locator('#toast')).not.toContainText('No readable text');
 });
 
+/** A real-shaped file drop: the DOM event carries File objects and no paths. */
+async function dropFile(page: Page, name: string): Promise<void> {
+  await page.evaluate(name => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([0, 1, 2])], name));
+    document.dispatchEvent(new DragEvent('dragenter', { dataTransfer: data, bubbles: true }));
+    document.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+  }, name);
+}
+
+test('a dropped folder attaches with its real path from the drag pasteboard', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/Downloads/assets'];`);
+  await dropFile(page, 'assets');
+  await expect(chips(page)).toHaveCount(1);
+  await expect(page.locator('#attachments .prompt-chip-folder')).toHaveAttribute('title', '/Users/you/Downloads/assets');
+});
+
+test('a dropped file that cannot attach inserts its real path', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/Downloads/build.zip'];`);
+  await prompt(page).fill('Look at');
+  await dropFile(page, 'build.zip');
+  await expect(prompt(page)).toHaveValue('Look at /Users/you/Downloads/build.zip');
+  await expect(chips(page)).toHaveCount(0);
+});
+
+test('a drag pasteboard holding other files is not trusted for this drop', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/old.md'];`);
+  await dropFile(page, 'firmware.bin');
+  await expect(prompt(page)).toHaveValue('firmware.bin (dropped file; PandaCode could not read it or find its path)');
+  await expect.poll(() => calls(page, 'read_document')).toHaveLength(0);
+});
+
+test('a text drag is left to the webview, which inserts it at the caret', async ({ page }) => {
+  await probe(page);
+  const cancelled = await page.evaluate(() => ['dragover', 'drop'].map(type => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'Some text');
+    return !document.querySelector('#prompt')!.dispatchEvent(new DragEvent(type, { dataTransfer: data, bubbles: true, cancelable: true }));
+  }));
+  expect(cancelled).toEqual([false, false]);
+  await expect(chips(page)).toHaveCount(0);
+});
+
+test('a dragged link can land in the prompt but never navigates the window', async ({ page }) => {
+  await probe(page);
+  const cancelled = await page.evaluate(() => ['#transcript', '#prompt'].map(selector => {
+    const data = new DataTransfer();
+    data.setData('text/uri-list', 'https://example.com/');
+    return !document.querySelector(selector)!.dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true }));
+  }));
+  expect(cancelled).toEqual([true, false]);
+});
+
 test('a browser drop that cannot be read inserts the file name with a note', async ({ page }) => {
   await probe(page);
   await page.evaluate(() => {
