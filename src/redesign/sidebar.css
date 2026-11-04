@@ -135,7 +135,7 @@ html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{backgro
 .sidebar .task-action .icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md)}
 .sidebar .task-action:hover{background:var(--ds-fill-hover)}
 
-.folder-more{height:36px;padding:0 10px 0 42px;border-radius:calc(var(--ds-radius-inner) - 2px);font-size:var(--ds-text-meta)}
+.folder-more{height:36px;padding:0 var(--ds-row-pad-x) 0 8px;border-radius:calc(var(--ds-radius-inner) - 2px);font-size:var(--ds-text-meta)}
 .sidebar .sidebar-no-match{padding:8px var(--ds-row-pad-x);font-size:var(--ds-text-meta)}
 .sidebar .folder-heading,.folder-row{border-radius:calc(var(--ds-radius-inner) - 2px)}
 
