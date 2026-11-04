@@ -1740,5 +1740,5 @@ fn auto_writes_keeps_question_denials_and_plan_read_allows_intact() {
         .receive(can_use("plan-key", "Read", json!({"file_path":"~/.ssh/id_rsa"})))
         .unwrap();
     assert!(step.write.is_empty(), "plan mode never auto-runs a key read");
-    assert!(step.events.iter().any(|event| event.kind == "approval"));>>>>>>> 7464015 (test: auto-approve writes failing-first contract (issue #200))
+    assert!(step.events.iter().any(|event| event.kind == "approval"));
 }
