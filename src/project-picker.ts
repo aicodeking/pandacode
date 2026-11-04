@@ -1,5 +1,5 @@
 import type { Project } from './types';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { showPopover, hidePopover } from './popover-motion';
 
 type ProjectPickerOptions = {
@@ -141,7 +141,7 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   });
   openButton.addEventListener('click', () => { if (!pending) { close(); onNewProject(); } });
   panel.addEventListener('keydown', event => {
-    if (event.isComposing) return;
+    if (isImeKey(event)) return;
     const buttons = choices();
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

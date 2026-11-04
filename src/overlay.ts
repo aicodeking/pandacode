@@ -1,5 +1,5 @@
 import './overlay.css';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { mountExternalLinks } from './external-links';
 import { providerLogo } from './provider-logos';
 import { nativeOverlay, overlayCall, type OverlaySnapshot, type OverlayTask, type LaunchContext } from './overlay-client';
@@ -200,7 +200,7 @@ list.addEventListener('keydown', event => {
 window.addEventListener('keydown',event => {
   if (event.defaultPrevented) return;
   if (event.key === 'Escape') { event.preventDefault(); if (pickerCleanup || pickerLoading) { closeModelPicker(); return; } if (selectedTask) backToAgents(); else void hide(); }
-  if (event.key === 'Enter' && event.target === prompt && !event.shiftKey && !event.isComposing) { event.preventDefault(); void submit(); }
+  if (event.key === 'Enter' && event.target === prompt && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); void submit(); }
   if (event.key === 'ArrowDown' && event.target === search) { event.preventDefault(); list.querySelector<HTMLButtonElement>('[data-task]')?.focus(); }
 });
 window.addEventListener('pagehide',() => { setVisible(false); fileMentions.dispose(); });

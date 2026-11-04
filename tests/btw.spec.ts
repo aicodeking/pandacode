@@ -483,3 +483,17 @@ test('a side thread whose picked settings cannot be applied is removed, keeping 
   expect((await calls(page, 'configure_session')).at(-1).args).toEqual({ sessionId: sideId, provider: 'claude', model: 'opus' });
   await expect(sideModel(page)).toContainText('Claude Opus 5');
 });
+
+test('the side thread ignores the Enter that commits an IME composition', async ({ page }) => {
+  await prompt(page).fill('/btw first');
+  await prompt(page).press('Enter');
+  await idle(page);
+  const sends = async () => (await calls(page, 'send_message')).length;
+  const before = await sends();
+  await side(page).fill('変換');
+  await side(page).dispatchEvent('keydown', { key: 'Enter', keyCode: 229 });
+  await expect(side(page)).toHaveValue('変換');
+  expect(await sends()).toBe(before);
+  await side(page).press('Enter');
+  await expect.poll(sends).toBe(before + 1);
+});

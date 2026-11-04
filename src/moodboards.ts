@@ -1,6 +1,6 @@
 import './moodboards.css';
 import { call, preview } from './bridge';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 
 export interface Moodboard { id: string; projectId: string; name: string; imageCount: number; updatedAt: number }
 export interface MoodboardImage { id: string; name: string; caption: string; width: number; height: number; createdAt: number }
@@ -228,7 +228,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   function key(event: KeyboardEvent): void {
     if (event.key === 'Escape' && host.querySelector('.moodboard-lightbox')) { event.preventDefault(); event.stopPropagation(); closePreview(); }
     else if (event.key === 'Escape' && !createForm.hidden) { event.preventDefault(); event.stopPropagation(); createForm.hidden = true; }
-    else if (event.key === 'Enter' && event.target === title) { event.preventDefault(); void saveTitle(); title.blur(); }
+    else if (event.key === 'Enter' && event.target === title && !isImeKey(event)) { event.preventDefault(); void saveTitle(); title.blur(); }
   }
   host.addEventListener('click', click); host.addEventListener('change', change); host.addEventListener('paste', paste); host.addEventListener('keydown', key);
   createForm.addEventListener('submit', createBoard); canvas.addEventListener('dragover', drag); canvas.addEventListener('dragleave', leave); canvas.addEventListener('drop', drop);

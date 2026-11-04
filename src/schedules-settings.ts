@@ -3,7 +3,7 @@
  * The IPC contract is `schedules-api.ts`. */
 import './schedules-settings.css';
 import { call, subscribe } from './bridge';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { openChoiceMenu } from './choice-menu';
 import { trackSegment } from './motion';
 import { infoMark } from './tooltip';
@@ -559,7 +559,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   flow.addEventListener('submit', event => { event.preventDefault(); void saveWorkflow(); });
   for (const [form, close, submit] of [[editor, closeEditor, save], [flow, closeWorkflow, saveWorkflow]] as const) {
     form.addEventListener('keydown', event => {
-      if (event.isComposing) return;
+      if (isImeKey(event)) return;
       // Escape closes the form, not Settings; ⌘/Ctrl Enter saves from a message box.
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
       else if (event.key === 'Enter' && event.target instanceof HTMLTextAreaElement && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); }
