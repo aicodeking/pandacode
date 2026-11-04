@@ -39,9 +39,12 @@ embedded editor engine.
 - **Tasks and a task board.** Parallel tasks across projects, a Pending → In
   progress → Review → Completed [board](docs/task-board.md), message queueing
   and steering while an agent runs.
-- **Agent teams.** An [architect and up to three workers](docs/architect-workers.md),
-  mixing harnesses and models, or named team profiles. Each spawned worker is one
-  line in the turn that started it; click it to open the worker.
+- **Agent teams.** An [architect and its workers](docs/architect-workers.md),
+  mixing harnesses and models, or named team profiles; workers run at once with no
+  limit unless you set one. Team starts an automatic team; with **Classic team setup**
+  on (Settings → Agents → Agent teams) it opens Architect & workers, where you choose
+  the worker models and how many run at once. Each spawned worker is one line in the
+  turn that started it; click it to open the worker.
 - **Model routing.** In automatic teams (Cheap, Balanced or Best, from the Team
   button) the lead can let a local router pick each worker's model, in about 10–25 ms
   and without sending the task anywhere; a failed worker's replacement escalates to a
