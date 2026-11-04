@@ -66,6 +66,7 @@ test('wallpapers settings drag visibility live without replacing controls, draft
   const originalSlider = await slider(page).elementHandle();
   const originalPreview = await page.locator('.wallpaper-settings-preview').elementHandle();
   const initialAlphas = await scrimAlphas(page);
+  await slider(page).scrollIntoViewIfNeeded();
   await page.clock.runFor(400);
   const bounds = await slider(page).boundingBox();
   expect(bounds).not.toBeNull();
@@ -110,6 +111,7 @@ test('wallpapers settings drag blur live while keeping text sharp and the scene 
   const originalBlur = await blurSlider(page).elementHandle();
   const originalPreview = await page.locator('.wallpaper-preview-image').elementHandle();
   const originalVisibility = await slider(page).inputValue();
+  await blurSlider(page).scrollIntoViewIfNeeded();
   await page.clock.runFor(400);
   const bounds = (await blurSlider(page).boundingBox())!;
   const y = bounds.y + bounds.height / 2;
