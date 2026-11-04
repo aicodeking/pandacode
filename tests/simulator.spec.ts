@@ -364,11 +364,11 @@ test.describe('on Windows', () => {
     await expect(panel.locator('.sim-device-name')).toHaveText('Pixel 9 API 35');
     await expect(panel.locator('.sim-axe')).toBeHidden();
     await panel.getByRole('button', { name: 'Choose simulator' }).click();
-    await expect(page.getByRole('menuitemradio')).toHaveText([/Pixel 9/]);
+    await expect(page.getByRole('menuitemradio').filter({ hasNotText: 'Web app' })).toHaveText([/Pixel 9/]);
     await expect(page.getByRole('menuitemradio', { name: /iPhone Duo|Set up Android/ })).toHaveCount(0);
   });
 
-  test('without the Android SDK the panel says to install it', async ({ page }) => {
+  test('without the Android SDK the mockup runs web apps', async ({ page }) => {
     await page.route('**/src/preview.ts*', async route => {
       const response = await route.fetch();
       const source = await response.text();
@@ -381,7 +381,21 @@ test.describe('on Windows', () => {
     await page.goto('/');
     await showSimulator(page);
     const panel = page.locator('#simulator-panel');
-    await expect(panel.locator('.sim-status')).toHaveText('Install Android Studio (or the Android command-line tools) into %LOCALAPPDATA%\\Android\\Sdk, create an emulator in Device Manager, then reopen this tab.');
+    await expect(panel.locator('.sim-device-name')).toHaveText('iPhone 17 Pro');
+    await expect(panel.locator('.sim-device-runtime')).toHaveText('Web app · 402×874');
     await expect(panel.locator('.sim-axe')).toBeHidden();
+    await expect(panel.getByRole('button', { name: 'Boot simulator' })).toBeHidden();
+    // The page sits on the display at the device's viewport, between the system bars.
+    await panel.getByRole('textbox', { name: 'Web app address' }).fill('1477');
+    await panel.getByRole('button', { name: 'Open', exact: true }).click();
+    const frame = panel.locator('.sim-web-screen iframe');
+    await expect(frame).toHaveAttribute('src', 'http://localhost:1477/');
+    await expect(panel.locator('.sim-web-screen')).toHaveCSS('width', '402px');
+    expect(await frame.evaluate(node => [node.clientWidth, node.clientHeight])).toEqual([402, 874 - 62 - 34]);
+    // Another model rebuilds the screen around the same page.
+    await panel.getByRole('button', { name: 'Choose simulator' }).click();
+    await page.getByRole('menuitemradio', { name: /Pixel 10/ }).click();
+    await expect(panel.locator('.sim-web-screen')).toHaveAttribute('data-front', 'punch');
+    await expect(frame).toHaveAttribute('src', 'http://localhost:1477/');
   });
 });
