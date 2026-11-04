@@ -48,7 +48,7 @@ import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -66,7 +66,7 @@ import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDu
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
-import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
+import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { SECTIONS } from './settings-sections';
 import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
@@ -595,6 +595,11 @@ void tokenSaver.loadTools();
 const taskUsage = new Map<string, TaskTokenUsage | null>();
 function usageLine(usage: TaskTokenUsage): string {
   return `This task so far: ${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out, ${tokenCount(usage.cacheRead)} cache reads.`;
+}
+function renderContextUsage(): void {
+  const usage = state.sessionId ? taskUsage.get(state.sessionId) : undefined;
+  const line = document.querySelector<HTMLElement>('.composer-task-usage');
+  if (line) line.textContent = usage ? usageLine(usage) : '';
 }
 function ensureTaskUsage(sessionId: string): void {
   if (taskUsage.has(sessionId)) return;
