@@ -111,12 +111,14 @@ pub fn show(app: &AppHandle) {
 
 /// Closing the main window hides it, so `show` and every other path that brings it back still
 /// find it and its page keeps working. Without a menu bar item nothing could reopen it: quit.
+/// Linux always quits: a tray icon can exist yet be invisible (GNOME without an appindicator
+/// extension, many Wayland compositors), which would leave agents running with no way back.
 pub(crate) fn hide_on_close(window: &WebviewWindow) {
     let main = window.clone();
     window.on_window_event(move |event| {
         let tauri::WindowEvent::CloseRequested { api, .. } = event else { return };
         api.prevent_close();
-        if main.app_handle().tray_by_id(ID).is_none() {
+        if cfg!(target_os = "linux") || main.app_handle().tray_by_id(ID).is_none() {
             main.app_handle().exit(0);
         } else if cfg!(target_os = "macos") && main.is_fullscreen().unwrap_or(false) {
             // Hiding a window in native fullscreen leaves its black Space behind.
