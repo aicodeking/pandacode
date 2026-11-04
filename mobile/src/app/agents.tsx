@@ -2,12 +2,13 @@
 // subagents (the live subagent state), each with harness, status, elapsed time, what it is doing
 // now and a one-line summary. A row opens that agent (agent.tsx).
 import { router, Stack, useLocalSearchParams } from 'expo-router';
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { glanceOf, elapsedLabel } from '../store/inbox.ts';
+import { connect } from '../connect/client.ts';
 import { taskKey, useConnect } from '../store/index.ts';
 import { subagentActive, subagentName, summarizeTools, traceText, describeTool, type Subagent } from '../store/trace.ts';
-import { workerActive, workerLabel, type Team, type TeamWorker } from '../store/team.ts';
+import { cutNote, teamResumable, workerClockEnd, workerLabel, workerRunning, workersTitle, type Team, type TeamWorker } from '../store/team.ts';
 import { outdated } from '../connect/rpc.ts';
 import { useBackdrop } from '../ui/Backdrop.tsx';
 import { HarnessLogo } from '../ui/harness.tsx';
@@ -35,10 +36,9 @@ export const workerLine = (w: TeamWorker) => firstLine(w.error ?? '') || firstLi
 const WorkerRow = memo(function WorkerRow({ deviceId, sessionId, worker, team, now }: { deviceId: string; sessionId: string; worker: TeamWorker; team: Team; now: number }) {
   const colors = useColors();
   const live = useConnect(s => (worker.sessionId ? s.live[taskKey(deviceId, worker.sessionId)] : undefined));
-  const active = workerActive(worker);
-  const activity = active ? glanceOf(live).activity : '';
+  const activity = workerRunning(worker, team) ? glanceOf(live).activity : '';
   const label = workerLabel(worker, team);
-  const elapsed = worker.createdAt ? elapsedLabel((active ? now : worker.updatedAt || now) - worker.createdAt) : '';
+  const elapsed = worker.createdAt ? elapsedLabel(workerClockEnd(worker, team, now) - worker.createdAt) : '';
   const line = workerLine(worker);
   return (
     <Pressable onPress={() => router.push({ pathname: '/agent', params: { device: deviceId, session: sessionId, kind: 'worker', id: worker.id } })}
@@ -99,6 +99,32 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+/** Why the team stopped or its lead is quiet, with Resume when it applies. */
+function TeamStatus({ deviceId, sessionId, team }: { deviceId: string; sessionId: string; team: Team }) {
+  const colors = useColors();
+  const backdrop = useBackdrop();
+  const [busy, setBusy] = useState(false);
+  const [refused, setRefused] = useState('');
+  const resumable = teamResumable(team);
+  if (!team.error && !resumable && !refused) return null;
+  const resume = () => {
+    setBusy(true);
+    setRefused('');
+    connect.resumeTeam(deviceId, sessionId).catch((error: Error) => setRefused(error.message)).finally(() => setBusy(false));
+  };
+  return (
+    <View style={[styles.status, { backgroundColor: backdrop.card }]}>
+      {!!team.error && <Text selectable style={[styles.line, { color: team.status === 'failed' ? colors.red : colors.secondary }]}>{team.error}</Text>}
+      {!!refused && <Text selectable style={[styles.line, { color: colors.red }]}>{refused}</Text>}
+      {resumable && (
+        <Pressable onPress={resume} disabled={busy} accessibilityRole="button" accessibilityState={{ busy }} style={({ pressed }) => [styles.resume, (pressed || busy) && styles.pressed]}>
+          <Text style={[styles.resumeLabel, { color: colors.tint }]}>{busy ? 'Resuming…' : 'Resume team'}</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
 export default function AgentsScreen() {
   const { device = '', session = '' } = useLocalSearchParams<{ device: string; session: string }>();
   const colors = useColors();
@@ -106,15 +132,19 @@ export default function AgentsScreen() {
   const team = useTeam(device, session);
   useWatchWorkers(device, team);
   const subagents = useConnect(s => s.live[taskKey(device, session)]?.subagents ?? NONE);
+  const subagentsCut = useConnect(s => s.live[taskKey(device, session)]?.subagentsCut);
   const computer = useConnect(s => s.devices.find(d => d.id === device)?.name ?? 'that computer');
-  const workers = team && team !== 'outdated' ? team.workers : [];
-  const now = useNow(workers.some(workerActive) || subagents.some(subagentActive));
+  const shown = team && team !== 'outdated' ? team : undefined;
+  const workers = shown?.workers ?? [];
+  const now = useNow(workers.some(w => workerRunning(w, shown)) || subagents.some(subagentActive));
   const empty = !workers.length && !subagents.length;
+  const note = cutNote(team, subagentsCut);
   return (
     <ScrollView style={{ backgroundColor: backdrop.background }} contentContainerStyle={styles.page} contentInsetAdjustmentBehavior="automatic">
       <Stack.Screen options={{ title: 'Agents' }} />
+      {shown && <TeamStatus deviceId={device} sessionId={session} team={shown} />}
       {team && team !== 'outdated' && workers.length > 0 && (
-        <Section title={`Team workers${team.rounds.max ? ` · round ${team.rounds.used} of ${team.rounds.max}` : ''}`}>
+        <Section title={workersTitle(team)}>
           {workers.map(w => <WorkerRow key={w.id} deviceId={device} sessionId={session} worker={w} team={team} now={now} />)}
         </Section>
       )}
@@ -123,6 +153,7 @@ export default function AgentsScreen() {
           {subagents.map(a => <SubagentRow key={a.id} deviceId={device} sessionId={session} agent={a} now={now} />)}
         </Section>
       )}
+      {note && <Text style={[styles.note, { color: colors.secondary }]}>{note}</Text>}
       {team === 'outdated' && <Text style={[styles.note, { color: colors.secondary }]}>{`Team workers: ${outdated(computer)}`}</Text>}
       {empty && team === undefined && <ActivityIndicator style={styles.spinner} />}
       {empty && team !== undefined && team !== 'outdated' && <Text style={[styles.note, { color: colors.secondary }]}>No agents are working for this task.</Text>}
@@ -134,6 +165,9 @@ const styles = StyleSheet.create({
   page: { padding: 16, gap: 18, paddingBottom: 40 },
   spinner: { marginTop: 80 },
   note: { fontSize: 15, textAlign: 'center', marginTop: 24, paddingHorizontal: 16 },
+  status: { borderRadius: 16, padding: 14, gap: 8, borderCurve: 'continuous' },
+  resume: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center' },
+  resumeLabel: { fontSize: 16, fontWeight: '600' },
   section: { gap: 6 },
   sectionTitle: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3, paddingHorizontal: 6 },
   group: { borderRadius: 16, paddingHorizontal: 14, borderCurve: 'continuous' },

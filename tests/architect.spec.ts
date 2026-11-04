@@ -159,7 +159,7 @@ test.describe('architect teams', () => {
       await page.setViewportSize({ width: 1280, height: 820 });
       await page.addInitScript(theme => {
         localStorage.setItem('pandacode.theme', theme);
-        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ enabled: true, visibility: 35, pinned: 'mon-morning' }));
+        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 35, pinned: 'mon-morning' }));
       }, theme);
       await installArchitect(page, { 'session-2': team('session-2') });
       await seedHistory(page, 'session-2', 'build', '**Search is ready.** The index now reuses its cached entries.\n\n```ts\nconst index = cachedIndex;\n```');
@@ -203,6 +203,46 @@ test.describe('architect teams', () => {
       await cdp?.detach();
     });
   }
+
+  test('a team held for a usage limit reads as limited, not working, until it is lifted', async ({page}) => {
+    const heldUntil = Date.now() + 4 * 3_600_000;
+    const held = team('session-2', { status: 'waiting', workers: [worker('build', { status: 'completed' })], error: "The lead's turn failed: limit hit PandaCode tries again, and workers keep running.", leadFailure: { error: 'limit hit', heldUntil } });
+    await installArchitect(page, {'session-2':held});
+    await page.evaluate(until => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'limited', text: 'Usage limit reached', data: { resetsAt: until } }), heldUntil);
+    const taskRow = page.locator('#task-row-session-2');
+    await expect(taskRow.locator('.task-indicator.limited')).toBeAttached();
+    await expect(taskRow.locator('.task-indicator.running')).toHaveCount(0);
+    const banner = page.locator('.limit-banner');
+    await expect(banner).toContainText('Usage limit reached');
+    await expect(banner.locator('.limit-resume-switch')).toHaveCount(0);
+    await expect(page.locator('.stop-button')).toBeVisible();
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-summary')).toContainText('Usage limit, resumes at');
+    await expect(panel(page).locator('.architect-panel-error')).toBeHidden();
+    await banner.getByRole('button', { name: 'Continue now' }).click();
+    await expect.poll(() => calls(page, 'clear_usage_limit').then(list => list.length)).toBe(1);
+    await expect(banner).toHaveCount(0);
+    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Architect is working…');
+    const error = panel(page).locator('.architect-panel-error');
+    await expect(error).toContainText('tries again');
+    await expect(error).toHaveClass(/is-notice/);
+    await expect(taskRow.locator('.task-indicator.running')).toBeAttached();
+  });
+
+  test('a paused team with a future heldUntil never promises a resume', async ({page}) => {
+    const heldUntil = Date.now() + 3_600_000;
+    await installArchitect(page, {'session-2':team('session-2', { status: 'paused', workers: [worker('build', { status: 'completed' })], error: 'Team paused.', leadFailure: { error: 'limit hit', heldUntil } })});
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Paused');
+  });
+
+  test('a worker still running keeps a held team working', async ({page}) => {
+    const heldUntil = Date.now() + 3_600_000;
+    await installArchitect(page, {'session-2':team('session-2', { status: 'waiting', workers: [worker('build')], leadFailure: { error: 'limit hit', heldUntil } })});
+    await page.evaluate(until => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'limited', text: 'Usage limit reached', data: { resetsAt: until } }), heldUntil);
+    await expect(page.locator('#task-row-session-2 .task-indicator.running')).toBeAttached();
+    await expect(page.locator('.limit-banner')).toHaveCount(0);
+  });
 
   test('worker messages expose forks and copy original saved or streaming Markdown', async ({page}) => {
     await page.addInitScript(() => {
@@ -275,6 +315,25 @@ test.describe('architect teams', () => {
     expect(await page.evaluate(() => (window as any).__checkpointNode === document.querySelector('.architect-worker-checkpoint'))).toBe(true);
     await panel(page).getByRole('button', { name: 'Back to workers', exact: true }).click(); await row(page, 'review').click();
     await expect(checkpoint).toBeHidden();
+  });
+
+  test('a parked worker only waits on sub-workers while its team runs', async ({ page }) => {
+    const snapshot = team('session-2', { workers: [worker('build', { status: 'parked' }), worker('review', { status: 'running', parentWorker: 'build' })] });
+    await installArchitect(page, { 'session-2': snapshot });
+    await seedHistory(page, 'session-2', 'build');
+    await openWorkers(page).click();
+    await expect(row(page, 'build')).toContainText('Waiting on sub-workers');
+    for (const status of ['failed', 'paused'] as const) {
+      snapshot.revision++; snapshot.status = status; snapshot.workers[1].status = 'failed';
+      await publish(page, snapshot);
+      await expect(row(page, 'build')).toContainText('Paused');
+      await expect(row(page, 'build')).not.toContainText('Waiting on sub-workers');
+      await expect(row(page, 'build').locator('.architect-worker-glyph')).toHaveAttribute('data-glyph', 'idle');
+      await expect(panel(page).getByRole('button', { name: 'Resume team', exact: true })).toBeVisible();
+    }
+    await row(page, 'build').click();
+    await expect(panel(page).locator('.architect-worker-meta')).toContainText('Paused');
+    await expect(panel(page).locator('.architect-worker-meta')).not.toContainText('Waiting on sub-workers');
   });
 
   test('explains queued workers and updates the expanded detail without remounting', async ({ page, browserName }) => {
@@ -429,6 +488,7 @@ test.describe('architect teams', () => {
       const index = (selector: string) => all.indexOf(root.querySelector(selector)!);
       return ['[data-tool-key="tool:read-plan"]', '[data-tool-key="tool:dispatch"]', '.team-progress-worker[data-worker-id="build"]', '.team-progress-worker[data-worker-id="review"]', '[data-tool-key="tool:verify"]'].map(index);
     });
+    await transcript(page).locator('.team-progress-toggle').click();
     await expect(transcript(page).locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
     await expect(transcript(page).locator('[data-tool-key="tool:verify"]')).toBeAttached();
     // In order and all present; the sample thread's rows may still sit above them for a moment.
@@ -444,12 +504,34 @@ test.describe('architect teams', () => {
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build search and review it.', createdAt: 2000 },
       { id: 302, sessionId: 'session-2', role: 'assistant', content: 'Delegated to the workers.', createdAt: 3000 },
     ] as Message[] });
-    await expect(transcript(page).locator('.team-progress-worker[data-worker-id="build"]')).toBeVisible();
+    await expect(transcript(page).locator('.team-progress-worker[data-worker-id="build"]')).toBeAttached();
     // Workers settled; PandaCode resumes the architect before the coordination message loads.
     await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'tool', text: '', tool: { id: 'review-diff', name: 'Bash', status: 'running', input: 'git diff', output: '' } }));
     const later = transcript(page).locator('[data-tool-key="tool:review-diff"]');
     await expect(later).toBeAttached();
     expect(await transcript(page).locator('.team-progress-worker[data-worker-id="review"]').evaluate((row, tool) => Boolean(row.compareDocumentPosition(tool!) & Node.DOCUMENT_POSITION_FOLLOWING), await later.elementHandle())).toBe(true);
+  });
+
+  test('workers in the thread have no surface of their own and stay collapsed until opened', async ({ page }) => {
+    const workers = [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })];
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
+    ] as Message[] });
+    const list = transcript(page).locator('.team-progress'), toggle = list.locator('.team-progress-toggle');
+    const row = list.locator('.team-progress-worker[data-worker-id="build"]');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(row).toBeHidden();
+    // Collapsed, the count says what needs the reader.
+    await expect(list.locator('.team-progress-count')).toHaveText('1 failed');
+    for (const [property, value] of [['background-color', 'rgba(0, 0, 0, 0)'], ['border-top-width', '0px'], ['box-shadow', 'none'], ['padding-left', '0px']] as const) await expect(list).toHaveCSS(property, value);
+    // The line starts at the list's left edge, as the rows do.
+    expect((await list.locator('.team-progress-label').boundingBox())!.x - (await toggle.boundingBox())!.x).toBeLessThan(30);
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(row).toBeVisible();
+    await expect(row).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await toggle.click();
+    await expect(row).toBeHidden();
   });
 
   test('a long worker line never makes a narrow thread scroll sideways', async ({ page }) => {
@@ -459,6 +541,7 @@ test.describe('architect teams', () => {
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
     ] as Message[] });
     const row = transcript(page).locator('.team-progress-worker[data-worker-id="build"]');
+    await transcript(page).locator('.team-progress-toggle').click();
     await expect(row).toBeVisible();
     const fit = await transcript(page).evaluate(root => {
       const line = root.querySelector('.team-progress-worker')!.getBoundingClientRect();
@@ -522,6 +605,7 @@ test.describe('architect teams', () => {
       const builder = progress.locator('.team-progress-worker[data-worker-id="build"]');
       const reviewer = progress.locator('.team-progress-worker[data-worker-id="review"]');
       await expect(progress).toBeVisible();
+      await progress.locator('.team-progress-toggle').click();
       // One inline line per spawned worker, no card or team heading.
       await expect(builder).toContainText('Spawned Search indexing'); await expect(reviewer).toContainText('Spawned Accessibility audit');
       await expect(progress.locator('.team-progress-heading')).toHaveCount(0);
@@ -565,6 +649,7 @@ test.describe('architect teams', () => {
       await expect(builder).toContainText(/completed/i); await expect(reviewer).toContainText(/needs attention/i);
       expect(await page.evaluate(() => { const nodes = (window as any).__progressNodes; return nodes.host === document.querySelector('.team-progress') && nodes.build === document.querySelector('.team-progress-worker[data-worker-id="build"]') && nodes.review === document.querySelector('.team-progress-worker[data-worker-id="review"]'); })).toBe(true);
       // A text line does not shrink while pressed (that read as a flicker).
+      await reviewer.scrollIntoViewIfNeeded();
       const reviewerBox = (await reviewer.boundingBox())!;
       await page.mouse.move(reviewerBox.x + 20, reviewerBox.y + reviewerBox.height / 2); await page.mouse.down();
       expect(await reviewer.evaluate(el => getComputedStyle(el).scale)).toMatch(/^(1|none)$/);

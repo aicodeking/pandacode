@@ -8,7 +8,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::Notify;
 
-pub(super) const MAX_RUNNING: i64 = 8;
 /// A thread's final reply in `pandacode_machine_wait`, and its excerpt in a wake turn.
 pub(super) const REPLY: usize = 8 * 1024;
 const EXCERPT: usize = 2 * 1024;
@@ -92,15 +91,6 @@ fn query(store: &Store, filter: &str, values: impl rusqlite::Params) -> Result<V
     let mut query = store.db.prepare(&format!("SELECT {COLUMNS} FROM machine_threads m JOIN sessions s ON s.id=m.session_id {filter}")).map_err(|e| e.to_string())?;
     let rows = query.query_map(values, child).map_err(|e| e.to_string())?;
     rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
-}
-
-/// Refuses a ninth running thread for `parent`.
-pub(crate) fn check_capacity(store: &Store, parent: &str) -> Result<()> {
-    let running: i64 = store.db.query_row("SELECT COUNT(*) FROM machine_threads m JOIN sessions s ON s.id=m.session_id WHERE m.parent_session_id=?1 AND s.status IN ('running','waiting')", [parent], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if running >= MAX_RUNNING {
-        return Err(format!("This task already has {MAX_RUNNING} running machine threads. Wait for one to finish."));
-    }
-    Ok(())
 }
 
 /// `machine_threads` was seen empty and no row came since. Both writers hold the store lock.
@@ -219,19 +209,30 @@ fn escaped_len(c: char) -> usize {
     }
 }
 
+/// A thread's last assistant message as far as it fits.
+pub(super) struct Reply {
+    pub id: i64,
+    pub text: String,
+    pub truncated: bool,
+}
+
 /// The thread's last assistant message, at most `bytes` once escaped as JSON (plus "…"
 /// when cut), so a reply full of quotes or control characters can't outgrow its budget.
-pub(super) fn final_reply(store: &Store, thread: &str, bytes: usize) -> Option<String> {
-    let text: String = store.db.query_row("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' ORDER BY id DESC LIMIT 1", [thread], |r| r.get(0)).optional().ok().flatten()?;
+pub(super) fn final_reply(store: &Store, thread: &str, bytes: usize) -> Option<Reply> {
+    let (id, text): (i64, String) = store.db.query_row("SELECT id,content FROM messages WHERE session_id=?1 AND role='assistant' ORDER BY id DESC LIMIT 1", [thread], |r| Ok((r.get(0)?, r.get(1)?))).optional().ok().flatten()?;
     let text = text.trim();
     let mut used = 0;
     let end = text.char_indices().find(|&(_, c)| {
         used += escaped_len(c);
         used > bytes
     });
-    Some(match end {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_owned(),
+    Some(Reply {
+        id,
+        truncated: end.is_some(),
+        text: match end {
+            Some((end, _)) => format!("{}…", &text[..end]),
+            None => text.to_owned(),
+        },
     })
 }
 
@@ -292,7 +293,7 @@ pub(crate) fn claim(store: &Store, parent: &str, label: impl Fn(&str) -> String,
     if due.is_empty() {
         return Ok(None);
     }
-    let reports: Vec<Report> = due.iter().map(|c| Report { title: c.title.clone(), machine: label(&c.device), status: c.status.clone(), reply: final_reply(store, &c.id, EXCERPT), offline: active(&c.status) }).collect();
+    let reports: Vec<Report> = due.iter().map(|c| Report { title: c.title.clone(), machine: label(&c.device), status: c.status.clone(), reply: final_reply(store, &c.id, EXCERPT).map(|reply| reply.text), offline: active(&c.status) }).collect();
     let ids: Vec<String> = due.into_iter().map(|c| c.id).collect();
     Ok(Some((wake_message(&reports), ids)))
 }

@@ -43,7 +43,7 @@ html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.se
 .conversation-pane .composer-steer-bar>.steer-button .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg)}
 
 /* The tray: the model (logo + name) and branch keep their text; mode, Team, Saver, computer and checkout are icons with the label in .sr-only and a tooltip. No fills at rest. */
-.conversation-pane .composer-tray{padding:0 4px;gap:2px}
+.conversation-pane .composer-tray{justify-content:flex-start;padding:0 4px;gap:2px}
 .conversation-pane .composer-tray .composer-tools{flex:0 1 auto;gap:6px}
 .conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button){height:36px;padding:0 8px;gap:7px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-lead);font-weight:var(--weight-medium);box-shadow:none;
   transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
@@ -137,6 +137,8 @@ html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,
 .conversation-pane .transcript:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 /* User bubbles keep their 16px radius (bots-thread.spec). */
 .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-content{padding:14px 18px;border-radius:16px;background:var(--ds-fill);line-height:1.55}
+/* A short bubble still has room for every checkpoint action within the thread. */
+html .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-actions{left:auto;right:0}
 .conversation-pane :is(#transcript,.thread-mirror-rows)>.agent-message>.message-content{line-height:1.6}
 /* Changed files: a card; its tree rows are ds rows. */
 .conversation-pane .turn-changes{padding:8px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}

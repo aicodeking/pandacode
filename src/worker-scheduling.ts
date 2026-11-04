@@ -12,7 +12,7 @@ export function workerQueueReason(worker: TeamWorker, workers: TeamWorker[], max
     && other.id !== worker.parentWorker && other.parentWorker !== worker.id);
   const blocker = holders.find(other => !other.readOnly && (
     !worker.files.length || !other.files.length || worker.files.some(file => other.files.some(scope => {
-      const path = file.toLowerCase(), root = scope.toLowerCase();
+      const path = file.replace(/\/+$/, '').toLowerCase(), root = scope.replace(/\/+$/, '').toLowerCase();
       return path === root || path.startsWith(`${root}/`) || root.startsWith(`${path}/`);
     }))
   ));

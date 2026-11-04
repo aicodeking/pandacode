@@ -421,11 +421,38 @@ fn profile_validation_uniqueness_capacity_and_invalid_ids_are_atomic() {
     .is_err());
     assert!(delete_profile(&store, "missing").is_err());
     assert_eq!(library_json(&store), before);
+    // No count cap: the old limit of 20 is gone.
     for index in 1..20 {
         save_profile(&store, None, format!("Profile {index}"), setup.clone()).unwrap();
     }
-    assert!(save_profile(&store, None, "Twenty one".into(), setup).is_err());
-    assert_eq!(read(&store).unwrap().profiles.len(), 20);
+    save_profile(&store, None, "Twenty one".into(), setup).unwrap();
+    assert_eq!(read(&store).unwrap().profiles.len(), 21);
+}
+#[test]
+fn saved_profiles_never_keep_a_team_catalog_but_the_last_setup_does() {
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let mut setup = setup();
+    setup.config.auto = true;
+    setup.config.catalog = (0..1000).map(|i| WorkerProfile { id: format!("m{i}"), name: format!("Model {i}"), provider: "codex".into(), model: format!("model-{i}"), reasoning_effort: None }).collect();
+    let id = save_profile(&store, None, "Auto".into(), setup.clone()).unwrap().profiles[0].id.clone();
+    // The profile matches the setup it was saved from, catalog and all.
+    remember(&store, Some(setup.clone()), Some(&id)).unwrap();
+    let library = read(&store).unwrap();
+    assert!(library.profiles[0].setup.config.catalog.is_empty());
+    assert_eq!(library.last_setup.unwrap().config.catalog.len(), 1000);
+    assert_eq!(library.active_profile_id.as_deref(), Some(id.as_str()), "a catalog is no part of a profile's identity");
+}
+#[test]
+fn a_new_task_inheriting_an_auto_team_keeps_its_catalog() {
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let new = task(&store);
+    let mut setup = setup();
+    setup.config.auto = true;
+    setup.config.catalog = (0..100).map(|i| WorkerProfile { id: format!("m{i}"), name: format!("Model {i}"), provider: "codex".into(), model: format!("model-{i}"), reasoning_effort: None }).collect();
+    remember(&store, Some(setup), None).unwrap();
+    let team = apply_default(&store, &new.id).unwrap().unwrap();
+    assert_eq!(team.config.catalog.len(), 100, "it routes over every model, not just the roster");
+    assert_eq!(architect::load(&store, &new.id).unwrap().unwrap().config.catalog.len(), 100);
 }
 #[test]
 fn mismatched_profile_or_storage_failure_roll_back_task_selection_and_library() {

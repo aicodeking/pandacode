@@ -61,13 +61,14 @@ export function createTaskUsage(host: { call: <T>(command: string, args: Record<
   function paint(): void {
     const button = document.querySelector<HTMLElement>('.task-usage-button');
     if (!button) { close(); return; }
-    button.hidden = !current;
+    if (button.hidden !== !current) button.hidden = !current;
     if (!current) return;
     const state = cache.get(current) ?? { kind: 'loading' };
-    button.textContent = label(state);
-    button.setAttribute('aria-label', `Task usage: ${label(state)} — show breakdown`);
-    button.setAttribute('aria-expanded', String(Boolean(panel)));
-    button.parentElement?.classList.remove('is-empty');
+    const text = label(state), description = `Task usage: ${text} — show breakdown`, expanded = String(Boolean(panel));
+    if (button.textContent !== text) button.textContent = text;
+    if (button.getAttribute('aria-label') !== description) button.setAttribute('aria-label', description);
+    if (button.getAttribute('aria-expanded') !== expanded) button.setAttribute('aria-expanded', expanded);
+    if (button.parentElement?.classList.contains('is-empty')) button.parentElement.classList.remove('is-empty');
     anchor = button;
     if (panel) {
       panel.querySelector('.task-usage-content')!.innerHTML = details(state);

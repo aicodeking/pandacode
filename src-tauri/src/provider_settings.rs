@@ -104,14 +104,13 @@ pub fn setup(dir: &Path) -> Result<()> {
 }
 
 pub fn executable_override(provider: &str) -> Option<PathBuf> {
-    CONFIG
-        .get()?
-        .lock()
-        .ok()?
-        .settings
-        .executable_paths
-        .get(provider)
-        .map(PathBuf::from)
+    saved_executable(&CONFIG.get()?.lock().ok()?.settings, provider).map(PathBuf::from)
+}
+
+/// GLM and MiMo run the Claude executable, so they follow Claude Code's saved location.
+fn saved_executable<'a>(settings: &'a Settings, provider: &str) -> Option<&'a String> {
+    let paths = &settings.executable_paths;
+    paths.get(provider).or_else(|| if matches!(provider, "glm" | "mimo") { paths.get("claude") } else { None })
 }
 
 /// A POSIX-style environment variable name, shared with the named-connection editor.
@@ -404,6 +403,9 @@ pub struct Configuration {
     environment: BTreeMap<String, Vec<String>>,
     /// Whether each provider's launches include the global environment.
     use_global_environment: BTreeMap<String, bool>,
+    /// Every known harness as (id, name). The settings page generates a card
+    /// for each one its hand-written cards do not cover.
+    providers: Vec<(String, String)>,
     glm_key_saved: bool,
     glm_key_from_environment: bool,
     mimo_key_saved: bool,
@@ -466,6 +468,7 @@ fn configuration() -> Result<Configuration> {
         global_environment,
         environment,
         use_global_environment,
+        providers: crate::providers::PROVIDERS.iter().map(|(id, name)| (id.to_string(), name.to_string())).collect(),
         glm_key_saved,
         glm_key_from_environment: from_environment(GLM_KEY.env),
         mimo_key_saved,
@@ -499,10 +502,7 @@ pub async fn provider_configuration() -> Result<Configuration> {
 }
 
 fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
-    if !matches!(
-        provider,
-        "opencode" | "antigravity" | "glm" | "grok" | "mimo" | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes"
-    ) {
+    if !known_provider(provider) {
         return Err("This provider does not support an executable override.".into());
     }
     if path.trim().is_empty() {
@@ -585,19 +585,29 @@ pub async fn provider_set_executable(
     provider: String,
     path: String,
 ) -> Result<Configuration> {
-    let changed = provider.clone();
+    // Claude's location is GLM's and MiMo's too (`saved_executable`).
+    let affected: Vec<String> = if provider == "claude" {
+        ["claude", "glm", "mimo"].map(String::from).to_vec()
+    } else {
+        vec![provider.clone()]
+    };
+    let changed = affected.clone();
     let result = crate::blocking(move || {
         save_executable(&provider, &path)?;
-        crate::agent_usage::invalidate(&provider);
-        crate::providers::acp_catalog::invalidate(&provider);
-        crate::slash_commands::invalidate_provider(&provider);
+        for provider in &affected {
+            crate::agent_usage::invalidate(provider);
+            crate::providers::acp_catalog::invalidate(provider);
+            crate::slash_commands::invalidate_provider(provider);
+        }
         configuration()
     })
     .await?;
-    let _ = app.emit(
-        "provider-models-changed",
-        serde_json::json!({"provider":changed}),
-    );
+    for provider in changed {
+        let _ = app.emit(
+            "provider-models-changed",
+            serde_json::json!({"provider":provider}),
+        );
+    }
     Ok(result)
 }
 
@@ -1084,6 +1094,7 @@ mod tests {
             global_environment: Vec::new(),
             environment: BTreeMap::new(),
             use_global_environment: BTreeMap::new(),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -1110,6 +1121,7 @@ mod tests {
             global_environment: vec!["HTTP_PROXY".into()],
             environment: BTreeMap::from([("glm".into(), vec!["HTTPS_PROXY".into()])]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: true,
             mimo_key_saved: true,
@@ -1422,6 +1434,7 @@ mod tests {
                 vec!["HTTPS_PROXY".into(), "NO_PROXY".into()],
             )]),
             use_global_environment: BTreeMap::from([("glm".into(), false), ("claude".into(), true)]),
+            providers: Vec::new(),
             glm_key_saved,
             glm_key_from_environment: false,
             mimo_key_saved: false,
@@ -1496,12 +1509,42 @@ mod tests {
     }
     #[test]
     fn rejects_command_strings_directories_and_unknown_providers() {
-        assert!(validated_executable("codex", "").is_err());
+        assert!(validated_executable("not-a-provider", "").is_err());
+        assert!(validated_executable("not-a-provider", "/bin/sh").is_err());
         assert!(validated_executable("opencode", "opencode --flag").is_err());
+        assert!(validated_executable("codex", "relative/codex").is_err());
         assert!(validated_executable("opencode", "/tmp").is_err());
         assert!(validated_executable("antigravity", "/tmp/foo\nbar").is_err());
-        assert_eq!(validated_executable("glm", "").unwrap(), None);
-        assert_eq!(validated_executable("mimo", "").unwrap(), None);
+        // Every known harness takes one; an empty path restores discovery.
+        for (provider, _) in crate::providers::PROVIDERS {
+            assert_eq!(validated_executable(provider, "").unwrap(), None);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file = std::env::temp_dir().join(format!("pandacode-executable-{}", uuid::Uuid::new_v4()));
+            std::fs::write(&file, "").unwrap();
+            let path = file.to_str().unwrap();
+            assert!(validated_executable("codex", path).is_err(), "a file without the executable bit");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let canonical = file.canonicalize().unwrap().to_string_lossy().into_owned();
+            assert_eq!(validated_executable("codex", path).unwrap(), Some(canonical.clone()));
+            assert_eq!(validated_executable("claude", path).unwrap(), Some(canonical));
+            std::fs::remove_file(file).unwrap();
+        }
+    }
+    #[test]
+    fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {
+        let mut settings = Settings::default();
+        settings.executable_paths.insert("claude".into(), "/opt/claude".into());
+        for provider in ["claude", "glm", "mimo"] {
+            assert_eq!(saved_executable(&settings, provider).unwrap(), "/opt/claude");
+        }
+        assert_eq!(saved_executable(&settings, "codex"), None);
+        // A path saved for one of them by an older version still counts.
+        settings.executable_paths.insert("glm".into(), "/opt/glm".into());
+        assert_eq!(saved_executable(&settings, "glm").unwrap(), "/opt/glm");
+        assert_eq!(saved_executable(&settings, "mimo").unwrap(), "/opt/claude");
     }
     #[test]
     fn mimo_endpoint_survives_reload_and_unknown_clusters_are_dropped() {

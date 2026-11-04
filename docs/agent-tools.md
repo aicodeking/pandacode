@@ -21,6 +21,14 @@ concurrency limits as the UI. Starting/following up on the current running task
 is rejected. Use Codex's shell tool for command execution and its image tool to
 inspect the local PNG returned by `pandacode_capture_browser`.
 
+A string argument is held to its field's `maxLength` (8 KiB with none), counted in
+characters: messages and task descriptions take up to the 16 MiB message limit.
+`pandacode_read_task` reads a truncated message to its end with `messageId` and
+`offset`, or the description with `offset` alone. `pandacode_list_subagents` does
+the same for one subagent with `agentId`, `part` (`response`, `prompt` or `tools`)
+and `offset`. A steer that `pandacode_steer_task` could not deliver is an error saying
+`Not delivered: <reason>`, and nothing is queued: use `pandacode_queue_message`.
+
 `pandacode_code_search` searches the task's checkout through the local
 third-party `codedb` CLI when it is installed and on the app's PATH: a text
 query by default, or symbol search with `symbols: true`. It is read-only and
@@ -66,8 +74,8 @@ history. Unsupported form constraints return an explicit protocol error instead
 of silently accepting incomplete answers. URL authorization always requires a
 separate explicit open and confirmation action.
 
-Callbacks run asynchronously (eight executing at once, at most 64 admitted per
-run), with bounded arguments/results, timeouts and cancellation. A slow callback
+Callbacks run asynchronously (up to 64 executing at once per run, with no cap on
+MCP connections), with bounded arguments/results, timeouts and cancellation. A slow callback
 cannot block provider stdout. Integration discovery is a short-lived process,
 limited to one at a time, and cleans up children on completion/cancellation.
 

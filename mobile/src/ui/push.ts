@@ -3,6 +3,10 @@
 // predates the endpoint: classifyRegister sorts 404/405
 // into 'unsupported' and this module stops trying until the next launch. No task content ever
 // leaves the phone: the register body is platform + token, nothing else.
+//
+// import/namespace misreads expo-notifications: its enum files write `* */ export var X`, which the
+// plugin's export check does not see after a comment, so it skips them. tsc still checks these names.
+/* eslint-disable import/namespace */
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 import { useEffect } from 'react';

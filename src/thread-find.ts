@@ -1,5 +1,5 @@
 import './thread-find.css';
-import { icon } from './dom';
+import { icon, isImeKey } from './dom';
 
 /* ⌘F in a thread: a slim find bar over the conversation. Matches in your messages and the
  * agent's are highlighted with the CSS Custom Highlight API, so the message DOM is never
@@ -165,7 +165,7 @@ export function createThreadFind(host: Host) {
       input = bar.querySelector('input')!; count = bar.querySelector<HTMLElement>('.thread-find-count')!;
       input.addEventListener('input', () => search(true));
       input.addEventListener('keydown', event => {
-        if (event.key === 'Enter') { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
+        if (event.key === 'Enter' && !isImeKey(event)) { event.preventDefault(); step(event.shiftKey ? -1 : 1); }
         else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
       });
       bar.addEventListener('click', event => {

@@ -4,7 +4,7 @@ import { randomBytes, uuid } from './crypto.ts';
 
 export const METHODS = ['subscribe', 'tasks.list', 'providers.list', 'providers.models', 'task.start', 'task.messages', 'task.send', 'task.stop', 'task.steer', 'task.configure', 'approval.respond', 'input.respond', 'projects.icons',
   'task.pull', 'task.pullDiff', 'task.pullMerge', 'task.pullDetect', 'task.changes', 'task.diff', 'bots.list', 'bot.thread', 'bot.message', 'bot.pause',
-  'task.attachment', 'task.workspaceImage', 'task.team', 'task.workerMessages', 'task.startStatus', 'task.cancelStart'] as const;
+  'task.attachment', 'task.workspaceImage', 'task.team', 'task.teamResume', 'task.workerMessages', 'task.startStatus', 'task.cancelStart'] as const;
 export type Method = (typeof METHODS)[number];
 
 export const TIMEOUT_MS = 20_000;

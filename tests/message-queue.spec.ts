@@ -147,3 +147,81 @@ test('Steer sends a queued entry into a steerable running turn', async ({ page }
   await expect(rows(page).locator('.queue-text')).toHaveText(['Keep']);
   expect(await calls(page, 'stop_session')).toEqual([]);
 });
+
+test('queue ignores the Enter that commits an IME composition', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Enter', keyCode: 229 });
+  await expect(prompt(page)).toHaveValue('変換');
+  await expect(rows(page)).toHaveCount(0);
+  await prompt(page).press('Enter');
+  await expect(rows(page).locator('.queue-text')).toHaveText(['変換']);
+});
+
+test('an Escape that cancels an IME conversion does not stop the run, and a normal one does', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Escape', keyCode: 229 });
+  // A stop would be recorded by the time this later command is.
+  await page.evaluate(() => (window as any).__queueInvoke('list_projects'));
+  expect(await calls(page, 'stop_session')).toEqual([]);
+  await expect(prompt(page)).toHaveValue('変換');
+  await prompt(page).press('Escape');
+  await expect.poll(async () => (await calls(page, 'stop_session')).length).toBe(1);
+});
+
+for (const [name, ime] of [['keyCode 229', { keyCode: 229 }], ['isComposing', { isComposing: true }]] as const) {
+  const enter = { key: 'Enter', ...ime };
+
+  test(`the composer and its pickers ignore an Enter with ${name}`, async ({ page }) => {
+    await prompt(page).fill('変換');
+    await prompt(page).dispatchEvent('keydown', enter);
+    await expect(prompt(page)).toHaveValue('変換');
+    expect(await calls(page, 'send_message')).toEqual([]);
+    const picker = page.getByRole('listbox').first();
+    // An open picker makes the prompt a combobox, so reach it by id.
+    const draft = page.locator('#prompt');
+    for (const text of ['/c', 'Read @s']) {
+      await draft.fill(text);
+      await expect(picker).toBeVisible();
+      await draft.dispatchEvent('keydown', enter);
+      await expect(draft).toHaveValue(text);
+      await expect(picker).toBeVisible();
+    }
+    expect(await calls(page, 'send_message')).toEqual([]);
+  });
+
+  test(`the command palette ignores an Enter with ${name}`, async ({ page }) => {
+    await page.keyboard.press('ControlOrMeta+k');
+    const search = page.getByRole('textbox', { name: 'Search tasks and commands' });
+    await search.fill('Settings');
+    await search.dispatchEvent('keydown', enter);
+    await expect(search).toBeVisible();
+    await search.press('Enter');
+    await expect(search).toBeHidden();
+  });
+
+  test(`the model picker ignores an Enter with ${name}`, async ({ page }) => {
+    await page.getByRole('button', { name: /^Model: / }).click();
+    const search = page.getByRole('combobox').first();
+    await expect(search).toBeFocused();
+    await search.dispatchEvent('keydown', enter);
+    await expect(search).toBeVisible();
+    await search.press('Enter');
+    await expect(search).toBeHidden();
+  });
+
+  test(`find in thread ignores an Enter with ${name}`, async ({ page }) => {
+    await prompt(page).fill('needle needle');
+    await prompt(page).press('Enter');
+    await page.keyboard.press('ControlOrMeta+f');
+    const find = page.getByRole('search');
+    await find.getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('needle');
+    const input = find.getByRole('searchbox', { name: 'Find in thread', exact: true });
+    await expect(find.locator('.thread-find-count')).toHaveText('1 of 2');
+    await input.dispatchEvent('keydown', enter);
+    await expect(find.locator('.thread-find-count')).toHaveText('1 of 2');
+    await input.press('Enter');
+    await expect(find.locator('.thread-find-count')).toHaveText('2 of 2');
+  });
+}

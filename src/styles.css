@@ -281,6 +281,7 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 @media(prefers-reduced-motion:reduce){.turn-activity-summary>.icon{transition:none}}
 @media(prefers-contrast:more){.tool-activity pre{border:1px solid var(--text);background:var(--bg)}.tool-activity-note,.tool-activity-section h4,.tool-activity-hint,.tool-activity-status{color:var(--text)}}
 .tool-extra{font-size:var(--text-2xs);background:var(--raised);padding:0 4px;border-radius:var(--radius-xs)}
+.message-note{margin:0 0 20px;color:var(--muted);font-size:var(--thread-font);font-style:italic}
 .message-error{display:flex;gap:9px;padding:12px;margin-bottom:20px;color:var(--danger);background:var(--tone-danger-bg);border-radius:var(--radius-sm);font-size:var(--thread-font)}
 .composer-area{padding:0 30px 17px;margin:0 auto;width:100%;max-width:950px;flex-shrink:0}
 .composer{border:1px solid transparent;border-radius:var(--radius-md);background:var(--bg);box-shadow:0 2px 5px rgb(0 0 0 / .025), 0 8px 24px rgb(0 0 0 / .035);transition:border-color var(--ds-ease-in) ease-out,box-shadow var(--ds-ease-in) ease-out}

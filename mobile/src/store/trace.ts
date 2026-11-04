@@ -179,12 +179,12 @@ export function decodeSubagent(value: unknown): Subagent | undefined {
   if (!value || typeof value !== 'object') return;
   const a = value as Record<string, unknown>;
   if (typeof a.id !== 'string' || !a.id || typeof a.name !== 'string' || !SUB_STATUS.includes(a.status as string)) return;
-  const tools = (Array.isArray(a.tools) ? a.tools : []).slice(-16)
+  const tools = (Array.isArray(a.tools) ? a.tools : [])
     .filter((t): t is ToolActivity => !!t && typeof t.id === 'string' && typeof t.name === 'string' && TOOL_STATUS.includes(t.status))
-    .map(t => ({ id: t.id.slice(0, 512), name: t.name.slice(0, 256), status: t.status, input: String(t.input ?? '').slice(0, 4096), output: String(t.output ?? '').slice(0, 8192) }));
+    .map(t => ({ id: t.id.slice(0, 512), name: t.name.slice(0, 256), status: t.status, input: String(t.input ?? ''), output: String(t.output ?? '') }));
   return {
-    id: a.id.slice(0, 512), name: a.name.slice(0, 256), prompt: String(a.prompt ?? '').slice(0, 4096), status: a.status as Subagent['status'],
-    response: String(a.response ?? '').slice(0, 65_536), tools, startedAt: Number(a.startedAt) || 0, updatedAt: Number(a.updatedAt) || 0,
+    id: a.id.slice(0, 512), name: a.name.slice(0, 256), prompt: String(a.prompt ?? ''), status: a.status as Subagent['status'],
+    response: String(a.response ?? ''), tools, startedAt: Number(a.startedAt) || 0, updatedAt: Number(a.updatedAt) || 0,
   };
 }
 

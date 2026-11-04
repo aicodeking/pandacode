@@ -55,7 +55,7 @@ import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus,
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
-import { $, button, escape, fileIcon, fileIconsReady, icon, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
+import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
@@ -115,7 +115,7 @@ import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
 import { isMac, isWindows, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
-import { teamActive, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
+import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
@@ -136,7 +136,7 @@ type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
 type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
-const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view === 'simulator' ? isMac || isWindows : view === 'vm' ? isMac : true);
+const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
 /** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
 type PanelView = InspectorView | 'file';
@@ -242,7 +242,7 @@ function onArchitect(team: TeamEvent): void {
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
-  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error)) notify(team.error);
+  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error) && !LEAD_RETRY.test(team.error)) notify(team.error);
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
@@ -819,7 +819,30 @@ transcriptScroller.tabIndex = 0;
 let stickToBottom = true, lastTranscriptTop = 0;
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+/** The live card shrinking (a result card or the trace folding) would clamp the scroll and slide everything above it down:
+ * the height it gave up becomes blank room under it, which new content grows back into. Only while the card's top is in
+ * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
+let liveCardSeen: { card: Element; height: number } | undefined;
+function keepTopOnShrink(): void {
+  const card = document.querySelector('#stream-region .turn-card.is-live'), before = liveCardSeen;
+  if (!card) { liveCardSeen = undefined; return; }
+  const box = card.getBoundingClientRect();
+  liveCardSeen = { card, height: box.height };
+  if (before?.card !== card || box.height >= before.height - 0.5 || tailBridging) return;
+  // At the end, the scroll has already lost what the card gave up (a clamp or scroll anchoring, in layout, before this runs).
+  const end = transcriptScroller.scrollHeight - transcriptScroller.clientHeight, top = transcriptScroller.scrollTop;
+  if (top < end - 1) return;
+  const clear = transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
+  const aim = Math.min(top + before.height - box.height, top + box.top - clear);
+  if (aim <= top) return;
+  tailSession = state.sessionId;
+  setTailRoom(tailRoom + aim - end);
+  transcriptScroller.scrollTop = aim;
+  // Where it landed, not where it was aimed: the room is whole pixels, and a fraction short would read as the reader scrolling up.
+  lastTranscriptTop = transcriptScroller.scrollTop;
+}
 function followTranscript(): void {
+  keepTopOnShrink();
   if (!stickToBottom) return;
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
   // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
@@ -896,8 +919,10 @@ transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
   // window goes, so nothing on screen moves and the scroll follows the wheel; the reader has left the bottom (a later
-  // scroll back down to the end pins again). A clamp (the old top past the end) is not the reader moving.
-  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= transcriptScroller.scrollHeight - transcriptScroller.clientHeight + 1) {
+  // scroll back down to the end pins again). A clamp (the old top past the end, or the scroll still at the end after a
+  // pixel's shrink) is not the reader moving.
+  const scrollEnd = transcriptScroller.scrollHeight - transcriptScroller.clientHeight;
+  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= scrollEnd + 1 && top < scrollEnd - 1) {
     absorbTailRoom(); stickToBottom = false; lastTranscriptTop = transcriptScroller.scrollTop;
     void loadOlderMessages(); return;
   }
@@ -910,7 +935,7 @@ transcriptScroller.addEventListener('scroll', () => {
   lastTranscriptTop = top;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false; }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
 transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
@@ -1070,6 +1095,12 @@ const pendingPromptActivity = new Map<string, number>();
 function session(): Session | undefined { return state.sessions.find(s => s.id === state.sessionId); }
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
+/** A team waiting out its lead's usage limit with nothing at work. It stays active (Stop works, prompts
+ *  queue, it retries by itself), so `isRunning` holds; the sidebar and composer say limited, not working. */
+function teamHeld(id = state.sessionId): boolean {
+  const team = teams.get(id), task = state.sessions.find(s => s.id === id);
+  return Boolean(team && teamHeldUntil(team) && task && limitActive(task) && !state.streams.has(id) && !team.workers.some(w => w.status === 'running' || w.status === 'waiting'));
+}
 /** The empty-thread layout (no header underlap) changes only once the thread's page is known, in the
  * frame that draws it: a switch never moves the transcript 39px while it loads or mid-settle. */
 function syncNewTaskPage(): void { if (!state.messagesLoading) $('.conversation-pane').classList.toggle('new-task-page', newTaskView()); }
@@ -1399,7 +1430,7 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
 /** Whether a task needs you, as its sidebar row and board card say it: a state, its full label, and the word shown. */
 function taskSignal(s: Session, now: number): { status: string; statusLabel: string; word: string } {
   const live = state.streams.get(s.id), answer = Boolean(live?.inputs.size);
-  const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : FAILED_STATUS.has(s.status) ? 'failed' : '';
+  const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) && !teamHeld(s.id) ? 'running' : limitActive(s, now) ? 'limited' : FAILED_STATUS.has(s.status) ? 'failed' : '';
   const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
   // States that need you say so in a word; running shows its clock, the rest their age.
   const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
@@ -1451,7 +1482,8 @@ function renderNavigation(): void {
     const activityAt = lastActivity(s);
     const live = state.streams.get(s.id);
     const startedAt = live?.startedAt ?? s.lastPromptAt;
-    const elapsed = isRunning(s.id) && startedAt != null ? formatDuration(now - startedAt) : '';
+    const working = isRunning(s.id) && !teamHeld(s.id);
+    const elapsed = working && startedAt != null ? formatDuration(now - startedAt) : '';
     const age = elapsed || (activityAt == null ? '' : responseAge(activityAt, now));
     const { status, statusLabel, word } = taskSignal(s, now);
     const unread = seen.has(s.id) && s.id !== state.sessionId;
@@ -1714,9 +1746,10 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
 }
 function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
   const lead = (turn.user ? messageHtml(turn.user, false, true, thread) : '') + (turn.handoff ? messageHtml(turn.handoff, false, true, thread) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '');
-  if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + turn.errors.map(message => messageHtml(message, false, true, thread)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
-  if (!turn.activity.length && !turn.final && !turn.errors.length) return lead + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
-  return lead + turnCardHtml(turn, sessionId, thread);
+  const notes = turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
+  if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + turn.errors.map(message => messageHtml(message, false, true, thread)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
+  if (!turn.activity.length && !turn.final && !turn.errors.length) return lead + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
+  return lead + turnCardHtml(turn, sessionId, thread) + notes;
 }
 function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): string {
   const decoded = turn.activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
@@ -1877,7 +1910,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const saved = card.getBoundingClientRect(), target = Math.max(0, transcriptScroller.scrollTop + saved.top - live.top);
   const room = target + transcriptScroller.clientHeight - (transcriptScroller.scrollHeight - tailRoom);
   tailSession = state.sessionId;
-  // The footer eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
+  // The footer (what the saved card adds to the live one) eases in on the bridge's timing, and the room under the card gives way (or grows) as it does, so the
   // scroll end holds and nothing above moves; what runs past the window the follow takes.
   const delta = Math.round(saved.height - live.height);
   const timing = bridgeCard(card, delta ? live.height : saved.height + Math.min(0, room));
@@ -2071,6 +2104,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
   }
   if (m.role === 'status') return renderToolStatus(m.content);
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
+  if (m.role === 'system') return `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
   const answer = !isUser && m.role === 'assistant' && m.sessionId === state.sessionId && thread.messages.at(-1)?.id === m.id && !isRunning() ? quickAnswerHtml(m.content, m.id) : '';
@@ -2278,6 +2312,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   const previous = new Map([...host.children].map(node => [(node as HTMLElement).dataset.streamKey, node as HTMLElement]));
   const next: HTMLElement[] = [];
   const commentary: { node: HTMLElement; content: string }[] = [];
+  /** Where the latest text falls among the steps, though it shows in the card's reply. */
+  let narratedAt = -1;
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
   const tools = current.tools.filter(tool => !tool.statusOnly), workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? null;
@@ -2293,7 +2329,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   for (const run of runs) {
     if (!run) { next.push(workers!); continue; }
     if (run.kind === 'message') {
-      if (run.item.key === current.retainedMessageKey) { next.push(liveMessage); continue; }
+      // In a card the latest text stays in the reply, even between steps; it joins the trace when newer text replaces it.
+      if (run.item.key === current.retainedMessageKey) { if (region.querySelector('.turn-card-reply-content')) narratedAt = next.length; else next.push(liveMessage); continue; }
       const key = run.item.key;
       let node = previous.get(key);
       if (!node) {
@@ -2330,7 +2367,7 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
   // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
   const newestGroup = next.map(node => node.classList.contains('tool-group')).lastIndexOf(true);
-  const narratedPast = next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true);
+  const narratedPast = Math.max(next.slice(0, Math.max(newestGroup, 0)).map(node => node.classList.contains('agent-message')).lastIndexOf(true), narratedAt <= newestGroup ? narratedAt : -1);
   next.slice(0, Math.max(narratedPast, 0)).forEach(node => {
     if (!node.classList.contains('tool-group') || node.dataset.earlier !== undefined) return;
     node.dataset.earlier = '';
@@ -2628,7 +2665,7 @@ function renderComposer(): void {
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))));
+  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
   trayStateChanged();
@@ -2901,7 +2938,7 @@ async function editBoardTask(): Promise<void> {
 function showBoardTaskForm(task?: Session): void {
   const p = task ? state.projects.find(p => p.id === task.projectId) : project() ?? state.projects[0];
   if (!p) { notify('Open a project to add a task.'); return; }
-  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="131072" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`);
+  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="${MESSAGE_LIMIT}" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`);
   document.querySelector<HTMLInputElement>('#board-task-title')?.focus();
   const description = document.querySelector<HTMLTextAreaElement>('#board-task-description')!;
   description.setAttribute('aria-description', 'Type @ to mention a project file.');
@@ -2960,6 +2997,7 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
 }
 let fullTaskDescription: { id: string; value: string } | undefined;
 let sessionsReload = 0;
+let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
@@ -3270,7 +3308,15 @@ async function selectProject(id: string): Promise<void> {
   const generation = ++state.generation; activateProject(id, false); state.sessionId = ''; restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
   render(); if (generation !== state.generation) return; await refreshInspector();
 }
-async function reloadSessions(): Promise<void> {
+/** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
+function reloadSessions(): Promise<void> {
+  if (!sessionsLoading) {
+    sessionsLoading = loadSessions().finally(() => { sessionsLoading = null; });
+    return sessionsLoading;
+  }
+  return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
+}
+async function loadSessions(): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
   const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
@@ -3794,6 +3840,7 @@ function scheduleLimitResumes(): void {
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
+  if (teamHeld(task.id)) return clearLimit(task);
   // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
   const finishing = finishingStreams.get(task.id);
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
@@ -3819,17 +3866,25 @@ function limitAlternatives(s: Session): { id: string; name: string }[] {
  *  across config folders, so connection_assign starts a fresh one that context recovery fills in. */
 async function continueOnConnection(task: Session, id: string): Promise<void> {
   const target = limitAlternatives(task).find(c => c.id === id);
-  if (!target || isRunning(task.id) || state.queueBusy.has(task.id)) return;
+  if (!target || (isRunning(task.id) && !teamHeld(task.id)) || state.queueBusy.has(task.id)) return;
   const from = taskConnection(task)?.name ?? `the default ${provider(task.provider)?.name ?? task.provider} setup`;
   onNamedConnections(await call('connection_assign', { sessionId: task.id, connectionId: id }));
   task.resumeId = null;
   await continueAfterLimit(task, `Continue where you left off. (Moved to the connection “${target.name}” because ${from} reached its usage limit.)`);
 }
+/** Drops a task's limit; a team held by it retries on the scheduler's next tick. */
+async function clearLimit(task: Session): Promise<void> {
+  await call('clear_usage_limit', { sessionId: task.id });
+  task.limitedAt = null; task.limitedUntil = null; task.resumeAtReset = false;
+  const team = teams.get(task.id);
+  if (team?.leadFailure) onArchitect({ ...team, leadFailure: { ...team.leadFailure, heldUntil: null } });
+  scheduleLimitResumes(); renderComposer(); renderNavigation();
+}
 async function limitAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   if (action === 'limit-continue') return continueAfterLimit(s);
   if (action === 'limit-switch') return continueOnConnection(s, element.dataset.connection ?? '');
-  if (action === 'limit-dismiss') { await call('clear_usage_limit', { sessionId: s.id }); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; scheduleLimitResumes(); renderComposer(); renderNavigation(); return; }
+  if (action === 'limit-dismiss') return clearLimit(s);
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
     try { Object.assign(s, await call<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
@@ -4328,6 +4383,8 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
     }).catch(report);
   }
 }
+/** `MESSAGE_LIMIT` in lib.rs. */
+const MESSAGE_LIMIT = 16 * 1024 * 1024;
 function onAgent(event: AgentEvent): void {
   remoteStartAttached(event.sessionId);
   queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
@@ -4379,6 +4436,7 @@ function onAgent(event: AgentEvent): void {
     return;
   }
   if (event.kind === 'done') {
+    subagents.runEnded(event.sessionId);
     if (s) refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
     if (s && botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
@@ -4509,7 +4567,7 @@ async function refreshInspector(): Promise<void> {
 }
 /** The simulator panel stays mounted once opened; hiding it stops its frames. */
 function syncSimulatorPanel(): void {
-  const wanted = (isMac || isWindows) && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed;
+  const wanted = state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed;
   $('#simulator-panel').hidden = !wanted;
   if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { simulatorPanel?.hide(); return; }
@@ -7071,12 +7129,14 @@ document.addEventListener('keydown', event => {
   const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
   if (command && event.key.toLowerCase() === 'k') { event.preventDefault(); showCommands(); return; }
   if (dialog.open) {
-    if (dialog.classList.contains('command-dialog') && ['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) {
+    if (dialog.classList.contains('command-dialog') && ['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key) && !isImeKey(event)) {
       event.preventDefault(); const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('#command-results button')]; const current = buttons.findIndex(b => b.classList.contains('command-selected'));
       if (event.key === 'Enter') buttons[Math.max(current, 0)]?.click(); else { buttons[current]?.classList.remove('command-selected'); const index = (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length; buttons[index]?.classList.add('command-selected'); buttons[index]?.scrollIntoView({ block: 'nearest' }); }
     }
     return;
   }
+  // An Escape that cancels an IME conversion belongs to the IME: it never stops a run or clears a field.
+  if (event.key === 'Escape' && isImeKey(event)) return;
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
   if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
   if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
@@ -7085,14 +7145,14 @@ document.addEventListener('keydown', event => {
   else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
   else if (command && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !event.isComposing) {
+  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
     if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !event.isComposing) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
-  else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey)) { event.preventDefault(); run(saveQueueEdit(actionTask(event.target as HTMLElement))); }
+  else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
+  else if (event.key === 'Enter' && (event.target as HTMLElement).classList.contains('queue-edit') && (event.metaKey || event.ctrlKey) && !isImeKey(event)) { event.preventDefault(); run(saveQueueEdit(actionTask(event.target as HTMLElement))); }
   else if (event.key === 'Escape' && settingsView && !event.defaultPrevented && !document.querySelector<HTMLDialogElement>('#dialog')?.open && !document.querySelector('.floating-menu')) { event.preventDefault(); closeSettings(); }
   else if (event.key === 'Escape' && state.view !== 'conversation' && state.boardPanel && !event.defaultPrevented) { event.preventDefault(); closeMenus(); state.boardPanel = false; renderBoardView(); }
   else if (event.key === 'Escape' && (event.target as Element).closest?.('.composer-steer-bar') && !event.defaultPrevented) { event.preventDefault(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }); }

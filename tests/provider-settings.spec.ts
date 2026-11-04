@@ -108,6 +108,65 @@ test('global and per-provider environment variables are added, toggled, removed,
   expect(errors).toEqual([]);
 });
 
+test('every harness has environment settings, and all but GLM and MiMo an executable location', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await expect(page.locator('form[data-env-provider="codex"]')).toHaveCount(1);
+
+  const editors = await page.evaluate(() => ({
+    env: [...document.querySelectorAll<HTMLFormElement>('form[data-env-provider]')].map(form => form.dataset.envProvider!),
+    toggles: [...document.querySelectorAll<HTMLInputElement>('input[data-use-global]')].map(input => input.dataset.useGlobal!),
+    executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
+  }));
+  // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes'];
+  expect([...editors.toggles].sort()).toEqual([...roster].sort());
+  expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
+  expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo').sort());
+
+  // A generated card works like a hand-written one, and never echoes a value.
+  const kimi = page.locator('.connection-card', { has: page.locator('form[data-env-provider="kimi"]') });
+  await expect(kimi.locator('h3')).toContainText('Kimi Code');
+  await expect(kimi.locator('.connection-state')).toHaveText(/Installed/);
+  await kimi.locator('summary').first().click();
+  await kimi.locator('details.connection-env > summary').click();
+  await expect(kimi.getByRole('checkbox', { name: 'Use global environment variables' })).toBeChecked();
+  await kimi.getByLabel('Variable name').fill('KIMI_EXTRA');
+  await kimi.getByLabel('Variable value').fill('proxy-secret-value');
+  await kimi.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(kimi.locator('.connection-env-var code')).toHaveText('KIMI_EXTRA');
+  await expect(kimi).not.toContainText('proxy-secret-value');
+  await kimi.getByRole('button', { name: 'Remove KIMI_EXTRA' }).click();
+  await expect(kimi.locator('.connection-env-var')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('generated cards draw a roster name as text and drop an id that is not plain', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_configuration') return Promise.resolve({ executablePaths: {}, providers: [['kimi', '<img src=x onerror="window.__xss=1">'], ['bad"><img src=x onerror="window.__xss=1">', 'Bad']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: null, mimoEndpoints: [], secureStorageAvailable: false });
+      switch (command) {
+    `) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const kimi = page.locator('.connection-card', { has: page.locator('form[data-env-provider="kimi"]') });
+  await expect(kimi.locator('h3')).toContainText('<img src=x');
+  await expect(page.locator('.provider-connections img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('[data-executable^="bad"]')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
 test('provider connections expose Kilo models, approval modes and executable settings', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();
@@ -188,10 +247,10 @@ async function delayedConnections(page: Page): Promise<void> {
     const source = await response.text();
     await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
       if (command === 'provider_configuration') return new Promise(resolve => {
-        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
+        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, providers: [['claude', 'Claude Code'], ['codex', 'Codex'], ['kimi', 'Kimi Code']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
       });
       if (command === 'provider_set_executable') return new Promise(resolve => {
-        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
+        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, providers: [['claude', 'Claude Code'], ['codex', 'Codex'], ['kimi', 'Kimi Code']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
       });
       switch (command) {
     `) });
@@ -213,6 +272,10 @@ test('provider connections preserve other drafts and edits made during a save', 
   await page.evaluate(() => (window as any).releaseProviderConfiguration());
   await expect(opencode).toHaveValue('/installed/opencode');
   await expect(antigravity).toHaveValue('/draft/agy_acp_server.par');
+  // Generated cards and the Claude form hydrate like the hand-written ones.
+  await expect(page.getByLabel('Codex executable', { exact: true })).toHaveValue('/installed/codex');
+  await expect(page.getByLabel('Kimi Code executable', { exact: true })).toHaveValue('/installed/kimi');
+  await expect(page.getByLabel('Claude Code executable', { exact: true })).toHaveValue('/installed/claude');
   await opencode.fill('/opt//bin/opencode');
   const apply = page.locator('form[data-provider="opencode"]').getByRole('button', { name: 'Apply', exact: true });
   await apply.click();

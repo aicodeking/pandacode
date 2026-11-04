@@ -23,7 +23,7 @@ pub const DIR: &str = ".pandacode/design";
 const COMMENTS: &str = "comments.json";
 /// Artboards on disk (agents may write them with their own editors).
 const MAX_ARTBOARD: u64 = 512 * 1024;
-/// Artboards through `pandacode_design_write`; the MCP body limit is 160 KiB.
+/// Artboards through `pandacode_design_write`: keeps a tool call's result and the model's context small.
 const MAX_TOOL_ARTBOARD: usize = 128 * 1024;
 const MAX_ARTBOARDS: usize = 100;
 const MAX_COMMENTS_FILE: u64 = 512 * 1024;

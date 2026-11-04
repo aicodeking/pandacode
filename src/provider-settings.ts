@@ -21,6 +21,7 @@ interface Configuration {
   globalEnvironment?: string[];
   environment?: Record<string, string[]>;
   useGlobalEnvironment?: Record<string, boolean>;
+  providers?: [string, string][];
   glmKeySaved: boolean;
   glmKeyFromEnvironment: boolean;
   deepseekKeySaved: boolean;
@@ -60,6 +61,11 @@ function envDetails(provider: string): string {
   </details>`;
 }
 
+/** A plain card for a harness without setup copy of its own: executable location and environment variables. */
+function generatedCard(id: string, name: string): string {
+  return `<details class="connection-card"><summary><h3>${providerLogo(id as ProviderId)}${escape(name)}</h3><span class="connection-state"></span>${icon('chevron')}</summary>${pathForm(id, `${name} executable`, `/path/to/${id}`)}${envDetails(id)}</details>`;
+}
+
 function keyForm(provider: KeyedProvider, label: string): string {
   return `<form id="${provider}-key-form" data-key-provider="${provider}"><label for="${provider}-key">${escape(label)}</label><div class="connection-input-row"><input id="${provider}-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter API key" maxlength="4096"><button class="primary-button" type="submit">Save key</button></div></form>
       <div class="connection-key-status"><span id="${provider}-key-status" role="status">Checking connection…</span><button type="button" class="secondary-button" id="remove-${provider}-key" data-remove-key="${provider}" hidden>Remove saved key</button></div>`;
@@ -67,7 +73,7 @@ function keyForm(provider: KeyedProvider, label: string): string {
 
 export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>, named?: { harnesses: { id: ProviderId; name: string; installed?: boolean }[]; saved: (snapshot: ConnectionSnapshot) => void }): () => void {
   let disposed = false, pending = false, unmountNamed: (() => void) | undefined;
-  let configurationRevision = 0;
+  let configurationRevision = 0, generatedMounted = false;
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
   host.innerHTML = `<div class="settings-heading"><h3>Sign-ins and keys</h3>${infoMark(howProvidersWork, 'How providers relate to agents')}<span class="sr-only">${escape(howProvidersWork)}</span></div>${named ? '<section id="named-connections"></section>' : ''}
@@ -92,6 +98,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <div class="connection-key-status"><span class="claude-auth-source" role="status">Checking Claude login…</span><button type="button" class="secondary-button" data-check-claude>Check login</button><span class="claude-auth-details"></span></div>
       <p class="claude-auth-endpoint" hidden></p><p class="claude-auth-conflict" hidden>Environment credentials can override your saved Claude login.</p><p class="claude-auth-login" hidden></p>
       <a href="https://code.claude.com/docs/en/authentication" target="_blank" rel="noopener noreferrer">Claude sign-in help ${icon('forward')}</a>
+      ${pathForm('claude', 'Claude Code executable', '/path/to/claude')}
       ${envDetails('claude')}
     </details>
     <details class="connection-card"><summary><h3>${providerLogo('glm')}GLM Coding Plan<small>via Claude Code</small></h3><span class="connection-state"></span>${icon('chevron')}</summary>
@@ -114,7 +121,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <div class="connection-key-status"><span data-google-status role="status">Checking Google connection…</span><button type="button" class="secondary-button" data-google-refresh>Refresh</button></div>
       <div class="connection-input-row"><button type="button" class="primary-button" data-google-login>Sign in with Google</button><button type="button" class="secondary-button" data-google-cancel hidden>Cancel sign-in</button></div>
       <p><button type="button" class="secondary-button" data-action="google-usage">${icon('activity')}Google model usage</button></p><p data-google-feedback role="status" hidden></p>
-      <details class="connection-path"><summary>Advanced setup ${icon('down')}</summary><p>Models use the official Antigravity ACP engine. Quotas use the standalone agy CLI (1.1.11 or later). Both share Google's account sign-in. Google AI Pro or Ultra benefits depend on your account; Gemini API keys use separate billing.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP engine ${icon('forward')}</a><a href="https://antigravity.google/docs/getting-started/" target="_blank" rel="noopener noreferrer">Install the standalone Google CLI ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
+      <details class="connection-path"><summary>Advanced setup ${icon('down')}</summary><p>Models use the official Antigravity ACP engine, or <code>agy acp</code> when that engine is unavailable. Quotas use the standalone agy CLI (1.1.11 or later). Both share Google's account sign-in. Google AI Pro or Ultra benefits depend on your account; Gemini API keys use separate billing.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP engine ${icon('forward')}</a><a href="https://antigravity.google/docs/getting-started/" target="_blank" rel="noopener noreferrer">Install the standalone Google CLI ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
     </section>
     <details class="connection-card"><summary><h3>${providerLogo('grok')}Grok Build<small>xAI, via ACP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses your Grok sign-in and models. Install with <code>curl -fsSL https://x.ai/cli/install.sh | bash</code>, then run <code>grok login</code> once; PandaCode talks to <code>grok agent stdio</code>.</p><a href="https://docs.x.ai/build/overview" target="_blank" rel="noopener noreferrer">Grok Build docs ${icon('forward')}</a>${pathForm('grok', 'Grok executable', '/path/to/grok')}${envDetails('grok')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('pi')}Pi</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts, models and extensions configured in Pi. Install Pi and sign in from its CLI before starting a task.</p><a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener noreferrer">Install Pi ${icon('forward')}</a>${pathForm('pi', 'Pi executable', '/path/to/pi')}${envDetails('pi')}</details>
@@ -180,6 +187,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   function message(text: string, error = false): void { feedback.textContent = text; feedback.hidden = false; feedback.classList.toggle('error', error); }
   function keysDisabled(config: Configuration): boolean { return !config.secureStorageAvailable || preview; }
   function render(config: Configuration): void {
+    // One card, once, for each harness in the roster without a hand-written
+    // one. Ids reach attributes and selectors, so only plain ones are drawn.
+    if (!generatedMounted) {
+      generatedMounted = true;
+      const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && id !== 'openai-compatible' && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
+      feedback.insertAdjacentHTML('beforebegin', cards);
+    }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
       const id = input.dataset.executable!;

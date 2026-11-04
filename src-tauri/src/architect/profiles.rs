@@ -139,11 +139,26 @@ pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))
 }
+/// A saved profile never carries a team's model catalog (every installed model, up to 1000): it is
+/// rebuilt when the team turns on. `last_setup` keeps it, so a new task inheriting an auto team
+/// routes over every model and not just the roster.
+fn strip_catalog(setup: &mut TeamSetup) {
+    setup.config.catalog = Vec::new();
+}
+/// Whether a profile is this setup: a catalog is no part of a profile's identity.
+fn same_setup(profile: &TeamSetup, setup: Option<&TeamSetup>) -> bool {
+    setup.is_some_and(|setup| {
+        let mut setup = setup.clone();
+        strip_catalog(&mut setup);
+        let mut profile = profile.clone();
+        strip_catalog(&mut profile);
+        profile == setup
+    })
+}
 fn write(store: &Store, library: &TeamLibrary) -> Result<()> {
-    let content = serde_json::to_string(library).map_err(|e| e.to_string())?;
-    if content.len() > 256 * 1024 {
-        return Err("Saved team setups exceed their storage limit.".into());
-    }
+    let mut library = library.clone();
+    library.profiles.iter_mut().for_each(|p| strip_catalog(&mut p.setup));
+    let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
         .db
         .execute(
@@ -190,9 +205,6 @@ pub(crate) fn save_profile(
         profile.setup = setup;
         profile.updated_at = storage::now();
     } else {
-        if library.profiles.len() >= 20 {
-            return Err("Save up to 20 team profiles. Update or delete one first.".into());
-        }
         library.profiles.push(TeamProfile {
             id: storage::id(),
             name,
@@ -206,7 +218,7 @@ pub(crate) fn save_profile(
             .profiles
             .iter()
             .find(|p| p.id == *id)
-            .is_none_or(|p| Some(&p.setup) != library.last_setup.as_ref())
+            .is_none_or(|p| !same_setup(&p.setup, library.last_setup.as_ref()))
     }) {
         library.active_profile_id = None;
     }
@@ -251,7 +263,7 @@ pub(super) fn remember(
                     .ok_or("This team profile no longer exists.")
             })
             .transpose()?;
-        if profile.is_some_and(|p| p.setup != setup) {
+        if profile.is_some_and(|p| !same_setup(&p.setup, Some(&setup))) {
             return Err("The selected profile does not match this team setup. Save it as a custom setup or update the profile first.".into());
         }
         library.active_profile_id = profile.map(|p| p.id.clone());
@@ -333,11 +345,8 @@ pub(crate) fn set_lead_guidance(
         .map(|text| text.trim().to_owned())
         .filter(|text| !text.is_empty());
     if let Some(guidance) = &library.lead_guidance {
-        if guidance.len() > super::MAX_LEAD_GUIDANCE || guidance.contains('\0') {
-            return Err(format!(
-                "Lead guidance must be under {} bytes.",
-                super::MAX_LEAD_GUIDANCE
-            ));
+        if guidance.contains('\0') {
+            return Err("Lead guidance must be plain text.".into());
         }
     }
     write(store, &library)?;

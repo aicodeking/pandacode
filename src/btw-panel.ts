@@ -1,7 +1,7 @@
 // The inspector's "By the way" tab: one side thread beside the main thread (docs/btw.md).
 // It draws the side thread with the main transcript's own renderers and composer pieces,
 // supplied by main.ts through the host, so both read and behave alike.
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { TITLE_PREFIX, parseBtw } from './btw';
 import type { Message, MessagePage, Session } from './types';
 
@@ -126,7 +126,7 @@ export class BtwPanel {
     root.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); this.submit(false); });
     // Listening on the form lets the slash and @ pickers (on the textarea) take Enter first.
     root.querySelector('form')!.addEventListener('keydown', event => {
-      if (event.target !== input || event.key !== 'Enter' || event.shiftKey || event.isComposing || event.defaultPrevented) return;
+      if (event.target !== input || event.key !== 'Enter' || event.shiftKey || isImeKey(event) || event.defaultPrevented) return;
       event.preventDefault(); this.submit(event.metaKey || event.ctrlKey);
     });
     // Esc leaves the panel for the main prompt; it never reaches the global stop-the-agent key.

@@ -991,3 +991,16 @@ test('launcher thread stays readable and scrollable at minimum window size', asy
   expect(await scroll.evaluate(element => element.scrollTop > 0)).toBe(true);
   await page.screenshot({path:'/private/tmp/pandacode-overlay-check/thread.png'});
 });
+
+test('launcher ignores the Enter that commits an IME composition', async ({page}) => {
+  await instrumentLauncher(page);
+  await page.goto('/?view=launcher');
+  const prompt = page.locator('.launcher textarea').first();
+  const launches = () => page.evaluate(() => (window as any).__overlayCalls.filter((call:any) => call.command === 'overlay_launch').length);
+  await prompt.fill('変換');
+  await prompt.dispatchEvent('keydown', {key:'Enter', keyCode:229});
+  await expect(prompt).toHaveValue('変換');
+  expect(await launches()).toBe(0);
+  await prompt.press('Enter');
+  await expect.poll(launches).toBe(1);
+});

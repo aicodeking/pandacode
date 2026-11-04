@@ -1,5 +1,5 @@
 import './sketch.css';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import type { PromptImage } from './attachments';
 
 /** A quick wireframe editor. Shapes live in scene coordinates; the canvas scales to fit.
@@ -329,7 +329,7 @@ export function showSketch(options: SketchOptions): void {
         event.preventDefault(); event.stopPropagation();
         window.setTimeout(() => { if (editing?.finish === finish) finish(false); }, 80);
       }
-      else if (event.key === 'Enter' && (shape.type === 'stencil' && shape.stencil !== 'list' && shape.stencil !== 'card' || event.metaKey || event.ctrlKey)) { event.preventDefault(); finish(false); }
+      else if (event.key === 'Enter' && !isImeKey(event) && (shape.type === 'stencil' && shape.stencil !== 'list' && shape.stencil !== 'card' || event.metaKey || event.ctrlKey)) { event.preventDefault(); finish(false); }
       event.stopPropagation();
     });
     area.addEventListener('blur', () => finish(false));

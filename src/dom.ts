@@ -101,6 +101,8 @@ export function fileIcon(name: string, isDir: boolean): string {
 }
 /** `tip` (default: the label) is the visible tooltip; a shortcut belongs there and in `aria-keyshortcuts`, never in the name. */
 export function button(action: string, label: string, symbol: string, cls = '', extra = '', tip = label): string { return `<button class="icon-button ${cls}" data-action="${action}" title="${escape(tip)}" aria-label="${escape(label)}" ${extra}>${icon(symbol)}</button>`; }
+/** A keydown the IME owns: WKWebView sends the Enter committing a conversion after compositionend, with isComposing false and keyCode 229. */
+export function isImeKey(event: KeyboardEvent): boolean { return event.isComposing || event.keyCode === 229; }
 export function $(selector: string): HTMLElement { const el = document.querySelector<HTMLElement>(selector); if (!el) throw new Error(`Missing element ${selector}`); return el; }
 // Local file URLs become inert workspace candidates before the sanitizer strips their
 // scheme. The later resolver is the only route to opening them.

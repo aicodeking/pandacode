@@ -23,6 +23,14 @@ function text(root: Element, selector: string, value: string): void {
   if (element.textContent !== value) element.textContent = value;
 }
 
+/** The workers of lists the reader opened: a redraw, a new worker or the run's end moves a list, and it stays open. */
+const openWorkers = new Set<string>();
+const listKeys = new WeakMap<HTMLElement, string[]>();
+function setOpen(list: HTMLElement, open: boolean): void {
+  list.toggleAttribute('data-open', open);
+  list.querySelector('.team-progress-toggle')!.setAttribute('aria-expanded', String(open));
+}
+
 /** Inline in the thread, one quiet line per spawned worker, like a tool line. Clicking a
  *  line opens that worker in the Architect & workers panel; the rest stay one click away. */
 export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null | undefined, providers: Provider[], only?: TeamWorker[], needsInput: (sessionId: string) => boolean = () => false): boolean {
@@ -36,9 +44,20 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
     list.className = 'team-progress'; list.setAttribute('aria-label', 'Team progress');
     list.dataset.sessionId = team.sessionId;
     // The source's Lineage head: a muted label, a running count and a … that opens the team panel.
-    list.innerHTML = `<div class="team-progress-head"><span class="team-progress-label">Workers</span><span class="team-progress-count"></span><button type="button" class="icon-button team-progress-menu" data-action="open-team-progress" aria-label="Open team" title="Open team">${icon('more')}</button></div><button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>`;
+    list.innerHTML = `<div class="team-progress-head"><button type="button" class="team-progress-toggle" aria-expanded="false">${icon('chevron')}<span class="team-progress-label">Workers</span><span class="team-progress-count"></span></button><button type="button" class="icon-button team-progress-menu" data-action="open-team-progress" aria-label="Open team" title="Open team">${icon('more')}</button></div><button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>`;
     host.replaceChildren(list);
+    const toggle = list.querySelector<HTMLButtonElement>('.team-progress-toggle')!, own = list;
+    toggle.addEventListener('click', () => {
+      const open = !own.hasAttribute('data-open');
+      for (const key of listKeys.get(own) ?? []) { if (open) openWorkers.add(key); else openWorkers.delete(key); }
+      setOpen(own, open);
+    });
   }
+  // Collapsed by default.
+  const keys = spawned.map(worker => `${team.sessionId}:${worker.id}`), open = list.hasAttribute('data-open') || keys.some(key => openWorkers.has(key));
+  if (open) keys.forEach(key => openWorkers.add(key));
+  listKeys.set(list, keys);
+  setOpen(list, open);
   list.dataset.status = team.status;
   // Active assignments first, then the latest settled ones; the rest are in the panel.
   const active = spawned.filter(worker => pending(worker) && worker.status !== 'queued');
@@ -78,7 +97,12 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
     }
   });
   const running = spawned.filter(worker => worker.status === 'running' && !worker.abandoned && teamActive(team)).length;
-  text(list, '.team-progress-count', running ? `${running} running` : `${spawned.length} ${spawned.length === 1 ? 'worker' : 'workers'}`);
+  // Collapsed, the count is all that shows, so it says first what needs the reader.
+  const asking = spawned.filter(worker => !worker.abandoned && (worker.status === 'waiting' || (worker.status === 'running' && needsInput(worker.sessionId)))).length;
+  const failed = spawned.filter(worker => worker.status === 'failed' && !worker.abandoned).length;
+  text(list, '.team-progress-count', asking ? `${asking} need${asking === 1 ? 's' : ''} attention` : failed ? `${failed} failed` : running ? `${running} running` : `${spawned.length} ${spawned.length === 1 ? 'worker' : 'workers'}`);
+  const tone = asking ? 'warn' : failed ? 'danger' : running ? 'team' : '';
+  if ((list.dataset.countTone ?? '') !== tone) list.dataset.countTone = tone;
   const more = list.querySelector<HTMLButtonElement>('.team-progress-more')!;
   const remaining = spawned.length - workers.length;
   more.hidden = remaining === 0;

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Listener, Manager};
 
-pub(crate) const METHODS: [&str; 32] = ["subscribe", "tasks.list", "projects.icons", "providers.list", "providers.models", "task.start", "task.startStatus", "task.cancelStart", "task.messages", "task.team", "task.workerMessages", "task.attachment", "task.workspaceImage", "task.send", "task.stop", "task.steer", "task.configure", "approval.respond", "input.respond", "task.pull", "task.pullDiff", "task.pullMerge", "task.pullDetect", "task.changes", "task.diff", "bots.list", "bot.thread", "bot.message", "bot.pause", "image.put", "batch", "pair.redeem"];
+pub(crate) const METHODS: [&str; 33] = ["subscribe", "tasks.list", "projects.icons", "providers.list", "providers.models", "task.start", "task.startStatus", "task.cancelStart", "task.messages", "task.team", "task.workerMessages", "task.attachment", "task.workspaceImage", "task.send", "task.stop", "task.teamResume", "task.steer", "task.configure", "approval.respond", "input.respond", "task.pull", "task.pullDiff", "task.pullMerge", "task.pullDetect", "task.changes", "task.diff", "bots.list", "bot.thread", "bot.message", "bot.pause", "image.put", "batch", "pair.redeem"];
 pub(crate) const OFF: &str = "Remote control is off on this computer";
 pub(crate) const MAX_TEXT: usize = 100 * 1024;
 const SUBSCRIPTION: Duration = Duration::from_secs(10 * 60);
@@ -48,8 +48,6 @@ const TASKS_MAX: usize = 500;
 const MESSAGE_PAGE_DEFAULT: i64 = 100;
 const WORKER_MESSAGE_PAGE_DEFAULT: i64 = 100;
 const WORKER_MESSAGE_PAGE_MAX: i64 = 100;
-const TEAM_MESSAGE_COUNT: usize = 30;
-const TEAM_MESSAGE_TEXT: usize = 2048;
 const WINDOW_MS: i64 = 60_000;
 const MAX_SEEN: usize = 20_000;
 /// A reply's or event frame's JSON budget: sealing adds a third (base64) plus a small
@@ -59,7 +57,14 @@ const MAX_PROJECT_ICON_IDS: usize = 50;
 const MAX_PROJECT_ICON_BYTES: usize = 64 * 1024;
 const MAX_BOT_AVATAR_BYTES: usize = 32 * 1024;
 const SUBAGENT_SNAPSHOT_BUDGET: usize = 40 * 1024;
-const MAX_SUBAGENT_SNAPSHOT: usize = 64;
+/// Name-and-status rows may pass the snapshot budget, up to this; only then are rows dropped.
+const SUBAGENT_ROWS_MAX: usize = 80 * 1024;
+/// A child's share of text below this is dropped rather than cut to almost nothing.
+const MIN_SUBAGENT_TEXT: usize = 64;
+/// A string's share below this is dropped: a few characters and a marker say nothing.
+const MIN_KEPT_TEXT: usize = 16;
+/// Room a `subagent` event's envelope needs beside its snapshot within [`MAX_MESSAGE`].
+const EVENT_ENVELOPE: usize = 1024;
 const DIFF_BUDGET: usize = 120 * 1024;
 const MAX_PATH: usize = 4096;
 const MAX_BATCH_CALLS: usize = 8;
@@ -137,6 +142,7 @@ pub(crate) enum Call {
     /// `budget`: the page's JSON bytes ([`page_budget`]).
     Messages { session_id: String, page: MessagePaging, budget: usize },
     Team { session_id: String },
+    TeamResume { session_id: String },
     /// `before_id`: a page ending before it (`tail` is before the newest), else after `after_id`.
     WorkerMessages { session_id: String, worker_id: String, after_id: i64, before_id: Option<i64>, limit: i64 },
     Attachment { session_id: String, id: String, variant: crate::attachments::Variant, offset: u64 },
@@ -174,6 +180,7 @@ impl Call {
             Self::CancelStart { .. } => "task.cancelStart",
             Self::Messages { .. } => "task.messages",
             Self::Team { .. } => "task.team",
+            Self::TeamResume { .. } => "task.teamResume",
             Self::WorkerMessages { .. } => "task.workerMessages",
             Self::Attachment { .. } => "task.attachment",
             Self::WorkspaceImage { .. } => "task.workspaceImage",
@@ -443,6 +450,7 @@ pub(crate) fn parse(host_enabled: bool, method: &str, params: &Value) -> Result<
         "task.cancelStart" => Call::CancelStart { start_id: id_param(params, "startId")? },
         "task.messages" => Call::Messages { session_id: id_param(params, "sessionId")?, page: message_paging(params)?, budget: page_budget(params)? },
         "task.team" => Call::Team { session_id: id_param(params, "sessionId")? },
+        "task.teamResume" => Call::TeamResume { session_id: id_param(params, "sessionId")? },
         "task.workerMessages" => {
             let after_id = match params.get("afterId").filter(|value| !value.is_null()) {
                 None => 0,
@@ -741,152 +749,122 @@ fn remote_worker(worker: &crate::architect::Worker) -> Value {
     })
 }
 
-fn team_reply(
-    store: &crate::storage::Store,
-    team: &crate::architect::TeamSnapshot,
-) -> Result<Value> {
-    let mut query = store.db.prepare("SELECT id,sender,recipient,content,created_at FROM architect_messages WHERE parent_session_id=?1 ORDER BY id DESC LIMIT ?2").map_err(|error| error.to_string())?;
-    let mut messages = query
-        .query_map(
-            rusqlite::params![team.session_id, TEAM_MESSAGE_COUNT as i64],
-            |row| {
-                Ok(json!({
-                    "id": row.get::<_, i64>(0)?,
-                    "sender": row.get::<_, String>(1)?,
-                    "recipient": row.get::<_, String>(2)?,
-                    "message": bounded_text(&row.get::<_, String>(3)?, TEAM_MESSAGE_TEXT),
-                    "createdAt": row.get::<_, i64>(4)?,
-                }))
-            },
-        )
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())?;
-    messages.reverse();
-
-    let workers: Vec<Value> = team.workers.iter().map(remote_worker).collect();
-    let mut snapshot = remote_team(team, workers);
-    if !messages.is_empty() {
-        snapshot["messages"] = json!(messages);
-    }
-    Ok(fit_team_reply(json!({"team": snapshot})))
-}
-
 fn remote_team(team: &crate::architect::TeamSnapshot, workers: Vec<Value>) -> Value {
     json!({
         "sessionId": team.session_id,
         "status": team.status,
+        "error": team.error.as_deref().map(|error| bounded_text(error, 2048)),
         "round": team.round,
         "revision": team.revision,
         "summary": team.summary.as_deref().map(|summary| bounded_text(summary, 4096)),
         "updatedAt": team.updated_at,
         "mode": if team.config.auto { "auto" } else { "classic" },
-        "rounds": {"used": team.round, "max": team.config.max_rounds},
+        // Rounds have no maximum; 0 keeps an older phone from showing "round 25 of 8".
+        "rounds": {"used": team.round, "max": 0},
         "workers": workers,
     })
 }
 
-fn trim_team_files(reply: &mut Value) -> bool {
-    let Some(workers) = reply["team"]["workers"].as_array_mut() else {
-        return false;
-    };
-    let Some(index) = workers
-        .iter()
-        .enumerate()
-        .filter_map(|(index, worker)| {
-            worker["files"]
-                .as_array()
-                .filter(|files| !files.is_empty())
-                .map(|files| (index, json!(files).to_string().len()))
-        })
-        .max_by_key(|(_, size)| *size)
-        .map(|(index, _)| index)
-    else {
-        return false;
-    };
-    let worker = &mut workers[index];
-    if let Some(files) = worker["files"].as_array_mut() {
-        files.pop();
-        worker["filesTruncated"] = json!(true);
+/// A phone's Resume may be late or repeated: it never restarts a team that is working or finished.
+fn resume_allowed(team: Option<&crate::architect::TeamSnapshot>) -> Result<()> {
+    match team {
+        Some(team) if crate::architect::can_resume(&team.status) => Ok(()),
+        Some(_) => Err("This team has nothing to resume.".into()),
+        None => Err("Team is unavailable.".into()),
     }
-    true
 }
 
-fn trim_team_text(reply: &mut Value) -> bool {
-    let Some(team) = reply["team"].as_object_mut() else {
-        return false;
-    };
-    let mut target: Option<(usize, usize, String, usize)> = None;
-    let mut consider = |row: usize, field: usize, key: &str, value: &Value| {
-        if let Some(text) = value.as_str() {
-            if text.len() > 256
-                && target
-                    .as_ref()
-                    .is_none_or(|(_, _, _, length)| text.len() > *length)
-            {
-                target = Some((row, field, key.to_owned(), text.len()));
+/// Cuts every worker's text and files to `1/divisor` of a fair share at once, so a large team costs one pass.
+fn fair_team_cut(reply: &mut Value, divisor: usize) {
+    let Some(workers) = reply["team"]["workers"].as_array_mut() else { return };
+    let count = workers.len().max(1);
+    let text = (PAGE_BUDGET / (count * 8)).clamp(240, 2048) / divisor;
+    let file_room = PAGE_BUDGET / (count * 4) / divisor;
+    for worker in workers {
+        for key in ["summary", "assignment", "error"] {
+            if let Some(value) = worker[key].as_str().map(|value| bounded_text(value, text)) {
+                worker[key] = json!(value);
             }
         }
-    };
-    if let Some(workers) = team.get("workers").and_then(Value::as_array) {
-        for (index, worker) in workers.iter().enumerate() {
-            for key in ["summary", "assignment", "error"] {
-                consider(index, 0, key, &worker[key]);
-            }
-            for key in ["summary", "nextSteps", "blocker"] {
-                consider(index, 1, key, &worker["checkpoint"][key]);
+        for key in ["summary", "nextSteps", "blocker"] {
+            if let Some(value) = worker["checkpoint"][key].as_str().map(|value| bounded_text(value, text)) {
+                worker["checkpoint"][key] = json!(value);
             }
         }
-    }
-    if let Some(messages) = team.get("messages").and_then(Value::as_array) {
-        for (index, message) in messages.iter().enumerate() {
-            consider(index, 2, "message", &message["message"]);
+        let Some(files) = worker["files"].as_array_mut() else { continue };
+        let before = files.len();
+        let mut used = 0;
+        files.retain(|file| {
+            used += file.to_string().len();
+            used <= file_room
+        });
+        if files.len() < before {
+            worker["filesTruncated"] = json!(true);
         }
     }
-    let Some((index, group, key, _)) = target else {
-        return false;
-    };
-    let text = if group == 2 {
-        &mut reply["team"]["messages"][index][&key]
-    } else if group == 1 {
-        &mut reply["team"]["workers"][index]["checkpoint"][&key]
-    } else {
-        &mut reply["team"]["workers"][index][&key]
-    };
-    if let Some(value) = text.as_str() {
-        *text = json!(bounded_text(value, value.len() / 2));
-        reply["team"]["truncated"] = json!(true);
-        return true;
-    }
-    false
 }
 
-/// Keeps the complete worker list where possible, trimming file detail and prose first.
+/// Leaves every worker its name, model and status, with no text or file detail.
+fn bare_team_rows(reply: &mut Value) {
+    let Some(workers) = reply["team"]["workers"].as_array_mut() else { return };
+    for worker in workers {
+        if worker["files"].as_array().is_some_and(|files| !files.is_empty()) {
+            worker["filesTruncated"] = json!(true);
+        }
+        worker["summary"] = json!("");
+        worker["assignment"] = json!("");
+        worker["error"] = Value::Null;
+        worker["checkpoint"] = Value::Null;
+        worker["files"] = json!([]);
+        worker["dependsOn"] = json!([]);
+    }
+}
+
+/// The last resort: drops rows until the reply fits, oldest settled workers first.
+fn drop_team_rows(reply: &mut Value) {
+    let mut excess = reply.to_string().len().saturating_sub(PAGE_BUDGET);
+    let Some(workers) = reply["team"]["workers"].as_array_mut() else { return };
+    let mut order: Vec<usize> = (0..workers.len()).collect();
+    order.sort_by_key(|&index| {
+        let worker = &workers[index];
+        let settled = worker["abandoned"] == true || matches!(worker["status"].as_str(), Some("completed" | "failed" | "stopped"));
+        (!settled, worker["updatedAt"].as_i64().unwrap_or(0))
+    });
+    let mut dropped = HashSet::new();
+    for index in order {
+        if excess == 0 {
+            break;
+        }
+        excess = excess.saturating_sub(workers[index].to_string().len() + 1);
+        dropped.insert(index);
+    }
+    let mut index = 0;
+    workers.retain(|_| {
+        index += 1;
+        !dropped.contains(&(index - 1))
+    });
+    reply["team"]["workersTruncated"] = json!(true);
+}
+
+/// Keeps every worker row: text and files go to a fair share, then half of it, then all row detail. Rows are dropped only when bare rows alone pass the budget.
+/// A handful of serializations, whatever the team's size.
 fn fit_team_reply(mut reply: Value) -> Value {
-    while reply.to_string().len() > PAGE_BUDGET {
-        if trim_team_text(&mut reply) || trim_team_files(&mut reply) {
-            reply["team"]["truncated"] = json!(true);
-            continue;
-        }
-        if reply["team"]["messages"]
-            .as_array()
-            .is_some_and(|messages| !messages.is_empty())
-        {
-            reply["team"]["messages"].as_array_mut().unwrap().remove(0);
-            reply["team"]["truncated"] = json!(true);
-            continue;
-        }
-        if reply["team"]["workers"]
-            .as_array()
-            .is_some_and(|workers| !workers.is_empty())
-        {
-            reply["team"]["workers"].as_array_mut().unwrap().pop();
-            reply["team"]["workersTruncated"] = json!(true);
-            continue;
-        }
-        shrink(&mut reply, PAGE_BUDGET);
-        break;
+    let over = |reply: &Value| reply.to_string().len() > PAGE_BUDGET;
+    if !over(&reply) {
+        return reply;
     }
+    reply["team"]["truncated"] = json!(true);
+    fair_team_cut(&mut reply, 1);
+    if over(&reply) {
+        fair_team_cut(&mut reply, 2);
+    }
+    if over(&reply) {
+        bare_team_rows(&mut reply);
+    }
+    if over(&reply) {
+        drop_team_rows(&mut reply);
+    }
+    shrink(&mut reply, PAGE_BUDGET);
     reply
 }
 
@@ -1406,7 +1384,7 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
                 let Some(team) = crate::architect::load(&store, &session_id)? else {
                     return Ok(json!({"team": null}));
                 };
-                team_reply(&store, &team)
+                Ok(fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())})))
             })
             .await
         }
@@ -1478,6 +1456,19 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             } else {
                 crate::stop_session(app.clone(), state, session_id).await?;
             }
+            Ok(json!({}))
+        }
+        Call::TeamResume { session_id } => {
+            // Resuming starts agents again, so it follows the rule for prompts, not for Stop.
+            allow_task_mode(&local_task(&state, &session_id).await?.mode, None, full_access)?;
+            let store = state.store.clone();
+            let id = session_id.clone();
+            crate::blocking(move || {
+                let store = store.lock().map_err(|e| e.to_string())?;
+                resume_allowed(crate::architect::load(&store, &id)?.as_ref())
+            })
+            .await?;
+            crate::architect::architect_control(app.clone(), state, session_id, "resume".into()).await?;
             Ok(json!({}))
         }
         Call::Steer { session_id, text } => {
@@ -2394,27 +2385,116 @@ fn add_live_timing(task: &mut Value, timing: Option<LiveTiming>) {
     }
 }
 
-/// Fits desktop-shaped child snapshots into a small slice of the response budget.
-fn bounded_subagents(activities: &[crate::providers::SubagentActivity], budget: usize) -> Result<(Vec<Value>, bool)> {
-    let mut items = Vec::new();
-    let mut truncated = activities.len() > MAX_SUBAGENT_SNAPSHOT;
-    for activity in activities.iter().take(MAX_SUBAGENT_SNAPSHOT) {
-        let mut item = serde_json::to_value(activity).map_err(|error| error.to_string())?;
-        let original_size = item.to_string().len();
-        let current_size = json!(&items).to_string().len();
-        let separator = usize::from(!items.is_empty());
-        let remaining = budget.saturating_sub(current_size.saturating_add(separator));
-        shrink(&mut item, remaining);
-        let item_size = item.to_string().len();
-        if item_size > remaining {
-            truncated = true;
-            break;
+/// A snapshot's prompt, response and tool text.
+fn subagent_texts(item: &mut Value) -> Vec<&mut String> {
+    let mut texts = Vec::new();
+    let Some(fields) = item.as_object_mut() else { return texts };
+    for (key, value) in fields.iter_mut() {
+        match (key.as_str(), value) {
+            ("prompt" | "response", Value::String(text)) => texts.push(text),
+            ("tools", Value::Array(tools)) => {
+                for tool in tools.iter_mut().filter_map(Value::as_object_mut) {
+                    for (key, value) in tool.iter_mut() {
+                        if let ("input" | "output", Value::String(text)) = (key.as_str(), value) {
+                            texts.push(text);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
-        truncated |= item_size < original_size;
-        items.push(item);
     }
-    truncated |= items.len() < activities.len();
-    Ok((items, truncated))
+    texts
+}
+
+/// A snapshot as a bare row: id, name, status and times, with its text and tools gone.
+fn bare_subagent(item: &mut Value) {
+    subagent_texts(item).into_iter().for_each(String::clear);
+    item["tools"] = json!([]);
+}
+
+/// Cuts a snapshot under `max` by scaling all its text at once (oldest tools go when their rows
+/// alone pass `max`), so a large snapshot serializes a few times, never once per cut.
+fn cut_subagent(item: &mut Value, max: usize) -> bool {
+    let mut cut = false;
+    for _ in 0..12 {
+        let size = item.to_string().len();
+        if size <= max {
+            return cut;
+        }
+        cut = true;
+        let weights: Vec<usize> = subagent_texts(item).iter().map(|text| json!(text).to_string().len()).collect();
+        let text: usize = weights.iter().sum();
+        // The marker's serialized size: its newline is escaped.
+        let rows = size - text + weights.len() * (CUT.len() + 1);
+        if rows >= max {
+            let Some(tools) = item["tools"].as_array_mut().filter(|tools| !tools.is_empty()) else { break };
+            tools.drain(..tools.len().div_ceil(2));
+            continue;
+        }
+        // A tenth to spare: text full of escapes serializes larger than its share.
+        let room = (max - rows) * 9 / 10;
+        for value in subagent_texts(item) {
+            let body = value.strip_suffix(CUT).unwrap_or(value);
+            let keep = body.len().saturating_mul(room) / text.max(1);
+            *value = if keep < MIN_KEPT_TEXT { String::new() } else { format!("{}{CUT}", head(body, keep)) };
+        }
+    }
+    bare_subagent(item);
+    true
+}
+
+/// Fits desktop-shaped child snapshots into a small slice of the response budget. Every child
+/// keeps a row: text is shared out fairly (what a small child leaves goes to the others), and
+/// past the budget children stay as bare rows. Rows go only past [`SUBAGENT_ROWS_MAX`].
+fn bounded_subagents(activities: &[crate::providers::SubagentActivity], budget: usize) -> Result<(Vec<Value>, bool)> {
+    let mut items = activities.iter().map(serde_json::to_value).collect::<std::result::Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    let size = |item: &Value| item.to_string().len() + 1;
+    let mut full: Vec<usize> = items.iter().map(size).collect();
+    if full.iter().sum::<usize>() < budget {
+        return Ok((items, false));
+    }
+    let mut rows: Vec<usize> = items
+        .iter()
+        .map(|item| {
+            let mut row = item.clone();
+            bare_subagent(&mut row);
+            size(&row)
+        })
+        .collect();
+    let mut excess = rows.iter().sum::<usize>().saturating_sub(SUBAGENT_ROWS_MAX);
+    if excess > 0 {
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by_key(|&index| (matches!(activities[index].status.as_str(), "running" | "waiting"), activities[index].updated_at));
+        let dropped: HashSet<usize> = order
+            .into_iter()
+            .take_while(|&index| {
+                let drop = excess > 0;
+                excess = excess.saturating_sub(rows[index]);
+                drop
+            })
+            .collect();
+        let keep = |index: usize| !dropped.contains(&index);
+        items = items.into_iter().enumerate().filter(|(index, _)| keep(*index)).map(|(_, item)| item).collect();
+        full = full.into_iter().enumerate().filter(|(index, _)| keep(*index)).map(|(_, size)| size).collect();
+        rows = rows.into_iter().enumerate().filter(|(index, _)| keep(*index)).map(|(_, size)| size).collect();
+    }
+    let mut spare = budget.saturating_sub(rows.iter().sum::<usize>() + 1);
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&index| full[index] - rows[index]);
+    for (settled, &index) in order.iter().enumerate() {
+        let text = full[index] - rows[index];
+        let share = spare / (order.len() - settled);
+        if text <= share {
+            spare -= text;
+        } else if share < MIN_SUBAGENT_TEXT {
+            bare_subagent(&mut items[index]);
+        } else {
+            cut_subagent(&mut items[index], rows[index] + share - 1);
+            spare -= share;
+        }
+    }
+    Ok((items, true))
 }
 
 fn live_run(agent: &crate::RunningAgent) -> Result<LiveRun> {
@@ -2636,7 +2716,13 @@ fn add_gap_subagents(mut reply: Value, saved: impl Fn(&str) -> Result<Vec<crate:
     let ids: Vec<String> = reply["tasks"].as_array().map(|tasks| tasks.iter().filter(|task| task["gap"] == true && task.get("subagents").is_none()).filter_map(|task| task["sessionId"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
     let mut size = reply.to_string().len();
     for id in ids {
-        let Ok((children, truncated)) = saved(&id).and_then(|children| bounded_subagents(&children, SUBAGENT_SNAPSHOT_BUDGET)) else { continue };
+        let (children, truncated) = match saved(&id).and_then(|children| bounded_subagents(&children, SUBAGENT_SNAPSHOT_BUDGET)) {
+            Ok(saved) => saved,
+            Err(error) => {
+                eprintln!("Remote task list: saved subagents of {id}: {error}");
+                continue;
+            }
+        };
         if children.is_empty() {
             continue;
         }
@@ -2957,6 +3043,9 @@ pub(crate) fn frames(events: Vec<Value>) -> Vec<Vec<Value>> {
     let (mut frame, mut size) = (Vec::new(), 0);
     for mut event in events {
         if event.to_string().len() > MAX_MESSAGE {
+            if event["kind"] == "subagent" {
+                cut_subagent(&mut event["data"], MAX_MESSAGE - EVENT_ENVELOPE);
+            }
             shrink(&mut event, MAX_MESSAGE);
         }
         let length = event.to_string().len() + 1;
@@ -3092,6 +3181,10 @@ fn journal_and_enqueue(inner: &mut super::Inner, session_id: &str, mut value: Va
     }
     if queue != Queue::Event {
         value["kind"] = json!("run.finished");
+    }
+    // Cut before the ring counts it: at full size one snapshot would evict the viewer's events.
+    if value["kind"] == "subagent" && value.to_string().len() > MAX_MESSAGE {
+        cut_subagent(&mut value["data"], MAX_MESSAGE - EVENT_ENVELOPE);
     }
     let value = inner.journal.record(session_id, value, subscribed)?;
     enqueue(inner, session_id, |subscriber| match queue {
@@ -3304,6 +3397,8 @@ mod tests {
             parent_worker: None,
             resume_prompt: None,
             tool_catalog_version: 0,
+            nudged: false,
+            reported: false,
         }
     }
 
@@ -3342,9 +3437,12 @@ mod tests {
             legacy_prompt_through_id: Some(0),
             continued_revision: None,
             last_turn_kind: None,
-            objective_start: 0,
             timed_out: false,
             briefings: Default::default(),
+            last_wake_at: 0,
+            stalled_wakes: 0,
+            wake_baseline: (0, 0),
+            lead_failure: None,
         }
     }
 
@@ -3380,7 +3478,7 @@ mod tests {
         let snapshot = remote_team(&team, vec![worker.clone()]);
         assert_eq!(snapshot["sessionId"], "team-session");
         assert_eq!(snapshot["mode"], "auto");
-        assert_eq!(snapshot["rounds"], json!({"used": 3, "max": 8}));
+        assert_eq!(snapshot["rounds"], json!({"used": 3, "max": 0}));
         assert_eq!(
             snapshot["workers"][0]["status"], "running",
             "desktop waiting is represented as a running phone worker"
@@ -3592,16 +3690,9 @@ mod tests {
             })
             .collect();
         let team = team_fixture(workers);
-        let messages = (0..TEAM_MESSAGE_COUNT).map(|id| json!({"id": id, "sender": "architect", "recipient": "w1", "message": "coordination ".repeat(128), "createdAt": id})).collect::<Vec<_>>();
-        let mut value = remote_team(&team, team.workers.iter().map(remote_worker).collect());
-        value["messages"] = json!(messages);
-        let reply = fit_team_reply(json!({"team": value}));
+        let reply = fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())}));
         assert!(reply.to_string().len() <= PAGE_BUDGET);
         assert_eq!(reply["team"]["workers"].as_array().unwrap().len(), 25);
-        assert_eq!(
-            reply["team"]["messages"].as_array().unwrap().len(),
-            TEAM_MESSAGE_COUNT
-        );
         assert_eq!(reply["team"]["truncated"], true);
         assert!(reply["team"]["workers"]
             .as_array()
@@ -3677,6 +3768,95 @@ mod tests {
     }
 
     #[test]
+    fn every_subagent_keeps_a_row_and_a_large_child_hides_nobody() {
+        let mut children: Vec<_> = (0..70).map(|index| subagent(&format!("run:{index}"), "short")).collect();
+        children[0].response = "huge ".repeat(50_000);
+        let (items, truncated) = bounded_subagents(&children, SUBAGENT_SNAPSHOT_BUDGET).unwrap();
+        assert!(truncated);
+        assert_eq!(items.len(), 70);
+        assert!(json!(items).to_string().len() <= SUBAGENT_SNAPSHOT_BUDGET);
+        assert_eq!(items[69]["response"], "short", "a small child keeps its text");
+        assert!(items[0]["response"].as_str().unwrap().ends_with(CUT));
+
+        // Past the budget children stay as bare rows, and past the row ceiling active ones stay.
+        let many: Vec<_> = (0..400).map(|index| subagent(&format!("run:{index}"), &"text ".repeat(100))).collect();
+        let (items, truncated) = bounded_subagents(&many, SUBAGENT_SNAPSHOT_BUDGET).unwrap();
+        assert!(truncated);
+        assert_eq!(items.len(), 400);
+        assert_eq!(items[399]["name"], "Reviewer");
+        assert_eq!(items[399]["status"], "running");
+        let endless: Vec<_> = (0..5000).map(|index| {
+            let mut child = subagent(&format!("run:{index}"), "x");
+            child.status = if index == 0 { "running".into() } else { "completed".into() };
+            child
+        }).collect();
+        let (items, _) = bounded_subagents(&endless, SUBAGENT_SNAPSHOT_BUDGET).unwrap();
+        assert!(json!(items).to_string().len() <= SUBAGENT_ROWS_MAX + items.len());
+        assert_eq!(items[0]["id"], "run:0");
+    }
+
+    #[test]
+    fn a_large_subagent_event_is_cut_once_under_the_frame_budget() {
+        let mut child = subagent("run:big", &"line \"quoted\"\n".repeat(20_000));
+        child.tools = serde_json::from_value(json!((0..64).map(|index| json!({"id": format!("t{index}"), "name": "Read", "status": "completed", "input": "i".repeat(4096), "output": "o".repeat(8192)})).collect::<Vec<_>>())).unwrap();
+        let event = json!({"sessionId": "s", "kind": "subagent", "text": "", "requestId": null, "data": child});
+        let sent = frames(vec![event]);
+        assert!(sent[0][0].to_string().len() <= MAX_MESSAGE);
+        assert_eq!(sent[0][0]["data"]["id"], "run:big");
+        assert!(sent[0][0]["data"]["response"].as_str().unwrap().len() > 1024, "text is scaled, not dropped");
+        let mut tiny = json!(subagent("run:tiny", &"x".repeat(9000)));
+        assert!(cut_subagent(&mut tiny, 600));
+        assert!(tiny.to_string().len() <= 600);
+    }
+
+    #[test]
+    fn an_oversized_team_keeps_detail_and_sends_no_messages() {
+        let workers = (0..40).map(|index| {
+            let mut worker = worker_fixture(&format!("w{index}"), "completed");
+            worker.summary = "s".repeat(4096);
+            worker.assignment = "a".repeat(4096);
+            worker
+        }).collect();
+        let team = team_fixture(workers);
+        let reply = fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())}));
+        assert!(reply.to_string().len() <= PAGE_BUDGET);
+        let rows = reply["team"]["workers"].as_array().unwrap();
+        assert_eq!(rows.len(), 40);
+        assert!(rows.iter().all(|row| !row["summary"].as_str().unwrap().is_empty()), "row detail stays");
+        assert!(reply["team"].get("messages").is_none(), "no client draws them");
+    }
+
+    #[test]
+    fn large_teams_keep_every_worker_row() {
+        let long = |count: usize| -> Vec<_> {
+            (0..count).map(|index| {
+                let mut worker = worker_fixture(&format!("w{index}"), if index + 1 == count { "running" } else { "completed" });
+                worker.summary = "summary ".repeat(512);
+                worker.assignment = "assignment ".repeat(512);
+                worker.updated_at = index as i64;
+                worker
+            }).collect()
+        };
+        for count in [120, 300] {
+            let team = team_fixture(long(count));
+            let reply = fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())}));
+            assert!(reply.to_string().len() <= PAGE_BUDGET);
+            assert_eq!(reply["team"]["workers"].as_array().unwrap().len(), count);
+            assert_eq!(reply["team"]["truncated"], true);
+            assert!(reply["team"].get("workersTruncated").is_none());
+            assert!(reply["team"]["workers"][count - 1]["name"].as_str().is_some());
+        }
+        let team = team_fixture(long(3000));
+        let reply = fit_team_reply(json!({"team": remote_team(&team, team.workers.iter().map(remote_worker).collect())}));
+        assert!(reply.to_string().len() <= PAGE_BUDGET);
+        assert_eq!(reply["team"]["workersTruncated"], true);
+        let rows = reply["team"]["workers"].as_array().unwrap();
+        assert_eq!(rows.last().unwrap()["id"], "w2999", "the running worker stays");
+        assert_eq!(rows[rows.len() - 2]["id"], "w2998", "the newest settled workers stay");
+        assert!(rows[0]["id"] != "w0", "the oldest settled worker goes first");
+    }
+
+    #[test]
     fn everything_is_refused_while_hosting_is_off() {
         for method in METHODS {
             assert_eq!(parse(false, method, &json!({"sessionId": "s", "text": "hi", "requestId": "r", "approve": true})), Err(OFF.to_string()));
@@ -3732,6 +3912,21 @@ mod tests {
             assert!(parse(true, gone, &json!({})).is_err(), "{gone}");
         }
         assert!(valid_id(&"a".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn team_resume_is_a_method_for_stopped_teams_only_and_sends_the_reason() {
+        assert!(METHODS.contains(&"task.teamResume"));
+        assert_eq!(parse(true, "task.teamResume", &json!({"sessionId": "s1"})), Ok(Call::TeamResume { session_id: "s1".into() }));
+        assert!(parse(true, "task.teamResume", &json!({})).is_err());
+        let mut team = team_fixture(Vec::new());
+        team.error = Some("PandaCode paused this team.".into());
+        assert_eq!(remote_team(&team, Vec::new())["error"], "PandaCode paused this team.");
+        for (status, allowed) in [("paused", true), ("failed", true), ("interrupted", true), ("running", false), ("waiting", false), ("completed", false), ("ready", false)] {
+            team.status = status.into();
+            assert_eq!(resume_allowed(Some(&team)).is_ok(), allowed, "{status}");
+        }
+        assert!(resume_allowed(None).is_err());
     }
 
     #[test]
@@ -3928,7 +4123,7 @@ mod tests {
         }
         for method in [
             "task.send", "task.steer", "task.stop", "task.configure", "approval.respond", "input.respond",
-            "bot.thread", "bot.message", "bot.pause", "task.pullMerge", "task.start", "unknown",
+            "bot.thread", "bot.message", "bot.pause", "task.pullMerge", "task.start", "task.teamResume", "unknown",
         ] {
             assert!(!is_read_only_method(method), "{method}");
         }
@@ -4293,6 +4488,24 @@ mod tests {
         assert_eq!(tasks[0]["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect::<Vec<_>>(), ["text", "team", "run.finished"]);
         assert_eq!(tasks[0]["events"][2]["status"], "running");
         assert_eq!(inner.journal.bytes, inner.journal.rings.values().map(|ring| ring.bytes).sum::<usize>());
+    }
+
+    #[test]
+    fn a_large_subagent_snapshot_never_evicts_the_viewers_events() {
+        let mut inner = super::super::Inner {
+            devices: vec![super::super::Device { id: "viewer".into(), name: String::new(), platform: String::new(), public_key: "k".into(), host: false, online: true, last_seen: Value::Null }],
+            outbox: Some(tokio::sync::mpsc::channel(1).0),
+            ..Default::default()
+        };
+        inner.settings.host_enabled = true;
+        inner.subscribers.insert("viewer".into(), Subscriber { until: Some(Instant::now() + SUBSCRIPTION), sessions: HashSet::from(["h1".to_string()]), ..Default::default() });
+        journal_and_enqueue(&mut inner, "h1", event("h1", "text", "keep me"), Queue::Event);
+        let child = subagent("run:big", &"x".repeat(JOURNAL_BYTES + 1024));
+        journal_and_enqueue(&mut inner, "h1", json!({"sessionId": "h1", "kind": "subagent", "text": "", "requestId": null, "data": child}), Queue::Event);
+        let ring = &inner.journal.rings["h1"];
+        assert_eq!(ring.events.len(), 2, "the text event is still there for a viewer coming back");
+        assert!(ring.events[1].1.len() <= MAX_MESSAGE, "{}", ring.events[1].1.len());
+        assert_eq!(inner.subscribers["viewer"].events[1]["data"]["id"], "run:big");
     }
 
     #[test]

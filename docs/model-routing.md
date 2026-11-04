@@ -133,7 +133,10 @@ one row per key in pool order, named after its first entry without the trailing
   (`pandacode.team-models.added.<harness>`, at most 50). The same set feeds the team catalog sent to
   `architect_configure`, Models for teams ("Showing N of M models · Add model…") and Rank models (whose Add model…
   asks for the harness first); both open `src/team-model-add.ts`, a searchable list where recent models are
-  always on and the others toggle the added list. A ranked model that leaves the set keeps its tier, unshown.
+  on by default and any row can be turned off — dropping a recent model adds it to
+  `pandacode.team-models.excluded.<harness>`, which hides it until it is turned on again. Rows whose display
+  name another model in the harness shares show their model id beside it, and Rank models chips of a shared
+  name list their harnesses (their key when those match too). A ranked model that leaves the set keeps its tier, unshown.
 - When you name models in your message, the lead uses those.
 
 ## Privacy

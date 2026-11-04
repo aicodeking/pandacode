@@ -411,6 +411,9 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
     }
 }
 
+/// Shown in a child's response when its newest text did not fit a subscribe reply.
+const SUBAGENT_TEXT_LEFT_OUT: &str = "*Newer text from this agent did not fit the update from its computer, so it was left out here.*";
+
 /// Saves the newest snapshot of each child agent among relabelled events, so a mirror's
 /// Subagents panel (`list_subagents`) has them after a reload, as a local run's does.
 fn save_subagents(store: &Store, events: &[Value]) {
@@ -420,6 +423,47 @@ fn save_subagents(store: &Store, events: &[Value]) {
             eprintln!("PandaCode Connect: could not keep a remote subagent: {error}");
         }
     }
+}
+
+/// A cut subscribe reply's rows, merged over what this computer saved.
+fn cut_subagent_rows(app: &tauri::AppHandle, local: &str, children: &[Value]) -> Vec<Value> {
+    let saved = lock(&app.state::<AppState>()).and_then(|store| store.subagents(local));
+    match saved {
+        Ok(saved) => merge_cut_subagents(&saved, children),
+        Err(error) => {
+            eprintln!("PandaCode Connect: could not read saved subagents: {error}");
+            Vec::new()
+        }
+    }
+}
+
+/// A cut snapshot has lost text and tools, so a known child takes only its status and times; an
+/// unknown one is kept as it came. Each row is marked `partial`: the panel must not take it as
+/// the child's full work. Saved rows newer than the snapshot are left alone.
+fn merge_cut_subagents(saved: &[crate::providers::SubagentActivity], children: &[Value]) -> Vec<Value> {
+    children
+        .iter()
+        .filter_map(|row| {
+            let mut merged = serde_json::from_value::<crate::providers::SubagentActivity>(row.clone()).ok()?;
+            let settled = !matches!(merged.status.as_str(), "running" | "waiting");
+            if let Some(known) = saved.iter().find(|known| known.id == merged.id) {
+                if merged.updated_at < known.updated_at {
+                    return None;
+                }
+                let behind = merged.updated_at > known.updated_at && merged.response != known.response;
+                let (status, started_at, updated_at) = (merged.status, merged.started_at, merged.updated_at);
+                merged = crate::providers::SubagentActivity { status, started_at, updated_at, ..known.clone() };
+                if behind && !merged.response.ends_with(SUBAGENT_TEXT_LEFT_OUT) {
+                    merged.response = if merged.response.is_empty() { SUBAGENT_TEXT_LEFT_OUT.to_owned() } else { format!("{}\n\n{SUBAGENT_TEXT_LEFT_OUT}", merged.response) };
+                }
+            } else if settled && merged.response.is_empty() {
+                merged.response = SUBAGENT_TEXT_LEFT_OUT.to_owned();
+            }
+            let mut value = serde_json::to_value(merged).ok()?;
+            value["partial"] = json!(true);
+            Some(value)
+        })
+        .collect()
 }
 
 /// The last `subagent` snapshot per (task, child), in first-seen order.
@@ -450,6 +494,16 @@ pub async fn remote_team(app: tauri::AppHandle, state: tauri::State<'_, AppState
         Err(error) if error == "Unknown method." => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+/// Resumes a mirror's team on its host and reads it back; None for a local task.
+pub(crate) async fn resume_team(app: &tauri::AppHandle, state: &AppState, local: &str) -> Result<Option<Value>> {
+    let Some(mirror) = of(&*lock(state)?, local)? else { return Ok(None) };
+    route(app, state, local, "task.teamResume", json!({})).await.map_err(|error| {
+        if error == "Unknown method." { format!("Update PandaCode on {} to use this.", super::device_label(&mirror.device)) } else { error }
+    })?;
+    let reply = client::call(app, &mirror.device, "task.team", json!({"sessionId": mirror.session})).await?;
+    desktop_team(&reply["team"], local).map(Some).ok_or_else(|| "Team is unavailable.".to_string())
 }
 
 /// A worker's transcript on a mirror's host (`task.workerMessages`) as a desktop MessagePage:
@@ -521,7 +575,7 @@ fn desktop_team(team: &Value, local: &str) -> Option<Value> {
                 "files": w["files"].as_array().map_or_else(Vec::new, |files| files.iter().filter(|file| file.is_string()).cloned().collect()),
                 "readOnly": w["readOnly"] == true, "abandoned": w["abandoned"] == true, "attempt": number(&w["attempt"]),
                 "checkpoint": w["checkpoint"].is_object().then(|| &w["checkpoint"]), "createdAt": number(&w["createdAt"]), "updatedAt": number(&w["updatedAt"]),
-                "parentWorker": w["parentWorker"].as_str(),
+                "parentWorker": w["parentWorker"].as_str(), "filesTruncated": w["filesTruncated"] == true,
             })
         })
         .collect();
@@ -529,7 +583,8 @@ fn desktop_team(team: &Value, local: &str) -> Option<Value> {
         "sessionId": local,
         "config": {"auto": team["mode"] == "auto", "workers": [], "maxParallel": 0, "maxRounds": number(&team["rounds"]["max"]), "maxAssignments": 0, "workspace": "shared", "summaryLimit": 0},
         "status": text(&team["status"]), "round": number(&team["round"]), "revision": number(&team["revision"]),
-        "workers": workers, "error": null, "summary": team["summary"].as_str(), "updatedAt": number(&team["updatedAt"]),
+        "workers": workers, "error": team["error"].as_str(), "summary": team["summary"].as_str(), "updatedAt": number(&team["updatedAt"]),
+        "truncated": team["truncated"] == true, "workersTruncated": team["workersTruncated"] == true,
     }))
 }
 
@@ -1250,7 +1305,8 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
         }
         // Child agents still at work: the snapshot covers events this viewer missed.
         if let Some(children) = task["subagents"].as_array() {
-            let events: Vec<Value> = children.iter().map(|data| json!({"sessionId": local, "kind": "subagent", "text": "", "requestId": null, "data": data})).collect();
+            let rows = if task["subagentsTruncated"] == true { cut_subagent_rows(app, &local, children) } else { children.clone() };
+            let events: Vec<Value> = rows.iter().map(|data| json!({"sessionId": local, "kind": "subagent", "text": "", "requestId": null, "data": data})).collect();
             if let Ok(store) = lock(&app.state::<AppState>()) {
                 save_subagents(&store, &events);
             }
@@ -1900,9 +1956,6 @@ async fn cancel_start(app: &tauri::AppHandle, state: &AppState, local: &str) -> 
 /// Makes (or converts an empty draft into) the local mirror row, published and running.
 fn mirror_row(store: &Store, request: &Launch) -> Result<(String, bool)> {
     let Launch { device, project_id, provider, model, mode, effort, draft, parent, title, .. } = request;
-    if let Some(parent) = parent {
-        super::orchestrate::check_capacity(store, parent)?;
-    }
     // A draft with its own local worktree keeps it; the mirror gets a fresh row.
     let reuse = draft.as_deref().filter(|id| store.is_empty_draft(id).unwrap_or(false) && store.session(id).is_ok_and(|task| &task.project_id == project_id && task.worktree_path.is_none()));
     // `create_user_task` commits its own transaction, so a new row is made before this one.
@@ -1953,6 +2006,48 @@ mod tests {
         assert_eq!(start_note(&json!({"note": "  "})), None);
         assert_eq!(start_note(&json!({"note": "Started in a worktree: busy.\nmore"})).as_deref(), Some("Started in a worktree: busy."));
         assert_eq!(start_note(&json!({"note": "x".repeat(500)})).map(|note| note.len()), Some(300));
+    }
+
+    #[test]
+    fn a_cut_snapshot_updates_status_and_times_and_keeps_saved_work() {
+        let (store, id) = store();
+        let saved = |id: &str, response: &str, updated_at: i64| crate::providers::SubagentActivity {
+            id: id.into(),
+            parent_id: None,
+            name: "bg".into(),
+            prompt: "full prompt".into(),
+            status: "running".into(),
+            response: response.into(),
+            tools: serde_json::from_value(json!([{"id": "t", "name": "Read", "status": "completed", "input": "i", "output": "o"}])).unwrap(),
+            started_at: 1,
+            updated_at,
+        };
+        for child in [saved("same", "full text", 5), saved("behind", "full text", 5), saved("newer", "kept", 9)] {
+            store.save_subagent(&id, &child).unwrap();
+        }
+        let row = |id: &str, status: &str, response: &str, updated_at: i64| json!({"id": id, "parentId": null, "name": "bg", "prompt": "", "status": status, "response": response, "tools": [], "startedAt": 1, "updatedAt": updated_at});
+        let rows = [
+            row("same", "running", "full text", 5),
+            row("behind", "completed", "cut\n…[cut on the host to fit a remote page]", 7),
+            row("newer", "running", "", 8),
+            row("new-bare", "completed", "", 7),
+            row("new-running", "running", "", 7),
+        ];
+        let merged = merge_cut_subagents(&store.subagents(&id).unwrap(), &rows);
+        let events: Vec<Value> = merged.iter().map(|data| json!({"sessionId": id, "kind": "subagent", "data": data})).collect();
+        save_subagents(&store, &events);
+        let find = |wanted: &str| store.subagents(&id).unwrap().into_iter().find(|child| child.id == wanted).unwrap();
+
+        assert!(merged.iter().all(|row| row["partial"] == true), "never taken for full work");
+        assert!(merged.iter().all(|row| row["id"] != "newer"), "an older snapshot changes nothing");
+        assert_eq!(find("newer").response, "kept");
+        assert_eq!(find("same").response, "full text", "nothing was left out");
+        let behind = find("behind");
+        assert_eq!((behind.status.as_str(), behind.updated_at, behind.prompt.as_str(), behind.tools.len()), ("completed", 7, "full prompt", 1));
+        assert_eq!(behind.response, format!("full text\n\n{SUBAGENT_TEXT_LEFT_OUT}"));
+        assert_eq!(merge_cut_subagents(std::slice::from_ref(&behind), &[row("behind", "completed", "", 8)])[0]["response"], json!(behind.response), "the note is added once");
+        assert_eq!(find("new-bare").response, SUBAGENT_TEXT_LEFT_OUT, "not \"the harness gave no response\"");
+        assert_eq!(find("new-running").response, "", "a running child still shows its first update coming");
     }
 
     #[test]
@@ -2010,6 +2105,12 @@ mod tests {
         let sub = json!({"workers": [{"id": "s1", "sessionId": "hs1", "status": "parked", "parentWorker": "w1"}]});
         let sub = &desktop_team(&sub, "local").unwrap()["workers"][0];
         assert_eq!((sub["status"].as_str(), sub["parentWorker"].as_str()), (Some("parked"), Some("w1")));
+        assert!(team["error"].is_null());
+        assert_eq!((team["truncated"].as_bool(), team["workersTruncated"].as_bool()), (Some(false), Some(false)));
+        let cut = json!({"status": "paused", "error": "PandaCode paused this team.", "truncated": true, "workersTruncated": true, "workers": [{"id": "w", "sessionId": "s", "filesTruncated": true}]});
+        let cut = desktop_team(&cut, "local").unwrap();
+        assert_eq!(cut["error"], "PandaCode paused this team.");
+        assert_eq!((cut["truncated"].as_bool(), cut["workersTruncated"].as_bool(), cut["workers"][0]["filesTruncated"].as_bool()), (Some(true), Some(true), Some(true)));
     }
 
     #[test]

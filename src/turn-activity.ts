@@ -8,6 +8,8 @@ export interface TranscriptTurn {
   activity: Message[];
   final?: Message;
   errors: Message[];
+  /** PandaCode's own lines (`system` rows): always shown, and never the turn's reply. */
+  notes: Message[];
   key: string;
   durationMs: number | null;
   estimated: boolean;
@@ -38,7 +40,7 @@ function makeTurn(messages: Message[]): TranscriptTurn {
   // An assistant update followed by tools is commentary at that point in the
   // timeline, not a final answer that belongs after those tools. Old generic
   // completion markers carry no new work and must not displace a final answer.
-  const substantive = (message: Message) => message !== start && message.role !== 'error' && message.role !== 'changes'
+  const substantive = (message: Message) => message !== start && message.role !== 'error' && message.role !== 'changes' && message.role !== 'system'
     && !(hasToolCall && message.role === 'tool' && message.content === 'Tool finished');
   const lastContent = [...messages].reverse().find(substantive);
   const final = lastContent?.role === 'assistant' ? lastContent : undefined;
@@ -55,6 +57,7 @@ function makeTurn(messages: Message[]): TranscriptTurn {
   return {
     user, coordination, activity, final,
     errors: messages.filter(message => message.role === 'error'),
+    notes: messages.filter(message => message.role === 'system'),
     key: toolKey ?? legacyKey ?? `turn:${start?.role ?? 'message'}:${messages[0].id}`,
     durationMs, estimated,
     changes: messages.find(message => message.role === 'changes' && message.turnChanges)?.turnChanges ?? start?.turnChanges ?? undefined,
@@ -69,7 +72,7 @@ export function groupTurns(messages: Message[]): TranscriptTurn[] {
     if (message.role === 'handoff') {
       if (current.length) turns.push(makeTurn(current));
       current = [];
-      turns.push({ handoff: message, activity: [], errors: [], key: `handoff:${message.id}`, durationMs: null, estimated: false });
+      turns.push({ handoff: message, activity: [], errors: [], notes: [], key: `handoff:${message.id}`, durationMs: null, estimated: false });
       continue;
     }
     if ((message.role === 'user' || message.role === 'coordination') && current.length) {

@@ -1,6 +1,6 @@
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
 import { advertisedModelsOnly, compatibleModel, fallbackModel, modelChoices, tokenCount } from './model-catalog';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
@@ -532,7 +532,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       else if (key === 'Enter' || key === 'ArrowRight') { event.preventDefault(); search.focus({ preventScroll: true }); }
       return;
     }
-    if (target !== search) return;
+    if (target !== search || isImeKey(event)) return;
     if (key === 'ArrowDown' || key === 'ArrowUp') { event.preventDefault(); moveActive(key === 'ArrowDown' ? 1 : -1); }
     else if (key === 'Home' || key === 'End') { event.preventDefault(); moveActive(key === 'Home' ? 'first' : 'last'); }
     else if ((key === 'ArrowLeft' || key === 'ArrowRight') && !search.value) { event.preventDefault(); stepView(key === 'ArrowRight' ? 1 : -1, false); }

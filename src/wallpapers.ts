@@ -28,8 +28,8 @@ export interface WallpaperController {
 const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 const preferenceKey = 'pandacode.wallpaperPreferences';
 const legacyKey = 'pandacode.wallpapers';
-/** Version 2 turned wallpapers into an off-by-default toggle (the thread shows the sky instead). */
-export const WALLPAPER_PREFERENCES_VERSION = 2;
+/** Version 3 turns wallpapers off once for everyone, so the live scenes are seen; the chosen scene, set and sliders stay, ready for the switch. */
+export const WALLPAPER_PREFERENCES_VERSION = 3;
 
 export function normalizeWallpaperPreferences(value: unknown): WallpaperPreferences {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
@@ -45,15 +45,11 @@ export function normalizeWallpaperPreferences(value: unknown): WallpaperPreferen
   };
 }
 
-/** A save from before version 2 still at the untouched defaults (on, 20%, sharp, automatic) becomes off;
- * one the user customised keeps its own on/off. Version 2 saves are taken as they are. */
+/** A save from an older version keeps its choices and starts off; only turning the switch on saves it as on. */
 export function migrateWallpaperPreferences(value: unknown): WallpaperPreferences {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : null;
-  if (!input) return normalizeWallpaperPreferences(null);
-  if (input.version === WALLPAPER_PREFERENCES_VERSION) return normalizeWallpaperPreferences(input);
-  const old = normalizeWallpaperPreferences({ ...input, enabled: typeof input.enabled === 'boolean' ? input.enabled : true });
-  const untouched = old.visibility === 20 && old.blur === 0 && old.set === 'automatic' && old.pinned === null;
-  return untouched ? { ...old, enabled: false } : old;
+  if (input?.version === WALLPAPER_PREFERENCES_VERSION) return normalizeWallpaperPreferences(input);
+  return { ...normalizeWallpaperPreferences(input), enabled: false };
 }
 
 function readPreferences(): WallpaperPreferences {

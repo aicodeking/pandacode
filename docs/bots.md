@@ -73,6 +73,8 @@ Adding a channel is a guided flow (`src/bots-connect.ts`): numbered steps with b
 | Discord | Gateway WebSocket. | Opens the Developer Portal, checks the token, generates the **Add to a server** invite with the right permissions, and warns when the Message Content intent is off. |
 | WhatsApp | Cloud API webhook at `/whatsapp/<channel id>`, checked with `X-Hub-Signature-256` and the app secret. | Checks the phone number ID and token against the Graph API, then walks through the tunnel (`cloudflared tunnel --url http://127.0.0.1:47321` or `tailscale funnel --bg 47321`), builds the callback URL from the address you paste, and shows the generated verify token (kept in the channel settings: it only proves the webhook is ours) with copy buttons. The status turns to "Webhook verified" when Meta checks it. |
 
+**WhatsApp: webhook verified, dashboard tests arrive, live messages do not.** The WhatsApp Business Account (WABA) is probably not subscribed to your Meta app. Subscribe it once with `POST https://graph.facebook.com/v22.0/<WABA_ID>/subscribed_apps`, sending your access token as `Authorization: Bearer <token>`. The WABA ID is on the app's WhatsApp API Setup page.
+
 Unknown senders get a four-digit pairing code and wait until approved in **Bots → Connections**. Web chat holders are the owner and skip pairing. Commands in any connection: `/stop`, `/new`, `/help`; `yes`, `no` and `always` answer a pending approval.
 
 ## Shared bot channels

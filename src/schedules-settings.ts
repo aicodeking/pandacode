@@ -3,7 +3,7 @@
  * The IPC contract is `schedules-api.ts`. */
 import './schedules-settings.css';
 import { call, subscribe } from './bridge';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { openChoiceMenu } from './choice-menu';
 import { trackSegment } from './motion';
 import { infoMark } from './tooltip';
@@ -102,7 +102,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     <form class="schedules-editor schedules-card" aria-label="Schedule" novalidate hidden>
       ${field('Thread', '<select class="schedules-thread" aria-label="Thread"></select>')}
       ${field('Title', '<input type="text" class="schedules-title" maxlength="120" autocomplete="off" aria-label="Title" placeholder="Optional; the message’s first words otherwise">')}
-      ${field('Message', '<textarea class="schedules-message" rows="3" maxlength="8000" aria-label="Message" placeholder="What should the thread be asked?"></textarea>', 'schedules-field-top')}
+      ${field('Message', '<textarea class="schedules-message" rows="3" aria-label="Message" placeholder="What should the thread be asked?"></textarea>', 'schedules-field-top')}
       <div class="schedules-field"><span>When</span>${segmented('schedules-kinds', 'When', KINDS, 'kind')}</div>
       <div class="schedules-when" data-for="once">${field('At', '<input type="datetime-local" class="schedules-run-at" aria-label="Run at">')}</div>
       <div class="schedules-when" data-for="interval">${field('Every', `<span class="schedules-inline"><input type="number" class="schedules-every" min="${INTERVAL_MIN}" step="1" aria-label="Repeat every"><select class="schedules-unit" aria-label="Unit"><option value="1">minutes</option><option value="60">hours</option></select><small class="schedules-hint">5 minutes to 7 days</small></span>`)}</div>
@@ -380,7 +380,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
       <span class="workflow-step-number" aria-hidden="true">${index + 1}</span>
       <div class="workflow-step-body">
         ${field('Thread', `<select aria-label="Step ${index + 1} thread"><option value="">Choose a thread…</option>${choices(step, index)}</select>`)}
-        ${field('Message', `<textarea rows="2" maxlength="8000" aria-label="Step ${index + 1} message" placeholder="What should this thread do?">${escape(step.prompt)}</textarea>`, 'schedules-field-top')}
+        ${field('Message', `<textarea rows="2" aria-label="Step ${index + 1} message" placeholder="What should this thread do?">${escape(step.prompt)}</textarea>`, 'schedules-field-top')}
       </div>
       <button type="button" class="icon-button" data-remove-step="${index}" aria-label="Remove step ${index + 1}" title="Remove step" ${steps.length <= STEPS_MIN ? 'disabled' : ''}>${icon('close')}</button>
     </li>`).join('');
@@ -559,7 +559,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   flow.addEventListener('submit', event => { event.preventDefault(); void saveWorkflow(); });
   for (const [form, close, submit] of [[editor, closeEditor, save], [flow, closeWorkflow, saveWorkflow]] as const) {
     form.addEventListener('keydown', event => {
-      if (event.isComposing) return;
+      if (isImeKey(event)) return;
       // Escape closes the form, not Settings; ⌘/Ctrl Enter saves from a message box.
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
       else if (event.key === 'Enter' && event.target instanceof HTMLTextAreaElement && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void submit(); }

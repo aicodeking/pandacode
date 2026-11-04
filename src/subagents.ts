@@ -8,7 +8,8 @@ import { renderToolActivity } from './tool-activity';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { SubagentActivity } from './types';
 
-type Entry = { value: SubagentActivity; revision: number; number: number };
+/** `full` is false for a list row (`list_subagents`), which has no tools and a short preview. */
+type Entry = { value: SubagentActivity; revision: number; number: number; full: boolean };
 type Task = { agents: Map<string, Entry>; loading: boolean; error: boolean; request: number; nextNumber: number };
 const active = (agent: SubagentActivity) => agent.status === 'running' || agent.status === 'waiting';
 const statusName = (agent: SubagentActivity) => ({ running: 'Working', waiting: 'Waiting', completed: 'Completed', failed: 'Failed', stopped: 'Stopped' })[agent.status];
@@ -17,14 +18,24 @@ function agentName(entry: Entry): string {
   return name && !/[\\/]/.test(name) && !/^(?:subagent|agent)$/i.test(name) ? name : `#${entry.number}`;
 }
 
+/** Native keeps a child's newest tools up to this many (`CHILD_TOOL_LIMIT`). */
+const TOOL_LIMIT = 64;
+/** Native cuts a list row's texts to this (`PREVIEW_CHARS`). */
+const PREVIEW_CHARS = 1025;
+const isFull = (value: unknown) => Array.isArray((value as SubagentActivity | undefined)?.tools);
+
+/** A settled child nobody has open costs what its list row costs; tasks can have any number of them. */
+const asRow = (agent: SubagentActivity): SubagentActivity => ({ ...agent, prompt: agent.prompt.slice(0, PREVIEW_CHARS), response: agent.response.slice(0, PREVIEW_CHARS), tools: [] });
+
+/** Native bounds the text (its cut marker included), so nothing here may cut it again. */
 function decode(value: unknown): SubagentActivity | undefined {
   if (!value || typeof value !== 'object') return;
   const a = value as SubagentActivity;
   if (typeof a.id !== 'string' || !a.id || typeof a.name !== 'string' || typeof a.response !== 'string' || !['running', 'waiting', 'completed', 'failed', 'stopped'].includes(a.status)) return;
   return { id: a.id.slice(0, 512), parentId: typeof a.parentId === 'string' ? a.parentId.slice(0, 512) : null,
-    name: a.name.slice(0, 256), prompt: String(a.prompt ?? '').slice(0, 4096), status: a.status, response: a.response.slice(0, 65536),
+    name: a.name.slice(0, 256), prompt: String(a.prompt ?? ''), status: a.status, response: a.response,
     startedAt: Number(a.startedAt) || 0, updatedAt: Number(a.updatedAt) || 0,
-    tools: (Array.isArray(a.tools) ? a.tools : []).slice(-16).filter(t => t && typeof t.id === 'string' && typeof t.name === 'string' && ['running', 'completed', 'failed'].includes(t.status)).map(t => ({ id: t.id.slice(0, 1024), name: t.name.slice(0, 256), status: t.status, input: String(t.input ?? '').slice(0, 4096), output: String(t.output ?? '').slice(0, 8192) })) };
+    tools: (Array.isArray(a.tools) ? a.tools : []).filter(t => t && typeof t.id === 'string' && typeof t.name === 'string' && ['running', 'completed', 'failed'].includes(t.status)).map(t => ({ id: t.id.slice(0, 1024), name: t.name.slice(0, 256), status: t.status, input: String(t.input ?? ''), output: String(t.output ?? '') })) };
 }
 
 /** Only the selected child's response is formatted. Background snapshots never touch the transcript. */
@@ -39,6 +50,7 @@ export class Subagents {
   private trigger: HTMLButtonElement;
   private rows = new Map<string, HTMLButtonElement>();
   private renderedTools = '';
+  private fetching = '';
 
   constructor(private host: HTMLElement, private panelId = 'subagents-panel', private fileContext?: (sessionId: string) => FileLinkContext | undefined) {
     host.innerHTML = `<button type="button" class="subagents-trigger" aria-label="Subagents" aria-expanded="false" aria-controls="subagents-panel" title="View subagent work" hidden>${icon('branch')}<span></span>${icon('chevron')}</button>`;
@@ -88,9 +100,19 @@ export class Subagents {
     if (previous && active(previous) && !active(agent)) {
       const context = this.fileContext?.(sessionId); if (context) refreshFileLinks(context);
     }
-    this.upsert(task, agent, ++this.revision);
+    // A row from a cut remote snapshot: only its status and times are news, and a full copy waits in the store.
+    if ((value as { partial?: unknown }).partial === true) {
+      this.mergeRow(task, agent, ++this.revision);
+      if (sessionId === this.sessionId && this.selected === agent.id) void this.loadFull(sessionId, agent.id);
+    } else if (!active(agent) && !this.onScreen(task, agent.id)) this.upsert(task, asRow(agent), ++this.revision, false);
+    else this.upsert(task, agent, ++this.revision, true);
     if (sessionId === this.sessionId) this.schedule();
     this.prune();
+  }
+
+  /** Native settles a run's children before `done`, so reread any row still shown as active. */
+  runEnded(id: string): void {
+    if ([...this.tasks.get(id)?.agents.values() ?? []].some(entry => active(entry.value))) void this.load(id);
   }
 
   forget(id: string): void {
@@ -99,14 +121,47 @@ export class Subagents {
     if (id === this.sessionId) this.setTask('', this.visible);
   }
 
-  private upsert(task: Task, value: SubagentActivity, revision: number): void {
-    if (!task.agents.has(value.id) && task.agents.size >= 64) {
-      const old = [...task.agents].find(([, entry]) => !active(entry.value));
-      if (!old) return;
-      task.agents.delete(old[0]);
-    }
+  private upsert(task: Task, value: SubagentActivity, revision: number, full: boolean): void {
     const number = task.agents.get(value.id)?.number ?? task.nextNumber++;
-    task.agents.set(value.id, { value, revision, number });
+    task.agents.set(value.id, { value, revision, number, full });
+  }
+
+  /** A list row updates what it knows; full texts and tools it lacks are never replaced by its previews. */
+  private mergeRow(task: Task, row: SubagentActivity, revision: number): void {
+    const known = task.agents.get(row.id);
+    if (!known?.full) { this.upsert(task, row, revision, false); return; }
+    // Another computer's clock can date a settled row earlier; it still ends Working.
+    if (active(row) && row.updatedAt < known.value.updatedAt) return;
+    if (!active(row) && !this.onScreen(task, row.id)) { this.upsert(task, row, revision, false); return; }
+    const value = { ...row, prompt: known.value.prompt, response: known.value.response, tools: known.value.tools };
+    this.upsert(task, value, revision, row.updatedAt === known.value.updatedAt);
+  }
+
+  /** The child on screen keeps its full snapshot; any other is refetched when opened. */
+  private onScreen(task: Task, id: string): boolean { return this.selected === id && this.tasks.get(this.sessionId) === task; }
+
+  private select(id: string): void {
+    this.selected = id; this.renderedTools = '';
+    void this.loadFull(this.sessionId, id);
+  }
+
+  /** Fetches the opened child's full snapshot once; live events keep it current from then on. */
+  private async loadFull(taskId: string, agentId: string): Promise<void> {
+    const task = this.tasks.get(taskId), revision = this.revision;
+    if (!task || task.agents.get(agentId)?.full !== false) return;
+    this.fetching = agentId;
+    try {
+      const value = decode(await call<unknown>('get_subagent', { sessionId: taskId, agentId }));
+      const known = task.agents.get(agentId);
+      // A live event that arrived meanwhile is newer and already full.
+      if (value && known && known.revision <= revision && this.tasks.get(taskId) === task) this.upsert(task, value, revision, true);
+    } catch (error) {
+      const notice = this.panel?.querySelector<HTMLElement>('.subagent-action-notice');
+      if (notice && this.selected === agentId) { notice.textContent = `Couldn’t load this subagent’s full work: ${error instanceof Error ? error.message : String(error)}`; notice.hidden = false; }
+    } finally {
+      if (this.fetching === agentId) this.fetching = '';
+      if (taskId === this.sessionId) this.schedule();
+    }
   }
 
   private prune(): void {
@@ -122,12 +177,15 @@ export class Subagents {
     try {
       const snapshots = await call<unknown[]>('list_subagents', { sessionId: id });
       if (task.request !== request) return;
-      const saved = (Array.isArray(snapshots) ? snapshots : []).map(decode).filter((agent): agent is SubagentActivity => Boolean(agent));
-      saved.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
-      for (const agent of saved) {
+      const saved = (Array.isArray(snapshots) ? snapshots : []).flatMap(item => { const agent = decode(item); return agent ? [{ agent, full: isFull(item) }] : []; });
+      saved.sort((a, b) => a.agent.startedAt - b.agent.startedAt || a.agent.id.localeCompare(b.agent.id));
+      for (const { agent, full } of saved) {
         // A delayed history snapshot must never replace a newer live update.
-        if ((task.agents.get(agent.id)?.revision ?? -1) <= revision) this.upsert(task, agent, revision);
+        if ((task.agents.get(agent.id)?.revision ?? -1) > revision) continue;
+        if (full) this.upsert(task, agent, revision, true); else this.mergeRow(task, agent, revision);
       }
+      // A row that moved on from the open child's snapshot (its run ended) needs the new one.
+      if (id === this.sessionId && this.selected) void this.loadFull(id, this.selected);
     } catch { if (task.request === request) task.error = true; }
     finally { if (task.request === request) task.loading = false; if (id === this.sessionId) this.schedule(); this.prune(); }
   }
@@ -143,7 +201,7 @@ export class Subagents {
     await this.load(taskId);
     if (taskId !== this.sessionId || !this.visible) return;
     if (!this.task(taskId).agents.has(agentId)) throw new Error('This subagent is no longer available.');
-    this.open(); this.selected = agentId; this.render();
+    this.open(); this.select(agentId); this.render();
     this.panel?.querySelector<HTMLButtonElement>('.subagents-back')?.focus();
   }
 
@@ -156,7 +214,7 @@ export class Subagents {
     this.selected = ''; this.rows.clear();
     const panel = document.createElement('section');
     panel.id = this.panelId; panel.className = 'subagents-panel'; panel.setAttribute('role', 'region'); panel.setAttribute('aria-label', 'Subagents');
-    panel.innerHTML = `<header class="subagents-heading"><button type="button" class="icon-button subagents-back" aria-label="Back to Subagents" hidden>${icon('back')}</button><strong>Subagents</strong><span class="subagents-summary"></span><button type="button" class="icon-button subagents-close" aria-label="Close subagents">${icon('close')}</button></header><div class="subagents-body"><div class="subagents-list"></div><p class="subagents-notice" role="status" hidden></p><button class="secondary-button subagents-retry" hidden>Retry loading subagents</button><div class="subagent-detail" hidden><div class="subagent-detail-meta"><span class="subagent-state"></span><h3 class="subagent-detail-name"></h3><span class="subagent-detail-status"></span></div><p class="subagent-parent" hidden></p><details class="subagent-assignment"><summary>Assignment</summary><p></p></details><div class="subagent-response"></div><p class="subagent-empty muted"></p><div class="subagent-tools"></div></div></div>`;
+    panel.innerHTML = `<header class="subagents-heading"><button type="button" class="icon-button subagents-back" aria-label="Back to Subagents" hidden>${icon('back')}</button><strong>Subagents</strong><span class="subagents-summary"></span><button type="button" class="icon-button subagents-close" aria-label="Close subagents">${icon('close')}</button></header><div class="subagents-body"><div class="subagents-list"></div><p class="subagents-notice" role="status" hidden></p><button class="secondary-button subagents-retry" hidden>Retry loading subagents</button><div class="subagent-detail" hidden><div class="subagent-detail-meta"><span class="subagent-state"></span><h3 class="subagent-detail-name"></h3><span class="subagent-detail-status"></span></div><p class="subagent-parent" hidden></p><details class="subagent-assignment"><summary>Assignment</summary><p></p></details><div class="subagent-response"></div><p class="subagent-empty muted"></p><p class="subagent-tools-hidden muted" hidden>Earlier tool calls are hidden.</p><div class="subagent-tools"></div></div></div>`;
     this.host.append(panel); this.panel = panel;
     panel.querySelector('.subagent-assignment')!.insertAdjacentHTML('beforeend', '<div class="subagent-assignment-actions"></div>');
     panel.querySelector('.subagent-response')!.insertAdjacentHTML('afterend', '<div class="subagent-response-actions"></div><p class="subagent-action-notice" role="status" hidden></p>');
@@ -198,15 +256,15 @@ export class Subagents {
     if (notice.textContent !== note) notice.textContent = note;
     panel.querySelector<HTMLElement>('.subagents-retry')!.hidden = !task?.error || Boolean(selected);
     if (!selected) {
-      const ids = new Set(agents.map(a => a.id));
-      for (const [id, row] of this.rows) if (!ids.has(id)) { row.remove(); this.rows.delete(id); }
+      const byId = new Map(agents.map(a => [a.id, a]));
+      for (const [id, row] of this.rows) if (!byId.has(id)) { row.remove(); this.rows.delete(id); }
       for (const agent of agents) {
         let row = this.rows.get(agent.id);
         if (!row) {
           row = document.createElement('button'); row.type = 'button'; row.className = 'subagent-row'; row.dataset.subagentId = agent.id;
           row.innerHTML = `<span class="subagent-state"></span><span class="subagent-row-copy"><strong></strong><small></small></span><span class="subagent-row-status"></span>${icon('chevron')}`;
           row.addEventListener('click', () => {
-            this.selected = agent.id; this.renderedTools = '';
+            this.select(agent.id);
             // Clear the previous child's response before its first streamed paint.
             const output = detail.querySelector<HTMLElement>('.subagent-response')!;
             if (this.fileContext) bindFileLinkContext(output, this.fileContext(this.sessionId));
@@ -217,7 +275,7 @@ export class Subagents {
           this.rows.set(agent.id, row); list.append(row);
         }
         row.dataset.status = agent.status;
-        const parent = agents.find(a => a.id === agent.parentId);
+        const parent = agent.parentId ? byId.get(agent.parentId) : undefined;
         const info = parent ? `From ${parent.name}` : '';
         const name = row.querySelector('strong')!, description = row.querySelector('small')!, status = row.querySelector('.subagent-row-status')!;
         if (name.textContent !== agent.name) name.textContent = agent.name;
@@ -244,7 +302,7 @@ export class Subagents {
     if (this.fileContext) bindFileLinkContext(output, this.fileContext(this.sessionId));
     streamMarkdown(output, selected.response, panel.querySelector<HTMLElement>('.subagents-body')!);
     detail.querySelector<HTMLElement>('.subagent-response-actions')!.hidden = !selected.response;
-    setText('.subagent-empty', selected.response ? '' : active(selected) ? 'Waiting for the first update…' : 'This harness did not provide a response for this agent.');
+    setText('.subagent-empty', selected.response ? '' : this.fetching === selected.id ? 'Loading…' : active(selected) ? 'Waiting for the first update…' : 'This harness did not provide a response for this agent.');
     const serializedTools = JSON.stringify(selected.tools);
     if (this.renderedTools !== serializedTools) {
       const target = detail.querySelector('.subagent-tools')!;
@@ -267,6 +325,7 @@ export class Subagents {
         existing.delete(key);
       }
       for (const old of existing.values()) old.remove();
+      detail.querySelector<HTMLElement>('.subagent-tools-hidden')!.hidden = selected.tools.length < TOOL_LIMIT;
       this.renderedTools = serializedTools;
     }
   }

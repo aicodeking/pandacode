@@ -199,7 +199,7 @@ fn prompt_activity_migration_excludes_legacy_coordination_without_a_watermark() 
         let mut worker = worker("legacy-worker", "completed", &["src"], &[]);
         worker.session_id = child.id.clone(); team.workers.push(worker);
         store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)", params![parent,child.id]).unwrap();
-        let raw = format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}", review_summaries(&team));
+        let raw = format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}", review_summaries(&team, true));
         store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'user',?2,200)", params![parent,raw]).unwrap();
         save(&store, &mut team).unwrap();
         store.db.execute_batch("DROP INDEX sessions_sidebar; DROP TRIGGER messages_record_prompt; ALTER TABLE sessions DROP COLUMN last_prompt_at; PRAGMA user_version=18;").unwrap();
@@ -236,7 +236,7 @@ fn legacy_generated_rows_project_only_with_owned_workers_before_the_startup_cuto
         worker.result_revision = 1;
         team.workers.push(worker);
         store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)",params![parent,child.id]).unwrap();
-        raw=format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}",review_summaries(&team));
+        raw=format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{}",review_summaries(&team, true));
         store.message(&parent, "user", &raw).unwrap();
         store
             .message(
@@ -313,7 +313,7 @@ fn legacy_generated_rows_project_only_with_owned_workers_before_the_startup_cuto
 }
 
 #[test]
-fn notification_context_stays_bounded_with_many_escaped_worker_reports() {
+fn notification_context_stays_valid_json_and_admissible_with_many_escaped_worker_reports() {
     let (state, parent) = state_fixture();
     {
         let store = state.store.lock().unwrap();
@@ -334,13 +334,12 @@ fn notification_context_stays_bounded_with_many_escaped_worker_reports() {
     }
     let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
     assert_eq!(action.sid, parent);
-    // Escaping and per-worker metadata count toward the actual serialized wire
-    // budget; the notification must not inject the entire set of reports.
-    assert!(
-        action.prompt.len() < 42 * 1024,
-        "{} bytes",
-        action.prompt.len()
-    );
+    // Escaping and per-worker metadata count toward the actual serialized wire budget: the
+    // notification injects whole workers only, under the 128 KiB a run admits.
+    assert!(action.prompt.len() < 128 * 1024, "{} bytes", action.prompt.len());
+    let (_, json) = action.prompt.rsplit_once("\n\n").unwrap();
+    let review: Value = serde_json::from_str(json).unwrap();
+    assert_eq!(review["workers"].as_array().unwrap().len(), 50, "changed results keep their place");
     assert!(action.prompt.contains("[Truncated]"));
     assert!(action.prompt.contains("Use read_worker"));
     assert!(action.prompt.contains("worker-0"));
@@ -587,6 +586,7 @@ fn checkpoints_notify_idle_architect_once_without_interrupting_workers_or_exhaus
         team.round = team.config.max_rounds - 1;
         save(&store, &mut team).unwrap();
     }
+    // A plain message waits for the next review; only urgent ones wake the architect.
     coordinate(
         &state,
         &parent,
@@ -617,7 +617,7 @@ fn checkpoints_notify_idle_architect_once_without_interrupting_workers_or_exhaus
 }
 
 #[test]
-fn checkpoint_validation_roles_and_limits_do_not_mutate_saved_progress() {
+fn checkpoint_validation_and_roles_do_not_mutate_saved_progress() {
     let (state, parent) = state_fixture();
     let (_run, actor) = running_worker(&state, &parent, "a", "src");
     let valid = json!({"key":"one","summary":"Saved milestone","nextSteps":"Run targeted tests","blocker":null});
@@ -643,7 +643,7 @@ fn checkpoint_validation_roles_and_limits_do_not_mutate_saved_progress() {
         &parent,
         &actor,
         "pandacode_checkpoint_worker",
-        json!({"key":"two","summary":"🌿".repeat(600),"nextSteps":"Run checks"})
+        json!({"key":"two","summary":"   ","nextSteps":"Run checks"})
     )
     .is_err());
     assert_eq!(
@@ -927,9 +927,12 @@ fn fixture() -> (Store, TeamSnapshot) {
         legacy_prompt_through_id: Some(0),
         continued_revision: None,
         last_turn_kind: None,
-        objective_start: 0,
         timed_out: false,
         briefings: Default::default(),
+        last_wake_at: 0,
+        stalled_wakes: 0,
+        wake_baseline: (0, 0),
+        lead_failure: None,
     };
     (store, team)
 }
@@ -960,6 +963,8 @@ fn worker(id: &str, status: &str, files: &[&str], depends: &[&str]) -> Worker {
         failovers: 0,
         resume_prompt: None,
         tool_catalog_version: TOOL_CATALOG_VERSION,
+        nudged: false,
+        reported: false,
         parent_worker: None,
     }
 }
@@ -1023,16 +1028,23 @@ fn scope_validation_rejects_escapes_and_globs() {
     assert!(validate_files(&["src/api.rs".into(), "tests".into()]).is_ok());
 }
 #[test]
-fn config_enforces_bounds_and_unique_profiles() {
+fn a_bracketed_route_is_a_literal_scope() {
+    let page = "app/blog/[slug]/page.tsx".to_owned();
+    assert!(validate_files(std::slice::from_ref(&page)).is_ok());
+    assert!(validate_files(&["app/blog/[slug]/*.tsx".into()]).is_err());
+    assert!(overlaps(std::slice::from_ref(&page), &["app/blog/[slug]".into()]));
+    assert!(!overlaps(std::slice::from_ref(&page), &["app/blog/s".into()]), "never read as a character class");
+}
+#[test]
+fn config_takes_any_numbers_but_needs_unique_profiles() {
     let mut c = config();
     assert!(c.validate().is_ok());
     for parallel in [0, 4, 128] {
         c.max_parallel = parallel;
         assert!(c.validate().is_ok());
     }
-    c.max_rounds = 0;
-    assert!(c.validate().is_err());
-    c.max_rounds = 5;
+    (c.max_rounds, c.max_assignments, c.summary_limit) = (0, 100_000, 1);
+    assert!(c.validate().is_ok());
     c.workers.push(c.workers[0].clone());
     assert!(c.validate().is_err());
 }
@@ -1345,25 +1357,25 @@ fn switching_a_reserved_review_preserves_its_single_turn_and_assignment_context(
 }
 
 #[test]
-fn queued_switch_enforces_lower_assignment_limit_and_rejects_used_limits() {
+fn team_setup_numbers_are_kept_but_never_enforced() {
     let (state, sid) = state_fixture();
     let (_parent, _rx) = claim(&state, Launch {
         sid: sid.clone(), prompt: "Build the feature".into(), images: None,
         admission: Admission { parent: sid.clone(), generation: 1 },
     });
     call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("first","fast","src/a")]})).unwrap();
-    let mut config = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().config;
+    let mut config = team_of(&state, &sid).config;
     config.max_assignments = 1;
     configure_state(&state, &sid, Some(config.clone()), None, None).unwrap();
-    assert!(call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("extra","fast","src/b")]})).unwrap_err().contains("Assignment limit"));
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("extra","fast","src/b")]})).unwrap();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.round = 3;
+        save(&store, &mut team).unwrap();
+    }
     config.max_rounds = 0;
-    assert!(configure_state(&state, &sid, Some(config), None, None).is_err());
-    let mut team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
-    team.round = 3;
-    save(&state.store.lock().unwrap(), &mut team).unwrap();
-    let mut config = team.config.clone();
-    config.max_rounds = 2;
-    assert!(configure_state(&state, &sid, Some(config), None, None).unwrap_err().contains("below the current round"));
+    configure_state(&state, &sid, Some(config), None, None).unwrap();
 }
 
 #[test]
@@ -1787,7 +1799,7 @@ fn permission_revocation_applies_to_worker_retry_and_failed_work_can_be_abandone
     .is_ok());
 }
 #[test]
-fn round_and_attempt_limits_stop_automatic_spending_until_explicit_action() {
+fn followups_and_resume_go_past_the_old_attempt_and_round_limits() {
     let (state, sid) = state_fixture();
     let result = call(
         &state,
@@ -1797,54 +1809,39 @@ fn round_and_attempt_limits_stop_automatic_spending_until_explicit_action() {
     )
     .unwrap();
     let worker_id = result["workerIds"][0].as_str().unwrap();
-    for attempt in 1..=3 {
+    for attempt in 1..=5 {
         let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
         let (worker, _rx) = claim(&state, action);
-        finish(
-            &state,
-            &worker,
-            "Blocked by an unresolved interface.",
-            false,
-        );
-        let follow = call(
+        finish(&state, &worker, "Blocked by an unresolved interface.", false);
+        call(
             &state,
             &sid,
             "pandacode_followup_worker",
             json!({"workerId":worker_id,"key":format!("fix-{attempt}"),"prompt":"Resolve the interface first."}),
-        );
-        if attempt < 3 {
-            assert!(follow.is_ok());
-        } else {
-            assert!(follow.is_err());
-        }
+        )
+        .unwrap();
     }
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let (worker, _rx) = claim(&state, action);
+    finish(&state, &worker, "Still blocked.", false);
     {
         let store = state.store.lock().unwrap();
         let mut team = load(&store, &sid).unwrap().unwrap();
+        team.round = 40;
         team.config.max_rounds = 1;
         save(&store, &mut team).unwrap();
     }
-    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
-    assert_eq!(
-        load(&state.store.lock().unwrap(), &sid)
-            .unwrap()
-            .unwrap()
-            .status,
-        "paused"
-    );
-    // An explicit Resume at the limit grants a few more rounds, never past the maximum.
-    let round = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().round;
-    let resumed = control_state(&state, &sid, "resume").unwrap();
-    assert_eq!(resumed.config.max_rounds, (round + EXTRA_ROUNDS).min(MAX_ROUNDS));
+    // A failed worker past every old limit still reaches the lead, and Resume still retries it.
+    let review = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(review.sid, sid);
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.round), ("running", 41));
     control_state(&state, &sid, "pause").unwrap();
-    {
-        let store = state.store.lock().unwrap();
-        let mut team = load(&store, &sid).unwrap().unwrap();
-        team.round = MAX_ROUNDS;
-        team.config.max_rounds = MAX_ROUNDS;
-        save(&store, &mut team).unwrap();
-    }
-    assert!(control_state(&state, &sid, "resume").unwrap_err().contains("Send a message"));
+    let resumed = control_state(&state, &sid, "resume").unwrap();
+    assert_eq!(resumed.status, "running");
+    assert_eq!(resumed.config.max_rounds, 1, "Resume grants nothing");
+    assert_eq!(resumed.workers[0].status, "queued");
+    assert_eq!(resumed.workers[0].attempt, 7);
 }
 #[test]
 fn dependency_failure_is_reported_instead_of_leaving_a_permanent_queue() {
@@ -1889,6 +1886,7 @@ fn resume_before_first_process_keeps_the_objective_and_recovers_reserved_review_
             prompt: team.objective.clone(),
             images: None,
             reserved: true,
+            reserved_at: storage::now(),
             kind: None,
         });
         save(&store, &mut team).unwrap();
@@ -1990,7 +1988,7 @@ fn auto_config_allows_an_empty_or_large_roster_but_not_unbounded() {
     config.workers = (0..AUTO_ROSTER_MAX).map(|i| WorkerProfile { id: format!("m{i}"), name: format!("Model {i}"), provider: "codex".into(), model: format!("m{i}"), reasoning_effort: None }).collect();
     assert!(config.validate().is_ok());
     config.workers.push(WorkerProfile { id: "extra".into(), name: "Extra".into(), provider: "codex".into(), model: "x".into(), reasoning_effort: None });
-    assert!(config.validate().is_err());
+    assert_eq!(config.validate().unwrap_err(), "A team can list at most 24 models, to keep the lead's prompt short; this one lists 25.");
     let mut manual = super::tests::config();
     manual.workers.clear();
     assert!(manual.validate().is_err());
@@ -2065,8 +2063,10 @@ fn roster_only_config_needs_an_auto_team_with_models() {
     config.workers.clear();
     assert!(config.validate().is_err());
     let mut named = super::tests::config();
-    named.name = Some("x".repeat(81));
+    named.name = Some("  ".into());
     assert!(named.validate().is_err());
+    named.name = Some("x".repeat(500));
+    assert!(named.validate().is_ok());
     named.name = Some("Reviewers".into());
     assert!(named.validate().is_ok());
 }
@@ -2152,7 +2152,7 @@ fn a_failed_follow_up_never_reports_the_previous_attempts_success() {
     assert!(!review.prompt.contains("Attempt one"));
 }
 #[test]
-fn a_new_objective_runs_a_reused_key_again_and_counts_its_own_assignments() {
+fn a_new_objective_runs_a_reused_key_again() {
     let (state, sid) = state_fixture();
     let first = Launch { sid: sid.clone(), prompt: "Objective one".into(), images: None, admission: Admission { parent: sid.clone(), generation: 1 } };
     let (parent, _rx) = claim(&state, first);
@@ -2167,7 +2167,6 @@ fn a_new_objective_runs_a_reused_key_again_and_counts_its_own_assignments() {
         let store = state.store.lock().unwrap();
         let mut team = load(&store, &sid).unwrap().unwrap();
         team.status = "completed".into();
-        team.config.max_assignments = 1;
         save(&store, &mut team).unwrap();
         store.finish_task_turn(&sid, true, false).unwrap();
     }
@@ -2238,7 +2237,7 @@ fn new_results_keep_their_place_ahead_of_old_checkpoints() {
     fresh.result_revision = 10;
     team.workers.push(fresh);
     team.reviewed_revision = 5;
-    let review = bounded(&serde_json::to_string(&review_summaries(&team)).unwrap(), 40 * 1024);
+    let review = bounded(&serde_json::to_string(&review_summaries(&team, true)).unwrap(), 40 * 1024);
     assert!(review.contains(" END"));
     assert!(!review.contains(&"s".repeat(100)));
 }
@@ -2317,6 +2316,27 @@ fn a_silent_worker_is_stopped_and_settles_as_failed() {
     assert!(!team.workers[0].timed_out);
 }
 #[test]
+fn time_asleep_does_not_count_as_silence() {
+    let (state, sid) = state_fixture();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("slow","fast","src")]})).unwrap();
+    let (run, mut rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let now = storage::now();
+    let woke = now + SILENT;
+    // Ticks on schedule forgive nothing, so a really silent worker is still caught below.
+    assert!(!watchdog::forgive_sleep(&state, now + 30_000, now).unwrap());
+    assert!(!watchdog::forgive_sleep(&state, now - 60_000, now).unwrap(), "a clock moved back is no sleep");
+    // A gap restarts every agent's clock, so the same moment reads as live.
+    assert!(watchdog::forgive_sleep(&state, woke, now).unwrap());
+    assert_eq!(watchdog::stop_silent(&state, woke, &mut |_| {}).unwrap(), 0);
+    assert!(rx.try_recv().is_err());
+    let team = team_of(&state, &sid);
+    assert_eq!(team.workers[0].status, "running");
+    assert!(!team.workers[0].timed_out);
+    // A turn that then stays silent while awake is still stopped.
+    assert_eq!(watchdog::stop_silent(&state, woke + SILENT, &mut |_| {}).unwrap(), 1);
+    drop(run);
+}
+#[test]
 fn a_silent_architect_turn_is_stopped_without_stopping_its_workers() {
     let (state, sid) = state_fixture();
     let parent = objective_turn(&state, &sid);
@@ -2367,9 +2387,9 @@ fn a_resumed_conversation_gets_the_team_rules_once_and_only_new_messages() {
     assert!(third.contains("Renderer API is ready"));
     let fourth = prompt(&store, &sid, "Review again", Some(&admission)).unwrap();
     assert!(!fourth.contains("Renderer API is ready"));
-    // Changed limits are new rules, so they go out in full.
+    // A changed parallel limit is a new rule, so the rules go out in full.
     let mut team = load(&store, &sid).unwrap().unwrap();
-    team.config.max_rounds += 4;
+    team.config.max_parallel += 4;
     save(&store, &mut team).unwrap();
     assert!(prompt(&store, &sid, "Go on", Some(&admission)).unwrap().contains("PandaCode architect mode. Coordinate"));
     // A conversation the harness starts afresh has never seen them.
@@ -2431,18 +2451,19 @@ fn the_app_wide_lead_guidance_reaches_teams_that_set_none() {
     assert!(!own.contains("Always run the test suite before finishing."), "the team's own guidance wins");
     // Blank settings mean the built-in rules alone.
     assert!(profiles::set_lead_guidance(&store, Some("   ".into())).unwrap().lead_guidance.is_none());
-    assert!(profiles::set_lead_guidance(&store, Some("x".repeat(2001))).is_err());
+    assert!(profiles::set_lead_guidance(&store, Some("x".repeat(20_000))).is_ok());
+    assert!(profiles::set_lead_guidance(&store, Some("a\0b".into())).is_err());
 }
 
 #[test]
-fn lead_guidance_is_bounded_to_two_kilobytes() {
+fn lead_guidance_takes_any_plain_text() {
     let (state, sid) = state_fixture();
     let store = state.store.lock().unwrap();
     let mut team = load(&store, &sid).unwrap().unwrap();
-    team.config.lead_guidance = Some("x".repeat(2001));
-    assert!(team.config.validate().is_err());
-    team.config.lead_guidance = Some("x".repeat(2000));
+    team.config.lead_guidance = Some("x".repeat(20_000));
     assert!(team.config.validate().is_ok());
+    team.config.lead_guidance = Some("a\0b".into());
+    assert!(team.config.validate().is_err());
     team.config.lead_guidance = Some(String::new());
     assert!(team.config.validate().is_ok());
     team.config.lead_guidance = None;
@@ -3053,7 +3074,7 @@ fn direct_workers_may_dispatch_sub_workers_but_sub_workers_may_not() {
 }
 
 #[test]
-fn sub_worker_scopes_stay_inside_the_parent_and_children_are_capped() {
+fn sub_worker_scopes_stay_inside_the_parent_and_their_number_is_free() {
     let mut parent = worker("p", "running", &["src"], &[]);
     assert!(within(&parent, &["src/a.rs".into()], false).is_ok());
     assert!(within(&parent, &["src/a".into(), "src".into()], false).is_ok());
@@ -3074,22 +3095,13 @@ fn sub_worker_scopes_stay_inside_the_parent_and_children_are_capped() {
     let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("out","fast","tests")]})).unwrap_err();
     assert!(error.contains("inside your own scope"), "{error}");
     let batch = |keys: &[&str]| json!({"assignments": keys.iter().map(|k| assignment(k, "fast", &format!("src/{k}"))).collect::<Vec<_>>()});
-    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["a", "b", "c"])).unwrap();
-    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["d"])).unwrap_err();
-    assert!(error.contains("At most 3"), "{error}");
-    {
-        let store = state.store.lock().unwrap();
-        let mut team = load(&store, &sid).unwrap().unwrap();
-        for w in team.workers.iter_mut().filter(|w| w.parent_worker.is_some()) {
-            w.status = "completed".into();
-        }
-        save(&store, &mut team).unwrap();
-    }
-    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["d", "e", "f"])).unwrap();
-    let error = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&["g"])).unwrap_err();
-    assert!(error.contains("already started 6"), "{error}");
-    // Rejected batches persist nothing.
-    assert_eq!(team_of(&state, &sid).workers.len(), 7);
+    let keys: Vec<String> = (0..9).map(|i| format!("k{i}")).collect();
+    let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", batch(&keys)).unwrap();
+    assert_eq!(team_of(&state, &sid).workers.len(), 10, "past the old 3 unsettled and 6 in all");
+    // The depth brake stays: a sub-worker manages nothing.
+    let child = team_of(&state, &sid).workers[1].id.clone();
+    assert!(sub_call(&state, &sid, &child, "pandacode_dispatch_workers", batch(&["z"])).is_err());
 }
 
 #[test]
@@ -3260,6 +3272,69 @@ fn a_parked_parent_keeps_its_files_reserved_but_not_from_its_own_sub_workers() {
     assert!(eligible(&team, 2));
 }
 
+/// A second team in the first team's checkout, with these workers.
+fn teams_in_one_checkout(first: Vec<Worker>, second: Vec<Worker>) -> (AppState, String) {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let parent = store.session(&sid).unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let mut other = team.clone();
+        team.workers = first;
+        save(&store, &mut team).unwrap();
+        other.session_id = store.create_session(&parent.project_id, "kimi", "default", "ask").unwrap().id;
+        other.workers = second;
+        save(&store, &mut other).unwrap();
+    }
+    (state, sid)
+}
+fn sub_worker(id: &str, parent: &str, status: &str, file: &str) -> Worker {
+    Worker { parent_worker: Some(parent.into()), ..worker(id, status, &[file], &[]) }
+}
+
+#[test]
+fn a_directory_scope_may_end_in_a_slash() {
+    validate_files(&["src/".into(), "src/app/".into()]).unwrap();
+    for bad in ["/", "//", "src//", "../", "./", "/src/"] {
+        assert!(validate_files(&[bad.into()]).is_err(), "{bad}");
+    }
+    assert!(overlaps(&["src/".into()], &["src/a.rs".into()]), "compared as `src`");
+    assert!(overlaps(&["src/a.rs".into()], &["src/".into()]));
+    assert!(!overlaps(&["src/".into()], &["srcx".into()]));
+    let parent = worker("p", "running", &["src/"], &[]);
+    within(&parent, &["src/a.rs".into()], false).unwrap();
+    assert!(within(&worker("p", "running", &["src"], &[]), &["src/".into()], false).is_ok());
+    assert!(within(&parent, &["srcx".into()], false).is_err());
+}
+
+#[test]
+fn parked_workers_of_two_teams_in_one_checkout_do_not_deadlock() {
+    // Each parked worker's files overlap the other's: neither may wait for the other to go first.
+    let (state, _) = teams_in_one_checkout(vec![worker("p", "parked", &["src"], &[])], vec![worker("r", "parked", &["src"], &[])]);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().expect("one resumes");
+    assert!(matches!(action.sid.as_str(), "task-p" | "task-r"), "{}", action.sid);
+    // Once it runs, the other waits for it.
+    let parent = action.admission.parent.clone();
+    assert_eq!(team_of(&state, &parent).workers[0].status, "running");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    // Their sub-workers neither: each runs inside its own parent's files, over the other parent's.
+    let (state, _) = teams_in_one_checkout(
+        vec![worker("p", "parked", &["src"], &[]), sub_worker("p-sub", "p", "queued", "src/a")],
+        vec![worker("r", "parked", &["src"], &[]), sub_worker("r-sub", "r", "queued", "src/b")],
+    );
+    let action = next_action_state(&state, &mut |_| {}).unwrap().expect("a sub-worker starts");
+    assert!(matches!(action.sid.as_str(), "task-p-sub" | "task-r-sub"), "{}", action.sid);
+}
+
+#[test]
+fn a_fresh_worker_still_waits_for_another_teams_parked_files() {
+    let (state, _) = teams_in_one_checkout(
+        vec![worker("fresh", "queued", &["src/c"], &[])],
+        vec![worker("r", "parked", &["src"], &[]), sub_worker("r-sub", "r", "running", "elsewhere")],
+    );
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "r resumes into those files");
+}
+
 #[test]
 fn team_turn_overhead_stays_within_budget() {
     // What a harness receives (mcp_host sends name, description and inputSchema).
@@ -3313,4 +3388,1480 @@ fn a_fresh_architect_conversation_gets_the_whole_objective_again() {
     let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
     assert!(review.config.prompt.contains(&objective));
     assert!(!review.config.prompt.contains("objective unchanged"));
+}
+
+// Stuck runs and removed limits: everything below used to strand a team or refuse the call.
+
+fn prompt_json(prompt: &str) -> Value {
+    serde_json::from_str(prompt.rsplit_once("\n\n").unwrap().1).unwrap()
+}
+
+#[test]
+fn a_snapshot_over_a_mebibyte_saves_and_its_finished_worker_wakes_the_lead() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.objective = "Build it. ".repeat(150_000);
+        save(&store, &mut team).unwrap();
+        let content: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [&sid], |r| r.get(0)).unwrap();
+        assert!(content.len() > 1024 * 1024);
+    }
+    finish(&state, &run, "Engine done", true);
+    assert_eq!(team_of(&state, &sid).workers[0].status, "completed");
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(action.sid, sid);
+    assert!(action.prompt.starts_with("Review the settled workers"), "{}", &action.prompt[..60]);
+    assert!(action.prompt.len() < 128 * 1024, "the objective is cut in a generated turn");
+}
+
+#[test]
+fn round_25_with_settled_workers_wakes_the_lead_for_review() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        (team.round, team.config.max_rounds) = (25, 5);
+        save(&store, &mut team).unwrap();
+    }
+    finish(&state, &run, "Engine done", true);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(action.sid, sid);
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.round), ("running", 26));
+    assert_eq!(prompt_json(&action.prompt)["round"], 26);
+}
+
+#[test]
+fn failure_and_coordination_wakes_ignore_the_round_number() {
+    let (state, sid) = state_fixture();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("a","fast","src/a"),assignment("b","fast","src/b")]})).unwrap();
+    let (a, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let (b, _rx2) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        (team.round, team.config.max_rounds) = (30, 5);
+        save(&store, &mut team).unwrap();
+    }
+    finish(&state, &a, "Failed", false);
+    let wake = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(wake.prompt.starts_with(FAILED_PREFIX));
+    let (lead, _rx3) = claim(&state, wake);
+    finish(&state, &lead, "Noted", true);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = team_of(&state, &sid);
+    let actor = coordination::Actor::resolve(&team, &b.config.session_id).unwrap();
+    coordinate(&state, &sid, &actor, "pandacode_send_team_message", json!({"recipient":"architect","key":"help","message":"Blocked","urgent":true})).unwrap();
+    let wake = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(wake.prompt.starts_with("A teammate sent a message"));
+    assert!(prompt_json(&wake.prompt)["workers"].is_array());
+}
+
+#[test]
+fn a_thirty_worker_batch_a_huge_prompt_many_scopes_and_a_long_name_are_all_accepted() {
+    let (state, sid) = state_fixture();
+    let assignments: Vec<Value> = (0..30).map(|i| assignment(&format!("k{i}"), "fast", &format!("src/{i}"))).collect();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":assignments})).unwrap();
+    assert_eq!(team_of(&state, &sid).workers.len(), 30);
+    let files: Vec<String> = (0..100).map(|i| format!("{}/file{i}", "deep".repeat(200))).collect();
+    let dependencies: Vec<String> = team_of(&state, &sid).workers.iter().map(|w| w.id.clone()).collect();
+    let big = json!({"key":"big","profileId":"fast","name":"N".repeat(300),"prompt":"p".repeat(20 * 1024),"files":files,"dependsOn":dependencies});
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[big]})).unwrap();
+    let team = team_of(&state, &sid);
+    let worker = team.workers.last().unwrap();
+    assert_eq!(worker.assignment.len(), 20 * 1024);
+    assert_eq!(worker.files.len(), 100);
+    assert_eq!(worker.depends_on.len(), 30);
+    assert_eq!(worker.name.chars().count(), NAME_CHARS, "cut to stay displayable, never refused");
+    // Path safety and non-empty text stay.
+    assert!(call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("esc","fast","../x")]})).is_err());
+    assert!(call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[{"key":"e","profileId":"fast","name":" ","prompt":"p","files":["a"]}]})).is_err());
+}
+
+#[test]
+fn a_long_cancel_reason_finish_summary_and_replace_reason_are_accepted() {
+    let (state, sid) = state_fixture();
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &run, "Done", true);
+    let old = worker_id(&actor);
+    let mut next = assignment("next", "fast", "src");
+    next["replaces"] = json!(old);
+    next["replaceReason"] = json!("r".repeat(5000));
+    let replaced = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[next]})).unwrap();
+    let id = replaced["workerIds"][0].as_str().unwrap();
+    call(&state, &sid, "pandacode_cancel_worker", json!({"workerId":id,"reason":"c".repeat(5000)})).unwrap();
+    call(&state, &sid, "pandacode_finish_team", json!({"summary":"s".repeat(50_000)})).unwrap();
+    assert_eq!(team_of(&state, &sid).summary.unwrap().len(), 50_000);
+}
+
+#[test]
+fn an_orphaned_run_is_reaped_when_old_and_never_while_young_or_registered() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let task = run.config.session_id.clone();
+    let old = storage::now() + watchdog::ORPHAN_AFTER_MS + 1000;
+    // Registered: however old, a live run is left alone.
+    assert!(watchdog::reconcile(&state, old, &mut |_| {}).unwrap());
+    assert_eq!(team_of(&state, &sid).workers[0].status, "running");
+    // No entry, but young: a launch may be between its claim and its registration.
+    state.agents.lock().unwrap().remove(&task);
+    assert!(watchdog::reconcile(&state, storage::now(), &mut |_| {}).unwrap());
+    assert_eq!(team_of(&state, &sid).workers[0].status, "running");
+    // No entry and old.
+    let mut notified = 0;
+    watchdog::reconcile(&state, old, &mut |_| notified += 1).unwrap();
+    let team = team_of(&state, &sid);
+    assert_eq!(notified, 1);
+    assert_eq!(team.workers[0].status, "failed");
+    assert_eq!(team.workers[0].error.as_deref(), Some(watchdog::ORPHANED));
+    assert_eq!(team.workers[0].provider, "codex", "not the model's failure, so no failover");
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(action.sid, sid);
+    assert!(action.prompt.contains(watchdog::ORPHANED));
+    // Once settled it is not settled again.
+    let revision = team_of(&state, &sid).dispatch_revision;
+    watchdog::reconcile(&state, old, &mut |_| {}).unwrap();
+    assert_eq!(team_of(&state, &sid).dispatch_revision, revision);
+}
+
+#[test]
+fn a_launch_claimed_before_its_worker_was_reaped_cannot_start() {
+    let (state, sid) = state_fixture();
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("engine","fast","src")]})).unwrap();
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    let old = storage::now() + watchdog::ORPHAN_AFTER_MS + 1000;
+    watchdog::reconcile(&state, old, &mut |_| {}).unwrap();
+    assert_eq!(team_of(&state, &sid).workers[0].status, "failed");
+    let (tx, _rx) = crate::unbounded_channel();
+    let late = crate::prepare_task_run_in_project(&state, action.sid, Some(action.prompt), vec![], tx, Arc::new(AtomicBool::new(false)), crate::RunAdmission { team: Some(action.admission), ..Default::default() });
+    assert!(late.is_err());
+}
+
+#[test]
+fn a_reserved_turn_without_an_agent_is_released_once_old() {
+    let (state, sid) = state_fixture();
+    let reserve = |state: &AppState| {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn = Some(PendingTurn { prompt: "Review it".into(), images: None, reserved: true, reserved_at: storage::now(), kind: Some(internal_turns::CoordinationKind::WorkerReview) });
+        save(&store, &mut team).unwrap();
+    };
+    reserve(&state);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    // Young: its launch may still be on the way.
+    watchdog::reconcile(&state, storage::now(), &mut |_| {}).unwrap();
+    assert!(team_of(&state, &sid).pending_turn.unwrap().reserved);
+    let old = storage::now() + watchdog::ORPHAN_AFTER_MS + 1000;
+    watchdog::reconcile(&state, old, &mut |_| {}).unwrap();
+    assert!(!team_of(&state, &sid).pending_turn.unwrap().reserved);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!((action.sid.as_str(), action.prompt.as_str()), (sid.as_str(), "Review it"));
+    assert!(team_of(&state, &sid).pending_turn.unwrap().reserved, "claimed again");
+    // An unrelated save (a worker's checkpoint) does not make a lost launch young again.
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn.as_mut().unwrap().reserved_at = storage::now() - watchdog::ORPHAN_AFTER_MS - 1000;
+        save(&store, &mut team).unwrap();
+    }
+    watchdog::reconcile(&state, storage::now(), &mut |_| {}).unwrap();
+    assert!(!team_of(&state, &sid).pending_turn.unwrap().reserved);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    // A registered lead keeps its reservation.
+    let (_lead, _rx) = claim(&state, action);
+    reserve(&state);
+    watchdog::reconcile(&state, old, &mut |_| {}).unwrap();
+    assert!(team_of(&state, &sid).pending_turn.unwrap().reserved);
+}
+
+#[test]
+fn a_team_that_errors_does_not_block_another() {
+    let (state, good) = state_fixture();
+    let bad = {
+        let store = state.store.lock().unwrap();
+        let project = store.session(&good).unwrap().project_id;
+        let bad = store.create_session(&project, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(bad.clone(), config());
+        team.status = "running".into();
+        team.generation = 1;
+        team.workers = vec![worker("stuck", "queued", &["bad"], &[])];
+        save(&store, &mut team).unwrap();
+        // Scheduled first, and every save of it fails.
+        store.db.execute("UPDATE architect_teams SET content=json_set(content,'$.updatedAt',1) WHERE session_id=?1", [&bad]).unwrap();
+        store.db.execute_batch(&format!("CREATE TRIGGER reject_bad BEFORE UPDATE ON architect_teams WHEN NEW.session_id='{bad}' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;")).unwrap();
+        let mut team = load(&store, &good).unwrap().unwrap();
+        team.workers = vec![worker("fine", "queued", &["good"], &[])];
+        save(&store, &mut team).unwrap();
+        bad
+    };
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(action.sid, "task-fine");
+    assert_eq!(team_of(&state, &bad).workers[0].status, "queued");
+    // The watchdog treats it the same way.
+    assert!(watchdog::reconcile(&state, storage::now(), &mut |_| {}).unwrap());
+}
+
+#[test]
+fn a_failed_save_when_a_worker_settles_is_recovered_by_the_watchdog() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    {
+        let store = state.store.lock().unwrap();
+        store.db.execute_batch("CREATE TRIGGER reject_save BEFORE UPDATE ON architect_teams BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+    }
+    let mut notified = 0;
+    {
+        let mut agents = state.agents.lock().unwrap();
+        agents.remove(&run.config.session_id);
+        completed_with_agents(&state, &agents, &run.config.session_id, run.team.as_ref(), true, false, None, &mut |_| notified += 1);
+    }
+    assert_eq!(notified, 0, "nothing was saved, so nothing is announced");
+    assert_eq!(team_of(&state, &sid).workers[0].status, "running");
+    state.store.lock().unwrap().db.execute_batch("DROP TRIGGER reject_save;").unwrap();
+    watchdog::reconcile(&state, storage::now() + watchdog::ORPHAN_AFTER_MS + 1000, &mut |_| {}).unwrap();
+    assert_eq!(team_of(&state, &sid).workers[0].status, "failed");
+    assert_eq!(next_action_state(&state, &mut |_| {}).unwrap().unwrap().sid, sid);
+}
+
+#[test]
+fn a_team_failed_for_its_setup_stops_its_workers_rather_than_leaving_them_running() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    state.agents.lock().unwrap().remove(&run.config.session_id);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let mut config = team.config.clone();
+        config.workspace = "elsewhere".into();
+        team.pending_setup = Some(profiles::TeamSetup { architect: profiles::ModelSelection::from_session(&store.session(&sid).unwrap()), config });
+        save(&store, &mut team).unwrap();
+    }
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "failed");
+    assert_eq!(team.workers[0].status, "stopped", "its later completion is ignored for its old generation");
+}
+
+#[test]
+fn a_worker_failed_by_its_dependency_reaches_the_lead_with_its_error() {
+    let (state, sid) = state_fixture();
+    let first = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("engine","fast","src")]})).unwrap();
+    let mut dependent = assignment("dependent", "fast", "tests");
+    dependent["dependsOn"] = json!([first["workerIds"][0]]);
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[dependent]})).unwrap();
+    let (engine, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &engine, "Failed", false);
+    let review = prompt_json(&next_action_state(&state, &mut |_| {}).unwrap().unwrap().prompt);
+    let item = &review["workers"][1];
+    assert_eq!((item["status"].as_str(), item["changed"].as_bool()), (Some("failed"), Some(true)));
+    assert_eq!(item["error"], "A dependency failed or was stopped.");
+}
+
+#[test]
+fn the_review_prompt_stays_valid_json_and_marks_cut_summaries_with_many_workers() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.summary_limit = 6000;
+        team.dispatch_revision = 1;
+        team.workers = (0..400).map(|i| {
+            let mut w = worker(&format!("w{i}"), "completed", &[], &[]);
+            w.summary = bounded(&"\"é\n".repeat(4000), 6000);
+            w.error = Some("e".repeat(5000));
+            w.result_revision = 1;
+            w
+        }).collect();
+        save(&store, &mut team).unwrap();
+    }
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(action.prompt.len() < 128 * 1024, "{} bytes", action.prompt.len());
+    let review = prompt_json(&action.prompt);
+    let workers = review["workers"].as_array().unwrap();
+    assert_eq!(workers.len() + review["omittedWorkers"].as_u64().unwrap() as usize, 400);
+    assert_eq!(workers.last().unwrap()["id"], "w399", "the newest stays");
+    assert!(workers.iter().filter(|w| w["summary"] != "").all(|w| w["summaryTruncated"] == true));
+    assert!(workers.iter().all(|w| w["error"].as_str().unwrap().len() < 600));
+}
+
+#[test]
+fn a_report_is_previewed_in_the_snapshot_and_paged_losslessly_by_read_worker() {
+    let (state, sid) = state_fixture();
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    let id = worker_id(&actor);
+    let report: String = (0..40_000).map(|i| format!("{i}é")).take(35_000).collect();
+    assert!(report.len() > 200 * 1024);
+    finish(&state, &run, &report, true);
+    let team = team_of(&state, &sid);
+    let summary = &team.workers[0].summary;
+    // The setup's summaryLimit (2000 here) is not enforced: previews are always SUMMARY_PREVIEW.
+    assert!(summary.len() <= SUMMARY_PREVIEW + TRUNCATED.len() && summary.len() > 2000 + TRUNCATED.len() && summary.ends_with(TRUNCATED));
+    assert_eq!(call(&state, &sid, "pandacode_list_workers", json!({})).unwrap()["workers"][0]["summaryTruncated"], true);
+    let mut rebuilt = String::new();
+    let mut offset = 0;
+    let mut pages = 0;
+    loop {
+        let page = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":offset})).unwrap();
+        let text = page["response"].as_str().unwrap();
+        assert!(text.len() <= PAGE_BYTES);
+        assert!(serde_json::to_string(&page).unwrap().len() <= PAGE_BYTES + 1024, "the whole result stays within a page");
+        rebuilt.push_str(text);
+        pages += 1;
+        match page["nextOffset"].as_u64() {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+    assert!(pages >= 4);
+    assert_eq!(rebuilt, report);
+    // An offset inside a character floors to its start; one past the end reads nothing.
+    let inside = report.char_indices().find(|(_, c)| *c == 'é').unwrap().0 + 1;
+    let page = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":inside})).unwrap();
+    assert!(page["response"].as_str().unwrap().starts_with('é'));
+    let end = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":report.len() * 2})).unwrap();
+    assert_eq!((end["response"].as_str(), end["nextOffset"].as_u64()), (Some(""), None));
+    assert!(call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":-1})).is_err());
+    assert!(call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"extra":1})).is_err());
+}
+
+#[test]
+fn sub_workers_read_pages_a_long_response_and_results_mark_cut_summaries() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("child","fast","src/a")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let (child_run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let report = "r".repeat(100 * 1024);
+    finish(&state, &child_run, &report, true);
+    let results = child_results(&team_of(&state, &sid), &engine).unwrap();
+    assert_eq!(prompt_json(&results)["subWorkers"][0]["summaryTruncated"], true);
+    let first = sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child})).unwrap();
+    assert!(serde_json::to_string(&first).unwrap().len() <= PAGE_BYTES + 1024, "the summary shares the first page's budget");
+    assert!(first.get("summary").is_some() && first.get("checkpoint").is_some(), "the first page carries the summary and checkpoint");
+    let mut rebuilt = first["response"].as_str().unwrap().to_string();
+    let mut next = first["nextOffset"].as_u64();
+    while let Some(offset) = next {
+        let page = sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child,"offset":offset})).unwrap();
+        assert!(page.get("summary").is_none() && page.get("checkpoint").is_none(), "later pages are the response alone");
+        rebuilt.push_str(page["response"].as_str().unwrap());
+        next = page["nextOffset"].as_u64();
+    }
+    assert_eq!(rebuilt, report);
+}
+
+#[test]
+fn route_models_takes_long_text_and_many_tasks() {
+    let tasks: Vec<Value> = (0..30).map(|_| json!({"text":"t".repeat(20_000)})).collect();
+    let (_, jobs, _) = routing::route_request(&config(), &[], json!({"tasks":tasks})).unwrap();
+    assert_eq!(jobs.len(), 30);
+    assert!(jobs.iter().all(|job| job.text.chars().count() == 8192), "cut for the profiler");
+    assert!(routing::route_request(&config(), &[], json!({"tasks":[]})).is_err());
+}
+
+#[test]
+fn legacy_review_rows_parse_past_round_twenty() {
+    let (state, sid) = state_fixture();
+    let (_run, actor) = running_worker(&state, &sid, "engine", "src");
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.legacy_prompt_through_id = Some(i64::MAX);
+    save(&store, &mut team).unwrap();
+    store.message(&sid, "user", "Objective").unwrap();
+    let later = store.db.last_insert_rowid() + 1;
+    let row = |round: u64, attempt: u64| format!("{}Build it{}{}", internal_turns_prefix(), internal_turns_body(), json!({"round":round,"workers":[{"id":worker_id(&actor),"name":"n","status":"completed","attempt":attempt,"changed":true,"summary":"s","error":null,"abandoned":false,"checkpoint":null}],"readMore":READ_MORE}));
+    let parsed = internal_turns::legacy_kind(&store, &sid, later, &row(25, 9)).unwrap();
+    assert_eq!(parsed, Some(internal_turns::CoordinationKind::WorkerReview));
+}
+fn internal_turns_prefix() -> &'static str {
+    "Review the settled workers for this objective: "
+}
+fn internal_turns_body() -> &'static str {
+    "\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n"
+}
+
+// A finished worker never shows as working and always returns to the lead.
+
+/// Ends a run cleanly without any assistant reply, as a harness can.
+fn finish_silent(state: &AppState, prepared: &crate::PreparedRun) {
+    let sid = &prepared.config.session_id;
+    let mut agents = state.agents.lock().unwrap();
+    {
+        let store = state.store.lock().unwrap();
+        store.finish_task_turn(sid, true, false).unwrap();
+        agents.remove(sid);
+    }
+    completed_with_agents(state, &agents, sid, prepared.team.as_ref(), true, false, None, &mut |_| {});
+}
+
+/// Rows as a harness's events save them: `save_agent_activity` flushes text at a new tool.
+fn tool_after_text(state: &AppState, sid: &str, text: &str, tool: &str) {
+    let store = state.store.lock().unwrap();
+    let assistant = std::sync::Mutex::new(text.to_owned());
+    let mut event = crate::AgentEvent { session_id: sid.into(), kind: "tool".into(), text: "Read".into(), request_id: None, data: None, tool: Some(crate::providers::ToolActivity { id: tool.into(), name: "Read".into(), status: "running".into(), input: String::new(), output: String::new(), write_paths: None }) };
+    crate::save_agent_activity(&store, &assistant, &mut event, None).unwrap();
+}
+
+#[test]
+fn a_preamble_before_the_last_tool_is_no_report() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &lead, "Waiting.", true);
+    let task = run.config.session_id.clone();
+    tool_after_text(&state, &task, "I'll start by reading the files.", "run:read");
+    finish_silent(&state, &run);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.nudged), ("queued", true), "asked to report");
+    let (again, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    tool_after_text(&state, &task, "", "run:read2");
+    state.store.lock().unwrap().message(&task, "assistant", "All done: the engine works.").unwrap();
+    // A tool's late update keeps its row, so the reply stays after it.
+    tool_after_text(&state, &task, "", "run:read2");
+    finish_silent(&state, &again);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.summary.as_str()), ("completed", "All done: the engine works."));
+}
+
+#[test]
+fn a_lead_whose_setup_failed_gives_its_row_back_for_the_retry() {
+    let (state, sid) = state_fixture();
+    running_worker(&state, &sid, "parser", "src");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn = Some(PendingTurn { prompt: "Also do this".into(), images: None, reserved: false, reserved_at: 0, kind: None });
+        save(&store, &mut team).unwrap();
+    }
+    let lead = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    // As after `begin_task_turn` when `architect::prompt` or `mark_started` then fails.
+    state.store.lock().unwrap().begin_task_turn(&sid, "Also do this").unwrap();
+    fail_launch_state(&state, &lead.admission, &lead.sid, "Team is unavailable.", &mut |_| {});
+    let store = state.store.lock().unwrap();
+    assert_eq!(store.session(&sid).unwrap().status, "error");
+    store.begin_task_turn(&sid, "The retry").expect("the claim is free");
+}
+
+#[test]
+fn a_worker_run_with_no_reply_is_asked_once_to_finish_then_fails_to_the_lead() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    let id = worker_id(&actor);
+    finish(&state, &lead, "Waiting.", true);
+    finish_silent(&state, &run);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.attempt, worker.nudged), ("queued", 1, true), "requeued on the same session, no attempt used");
+    assert_eq!(worker.resume_prompt.as_deref(), Some(EMPTY_REPLY_PROMPT));
+    assert!(worker.error.is_none() && worker.summary.is_empty());
+    let relaunch = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!((relaunch.sid.as_str(), relaunch.prompt.as_str()), (run.config.session_id.as_str(), EMPTY_REPLY_PROMPT));
+    let (again, _rx) = claim(&state, relaunch);
+    assert_eq!(again.config.session_id, run.config.session_id);
+    assert!(team_of(&state, &sid).workers[0].resume_prompt.is_none());
+    finish_silent(&state, &again);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.attempt), ("failed", 1));
+    assert_eq!(worker.error.as_deref(), Some(EMPTY_REPLY_ERROR));
+    assert_eq!(worker.provider, "codex", "not the model's failure: no failover, nothing recorded against it");
+    let wake = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(wake.sid, sid);
+    assert!(wake.prompt.contains(EMPTY_REPLY_ERROR), "{}", wake.prompt);
+    // A follow-up clears the flag, so the worker gets a fresh nudge on new work.
+    let (_, _rx) = claim(&state, wake);
+    call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"again","prompt":"Report what you did."})).unwrap();
+    assert!(!team_of(&state, &sid).workers[0].nudged);
+}
+
+#[test]
+fn a_worker_that_replies_after_its_nudge_completes_and_a_silent_parent_still_parks() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &lead, "Waiting.", true);
+    finish_silent(&state, &run);
+    let (again, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &again, "Done: src/a.rs changed, tests pass.", true);
+    let worker = &team_of(&state, &sid).workers[0];
+    assert_eq!((worker.status.as_str(), worker.summary.as_str()), ("completed", "Done: src/a.rs changed, tests pass."));
+    assert_eq!(next_action_state(&state, &mut |_| {}).unwrap().unwrap().sid, sid, "the lead reviews it");
+    // A parent whose sub-workers still run parks, reply or not.
+    let (state, sid, lead, run, engine) = nested_fixture();
+    sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap();
+    let (_child, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &lead, "Workers are on it.", true);
+    finish_silent(&state, &run);
+    let parent = team_of(&state, &sid).workers.iter().find(|w| w.id == engine).unwrap().clone();
+    assert_eq!((parent.status.as_str(), parent.nudged), ("parked", false));
+}
+
+#[test]
+fn a_failing_team_stops_a_lead_mid_turn() {
+    let (state, sid) = state_fixture();
+    let (lead, mut lead_rx) = claim(&state, Launch { sid: sid.clone(), prompt: "Build it".into(), images: None, admission: Admission { parent: sid.clone(), generation: 1 } });
+    assert_eq!(lead.config.session_id, sid);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let agents = state.agents.lock().unwrap();
+        fail_team(&mut team, &agents, "Setup broke".into());
+        save(&store, &mut team).unwrap();
+    }
+    assert!(matches!(lead_rx.try_recv(), Ok(RunInput::Stop)), "the lead's agent is told to stop");
+    assert_eq!(team_of(&state, &sid).status, "failed");
+}
+
+#[test]
+fn an_oversized_objective_or_assignment_is_refused_before_it_touches_state() {
+    let (state, sid) = state_fixture();
+    let huge = "x".repeat(crate::MESSAGE_LIMIT + 1);
+    assert!(text_check(&huge).unwrap_err().contains("16 MiB"));
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &run, "Done", true);
+    let id = worker_id(&actor);
+    let before = team_of(&state, &sid);
+    assert!(call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[{"key":"big","profileId":"fast","name":"big","prompt":huge,"files":["src/b"]}]})).unwrap_err().contains("16 MiB"));
+    assert!(call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":"big2","prompt":huge})).unwrap_err().contains("16 MiB"));
+    let after = team_of(&state, &sid);
+    assert_eq!((after.workers.len(), after.dispatch_revision, after.workers[0].status.as_str()), (before.workers.len(), before.dispatch_revision, "completed"));
+    // An idle team keeps its objective and request keys when the new objective is too large.
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "ready".into();
+        team.workers.clear();
+        save(&store, &mut team).unwrap();
+    }
+    let error = start_state(&state, &sid, &huge, None, None).unwrap_err();
+    assert!(error.contains("16 MiB"), "{error}");
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.objective.as_str()), ("ready", "Build it"));
+    let keys: i64 = state.store.lock().unwrap().db.query_row("SELECT COUNT(*) FROM architect_requests WHERE parent_session_id=?1 AND kind='dispatch'", [&sid], |r| r.get(0)).unwrap();
+    assert_eq!(keys, 1, "the finished worker's key is still recorded");
+}
+
+#[test]
+fn a_parent_whose_relaunch_fails_settles_its_sub_workers() {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let (child_run, mut child_rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &run, "Started the lexer sub-worker.", true);
+    // The child is somehow still registered when its parked parent fails to relaunch.
+    let admission = Admission { parent: sid.clone(), generation: 1 };
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let parent = team.workers.iter_mut().find(|w| w.id == engine).unwrap();
+        parent.status = "running".into();
+        save(&store, &mut team).unwrap();
+    }
+    fail_launch_state(&state, &admission, &run.config.session_id, "An agent update is being installed", &mut |_| {});
+    let team = team_of(&state, &sid);
+    let parent = team.workers.iter().find(|w| w.id == engine).unwrap();
+    let child = team.workers.iter().find(|w| w.id == child).unwrap();
+    assert_eq!(parent.status, "failed");
+    assert_eq!((child.status.as_str(), child.abandoned), ("stopped", true));
+    assert!(child.error.as_deref().unwrap().starts_with("Its parent worker failed."));
+    assert!(matches!(child_rx.try_recv(), Ok(RunInput::Stop)));
+    drop(child_run);
+}
+
+#[test]
+fn stale_running_workers_of_inactive_teams_are_settled_once_by_the_watchdog() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    state.agents.lock().unwrap().remove(&run.config.session_id);
+    // An older version saved this team as failed with its worker still running.
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "failed".into();
+        team.workers.push(worker("done", "completed", &["tests"], &[]));
+        save(&store, &mut team).unwrap();
+    }
+    let mut notified = 0;
+    assert_eq!(watchdog::settle_stale(&state, &mut |_| notified += 1).unwrap(), 1);
+    let team = team_of(&state, &sid);
+    assert_eq!((notified, team.status.as_str()), (1, "failed"));
+    assert_eq!(team.workers.iter().map(|w| w.status.as_str()).collect::<Vec<_>>(), ["stopped", "completed"]);
+    assert_eq!(watchdog::settle_stale(&state, &mut |_| notified += 1).unwrap(), 0, "nothing left");
+    // An active team's running workers are the scheduler's and reconcile's, never settled here.
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    state.agents.lock().unwrap().remove(&run.config.session_id);
+    assert_eq!(watchdog::settle_stale(&state, &mut |_| {}).unwrap(), 0);
+    assert_eq!(team_of(&state, &sid).workers[0].status, "running");
+}
+
+#[test]
+fn read_worker_pages_by_escaped_length_and_carries_the_summary_on_the_first_page_only() {
+    let (state, sid) = state_fixture();
+    let (run, actor) = running_worker(&state, &sid, "engine", "src");
+    let id = worker_id(&actor);
+    coordinate(&state, &sid, &actor, "pandacode_checkpoint_worker", json!({"key":"c","summary":"Halfway","nextSteps":"Finish"})).unwrap();
+    // Quotes and newlines double in JSON, so the raw page is smaller than its budget.
+    let report: String = (0..30_000).map(|i| format!("{i}\"\n")).collect();
+    finish(&state, &run, &report, true);
+    let mut rebuilt = String::new();
+    let mut offset = Some(0);
+    while let Some(at) = offset {
+        let page = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":at})).unwrap();
+        let text = page["response"].as_str().unwrap();
+        assert!(wire_len(text) <= PAGE_BYTES + 2, "{} escaped bytes", wire_len(text));
+        assert_eq!(page.get("summary").is_some(), at == 0);
+        assert_eq!(page["checkpoint"]["summary"].as_str(), (at == 0).then_some("Halfway"));
+        assert_eq!(page["offset"].as_u64(), Some(at));
+        rebuilt.push_str(text);
+        offset = page["nextOffset"].as_u64();
+    }
+    assert_eq!(rebuilt, report);
+}
+
+#[test]
+fn review_budgets_are_shared_fairly_and_update_turns_list_only_changed_or_active_rows() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers = (0..70).map(|i| {
+            let mut w = worker(&format!("w{i}"), "completed", &[&format!("src/{i}")], &[]);
+            w.summary = format!("{i}:{}", "s".repeat(6000));
+            w.result_revision = 1;
+            w
+        }).collect();
+        team.dispatch_revision = 1;
+        team.reviewed_revision = 0;
+        save(&store, &mut team).unwrap();
+    }
+    let review = review_summaries(&team_of(&state, &sid), true);
+    let workers = review["workers"].as_array().unwrap();
+    assert_eq!(workers.len(), 70);
+    let shortest = workers.iter().map(|w| w["summary"].as_str().unwrap().len()).min().unwrap();
+    assert!(shortest > 300, "the oldest keeps a fair share, not just [Truncated]: {shortest}");
+    assert!(workers[0]["summary"].as_str().unwrap().starts_with("0:"));
+    // Nothing new on 69 of them: an update turn lists only the changed and active rows.
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.reviewed_revision = 1;
+        team.workers[5].status = "running".into();
+        team.workers[9].result_revision = 2;
+        team.dispatch_revision = 2;
+        save(&store, &mut team).unwrap();
+    }
+    let update = review_summaries(&team_of(&state, &sid), false);
+    assert_eq!(update["workers"].as_array().unwrap().iter().map(|w| w["id"].as_str().unwrap()).collect::<Vec<_>>(), ["w5", "w9"]);
+    assert_eq!(update["settledUnchanged"], 68);
+    assert_eq!(review_summaries(&team_of(&state, &sid), true)["workers"].as_array().unwrap().len(), 70, "a review still lists every worker");
+}
+
+#[test]
+fn a_long_objective_is_kept_whole_as_a_reserved_note_and_quoted_by_head_and_tail() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "ready".into();
+        save(&store, &mut team).unwrap();
+    }
+    let objective = format!("START {} END", "Build the parser and its tests. ".repeat(1000));
+    assert!(objective.len() > OBJECTIVE_QUOTE);
+    let (_, admission) = start_state(&state, &sid, &objective, None, None).unwrap();
+    // The first turn is reserved by start_state and launched by its caller.
+    let (lead, _rx) = claim(&state, Launch { sid: sid.clone(), prompt: objective.clone(), images: None, admission });
+    assert!(lead.config.prompt.contains(&objective), "the user's own message is whole");
+    let notes = |args: Value| coordinate(&state, &sid, &coordination::Actor::Architect, "pandacode_team_notes", args);
+    let mut whole = String::new();
+    let mut offset = Some(0);
+    while let Some(at) = offset {
+        let note = notes(json!({"action":"get","key":"objective","offset":at})).unwrap();
+        assert_eq!(note["note"]["author"], "pandacode");
+        whole.push_str(note["note"]["value"].as_str().unwrap());
+        offset = note["note"]["nextOffset"].as_u64();
+    }
+    assert_eq!(whole, objective);
+    assert!(notes(json!({"action":"set","key":"objective","value":"mine"})).unwrap_err().contains("reserved"));
+    let (run, _rx) = claim(&state, { call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("a","fast","src/a")]})).unwrap(); next_action_state(&state, &mut |_| {}).unwrap().unwrap() });
+    finish(&state, &lead, "Waiting.", true);
+    finish(&state, &run, "Done.", true);
+    let review = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(review.prompt.starts_with("Review the settled workers for this objective: START "), "{}", &review.prompt[..120]);
+    assert!(review.prompt.contains("tests.  END (the full objective is team note `objective`"), "{}", review.prompt);
+    assert!(review.prompt.len() < 8 * 1024, "{} bytes", review.prompt.len());
+    // The brief never lists the objective note; the turns that need it point to it.
+    let (reviewer, _rx) = claim(&state, review);
+    assert!(!reviewer.config.prompt.contains("- objective (pandacode)"));
+    // A short new objective removes the note.
+    finish(&state, &reviewer, "Done.", true);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "ready".into();
+        team.workers.clear();
+        save(&store, &mut team).unwrap();
+    }
+    start_state(&state, &sid, "Short one", None, None).unwrap();
+    assert_eq!(notes(json!({"action":"get","key":"objective"})).unwrap()["found"], false);
+}
+
+#[test]
+fn saved_teams_with_the_old_objective_start_field_still_load() {
+    let (store, mut team) = fixture();
+    save(&store, &mut team).unwrap();
+    store.db.execute("UPDATE architect_teams SET content=json_set(content,'$.objectiveStart',3) WHERE session_id=?1", [&team.session_id]).unwrap();
+    let loaded = load(&store, &team.session_id).unwrap().unwrap();
+    assert_eq!(loaded.objective, "Build it");
+    assert!(!serde_json::to_string(&loaded).unwrap().contains("objectiveStart"));
+}
+
+/// A lead turn PandaCode started, ended cleanly, with a worker still running.
+fn end_lead_turn(state: &AppState, sid: &str) -> Option<String> {
+    let action = next_action_state(state, &mut |_| {}).unwrap()?;
+    assert_eq!(action.sid, sid);
+    let prompt = action.prompt.clone();
+    let (run, _rx) = claim(state, action);
+    finish(state, &run, "Coordinated.", true);
+    Some(prompt)
+}
+/// A team with a running worker, its lead idle; the worker's handles are returned.
+fn team_with_running_worker() -> (AppState, String, coordination::Actor, crate::PreparedRun) {
+    let (state, sid) = state_fixture();
+    let (lead, _rx) = claim(&state, Launch { sid: sid.clone(), prompt: "Objective".into(), images: None, admission: Admission { parent: sid.clone(), generation: 1 } });
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("a","fast","src/a")]})).unwrap();
+    finish(&state, &lead, "Waiting.", true);
+    let (run, _w) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let actor = {
+        let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+        coordination::Actor::resolve(&team, &run.config.session_id).unwrap()
+    };
+    (state, sid, actor, run)
+}
+fn age_last_wake(state: &AppState, sid: &str) {
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, sid).unwrap().unwrap();
+    team.last_wake_at = storage::now() - WAKE_WINDOW_MS - 1;
+    save(&store, &mut team).unwrap();
+}
+fn still_blocked(state: &AppState, sid: &str, actor: &coordination::Actor, key: &str) {
+    coordinate(state, sid, actor, "pandacode_send_team_message", json!({"recipient":"architect","key":key,"message":"Still blocked","urgent":true})).unwrap();
+}
+#[test]
+fn a_wake_inside_the_window_is_deferred_and_never_lost() {
+    let (state, sid, actor, _run) = team_with_running_worker();
+    still_blocked(&state, &sid, &actor, "one");
+    assert!(end_lead_turn(&state, &sid).unwrap().contains("A teammate sent a message"));
+    // Another sender's blocker, inside the window: nothing starts, and it stays due.
+    still_blocked(&state, &sid, &actor, "two");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "one wake a minute per team");
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert!(team.coordination_revision > team.reviewed_coordination_revision);
+    // The watchdog's next tick after the window delivers it.
+    age_last_wake(&state, &sid);
+    assert!(end_lead_turn(&state, &sid).unwrap().contains("A teammate sent a message"));
+}
+/// Uses up the no-progress count on a running worker's blockers.
+fn exhaust_wakes(state: &AppState, sid: &str, actor: &coordination::Actor) {
+    for i in 0..MAX_STALLED_WAKES {
+        still_blocked(state, sid, actor, &format!("w{i}"));
+        age_last_wake(state, sid);
+        assert!(end_lead_turn(state, sid).is_some(), "wake {i}");
+    }
+}
+#[test]
+fn the_no_progress_limit_holds_wakes_while_workers_run_and_never_stops_them() {
+    let (state, sid, actor, run) = team_with_running_worker();
+    let (other, _) = running_worker(&state, &sid, "b", "src/b");
+    exhaust_wakes(&state, &sid, &actor);
+    still_blocked(&state, &sid, &actor, "over");
+    age_last_wake(&state, &sid);
+    let before = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_ne!(team.status, "paused");
+    assert_eq!(team.workers[0].status, "running", "live work keeps going");
+    assert_eq!(team.error.as_deref(), Some(HELD_NOTE), "the panel says why the lead is quiet");
+    assert_eq!((team.revision, team.reviewed_coordination_revision), (before.revision + 1, before.reviewed_coordination_revision), "only the note is saved: the wake stays due");
+    assert!(team.coordination_revision > team.reviewed_coordination_revision);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert_eq!(load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().revision, team.revision, "a later pass saves nothing");
+    // Another worker's failure waits the same way, unreviewed.
+    finish(&state, &other, "Failed.", false);
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    let reviewed = team.reviewed_revision;
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert_eq!(load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().reviewed_revision, reviewed);
+    // A completion resets the count and the lead gets everything that waited.
+    finish(&state, &run, "Done; tests pass.", true);
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_eq!(team.stalled_wakes, 0);
+    assert_eq!(team.error, None, "the note goes with the hold");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_some());
+}
+#[test]
+fn the_no_progress_limit_pauses_only_with_nothing_running_and_resume_resets_it() {
+    let (state, sid, actor, run) = team_with_running_worker();
+    exhaust_wakes(&state, &sid, &actor);
+    finish(&state, &run, "Failed.", false);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_eq!(team.status, "paused");
+    let error = team.error.unwrap();
+    assert!(error.contains("8 times") && error.contains("Resume continues") && !error.contains("message from you"), "{error}");
+    assert_eq!(team.workers[0].status, "failed", "a settled result is kept as it was");
+    state.agents.lock().unwrap().clear();
+    let resumed = control_state(&state, &sid, "resume").unwrap();
+    assert_eq!((resumed.status.as_str(), resumed.stalled_wakes, resumed.error), ("running", 0, None));
+}
+#[test]
+fn progress_resets_the_no_progress_count() {
+    let (state, sid, actor, run) = team_with_running_worker();
+    let stalled = |state: &AppState| load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().stalled_wakes;
+    still_blocked(&state, &sid, &actor, "one");
+    end_lead_turn(&state, &sid).unwrap();
+    assert_eq!(stalled(&state), 1);
+    // A new assignment is progress; a replacement or a follow-up is not new.
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("b","fast","src/b")]})).unwrap();
+    assert_eq!(stalled(&state), 0);
+    still_blocked(&state, &sid, &actor, "two");
+    age_last_wake(&state, &sid);
+    // The new worker starts first, then the lead is woken.
+    let (_b, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    end_lead_turn(&state, &sid).unwrap();
+    assert_eq!(stalled(&state), 1);
+    finish(&state, &run, "Done; tests pass.", true);
+    assert_eq!(stalled(&state), 0, "a worker completed");
+}
+#[test]
+fn a_worker_that_fails_every_follow_up_trips_the_breaker() {
+    let (state, sid, _actor, run) = team_with_running_worker();
+    finish(&state, &run, "Failed.", false);
+    let mut wakes = 0;
+    while let Some(action) = next_action_state(&state, &mut |_| {}).unwrap() {
+        wakes += 1;
+        assert!(wakes <= MAX_STALLED_WAKES, "the breaker stops it");
+        let (lead, _rx) = claim(&state, action);
+        let id = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].id.clone();
+        call(&state, &sid, "pandacode_followup_worker", json!({"workerId":id,"key":format!("f{wakes}"),"prompt":"Try again."})).unwrap();
+        finish(&state, &lead, "Retrying.", true);
+        let (retry, _w) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        finish(&state, &retry, "Failed.", false);
+    }
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    assert_eq!((wakes, team.status.as_str()), (MAX_STALLED_WAKES, "paused"));
+}
+#[test]
+fn one_unreadable_team_does_not_stop_the_others_settling() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "paused".into();
+        team.workers.push(worker("stale", "running", &["a"], &[]));
+        save(&store, &mut team).unwrap();
+        let project = store.session(&sid).unwrap().project_id;
+        for content in ["{\"status\":\"failed\"}", "not json"] {
+            let other = store.create_session(&project, "claude", "default", "ask").unwrap();
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![other.id, content]).unwrap();
+        }
+    }
+    assert_eq!(watchdog::settle_stale(&state, &mut |_| {}).unwrap(), 1);
+    assert_eq!(load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].status, "stopped");
+    assert!(next_action_state(&state, &mut |_| {}).is_ok());
+    assert!(watchdog::reconcile(&state, storage::now(), &mut |_| {}).is_ok());
+}
+#[test]
+fn resuming_an_old_team_with_a_long_objective_sets_the_note_it_points_to() {
+    let (state, sid) = state_fixture();
+    let objective = "o".repeat(OBJECTIVE_QUOTE + 1);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.objective = objective.clone();
+        team.status = "paused".into();
+        save(&store, &mut team).unwrap();
+        coordination::notes::ensure(&store).unwrap();
+        assert!(!coordination::notes::exists(&store, &sid, OBJECTIVE_NOTE).unwrap());
+    }
+    control_state(&state, &sid, "resume").unwrap();
+    let store = state.store.lock().unwrap();
+    let value: String = store.db.query_row("SELECT value FROM architect_notes WHERE parent_session_id=?1 AND key=?2", params![sid, OBJECTIVE_NOTE], |r| r.get(0)).unwrap();
+    assert_eq!(value, objective);
+}
+#[test]
+fn a_turn_that_quotes_a_long_objective_restores_a_missing_note() {
+    let (state, sid, actor, _run) = team_with_running_worker();
+    let objective = "o".repeat(OBJECTIVE_QUOTE + 1);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.objective = objective.clone();
+        save(&store, &mut team).unwrap();
+    }
+    still_blocked(&state, &sid, &actor, "one");
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(action.prompt.contains("team note `objective`"));
+    let store = state.store.lock().unwrap();
+    assert!(coordination::notes::exists(&store, &sid, OBJECTIVE_NOTE).unwrap());
+}
+#[test]
+fn events_leave_out_the_objective_pending_prompt_and_catalogs() {
+    let (_store, mut team) = fixture();
+    team.objective = "o".repeat(1024);
+    team.pending_turn = Some(PendingTurn { prompt: "p".repeat(1024), images: None, reserved: true, reserved_at: storage::now(), kind: None });
+    team.config.catalog = vec![WorkerProfile { id: "m".into(), name: "M".into(), provider: "codex".into(), model: "m".into(), reasoning_effort: None }];
+    let lean = event_payload(&team);
+    assert!(lean.objective.is_empty() && lean.pending_turn.is_none() && lean.config.catalog.is_empty());
+    // The remote host's listener parses the same payload back.
+    let parsed: TeamSnapshot = serde_json::from_value(serde_json::to_value(&lean).unwrap()).unwrap();
+    assert_eq!(parsed.session_id, team.session_id);
+    assert_eq!(team.objective.len(), 1024, "the saved team is untouched");
+}
+#[test]
+fn an_oversized_routed_name_is_cut_in_the_routing_note() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let long = "n".repeat(300 * 1024);
+    let mut task = assignment("big", "auto", "src/a");
+    task["name"] = json!(long);
+    let result = routed_call(&state, &sid, json!({"assignments":[task]}), true).unwrap();
+    let note = result["routing"][0].as_str().unwrap();
+    assert!(note.len() < 4 * 1024, "{} bytes", note.len());
+}
+/// A parent that started one child which settles (as `success` says) before the parent's run ends.
+fn early_child(success: bool) -> (AppState, String, crate::PreparedRun, String, String) {
+    let (state, sid, lead, run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let (child_run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &lead, "Workers are on it.", true);
+    finish(&state, &child_run, if success { "Lexer done." } else { "Could not build." }, success);
+    (state, sid, run, engine, child)
+}
+fn status_of(state: &AppState, sid: &str, id: &str) -> Worker {
+    team_of(state, sid).workers.into_iter().find(|w| w.id == id).unwrap()
+}
+#[test]
+fn a_sub_worker_that_settles_early_still_returns_to_its_parent_once() {
+    for (success, text) in [(true, "Lexer done."), (false, "Could not build.")] {
+        let (state, sid, run, engine, child) = early_child(success);
+        finish(&state, &run, "Started the lexer.", true);
+        assert_eq!(status_of(&state, &sid, &engine).status, "parked");
+        assert!(!status_of(&state, &sid, &child).abandoned, "not resolved behind the parent's back");
+        let resume = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+        assert_eq!(resume.sid, status_of(&state, &sid, &engine).session_id);
+        assert!(resume.prompt.contains("Your sub-workers have settled") && resume.prompt.contains(text), "{}", resume.prompt);
+        assert!(status_of(&state, &sid, &child).reported);
+        let (again, _rx) = claim(&state, resume);
+        finish(&state, &again, "Verified.", true);
+        // One extra turn: the reported child does not park it again.
+        assert_eq!(status_of(&state, &sid, &engine).status, "completed");
+        assert_eq!(status_of(&state, &sid, &child).abandoned, !success, "a seen failure is resolved by its parent");
+    }
+}
+#[test]
+fn a_parent_that_read_its_settled_sub_worker_needs_no_extra_turn() {
+    let (state, sid, run, engine, child) = early_child(false);
+    let revision = team_of(&state, &sid).dispatch_revision;
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child,"checkpoint":true})).unwrap();
+    assert!(!status_of(&state, &sid, &child).reported, "a checkpoint is not its result");
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child})).unwrap();
+    assert!(status_of(&state, &sid, &child).reported);
+    assert_eq!(team_of(&state, &sid).dispatch_revision, revision, "a read gives the architect nothing to review");
+    finish(&state, &run, "Handled the failure.", true);
+    assert_eq!(status_of(&state, &sid, &engine).status, "completed");
+}
+#[test]
+fn reading_a_running_sub_worker_does_not_report_it_and_a_follow_up_clears_reported() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let (child_run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child})).unwrap();
+    assert!(!status_of(&state, &sid, &child).reported);
+    finish(&state, &child_run, "Lexer done.", true);
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"read","workerId":child})).unwrap();
+    assert!(status_of(&state, &sid, &child).reported);
+    state.agents.lock().unwrap().remove(&status_of(&state, &sid, &child).session_id);
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"followup","workerId":child,"key":"more","prompt":"More."})).unwrap();
+    assert!(!status_of(&state, &sid, &child).reported);
+}
+#[test]
+fn only_pandacodes_own_note_counts_as_the_objective() {
+    let (state, sid) = state_fixture();
+    let store = state.store.lock().unwrap();
+    coordination::notes::ensure(&store).unwrap();
+    store.db.execute("INSERT INTO architect_notes(parent_session_id,key,value,author,updated_at,rev) VALUES(?1,?2,'agent text','w1',1,1)", params![sid, OBJECTIVE_NOTE]).unwrap();
+    assert!(!coordination::notes::exists(&store, &sid, OBJECTIVE_NOTE).unwrap());
+    let value = |store: &Store| store.db.query_row("SELECT value FROM architect_notes WHERE parent_session_id=?1 AND key=?2", params![sid, OBJECTIVE_NOTE], |r| r.get::<_, String>(0)).unwrap();
+    // A short objective's start clears only PandaCode's own note.
+    coordination::notes::set_reserved(&store, &sid, OBJECTIVE_NOTE, None).unwrap();
+    assert_eq!(value(&store), "agent text");
+    // A turn that points at the note gets the real objective.
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.objective = "o".repeat(OBJECTIVE_QUOTE + 1);
+    keep_objective_note(&store, &team).unwrap();
+    assert_eq!(value(&store), team.objective);
+    assert!(coordination::notes::exists(&store, &sid, OBJECTIVE_NOTE).unwrap());
+    coordination::notes::set_reserved(&store, &sid, OBJECTIVE_NOTE, None).unwrap();
+    assert!(!coordination::notes::exists(&store, &sid, OBJECTIVE_NOTE).unwrap());
+}
+#[test]
+fn a_live_blocker_keeps_its_place_when_long_summaries_use_the_budget() {
+    let mut team = new_team("lead".into(), config());
+    team.reviewed_revision = 0;
+    let mut blocked = worker("blocked", "running", &["a"], &[]);
+    blocked.checkpoint = Some(coordination::WorkerCheckpoint { summary: "s".into(), next_steps: "n".into(), blocker: Some("NEED-THE-API-KEY".into()), updated_at: 1 });
+    let mut workers = vec![blocked];
+    for i in 0..12 {
+        let mut done = worker(&format!("w{i}"), "completed", &["b"], &[]);
+        done.summary = "r".repeat(SUMMARY_PREVIEW);
+        done.result_revision = 1;
+        done.checkpoint = Some(coordination::WorkerCheckpoint { summary: "c".repeat(900), next_steps: "n".into(), blocker: None, updated_at: 1 });
+        workers.push(done);
+    }
+    team.workers = workers;
+    let review = review_summaries(&team, false);
+    assert!(serde_json::to_string(&review).unwrap().contains("NEED-THE-API-KEY"));
+}
+#[test]
+fn failing_over_clears_the_empty_reply_nudge() {
+    let (state, sid, _run) = failover_state("gpt-5", &["codex", "cline"]);
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.workers[0].status = "failed".into();
+    team.workers[0].nudged = true;
+    assert!(fail_over(&store, &mut team, 0, "harness error").unwrap());
+    assert!(!team.workers[0].nudged, "a fresh session gets its own nudge");
+}
+#[test]
+fn route_models_output_stays_within_a_page_however_many_tasks() {
+    let mut config = config();
+    config.auto = true;
+    config.catalog = routing_catalog();
+    let (pool, jobs, _) = routing::route_request(&config, &[], json!({"tasks":[{"text":"Investigate the failing scheduler test."}]})).unwrap();
+    let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &Default::default(), &pool, jobs).unwrap();
+    let many = |n: usize| std::iter::repeat_n(routes[0].clone(), n).collect::<Vec<_>>();
+    let few = routing::route_summary(&config, &many(2));
+    assert!(few.get("trimmed").is_none() && few["tasks"][0].get("ladder").is_some());
+    let single = serde_json::to_vec(&few["tasks"][0]).unwrap().len();
+    // Whole tasks overflow but trimmed ones fit: nothing is omitted.
+    let trimmed = routing::route_summary(&config, &many(PAGE_BYTES / single + 1));
+    assert_eq!(trimmed["trimmed"], true);
+    assert!(trimmed.get("omittedTasks").is_none() && trimmed["tasks"][0].get("ladder").is_none() && trimmed["tasks"][0].get("alternatives").is_none());
+    for count in [1000, 5000] {
+        let out = routing::route_summary(&config, &many(count));
+        assert!(serde_json::to_vec(&out).unwrap().len() <= PAGE_BYTES);
+        assert_eq!(out["tasks"].as_array().unwrap().len() + out["omittedTasks"].as_u64().unwrap() as usize, count);
+    }
+}
+#[test]
+fn a_committed_batch_leaves_out_routing_notes_too_long_for_one_result() {
+    let (state, sid) = auto_state();
+    with_catalog(&state, &sid);
+    let tasks: Vec<_> = (0..300).map(|i| { let mut task = assignment(&format!("k{i}"), "auto", &format!("src/{i}")); task["name"] = json!("n".repeat(80)); task }).collect();
+    let result = routed_call(&state, &sid, json!({"assignments":tasks}), true).unwrap();
+    assert_eq!(result["workerIds"].as_array().unwrap().len(), 300);
+    assert!(result.get("routing").is_none() && result["routingOmitted"].as_str().unwrap().contains("list_workers"));
+    assert!(serde_json::to_vec(&result).unwrap().len() <= PAGE_BYTES);
+    let listed = call(&state, &sid, "pandacode_list_workers", json!({})).unwrap();
+    assert!(listed["workers"][0]["model"].is_string() && listed["workers"][0]["provider"].is_string());
+}
+#[test]
+fn a_folder_that_vanishes_fails_the_team_only_once_nothing_runs() {
+    let (state, sid, _actor, run) = team_with_running_worker();
+    let project = state.store.lock().unwrap().session(&sid).unwrap().project_id;
+    let path: String = state.store.lock().unwrap().db.query_row("SELECT path FROM projects WHERE id=?1", [&project], |r| r.get(0)).unwrap();
+    let set_path = |to: &str| { state.store.lock().unwrap().db.execute("UPDATE projects SET path=?2 WHERE id=?1", params![project, to]).unwrap(); };
+    set_path("/pandacode-test/no-such-folder");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.workers[0].status.as_str(), team.error.as_deref()), ("waiting", "running", None), "live work survives the pass");
+    assert!(state.agents.lock().unwrap().contains_key(&run.config.session_id));
+    // The folder comes back: nothing happened to the team.
+    set_path(&path);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert_eq!(team_of(&state, &sid).status, "waiting");
+    // Gone again with nothing running: the team fails.
+    finish(&state, &run, "Done; tests pass.", true);
+    set_path("/pandacode-test/no-such-folder");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "failed");
+    assert!(team.error.is_some());
+}
+#[test]
+fn failing_over_a_worker_with_sub_workers_tells_it_to_read_them_first() {
+    let (state, sid, _run) = failover_state("gpt-5", &["codex", "cline"]);
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, &sid).unwrap().unwrap();
+    team.workers[0].status = "failed".into();
+    assert!(fail_over(&store, &mut team, 0, "harness error").unwrap());
+    assert_eq!(team.workers[0].resume_prompt, None, "no sub-workers: the assignment alone");
+    let mut child = team.workers[0].clone();
+    child.id = "child".into();
+    child.parent_worker = Some(team.workers[0].id.clone());
+    child.status = "completed".into();
+    child.reported = true;
+    team.workers.push(child);
+    team.workers[0].status = "failed".into();
+    team.workers[0].provider = "codex".into();
+    assert!(fail_over(&store, &mut team, 0, "harness error").unwrap());
+    let prompt = team.workers[0].resume_prompt.clone().unwrap();
+    assert!(prompt.starts_with(&team.workers[0].assignment) && prompt.ends_with(FAILOVER_CHILDREN), "{prompt}");
+    assert!(FAILOVER_CHILDREN.contains("sub_workers"));
+}
+#[test]
+fn a_worker_that_ran_tools_but_never_reported_fails_saying_so() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &lead, "Waiting.", true);
+    state.store.lock().unwrap().message(&run.config.session_id, "tool", "Edited src/a.rs").unwrap();
+    finish_silent(&state, &run);
+    assert_eq!(team_of(&state, &sid).workers[0].status, "queued", "still asked once");
+    let (again, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish_silent(&state, &again);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.error.as_deref()), ("failed", Some(NO_REPORT_ERROR)));
+    assert!(NO_REPORT_ERROR.len() <= 512, "list views show it whole");
+}
+#[test]
+fn read_worker_gives_the_whole_error_on_the_first_page_only() {
+    let (state, sid, actor, _run) = team_with_running_worker();
+    let id = worker_id(&actor);
+    let long = "e".repeat(900);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].error = Some(long.clone());
+        save(&store, &mut team).unwrap();
+    }
+    let first = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id})).unwrap();
+    assert_eq!(first["error"], long);
+    let later = call(&state, &sid, "pandacode_read_worker", json!({"workerId":id,"offset":1})).unwrap();
+    assert!(later.get("error").is_none());
+}
+
+/// A lead turn the harness failed, as the run's end reports it (not charged to the model here).
+fn lead_fails(state: &AppState, run: &crate::PreparedRun) {
+    let sid = &run.config.session_id;
+    let mut agents = state.agents.lock().unwrap();
+    state.store.lock().unwrap().finish_task_turn(sid, false, false).unwrap();
+    agents.remove(sid);
+    completed_with_agents(state, &agents, sid, run.team.as_ref(), false, false, Some("Overloaded."), &mut |_| {});
+}
+/// The retry's minimum gap has passed.
+fn retry_gap_passes(state: &AppState, sid: &str) {
+    let store = state.store.lock().unwrap();
+    let mut team = load(&store, sid).unwrap().unwrap();
+    team.last_wake_at = 0;
+    save(&store, &mut team).unwrap();
+}
+#[test]
+fn a_failed_worker_wake_that_fails_keeps_workers_running_and_is_retried() {
+    let (state, sid) = state_fixture();
+    let parent = objective_turn(&state, &sid);
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("one","fast","src/a"),assignment("two","fast","src/b")]})).unwrap();
+    let (one, _a) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let (two, mut two_rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &parent, "waiting", true);
+    finish(&state, &one, "broke", false);
+    let (handle, _h) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    lead_fails(&state, &handle);
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "waiting");
+    assert!(team.error.as_deref().unwrap().contains("Overloaded."));
+    assert_eq!(team.workers.iter().find(|w| w.session_id == two.config.session_id).unwrap().status, "running");
+    assert!(two_rx.try_recv().is_err(), "the healthy worker is not stopped");
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "no retry from the run's own end");
+    retry_gap_passes(&state, &sid);
+    let retry = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(retry.prompt.starts_with(FAILED_PREFIX), "the same wake is due again");
+    let count = team_of(&state, &sid).stalled_wakes;
+    assert_eq!(count, 2, "both wakes count against the breaker");
+    let _retry = claim(&state, retry);
+    let team = team_of(&state, &sid);
+    assert_eq!((team.error, team.lead_failure), (None, None));
+}
+#[test]
+fn a_failed_review_with_nothing_running_is_retried_and_waits_out_a_usage_limit() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "parser", "src");
+    finish(&state, &run, "Parser checked successfully", true);
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    lead_fails(&state, &review);
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "waiting", "not failed at once");
+    assert_eq!(team.reviewed_revision, 0, "the results are unread again");
+    assert_eq!(team.workers[0].status, "completed");
+    state.store.lock().unwrap().set_limited(&sid, Some(storage::now() + 3_600_000)).unwrap();
+    retry_gap_passes(&state, &sid);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "held during the limit");
+    assert_eq!(team_of(&state, &sid).stalled_wakes, 1, "a held wake is not counted");
+    state.store.lock().unwrap().clear_limited(&sid).unwrap();
+    let retry = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(retry.prompt.starts_with("Review the settled workers"));
+    assert!(retry.prompt.contains("Parser checked successfully"), "the results come back");
+}
+#[test]
+fn a_failed_continue_turn_is_asked_again() {
+    let (state, sid) = state_fixture();
+    let parent = objective_turn(&state, &sid);
+    finish(&state, &parent, "Thinking about it.", true);
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.last_turn_kind = Some(internal_turns::CoordinationKind::Continue);
+        save(&store, &mut team).unwrap();
+    }
+    let (asked, _a) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    lead_fails(&state, &asked);
+    retry_gap_passes(&state, &sid);
+    let retry = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(retry.prompt.starts_with("You ended your turn"), "{}", retry.prompt);
+}
+#[test]
+fn the_breaker_ends_lead_retries_with_the_error_and_resume_continues() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "parser", "src");
+    finish(&state, &run, "Parser checked successfully", true);
+    let mut turns = 0;
+    while let Some(action) = next_action_state(&state, &mut |_| {}).unwrap() {
+        let (turn, _t) = claim(&state, action);
+        lead_fails(&state, &turn);
+        retry_gap_passes(&state, &sid);
+        turns += 1;
+        assert!(turns <= MAX_STALLED_WAKES, "the retries are bounded");
+    }
+    assert_eq!(turns, MAX_STALLED_WAKES);
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "paused");
+    let error = team.error.unwrap();
+    assert!(error.contains("Overloaded.") && error.contains("Resume"), "{error}");
+    let team = control_state(&state, &sid, "resume").unwrap();
+    assert_eq!((team.status.as_str(), team.stalled_wakes, team.lead_failure), ("running", 0, None));
+}
+#[test]
+fn a_failed_user_turn_with_nothing_dispatched_still_ends_the_team() {
+    let (state, sid) = state_fixture();
+    let parent = objective_turn(&state, &sid);
+    lead_fails(&state, &parent);
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.lead_failure), ("failed", None));
+}
+#[test]
+fn a_failed_user_turn_keeps_its_workers_and_reports_them_once() {
+    let (state, sid) = state_fixture();
+    let (old, _) = running_worker(&state, &sid, "old", "src/old");
+    finish(&state, &old, "Old result, already reviewed", true);
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    finish(&state, &review, "Reviewed.", true);
+    {
+        // The user's message starts a turn, with the old result already behind the review marks.
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(team.reviewed_revision, team.dispatch_revision);
+    }
+    let parent = {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn = Some(PendingTurn { prompt: "Also do this".into(), images: None, reserved: false, reserved_at: 0, kind: None });
+        save(&store, &mut team).unwrap();
+        drop(store);
+        claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap()).0
+    };
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[assignment("one","fast","src/a")]})).unwrap();
+    let (one, mut one_rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    lead_fails(&state, &parent);
+    let team = team_of(&state, &sid);
+    assert_eq!(team.status, "waiting", "not failed");
+    assert!(team.lead_failure.is_some());
+    assert_eq!(team.workers[1].status, "running");
+    assert!(one_rx.try_recv().is_err(), "the worker is not stopped");
+    finish(&state, &one, "New result", true);
+    retry_gap_passes(&state, &sid);
+    let retry = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(retry.prompt.starts_with("Review the settled workers"), "{}", retry.prompt);
+    assert!(retry.prompt.contains("New result"));
+    assert!(!retry.prompt.contains("Old result, already reviewed"), "{}", retry.prompt);
+}
+#[test]
+fn a_usage_limit_holds_the_team_in_its_snapshot_until_a_new_harness_or_a_retry_lifts_it() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "parser", "src");
+    finish(&state, &run, "Parser checked successfully", true);
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let until = storage::now() + 3_600_000;
+    state.store.lock().unwrap().set_limited(&sid, Some(until)).unwrap();
+    lead_fails(&state, &review);
+    assert_eq!(team_of(&state, &sid).lead_failure.unwrap().held_until, Some(until));
+    retry_gap_passes(&state, &sid);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "held");
+    {
+        // The same harness keeps the limit.
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        let session = store.session(&sid).unwrap();
+        let same = profiles::TeamSetup { architect: profiles::ModelSelection { provider: session.provider.clone(), model: "other".into(), reasoning_effort: None }, config: team.config.clone() };
+        apply_setup(&store, &mut team, &same).unwrap();
+        assert!(store.session(&sid).unwrap().limited_at.is_some());
+        // Another harness does not.
+        let other = if session.provider == "codex" { "claude" } else { "codex" };
+        let moved = profiles::TeamSetup { architect: profiles::ModelSelection { provider: other.into(), model: "other".into(), reasoning_effort: None }, config: team.config.clone() };
+        apply_setup(&store, &mut team, &moved).unwrap();
+        save(&store, &mut team).unwrap();
+        assert_eq!(store.session(&sid).unwrap().limited_at, None);
+        assert_eq!(team.lead_failure.unwrap().held_until, None);
+    }
+    let retry = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(retry.prompt.starts_with("Review the settled workers"));
+}
+#[test]
+fn clearing_the_limit_lets_a_held_retry_go_on_the_next_pass() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "parser", "src");
+    finish(&state, &run, "Parser checked successfully", true);
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    state.store.lock().unwrap().set_limited(&sid, Some(storage::now() + 3_600_000)).unwrap();
+    lead_fails(&state, &review);
+    retry_gap_passes(&state, &sid);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none(), "held");
+    state.store.lock().unwrap().clear_limited(&sid).unwrap();
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().unwrap().prompt.starts_with("Review the settled workers"));
+}
+#[test]
+fn a_lead_that_cannot_launch_leaves_live_workers_running_and_tries_again() {
+    let (state, sid) = state_fixture();
+    running_worker(&state, &sid, "parser", "src");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn = Some(PendingTurn { prompt: "Also do this".into(), images: None, reserved: false, reserved_at: 0, kind: None });
+        save(&store, &mut team).unwrap();
+    }
+    let lead = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert_eq!(lead.sid, sid);
+    fail_launch_state(&state, &lead.admission, &lead.sid, "An agent update is being installed", &mut |_| {});
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.workers[0].status.as_str()), ("waiting", "running"));
+    assert!(team.lead_failure.is_some() && team.pending_turn.is_none());
+    let note = team.error.unwrap();
+    assert!(note.contains("An agent update is being installed") && !note.contains("shortly"), "{note}");
+}
+#[test]
+fn a_lead_that_cannot_launch_with_nothing_live_fails_the_team() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.pending_turn = Some(PendingTurn { prompt: "Also do this".into(), images: None, reserved: false, reserved_at: 0, kind: None });
+        save(&store, &mut team).unwrap();
+    }
+    let lead = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    fail_launch_state(&state, &lead.admission, &lead.sid, "An agent update is being installed", &mut |_| {});
+    assert_eq!(team_of(&state, &sid).status, "failed");
+}
+#[test]
+fn a_retry_that_starts_clears_the_limit_and_a_new_limit_sets_it_again() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "parser", "src");
+    finish(&state, &run, "Parser checked successfully", true);
+    let (review, _r) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    let round = team_of(&state, &sid).round;
+    // The reset has passed, or was never reported: the retry goes ahead.
+    state.store.lock().unwrap().set_limited(&sid, None).unwrap();
+    lead_fails(&state, &review);
+    assert_eq!(team_of(&state, &sid).round, round - 1, "a failed turn takes its round back");
+    retry_gap_passes(&state, &sid);
+    let (_retry, _t) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+    assert_eq!(team_of(&state, &sid).round, round, "the retry is the same round");
+    let store = state.store.lock().unwrap();
+    assert_eq!(store.session(&sid).unwrap().limited_at, None);
+    store.set_limited(&sid, Some(storage::now() + 1000)).unwrap();
+    assert!(store.session(&sid).unwrap().limited_at.is_some());
+}
+#[test]
+fn cancel_and_replace_reasons_are_bounded_when_stored() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "one", "src/a");
+    let id = team_of(&state, &sid).workers[0].id.clone();
+    finish(&state, &run, "broke", false);
+    let long = "r".repeat(8192);
+    let mut replacement = assignment("two", "fast", "src/a");
+    replacement["replaces"] = json!(id);
+    replacement["replaceReason"] = json!(long);
+    call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[replacement]})).unwrap();
+    let team = team_of(&state, &sid);
+    assert!(team.workers[0].error.as_deref().unwrap().len() < 1100);
+    let replacement = team.workers[1].id.clone();
+    call(&state, &sid, "pandacode_cancel_worker", json!({"workerId":replacement,"reason":long})).unwrap();
+    assert!(team_of(&state, &sid).workers[1].error.as_deref().unwrap().len() < 1100);
+}
+#[test]
+fn a_run_that_replies_clears_the_nudge() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "one", "src/a");
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers[0].nudged = true;
+        save(&store, &mut team).unwrap();
+    }
+    finish(&state, &run, "Done.", true);
+    assert!(!team_of(&state, &sid).workers[0].nudged);
+}
+#[test]
+fn resume_under_a_settled_parent_is_refused_before_anything_is_requeued() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "one", "src/a");
+    control_state(&state, &sid, "pause").unwrap();
+    {
+        let mut agents = state.agents.lock().unwrap();
+        let store = state.store.lock().unwrap();
+        store.finish_task_turn(&run.config.session_id, false, true).unwrap();
+        agents.remove(&run.config.session_id);
+        store.db.execute("UPDATE sessions SET task_stage='completed' WHERE id=?1", [&sid]).unwrap();
+    }
+    assert_eq!(control_state(&state, &sid, "resume").unwrap_err(), SETTLED_PARENT);
+    let team = team_of(&state, &sid);
+    assert_eq!((team.status.as_str(), team.workers[0].status.as_str()), ("paused", "stopped"));
+}
+
+/// As the run loop saves a clean end with a child still running: the reply, then PandaCode's note.
+fn end_note(state: &AppState, sid: &str, reply: &str) {
+    let store = state.store.lock().unwrap();
+    let assistant = std::sync::Mutex::new(reply.to_owned());
+    let mut note = crate::AgentEvent { session_id: sid.into(), kind: "note".into(), text: "The report from \"scout\" did not reach the agent.".into(), request_id: None, data: None, tool: None };
+    crate::save_agent_activity(&store, &assistant, &mut note, None).unwrap();
+}
+
+#[test]
+fn the_run_end_note_never_replaces_a_workers_report() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &lead, "Waiting.", true);
+    let task = run.config.session_id.clone();
+    end_note(&state, &task, "Done: fixed X");
+    let rows: Vec<String> = state.store.lock().unwrap().db.prepare("SELECT role FROM messages WHERE session_id=?1 ORDER BY id DESC LIMIT 2").unwrap()
+        .query_map([&task], |row| row.get(0)).unwrap().map(|row| row.unwrap()).collect();
+    assert_eq!(rows, ["system", "assistant"], "the note is its own row, after the flushed report");
+    finish_silent(&state, &run);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.summary.as_str()), ("completed", "Done: fixed X"));
+    let page = call(&state, &sid, "pandacode_read_worker", json!({"workerId":worker.id,"offset":null,"checkpoint":null})).unwrap();
+    assert_eq!(page["response"], "Done: fixed X", "{page}");
+    assert_eq!(page["summary"], "Done: fixed X", "{page}");
+    assert!(call(&state, &sid, "pandacode_list_workers", json!({"offset":null})).is_ok());
+}
+
+#[test]
+fn a_silent_workers_run_end_note_is_no_reply() {
+    let (state, sid) = state_fixture();
+    let lead = objective_turn(&state, &sid);
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &lead, "Waiting.", true);
+    end_note(&state, &run.config.session_id, "");
+    finish_silent(&state, &run);
+    let worker = team_of(&state, &sid).workers[0].clone();
+    assert_eq!((worker.status.as_str(), worker.nudged, worker.summary.as_str()), ("queued", true, ""), "asked to report");
 }

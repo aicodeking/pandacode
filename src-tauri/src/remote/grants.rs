@@ -29,7 +29,7 @@ const VIEW: [&str; 18] = [
     "subscribe", "tasks.list", "task.messages", "task.changes", "task.diff", "task.attachment", "task.workspaceImage", "projects.icons", "providers.list", "providers.models",
     "task.team", "task.workerMessages", "bots.list", "bot.thread", "task.startStatus", "task.pull", "task.pullDiff", "batch",
 ];
-const CONTROL: [&str; 9] = ["task.send", "task.steer", "task.stop", "task.configure", "approval.respond", "input.respond", "image.put", "task.cancelStart", "task.pullDetect"];
+const CONTROL: [&str; 10] = ["task.send", "task.steer", "task.stop", "task.teamResume", "task.configure", "approval.respond", "input.respond", "image.put", "task.cancelStart", "task.pullDetect"];
 /// Needs `full`: starting work, merging, and acting as a bot. Anything not listed anywhere
 /// is `full`-only too.
 #[cfg(test)]

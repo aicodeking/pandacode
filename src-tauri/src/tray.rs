@@ -20,6 +20,7 @@ const WIDTH: f64 = 340.0;
 const MAX_HEIGHT: f64 = 560.0;
 const GAP: f64 = 6.0;
 const SECTION_LIMIT: usize = 10;
+const FULLSCREEN_EXIT: Duration = Duration::from_millis(1000);
 /// Finished since last viewed, with whether the turn failed; in memory, so a restart starts clean.
 static UNSEEN: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 static USAGE: Mutex<BTreeMap<String, Usage>> = Mutex::new(BTreeMap::new());
@@ -106,6 +107,32 @@ pub fn show(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+/// Closing the main window hides it, so `show` and every other path that brings it back still
+/// find it and its page keeps working. Without a menu bar item nothing could reopen it: quit.
+/// Linux always quits: a tray icon can exist yet be invisible (GNOME without an appindicator
+/// extension, many Wayland compositors), which would leave agents running with no way back.
+pub(crate) fn hide_on_close(window: &WebviewWindow) {
+    let main = window.clone();
+    window.on_window_event(move |event| {
+        let tauri::WindowEvent::CloseRequested { api, .. } = event else { return };
+        api.prevent_close();
+        if cfg!(target_os = "linux") || main.app_handle().tray_by_id(ID).is_none() {
+            main.app_handle().exit(0);
+        } else if cfg!(target_os = "macos") && main.is_fullscreen().unwrap_or(false) {
+            // Hiding a window in native fullscreen leaves its black Space behind.
+            // ponytail: a fixed wait for the exit animation; a reopen inside it is hidden again.
+            let _ = main.set_fullscreen(false);
+            let main = main.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(FULLSCREEN_EXIT).await;
+                let _ = main.hide();
+            });
+        } else {
+            let _ = main.hide();
+        }
+    });
 }
 
 fn hide(app: &AppHandle) {

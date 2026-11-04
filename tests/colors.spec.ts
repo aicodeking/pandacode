@@ -6,7 +6,7 @@ const token = (page: Page, name: string) => page.evaluate(name => getComputedSty
 const pin = (page: Page, scene: string) => page.addInitScript(scene => {
   if (sessionStorage.getItem('pinned') === scene) return;
   sessionStorage.setItem('pinned', scene);
-  localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: scene }));
+  localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: scene }));
 }, scene);
 async function openColors(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();

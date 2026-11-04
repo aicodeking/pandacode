@@ -220,6 +220,26 @@ test('older history and forks preserve authors when the later harness switch is 
 });
 
 test.describe('conversation message actions', () => {
+  for (const theme of ['light', 'dark']) test(`checkpoint actions fit beneath a short user message in a narrow thread (${theme})`, async ({ page }, testInfo) => {
+    await page.addInitScript(theme => localStorage.setItem('pandacode.theme', theme), theme);
+    await page.setViewportSize({ width: 700, height: 800 });
+    await install(page);
+    await page.evaluate(() => (window as any).__messageActionsTest.setContent(205, 'OK'));
+    await page.locator('.task-item[data-id="session-1"]').click();
+    await page.locator(`.task-item[data-id="${sessionId}"]`).click();
+    const message = transcript(page).locator('[data-message-id="205"]');
+    await expect(message.locator('.message-content')).toHaveText('OK');
+    await message.hover();
+    const actions = message.getByRole('group', { name: 'Message actions', exact: true });
+    await expect(actions.getByRole('button')).toHaveCount(5);
+    await expect(actions).toHaveCSS('opacity', '1');
+    const bounds = (await transcript(page).boundingBox())!, controls = (await actions.boundingBox())!;
+    expect(controls.x).toBeGreaterThanOrEqual(bounds.x);
+    expect(controls.x + controls.width).toBeLessThanOrEqual(bounds.x + bounds.width);
+    expect(await transcript(page).evaluate(root => root.scrollWidth - root.clientWidth)).toBe(0);
+    await page.screenshot({ path: testInfo.outputPath(`checkpoint-actions-${theme}.png`) });
+  });
+
   test('copies the original user text and Markdown, including earlier activity responses, using keyboard controls', async ({ page }) => {
     await install(page); await revealHistory(page);
     await expect(action(page, 201, 'copy')).toBeVisible();

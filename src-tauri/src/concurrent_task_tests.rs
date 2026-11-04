@@ -977,6 +977,8 @@ fn settled_team_lead(provider: &str, stage: &str, status: &str) -> (Arc<AppState
             failovers: 0,
             parent_worker: None,
             resume_prompt: None,
+            nudged: false,
+            reported: false,
             tool_catalog_version: 0,
         });
         store.db.execute(

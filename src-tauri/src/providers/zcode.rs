@@ -230,7 +230,7 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("zcode", path)?;
     command.arg("app-server");
     let workspace = std::env::temp_dir();
     command
@@ -422,7 +422,7 @@ impl Protocol {
                     field(params, "reason"),
                     preview_json(&params["input"], TOOL_INPUT_LIMIT),
                 );
-                self.approval(value, text, step)?;
+                self.approval(value, text, step);
             }
             ("interaction/requestUserInput", true) => step.write.push(
                 json!({"id": value["id"], "result": {"action": "decline",
@@ -1122,8 +1122,137 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the ZCode CLI; metadata only, never sends a prompt"]
     async fn installed_zcode_lists_models() {
-        let path = executable("zcode").expect("Install ZCode first");
+        // Prefer the desktop bundle: a PATH shim (or a stale install) may not
+        // speak the current protocol, and the bundle is what the pin records.
+        let path = bundled().unwrap_or_else(|| executable("zcode").expect("Install ZCode first"));
         let models = models(&path).await.unwrap();
         assert!(models.len() > 1, "{models:?}");
+    }
+
+    /// Metadata re-verification against the current desktop CLI: the create
+    /// snapshot carries per-model capability properties and slash commands,
+    /// and `session/usage` answers a zero-state session. Never sends a prompt,
+    /// so turn event names stay pinned to the recorded frames.
+    #[tokio::test]
+    #[ignore = "needs the ZCode CLI; metadata only, never sends a prompt"]
+    async fn installed_zcode_snapshot_capabilities() {
+        // Prefer the desktop bundle: a PATH shim (or a stale install) may not
+        // speak the current protocol, and the bundle is what the pin records.
+        let path = bundled().unwrap_or_else(|| executable("zcode").expect("Install ZCode first"));
+        // The bundled CLI runs on the desktop app's Electron runtime, so the
+        // launch layer builds the process (direct exec of zcode.cjs fails).
+        let mut command = super::launch::command(&path).unwrap();
+        command.arg("app-server");
+        let workspace = std::env::temp_dir();
+        command
+            .current_dir(&workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().expect("start ZCode");
+        let group = ProcessGroup::register(child.id());
+        let snapshot = tokio::time::timeout(Duration::from_secs(25), async {
+            let mut stdin = child.stdin.take().unwrap();
+            write_json(
+                &mut stdin,
+                &json!({"id": ID_CREATE, "method": "session/create", "params": {
+                    "workspace": workspace_of(&workspace),
+                    "persistence": "deferred",
+                    "mode": "plan",
+                    "titleGenerationEnabled": false,
+                }}),
+            )
+            .await
+            .unwrap();
+            let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+            loop {
+                let mut line = String::new();
+                let count = stdout.read_line(&mut line).await.unwrap();
+                assert!(count > 0, "ZCode exited before the create reply");
+                let value: Value = serde_json::from_str(&line).unwrap();
+                if value.get("method").is_some() && value.get("id").is_some() {
+                    // Decline reverse requests like the run path does; the
+                    // create waits on them (runtime preferences).
+                    write_json(
+                        &mut stdin,
+                        &json!({"id": value["id"], "error": {"code": -32601, "message": "Method not found"}}),
+                    )
+                    .await
+                    .unwrap();
+                    continue;
+                }
+                if value["id"] == ID_CREATE {
+                    assert!(value.get("error").is_none(), "create failed: {value}");
+                    let session_id = value["result"]["session"]["sessionId"].clone();
+                    let result = value["result"].clone();
+                    // A fresh deferred session may be known to usage only
+                    // after its first send; a zero-state reply proves the
+                    // method, a session-not-found error proves the same on
+                    // builds that defer harder. Anything else has changed.
+                    write_json(
+                        &mut stdin,
+                        &json!({"id": 90, "method": "session/usage", "params": {"sessionId": session_id}}),
+                    )
+                    .await
+                    .unwrap();
+                    loop {
+                        let mut line = String::new();
+                        stdout.read_line(&mut line).await.unwrap();
+                        let value: Value = serde_json::from_str(&line).unwrap();
+                        if value.get("method").is_some() && value.get("id").is_some() {
+                            write_json(
+                                &mut stdin,
+                                &json!({"id": value["id"], "error": {"code": -32601, "message": "Method not found"}}),
+                            )
+                            .await
+                            .unwrap();
+                            continue;
+                        }
+                        if value["id"] == 90 {
+                            if let Some(result) = value.get("result") {
+                                assert_eq!(result["totalTokens"], 0, "{result}");
+                                assert!(result["inputTokens"].is_number(), "{result}");
+                            } else {
+                                assert_eq!(value["error"]["code"], -32004, "{value}");
+                            }
+                            break;
+                        }
+                    }
+                    return result;
+                }
+            }
+        })
+        .await
+        .expect("ZCode snapshot timed out");
+        drop(group);
+        let _ = child.start_kill();
+
+        let entries = snapshot["settings"]["model"]["available"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let input = &entry["properties"]["inputFormat"];
+            assert!(input["supportsText"].is_boolean(), "no inputFormat on {entry}");
+            assert!(input["supportsImage"].is_boolean(), "no supportsImage on {entry}");
+            assert!(input["supportsPdf"].is_boolean(), "no supportsPdf on {entry}");
+            // The catalog schema is strict and carries no speed or tier
+            // field; the GLM Coding Plan sells speed per plan, not per model.
+            assert!(entry.get("capabilities").is_none(), "{entry}");
+            assert!(entry.get("speedTiers").is_none(), "{entry}");
+            assert!(entry.get("serviceTiers").is_none(), "{entry}");
+        }
+        let commands = snapshot["slashCommands"].as_array().unwrap();
+        assert!(
+            commands.iter().any(|c| c["name"] == "goal" && c["source"] == "builtin"),
+            "expected the builtin /goal command in {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|c| c["name"] == "compact"),
+            "expected /compact in {commands:?}"
+        );
+        assert!(snapshot["projection"]["contextWindow"].is_number());
+        assert!(snapshot["todos"].is_array());
     }
 }

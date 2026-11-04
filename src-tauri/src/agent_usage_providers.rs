@@ -479,6 +479,11 @@ async fn fetch_opencode() -> Usage {
         .map(|p| p.join("opencode/auth.json"));
     let content = std::env::var("OPENCODE_AUTH_CONTENT").ok();
     let saved = match opencode_auth_bytes(path.as_deref(), content.as_deref()).await {
+        // OpenCode 2.x keeps credentials in opencode.db instead of auth.json.
+        Ok(None) => match path.as_deref().and_then(Path::parent).map(|dir| dir.join("opencode.db")) {
+            Some(db) => tokio::task::spawn_blocking(move || opencode_db_auth(&db)).await.ok().flatten(),
+            None => None,
+        },
         Ok(bytes) => bytes,
         Err(()) => {
             return Usage::empty(
@@ -530,6 +535,46 @@ async fn opencode_auth_bytes(
         }
     }
     credential_bytes(path.ok_or(())?).await
+}
+
+/// Rebuilds auth.json's shape from OpenCode 2.x's `credential` table, so
+/// the same Go-before-Zen rules apply. Only active `opencode-go` and
+/// `opencode` rows are read, and only their type and key are kept;
+/// `{"type":"key"}` there means an API key. A malformed newest row stays
+/// invalid rather than falling back to an older, possibly different account.
+fn opencode_db_auth(db: &Path) -> Option<Vec<u8>> {
+    use rusqlite::{Connection, OpenFlags};
+    // A link must not lead out of OpenCode's directory. SQLITE_OPEN_NOFOLLOW is
+    // too strict: it also refuses links above it, such as a symlinked home.
+    if !std::fs::symlink_metadata(db).is_ok_and(|metadata| metadata.is_file()) {
+        return None;
+    }
+    // No URI flag, so the fixed path is taken literally.
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let connection = Connection::open_with_flags(db, flags).ok()?;
+    connection.busy_timeout(Duration::from_millis(500)).ok()?;
+    let mut statement = connection
+        .prepare("SELECT integration_id, value FROM credential WHERE active = 1 AND integration_id IN ('opencode-go', 'opencode') AND length(value) <= ?1 ORDER BY time_updated DESC")
+        .ok()?;
+    let rows = statement
+        .query_map([CREDENTIAL_LIMIT as i64], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok()?;
+    let mut auth = serde_json::Map::new();
+    for (integration, value) in rows.flatten() {
+        if auth.contains_key(&integration) {
+            continue;
+        }
+        let entry = serde_json::from_str::<Value>(&value).unwrap_or(Value::Null);
+        let kind = match entry["type"].as_str() {
+            Some("key") => "api",
+            Some(kind) => kind,
+            None => "invalid",
+        };
+        auth.insert(integration, serde_json::json!({"type": kind, "key": entry["key"].as_str()}));
+    }
+    (!auth.is_empty()).then(|| serde_json::to_vec(&auth).ok()).flatten()
 }
 
 fn opencode_usage_key(
@@ -1539,5 +1584,77 @@ key = "oauth/kimi-code"
             std::fs::remove_file(started_file).unwrap();
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn opencode_test_db(rows: &str) -> (PathBuf, PathBuf) {
+        let directory = std::env::temp_dir().join(format!("pandacode-opencode-db-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let db = directory.join("opencode.db");
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE credential (id TEXT, integration_id TEXT, label TEXT, value TEXT, active INTEGER, time_updated INTEGER); {rows}"
+            ))
+            .unwrap();
+        (directory, db)
+    }
+
+    #[test]
+    fn opencode_2_database_credentials_supply_the_go_key() {
+        let (directory, db) = opencode_test_db(r#"
+            INSERT INTO credential VALUES ('a', 'opencode', 'Default', '{"type":"oauth","access":"PRIVATE"}', 1, 1);
+            INSERT INTO credential VALUES ('b', 'opencode-go', 'OpenCode Go', '{"type":"key","key":"go-db-key","extra":"PRIVATE"}', 1, 2);
+            INSERT INTO credential VALUES ('c', 'openai', 'Other', '{"type":"key","key":"unrelated"}', 1, 3);
+            INSERT INTO credential VALUES ('d', 'opencode-go', 'Off', '{"type":"key","key":"inactive"}', 0, 4);
+        "#);
+        let auth = opencode_db_auth(&db).unwrap();
+        assert_eq!(opencode_usage_key(Some(&auth), None).unwrap().as_deref(), Some("go-db-key"));
+        let text = String::from_utf8(auth).unwrap();
+        for absent in ["unrelated", "inactive", "PRIVATE"] {
+            assert!(!text.contains(absent), "{absent}");
+        }
+        assert!(opencode_db_auth(&directory.join("missing.db")).is_none());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn opencode_2_malformed_rows_fail_closed_without_an_older_key() {
+        for bad in ["not json", "[1,2]", "7", r#"{"type":"key"}"#, r#"{"type":"key","key":9}"#] {
+            let (directory, db) = opencode_test_db(&format!(
+                r#"INSERT INTO credential VALUES ('a', 'opencode-go', '', '{{"type":"key","key":"older"}}', 1, 1);
+                   INSERT INTO credential VALUES ('b', 'opencode-go', '', '{bad}', 1, 2);"#
+            ));
+            let auth = opencode_db_auth(&db).unwrap();
+            assert!(opencode_usage_key(Some(&auth), Some("env".into())).is_err(), "{bad}");
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+    }
+
+    #[test]
+    fn opencode_2_database_rejects_oversized_values_foreign_files_and_links() {
+        let huge = "x".repeat(CREDENTIAL_LIMIT as usize + 1);
+        let (directory, db) = opencode_test_db(&format!(
+            "INSERT INTO credential VALUES ('a', 'opencode-go', '', '{huge}', 1, 1);"
+        ));
+        assert!(opencode_db_auth(&db).is_none());
+        let garbage = directory.join("garbage.db");
+        std::fs::write(&garbage, b"this is not a database").unwrap();
+        assert!(opencode_db_auth(&garbage).is_none());
+        // An older database with no credential table.
+        let other = directory.join("other.db");
+        rusqlite::Connection::open(&other).unwrap().execute_batch("CREATE TABLE t (a);").unwrap();
+        assert!(opencode_db_auth(&other).is_none());
+        #[cfg(unix)]
+        {
+            let (outside, target) = opencode_test_db(
+                r#"INSERT INTO credential VALUES ('a', 'opencode-go', '', '{"type":"key","key":"linked"}', 1, 1);"#,
+            );
+            let link = directory.join("link.db");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert!(opencode_db_auth(&target).is_some());
+            assert!(opencode_db_auth(&link).is_none());
+            let _ = std::fs::remove_dir_all(&outside);
+        }
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

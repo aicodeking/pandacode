@@ -3,7 +3,7 @@ import './model-routing.css';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { trackSegment } from './motion';
-import { installedCatalog, teamModels, TEAM_MODELS_EVENT } from './team-catalog';
+import { dupModelNames, installedCatalog, teamModels, TEAM_MODELS_EVENT } from './team-catalog';
 import { modelTiersHtml, mountModelTiers } from './model-tiers';
 import { infoMark } from './tooltip';
 import type { ProviderId, ProviderModel } from './types';
@@ -263,10 +263,14 @@ function mountPool(group: HTMLElement, options: ModelRoutingOptions, fail: (caus
     const list = rows.querySelector<HTMLElement>(`#routing-pool-${CSS.escape(id)}`);
     if (!list?.dataset.ready) return;
     const name = harnesses.find(p => p.id === id)!.name;
-    const team = teamModels(id, models.get(id) ?? []);
+    const full = models.get(id) ?? [];
+    const team = teamModels(id, full);
+    // Duplicate display names hide which model a row is (issue #315): those rows show their id.
+    const dupes = dupModelNames(full);
+    const label = (m: ProviderModel) => escape(m.name) + (dupes.has(m.name) ? ` · ${escape(m.id)}` : '');
     const limit = team.limited ? `<p class="routing-pool-limit">Showing ${team.models.filter(m => m.id !== 'default').length} of ${team.total} models · <button type="button" class="link-button routing-pool-add" data-provider="${escape(id)}">Add model…</button></p>` : '';
-    list.innerHTML = limit + (team.models.length ? team.models.map(m => `<label class="setting-row routing-pool-model-row" title="${escape(m.id)}"><span>${escape(m.name)}</span>`
-      + `<input type="checkbox" class="settings-switch routing-pool-model" data-model="${escape(m.id)}" aria-label="Use ${escape(m.name)} (${escape(name)}) for teams"></label>`).join('')
+    list.innerHTML = limit + (team.models.length ? team.models.map(m => `<label class="setting-row routing-pool-model-row" title="${escape(m.id)}">${dupes.has(m.name) ? `<span class="routing-pool-dup"><span>${escape(m.name)}</span><small class="routing-pool-model-id">${escape(m.id)}</small></span>` : `<span>${escape(m.name)}</span>`}`
+      + `<input type="checkbox" class="settings-switch routing-pool-model" data-model="${escape(m.id)}" aria-label="Use ${label(m)} (${escape(name)}) for teams"></label>`).join('')
       : '<p class="routing-pool-empty">No models listed.</p>');
     sync();
   };

@@ -1,5 +1,5 @@
 import type { ProviderId } from './types';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
@@ -223,7 +223,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     error.hidden = true; typed = ''; renderChoices();
   });
   panel.addEventListener('keydown', event => {
-    if (event.isComposing) return;
+    if (isImeKey(event)) return;
     // Restore the trigger before the browser's default Tab step, so the menu
     // does not jump to the end of the body or trap focus in a parent dialog.
     if (event.key === 'Tab') { close(); return; }

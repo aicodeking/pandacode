@@ -73,10 +73,21 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "kilo" => super::kilo::configure(command),
         "devin" => super::devin::configure(command),
         "hermes" => super::hermes::configure(command, config),
+        "antigravity" => antigravity_args(command),
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
         }
+    }
+}
+
+/// The standalone server takes no subcommand; the `agy` CLI fallback serves ACP from `acp`.
+pub(crate) fn antigravity_args(command: &mut Command) {
+    let program = Path::new(command.as_std().get_program());
+    if program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("agy")) {
+        command.arg("acp");
+    } else if cfg!(target_os = "linux") {
+        command.arg("--uid=");
     }
 }
 
@@ -406,6 +417,16 @@ impl Protocol {
             // ACP modes aren't universally approval policies. Keep user prompts
             // intact unless Full access, or Auto edits for an explicit edit call.
             let options = value["params"]["options"].as_array();
+            // As for Claude: a registered self-scoped tool can't touch the checkout.
+            if self.config.provider == "cline"
+                && super::cline::host_tool(field(&value["params"]["toolCall"], "title"))
+                    .is_some_and(|tool| super::self_scoped_host_tool(tool) && self.mcp_tool_names.contains(tool))
+            {
+                if let Some(allow) = options.and_then(|values| values.iter().find(|entry| entry["kind"] == "allow_once")) {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":allow["optionId"]}}}));
+                    return Ok(step);
+                }
+            }
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
             if self.config.provider == "kilo" {
@@ -809,7 +830,7 @@ impl Protocol {
         }
         let tool = self.tools.get(field(&value["params"]["toolCall"], "toolCallId"));
         let label = super::devin::approval_label(&value, tool);
-        self.approval(value, label, &mut step)?;
+        self.approval(value, label, &mut step);
         Ok(step)
     }
     fn acp_copilot_permissions(&mut self, step: &mut Step) -> Result<(), String> {
@@ -974,8 +995,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
     let mut command = super::provider_command("antigravity", path)?;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
@@ -1176,15 +1196,14 @@ fn connection_status(result: Result<(Value, Option<Value>), DiscoveryFailure>) -
 pub async fn provider_check_connection(provider: String) -> Result<ConnectionStatus, String> {
     if provider != "antigravity" { return Err("Connection checks are supported for Antigravity ACP.".into()); }
     let Some(path) = super::executable(&provider).filter(|path| path.is_file()) else {
-        return Ok(ConnectionStatus { installed: false, acp_ready: false, session_ready: false, state: "missing", message: "Select the installed official Antigravity ACP server executable.".into() });
+        return Ok(ConnectionStatus { installed: false, acp_ready: false, session_ready: false, state: "missing", message: "Install the agy CLI or select the official Antigravity ACP server executable.".into() });
     };
     let command = match super::provider_command(&provider, &path) {
         Ok(command) => command,
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };
     let mut command = command;
-    #[cfg(target_os = "linux")]
-    command.arg("--uid=");
+    antigravity_args(&mut command);
     let discovery = super::acp_catalog::begin("antigravity", &path);
     let _temp = super::AgentTemp::redirect(&mut command);
     let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
@@ -1192,7 +1211,6 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
     Ok(connection_status(result))
 }
 
-const MAX_STEER_BYTES: usize = 128 * 1024;
 const MAX_STEERS: usize = 16;
 /// Request ids for live steering prompts, clear of startup (1-7), cancel (900) and goals (10000+).
 const STEER_IDS: std::ops::Range<u64> = 2000..9000;
@@ -1222,8 +1240,8 @@ impl Protocol {
     pub(super) fn acp_steer(&mut self, id: String, text: String, reply: super::goals::RpcReply) -> Step {
         let mut step = Step::default();
         let text = text.trim().to_owned();
-        if text.is_empty() || text.len() > MAX_STEER_BYTES {
-            let _ = reply.send(Err("Write a steering message under 128 KiB.".into()));
+        if text.is_empty() || text.len() > crate::MESSAGE_LIMIT {
+            let _ = reply.send(Err("Write a steering message under 16 MiB.".into()));
             return step;
         }
         let steers = &mut self.acp_steers;
@@ -1313,6 +1331,26 @@ impl Protocol {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn antigravity_args_give_acp_only_to_the_agy_cli() {
+        let args = |program: &str| {
+            let mut command = tokio::process::Command::new(program);
+            super::antigravity_args(&mut command);
+            command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>()
+        };
+        let mut agy = vec!["agy", "agy.exe", "AGY.EXE", "/usr/local/bin/agy", "/custom/dir/agy"];
+        if cfg!(windows) {
+            agy.push(r"C:\Program Files\Antigravity\agy.exe");
+        }
+        for program in agy {
+            assert_eq!(args(program), ["acp"], "{program}");
+        }
+        let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
+        for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
+            assert_eq!(args(program), server, "{program}");
+        }
+    }
+
     use super::super::tests::config;
     use super::*;
 
@@ -2310,6 +2348,9 @@ mod tests {
         let mut c = Command::new("agy_acp_server.par");
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
+        let mut c = Command::new("/usr/local/bin/agy");
+        configure(&mut c, &config("antigravity"));
+        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp"]);
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));
@@ -2566,7 +2607,7 @@ mod tests {
     fn steers_are_bounded_and_validated() {
         let mut p = Protocol::new(config("deepseek"));
         assert!(acp_steer(&mut p, "a", "   ").1.is_err());
-        assert!(acp_steer(&mut p, "a", &"x".repeat(MAX_STEER_BYTES + 1)).1.is_err());
+        assert!(acp_steer(&mut p, "a", &"x".repeat(crate::MESSAGE_LIMIT + 1)).1.is_err());
         for n in 0..MAX_STEERS {
             acp_steer(&mut p, &n.to_string(), "ok").1.unwrap();
         }

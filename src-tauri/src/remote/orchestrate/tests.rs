@@ -153,14 +153,57 @@ fn only_a_tasks_own_threads_are_in_scope() {
 }
 
 #[test]
-fn a_task_runs_at_most_eight_threads() {
+fn a_task_may_run_any_number_of_threads() {
     let (store, project, parent) = store();
-    for _ in 0..threads::MAX_RUNNING {
+    for _ in 0..12 {
         child(&store, &project, &parent, "running");
     }
-    assert!(check_capacity(&store, &parent).unwrap_err().contains("8 running"));
-    store.db.execute("UPDATE sessions SET status='idle' WHERE id=(SELECT session_id FROM machine_threads LIMIT 1)", []).unwrap();
-    assert_eq!(check_capacity(&store, &parent), Ok(()));
+    assert_eq!(threads::active_children(&store, &parent).unwrap().len(), 12);
+}
+
+#[test]
+fn machine_tools_take_long_text_up_to_what_the_host_accepts() {
+    let launch = |prompt: String| validate("pandacode_machine_launch", &json!({"machine": "m", "prompt": prompt, "provider": "codex", "model": "m"}));
+    let message = |text: String| validate("pandacode_machine_message", &json!({"thread": "t", "action": "steer", "text": text}));
+    // Escaping doubles this text; it is still within its limit.
+    assert_eq!(launch("\n".repeat(MACHINE_TEXT)), Ok(()));
+    assert_eq!(message("x".repeat(MACHINE_TEXT)), Ok(()));
+    assert!(launch("x".repeat(MACHINE_TEXT + 1)).unwrap_err().contains("prompt"));
+    assert!(message("x".repeat(MACHINE_TEXT + 1)).unwrap_err().contains("text"));
+    // Within the schema's characters, past the host's bytes: refused here, not after the approval.
+    assert!(message("é".repeat(MACHINE_TEXT / 2 + 1)).unwrap_err().contains("KiB"));
+}
+
+#[test]
+fn a_cut_reply_says_so_and_can_be_read_in_full() {
+    let (store, project, parent) = store();
+    let id = child(&store, &project, &parent, "idle");
+    let whole = "x".repeat(threads::REPLY * 2);
+    store.message(&id, "assistant", &whole).unwrap();
+    let own = threads::own(&store, &parent, &id).unwrap();
+
+    let result = fitted(reply_share(1), false, |share| vec![thread_row(&own, "ProMini", threads::final_reply(&store, &id, share))]);
+    let row = &result["threads"][0];
+    assert_eq!(row["replyTruncated"], true);
+    assert!(result["note"].as_str().unwrap().contains("pandacode_machine_read"), "{result}");
+    let (mut read, mut offset) = (String::new(), Some(0));
+    while let Some(from) = offset {
+        let page = read_message(&store, &id, row["replyMessageId"].as_i64().unwrap(), from as usize).unwrap();
+        read.push_str(page["content"].as_str().unwrap());
+        offset = page["nextOffset"].as_u64();
+    }
+    assert_eq!(read, whole);
+
+    store.message(&id, "assistant", "Short.").unwrap();
+    let result = fitted(reply_share(1), false, |share| vec![thread_row(&own, "ProMini", threads::final_reply(&store, &id, share))]);
+    assert_eq!(result["threads"][0]["replyTruncated"], false);
+    assert_eq!(result["note"], UNTRUSTED);
+}
+
+#[test]
+fn a_refused_steer_tells_the_agent_nothing_was_queued() {
+    let refused = crate::message_queue::steer_refusal("The agent is not running; the message stays queued.", "Use machine_message with action send.");
+    assert_eq!(refused, "Not delivered: The agent is not running. Use machine_message with action send.");
 }
 
 #[test]
@@ -213,6 +256,7 @@ fn the_catalog_validates_arguments() {
     assert!(ok("pandacode_machine_stop", json!({"thread": "t"})));
     assert!(!APPROVAL.contains(&"pandacode_machine_stop"), "stopping needs no approval");
     assert!(!ok("pandacode_machine_read", json!({"thread": "t", "beforeId": -1})));
+    assert!(ok("pandacode_machine_read", json!({"thread": "t", "messageId": 7, "offset": 0})));
     assert!(APPROVAL.iter().all(|name| tools.iter().any(|t| t["name"] == *name)));
     assert!(tools.iter().filter(|t| ["pandacode_machine_wait", "pandacode_machine_read"].contains(&t["name"].as_str().unwrap())).all(|t| t["description"].as_str().unwrap().contains("untrusted")));
 }
@@ -449,24 +493,61 @@ fn a_thread_in_error_does_not_hold_a_wait() {
     assert!(settled([unlinked, Ok((running, "ProMini".into()))].iter(), |device| device == "studio"));
 }
 
+const ROOM: usize = crate::agent_tools::TOOL_PAGE_BYTES;
+
 #[test]
 fn an_empty_message_does_not_end_a_page() {
     let row = |id: i64, content: &str| (id, "assistant".to_string(), content.to_string(), 0);
-    let (messages, more) = page(vec![row(3, "newest"), row(2, ""), row(1, "oldest")]);
+    let (messages, more) = page(vec![row(3, "newest"), row(2, ""), row(1, "oldest")], ROOM);
     assert_eq!(messages.iter().map(|m| m["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3]);
     assert!(!more);
     // The budget still bounds a page.
     let big = "x".repeat(MESSAGE_BYTES);
-    let rows: Vec<_> = (0..10).rev().map(|id| row(id, &big)).collect();
-    let (messages, more) = page(rows);
-    assert_eq!((messages.len(), more), (PAGE_BYTES / MESSAGE_BYTES, true));
-    // No more rows: never hasMore, even when the page or the budget is exactly used up.
-    let (messages, more) = page((0..4).rev().map(|id| row(id, &big)).collect());
-    assert_eq!((messages.len(), more), (4, false));
-    let (messages, more) = page((0..PAGE as i64).rev().map(|id| row(id, "x")).collect());
+    let (messages, more) = page((0..10).rev().map(|id| row(id, &big)).collect(), ROOM);
+    assert!(more && messages.len() <= ROOM / MESSAGE_BYTES + 1, "{}", messages.len());
+    // No more rows: never hasMore, even when the page is exactly used up.
+    let (messages, more) = page((0..2).rev().map(|id| row(id, &big)).collect(), ROOM);
+    assert_eq!((messages.len(), more), (2, false));
+    let (messages, more) = page((0..PAGE as i64).rev().map(|id| row(id, "x")).collect(), ROOM);
     assert_eq!((messages.len(), more), (PAGE, false));
-    let (messages, more) = page((0..PAGE as i64 + 1).rev().map(|id| row(id, "x")).collect());
+    let (messages, more) = page((0..PAGE as i64 + 1).rev().map(|id| row(id, "x")).collect(), ROOM);
     assert_eq!((messages.len(), more), (PAGE, true));
+}
+
+/// Budgets count serialized bytes: quotes and newlines take two, and Codex cuts the middle out of
+/// output past about 40 KB, which beforeId would then skip.
+#[test]
+fn a_page_of_escapes_stays_within_one_tool_page() {
+    let row = |id: i64| (id, "assistant".to_string(), "\"\n".repeat(20_000), 0);
+    let (messages, more) = page((0..10).rev().map(row).collect(), ROOM);
+    assert!(more);
+    assert!(serde_json::to_vec(&messages).unwrap().len() <= ROOM, "{}", serde_json::to_vec(&messages).unwrap().len());
+    assert!(messages.iter().all(|m| m["truncated"] == true && m["nextOffset"].as_u64().is_some()));
+    // No room at all still moves beforeId on.
+    let (messages, more) = page((0..3).rev().map(row).collect(), 0);
+    assert_eq!((messages.len(), more), (1, true));
+}
+
+/// A 30 KB report is read to its last byte, every page one tool page, and only from its thread.
+#[test]
+fn a_long_message_is_read_to_its_end() {
+    let (store, _, _) = self::store();
+    store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    let report = format!("{}THE END", "line \"é\"\n".repeat(3000));
+    store.db.execute("INSERT INTO messages(session_id,role,content,created_at) VALUES('child','assistant',?1,0)", [&report]).unwrap();
+    let id = store.db.last_insert_rowid();
+    let (mut text, mut offset) = (String::new(), 0);
+    loop {
+        let page = read_message(&store, "child", id, offset).unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() <= ROOM);
+        text.push_str(page["content"].as_str().unwrap());
+        match page["nextOffset"].as_u64() {
+            Some(next) => offset = next as usize,
+            None => break,
+        }
+    }
+    assert_eq!(text, report);
+    assert!(read_message(&store, "other-thread", id, 0).is_err(), "only this thread's messages");
 }
 
 #[test]
@@ -587,7 +668,7 @@ fn a_wait_shares_one_reply_budget() {
     for threads in [12, 20, 64] {
         assert!(threads * reply_share(threads) <= WAIT_REPLIES, "{threads}");
     }
-    const { assert!(WAIT_REPLIES < 128 * 1024 - 16 * 1024, "room for the rest of the result") };
+    const { assert!(WAIT_REPLIES < WAIT_RESULT, "room for the rest of the result") };
 }
 
 #[test]
@@ -645,12 +726,12 @@ fn a_wait_full_of_escapes_still_fits_the_host_result_limit() {
     let result = fitted(reply_share(ids.len()), false, |share| {
         ids.iter().map(|id| {
             let title: String = store.db.query_row("SELECT title FROM sessions WHERE id=?1", [id], |r| r.get(0)).unwrap();
-            json!({"thread": id, "title": title, "machine": {"id": "studio", "name": "ProMini"}, "status": "idle", "reply": threads::final_reply(&store, id, share)})
+            json!({"thread": id, "title": title, "machine": {"id": "studio", "name": "ProMini"}, "status": "idle", "reply": threads::final_reply(&store, id, share).map(|reply| reply.text)})
         }).collect()
     });
     let size = serde_json::to_vec(&result).unwrap().len();
-    assert!(size <= 128 * 1024, "{size} bytes");
-    assert!(result["threads"][0]["reply"].as_str().unwrap().len() > 1024, "replies are trimmed, not dropped");
+    assert!(size <= WAIT_RESULT, "{size} bytes, past which Codex cuts the middle out");
+    assert!(!result["threads"][0]["reply"].as_str().unwrap().is_empty(), "replies are trimmed, not dropped");
 }
 
 #[test]
@@ -834,15 +915,14 @@ fn auto_placement_follows_an_explicit_model() {
 }
 
 #[test]
-fn only_running_threads_count_for_placement_but_waiting_ones_still_fill_the_cap() {
+fn only_running_threads_count_for_placement_and_waiting_ones_hold_the_wake() {
     let (store, project, parent) = store();
     child(&store, &project, &parent, "running");
-    for _ in 1..threads::MAX_RUNNING {
+    for _ in 0..7 {
         child(&store, &project, &parent, "waiting");
     }
     assert_eq!(threads::running_by_device(&store).unwrap().get("studio"), Some(&1));
-    assert!(check_capacity(&store, &parent).is_err(), "waiting threads still count toward the cap");
-    assert_eq!(claim(&store, &parent), None, "and hold the wake");
+    assert_eq!(claim(&store, &parent), None, "waiting threads hold the wake");
 }
 
 #[test]

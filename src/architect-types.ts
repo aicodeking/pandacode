@@ -21,6 +21,7 @@ export interface TeamConfig {
   catalog?: WorkerProfile[];
   /** Zero means unlimited; positive values preserve a user-selected limit. */
   maxParallel: number;
+  /** Ignored natively, like `maxAssignments` and `summaryLimit`; kept so old saves still parse. */
   maxRounds: number;
   maxAssignments: number;
   workspace: 'shared';
@@ -91,8 +92,17 @@ export interface TeamSnapshot {
   workers: TeamWorker[];
   error?: string | null;
   summary?: string | null;
+  /** The lead's failed turn, while its retry waits; `heldUntil` is the reset of a usage limit holding it. */
+  leadFailure?: { error: string; heldUntil?: number | null } | null;
   updatedAt: number;
 }
+/** The note on a team whose failed lead turn PandaCode is retrying. */
+export const LEAD_RETRY = /^The lead's turn failed:/;
 export const teamActive = (team?: TeamSnapshot | null): boolean => team?.status === 'running' || team?.status === 'waiting';
+/** The reset a working team's retry is waiting for, while it is still ahead. A paused or stopped team retries nothing. */
+export const teamHeldUntil = (team?: TeamSnapshot | null, now = Date.now()): number | null => {
+  const until = team?.leadFailure?.heldUntil;
+  return teamActive(team) && until && until > now ? until : null;
+};
 
 export type TeamEvent = TeamSnapshot | { sessionId: string; removed: true };

@@ -164,6 +164,7 @@ function previewProviderConfiguration(): Record<string, unknown> {
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
+    providers: providers.map(provider => [provider.id, provider.name]),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
@@ -602,6 +603,8 @@ export function samplePick(kind: 'files' | 'folder'): string[] {
   return kind === 'folder' ? ['/Users/you/Projects/orbit-design'] : ['/Users/you/Pictures/dashboard-mockup.png', '/Users/you/Documents/Product brief.pdf'];
 }
 function agent(event: AgentEvent) { emit('agent-event', event); }
+/** `MESSAGE_LIMIT` in lib.rs. */
+const MESSAGE_LIMIT = 16 * 1024 * 1024;
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -610,7 +613,7 @@ function assertIdle(s: Session): void {
 }
 function taskDetails(title: unknown, description: unknown): { title: string; taskDescription: string } {
   if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Title must be 1–200 characters.');
-  if (typeof description !== 'string' || new TextEncoder().encode(description).length > 128 * 1024) throw new Error('Task description must be under 128 KiB.');
+  if (typeof description !== 'string' || new TextEncoder().encode(description).length > MESSAGE_LIMIT) throw new Error('Task details must be under 16 MiB.');
   return { title: title.trim(), taskDescription: description.trim() };
 }
 function taskSummary(s: Session): Session {
@@ -1363,7 +1366,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
     case 'export_task': { const task = session(args.sessionId); result = `# ${task.title}\n\n` + (messages[task.id] ?? []).map(message => `## ${message.role}\n\n${message.content}\n\n`).join(''); break; }
-    case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])] as T;
+    // Rows as `list_subagents` sends them: no tools and a short preview; the full one is `get_subagent`.
+    case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])].map(saved => { const { tools, ...row } = saved as { prompt?: string; response?: string; tools?: unknown[] }; return { ...row, prompt: String(row.prompt ?? '').slice(0, 1025), response: String(row.response ?? '').slice(0, 1025), toolCount: tools?.length ?? 0 }; }) as T;
+    case 'get_subagent': return structuredClone(mirrorSubagents.get(String(args.sessionId))?.get(String(args.agentId)) ?? null) as T;
     case 'remote_team': return structuredClone(mirrorTeams.get(String(args.sessionId)) ?? null) as T;
     case 'remote_worker_messages': {
       // Pages of 40 back from the tail, as `worker_pages` in remote/mirror.rs joins the host's.
@@ -1680,7 +1685,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (s.taskStage === 'completed') throw new Error('Reopen this task before starting it.');
       const text = typeof args.text === 'string' ? args.text.trim() + moodboardContext : '';
       if (!text) throw new Error('Write a message first.');
-      if (new TextEncoder().encode(text).length > 128 * 1024) throw new Error('Message and attached context must be under 128 KiB.');
+      if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
@@ -1957,6 +1962,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     // matters to tests, which provide the base64 through the invoke hook.
     case 'read_clipboard_image': result = null; break;
     case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
+    case 'dragged_file_paths': result = []; break;
     case 'read_document': {
       const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';
       if (!path.startsWith('/')) throw new Error('Choose the document with the picker or drop it onto the message.');

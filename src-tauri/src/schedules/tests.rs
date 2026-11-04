@@ -46,11 +46,21 @@ fn weekly_next_run_picks_listed_days_and_daily_is_unchanged() {
 }
 
 #[test]
+fn a_long_message_is_taken_and_a_listing_previews_it() {
+    let store = store();
+    let long = "x".repeat(100_000);
+    create(&store, &ScheduleInput { prompt: long.clone(), interval_minutes: Some(30), session_id: "a".into(), ..input("interval") }, "user", Some("a"), NOW).unwrap();
+    assert_eq!(list(&store, Some("a")).unwrap()[0].prompt, long, "kept whole");
+    let (listed, _) = tools::dispatch(&store, "a", "pandacode_list_schedules", &json!({"taskId": "a"}), &std::collections::HashSet::new(), NOW).unwrap();
+    assert_eq!(listed["schedules"][0]["schedule"]["prompt"].as_str().unwrap().chars().count(), tools::PROMPT_PREVIEW + 1);
+}
+
+#[test]
 fn validation_explains_what_is_wrong() {
     let store = store();
     let error = |input: ScheduleInput| create(&store, &input, "user", None, NOW).unwrap_err();
     assert!(error(ScheduleInput { prompt: " ".into(), ..input("interval") }).contains("message"));
-    assert!(error(ScheduleInput { prompt: "x".repeat(8001), ..input("interval") }).contains("8000"));
+    assert!(error(ScheduleInput { prompt: "x".repeat(crate::MESSAGE_LIMIT), ..input("interval") }).contains("16 MiB"));
     assert!(error(ScheduleInput { title: "t".repeat(121), interval_minutes: Some(30), ..input("interval") }).contains("120"));
     assert!(error(ScheduleInput { interval_minutes: Some(4), ..input("interval") }).contains("5 minutes"));
     assert!(error(ScheduleInput { interval_minutes: Some(10081), ..input("interval") }).contains("5 minutes"));

@@ -23,6 +23,43 @@ struct Entry {
     number: usize,
 }
 
+/// How much of a child's prompt and response a list row carries. One more than the 1024 bytes
+/// `pandacode_list_subagents` shows, so a longer text still reads as cut there.
+pub(crate) const PREVIEW_CHARS: i64 = 1025;
+
+/// One child in a task's list: everything but its tools and the rest of its text. The webview
+/// asks for the full snapshot (`get_subagent`) when a row is opened.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRow {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub prompt: String,
+    pub status: String,
+    pub response: String,
+    pub tool_count: i64,
+    pub started_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<&SubagentActivity> for SubagentRow {
+    fn from(activity: &SubagentActivity) -> Self {
+        let preview = |text: &str| text.chars().take(PREVIEW_CHARS as usize).collect();
+        Self {
+            id: activity.id.clone(),
+            parent_id: activity.parent_id.clone(),
+            name: activity.name.clone(),
+            prompt: preview(&activity.prompt),
+            status: activity.status.clone(),
+            response: preview(&activity.response),
+            tool_count: activity.tools.len() as i64,
+            started_at: activity.started_at,
+            updated_at: activity.updated_at,
+        }
+    }
+}
+
 /// Launcher metadata deliberately excludes responses, prompts, and tool output.
 pub(crate) struct ActiveSummary {
     pub id: String,
@@ -49,19 +86,6 @@ impl SubagentState {
         activity.parent_id = activity.parent_id.map(|id| format!("{run_id}:{id}"));
         for tool in &mut activity.tools {
             tool.id = format!("{}:{}", activity.id, tool.id);
-        }
-        if !self.entries.contains_key(&activity.id) && self.entries.len() >= 64 {
-            let oldest = self
-                .entries
-                .iter()
-                .filter(|(_, entry)| !running(&entry.activity.status))
-                .min_by_key(|(_, entry)| entry.activity.updated_at)
-                .map(|(id, _)| id.clone());
-            if let Some(id) = oldest {
-                self.entries.remove(&id);
-            } else {
-                return Err("This run already has 64 active subagents.".into());
-            }
         }
         event.data = Some(serde_json::to_value(&activity).map_err(|error| error.to_string())?);
         if !self.entries.contains_key(&activity.id) {
@@ -150,8 +174,21 @@ impl SubagentState {
                 .then_with(|| b.updated_at.cmp(&a.updated_at))
                 .then_with(|| a.id.cmp(&b.id))
         });
-        activities.truncate(64);
         activities
+    }
+
+    /// `merge_history` for list rows: live work wins, and no snapshot is copied whole.
+    pub(crate) fn merge_rows(&self, history: Vec<SubagentRow>) -> Vec<SubagentRow> {
+        let mut combined: HashMap<String, SubagentRow> = history.into_iter().map(|row| (row.id.clone(), row)).collect();
+        combined.extend(self.entries.iter().map(|(id, entry)| (id.clone(), SubagentRow::from(&entry.activity))));
+        let mut rows: Vec<_> = combined.into_values().collect();
+        rows.sort_by(|a, b| {
+            running(&b.status)
+                .cmp(&running(&a.status))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        rows
     }
 
     pub(crate) fn finish(
@@ -163,8 +200,13 @@ impl SubagentState {
         let mut changed = Vec::new();
         let mut first_error = None;
         for entry in self.entries.values_mut() {
-            if running(&entry.activity.status) {
-                entry.activity.status = status.into();
+            let child_open = running(&entry.activity.status);
+            // A settled child may never have reported its last tool's result.
+            let tool_open = entry.activity.tools.iter().any(|tool| running(&tool.status));
+            if child_open || tool_open {
+                if child_open {
+                    entry.activity.status = status.into();
+                }
                 entry.activity.updated_at = crate::storage::now();
                 for tool in &mut entry.activity.tools {
                     if running(&tool.status) {
@@ -334,7 +376,7 @@ mod tests {
         let db = store.lock().unwrap();
         let (changed, saved) = state.finish(&db, &sid, "stopped");
         saved.unwrap();
-        assert!(changed.is_empty());
+        assert_eq!(changed[0].status, "completed", "only its open tool settles");
         assert_eq!(
             db.subagents(&sid).unwrap()[0].response,
             "Final answer with last suffix"
@@ -367,17 +409,17 @@ mod tests {
             let db = store.lock().unwrap();
             let (changed, saved) = state.finish(&db, &sid, status);
             saved.unwrap();
-            assert_eq!(changed.len(), 2);
+            assert_eq!(changed.len(), 3);
             for activity in &changed {
-                assert_eq!(activity.status, status);
+                let expected = if activity.id == "run:done" { "completed" } else { status };
+                assert_eq!(activity.status, expected);
                 assert_eq!(activity.response, "Reading");
-                assert_eq!(activity.tools[0].status, "failed");
+                assert_eq!(activity.tools[0].status, "failed", "no spinner survives the run");
             }
             let history = db.subagents(&sid).unwrap();
-            assert_eq!(
-                history.iter().find(|a| a.id == "run:done").unwrap().status,
-                "completed"
-            );
+            let done = history.iter().find(|a| a.id == "run:done").unwrap();
+            assert_eq!(done.status, "completed");
+            assert_eq!(done.tools[0].status, "failed", "saved settled too");
             assert_eq!(db.subagents(&other_sid).unwrap()[0].status, "running");
         }
     }
@@ -427,7 +469,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_history_keeps_active_children_and_cascades_with_their_task() {
+    fn history_keeps_every_child_and_cascades_with_their_task() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let sid = task(&store);
         store
@@ -439,7 +481,8 @@ mod tests {
             store.save_subagent(&sid, &activity).unwrap();
         }
         let history = store.subagents(&sid).unwrap();
-        assert_eq!(history.len(), 64);
+        assert_eq!(history.len(), 81);
+        assert!(history.iter().any(|a| a.id == "done-0"));
         assert!(history.iter().any(|a| a.id == "still-active"));
         assert!(history.iter().any(|a| a.id == "done-79"));
         let mut live = SubagentState::default();
@@ -453,7 +496,7 @@ mod tests {
             },
         );
         let merged = live.merge_history(history);
-        assert_eq!(merged.len(), 64);
+        assert_eq!(merged.len(), 82);
         assert!(merged.iter().take(2).all(|a| a.status == "running"));
         store
             .db
@@ -467,6 +510,69 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn a_run_records_more_active_children_than_the_old_limit_and_large_snapshots() {
+        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
+        let sid = task(&store.lock().unwrap());
+        let mut state = SubagentState::default();
+        for n in 0..70 {
+            let mut activity = child(&format!("worker-{n}"), "running");
+            activity.response = "x".repeat(if n == 0 { 2 * 1024 * 1024 } else { 8 });
+            record(&mut state, &store, &sid, "run", activity);
+        }
+        assert_eq!(state.active_summaries().len(), 70);
+        assert_eq!(state.merge_history(Vec::new()).len(), 70);
+        assert_eq!(store.lock().unwrap().subagents(&sid).unwrap().len(), 70);
+    }
+
+    #[test]
+    fn list_rows_stay_small_whatever_the_snapshots_weigh_and_the_full_one_is_a_call_away() {
+        const CHILDREN: usize = 300;
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let sid = task(&store);
+        let heavy = |n: usize| {
+            let mut activity = child(&format!("worker-{n}"), "completed");
+            activity.prompt = "p".repeat(8 * 1024);
+            activity.response = "🦀".repeat(64 * 1024);
+            activity.tools = vec![activity.tools[0].clone(); 64];
+            activity
+        };
+        for n in 0..CHILDREN {
+            store.save_subagent(&sid, &heavy(n)).unwrap();
+        }
+        let rows = store.subagent_rows(&sid).unwrap();
+        assert_eq!(rows.len(), CHILDREN);
+        let bytes = serde_json::to_vec(&rows).unwrap().len();
+        assert!(bytes < CHILDREN * 8 * 1024, "{bytes} bytes for the list");
+        assert_eq!(rows[0].response.chars().count(), PREVIEW_CHARS as usize);
+        assert_eq!(rows[0].tool_count, 64);
+        assert!(!serde_json::to_string(&rows[0]).unwrap().contains("\"tools\""));
+        let full = store.subagent(&sid, "worker-7").unwrap().unwrap();
+        assert_eq!(full, heavy(7), "the full snapshot is untouched");
+        assert!(store.subagent(&sid, "missing").unwrap().is_none());
+        assert_eq!(rows.iter().find(|row| row.id == "worker-7").unwrap(), &SubagentRow::from(&full), "live and saved rows agree");
+    }
+
+    #[test]
+    fn live_rows_override_saved_ones_and_settle_order_matches_the_full_merge() {
+        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
+        let sid = task(&store.lock().unwrap());
+        let mut state = SubagentState::default();
+        let mut activity = child("worker", "running");
+        record(&mut state, &store, &sid, "run", activity.clone());
+        activity.response = "Newer than the checkpoint".into();
+        record(&mut state, &store, &sid, "run", activity);
+        let mut settled = child("old", "completed");
+        settled.updated_at = 5000;
+        store.lock().unwrap().save_subagent(&sid, &settled).unwrap();
+        let db = store.lock().unwrap();
+        let rows = state.merge_rows(db.subagent_rows(&sid).unwrap());
+        let full = state.merge_history(db.subagents(&sid).unwrap());
+        assert_eq!(rows.iter().map(|row| &row.id).collect::<Vec<_>>(), full.iter().map(|child| &child.id).collect::<Vec<_>>());
+        assert_eq!(rows[0].response, "Newer than the checkpoint");
+        assert_eq!(rows[0].tool_count, 1);
     }
 
     #[test]
@@ -526,6 +632,16 @@ mod tests {
             "Fresh live response"
         );
         assert_eq!(
+            crate::task_subagent(&state, &sid, "run:worker").unwrap().map_or(0, |child| child.tools.len()),
+            0,
+            "another run's id is not this child"
+        );
+        assert_eq!(
+            crate::task_subagent(&state, &sid, &format!("{run}:worker")).unwrap().unwrap().response,
+            "Fresh live response",
+            "a running child's full snapshot is the live one, not the checkpoint"
+        );
+        assert_eq!(
             state.store.lock().unwrap().subagents(&sid).unwrap()[0].response,
             "Reading"
         );
@@ -535,7 +651,7 @@ mod tests {
         state.store.lock().unwrap().status(&sid, "error").unwrap();
         let recovered = crate::task_subagents(&state, &sid).unwrap();
         assert_eq!(recovered[0].status, "failed");
-        assert_eq!(recovered[0].tools[0].status, "failed");
+        assert_eq!(state.store.lock().unwrap().subagents(&sid).unwrap()[0].tools[0].status, "failed");
         assert_eq!(
             state.store.lock().unwrap().subagents(&sid).unwrap()[0].status,
             "failed"

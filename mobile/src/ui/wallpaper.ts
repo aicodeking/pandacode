@@ -26,7 +26,7 @@ export const sceneIds = wallpaperSets.flatMap(day => wallpaperPeriods.map(period
 export function normalizeWallpaperPreferences(value: unknown): WallpaperPreferences {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : true,
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : false,
     visibility: typeof input.visibility === 'number' && Number.isFinite(input.visibility)
       ? Math.max(0, Math.min(100, Math.round(input.visibility))) : 20,
     blur: typeof input.blur === 'number' && Number.isFinite(input.blur)
@@ -61,8 +61,9 @@ export function patchWallpaperPreferences(previous: WallpaperPreferences, patch:
 
 // ---- Phone only (not on the desktop) ----
 
-/** The phone's starting visibility and blur: a small screen wants a fainter, softer scene. */
-export const PHONE_DEFAULTS = { visibility: 26, blur: 2 } as const;
+/** The phone's starting state: on, since it has no live scenes to fall back on as the desktop does,
+ * and a fainter, softer scene for a small screen. */
+export const PHONE_DEFAULTS = { enabled: true, visibility: 26, blur: 2 } as const;
 /** Saved preferences carry this version; earlier ones were saved whole with the desktop's defaults. */
 export const PHONE_PREFERENCES_VERSION = 2;
 

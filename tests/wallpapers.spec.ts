@@ -6,7 +6,7 @@ test.use({ timezoneId: 'America/New_York' });
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     if (localStorage.getItem('pandacode.wallpaperPreferences') === null && localStorage.getItem('pandacode.wallpapers') === null) {
-      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
+      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
     }
   });
 });

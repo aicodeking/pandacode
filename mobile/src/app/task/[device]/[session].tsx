@@ -20,7 +20,7 @@ import { Icon } from '../../../ui/Icon.tsx';
 import { HeaderBlur, TaskHeader } from '../../../ui/TaskHeader.tsx';
 import { useColors } from '../../../ui/theme.ts';
 import { useBackdrop } from '../../../ui/Backdrop.tsx';
-import { Transcript } from '../../../ui/transcript.tsx';
+import { scrollToNewest, Transcript } from '../../../ui/transcript.tsx';
 import { WorkerNamesContext } from '../../../ui/ToolCards.tsx';
 import { useNames, useTeam } from '../../../ui/useTeam.ts';
 
@@ -122,7 +122,7 @@ export default function TaskScreen() {
   const keyboard = useKeyboardHeight();
   const list = useRef<FlatList<TurnRow>>(null);
   const [away, setAway] = useState(false);
-  const [latest] = useState(() => () => list.current?.scrollToOffset({ offset: 0, animated: true }));
+  const [latest] = useState(() => () => scrollToNewest(list.current));
 
   useEffect(() => {
     markOpen(taskKey(device, session));

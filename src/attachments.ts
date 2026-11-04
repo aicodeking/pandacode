@@ -1,6 +1,7 @@
 import './attachments.css';
 import { call, chooseAttachmentFolder, chooseAttachments, preview } from './bridge';
 import { escape, icon } from './dom';
+import { isMac } from './platform';
 
 /** Inputs the user adds to one message: images travel as native image blocks,
  * documents and folders as bounded text context. Kept per task until sent. */
@@ -169,6 +170,16 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     if (attached && origin !== 'paste') host.notify(attached === 1 ? `Attached ${files[0].name}` : `Attached ${attached} items`);
   }
 
+  /** A DOM file drop: the real paths when the drag pasteboard still holds these files
+   * (names prove it), otherwise the File objects, which have no path (Photos, Mail, a
+   * failed read). */
+  async function attachDropped(files: File[]): Promise<void> {
+    const paths = await call<string[]>('dragged_file_paths').catch(() => [] as string[]);
+    const names = new Set(paths.map(path => baseName(path).normalize()));
+    if (paths.length && files.every(file => names.has(file.name.normalize()))) await attachPaths(paths, 'unknown', true);
+    else if (files.length) await attachFiles(files, 'drop');
+  }
+
   async function openMenu(anchor: HTMLElement): Promise<void> {
     const taskId = host.taskId();
     const reason = taskId ? host.blocked(taskId) : 'Start a task before attaching anything.';
@@ -253,20 +264,25 @@ export function mountPromptAttachments(host: AttachmentsHost) {
       // Open dialogs (moodboards, settings) own their drops.
       const accepting = () => Boolean(host.taskId()) && !document.querySelector('dialog[open]');
       const setActive = (active: boolean) => zone()?.classList.toggle('drop-active', active && accepting());
-      if (preview) {
+      // macOS drops are HTML5 events (the native handler is off, `app_context` in lib.rs), so
+      // text falls through to the prompt; Windows and Linux stay on Tauri's native events.
+      if (preview || isMac) {
         let depth = 0;
-        document.addEventListener('dragenter', event => { if (event.dataTransfer?.types.includes('Files')) { depth++; setActive(true); } });
+        const types = (event: DragEvent) => event.dataTransfer?.types ?? [];
+        // The main window has no navigation guard: a file or link the page does not take
+        // would replace the whole app, so anything but a drop on a text field is cancelled.
+        const wouldNavigate = (event: DragEvent) => types(event).includes('Files') || (types(event).includes('text/uri-list') && !(event.target instanceof Element && event.target.closest('textarea, input, [contenteditable]')));
+        document.addEventListener('dragenter', event => { if (types(event).includes('Files')) { depth++; setActive(true); } });
         document.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; setActive(false); } });
-        document.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files') && accepting()) event.preventDefault(); });
+        document.addEventListener('dragover', event => { if (wouldNavigate(event)) event.preventDefault(); });
         document.addEventListener('drop', event => {
           depth = 0; setActive(false);
-          const files = [...(event.dataTransfer?.files ?? [])];
-          if (!files.length || !accepting()) return;
-          event.preventDefault();
-          attachFiles(files, 'drop').catch(host.report);
+          if (wouldNavigate(event)) event.preventDefault();
+          if (!types(event).includes('Files') || !accepting()) return;
+          attachDropped([...(event.dataTransfer?.files ?? [])]).catch(host.report);
         });
         // Tests stand in for the native drop, which delivers paths.
-        window.addEventListener('pandacode-preview-drop', event => { if (accepting()) attachPaths((event as CustomEvent<string[]>).detail, 'unknown', true).catch(host.report); });
+        if (preview) window.addEventListener('pandacode-preview-drop', event => { if (accepting()) attachPaths((event as CustomEvent<string[]>).detail, 'unknown', true).catch(host.report); });
         return;
       }
       import('@tauri-apps/api/webview').then(({ getCurrentWebview }) => getCurrentWebview().onDragDropEvent(event => {

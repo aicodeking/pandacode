@@ -1,5 +1,5 @@
 import './file-mentions.css';
-import { fileIcon, icon } from './dom';
+import { fileIcon, icon, isImeKey } from './dom';
 import { hidePopover, showPopover } from './popover-motion';
 import type { FileEntry } from './types';
 
@@ -195,7 +195,7 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
     options.select?.(file);
   }
   function keydown(event: KeyboardEvent): void {
-    if (!opened || composing || event.isComposing || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (!opened || composing || isImeKey(event) || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(true); return; }
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault(); event.stopImmediatePropagation();

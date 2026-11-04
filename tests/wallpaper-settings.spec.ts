@@ -6,7 +6,7 @@ test.use({ timezoneId: 'America/New_York' });
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     if (localStorage.getItem('pandacode.wallpaperPreferences') === null && localStorage.getItem('pandacode.wallpapers') === null) {
-      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
+      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
     }
   });
 });
@@ -284,6 +284,30 @@ test('wallpapers settings pin a default scene until rotation is explicitly resum
   await setButton(page, 'Sunday').click();
   await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'sun-afternoon');
   await expect.poll(async () => (await preferences(page)).pinned).toBeNull();
+});
+
+test('a wallpaper saved before the live scenes starts off, keeps its choices, and stays on once turned on again', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('old-save')) return;
+    sessionStorage.setItem('old-save', '1');
+    localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 45, blur: 6, set: 'tue', pinned: 'tue-afternoon' }));
+  });
+  await open(page);
+  await expect(sceneImages(page)).toHaveCount(0);
+  await expect(workspace(page)).not.toHaveAttribute('data-wallpaper');
+  await expect(page.locator('.thread-sky')).toBeVisible();
+  await page.reload();
+  await expect(prompt(page)).toBeEnabled();
+  await expect(sceneImages(page)).toHaveCount(0);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await appearance(page);
+  const enabled = page.getByRole('checkbox', { name: 'Wallpapers', exact: true });
+  await expect(enabled).not.toBeChecked();
+  await enabled.check();
+  await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
+  await expect(slider(page)).toHaveValue('45');
+  await page.reload();
+  await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
 });
 
 test('wallpapers settings migrate the disabled preference and retain a favorite through disabling', async ({ page }) => {
