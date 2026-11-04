@@ -205,7 +205,7 @@ export function createPullView(host: PullHost) {
     }
   }
 
-  function header(detail: PullDetail): string {
+  function header(detail: PullDetail, view: NonNullable<typeof mounted>): string {
     const state = detail.state || 'open';
     const age = ago(state === 'merged' ? detail.mergedAt : detail.createdAt);
     const avatar = detail.author ? `<span class="ds-avatar pull-avatar" aria-hidden="true">${escape(detail.author.slice(0, 1).toUpperCase())}</span><strong>${escape(detail.author)}</strong>` : '';
@@ -295,7 +295,7 @@ export function createPullView(host: PullHost) {
     if (mounted !== view) return;
     view.viewers.forEach(viewer => viewer.dispose()); view.viewers.clear();
     const tab = (id: Section, label: string, count?: number) => `<button role="tab" data-pull-action="section" data-section="${id}" aria-selected="${view.section === id}"${count === undefined ? '' : ` title="${escape(`${label}: ${count}`)}"`}>${label}</button>`;
-    view.detail.innerHTML = `${header(detail)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
+    view.detail.innerHTML = `${header(detail, view)}<div class="pull-tabs ds-seg" role="tablist" aria-label="Pull request sections">${tab('overview', 'Summary')}${tab('commits', 'Commits', detail.commits.length)}${tab('files', 'Files', detail.files.length)}</div><div class="pull-content" role="tabpanel">${content}</div>`;
     const tabs = view.root.querySelector<HTMLElement>('.pull-tabs')!;
     trackSegment(tabs, tabs.querySelector<HTMLElement>('[aria-selected="true"]'));
   }

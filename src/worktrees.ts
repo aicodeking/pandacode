@@ -102,7 +102,7 @@ export function createWorktrees(host: WorktreeHost) {
       items.push({ id: 'settle-task', label: 'Settle task', description: 'Keep the history; forget the checkout.', icon: 'check' });
     } else if (session.worktreePath) {
       const target = (await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null))?.defaultBranch || 'main';
-      items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : sectioned ? 'Locally, in each repository. Commit first.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
+      items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : repos.length > 1 ? 'Locally, in each repository. Commit first.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
       items.push(...host.extraItems(session));
       items.push({ id: 'worktree-remove', label: 'Remove worktree…', description: 'Settles the task; refuses when work would be lost.', icon: 'close', disabled: host.running() });
       items.push({ id: 'copy-path', label: 'Copy worktree path', icon: 'copy' });
