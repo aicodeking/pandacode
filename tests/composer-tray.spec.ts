@@ -18,6 +18,23 @@ test('mode, Team, Saver and checkout are icons whose labels stay in the DOM', as
   await expect(mode(page)).toHaveAccessibleName('Mode: Standard');
 });
 
+test('with no branch to show, the tray stays packed from the left', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    await route.fulfill({ response, body: source.replace(/isRepo: true/, 'isRepo: false') });
+  });
+  await page.goto('/');
+  await expect(tray(page)).toBeVisible();
+  await expect(tray(page).locator('.composer-local')).toBeVisible();
+  await expect(page.locator('#branch-chip')).toHaveCount(0);
+  // While git status loads, a placeholder holds the branch's place on the right; once it has gone, nothing is left spread out.
+  await expect(tray(page).locator('.branch-chip-pending')).toHaveCount(0);
+  await expect.poll(() => tray(page).evaluate(row => {
+    const boxes = [...row.querySelectorAll<HTMLElement>('.composer-tools, .composer-context > *')].filter(item => item.getClientRects().length).map(item => item.getBoundingClientRect());
+    return Math.max(...boxes.slice(1).map((box, index) => box.left - boxes[index].right));
+  })).toBeLessThan(16);
+});
+
 test('the branch chip names its branch and checkout in a tip, not a title', async ({ page }) => {
   await page.goto('/');
   const chip = page.locator('#branch-chip');
