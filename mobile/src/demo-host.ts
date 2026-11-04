@@ -139,6 +139,7 @@ export async function demoCall(host: DemoHost, deviceId: string, method: Method,
     }
     case 'task.changes': return DEMO_CHANGES;
     case 'task.diff': return { diff: demoDiff(params.path), truncated: false };
+    case 'task.teamResume': return {};
     case 'task.team': return { team: params?.sessionId === DEMO_TEAM_TASK ? demoTeam(host.now()) : null };
     case 'task.workerMessages': {
       const all = params?.sessionId === DEMO_TEAM_TASK ? demoWorkerMessages(String(params.workerId), host.now()) : [];

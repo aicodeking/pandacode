@@ -37,7 +37,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     picker.disabled = pending || (!library.profiles.length && !library.lastSetup);
     picker.title = 'Choose a saved team';
     manage.disabled = pending || !profile;
-    create.disabled = pending || library.profiles.length >= 20;
+    create.disabled = pending;
     update.hidden = !modified;
     update.disabled = pending;
     status.textContent = modified ? 'Modified' : options.pendingSetup && sameTeamSetup(options.pendingSetup, setup) ? 'Pending' : profile ? 'Saved' : '';

@@ -203,6 +203,46 @@ test.describe('architect teams', () => {
     });
   }
 
+  test('a team held for a usage limit reads as limited, not working, until it is lifted', async ({page}) => {
+    const heldUntil = Date.now() + 4 * 3_600_000;
+    const held = team('session-2', { status: 'waiting', workers: [worker('build', { status: 'completed' })], error: "The lead's turn failed: limit hit PandaCode tries again, and workers keep running.", leadFailure: { error: 'limit hit', heldUntil } });
+    await installArchitect(page, {'session-2':held});
+    await page.evaluate(until => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'limited', text: 'Usage limit reached', data: { resetsAt: until } }), heldUntil);
+    const taskRow = page.locator('#task-row-session-2');
+    await expect(taskRow.locator('.task-indicator.limited')).toBeAttached();
+    await expect(taskRow.locator('.task-indicator.running')).toHaveCount(0);
+    const banner = page.locator('.limit-banner');
+    await expect(banner).toContainText('Usage limit reached');
+    await expect(banner.locator('.limit-resume-switch')).toHaveCount(0);
+    await expect(page.locator('.stop-button')).toBeVisible();
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-summary')).toContainText('Usage limit, resumes at');
+    await expect(panel(page).locator('.architect-panel-error')).toBeHidden();
+    await banner.getByRole('button', { name: 'Continue now' }).click();
+    await expect.poll(() => calls(page, 'clear_usage_limit').then(list => list.length)).toBe(1);
+    await expect(banner).toHaveCount(0);
+    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Architect is working…');
+    const error = panel(page).locator('.architect-panel-error');
+    await expect(error).toContainText('tries again');
+    await expect(error).toHaveClass(/is-notice/);
+    await expect(taskRow.locator('.task-indicator.running')).toBeAttached();
+  });
+
+  test('a paused team with a future heldUntil never promises a resume', async ({page}) => {
+    const heldUntil = Date.now() + 3_600_000;
+    await installArchitect(page, {'session-2':team('session-2', { status: 'paused', workers: [worker('build', { status: 'completed' })], error: 'Team paused.', leadFailure: { error: 'limit hit', heldUntil } })});
+    await openWorkers(page).click();
+    await expect(panel(page).locator('.architect-panel-summary')).toHaveText('Paused');
+  });
+
+  test('a worker still running keeps a held team working', async ({page}) => {
+    const heldUntil = Date.now() + 3_600_000;
+    await installArchitect(page, {'session-2':team('session-2', { status: 'waiting', workers: [worker('build')], leadFailure: { error: 'limit hit', heldUntil } })});
+    await page.evaluate(until => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'limited', text: 'Usage limit reached', data: { resetsAt: until } }), heldUntil);
+    await expect(page.locator('#task-row-session-2 .task-indicator.running')).toBeAttached();
+    await expect(page.locator('.limit-banner')).toHaveCount(0);
+  });
+
   test('worker messages expose forks and copy original saved or streaming Markdown', async ({page}) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async (text:string) => { (window as any).__copiedMessage = text; }}});
@@ -274,6 +314,25 @@ test.describe('architect teams', () => {
     expect(await page.evaluate(() => (window as any).__checkpointNode === document.querySelector('.architect-worker-checkpoint'))).toBe(true);
     await panel(page).getByRole('button', { name: 'Back to workers', exact: true }).click(); await row(page, 'review').click();
     await expect(checkpoint).toBeHidden();
+  });
+
+  test('a parked worker only waits on sub-workers while its team runs', async ({ page }) => {
+    const snapshot = team('session-2', { workers: [worker('build', { status: 'parked' }), worker('review', { status: 'running', parentWorker: 'build' })] });
+    await installArchitect(page, { 'session-2': snapshot });
+    await seedHistory(page, 'session-2', 'build');
+    await openWorkers(page).click();
+    await expect(row(page, 'build')).toContainText('Waiting on sub-workers');
+    for (const status of ['failed', 'paused'] as const) {
+      snapshot.revision++; snapshot.status = status; snapshot.workers[1].status = 'failed';
+      await publish(page, snapshot);
+      await expect(row(page, 'build')).toContainText('Paused');
+      await expect(row(page, 'build')).not.toContainText('Waiting on sub-workers');
+      await expect(row(page, 'build').locator('.architect-worker-glyph')).toHaveAttribute('data-glyph', 'idle');
+      await expect(panel(page).getByRole('button', { name: 'Resume team', exact: true })).toBeVisible();
+    }
+    await row(page, 'build').click();
+    await expect(panel(page).locator('.architect-worker-meta')).toContainText('Paused');
+    await expect(panel(page).locator('.architect-worker-meta')).not.toContainText('Waiting on sub-workers');
   });
 
   test('explains queued workers and updates the expanded detail without remounting', async ({ page, browserName }) => {

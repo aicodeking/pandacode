@@ -12,7 +12,8 @@ import { bindFileLinkContext, refreshFileLinks, type FileLinkContext } from './f
 import { createAgentInput, type AgentInput } from './agent-input';
 import { TailText } from './tail-text';
 import { decodeToolActivity, renderToolActivity } from './tool-activity';
-import { teamActive, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
+import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamConfig, type TeamSnapshot, type TeamWorker, type ModelSelection, type TeamLibrary, type TeamSetup } from './architect-types';
+import { resetTime } from './usage-limit';
 import { mountTeamProfiles } from './team-profiles';
 import { infoMark } from './tooltip';
 import { workerQueueReason } from './worker-scheduling';
@@ -22,8 +23,6 @@ import { teamSignature } from './team-progress';
 import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { AgentEvent, Message, MessagePage, Provider, ProviderId, ProviderModel, Session, ToolActivity } from './types';
-/** The highest round limit a team can have (`MAX_ROUNDS` in architect.rs). */
-const MAX_ROUNDS = 20;
 
 type SetupOptions = {
   task: Session; team: TeamSnapshot | null; library: TeamLibrary; providers: Provider[];
@@ -33,6 +32,8 @@ type SetupOptions = {
 const statusNames: Record<string, string> = { ready: 'Ready', running: 'Working', waiting: 'Waiting', paused: 'Paused', completed: 'Ready for review', failed: 'Needs attention', interrupted: 'Interrupted', queued: 'Queued', stopped: 'Stopped', parked: 'Waiting on sub-workers' };
 // Worker rows: a status verb (with its colour tone) and a 28px glyph per state.
 const workerVerbs: Record<string, [string, string]> = { running: ['Working..', 'accent'], waiting: ['Waiting', 'accent'], queued: ['Queued', ''], parked: ['Waiting on sub-workers', 'accent'], completed: ['Done', 'success'], failed: ['Failed', 'danger'] };
+/** A parked worker has no process of its own, so it only waits on sub-workers while its team runs. Resume recovers it. */
+const workerState = (worker: TeamWorker, team: TeamSnapshot): TeamWorker['status'] | 'paused' => worker.status === 'parked' && !teamActive(team) ? 'paused' : worker.status;
 const ring = (dash: string) => `<circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="${dash}"/>`;
 const workerGlyphs: Record<string, string> = {
   running: `<svg viewBox="0 0 28 28" aria-hidden="true"><g class="architect-glyph-spin">${ring('2.5 4')}</g><circle cx="14" cy="14" r="3.5" fill="currentColor"/></svg>`,
@@ -150,7 +151,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   const setupHelp = 'Applies to the next architect turn. Existing workers keep their models.';
   const parallelHelp = 'Maximum simultaneous assignments. The architect dispatches independent work; overlapping writes or dependencies may wait.';
   const guidanceHelp = 'Extra instructions for the lead, added to the built-in architect rules and sent with them. Leave it empty to use the guidance from Settings → Agent teams, or the built-in rules alone when none is set.';
-  host.innerHTML = `<form class="architect-setup"><section class="architect-config-section"><div class="architect-section-label"><h3>Architect</h3><span>Plans & reviews</span></div><button class="architect-model" type="button" aria-label="Choose architect model" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(architect, providers)}</button><div class="architect-guidance"><label for="team-guidance">Lead guidance</label>${infoMark(guidanceHelp, 'Lead guidance')}<span class="sr-only" id="team-guidance-help">${escape(guidanceHelp)}</span><textarea id="team-guidance" name="leadGuidance" rows="3" maxlength="2000" aria-describedby="team-guidance-help" placeholder="Extra instructions for the lead, on top of the built-in team rules.">${escape(config.leadGuidance ?? '')}</textarea><button type="button" class="secondary-button architect-guidance-reset">Reset to default</button></div></section><section class="architect-config-section"><div class="architect-section-label"><h3>Workers</h3><button type="button" class="architect-add" aria-label="Add worker profile">${icon('plus')} Add</button></div><div class="architect-profiles"></div></section><section class="architect-parallel"><div class="architect-parallel-controls"><label for="team-parallel">At once</label>${infoMark(parallelHelp, 'How parallel workers run')}<span id="team-parallel-help" class="sr-only">${parallelHelp}</span></div><div class="architect-parallel-controls"><label><input id="team-unlimited" type="checkbox" aria-label="Unlimited workers" aria-describedby="team-parallel-help" ${config.maxParallel === 0 ? 'checked' : ''}>Unlimited</label><input id="team-parallel" name="maxParallel" aria-label="Workers at once" aria-describedby="team-parallel-help" type="number" min="1" step="1" value="${config.maxParallel || 3}" ${config.maxParallel === 0 ? 'hidden' : ''} ${config.maxParallel === 0 ? 'disabled' : ''} required></div></section><details class="architect-limits"><summary>Run limits & context</summary><div class="architect-limit-fields"><label>Architect rounds<input type="number" name="maxRounds" min="1" max="20" value="${config.maxRounds}" required></label><label>Worker assignments<input type="number" name="maxAssignments" min="1" max="50" value="${config.maxAssignments}" required></label><label>Result summary limit<input type="number" name="summaryLimit" aria-label="Result summary limit" min="512" max="6000" value="${config.summaryLimit}" required><small>Bytes per worker result</small></label></div><p>Short summaries keep the architect's context focused. Full worker transcripts remain available.</p><p>Shared checkout · overlapping write scopes wait. Read-only assignments can run alongside writers. Scopes coordinate work; task permissions apply to every worker.</p></details>${task.resumeId && !team ? '<p class="architect-workspace-note">A fresh architect context enables delegation. Your saved conversation stays here.</p>' : ''}${team ? `<p class="architect-workspace-note">Next architect turn ${infoMark(setupHelp, 'When team changes apply')}<span class="sr-only">${setupHelp}</span></p>` : ''}<p class="architect-setup-error" role="alert" hidden></p><div class="architect-setup-footer">${canDisable ? '<button class="secondary-button architect-disable" type="button">Use a single agent</button>' : '<span>Remembered for new tasks</span>'}<button class="primary-button" type="submit">${team && !canDisable ? 'Apply setup' : 'Save setup'}</button></div></form>`;
+  host.innerHTML = `<form class="architect-setup"><section class="architect-config-section"><div class="architect-section-label"><h3>Architect</h3><span>Plans & reviews</span></div><button class="architect-model" type="button" aria-label="Choose architect model" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(architect, providers)}</button><div class="architect-guidance"><label for="team-guidance">Lead guidance</label>${infoMark(guidanceHelp, 'Lead guidance')}<span class="sr-only" id="team-guidance-help">${escape(guidanceHelp)}</span><textarea id="team-guidance" name="leadGuidance" rows="3" aria-describedby="team-guidance-help" placeholder="Extra instructions for the lead, on top of the built-in team rules.">${escape(config.leadGuidance ?? '')}</textarea><button type="button" class="secondary-button architect-guidance-reset">Reset to default</button></div></section><section class="architect-config-section"><div class="architect-section-label"><h3>Workers</h3><button type="button" class="architect-add" aria-label="Add worker profile">${icon('plus')} Add</button></div><div class="architect-profiles"></div></section><section class="architect-parallel"><div class="architect-parallel-controls"><label for="team-parallel">At once</label>${infoMark(parallelHelp, 'How parallel workers run')}<span id="team-parallel-help" class="sr-only">${parallelHelp}</span></div><div class="architect-parallel-controls"><label><input id="team-unlimited" type="checkbox" aria-label="Unlimited workers" aria-describedby="team-parallel-help" ${config.maxParallel === 0 ? 'checked' : ''}>Unlimited</label><input id="team-parallel" name="maxParallel" aria-label="Workers at once" aria-describedby="team-parallel-help" type="number" min="1" step="1" value="${config.maxParallel || 3}" ${config.maxParallel === 0 ? 'hidden' : ''} ${config.maxParallel === 0 ? 'disabled' : ''} required></div></section><p class="architect-workspace-note">Shared checkout · overlapping write scopes wait. Read-only assignments can run alongside writers. Scopes coordinate work; task permissions apply to every worker.</p>${task.resumeId && !team ? '<p class="architect-workspace-note">A fresh architect context enables delegation. Your saved conversation stays here.</p>' : ''}${team ? `<p class="architect-workspace-note">Next architect turn ${infoMark(setupHelp, 'When team changes apply')}<span class="sr-only">${setupHelp}</span></p>` : ''}<p class="architect-setup-error" role="alert" hidden></p><div class="architect-setup-footer">${canDisable ? '<button class="secondary-button architect-disable" type="button">Use a single agent</button>' : '<span>Remembered for new tasks</span>'}<button class="primary-button" type="submit">${team && !canDisable ? 'Apply setup' : 'Save setup'}</button></div></form>`;
   const form = host.querySelector<HTMLFormElement>('form')!;
   const guidanceField = host.querySelector<HTMLTextAreaElement>('#team-guidance')!;
   const profiles = host.querySelector<HTMLElement>('.architect-profiles')!;
@@ -164,7 +165,6 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
     else { disabledControls.forEach((disabled, el) => { el.disabled = disabled; }); disabledControls.clear(); }
   }
   function readSetup(): TeamSetup {
-    for (const name of ['maxRounds', 'maxAssignments', 'summaryLimit'] as const) config[name] = Number((form.elements.namedItem(name) as HTMLInputElement).value);
     config.leadGuidance = guidanceField.value.trim() || null;
     return structuredClone({ architect, config });
   }
@@ -173,7 +173,6 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
       if (!team && task.resumeId && setup.architect.provider !== task.provider) throw new Error('Use a new task to switch the architect harness.');
       picker?.(); Object.assign(config, structuredClone(setup.config)); Object.assign(architect, structuredClone(setup.architect));
       renderProfiles(); refreshModelLabels();
-      for (const name of ['maxRounds', 'maxAssignments', 'summaryLimit'] as const) (form.elements.namedItem(name) as HTMLInputElement).value = String(config[name]);
       guidanceField.value = config.leadGuidance ?? '';
       parallel.value = String(config.maxParallel || 3); refreshParallel();
       error.hidden = true;
@@ -181,7 +180,6 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   });
   form.addEventListener('input', () => savedProfiles.changed());
   host.querySelector<HTMLButtonElement>('.architect-guidance-reset')!.addEventListener('click', () => { guidanceField.value = ''; guidanceField.focus(); savedProfiles.changed(); });
-  form.addEventListener('invalid', event => { (event.target as HTMLElement).closest('details')?.setAttribute('open', ''); }, true);
   function choose(anchor: HTMLButtonElement, selection: ModelSelection, canSwitchProvider: boolean): void {
     picker?.();
     picker = openModelPicker({ anchor, providers, current: { ...selection, model: selection.model || 'default' }, canSwitchProvider, loadModels: options.loadModels,
@@ -197,7 +195,6 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
       row.querySelector('.icon-button')!.addEventListener('click', () => { picker?.(); config.workers.splice(index, 1); renderProfiles(); savedProfiles.changed(); });
       row.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, config.workers[index], true));
     });
-    (host.querySelector('.architect-add') as HTMLButtonElement).disabled = config.workers.length >= 6;
   }
   renderProfiles();
   function refreshModelLabels(): void {
@@ -236,10 +233,8 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
     if (disposed || pending || (disable && !canDisable)) return;
     if (!disable && !form.reportValidity()) return;
     error.hidden = true;
-    for (const name of ['maxRounds', 'maxAssignments', 'summaryLimit'] as const) config[name] = Number((form.elements.namedItem(name) as HTMLInputElement).value);
     config.leadGuidance = guidanceField.value.trim() || null;
     if (!disable && !unlimited.checked && (!Number.isSafeInteger(config.maxParallel) || config.maxParallel < 1)) { error.textContent = 'Choose a whole worker count or Unlimited.'; error.hidden = false; return; }
-    if (!disable && new TextEncoder().encode(config.leadGuidance ?? '').length > 2000) { error.textContent = 'Lead guidance must be under 2000 bytes.'; error.hidden = false; guidanceField.focus(); return; }
     if (!disable && config.workers.some(p => !p.name.trim())) { error.textContent = 'Give each worker profile a name.'; error.hidden = false; return; }
     const profileId = disable ? null : savedProfiles.selectedId();
     setBusy(true);
@@ -255,6 +250,10 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
 // An open worker transcript keeps a bounded window of messages in memory and the DOM.
 const WINDOW_MESSAGES = 200, WINDOW_CHARS = 2_000_000;
 type WorkerLive = { body: TailText; readonly text: string; tools: Map<string, ToolActivity>; approvals: Map<string, string>; inputs: Map<string, AgentInput>; ended: boolean };
+/** A mirror's host cut text, files or rows of its reply to fit. */
+const teamCut = (team: TeamSnapshot & { truncated?: boolean; workersTruncated?: boolean }) =>
+  Boolean(team.truncated || team.workersTruncated || team.workers.some(worker => (worker as { filesTruncated?: boolean }).filesTruncated));
+
 /** The selected worker is painted per frame. Background workers keep bounded data only. */
 export class ArchitectView {
   readonly host = document.createElement('div');
@@ -298,7 +297,7 @@ export class ArchitectView {
   setAssistEnabled(enabled: boolean): void { this.assistEnabled = enabled; this.paintAssist(); }
   private paintAssist(): void {
     const button = this.panel?.querySelector<HTMLButtonElement>('.architect-assist'); if (!button) return;
-    button.hidden = !this.assistEnabled || !this.options.assist;
+    button.hidden = !this.assistEnabled || !this.options.assist || Boolean(this.options.remote?.(this.taskId));
     button.textContent = this.selected ? 'Review with Jev' : 'Suggest worker';
   }
   setTask(taskId: string, team: TeamSnapshot | null, providers: Provider[]): void {
@@ -343,6 +342,7 @@ export class ArchitectView {
     }
     if (event.kind === 'input_cancelled' && event.requestId) { live.inputs.get(event.requestId)?.dispose(); live.inputs.delete(event.requestId); }
     if (event.kind === 'done') {
+      this.childAgents?.runEnded(event.sessionId);
       const context = this.options.fileContext?.(event.sessionId); if (context) refreshFileLinks(context);
       live.ended = true; live.approvals.clear(); for (const input of live.inputs.values()) input.dispose(); live.inputs.clear();
       if (this.worker()?.sessionId === event.sessionId) void this.loadMessages();
@@ -434,20 +434,24 @@ export class ArchitectView {
     const panel = this.panel, worker = this.worker();
     this.paintAssist();
     // Auto teams have nothing to set up: the lead picks worker models.
-    panel.querySelector<HTMLElement>('.architect-configure')!.hidden = Boolean(team.config.auto);
-    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = teamActive(team) ? 'Architect is working…' : statusNames[team.status];
+    const remote = Boolean(this.options.remote?.(this.taskId));
+    panel.querySelector<HTMLElement>('.architect-configure')!.hidden = Boolean(team.config.auto) || remote;
+    const heldUntil = teamHeldUntil(team);
+    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = heldUntil ? `Usage limit, resumes at ${resetTime(heldUntil)}` : teamActive(team) ? 'Architect is working…' : statusNames[team.status];
     const count = panel.querySelector<HTMLElement>('.architect-panel-count')!;
-    count.textContent = `${team.workers.length} ${team.workers.length === 1 ? 'task' : 'tasks'}`; count.title = `Round ${team.round}/${team.config.maxRounds}`;
-    panel.querySelector<HTMLButtonElement>('[data-team-control=pause]')!.hidden = !teamActive(team);
-    panel.querySelector<HTMLButtonElement>('[data-team-control=stop]')!.hidden = !teamActive(team) && team.status !== 'paused';
-    // Resume at the round limit grants more rounds natively, up to the maximum of 20.
-    panel.querySelector<HTMLButtonElement>('[data-team-control=resume]')!.hidden = !['paused', 'failed', 'interrupted'].includes(team.status) || team.round >= MAX_ROUNDS;
+    count.textContent = `${team.workers.length} ${team.workers.length === 1 ? 'task' : 'tasks'}`; count.title = `Round ${team.round}`;
+    panel.querySelector<HTMLButtonElement>('[data-team-control=pause]')!.hidden = !teamActive(team) || remote;
+    panel.querySelector<HTMLButtonElement>('[data-team-control=stop]')!.hidden = remote || (!teamActive(team) && team.status !== 'paused');
+    const resumable = ['paused', 'failed', 'interrupted'].includes(team.status);
+    panel.querySelector<HTMLButtonElement>('[data-team-control=resume]')!.hidden = !resumable;
     panel.querySelectorAll<HTMLButtonElement>('[data-team-control]').forEach(button => { button.disabled = this.busy; });
-    // Teams running on another computer are shown read-only.
-    panel.querySelector<HTMLElement>('.architect-panel-controls')!.hidden = Boolean(this.options.remote?.(this.taskId));
-    const error = panel.querySelector<HTMLElement>('.architect-panel-error')!; error.textContent = team.error ?? ''; error.hidden = !team.error;
-    // Pausing or stopping is the user's own choice, not a failure.
-    error.classList.toggle('is-notice', team.status === 'paused' && /^Team (paused|stopped)\./.test(team.error ?? ''));
+    // Teams running on another computer are shown read-only, except that a stopped one can be resumed.
+    panel.querySelector<HTMLElement>('.architect-panel-controls')!.hidden = remote && !resumable;
+    // While held, the summary says when the retry goes; the note would only repeat it.
+    const notes = [heldUntil && team.error && LEAD_RETRY.test(team.error) ? '' : team.error, teamCut(team) && 'Some agent details were left out to fit. Open this task on the other computer to see them.', remote && 'Messages between teammates stay on the other computer.'].filter(Boolean);
+    const error = panel.querySelector<HTMLElement>('.architect-panel-error')!; error.textContent = notes.join(' '); error.hidden = !notes.length;
+    // Pausing or stopping is the user's own choice, and neither a quiet lead nor one retrying is a failure.
+    error.classList.toggle('is-notice', !team.error || (team.status === 'paused' && /^Team (paused|stopped)\./.test(team.error)) || /^The lead is quiet:/.test(team.error) || LEAD_RETRY.test(team.error));
     panel.querySelector<HTMLElement>('.architect-back')!.hidden = !worker;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
     panel.querySelector<HTMLElement>('.architect-worker-detail')!.hidden = !worker;
@@ -455,7 +459,7 @@ export class ArchitectView {
     if (worker) {
       const meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(modelName(worker, this.providers))} · ${escape(statusNames[worker.status])}${worker.readOnly ? ' · Read only' : ''}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
+      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(modelName(worker, this.providers))} · ${escape(statusNames[workerState(worker, team)])}${worker.readOnly ? ' · Read only' : ''}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
       panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? 'Read only · no writes' : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : 'Write scope: shared checkout';
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;
@@ -486,10 +490,11 @@ export class ArchitectView {
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       const live = this.live.get(worker.sessionId);
       const needsInput = Boolean(live?.approvals.size || live?.inputs.size);
-      row.dataset.status = needsInput ? 'waiting' : worker.status;
+      const state = workerState(worker, team);
+      row.dataset.status = needsInput ? 'waiting' : state;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      const [verb, tone] = worker.abandoned ? ['Resolved', ''] : needsInput ? ['Needs input', 'accent'] : workerVerbs[worker.status] ?? [statusNames[worker.status] ?? worker.status, ''];
-      const glyph = worker.abandoned ? 'idle' : needsInput || ['queued', 'waiting', 'parked'].includes(worker.status) ? 'pending' : workerGlyphs[worker.status] ? worker.status : 'idle';
+      const [verb, tone] = worker.abandoned ? ['Resolved', ''] : needsInput ? ['Needs input', 'accent'] : workerVerbs[state] ?? [statusNames[state] ?? state, ''];
+      const glyph = worker.abandoned ? 'idle' : needsInput || ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
       const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}">${workerGlyphs[glyph]}<span class="architect-worker-logo">${providerLogo(worker.provider)}</span></span><span class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small${queueReason ? ` data-tip="${escape(queueReason)}"` : ''}><span class="architect-worker-state"${tone ? ` data-tone="${tone}"` : ''}>${escape(verb)}</span> ${escape(queueReason ?? modelName(worker, this.providers))}</small></span>${icon('chevron')}`;
       if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
     });

@@ -3,14 +3,14 @@
 // its prompt, tools and reply from the task's live subagent state.
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { connect } from '../connect/client.ts';
 import type { Message, ToolActivity } from '../connect/types.ts';
 import { elapsedLabel } from '../store/inbox.ts';
-import { mergeMessages } from '../store/reduce.ts';
+import { mergeMessages, prependMessages } from '../store/reduce.ts';
 import { taskKey, useConnect } from '../store/index.ts';
 import { parseToolMessage, subagentActive, subagentName } from '../store/trace.ts';
-import { workerActive, workerLabel, type Team, type TeamWorker } from '../store/team.ts';
+import { workerClockEnd, workerLabel, workerRunning, type Team, type TeamWorker } from '../store/team.ts';
 import { useBackdrop } from '../ui/Backdrop.tsx';
 import { harnessName } from '../ui/harness.tsx';
 import { Markdown } from '../ui/Markdown.tsx';
@@ -39,27 +39,46 @@ function Plain({ text, color }: { text: string; color?: string }) {
 }
 
 /** The worker's transcript: stored messages, then live tools the store doesn't hold yet. */
-function Transcript({ deviceId, sessionId, worker }: { deviceId: string; sessionId: string; worker: TeamWorker }) {
+function Transcript({ deviceId, sessionId, worker, team }: { deviceId: string; sessionId: string; worker: TeamWorker; team: Team }) {
   const colors = useColors();
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [error, setError] = useState('');
-  const running = workerActive(worker);
+  const running = workerRunning(worker, team);
   const live = useConnect(s => (worker.sessionId ? s.live[taskKey(deviceId, worker.sessionId)] : undefined));
+  const [hasOlder, setHasOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   // The newest id held, across refreshes (the component is keyed by worker).
   const last = useRef(0);
   useEffect(() => {
     let alive = true;
-    const load = () => connect.workerMessages(deviceId, sessionId, worker.id, last.current).then(fresh => {
-      if (!alive || !fresh.length) { if (alive) setMessages(m => m ?? []); return; }
-      last.current = fresh[fresh.length - 1].id;
-      setMessages(m => mergeMessages(m ?? [], fresh));
-      setError('');
-    }, (e: Error) => alive && setError(e.message));
+    const load = () => {
+      const after = last.current;
+      return connect.workerMessages(deviceId, sessionId, worker.id, after).then(page => {
+        if (!alive) return;
+        if (!after) setHasOlder(page.hasOlder);
+        setHasMore(page.hasMore);
+        setError('');
+        if (!page.messages.length) { setMessages(m => m ?? []); return; }
+        last.current = Math.max(last.current, page.messages[page.messages.length - 1].id);
+        setMessages(m => mergeMessages(m ?? [], page.messages));
+      }, (e: Error) => { if (alive) setError(e.message); });
+    };
     void load();
     const timer = running ? setInterval(load, REFRESH_MS) : undefined;
     return () => { alive = false; if (timer) clearInterval(timer); };
   }, [deviceId, sessionId, worker.id, running]);
-  const rows = useMemo(() => (messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool'), [messages]);
+  const loadOlder = () => {
+    const first = messages?.[0]?.id;
+    if (!first || loadingOlder) return;
+    setLoadingOlder(true);
+    connect.olderWorkerMessages(deviceId, sessionId, worker.id, first).then(page => {
+      setHasOlder(page.hasOlder);
+      setMessages(m => prependMessages(m ?? [], page.messages));
+      setError('');
+    }, (e: Error) => setError(e.message)).finally(() => setLoadingOlder(false));
+  };
+  const rows = useMemo(() => (messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool' || m.role === 'system'), [messages]);
   const stored = useMemo(() => new Set(rows.filter(m => m.role === 'tool').map(m => parseToolMessage(m.content).id).filter(Boolean)), [rows]);
   const liveTools = (live?.items ?? []).flatMap(i => (i.kind === 'tool' && !stored.has(i.tool.id) ? [i] : []));
   if (error && !messages) return <Plain text={error} color={colors.secondary as string} />;
@@ -67,19 +86,25 @@ function Transcript({ deviceId, sessionId, worker }: { deviceId: string; session
   if (!rows.length && !liveTools.length) return <Plain text="No messages yet." color={colors.secondary as string} />;
   return (
     <View style={styles.transcript}>
+      {hasOlder && (
+        <Pressable onPress={loadOlder} disabled={loadingOlder} accessibilityRole="button" style={styles.older}>
+          {loadingOlder ? <ActivityIndicator /> : <Text style={[styles.body, { color: colors.tint }]}>Load older messages</Text>}
+        </Pressable>
+      )}
+      {!!error && <Plain text={error} color={colors.secondary as string} />}
       {rows.map(m => m.role === 'tool' ? <ToolRow key={m.id} tool={parseToolMessage(m.content)} />
         : m.role === 'user' ? <View key={m.id} style={[styles.prompt, { backgroundColor: colors.fill }]}><Text selectable style={[styles.body, { color: colors.text }]} numberOfLines={12}>{m.content}</Text></View>
         : <Markdown key={m.id} text={m.content} />)}
       {liveTools.map(i => <ToolRow key={i.tool.id} tool={i.tool} startedAt={i.startedAt} endedAt={i.endedAt} />)}
+      {hasMore && <Plain text="Newer messages were left out. Open this task on the computer to see them." color={colors.secondary as string} />}
     </View>
   );
 }
 
 function WorkerDetail({ deviceId, sessionId, worker, team }: { deviceId: string; sessionId: string; worker: TeamWorker; team: Team }) {
   const colors = useColors();
-  const active = workerActive(worker);
-  const now = useNow(active);
-  const elapsed = worker.createdAt ? elapsedLabel((active ? now : worker.updatedAt || now) - worker.createdAt) : '';
+  const now = useNow(workerRunning(worker, team));
+  const elapsed = worker.createdAt ? elapsedLabel(workerClockEnd(worker, team, now) - worker.createdAt) : '';
   const names = useNames(team);
   const deps = worker.dependsOn.map(id => names[id] || id);
   return (
@@ -107,7 +132,7 @@ function WorkerDetail({ deviceId, sessionId, worker, team }: { deviceId: string;
       )}
       <Text style={[styles.heading, { color: colors.secondary }]}>Transcript</Text>
       <WorkerNamesContext.Provider value={names}>
-        <Transcript key={worker.id} deviceId={deviceId} sessionId={sessionId} worker={worker} />
+        <Transcript key={worker.id} deviceId={deviceId} sessionId={sessionId} worker={worker} team={team} />
       </WorkerNamesContext.Provider>
     </>
   );
@@ -154,5 +179,6 @@ const styles = StyleSheet.create({
   files: { fontFamily: mono, fontSize: 12.5, lineHeight: 18 },
   heading: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3, paddingHorizontal: 6, marginTop: 6 },
   transcript: { gap: 6 },
+  older: { alignItems: 'center', padding: 8 },
   prompt: { borderRadius: 14, padding: 12, borderCurve: 'continuous' },
 });

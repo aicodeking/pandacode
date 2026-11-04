@@ -30,7 +30,7 @@ import { markCurrent, markStartup } from './perf.ts';
 import { clearInbox, readInbox, saveInboxSoon } from './inbox-file.ts';
 import { decodeInbox, encodeInbox, type RestoredInbox } from '../store/inbox-cache.ts';
 import { attempt, configured, stopping, unanswered, unconfigured, unpaused, unstopping } from './optimistic.ts';
-import { newestPage, olderByAfterId, pageMessages, type Fetch } from './paging.ts';
+import { newestPage, olderByAfterId, pageMessages, workerNewer, workerNewest, workerOlder, type Fetch, type WorkerPage } from './paging.ts';
 import type { Live } from '../store/reduce.ts';
 import type { AgentEvent, Bot, Changes, ConfigureParams, Device, Diff, MergeMethod, Message, MessagePage, Provider, ProviderModel, PullDetail, RunFinished, StartParams, SubscribeReply, TaskSummary, TasksList } from './types.ts';
 
@@ -1121,19 +1121,28 @@ async function loadTeam(deviceId: string, sessionId: string): Promise<Team | nul
   }
 }
 
-/** A team worker's transcript, oldest first (afterId pages until the host has no more). */
-async function workerMessages(deviceId: string, sessionId: string, workerId: string, afterId = 0): Promise<Message[]> {
-  let all: Message[] = [];
-  let cursor = afterId;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const reply = await call<Partial<MessagePage>>(deviceId, 'task.workerMessages', { sessionId, workerId, ...(cursor ? { afterId: cursor } : {}) });
-    const fresh = (Array.isArray(reply?.messages) ? reply.messages : []).filter(m => typeof m?.id === 'number' && m.id > cursor);
-    all = [...all, ...fresh];
-    if (!reply?.hasMore || !fresh.length) return all;
-    cursor = fresh[fresh.length - 1].id;
+/** Resumes a paused, failed or interrupted team. An older host only lacks this one method, so
+ * unlike `newer` it does not mark the host outdated for pulls and bots. */
+async function resumeTeam(deviceId: string, sessionId: string): Promise<void> {
+  try {
+    await call(deviceId, 'task.teamResume', { sessionId });
+  } catch (error) {
+    if ((error as Error).message !== UNKNOWN_METHOD) throw error;
+    throw new Error(outdated(state().devices.find(d => d.id === deviceId)?.name ?? 'that computer'));
   }
-  return all;
+  await loadTeam(deviceId, sessionId).catch(() => undefined);
 }
+
+const workerFetch = (deviceId: string, sessionId: string, workerId: string): Fetch => params =>
+  call<MessagePage>(deviceId, 'task.workerMessages', { sessionId, workerId, ...params });
+
+/** A team worker's transcript, oldest first: its newest page, or everything after `afterId`. */
+const workerMessages = (deviceId: string, sessionId: string, workerId: string, afterId = 0): Promise<WorkerPage> =>
+  afterId ? workerNewer(workerFetch(deviceId, sessionId, workerId), afterId, MAX_PAGES) : workerNewest(workerFetch(deviceId, sessionId, workerId), MAX_PAGES);
+
+/** The page of a worker's transcript before `beforeId`. */
+const olderWorkerMessages = (deviceId: string, sessionId: string, workerId: string, beforeId: number): Promise<WorkerPage> =>
+  workerOlder(workerFetch(deviceId, sessionId, workerId), beforeId);
 
 // ---- Attachments ----
 
@@ -1159,6 +1168,6 @@ export const connect = {
   listTasks, refreshLists, listProviders, listModels, startTask, projectIcons,
   sendMessage, stopTask, steerTask, configureTask, respondApproval, respondInput,
   loadPull, pullDiff, mergePull, taskChanges, taskDiff, listBots, botThread, botMessage, pauseBot,
-  loadTeam, workerMessages,
+  loadTeam, resumeTeam, workerMessages, olderWorkerMessages,
   attachment,
 };

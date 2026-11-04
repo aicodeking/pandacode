@@ -13,6 +13,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tauri::Manager;
 
+/// How much of a schedule's message its tool results show.
+pub(super) const PROMPT_PREVIEW: usize = 8000;
 /// Recurring agent schedules stop after this many runs unless they say otherwise (`after` ones after 1).
 pub(crate) const AGENT_DEFAULT_MAX_RUNS: i64 = 20;
 const MESSAGE: &str = "pandacode_schedule_message";
@@ -37,7 +39,7 @@ fn with_timing(extra: Value) -> Value {
 }
 
 pub(crate) fn catalog() -> Vec<Value> {
-    let text = json!({"type":"string","maxLength":8000});
+    let text = json!({"type":"string","maxLength":crate::MESSAGE_LIMIT});
     let id = json!({"type":"string","maxLength":64});
     vec![
         spec("schedule_wakeup", "Wake THIS thread later with a note to yourself (check a deploy in 20 min, poll CI hourly, continue after another thread finishes). The note comes back as a user message when it fires, even after this turn ends. You cannot edit or pause a schedule: cancel and recreate it.", with_timing(json!({"note": text})), &["note"]),
@@ -195,6 +197,11 @@ fn local(at: Option<i64>) -> Option<String> {
 fn describe(store: &Store, schedule: &TaskSchedule, with_runs: bool) -> Result<Value> {
     let next = local(schedule.next_run_at).unwrap_or_else(|| if schedule.enabled && schedule.kind == "after" { "when the watched thread's run ends".into() } else { "none".into() });
     let mut value = json!({"id": schedule.id, "cadence": cadence(schedule), "nextRunLocal": next, "schedule": schedule});
+    // A listing holds 50 schedules, and each message can reach 16 MiB.
+    if schedule.prompt.len() > PROMPT_PREVIEW {
+        let preview: String = schedule.prompt.chars().take(PROMPT_PREVIEW).chain(['…']).collect();
+        value["schedule"]["prompt"] = json!(preview);
+    }
     if with_runs {
         value["lastRuns"] = json!(super::runs(store, None, Some(&schedule.id), 5)?);
     }

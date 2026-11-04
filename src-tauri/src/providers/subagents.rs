@@ -2,11 +2,17 @@
 //! Only IDs explicitly linked by provider delegation metadata are accepted.
 use super::*;
 
-const CHILD_LIMIT: usize = 64;
-const RESPONSE_LIMIT: usize = 32 * 1024;
-const CHILD_TOOL_LIMIT: usize = 16;
-const CHILD_INPUT_LIMIT: usize = 2 * 1024;
-const CHILD_OUTPUT_LIMIT: usize = 4 * 1024;
+// ponytail: display-only preview bounds (about 1 MiB per child), because each snapshot is
+// re-serialized when it is sent (quadratic in its size). The harness's own result to the
+// parent is unaffected. Send deltas instead of snapshots if a child ever needs more.
+const RESPONSE_LIMIT: usize = 256 * 1024;
+const CHILD_TOOL_LIMIT: usize = TOOL_CACHE_LIMIT;
+const CHILD_INPUT_LIMIT: usize = 4 * 1024;
+const CHILD_OUTPUT_LIMIT: usize = 8 * 1024;
+/// A status change always sends at once; other changes to one child send at this rate.
+const SNAPSHOT_INTERVAL: Duration = Duration::from_millis(250);
+/// An event only the run's silence clock reads; it goes no further than the sink.
+pub const HEARTBEAT: &str = "heartbeat";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -29,14 +35,39 @@ struct Child {
     response_from_result: bool,
     last_message_id: Option<String>,
     last_result_hash: Option<u64>,
+    /// The status and time of the last snapshot sent.
+    flushed_status: String,
+    flushed_at: Option<tokio::time::Instant>,
 }
 
-#[derive(Default)]
 pub(super) struct Subagents {
     children: HashMap<String, Child>,
     // Claude background task IDs alias the launching tool-use identity.
     aliases: HashMap<String, String>,
     dirty: HashSet<String>,
+    interval: Duration,
+    /// A child reported progress: the run is alive even if the snapshot has not changed.
+    progressed: bool,
+}
+
+impl Default for Subagents {
+    fn default() -> Self {
+        Self {
+            children: HashMap::new(),
+            aliases: HashMap::new(),
+            dirty: HashSet::new(),
+            interval: SNAPSHOT_INTERVAL,
+            progressed: false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Subagents {
+    /// Tests that assert each frame's snapshot turn the throttle off; it has its own test.
+    pub(super) fn send_every_snapshot(&mut self) {
+        self.interval = Duration::ZERO;
+    }
 }
 
 fn now() -> i64 {
@@ -46,16 +77,16 @@ fn now() -> i64 {
         .as_millis()
         .min(i64::MAX as u128) as i64
 }
-fn active(status: &str) -> bool {
+pub(super) fn active(status: &str) -> bool {
     matches!(status, "running" | "waiting")
 }
-fn status(value: &str) -> Option<&'static str> {
+pub(super) fn status(value: &str) -> Option<&'static str> {
     match value {
         "running" | "pendingInit" | "pending" | "started" => Some("running"),
         "waiting" | "paused" => Some("waiting"),
-        "completed" => Some("completed"),
-        "failed" | "errored" | "notFound" => Some("failed"),
-        "stopped" | "shutdown" | "interrupted" | "killed" => Some("stopped"),
+        "completed" | "success" | "done" => Some("completed"),
+        "failed" | "errored" | "error" | "notFound" | "timeout" | "timed_out" => Some("failed"),
+        "stopped" | "shutdown" | "interrupted" | "killed" | "cancelled" | "canceled" => Some("stopped"),
         _ => None,
     }
 }
@@ -66,19 +97,6 @@ impl Subagents {
             return None;
         }
         if !self.children.contains_key(id) {
-            // Retire completed previews so later delegates remain visible; the
-            // simultaneous active-child bound still never evicts running work.
-            if self.children.len() >= CHILD_LIMIT {
-                let retired = self
-                    .children
-                    .iter()
-                    .filter(|(_, child)| !active(&child.activity.status))
-                    .min_by_key(|(_, child)| child.activity.updated_at)
-                    .map(|(id, _)| id.clone())?;
-                self.children.remove(&retired);
-                self.dirty.remove(&retired);
-                self.aliases.retain(|_, id| id != &retired);
-            }
             let time = now();
             self.children.insert(
                 id.into(),
@@ -99,6 +117,8 @@ impl Subagents {
                     response_from_result: false,
                     last_message_id: None,
                     last_result_hash: None,
+                    flushed_status: String::new(),
+                    flushed_at: None,
                 },
             );
             self.dirty.insert(id.into());
@@ -117,15 +137,41 @@ impl Subagents {
         }
     }
     pub(super) fn flush(&mut self, protocol: &Protocol) -> Vec<AgentEvent> {
+        self.flush_due(protocol, false)
+    }
+    /// Sends what is due and keeps the rest dirty for `next_flush`; `all` sends everything.
+    pub(super) fn flush_due(&mut self, protocol: &Protocol, all: bool) -> Vec<AgentEvent> {
+        let now = tokio::time::Instant::now();
+        let mut events = Vec::new();
+        if std::mem::take(&mut self.progressed) {
+            events.push(protocol.event(HEARTBEAT, "", None));
+        }
+        for id in std::mem::take(&mut self.dirty) {
+            let Some(child) = self.children.get_mut(&id) else {
+                continue;
+            };
+            let due = all
+                || child.flushed_status != child.activity.status
+                || child.flushed_at.is_none_or(|at| now.duration_since(at) >= self.interval);
+            if !due {
+                self.dirty.insert(id);
+                continue;
+            }
+            child.flushed_at = Some(now);
+            child.flushed_status.clone_from(&child.activity.status);
+            let mut event = protocol.event("subagent", "", None);
+            event.data = serde_json::to_value(&child.activity).ok();
+            events.push(event);
+        }
+        events
+    }
+    /// When the earliest held snapshot is due, so a child that goes quiet still shows its last text.
+    pub(super) fn next_flush(&self) -> Option<tokio::time::Instant> {
         self.dirty
-            .drain()
-            .filter_map(|id| {
-                let child = self.children.get(&id)?;
-                let mut event = protocol.event("subagent", "", None);
-                event.data = serde_json::to_value(&child.activity).ok();
-                Some(event)
-            })
-            .collect()
+            .iter()
+            .filter_map(|id| self.children.get(id)?.flushed_at)
+            .min()
+            .map(|at| at + self.interval)
     }
     pub(super) fn observe_tools(
         &mut self,
@@ -153,7 +199,8 @@ impl Subagents {
             if let Some(prompt) = input["prompt"].as_str() {
                 child.activity.prompt = limited(prompt, TOOL_INPUT_LIMIT);
             }
-            child.background |= input["run_in_background"] == true;
+            // A foreground agent backgrounded partway reports only that launch as its result.
+            child.background |= input["run_in_background"] == true || tool.output.trim_start().starts_with("Async agent launched");
             // A completed Agent launch may only mean a background worker was started.
             if active(&child.activity.status) && (!child.background || tool.status == "failed") {
                 child.activity.status = tool.status.clone();
@@ -227,15 +274,14 @@ impl Subagents {
             parser.turn_id.clear();
         }
         let result = parser.receive(frame);
-        // Apply the tighter child transcript bounds to retained parser previews too.
-        while parser.tools.len() > CHILD_TOOL_LIMIT {
-            if let Some(oldest) = parser.tool_order.pop_front() {
-                parser.tools.remove(&oldest);
-            }
-        }
+        // Apply the child transcript bounds to retained parser previews too.
         for tool in parser.tools.values_mut() {
-            tool.input = limited(&tool.input, CHILD_INPUT_LIMIT);
-            tool.output = limited(&tool.output, CHILD_OUTPUT_LIMIT);
+            if tool.input.len() > CHILD_INPUT_LIMIT {
+                tool.input = limited(&tool.input, CHILD_INPUT_LIMIT);
+            }
+            if tool.output.len() > CHILD_OUTPUT_LIMIT {
+                tool.output = limited(&tool.output, CHILD_OUTPUT_LIMIT);
+            }
         }
         match result {
             Ok(step) => {
@@ -297,6 +343,12 @@ impl Subagents {
             }
         }
     }
+    /// Who is still working, oldest first, as the lost-report note names them.
+    pub(super) fn active_names(&self) -> Vec<String> {
+        let mut children: Vec<_> = self.children.values().map(|child| &child.activity).filter(|child| active(&child.status)).collect();
+        children.sort_by_key(|child| child.started_at);
+        children.into_iter().map(|child| if child.name.is_empty() || child.name == "Subagent" { "Subagent".to_owned() } else { format!("\"{}\"", child.name) }).collect()
+    }
     pub(super) fn route(&mut self, frame: &mut Value, protocol: &Protocol) -> Option<Step> {
         match protocol.config.provider.as_str() {
             "codex" => self.codex(frame, protocol),
@@ -334,7 +386,7 @@ impl Subagents {
         let task = field(frame, "task_id");
         let tool = field(frame, "tool_use_id");
         // Background Bash tasks use the same lifecycle envelope; never label them agents.
-        let agent_type = matches!(field(frame, "task_type"), "local_agent" | "remote_agent");
+        let agent_type = steering::holds_run(field(frame, "task_type"));
         let id = if self.children.contains_key(tool) || agent_type && !tool.is_empty() {
             tool.to_owned()
         } else if let Some(id) = self.aliases.get(task) {
@@ -344,8 +396,11 @@ impl Subagents {
         } else {
             return None;
         };
+        // A quiet remote agent or workflow reports only this, and must not count as silent.
+        self.progressed |= subtype == "task_progress";
         let child = self.child(&id, None)?;
-        child.background = true;
+        // A workflow's launch result never means it finished.
+        child.background = frame["is_backgrounded"].as_bool().unwrap_or(child.background || field(frame, "task_type") == "local_workflow");
         let before = child.activity.clone();
         if child.activity.name == "Subagent" {
             if let Some(name) = frame["description"].as_str().filter(|v| !v.is_empty()) {
@@ -359,14 +414,19 @@ impl Subagents {
         };
         if let Some(status) = status(raw_status) {
             child.activity.status = status.into();
+        } else if subtype == "task_notification" && active(&child.activity.status) {
+            // This frame only announces an end; a status word we don't know can't leave it running.
+            child.activity.status = "stopped".into();
+        } else if subtype == "task_started" && agent_type && !active(&child.activity.status) {
+            // A child woken after its early report starts again under a new run, with no status.
+            child.activity.status = "running".into();
         }
         if let Some(summary) = frame["summary"].as_str().filter(|v| !v.is_empty()) {
             Self::result_text(child, summary);
         }
         let changed = before != child.activity;
-        // Admission may retire an old alias at capacity; register the new task
-        // after that retirement, including starts without a prior Agent block.
-        if !task.is_empty() && self.aliases.len() < CHILD_LIMIT {
+        // Includes starts without a prior Agent block; task_updated has only this ID.
+        if !task.is_empty() {
             self.aliases.insert(limited(task, 256), id.clone());
         }
         if changed {
@@ -465,6 +525,13 @@ impl Subagents {
                     self.changed(owner);
                 }
             }
+            // A thread can close without a final turn or status notification.
+            "thread/closed" => {
+                if let Some(child) = self.children.get_mut(owner).filter(|child| active(&child.activity.status)) {
+                    child.activity.status = "stopped".into();
+                    self.changed(owner);
+                }
+            }
             _ => {
                 let owner = owner.to_owned();
                 self.child_events(&owner, std::mem::take(frame), protocol);
@@ -480,7 +547,6 @@ impl Subagents {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .take(CHILD_LIMIT)
                     .filter_map(Value::as_str)
                 {
                     if id == protocol.remote_id {
@@ -541,6 +607,7 @@ mod tests {
         p.remote_id = "root".into();
         p.turn_id = "turn-root".into();
         p.phase = 1;
+        p.subagents.as_mut().unwrap().send_every_snapshot();
         p
     }
     fn snapshot(step: &Step, id: &str) -> SubagentActivity {
@@ -632,6 +699,20 @@ mod tests {
             .filter(|event| event.kind == "subagent")
             .all(|event| event.data.as_ref().unwrap()["status"] != "running"));
     }
+    /// Recorded launch text: a foreground agent moved to the background partway answers its tool
+    /// call with this, and only its notification says it finished.
+    #[test]
+    fn a_foreground_agent_backgrounded_partway_stays_running_at_its_launch_result() {
+        let mut p = protocol("claude");
+        p.receive(json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"agent-tool","name":"Agent","input":{"description":"Review","prompt":"Review"}}]}})).unwrap();
+        let launched = p.receive(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent-tool","content":[{"type":"text","text":"Async agent launched successfully. (This tool result is internal metadata.)\nagentId: abc"}]}]}})).unwrap();
+        assert_eq!(snapshot(&launched, "agent-tool").status, "running");
+
+        let mut p = protocol("claude");
+        p.receive(json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"agent-tool","name":"Agent","input":{"description":"Review","prompt":"Review"}}]}})).unwrap();
+        let reported = p.receive(json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"agent-tool","content":[{"type":"text","text":"The docs say: Async agent launched successfully."}]}]}})).unwrap();
+        assert_eq!(snapshot(&reported, "agent-tool").status, "completed", "a report that only quotes it is still the report");
+    }
     #[test]
     fn codex_spawn_status_is_not_child_completion_and_child_errors_are_isolated() {
         let mut p = protocol("codex");
@@ -653,6 +734,118 @@ mod tests {
         );
         let stopped=p.receive(json!({"method":"turn/completed","params":{"threadId":"b","turn":{"id":"turn-b","status":"interrupted"}}})).unwrap();
         assert_eq!(snapshot(&stopped, "b").status, "stopped");
+    }
+    /// The main agent spawned one child and replied without waiting; a settled child has nothing to lose.
+    #[test]
+    fn a_clean_end_says_whose_report_was_lost_and_claude_keeps_its_own_path() {
+        let mut p = protocol("codex");
+        p.receive(json!({"method":"thread/started","params":{"thread":{"id":"a","agentNickname":"scout","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"root"}}}}}})).unwrap();
+        spawn(&mut p, "a");
+        spawn(&mut p, "b");
+        p.receive(json!({"method":"thread/status/changed","params":{"threadId":"b","status":{"type":"idle"}}})).unwrap();
+        let note: String = p.lost_reports_note().iter().filter(|event| event.kind == "note").map(|event| event.text.as_str()).collect();
+        assert_eq!(note, "The report from \"scout\" did not reach the agent: its process ended before handing it back.");
+        let mut settled = protocol("codex");
+        spawn(&mut settled, "a");
+        settled.receive(json!({"method":"thread/status/changed","params":{"threadId":"a","status":{"type":"idle"}}})).unwrap();
+        assert!(settled.lost_reports_note().is_empty());
+        let mut claude = protocol("claude");
+        claude.subagents.as_mut().unwrap().child("a", None);
+        assert!(claude.lost_reports_note().is_empty(), "claude_end_idle reports its own");
+    }
+    /// `thread/closed` is in the app-server schema of codex-cli 0.162.1.
+    #[test]
+    fn codex_child_whose_thread_closes_does_not_stay_running() {
+        let mut p = protocol("codex");
+        spawn(&mut p, "a");
+        spawn(&mut p, "b");
+        let completed = p.receive(json!({"method":"thread/status/changed","params":{"threadId":"b","status":{"type":"idle"}}})).unwrap();
+        assert_eq!(snapshot(&completed, "b").status, "completed");
+        for id in ["a", "b"] {
+            p.receive(json!({"method":"thread/closed","params":{"threadId":id}})).unwrap();
+        }
+        let children = &p.subagents.as_ref().unwrap().children;
+        assert_eq!(children["a"].activity.status, "stopped");
+        assert_eq!(children["b"].activity.status, "completed", "a settled child keeps its outcome");
+    }
+    #[test]
+    fn text_snapshots_are_throttled_but_status_changes_and_the_final_state_are_not() {
+        let mut p = protocol("claude");
+        p.subagents = Some(Subagents::default());
+        let delta = |text: &str| json!({"type":"stream_event","parent_tool_use_id":"a","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":text}}});
+        let shown = |step: &Step| step.events.iter().filter(|event| event.kind == "subagent").count();
+        let started = p.receive(json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Agent","input":{"prompt":"Go","run_in_background":true}}]}})).unwrap();
+        assert_eq!(snapshot(&started, "a").status, "running", "a new child shows at once");
+        assert_eq!(shown(&p.receive(delta("one ")).unwrap()), 0, "within the interval");
+        assert_eq!(shown(&p.receive(delta("two ")).unwrap()), 0);
+        assert!(p.subagent_flush_at().is_some(), "the timer will send it if the child goes quiet");
+        // The interval passes with no frame: the run loop's timer sends the held text.
+        let child = p.subagents.as_mut().unwrap().children.get_mut("a").unwrap();
+        child.flushed_at = Some(tokio::time::Instant::now() - SNAPSHOT_INTERVAL);
+        assert!(p.subagent_flush_at().unwrap() <= tokio::time::Instant::now());
+        assert_eq!(snapshot(&p.flush_subagents(false), "a").response, "one two ");
+        assert!(p.subagent_flush_at().is_none());
+        // A status change never waits, and carries the text held before it.
+        assert_eq!(shown(&p.receive(delta("three ")).unwrap()), 0);
+        let settled = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"t","tool_use_id":"a","task_type":"local_agent","status":"completed"})).unwrap();
+        assert_eq!(snapshot(&settled, "a").status, "completed");
+        assert_eq!(snapshot(&settled, "a").response, "one two three ");
+        // Run end sends what is still held, due or not.
+        assert_eq!(shown(&p.receive(delta("four")).unwrap()), 0);
+        assert_eq!(snapshot(&p.flush_subagents(true), "a").response, "one two three four");
+        assert!(p.flush_subagents(true).events.is_empty(), "sent once");
+    }
+    #[test]
+    fn progress_that_changes_nothing_still_refreshes_the_silence_clock() {
+        let mut p = protocol("claude");
+        let frame = |task_type: &str, id: &str| json!({"type":"system","subtype":"task_progress","task_id":id,"tool_use_id":format!("tool-{id}"),"task_type":task_type});
+        p.receive(json!({"type":"system","subtype":"task_started","task_id":"r","tool_use_id":"tool-r","task_type":"remote_agent","is_backgrounded":true})).unwrap();
+        let beats = |step: &Step| step.events.iter().filter(|event| event.kind == HEARTBEAT).count();
+        for _ in 0..2 {
+            let step = p.receive(frame("remote_agent", "r")).unwrap();
+            assert_eq!(beats(&step), 1);
+            assert!(step.events.iter().all(|event| event.kind != "subagent"), "no snapshot is re-sent or re-saved");
+        }
+        assert_eq!(beats(&p.receive(frame("local_bash", "shell")).unwrap()), 0, "a background command is not an agent");
+    }
+    /// relist.log: 15.97 s the child's early report; 27.81 s its command ends and it is woken
+    /// under the same task and tool, with no status on the frame; 30.21 s its real report.
+    #[test]
+    fn a_relisted_child_shows_as_working_until_its_real_report() {
+        let mut p = protocol("claude");
+        let frame = |subtype: &str, extra: Value| {
+            let mut frame = json!({"type":"system","subtype":subtype,"task_id":"t","tool_use_id":"a","task_type":"local_agent","is_backgrounded":true});
+            frame.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            frame
+        };
+        p.receive(frame("task_started", json!({}))).unwrap();
+        let early = p.receive(frame("task_notification", json!({"status":"completed"}))).unwrap();
+        assert_eq!(snapshot(&early, "a").status, "completed");
+        let woken = p.receive(frame("task_started", json!({}))).unwrap();
+        assert_eq!(snapshot(&woken, "a").status, "running");
+        let real = p.receive(frame("task_notification", json!({"status":"completed"}))).unwrap();
+        assert_eq!(snapshot(&real, "a").status, "completed");
+    }
+    #[test]
+    fn a_relisted_shell_task_never_reopens_its_child_and_a_waiting_child_stays_waiting() {
+        let mut p = protocol("claude");
+        p.receive(json!({"type":"system","subtype":"task_started","task_id":"t","tool_use_id":"a","task_type":"local_agent"})).unwrap();
+        p.receive(json!({"type":"control_request","parent_tool_use_id":"a"})).unwrap();
+        let started = p.receive(json!({"type":"system","subtype":"task_started","task_id":"t","tool_use_id":"a","task_type":"local_agent"})).unwrap();
+        assert!(started.events.iter().all(|event| event.kind != "subagent"), "an approval stays waiting");
+        let done = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"t","tool_use_id":"a","status":"completed"})).unwrap();
+        assert_eq!(snapshot(&done, "a").status, "completed");
+        let shell = p.receive(json!({"type":"system","subtype":"task_started","task_id":"s","tool_use_id":"a","task_type":"local_bash"})).unwrap();
+        assert!(shell.events.iter().all(|event| event.kind != "subagent"), "a command is not its agent");
+    }
+    #[test]
+    fn terminal_status_spellings_and_unknown_words_settle_a_claude_child() {
+        for (word, expected) in [("cancelled", "stopped"), ("canceled", "stopped"), ("error", "failed"), ("timeout", "failed"), ("timed_out", "failed"), ("success", "completed"), ("done", "completed"), ("vaporized", "stopped")] {
+            let mut p = protocol("claude");
+            p.receive(json!({"type":"system","subtype":"task_started","task_id":"t","tool_use_id":"a","task_type":"local_agent","is_backgrounded":true})).unwrap();
+            let settled = p.receive(json!({"type":"system","subtype":"task_notification","task_id":"t","tool_use_id":"a","status":word})).unwrap();
+            assert_eq!(snapshot(&settled, "a").status, expected, "{word}");
+        }
     }
     #[test]
     fn codex_thread_creation_precedes_spawn_result_and_supports_nested_children() {
@@ -769,9 +962,10 @@ mod tests {
         assert!(p.subagents.as_ref().unwrap().children.is_empty());
     }
     #[test]
-    fn sequential_children_retire_terminal_entries_and_their_task_aliases() {
+    fn every_child_stays_visible_and_task_updated_resolves_past_the_old_limit() {
+        const CHILDREN: usize = 76;
         let mut p = protocol("claude");
-        for index in 0..CHILD_LIMIT + 12 {
+        for index in 0..CHILDREN {
             let id = format!("agent-{index}");
             let task = format!("background-{index}");
             let started = p.receive(json!({"type":"assistant","message":{"id":format!("message-{index}"),"content":[{"type":"tool_use","id":id,"name":"Agent","input":{"description":"Review","run_in_background":true}}]}})).unwrap();
@@ -781,39 +975,26 @@ mod tests {
                 let completed=p.receive(json!({"type":"system","subtype":"task_notification","task_id":task,"status":"completed","summary":"Done"})).unwrap();
                 assert_eq!(snapshot(&completed, &id).status, "completed");
             }
-            // Deterministic age ordering without sleeps.
-            p.subagents
-                .as_mut()
-                .unwrap()
-                .children
-                .get_mut(&id)
-                .unwrap()
-                .activity
-                .updated_at = index as i64;
         }
         let tracker = p.subagents.as_ref().unwrap();
-        assert_eq!(tracker.children.len(), CHILD_LIMIT);
+        assert_eq!(tracker.children.len(), CHILDREN);
+        assert_eq!(tracker.aliases.len(), CHILDREN);
         assert_eq!(tracker.children["agent-0"].activity.status, "running");
-        assert!(!tracker.children.contains_key("agent-1"));
-        assert!(!tracker.aliases.contains_key("background-1"));
-        assert!(tracker
-            .aliases
-            .contains_key(&format!("background-{}", CHILD_LIMIT + 11)));
-        assert!(tracker
-            .aliases
-            .values()
-            .all(|id| tracker.children.contains_key(id)));
+        assert_eq!(tracker.children["agent-1"].activity.status, "completed");
+        let updated = p.receive(json!({"type":"system","subtype":"task_updated","task_id":"background-0","patch":{"status":"completed"}})).unwrap();
+        assert_eq!(snapshot(&updated, "agent-0").status, "completed");
         p.receive(json!({"type":"system","subtype":"task_started","task_id":"direct-task","tool_use_id":"direct-child","task_type":"local_agent"})).unwrap();
         let completed=p.receive(json!({"type":"system","subtype":"task_notification","task_id":"direct-task","status":"completed","summary":"Done"})).unwrap();
         assert_eq!(snapshot(&completed, "direct-child").status, "completed");
     }
     #[test]
-    fn child_storage_is_bounded_and_keeps_existing_active_children() {
+    fn child_previews_are_bounded_and_no_child_is_dropped() {
         let mut p = protocol("codex");
-        for n in 0..CHILD_LIMIT + 10 {
-            spawn(&mut p, &format!("child-{n}"));
+        for n in 0..74 {
+            let created = spawn(&mut p, &format!("child-{n}"));
+            assert_eq!(snapshot(&created, &format!("child-{n}")).status, "running");
         }
-        assert_eq!(p.subagents.as_ref().unwrap().children.len(), CHILD_LIMIT);
+        assert_eq!(p.subagents.as_ref().unwrap().children.len(), 74);
         assert!(p
             .subagents
             .as_ref()
@@ -823,7 +1004,7 @@ mod tests {
         for _ in 0..8 {
             p.receive(json!({"method":"item/agentMessage/delta","params":{"threadId":"child-0","itemId":"message","delta":"🦀".repeat(16_384)}})).unwrap();
         }
-        for n in 0..40 {
+        for n in 0..CHILD_TOOL_LIMIT + 24 {
             p.receive(json!({"method":"item/completed","params":{"threadId":"child-0","item":{"type":"commandExecution","id":format!("tool-{n}"),"command":"x".repeat(10_000),"aggregatedOutput":"y".repeat(20_000),"exitCode":0}}})).unwrap();
         }
         let child = &p.subagents.as_ref().unwrap().children["child-0"];
@@ -836,6 +1017,6 @@ mod tests {
             .iter()
             .all(|tool| tool.input.len() <= CHILD_INPUT_LIMIT
                 && tool.output.len() <= CHILD_OUTPUT_LIMIT));
-        assert_eq!(child.parser.as_ref().unwrap().tools.len(), CHILD_TOOL_LIMIT);
+        assert_eq!(child.parser.as_ref().unwrap().tools.len(), TOOL_CACHE_LIMIT);
     }
 }

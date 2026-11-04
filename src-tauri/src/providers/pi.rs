@@ -586,7 +586,7 @@ impl Protocol {
                 value.clone(),
                 format!("{}\n{}", field(&value, "title"), field(&value, "message")),
                 step,
-            )?,
+            ),
             // PandaCode's question form speaks Codex/MCP shapes; Pi dialogs decline for now.
             "select" | "input" | "editor" => step.write.push(
                 json!({"type":"extension_ui_response","id":value["id"],"cancelled":true}),

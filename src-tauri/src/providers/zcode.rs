@@ -323,7 +323,7 @@ impl Protocol {
                     field(params, "reason"),
                     preview_json(&params["input"], TOOL_INPUT_LIMIT),
                 );
-                self.approval(value, text, step)?;
+                self.approval(value, text, step);
             }
             ("interaction/requestUserInput", true) => step.write.push(
                 json!({"id": value["id"], "result": {"action": "decline",

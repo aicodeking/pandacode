@@ -2,6 +2,8 @@
 mod linux_fonts;
 
 fn main() {
+    // Before anything spawns: Finder starts apps with room for only about 45 workers.
+    pandacode_lib::raise_open_file_limit();
     // Before any GTK/WebKit init (Linux emoji freeze, issue #179).
     #[cfg(target_os = "linux")]
     linux_fonts::hide_colrv1_fonts();

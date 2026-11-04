@@ -290,11 +290,7 @@ fn reconcile_inactive_task(
 ) -> Session {
     // Team coordination continues while the architect process is between review rounds.
     // The raw row remains idle for internal admission; the UI sees logical activity.
-    if architect::load(store, &task.id)
-        .ok()
-        .flatten()
-        .is_some_and(|team| matches!(team.status.as_str(), "running" | "waiting"))
-    {
+    if architect::is_active(store, &task.id) {
         if !agents.contains_key(&task.id) {
             task.status = "waiting".into();
         }
@@ -321,6 +317,21 @@ fn reconcile_inactive_task(
 #[cfg(test)]
 mod task_agent_tests {
     use super::*;
+
+    #[test]
+    fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        let listed = |content: &str| {
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content", rusqlite::params![task.id, content]).unwrap();
+            reconcile_inactive_task(&store, &HashMap::new(), store.session(&task.id).unwrap()).status
+        };
+        // Nothing but the status: a full parse of this row would fail.
+        assert_eq!(listed(r#"{"status":"waiting"}"#), "waiting");
+        assert_eq!(listed(r#"{"status":"paused"}"#), "idle");
+        assert_eq!(listed("not json"), "idle");
+    }
 
     #[test]
     fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tools() {
@@ -547,8 +558,12 @@ fn app_instructions(chat: bool, worker: bool) -> String {
     [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat()
 }
 
+/// The largest prompt, steer or task description PandaCode accepts: large enough for long
+/// objectives and assignments, small enough that one message can't exhaust a harness pipe.
+pub(crate) const MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
 /// PandaCode closes the harness when a turn ends, so background waits never come back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Wait for long-running commands in the foreground (or poll them) before you reply.";
+/// Claude Code's background agents are the exception: the run stays open until they hand back.
+const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Background Agent subagents in Claude Code are different: they do report back, because the run stays open until they finish. On any other harness, a subagent still running when you reply is stopped and its report is lost: wait for every subagent you started (Codex: its wait tool) before you reply. Wait for long-running commands in the foreground (or poll them) before you reply.";
 
 /// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
 const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
@@ -578,6 +593,7 @@ mod instruction_tests {
         for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:", "Visual progress:"] {
             assert!(text.contains(part), "{part}");
         }
+        assert!(text.contains("wait for every subagent you started"), "a harness whose turn end closes its subagents waits for them");
         let chat = app_instructions(true, false);
         assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:"));
     }
@@ -677,8 +693,11 @@ async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, ena
     state.store.lock().map_err(|e| e.to_string())?.set_resume_at_reset(&session_id, enabled)
 }
 #[tauri::command]
-async fn clear_usage_limit(state: State<'_, AppState>, session_id: String) -> Result<()> {
-    state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)
+async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<()> {
+    state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)?;
+    // A team held on this limit goes now, not at the next watchdog tick.
+    architect::wake(app);
+    Ok(())
 }
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
@@ -927,40 +946,55 @@ async fn get_messages(
 async fn list_subagents(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<providers::SubagentActivity>> {
+) -> Result<Vec<subagent_state::SubagentRow>> {
     task_subagents(&state, &session_id)
 }
 
-fn task_subagents(state: &AppState, session_id: &str) -> Result<Vec<providers::SubagentActivity>> {
-    // Registry -> subagent snapshots -> store matches completion. Holding the
-    // live snapshot lock through the read prevents stale disk data winning a
-    // race with an in-memory text update or with the final completion flush.
-    let agents = state.agents.lock().map_err(|error| error.to_string())?;
-    let live = agents
-        .get(session_id)
-        .map(|agent| agent.subagents.lock())
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let store = state.store.lock().map_err(|error| error.to_string())?;
-    // A mirror's children run on its host: they settle there while its turn is open.
-    let task = live.is_none().then(|| store.session(session_id)).transpose()?;
-    if let Some(task) = task.filter(|task| task.remote_device.is_none() || !matches!(task.status.as_str(), "running" | "waiting")) {
-        // Retry a completion write that may have failed without reviving old
-        // children just because their final snapshot could not reach disk.
-        store.finish_subagents(
-            session_id,
-            if task.status == "error" {
-                "failed"
-            } else {
-                "stopped"
-            },
-        )?;
-    }
-    let history = store.subagents(session_id)?;
+/// One child in full, for the row the user opened; `None` if it no longer exists.
+#[tauri::command]
+async fn get_subagent(
+    state: State<'_, AppState>,
+    session_id: String,
+    agent_id: String,
+) -> Result<Option<providers::SubagentActivity>> {
+    task_subagent(&state, &session_id, &agent_id)
+}
+
+fn live_subagents(state: &AppState, session_id: &str) -> Result<Option<Arc<Mutex<subagent_state::SubagentState>>>> {
+    Ok(state.agents.lock().map_err(|error| error.to_string())?.get(session_id).map(|agent| agent.subagents.clone()))
+}
+
+/// A task's children as list rows. Live snapshots are read after the store, so stale disk data
+/// can't beat an in-memory update or the final flush, and neither lock waits on the other.
+fn task_subagents(state: &AppState, session_id: &str) -> Result<Vec<subagent_state::SubagentRow>> {
+    let live = {
+        // Held only when no run owns the task, so none can start while its children are settled.
+        let agents = state.agents.lock().map_err(|error| error.to_string())?;
+        let live = agents.get(session_id).map(|agent| agent.subagents.clone());
+        if live.is_none() {
+            let store = state.store.lock().map_err(|error| error.to_string())?;
+            let task = store.session(session_id)?;
+            // A mirror's children run on its host: they settle there while its turn is open.
+            if task.remote_device.is_none() || !matches!(task.status.as_str(), "running" | "waiting") {
+                // Retry a completion write that may have failed without reviving old
+                // children just because their final snapshot could not reach disk.
+                store.finish_subagents(session_id, if task.status == "error" { "failed" } else { "stopped" })?;
+            }
+        }
+        live
+    };
+    let history = state.store.lock().map_err(|error| error.to_string())?.subagent_rows(session_id)?;
     Ok(match live {
-        Some(live) => live.merge_history(history),
+        Some(live) => live.lock().map_err(|error| error.to_string())?.merge_rows(history),
         None => history,
     })
+}
+
+fn task_subagent(state: &AppState, session_id: &str, agent_id: &str) -> Result<Option<providers::SubagentActivity>> {
+    if let Some(child) = live_subagents(state, session_id)?.and_then(|live| live.lock().ok()?.get(agent_id)) {
+        return Ok(Some(child));
+    }
+    state.store.lock().map_err(|error| error.to_string())?.subagent(session_id, agent_id)
 }
 
 // Boundary callbacks are synchronous; move their bounded filesystem work off Tokio's
@@ -1149,6 +1183,13 @@ fn save_agent_activity(
         // replies even when no tool call appears between them. Persist the
         // previous text before forwarding the boundary; the marker is not a row.
         "message_start" | "turn_complete" => flush_assistant(db, &activity.session_id, assistant),
+        // PandaCode's own line about the run, never the agent's reply: readers of a worker's
+        // report and of a thread's last reply take `assistant` rows only.
+        "note" => {
+            bounded_tail(&mut activity.text, 8192);
+            let flushed = flush_assistant(db, &activity.session_id, assistant);
+            flushed.and(db.message(&activity.session_id, "system", &activity.text))
+        }
         "tool" | "error" => {
             // Tool progress can arrive after the agent has begun its next
             // response. Only a newly encountered call is a text boundary;
@@ -1242,8 +1283,8 @@ async fn resolve_slash_command(
     session_id: String,
     text: String,
 ) -> Result<slash_commands::Resolution> {
-    if text.len() > 128 * 1024 {
-        return Err("Message must be under 128 KiB.".into());
+    if text.len() > MESSAGE_LIMIT {
+        return Err("Message must be under 16 MiB.".into());
     }
     let (provider, cwd) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1283,8 +1324,8 @@ async fn prepare_command(
             })
             .trim()
             .to_string();
-        if original.len() > 128 * 1024 {
-            return Err("Message and attached context must be under 128 KiB.".into());
+        if original.len() > MESSAGE_LIMIT {
+            return Err("Message and attached context must be under 16 MiB.".into());
         }
         let Some((name, _)) = slash_commands::split_command(&original) else {
             return Ok(None);
@@ -1522,8 +1563,8 @@ fn prepare_task_run_in_project(
     if text.is_empty() {
         return Err("Write a message first.".into());
     }
-    if text.len() > 128 * 1024 {
-        return Err("Message and attached context must be under 128 KiB.".into());
+    if text.len() > MESSAGE_LIMIT {
+        return Err("Message and attached context must be under 16 MiB.".into());
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     // Discovery awaits outside the locks. Recheck the exact command and checkout
@@ -2029,7 +2070,7 @@ async fn launch_operation_admitted(
                 return;
             }
             last_event.store(storage::now(), Ordering::SeqCst);
-            if e.kind == "done" {
+            if e.kind == "done" || e.kind == providers::HEARTBEAT {
                 return;
             }
             let usage = if e.kind == "usage" {
@@ -3628,6 +3669,60 @@ pub fn prepare_environment() {
     providers::widen_process_path();
 }
 
+/// Open-file soft limits to try, highest first. Finder gives an app 256, about 45 workers' worth.
+/// macOS refuses a value over `kern.maxfilesperproc` (older systems: over `OPEN_MAX`, 10240)
+/// even when the hard limit is unlimited, so each refusal halves the ask.
+#[cfg(unix)]
+fn open_file_targets(soft: libc::rlim_t, hard: libc::rlim_t) -> Vec<libc::rlim_t> {
+    std::iter::successors(Some(hard.min(65_536)), |target| Some(target / 2)).take_while(|target| *target > soft).collect()
+}
+
+/// Raises this process's soft open-file limit; agents and tools it spawns inherit it. A failure
+/// only logs: the app still runs at the old limit.
+pub fn raise_open_file_limit() {
+    #[cfg(unix)]
+    {
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `limit` is a valid rlimit for the call to fill in.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+            eprintln!("Could not read the open-file limit: {}", std::io::Error::last_os_error());
+            return;
+        }
+        let targets = open_file_targets(limit.rlim_cur, limit.rlim_max);
+        let raised = targets.iter().any(|target| {
+            let wanted = libc::rlimit { rlim_cur: *target, rlim_max: limit.rlim_max };
+            // SAFETY: `wanted` is a valid rlimit that the call only reads.
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &wanted) == 0 }
+        });
+        if !raised && !targets.is_empty() {
+            eprintln!("Could not raise the open-file limit from {}: {}", limit.rlim_cur, std::io::Error::last_os_error());
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_file_limit_tests {
+    use super::*;
+
+    #[test]
+    fn targets_stop_at_the_hard_limit_and_never_lower_the_soft_one() {
+        assert_eq!(open_file_targets(256, libc::RLIM_INFINITY)[..2], [65_536, 32_768]);
+        assert_eq!(open_file_targets(256, 1024), [1024, 512]);
+        assert!(open_file_targets(65_536, libc::RLIM_INFINITY).is_empty());
+        assert!(open_file_targets(70_000, 80_000).is_empty());
+    }
+
+    #[test]
+    fn the_raised_limit_is_set_and_children_inherit_it() {
+        raise_open_file_limit();
+        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) }, 0);
+        assert!(limit.rlim_cur > 256);
+        let child = std::process::Command::new("sh").args(["-c", "ulimit -n"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&child.stdout).trim(), limit.rlim_cur.to_string());
+    }
+}
+
 /// Re-signs the app bundle with the local identity (after an update installs, and before,
 /// to wait out the startup pass); a no-op outside a macOS app bundle.
 #[tauri::command]
@@ -4050,6 +4145,7 @@ pub fn run() {
                 turn_changes::turn_change_diff,
                 turn_changes::turn_change_summary,
                 list_subagents,
+                get_subagent,
                 send_message,
                 list_slash_commands,
                 recipes_list,

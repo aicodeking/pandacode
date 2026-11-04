@@ -704,7 +704,7 @@ impl Protocol {
         }
         let tool = self.tools.get(field(&value["params"]["toolCall"], "toolCallId"));
         let label = super::devin::approval_label(&value, tool);
-        self.approval(value, label, &mut step)?;
+        self.approval(value, label, &mut step);
         Ok(step)
     }
     fn acp_copilot_permissions(&mut self, step: &mut Step) -> Result<(), String> {
@@ -1087,7 +1087,6 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
     Ok(connection_status(result))
 }
 
-const MAX_STEER_BYTES: usize = 128 * 1024;
 const MAX_STEERS: usize = 16;
 /// Request ids for live steering prompts, clear of startup (1-7), cancel (900) and goals (10000+).
 const STEER_IDS: std::ops::Range<u64> = 2000..9000;
@@ -1117,8 +1116,8 @@ impl Protocol {
     pub(super) fn acp_steer(&mut self, id: String, text: String, reply: super::goals::RpcReply) -> Step {
         let mut step = Step::default();
         let text = text.trim().to_owned();
-        if text.is_empty() || text.len() > MAX_STEER_BYTES {
-            let _ = reply.send(Err("Write a steering message under 128 KiB.".into()));
+        if text.is_empty() || text.len() > crate::MESSAGE_LIMIT {
+            let _ = reply.send(Err("Write a steering message under 16 MiB.".into()));
             return step;
         }
         let steers = &mut self.acp_steers;
@@ -2276,7 +2275,7 @@ mod tests {
     fn steers_are_bounded_and_validated() {
         let mut p = Protocol::new(config("deepseek"));
         assert!(acp_steer(&mut p, "a", "   ").1.is_err());
-        assert!(acp_steer(&mut p, "a", &"x".repeat(MAX_STEER_BYTES + 1)).1.is_err());
+        assert!(acp_steer(&mut p, "a", &"x".repeat(crate::MESSAGE_LIMIT + 1)).1.is_err());
         for n in 0..MAX_STEERS {
             acp_steer(&mut p, &n.to_string(), "ok").1.unwrap();
         }

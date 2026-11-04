@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 const MAX_PER_TASK: i64 = 50;
-const MAX_TEXT: usize = 128 * 1024;
 const MAX_ATTACHMENTS: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,8 +29,8 @@ fn validate(text: &str, attachments: &serde_json::Value) -> Result<String> {
     if !attachments.is_array() || encoded.len() > MAX_ATTACHMENTS {
         return Err("Queued attachments are invalid or too large.".into());
     }
-    if text.len() > MAX_TEXT {
-        return Err("Queued messages must be under 128 KiB.".into());
+    if text.len() > crate::MESSAGE_LIMIT {
+        return Err("Queued messages must be under 16 MiB.".into());
     }
     if text.trim().is_empty() && attachments.as_array().is_some_and(Vec::is_empty) {
         return Err("Write a message or add an attachment to queue.".into());
@@ -221,6 +220,14 @@ pub async fn steer_task(app: tauri::AppHandle, state: State<'_, AppState>, sessi
     Ok(reply)
 }
 
+/// A refused steer as an agent reads it. The "stays queued" wording is the composer's, whose
+/// message really does stay queued; an agent's message went nowhere, whichever host refused it.
+pub(crate) fn steer_refusal(error: &str, instead: &str) -> String {
+    let error = error.trim_end_matches('.');
+    let reason = error.strip_suffix("; the message stays queued").or_else(|| error.strip_suffix("; it stays queued")).unwrap_or(error);
+    format!("Not delivered: {reason}. {instead}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,7 +286,7 @@ mod tests {
         let (store, task) = store();
         assert!(add(&store, &task, "   ", &json!([])).is_err());
         assert!(add(&store, &task, "", &json!({"not":"a list"})).is_err());
-        assert!(add(&store, &task, &"x".repeat(MAX_TEXT + 1), &json!([])).is_err());
+        assert!(add(&store, &task, &"x".repeat(crate::MESSAGE_LIMIT + 1), &json!([])).is_err());
         assert!(add(&store, "missing", "hello", &json!([])).is_err());
         assert!(add(&store, &task, "", &json!([{"kind":"document"}])).is_ok(), "an attachment alone can be queued");
         for i in 1..MAX_PER_TASK {

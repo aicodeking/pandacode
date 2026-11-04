@@ -571,8 +571,8 @@ impl Store {
             )
             .map_err(|e| e.to_string())?;
         recovery.execute_batch("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
-            '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers'))))
-            WHERE json_extract(content,'$.status') IN ('running','waiting');").map_err(|e|e.to_string())?;
+            '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
+            WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END IN ('running','waiting');").map_err(|e|e.to_string())?;
         recovery.commit().map_err(|e| e.to_string())?;
         let ranked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE sidebar_order IS NOT NULL)", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if ranked { rank_published_drafts(&db)?; }
@@ -587,13 +587,13 @@ impl Store {
     /// Older team releases stored scheduler prompts as user rows. Reuse their exact
     /// provenance check once during migration, rather than reading transcripts on every list.
     fn record_legacy_prompt_cutoff(db: &Connection) -> Result<()> {
-        db.execute_batch("UPDATE architect_teams SET content=json_set(content,'$.legacyPromptThroughId',COALESCE((SELECT MAX(id) FROM messages WHERE session_id=architect_teams.session_id),0)) WHERE json_type(content,'$.legacyPromptThroughId') IS NULL OR json_type(content,'$.legacyPromptThroughId')='null';").map_err(|e|e.to_string())?;
+        db.execute_batch("UPDATE architect_teams SET content=json_set(content,'$.legacyPromptThroughId',COALESCE((SELECT MAX(id) FROM messages WHERE session_id=architect_teams.session_id),0)) WHERE json_valid(content) AND COALESCE(CASE WHEN json_valid(content) THEN json_type(content,'$.legacyPromptThroughId') END,'null')='null';").map_err(|e|e.to_string())?;
         Ok(())
     }
 
     fn backfill_legacy_prompt_activity(db: &Connection) -> Result<()> {
         Self::record_legacy_prompt_cutoff(db)?;
-        let mut teams = db.prepare("SELECT session_id FROM architect_teams WHERE COALESCE(json_extract(content,'$.legacyPromptThroughId'),0)>0").map_err(|e| e.to_string())?;
+        let mut teams = db.prepare("SELECT session_id FROM architect_teams WHERE COALESCE(CASE WHEN json_valid(content) THEN json_extract(content,'$.legacyPromptThroughId') END,0)>0").map_err(|e| e.to_string())?;
         let ids = teams.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
         let mut messages = db.prepare("SELECT id,content,created_at FROM messages WHERE session_id=?1 AND role='user' AND trim(content)<>'' ORDER BY created_at DESC,id DESC").map_err(|e| e.to_string())?;
         for sid in ids {
@@ -1209,8 +1209,8 @@ impl Store {
         if title.trim().is_empty() || title.len() > 200 {
             return Err("Title must be 1–200 characters.".into());
         }
-        if description.len() > 128 * 1024 {
-            return Err("Task details must be under 128 KiB.".into());
+        if description.len() > crate::MESSAGE_LIMIT {
+            return Err("Task details must be under 16 MiB.".into());
         }
         Ok(())
     }
@@ -1583,8 +1583,8 @@ impl Store {
         kind: Option<crate::architect::internal_turns::CoordinationKind>,
         reported: &[String],
     ) -> Result<i64> {
-        if content.trim().is_empty() || content.len() > 128 * 1024 {
-            return Err("Write a message under 128 KiB first.".into());
+        if content.trim().is_empty() || content.len() > crate::MESSAGE_LIMIT {
+            return Err("Write a message under 16 MiB first.".into());
         }
         let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
         let session = self.session(sid)?;
@@ -1706,24 +1706,12 @@ impl Store {
         activity: &crate::providers::SubagentActivity,
     ) -> Result<()> {
         let content = serde_json::to_string(activity).map_err(|error| error.to_string())?;
-        if activity.id.is_empty() || activity.id.len() > 1024 || content.len() > 1024 * 1024 {
-            return Err("Subagent activity exceeded its storage limit.".into());
+        if activity.id.is_empty() || activity.id.len() > 1024 {
+            return Err("Subagent activity has an invalid ID.".into());
         }
         self.db.execute("INSERT INTO subagents(session_id,id,content,updated_at) VALUES (?1,?2,?3,?4)
             ON CONFLICT(session_id,id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at",
             params![sid,activity.id,content,activity.updated_at]).map_err(|error| error.to_string())?;
-        // Keep current work regardless of age; older terminal snapshots give
-        // way to the newest 64 entries without growing every parent turn.
-        self.db
-            .execute(
-                "DELETE FROM subagents WHERE session_id=?1
-            AND json_extract(content,'$.status') NOT IN ('running','waiting')
-            AND id NOT IN (SELECT id FROM subagents WHERE session_id=?1
-                ORDER BY (json_extract(content,'$.status') IN ('running','waiting')) DESC,
-                updated_at DESC,id DESC LIMIT 64)",
-                [sid],
-            )
-            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -1733,7 +1721,7 @@ impl Store {
             .db
             .prepare(
                 "SELECT content FROM subagents WHERE session_id=?1
-            ORDER BY updated_at DESC,id DESC LIMIT 64",
+            ORDER BY updated_at DESC,id DESC",
             )
             .map_err(|error| error.to_string())?;
         let rows = query
@@ -1744,6 +1732,50 @@ impl Store {
             serde_json::from_str(&content).map_err(|error| error.to_string())
         })
         .collect()
+    }
+
+    /// The list of a task's children without their tools and with short previews. SQLite still
+    /// parses each snapshot, but only this much of it crosses into Rust and on to the webview.
+    // ponytail: the parse is linear in saved bytes; give `subagents` plain columns if a task's
+    // history ever makes opening its thread slow.
+    pub fn subagent_rows(&self, sid: &str) -> Result<Vec<crate::subagent_state::SubagentRow>> {
+        self.session(sid)?;
+        let mut query = self
+            .db
+            .prepare(
+                "SELECT id,json_extract(content,'$.parentId'),json_extract(content,'$.name'),
+                    substr(json_extract(content,'$.prompt'),1,?2),json_extract(content,'$.status'),
+                    substr(json_extract(content,'$.response'),1,?2),json_array_length(content,'$.tools'),
+                    json_extract(content,'$.startedAt'),json_extract(content,'$.updatedAt')
+                 FROM subagents WHERE session_id=?1 ORDER BY updated_at DESC,id DESC",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = query
+            .query_map(params![sid, crate::subagent_state::PREVIEW_CHARS], |row| {
+                Ok(crate::subagent_state::SubagentRow {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    prompt: row.get(3)?,
+                    status: row.get(4)?,
+                    response: row.get(5)?,
+                    tool_count: row.get(6)?,
+                    started_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.map(|row| row.map_err(|error| error.to_string())).collect()
+    }
+
+    /// One saved child in full.
+    pub fn subagent(&self, sid: &str, id: &str) -> Result<Option<crate::providers::SubagentActivity>> {
+        let content: Option<String> = self
+            .db
+            .query_row("SELECT content FROM subagents WHERE session_id=?1 AND id=?2", [sid, id], |row| row.get(0))
+            .optional()
+            .map_err(|error| error.to_string())?;
+        content.map(|content| serde_json::from_str(&content).map_err(|error| error.to_string())).transpose()
     }
 
     pub fn finish_subagents(&self, sid: &str, status: &str) -> Result<()> {
@@ -2163,7 +2195,7 @@ mod tests {
         for (provider, title, details) in [
             ("bad", "Valid", ""),
             ("codex", "  ", ""),
-            ("codex", "Valid", &"x".repeat(128 * 1024 + 1)),
+            ("codex", "Valid", &"x".repeat(crate::MESSAGE_LIMIT + 1)),
         ] {
             assert!(store
                 .create_board_task(
@@ -2326,6 +2358,26 @@ mod tests {
         assert_eq!(review.updated_at, 9);
         assert!(!store.session(&live.id).unwrap().archived);
         assert_eq!(store.settle_archived().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_corrupt_team_row_never_stops_the_store_opening() {
+        let directory = std::env::temp_dir().join(format!("pandacode-corrupt-team-{}", id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        drop(Store::open(&path).unwrap());
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("PRAGMA foreign_keys=OFF;
+                INSERT INTO architect_teams(session_id,content) VALUES('not-json','{broken'),('bad-worker','{\"status\":\"running\",\"workers\":[\"x\",{\"status\":\"running\"}]}');").unwrap();
+        }
+        drop(Store::open(&path).unwrap());
+        let db = Connection::open(&path).unwrap();
+        let broken: String = db.query_row("SELECT content FROM architect_teams WHERE session_id='not-json'", [], |row| row.get(0)).unwrap();
+        assert_eq!(broken, "{broken");
+        let worker: String = db.query_row("SELECT json_extract(content,'$.workers[0].status') FROM architect_teams WHERE session_id='bad-worker'", [], |row| row.get(0)).unwrap();
+        assert_eq!(worker, "stopped");
+        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]

@@ -9,13 +9,14 @@ use tauri::Manager;
 
 use rusqlite::{params, OptionalExtension};
 
-use super::{active, load, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, HARNESSES};
+use super::{active, load, text, Assignment, TeamConfig, TeamSnapshot, WorkerProfile, HARNESSES, PAGE_BYTES};
 use crate::model_routing::{self, Job};
 use crate::model_health;
 use crate::panda_router::{Mode, PoolModel, Route, Routed, TaskContext};
 use crate::{storage, AppState, Result};
 
 pub(super) const AUTO: &str = "auto";
+/// What the profiler reads of a task; longer text is cut for it, never refused.
 const MAX_TASK_TEXT: usize = 8192;
 
 #[derive(Clone, Debug)]
@@ -330,15 +331,15 @@ struct FailedModel {
 /// The pool, jobs and mode of a route_models call.
 pub(super) fn route_request(config: &TeamConfig, langs: &[String], args: Value) -> Result<(Vec<PoolModel>, Vec<Job>, Option<Mode>)> {
     let args: RouteArgs = serde_json::from_value(args).map_err(|e| format!("Invalid route_models arguments: {e}"))?;
-    if args.tasks.is_empty() || args.tasks.len() > 12 {
-        return Err("Route 1–12 tasks per call.".into());
+    if args.tasks.is_empty() {
+        return Err("Route at least one task.".into());
     }
     let pool = pool(config);
     let mut jobs = Vec::new();
     for task in args.tasks {
-        text(&task.text, MAX_TASK_TEXT, "Task text")?;
-        if task.failed.len() > 12 || task.failed.iter().any(|f| !HARNESSES.contains(&f.provider.as_str()) || f.model.len() > 200) {
-            return Err("List at most 12 failed models, each with a known harness.".into());
+        text(&task.text, "Task text")?;
+        if task.failed.iter().any(|f| !HARNESSES.contains(&f.provider.as_str()) || f.model.len() > 200) {
+            return Err("Failed models need a known harness and a model ID under 200 bytes.".into());
         }
         let failed = task
             .failed
@@ -355,7 +356,8 @@ pub(super) fn route_request(config: &TeamConfig, langs: &[String], args: Value) 
 
 /// Compact route_models output: pick and why, up to 3 alternatives, the first 4 rungs of the
 /// escalation ladder, difficulty, category, unrated count, and which profiler ran ("heuristic" while
-/// the ONNX profiler downloads).
+/// the ONNX profiler downloads). Past `PAGE_BYTES` every task drops its alternatives and ladder
+/// (`trimmed`), and tasks that still do not fit are left out, last first (`omittedTasks`).
 pub(super) fn route_summary(config: &TeamConfig, routes: &[Route]) -> Value {
     let model = |m: &Routed| {
         let mut entry = json!({"provider":m.provider,"model":m.model,"name":m.name,"pSuccess":(m.p_success * 100.0).round() / 100.0,"estCostUsd":(m.est_cost_usd * 10000.0).round() / 10000.0});
@@ -370,7 +372,7 @@ pub(super) fn route_summary(config: &TeamConfig, routes: &[Route]) -> Value {
         }
         entry
     };
-    let tasks: Vec<Value> = routes
+    let mut tasks: Vec<Value> = routes
         .iter()
         .map(|r| {
             let picked = r.pick.as_ref().map(|p| p.card_id.as_str());
@@ -379,7 +381,29 @@ pub(super) fn route_summary(config: &TeamConfig, routes: &[Route]) -> Value {
             json!({"pick":r.pick.as_ref().map(model),"decidedBy":r.decided_by,"alternatives":alternatives,"ladder":ladder,"difficulty":r.difficulty,"category":r.category,"unrated":r.unrated.len()})
         })
         .collect();
-    json!({"tasks": tasks, "profiler": routes.first().map_or("heuristic", |r| r.profiler)})
+    let profiler = routes.first().map_or("heuristic", |r| r.profiler);
+    let size = |task: &Value| serde_json::to_vec(task).map_or(PAGE_BYTES, |b| b.len() + 1);
+    // Room for the fields around the tasks.
+    let budget = PAGE_BYTES - 256;
+    if tasks.iter().map(size).sum::<usize>() <= budget {
+        return json!({"tasks": tasks, "profiler": profiler});
+    }
+    for task in &mut tasks {
+        if let Some(task) = task.as_object_mut() {
+            task.remove("alternatives");
+            task.remove("ladder");
+        }
+    }
+    let mut bytes = 0;
+    // At least one, so a call always makes progress.
+    let kept = tasks.iter().take_while(|task| { bytes += size(task); bytes <= budget }).count().max(1);
+    let omitted = tasks.len() - kept;
+    tasks.truncate(kept);
+    let mut out = json!({"tasks": tasks, "profiler": profiler, "trimmed": true});
+    if omitted > 0 {
+        out["omittedTasks"] = json!(omitted);
+    }
+    out
 }
 
 pub(super) async fn route_models(config: &TeamConfig, langs: &[String], args: Value) -> Result<Value> {

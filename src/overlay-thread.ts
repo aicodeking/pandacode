@@ -262,7 +262,7 @@ export class OverlayThreadView {
       heading.dataset.provider = author;
     }
     if (turn.final) { response.dataset.messageId = String(turn.final.id); streamMarkdown(response.querySelector('div')!,turn.final.content,this.scroll); this.paintActions(response, turn.final); }
-    node.querySelector('.launcher-thread-errors')!.textContent = turn.errors.map(message => message.content).join('\n');
+    node.querySelector('.launcher-thread-errors')!.textContent = [...turn.errors, ...turn.notes].map(message => message.content).join('\n');
   }
   private canFork(message: Message): boolean {
     return !this.task?.subagentId && message.id > 0 && message.id !== Number.MAX_SAFE_INTEGER && this.messages.has(message.id);

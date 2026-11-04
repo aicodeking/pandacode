@@ -281,6 +281,9 @@ them; the adapter does not wait for the turn to finish. Claude launches with
 message, with bounded `data.messageId` and optional `data.phase` (Codex commentary
 or final answer). Native persistence flushes the preceding assistant message at
 this boundary without storing a marker row.
+`note` is PandaCode's own line at a run's end (a subagent's report lost, a background
+command stopped). It saves as a `system` row after the flushed reply: both clients show
+it outside the fold, and it is never the agent's reply, a worker's report or harness context.
 If message IDs interleave, a resumed ID starts a new contiguous display segment;
 text never appends silently to another message's live buffer.
 
@@ -446,13 +449,46 @@ parent run and persists child history separately from the parent's messages.
   [tool notification mapping](https://github.com/MoonshotAI/kimi-code/blob/main/packages/acp-server/src/events-map.ts),
   and [Agent tool parameters](https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/reference/tools.md).
 
-Each run retains at most 64 child previews at a time. When that cache fills,
-its oldest terminal child retires to make room for later delegates; active children
-are never evicted (up to 64 simultaneous children). Each retained child keeps a 32 KiB response preview and its latest 16 tools (2 KiB input / 4 KiB output
-per tool); prompt previews are 4 KiB. Consumed child frames move into the parser
-instead of copying potentially multi-megabyte envelopes. Rendering receives only
-bounded snapshots, and storage checkpoints ongoing updates at most once per
-second. Parent exit/stop and app recovery settle children still marked active.
+A run tracks every child; there is no cap on children, and nothing is evicted. Codex
+has its own limit per session (`agents.max_concurrent_threads_per_session`; past it,
+spawns fail with `AgentLimitReached`), so PandaCode launches it with
+`-c agents.max_threads=1024` (the older name, which every version reads; 0.144 and older
+refuse to start on the new one) unless the `config.toml` in your Codex home or in `<task folder>/.codex/` sets either name
+(other layers Codex reads, such as a parent folder's `.codex/` or a system config, are not checked); then your value stands, and subagents past it are refused by Codex. Each
+child's preview keeps its latest 256 KiB of response and 64 tools (4 KiB input / 8 KiB
+output per tool). The harness's own result to the parent is not affected by these
+bounds. Consumed child frames move into the parser instead of copying potentially
+multi-megabyte envelopes. Snapshots reach the window at most every 250 ms per child, a
+status change at once, and storage checkpoints ongoing updates at most once per second.
+Parent exit/stop and app recovery settle children still marked active.
+
+Saved history keeps every child. `list_subagents` returns light rows (no tools, about
+1 KiB of prompt and response, and `toolCount`), so opening a thread stays cheap whatever
+its children weigh; `get_subagent` returns one full snapshot when a row is opened. Live
+events carry full data, and a list row never replaces it. `pandacode_list_subagents`
+pages by `offset` and `nextOffset`.
+
+Claude Code keeps the run open for its background agents: while any runs, with no time
+limit (known from `background_tasks_changed`, or `task_started` with `is_backgrounded`
+on a CLI that sends no list; a terminal `task_notification` or `task_updated` settles
+one even if no list follows). An inner agent that settles while its parent subagent is open,
+foreground or background, reports to that subagent and is owed nothing; one that outlives its
+parent gets its own hand-back turn. After the parent's `result`, the run waits for what is
+still owed: 10 s for a settled agent's hand-back (120 s over the cloud bridge, whose
+polling backs off in a network blip), the same after an empty notification `result` (no turns,
+no text: Claude merged it with another notification and the turn answering both follows, recorded
+2 s later; if none comes the run ends cleanly) and 15 minutes for a prompt or steer Claude has not
+taken, because hooks run before that turn's first frame. `--include-hook-events` (passed
+when the CLI's `--help` lists it, never over the cloud bridge) shows a UserPromptSubmit hook
+starting, and the same 15 minutes apply while it runs. A background command a subagent owns
+(`parent_task_id`) holds the run too, for up to 5 minutes from when it first does (a steer never restarts them, and the thread's status line says what it is waiting on), because the subagent is woken
+when it ends and reports then; when it ends the short wait starts over, and the parent's own
+background commands never hold. At the 5 minutes the main agent gets one plain-text turn on
+stream input, naming the subagent and command and saying the report will not arrive; that
+turn's `result` ends the run and the transcript notes the command was stopped, so a dev server
+can never hold a run twice. If no turn starts within 120 s the run ends with the same note.
+Stop works throughout. A
+child's `task_progress` counts as activity for the team watchdog's silence limit.
 
 Deterministic protocol tests cover interleaved child identities, nested linkage,
 permission waiting/resumption, final-suffix recovery and replay deduplication,

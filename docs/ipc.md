@@ -186,6 +186,8 @@ its `done` event before releasing its execution slot for another start of that t
 delta. Its optional data contains a bounded `messageId` and `phase`; it creates no
 history row. New tool calls also end the preceding text segment, while progress
 and completion updates to existing tool IDs leave the current response intact.
+`note` is PandaCode's own run-end line: it ends the current text segment and saves as a
+`system` row, shown in the transcript but never counted as the agent's reply.
 
 Conversation and Board share the same live response buffer. Incoming text is
 painted on the next frame and sanitized Markdown updates are coalesced at 32 ms,
@@ -232,20 +234,22 @@ Unfinished tools are settled with an explanatory failure note when a turn ends o
 an interrupted session is recovered at startup. Tool updates do not change a task's
 last assistant response timestamp.
 
-`AgentEvent` kind `subagent` carries a full bounded snapshot in `data`:
+`AgentEvent` kind `subagent` carries a full snapshot in `data` (per child, previews keep 64 tools, 4 KiB of tool input, 8 KiB of output and 256 KiB of response; there is no cap on children):
 `{id, parentId, name, prompt, status, response, tools, startedAt, updatedAt}`.
 Timestamps are Unix milliseconds; status is `running`, `waiting`, `completed`,
 `failed`, or `stopped`. The run UUID scopes child and parent IDs, while nested
 tool IDs also include the child ID. Snapshots replace by ID and never become
-parent transcript messages. `list_subagents({sessionId})` returns up to 64
-snapshots, combining current in-memory work with persisted history. The UI must
-preserve events received after a history request started when merging its reply.
+parent transcript messages. `list_subagents({sessionId})` returns a light row for
+every child (no tools, a short response preview, `toolCount`), combining current
+in-memory work with persisted history; `get_subagent({sessionId, agentId})` returns one full
+snapshot. The UI must preserve events received after a history request started when
+merging its reply, and a light row never replaces full data.
 
 Schema version 9 stores child snapshots in a separate indexed `subagents` table,
 independent of the parent message window. First sightings and status transitions
 are saved immediately; intermediate text/tool snapshots checkpoint at most once
-per second per child and flush when the parent turn ends. Stored history retains
-the latest 64 children per task, preserving active children. A successful or
+per second per child and flush when the parent turn ends. Stored history keeps
+every child. A successful or
 stopped parent settles children that never reported completion as `stopped`;
 a failed parent marks them `failed`. Startup recovery settles leftover live
 children as `stopped`, preserving their last saved work. Abrupt process loss can

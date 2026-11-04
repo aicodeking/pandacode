@@ -5,7 +5,6 @@ import { decodeSubagent, describeTool, parseFields, subagentActive, todosOf, too
 
 const MAX_TEXT = 262_144;
 const MAX_ITEMS = 200;
-const MAX_SUBAGENTS = 64;
 /** A status line that says the model is thinking (no harness forwards the reasoning text itself). */
 const THINKING = /\b(think|thinking|reasoning)\b/i;
 
@@ -32,6 +31,8 @@ export interface Live {
   startedAt?: number;
   /** The run's subagents in start order, from `subagent` events and host snapshots. */
   subagents?: Subagent[];
+  /** The host cut this list's text to fit. */
+  subagentsCut?: true;
   /** The newest todo/plan update, shown as one checklist that updates in place. */
   todos?: Todo[];
   /** A "Thinking…" status line, until text or a tool follows. */
@@ -156,19 +157,15 @@ function reduce(live: Live, event: AgentEvent, now: number): Live {
   }
 }
 
-/** Subagents by id, the newer snapshot winning, in start order (at most MAX_SUBAGENTS, finished ones dropped first). */
+/** Subagents by id, the newer snapshot winning, in start order. */
 export function upsertSubagents(list: readonly Subagent[] | undefined, fresh: readonly Subagent[]): Subagent[] {
   const byId = new Map((list ?? []).map(a => [a.id, a]));
   for (const a of fresh) {
     const old = byId.get(a.id);
-    if (!old || a.updatedAt >= old.updatedAt) byId.set(a.id, a);
+    // A host snapshot may carry less text than the live event of the same moment.
+    if (!old || a.updatedAt > old.updatedAt || (a.updatedAt === old.updatedAt && a.response.length >= old.response.length)) byId.set(a.id, a);
   }
-  let all = [...byId.values()].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
-  while (all.length > MAX_SUBAGENTS) {
-    const done = all.findIndex(a => a.status !== 'running' && a.status !== 'waiting');
-    all = all.filter((_, i) => i !== (done < 0 ? 0 : done));
-  }
-  return all;
+  return [...byId.values()].sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id));
 }
 
 /** A host time in ms (a value small enough to be seconds is scaled), or undefined. */
@@ -181,13 +178,18 @@ export function withHostActivity(live: Live, host: HostActivity | undefined): Li
   const startedAt = hostTime(host.runStartedAt);
   // An array (or an `{ items }` envelope).
   const raw: unknown = Array.isArray(host.subagents) ? host.subagents : (host.subagents as { items?: unknown } | undefined)?.items;
-  const subagents = Array.isArray(raw) ? raw.slice(0, MAX_SUBAGENTS * 2).map(decodeSubagent).filter((a): a is Subagent => !!a) : [];
-  if (lastEventAt === undefined && startedAt === undefined && !subagents.length) return live;
+  const subagents = Array.isArray(raw) ? raw.map(decodeSubagent).filter((a): a is Subagent => !!a) : [];
+  // A reply carrying subagents says whether they were cut; one without them says nothing.
+  const carried = Array.isArray(raw);
+  if (lastEventAt === undefined && startedAt === undefined && !carried) return live;
+  const { subagentsCut, ...rest } = live;
+  const cut = carried ? host.subagentsTruncated === true : subagentsCut === true;
   return {
-    ...live,
+    ...rest,
     lastEventAt: Math.max(live.lastEventAt ?? 0, lastEventAt ?? 0) || undefined,
     startedAt: startedAt ?? live.startedAt,
     subagents: subagents.length ? upsertSubagents(live.subagents, subagents) : live.subagents,
+    ...(cut ? { subagentsCut: true as const } : {}),
   };
 }
 

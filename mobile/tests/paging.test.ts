@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { newestPage, olderByAfterId } from '../src/connect/paging.ts';
+import { newestPage, olderByAfterId, workerNewer, workerNewest, workerOlder } from '../src/connect/paging.ts';
 import { OFFLINE } from '../src/connect/rpc.ts';
 import type { Message, MessagePage } from '../src/connect/types.ts';
 
@@ -50,4 +50,53 @@ test('older history from an older host pages forward up to the first message hel
   const older = await olderByAfterId(fetch, 8, await fetch({ beforeId: 8 }), 50);
   assert.deepEqual(older.map(m => m.id), [1, 2, 3, 4, 5, 6, 7]);
   assert.deepEqual(calls.map(c => c.afterId ?? 0), [0, 3, 6]);
+});
+
+/** A newer host's task.workerMessages over ids 1..`total`, 3 rows a page. */
+const workerHost = (total: number, calls: object[] = []) => async (params: any): Promise<MessagePage> => {
+  calls.push(params);
+  if (params.tail || params.beforeId) {
+    const end = params.tail ? total : params.beforeId - 1;
+    const start = Math.max(1, end - 2);
+    return { messages: range(start, end), hasMore: end < total, hasOlder: start > 1, tail: true, title: 't' };
+  }
+  const after = params.afterId ?? 0;
+  const end = Math.min(after + 3, total);
+  return { messages: range(after + 1, end), hasMore: end < total, hasOlder: after > 0, title: 't' };
+};
+
+test('a worker opens on its newest rows in one call, however long its transcript', async () => {
+  const calls: object[] = [];
+  const page = await workerNewest(workerHost(1_000_000, calls), 50);
+  assert.deepEqual(page.messages.map(m => m.id), [999_998, 999_999, 1_000_000]);
+  assert.deepEqual([page.hasOlder, page.hasMore], [true, false]);
+  assert.deepEqual(calls, [{ tail: true }]);
+});
+
+test('older worker pages walk back to the first message', async () => {
+  const fetch = workerHost(5);
+  const page = await workerOlder(fetch, 4);
+  assert.deepEqual(page.messages.map(m => m.id), [1, 2, 3]);
+  assert.equal(page.hasOlder, false);
+});
+
+test('a refresh reads every newer worker row forward', async () => {
+  const page = await workerNewer(workerHost(10), 3, 50);
+  assert.deepEqual(page.messages.map(m => m.id), [4, 5, 6, 7, 8, 9, 10]);
+  assert.equal(page.hasMore, false);
+});
+
+test('an older host is read forward from the start and offers no older pages', async () => {
+  const calls: object[] = [];
+  const page = await workerNewest(oldHost(calls), 50);
+  assert.deepEqual(page.messages.map(m => m.id), range(1, 10).map(m => m.id));
+  assert.deepEqual([page.hasOlder, page.hasMore], [false, false]);
+  assert.deepEqual(calls.slice(0, 2), [{ tail: true }, { afterId: 3 }]);
+  assert.deepEqual((await workerOlder(oldHost([]), 5)).messages, []);
+});
+
+test('an older host past the page cap reports the rows it left unread', async () => {
+  const page = await workerNewest(oldHost([]), 2);
+  assert.deepEqual(page.messages.map(m => m.id), [1, 2, 3, 4, 5, 6]);
+  assert.equal(page.hasMore, true);
 });

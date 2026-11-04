@@ -26,7 +26,7 @@ pub(super) struct HostTools {
     /// When a pending approval with a bounded wait (machine tools) is declined.
     expires: HashMap<String, tokio::time::Instant>,
 }
-const MAX_CALLS: usize = 64;
+pub(super) const MAX_CALLS: usize = 64;
 fn rpc_key(id: &Value) -> Result<String, String> {
     match id {
         Value::String(s) if !s.is_empty() && s.len() <= 256 => Ok(format!("s:{s}")),
@@ -41,6 +41,9 @@ fn valid_name(name: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
 }
+/// Largest tool call a harness may send, on both the Codex and MCP paths. Results stay bounded apart.
+pub(super) const REQUEST_LIMIT: usize = 16 * 1024 * 1024;
+
 pub(super) fn bounded_json(value: &Value, limit: usize) -> Result<String, String> {
     let mut preview = Preview::new(limit);
     serde_json::to_writer(&mut preview, value)
@@ -80,11 +83,10 @@ impl HostTools {
                 }
             }
         }
-        if catalog.len() > MAX_CALLS
-            || host
-                .approval_tools
-                .iter()
-                .any(|name| !catalog.iter().any(|(_, registered)| registered == name))
+        if host
+            .approval_tools
+            .iter()
+            .any(|name| !catalog.iter().any(|(_, registered)| registered == name))
         {
             return Err("Invalid host tool approval catalog".into());
         }
@@ -114,7 +116,7 @@ impl HostTools {
         {
             return Err("Invalid host tool arguments or call ID".into());
         }
-        bounded_json(&params["arguments"], 32 * 1024)?;
+        bounded_json(&params["arguments"], REQUEST_LIMIT)?;
         Ok(Call {
             id: request["id"].clone(),
             tool: name.into(),
@@ -264,12 +266,8 @@ impl Protocol {
             );
             let pending = json!({"id":call.id,"method":"item/tool/call","params":{"namespace":request["params"]["namespace"],"tool":call.tool,"arguments":call.arguments,"callId":request["params"]["callId"]}});
             let wait = crate::remote::orchestrate::approval_wait(&call.tool);
-            if let Err(error) = self.approval(pending, label, step) {
-                if let Some(host) = &mut self.host {
-                    host.finish(&call.id);
-                }
-                step.write.push(reply(call.id, Err(error)));
-            } else if let (Some(wait), Some(id), Some(host)) = (wait, step.events.last().and_then(|e| e.request_id.clone()), &mut self.host) {
+            self.approval(pending, label, step);
+            if let (Some(wait), Some(id), Some(host)) = (wait, step.events.last().and_then(|e| e.request_id.clone()), &mut self.host) {
                 host.expires.insert(id, tokio::time::Instant::now() + wait);
             }
         } else {
@@ -338,9 +336,7 @@ impl Protocol {
         step
     }
     pub(super) fn input_request(&mut self, request: Value, step: &mut Step) {
-        let normalized = if self.inputs.len() + self.pending.len() >= 64 {
-            Err("Too many pending input requests".into())
-        } else if rpc_key(&request["id"]).is_err()
+        let normalized = if rpc_key(&request["id"]).is_err()
             || self.inputs.values().any(|old| old["id"] == request["id"])
         {
             Err("Invalid or duplicate input request ID".into())
@@ -492,7 +488,7 @@ pub(super) async fn apply_step(
     }
     queued.extend(step.calls);
     if let Some(host) = &protocol.host {
-        while jobs.len() < 8 {
+        while jobs.len() < MAX_CALLS {
             let Some(call) = queued.pop_front() else {
                 break;
             };
@@ -506,6 +502,52 @@ pub(super) async fn apply_step(
 
 #[cfg(test)]
 mod tests {
+    /// Jev, the simulator and a deploy token reach 65 tools; a catalog that size must still start.
+    #[test]
+    fn a_catalog_past_the_running_call_limit_still_starts() {
+        let spec = |index: usize| json!({"type":"function","name":format!("tool_{index}"),"description":"d","inputSchema":{"type":"object"}});
+        let tool_host = |count: usize| ToolHost { tools: (0..count).map(spec).collect(), approval_tools: HashSet::new(), handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })) };
+        assert!(HostTools::new(tool_host(MAX_CALLS + 1)).is_ok());
+        assert!(HostTools::new(tool_host(4000)).is_err(), "the byte limit still applies");
+    }
+    #[tokio::test]
+    async fn dynamic_host_tools_run_as_many_at_once_as_the_mcp_host() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(MAX_CALLS));
+        let release = barrier.clone();
+        let handler: ToolHandler = Arc::new(move |_, args| {
+            let barrier = release.clone();
+            Box::pin(async move {
+                barrier.wait().await;
+                Ok(args)
+            })
+        });
+        let mut protocol = Protocol::new(super::super::tests::config("codex"));
+        let mut tools = HostTools::new(ToolHost { handler, ..host() }).unwrap();
+        let mut calls = VecDeque::new();
+        for index in 0..=MAX_CALLS {
+            if index < MAX_CALLS {
+                calls.push_back(tools.reserve(&json!({"id":format!("rpc-{index}"),"params":{"namespace":null,"tool":"pandacode_test","arguments":{},"callId":format!("call-{index}")}})).unwrap());
+            } else {
+                assert!(tools.reserve(&json!({"id":"rpc-over","params":{"namespace":null,"tool":"pandacode_test","arguments":{},"callId":"call-over"}})).is_err(), "one past the limit waits its turn");
+            }
+        }
+        protocol.host = Some(tools);
+        let mut cat = Command::new("/bin/cat").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
+        let mut stdin = cat.stdin.take().unwrap();
+        let sink: Sink = Arc::new(|_| {});
+        let (mut jobs, mut queued) = (tokio::task::JoinSet::new(), VecDeque::new());
+        apply_step(&mut protocol, Step { calls: calls.into(), ..Step::default() }, &sink, &mut stdin, &mut jobs, &mut queued).await.unwrap();
+        assert_eq!(jobs.len(), MAX_CALLS);
+        // Every call holds the barrier until all of them run, so 8 at a time would time out here.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(job) = jobs.join_next().await {
+                job.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     use super::*;
     fn host() -> ToolHost {
         ToolHost {
@@ -569,7 +611,7 @@ mod tests {
         state.reserve(&req).unwrap();
         assert!(state.reserve(&req).is_err());
         state.finish(&req["id"]);
-        req["params"]["arguments"] = json!({"text":"x".repeat(32769)});
+        req["params"]["arguments"] = json!({"text":"x".repeat(REQUEST_LIMIT + 1)});
         assert!(state.reserve(&req).is_err());
     }
     #[test]

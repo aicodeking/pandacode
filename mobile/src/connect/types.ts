@@ -25,7 +25,7 @@ export interface TaskSummary extends HostActivity {
 
 /** Newer hosts: when the run's newest event came and when it started (ms), and its subagents.
  * `team` (architect tasks only, checked by decodeTeamRun in src/store/team.ts): `{ status, activeWorkers }`. */
-export interface HostActivity { lastEventAt?: number | null; runStartedAt?: number | null; subagents?: unknown; team?: unknown }
+export interface HostActivity { lastEventAt?: number | null; runStartedAt?: number | null; subagents?: unknown; subagentsTruncated?: boolean; team?: unknown }
 
 export interface TasksList { tasks: TaskSummary[]; projects: Project[] }
 
@@ -47,7 +47,9 @@ export interface AgentEventsFrame { events: AgentEvent[]; epoch?: string; lagged
 /** `attachments`: newer hosts' rows (checked by parseAttachments in src/store/attachments.ts). */
 export interface Message { id: number; role: string; content: string; createdAt: number; turnDurationMs: number | null; attachments?: unknown; /** The host cut this (oversized) message to fit a small page; same id, refetched whole. */ cut?: boolean }
 /** `hasMore`: newer messages follow the page; `hasOlder` (newer hosts, tail/beforeId pages): older ones precede it. */
-export interface MessagePage { messages: Message[]; hasMore: boolean; title: string; hasOlder?: boolean; lastId?: number | null }
+export interface MessagePage { messages: Message[]; hasMore: boolean; title: string; hasOlder?: boolean; lastId?: number | null;
+  /** task.workerMessages: this host pages backward. */
+  tail?: boolean }
 
 export interface ReasoningEffort { id: string; name: string; description: string }
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null }

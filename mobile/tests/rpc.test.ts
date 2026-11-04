@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { METHODS, outdated, Pending, Replay, request } from '../src/connect/rpc.ts';
 
+test('the phone can ask a host to resume a team', () => {
+  assert.equal(request('task.teamResume', { sessionId: 's' }).method, 'task.teamResume');
+});
+
 test('requests carry id, ts, a fresh printable nonce and z (opens packed frames)', () => {
   const a = request('task.send', { sessionId: 's', text: 'hi' }, 1000);
   const b = request('task.send', { sessionId: 's', text: 'hi' }, 1000);

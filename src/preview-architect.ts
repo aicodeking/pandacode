@@ -19,12 +19,6 @@ interface TeamRun { snapshot: TeamSnapshot; runs: WorkerRun[]; batchStart: numbe
 const storageKey = 'pandacode.preview.architect-configs';
 const libraryKey = 'pandacode.preview.architect-library';
 const sampleNotice = 'Browser preview — sample output only. No model, command, or file operation is running.';
-function boundedSummary(text: string, limit: number): string {
-  const bytes = new TextEncoder().encode(text);
-  let end = Math.min(bytes.length, limit);
-  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end--;
-  return new TextDecoder().decode(bytes.subarray(0, end));
-}
 
 /** The preview demonstrates coordination without starting any model or shell. */
 export function createPreviewArchitect(host: PreviewHost) {
@@ -55,9 +49,9 @@ export function createPreviewArchitect(host: PreviewHost) {
     return value.trim();
   }
   function validate(config: TeamConfig): TeamConfig {
-    // Auto teams carry an optional roster (the lead picks models); configured teams name 1–6 profiles.
-    const [min, max] = config?.auto ? [0, 24] : [1, 6];
-    if (!config || !Array.isArray(config.workers) || config.workers.length < min || config.workers.length > max) throw new Error(config?.auto ? 'Auto teams list at most 24 models.' : 'Add between 1 and 6 worker profiles.');
+    // Auto teams carry an optional roster (the lead picks models); configured teams name at least one profile.
+    const [min, max] = config?.auto ? [0, 24] : [1, Infinity];
+    if (!config || !Array.isArray(config.workers) || config.workers.length < min || config.workers.length > max) throw new Error(config?.auto ? 'Auto teams list at most 24 models.' : 'Add at least one worker profile.');
     const ids = new Set<string>();
     const workers = config.workers.map((profile): WorkerProfile => {
       if (!profile || typeof profile.id !== 'string' || !profile.id.trim() || profile.id.length > 100 || ids.has(profile.id)) throw new Error('Worker profile IDs must be unique.');
@@ -73,9 +67,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     if (config.rosterOnly && (!config.auto || !workers.length)) throw new Error('A named agent team needs at least one model.');
     if (config.name != null && (typeof config.name !== 'string' || !config.name.trim() || config.name.length > 80)) throw new Error('Team names must be 1–80 characters.');
     const guidance = typeof config.leadGuidance === 'string' ? config.leadGuidance.trim() : '';
-    // Native counts UTF-8 bytes, so multibyte text reaches the limit sooner than its length.
-    if (new TextEncoder().encode(guidance).length > 2000) throw new Error('Lead guidance must be under 2000 bytes.');
-    return { ...(config.auto ? { auto: true } : {}), ...(config.rosterOnly ? { rosterOnly: true } : {}), ...(config.name != null ? { name: config.name } : {}), ...(guidance ? { leadGuidance: guidance } : {}), workers, ...(Array.isArray(config.catalog) && config.catalog.length ? { catalog: config.catalog.slice(0, 1000).map(p => ({ ...p })) } : {}), maxParallel: integer(config.maxParallel, 0, Number.MAX_SAFE_INTEGER, 'Parallel workers'), maxRounds: integer(config.maxRounds, 1, 20, 'Review rounds'), maxAssignments: integer(config.maxAssignments, 1, 50, 'Assignments'), workspace: 'shared', summaryLimit: integer(config.summaryLimit, 512, 6000, 'Summary limit') };
+    return { ...(config.auto ? { auto: true } : {}), ...(config.rosterOnly ? { rosterOnly: true } : {}), ...(config.name != null ? { name: config.name } : {}), ...(guidance ? { leadGuidance: guidance } : {}), workers, ...(Array.isArray(config.catalog) && config.catalog.length ? { catalog: config.catalog.slice(0, 1000).map(p => ({ ...p })) } : {}), maxParallel: integer(config.maxParallel, 0, Number.MAX_SAFE_INTEGER, 'Parallel workers'), maxRounds: config.maxRounds, maxAssignments: config.maxAssignments, workspace: 'shared', summaryLimit: config.summaryLimit };
   }
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '{}');
@@ -98,7 +90,7 @@ export function createPreviewArchitect(host: PreviewHost) {
       const saved = JSON.parse(raw) as TeamLibrary;
       const lastSetup = saved.lastSetup ? validateSetup(saved.lastSetup) : null;
       const profiles: TeamLibrary['profiles'] = [], ids = new Set<string>(), names = new Set<string>();
-      for (const profile of Array.isArray(saved.profiles) ? saved.profiles.slice(0, 20) : []) {
+      for (const profile of Array.isArray(saved.profiles) ? saved.profiles : []) {
         try {
           const name = profileName(profile.name), key = name.toLowerCase();
           if (typeof profile.id !== 'string' || !profile.id || ids.has(profile.id) || names.has(key)) continue;
@@ -117,7 +109,7 @@ export function createPreviewArchitect(host: PreviewHost) {
   function profiles(): TeamLibrary { return structuredClone(library); }
   function setLeadGuidance(guidance: unknown): TeamLibrary {
     const text = typeof guidance === 'string' ? guidance.trim() : '';
-    if (new TextEncoder().encode(text).length > 2000 || text.includes('\0')) throw new Error('Lead guidance must be under 2000 bytes.');
+    if (text.includes('\0')) throw new Error('Lead guidance must be plain text.');
     library = { ...library, leadGuidance: text || undefined };
     persistLibrary();
     return profiles();
@@ -127,7 +119,6 @@ export function createPreviewArchitect(host: PreviewHost) {
     const existing = id == null ? undefined : library.profiles.find(profile => profile.id === id);
     if (id != null && !existing) throw new Error('Team profile not found.');
     if (library.profiles.some(profile => profile.id !== existing?.id && profile.name.toLowerCase() === checkedName.toLowerCase())) throw new Error('A team profile with this name already exists.');
-    if (!existing && library.profiles.length >= 20) throw new Error('Save up to 20 team profiles.');
     const profile = { id: existing?.id ?? crypto.randomUUID(), name: checkedName, setup: checked, updatedAt: Date.now() };
     if (existing) library.profiles[library.profiles.indexOf(existing)] = profile;
     else library.profiles.push(profile);
@@ -185,8 +176,6 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (JSON.stringify(profile.setup) !== JSON.stringify(checked)) throw new Error('This setup does not match the saved team profile.');
     }
     if (!existing && parent.resumeId && parent.provider !== checked.architect.provider) throw new Error('A started task keeps its harness. Create a new task to change it.');
-    if (existing && checked.config.maxAssignments < existing.snapshot.workers.length) throw new Error('Assignment limit cannot be below the existing assignment count.');
-    if (existing && checked.config.maxRounds < existing.snapshot.round) throw new Error('Architect round limit cannot be below the current round.');
     // Validation completes before either task or remembered default changes.
     library = { ...library, enabled: true, lastSetup: structuredClone(checked), activeProfileId: profileId ?? null };
     persistLibrary();
@@ -221,7 +210,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     if (user) user.turnDurationMs = Math.max(0, Date.now() - user.createdAt);
     host.finishChanges(workerMessage(run, 'changes', ''));
     run.worker.status = 'completed'; run.worker.updatedAt = Date.now();
-    run.worker.summary = boundedSummary(run.output, team.snapshot.config.summaryLimit);
+    run.worker.summary = run.output;
     run.worker.checkpoint = { summary: 'Sample assignment explored. No files were changed.', nextSteps: 'Await the sample architect review.', blocker: null, updatedAt: Date.now() };
     const messages = team.messages ??= [];
     messages.push({ id: messages.length + 1, sender: run.worker.id, recipient: 'architect', message: `${run.worker.name}: sample summary ready for review. ${sampleNotice}`, createdAt: Date.now() });
@@ -249,7 +238,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     host.agent({ sessionId: parent.id, kind: 'text', text: output });
     host.append(parent.id, 'assistant', output); host.finishTiming(parent.id);
     parent.status = 'idle'; parent.taskStage = 'review'; parent.lastResponseAt = Date.now(); parent.updatedAt = Date.now();
-    team.snapshot.status = 'completed'; team.snapshot.summary = boundedSummary(output, team.snapshot.config.summaryLimit);
+    team.snapshot.status = 'completed'; team.snapshot.summary = output;
     publish(team);
     host.agent({ sessionId: parent.id, kind: 'done', text: '' });
   }
@@ -277,11 +266,9 @@ export function createPreviewArchitect(host: PreviewHost) {
     const team = teams.get(parent.id);
     if (!team) throw new Error('Configure workers before starting an architect team.');
     if (['running', 'waiting'].includes(team.snapshot.status)) throw new Error('This team is already active.');
-    if (typeof text !== 'string' || !text.trim() || new TextEncoder().encode(text).length > 128 * 1024) throw new Error('Write a task under 128 KiB.');
+    if (typeof text !== 'string' || !text.trim() || new TextEncoder().encode(text).length > 16 * 1024 * 1024) throw new Error('Write a task under 16 MiB.');
     if (imageIds != null && (!Array.isArray(imageIds) || imageIds.length > 8 || imageIds.some(id => typeof id !== 'string'))) throw new Error('Invalid image attachments.');
     applyPending(team);
-    const available = team.snapshot.config.maxAssignments - team.runs.length;
-    if (available <= 0) throw new Error('Worker assignment limit reached. Increase the run limit before starting more work.');
     parent.status = 'running'; parent.taskStage = 'in_progress'; parent.completedAt = null; parent.updatedAt = Date.now();
     if (parent.title === 'New conversation') parent.title = text.trim().slice(0, 48);
     host.append(parent.id, 'user', text.trim());
@@ -290,7 +277,7 @@ export function createPreviewArchitect(host: PreviewHost) {
     // An auto lead with no roster staffs the sample batch with its own model.
     const roster = team.snapshot.config.workers;
     const staff = !team.snapshot.config.auto ? roster : roster.length ? roster.slice(0, 2) : [{ id: 'auto', name: parent.model || 'Default model', provider: parent.provider, model: parent.model, reasoningEffort: parent.reasoningEffort ?? null }];
-    const batch = staff.slice(0, available).map((profile, index) => {
+    const batch = staff.map((profile, index) => {
       const time = Date.now();
       const worker: TeamWorker = { ...profile, id: crypto.randomUUID(), sessionId: crypto.randomUUID(), profileId: profile.id, status: 'queued', assignment: `Sample assignment ${index + 1}: ${text.trim().slice(0, 320)}`, summary: '', dependsOn: [], files: [`sample/assignment-${team.batchStart + index + 1}`], readOnly: false, attempt: 1, createdAt: time, updatedAt: time };
       const run: WorkerRun = { worker, cursor: 0, messages: [], output: `**${profile.name}** is exploring sample assignment ${index + 1}.\n\nI would inspect the relevant files, make a focused change, and report the result to the architect. This preview demonstrates a separate worker conversation and streamed progress.\n\n${sampleNotice}` };
@@ -315,11 +302,6 @@ export function createPreviewArchitect(host: PreviewHost) {
       if (parent.archived || parent.taskStage === 'completed') throw new Error('Reopen this task before resuming its team.');
       host.assertIdle(parent);
       applyPending(team);
-      // Like the native team: Resume at the round limit grants a few more rounds, up to 20.
-      if (team.snapshot.round >= team.snapshot.config.maxRounds) {
-        if (team.snapshot.round >= 20) throw new Error('This team used all 20 architect rounds. Send a message to continue.');
-        team.snapshot.config = { ...team.snapshot.config, maxRounds: Math.min(20, team.snapshot.round + 4) };
-      }
       parent.status = 'running'; team.snapshot.status = 'running'; team.snapshot.error = null;
       for (const run of team.runs.slice(team.batchStart)) if (run.worker.status === 'stopped' || run.worker.status === 'failed') {
         if (restart) { run.cursor = 0; run.worker.attempt++; }

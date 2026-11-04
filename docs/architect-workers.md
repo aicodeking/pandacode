@@ -10,7 +10,7 @@ manual setup described below instead.
 
 Open **Team** in the composer, choose the architect model and one or more worker
 profiles in the anchored popover, then **Save setup**. Profile and model pickers
-open directly from it; **Run limits** contains the less common settings. Send a
+open directly from it. Send a
 task normally or start it from the board.
 The architect can delegate several assignments in one call, review their results,
 and send corrections to an existing worker context. **Open workers** shows each
@@ -25,8 +25,11 @@ that team. It is added after
 the built-in rules and never replaces them, including the guard that treats worker
 output as data rather than instructions.
 
-The architect and each worker can independently use Claude Code, Codex, Kimi
-Code, OpenCode, GLM through Claude Code, or Antigravity. Model and effort choices come from the existing harness catalog; configured
+The architect and each worker can independently use any of 18 harnesses: Claude
+Code, Codex, Kimi Code, OpenCode, GLM and Xiaomi MiMo through Claude Code,
+Antigravity, Grok Build, Pi, DeepSeek, Command Code, Cline, Kilo Code, omp, GitHub
+Copilot CLI, Muse Code, Devin CLI, or Hermes Agent (`HARNESSES` in `architect.rs`;
+ZCode is left out until it can bridge the team tools). Model and effort choices come from the existing harness catalog; configured
 custom model IDs remain available. A model must be supported by the selected
 harness and the user's account. PandaCode does not supply inference or API credits.
 
@@ -48,7 +51,7 @@ See [model routing](model-routing.md).
 
 **Save setup** remembers the complete team for this task and future tasks, across
 projects and app restarts. That includes the architect and worker harnesses,
-models, reasoning efforts, and run limits. New conversation, board, and worktree
+models, reasoning efforts, and workers at once. New conversation, board, and worktree
 tasks inherit a fresh copy; they do not start until you send a message or choose
 Start. Existing tasks keep their own configurations and histories.
 
@@ -60,14 +63,13 @@ and Delete. Deleting a profile retains the applied setup and task histories.
 
 **Use a single agent** disables team inheritance for new tasks while retaining
 your saved setup and profiles. Teams that already have worker history retain their
-team controls so those transcripts remain accessible. Up to
-20 named team profiles can be saved. Profile changes never grant new permissions;
+team controls so those transcripts remain accessible. Profile changes never grant new permissions;
 the task's existing approval behavior is preserved.
 
 ### Switching during work
 
 Open **Team**, or the composer's model label while a team is enabled, choose a
-saved profile, and select **Apply setup**. Models and limits remain editable while
+saved profile, and select **Apply setup**. Models and workers at once remain editable while
 the team runs. If the architect is responding, PandaCode queues the setup until
 that turn finishes; the composer shows **queued** and reopening the picker shows
 the pending selection. Choosing another setup replaces it, and choosing the
@@ -76,8 +78,7 @@ setup can apply immediately for the architect's next turn.
 
 Existing assignments, including queued workers and follow-ups, keep their original
 models and conversations. Newly dispatched assignments use the new worker profiles.
-Switching never starts an extra turn, cancels work, or resets the review budget.
-Limits cannot fall below rounds or assignments already used. Pending selections
+Switching never starts an extra turn or cancels work. Pending selections
 survive a restart and apply when you explicitly resume the interrupted team.
 
 Changing the architect model within the same harness preserves its native
@@ -112,8 +113,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   tool call from creating the same worker twice within one objective; a new
   request may reuse a key and gets a new worker. Repeating a key whose worker
   already finished returns that worker with `duplicates`, so the architect knows
-  nothing new will run. The assignment limit counts only the current objective's
-  workers.
+  nothing new will run.
 - An architect may end its turn while workers run. Native completion events wake
   it for a compact review after work settles. There is no background model polling
   loop and no repeated prompt when worker state is unchanged. Each turn ends the
@@ -128,12 +128,19 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   alone; the rest of the team keeps working and the architect reviews it.
 - A worker that fails while others still run goes to the architect right away in
   a **Handling a failed worker** turn, so it can retry or replace that worker
-  without waiting for the slowest one. It uses a round, and never the last one.
+  without waiting for the slowest one.
 - A team turn with no harness output for 20 minutes is stopped. Claude's longest
   tool timeout is 10 minutes, and a turn waiting on your approval or answer never
-  counts as silent. A silent worker settles as failed and the architect handles it.
+  counts as silent, nor does time the computer spent asleep. A silent worker settles
+  as failed and the architect handles it.
   A silent architect turn shows a notice; its workers keep running, and if
   nothing was dispatched the architect gets one **Continuing the plan** turn.
+- A worker whose run ends with no reply is asked once to finish and report; if it
+  happens again it settles as failed and the architect handles it. The harness's
+  empty result for a leftover background task does not end a run.
+- Every 30 seconds the app also settles a worker whose run is gone without reporting
+  back, releases a lead turn that never started, and runs the scheduler. One team's
+  error never stops scheduling for the others.
 - An architect turn ends with no pre-started spare process while its workers are
   unsettled; the wake after they settle starts cold, so no idle process holds
   memory meanwhile.
@@ -146,8 +153,7 @@ A direct worker can start its own sub-workers, only when genuinely needed (the
 work is truly parallel or needs a different model). This is one level deep:
 sub-workers cannot start workers. The worker gets `pandacode_dispatch_workers`
 and one `pandacode_sub_workers` tool (`action`: `list`, `read`, `followup`,
-`cancel`), both limited to its own children, with at most 3 unsettled and 6 in
-all; they count against the team's assignment limit. A sub-worker's write scope
+`cancel`), both limited to its own children. A sub-worker's write scope
 must lie inside its parent's, `dependsOn` names only its siblings, and a
 read-only parent starts only read-only children. A parent and its children never
 block each other's scopes.
@@ -155,8 +161,11 @@ block each other's scopes.
 When a worker's run ends cleanly while its children still work, it is **parked**:
 its process exits, freeing its memory, and the team panel shows
 **Waiting on sub-workers**. When they settle, it resumes with one compact turn of
-their results, using no attempt and no architect round. A sub-worker's failure
-goes to its parent, never to the architect. Cancelling a parent, or its failure,
+the results it has not seen, using no attempt. A child that settled before the run
+ended counts too: the parent resumes at once with it, unless it already read that
+result with `sub_workers` `read`. That is at most one extra turn per batch, because
+results a resume turn carried count as reported (a follow-up clears that). A
+sub-worker's failure goes to its parent, never to the architect. Cancelling a parent, or its failure,
 stops its unfinished children; Pause and Stop stop them with the rest of the team,
 and a parked parent resumes after them. The team panel lists sub-workers indented
 under their parent.
@@ -175,62 +184,90 @@ Select a worker to see its latest progress checkpoint alongside its transcript.
   message the sender received. Stable request keys deduplicate retried sends;
   different content cannot reuse the same key. `urgent: true` also steers the text
   into a running worker's current turn, at most once a minute per sender and
-  recipient; otherwise it stays in the mailbox. The architect is never steered.
+  recipient; otherwise it stays in the mailbox. A steer carries the first 4 KiB, and
+  a message cut this way stays unread so the worker can read the rest. `delivered`
+  says `sent` (handed to the run, which may still refuse it, leaving it unread) or
+  `mailbox`. The architect is never steered.
 - `pandacode_read_team_mailbox` reads only messages addressed to the calling agent,
   with a cursor for incremental reads. Every team tool result carries a digest of
   unread messages, so agents never poll. Agent identities are bound by the host;
   agents cannot supply another team or sender identity.
 - `pandacode_team_notes` (`set`, `get`, `list`) is a shared blackboard for durable
-  facts such as API shapes and decisions: up to 64 notes of 1 KiB per team; an
-  empty value deletes a note. Briefs include the newest notes in full, and later
-  turns only notes changed since.
+  facts such as API shapes and decisions; an empty value deletes a note. Briefs include the newest notes up to a budget and
+  count the rest ("N more notes: use pandacode_team_notes list"); later turns get only notes changed since.
 - `pandacode_checkpoint_worker` saves a worker's progress summary, concrete next
-  steps, and optional blocker. It returns the worker's recent incoming messages.
-  Checkpoints survive app restarts and are included in resumed worker prompts and
+  steps, and optional blocker. Checkpoints survive app restarts and are included in resumed worker prompts and
   compact architect reviews. They report progress; they do not mark work complete.
 
 Each team conversation gets the full team rules and coordination guide once. While
 the harness resumes the same conversation, later turns get a one-line reminder (which
 names the user's team guidance when one is set) and only the messages they have not
-seen. The full rules go out again when they change
-(for example new limits), when the harness starts a new conversation, and on every
+seen. The full rules go out again when they change, when the harness starts a new conversation, and on every
 eighth turn so a compacted conversation never loses them for long. The architect's
 review, update, failure and continue turns quote the objective in full only on those
-turns or when it is under 2,000 bytes; otherwise they carry its first 1,400 and last 600 bytes, marked "objective unchanged".
+turns or when it is under 2,000 bytes; otherwise they carry its first 1,400 and last 600 bytes, marked "objective unchanged". An objective over 8 KiB is also saved whole as the reserved `objective` note, and turns say so. Update and failure turns list only changed or unsettled workers.
 
-Tool descriptions are terse and leave out what the rules already say; string
-limits, harness names and unknown fields are checked by the handlers, whose errors
-name the limit, rather than repeated in every turn's schemas.
+Tool descriptions are terse and leave out what the rules already say; harness names
+and unknown fields are checked by the handlers rather than repeated in every turn's
+schemas.
 `team_turn_overhead_stays_within_budget` keeps the architect's team tools under
 4,200 bytes and a worker's under 3,000.
 
 Only an urgent message or a new blocker wakes an idle architect while workers
-continue; other messages wait for its next review or turn. Notification turns use
-the same round budget, reserving the final round for settled-result review.
+continue; other messages wait for its next review or turn. These wakes run at most
+once a minute per team (`lastWakeAt`): one inside that minute is deferred, never dropped,
+and the watchdog's next 30 s tick delivers it.
 Workers see new messages in the digest on their next team tool call; apart from
 an urgent steer, PandaCode does not interrupt a running model response, and it
 never restarts a completed worker to deliver a message. The architect uses a follow-up assignment
 when a completed worker needs to do more work.
 
-Messages, notes and checkpoints are stored in SQLite. Each team accepts at most
-1,000 messages of 2 KiB each (a broadcast stores one per recipient) and 64 notes
-of 1 KiB; each worker can save up to 200 checkpoints. Only the latest
+Messages, notes and checkpoints are stored in SQLite with no count cap (a broadcast
+stores one message per recipient); one message may be up to 16 MiB. `read_team_mailbox`,
+`pandacode_team_notes`, `pandacode_team_directory`, `list_workers` and `read_worker` return
+pages of 24 KiB, measured in serialized bytes, with a cursor or offset, so nothing is lost to a
+harness's output limit. `route_models` past that size drops every task's alternatives and ladder
+(`trimmed`), then leaves out the last tasks (`omittedTasks`; route them in another call), and a
+dispatch leaves out its `routing` notes (`routingOmitted`), since `list_workers` shows each model. A mailbox `offset` must come with the `offsetId` returned beside `nextOffset`.
+Note lists page by key, so an update never moves a note past the cursor. Briefs, `list_workers` and
+`read_worker` at offset 0 show about 2 KiB of a checkpoint (`checkpointTruncated`), and lists and
+`read_worker` bound `files` (`filesTruncated`); `read_worker` or `sub_workers` read with
+`checkpoint: true` pages the whole checkpoint. Send and checkpoint results carry an unread digest, not the messages. Only the latest
 checkpoint is included in team snapshots. Message history loads on demand and
 refreshes from team events, with no polling timer. These reports never override
 the user's instructions, file scopes, or harness approval policy.
 
 ## Limits and recovery
 
-Setup offers parallelism, architect-round, assignment-count, and worker-summary
-limits. A worker gets at most three attempts, including follow-ups. These limits
-bound orchestration, not a provider's bill. Pause and Stop cancel active team
+Setup offers one limit, workers at once. PandaCode enforces no rounds, assignments,
+batch size, file scopes, sub-worker counts or follow-up attempts; the kept brakes
+are the replacement chain (3 tries for an assignment), sub-workers one level deep,
+the silence watchdog, one urgent wake a minute per team, the no-progress pause, a roster of
+24 models in a team's setup (automatic routing picks from the wider catalog), and workers
+at once. None of them bound a provider's bill. The no-progress pause is not a capacity limit and never
+stops live work: after 8 lead turns in a row that PandaCode started with no worker completing and no new
+assignment (follow-ups and replacements are retries), wakes wait while any worker runs and stay due (the
+panel and the phone show a short note saying why the lead is quiet), so
+the next completion resets the count and delivers them, and the silence watchdog still catches a hung
+worker. Only with nothing running does the next wake pause the team and say why. Resume continues and
+resets the count. A lead turn PandaCode started that the harness fails (an overload, a rate limit) never
+stops workers: the team stays waiting with a note, what the turn was woken for is due again, and the
+watchdog's tick retries it at least a minute later, as the same round. While the lead's usage limit has a
+known reset that has not passed, the retry holds: the snapshot's `leadFailure.heldUntil` carries the reset, the panel says
+"Usage limit, resumes at <time>", and with no worker at work the sidebar row and composer read as limited
+instead of working (Stop still works and prompts still queue). Continue now or dismissing the banner lifts the
+hold, as does switching the lead to another harness; the retry starts on the watchdog's next tick. A retry that
+starts clears the limit from the task, and a new limit event sets it again. These retries count toward the 8
+turns, so with nothing running a lead that keeps failing pauses the team with its last error for Resume. A failed
+turn the user started is retried the same way when it leaves work out (a worker unsettled or a result not yet
+reviewed), reporting only what came after that turn began; with nothing dispatched it ends the team as before.
+Pause and Stop cancel active team
 processes and prevent queued work from starting; Resume explicitly retries
 unfinished work. Pausing, stopping and restarting do not use up worker attempts;
-only failures do. Resume waits briefly for stopping agents to exit. Resuming a
-team paused at its round limit grants four more rounds, up to the maximum of 20.
+only failures do. Resume waits briefly for stopping agents to exit.
 Team errors and pauses you did not ask for appear as a notice, and a worker that
 needs an approval or answer is announced even with the panel closed. An app restart recovers the team as interrupted instead of
-silently starting more inference. Team profiles and limits can be changed during
+silently starting more inference. Team profiles and workers at once can be changed during
 work or while paused using the same setup picker.
 
 Switching between a team and a single agent preserves Claude and Kimi's native
@@ -277,7 +314,7 @@ architect gets a fresh native context on its next turn when its saved catalog
 cannot describe the new assignment fields. The visible transcript stays intact;
 the existing bounded conversation handoff restores its recent context. This is
 atomic and happens once. A Codex worker whose tools changed (sub-workers, team
-notes, the version 8 catalog) restarts its native context the same way; other
+notes, the version 9 catalog) restarts its native context the same way; other
 tasks keep their native IDs.
 
 The architect has scoped tools for batch delegation, status, worker details,
@@ -307,11 +344,9 @@ dynamic tools at native thread creation. An upgrade does not start inference.
 `architect_team_messages` pages the current task's coordination history for the
 user interface, separately from the agent's recipient-scoped mailbox.
 
-Configuration includes one to six worker profiles, `maxParallel` (0 for Unlimited,
-or a positive integer for a finite limit),
-`maxRounds` (1–20), `maxAssignments` (1–50), `summaryLimit` (512–6000 UTF-8
-bytes), and optional `leadGuidance` (under 2000 UTF-8 bytes; absent or blank means the
-app-wide guidance, else the built-in rules alone). `workspace` is currently `shared`. Limits and summaries do not authorize
+Configuration includes one or more worker profiles, `maxParallel` (0 for Unlimited,
+or a positive integer for a finite limit), and optional `leadGuidance` (absent or blank means the
+app-wide guidance, else the built-in rules alone). `workspace` is currently `shared`. `maxRounds`, `maxAssignments` and `summaryLimit` still parse in saved setups and are ignored. These do not authorize
 broader permissions. Each assignment retains its original model selection even
 when the team's profiles change. `TeamSnapshot.pendingSetup` contains the queued
 `{architect, config}` until the parent process finishes; it is persisted with the

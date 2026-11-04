@@ -8,6 +8,9 @@ export type TurnRow =
   | { kind: 'reply'; id: string; message: Message }
   | { kind: 'note'; id: string; message: Message };
 
+/** Errors and PandaCode's own lines (`system`) stay visible outside the fold. */
+const isNote = (m: Message) => m.role === 'error' || m.role === 'system';
+
 export function turnRows(messages: readonly Message[]): TurnRow[] {
   const rows: TurnRow[] = [];
   let turn: Message[] = [];
@@ -15,13 +18,13 @@ export function turnRows(messages: readonly Message[]): TurnRow[] {
     if (!turn.length) return;
     const replyIndex = turn.findLastIndex(m => m.role === 'assistant');
     const reply = replyIndex >= 0 ? turn[replyIndex] : undefined;
-    const steps = turn.filter((m, i) => i !== replyIndex && m.role !== 'error');
+    const steps = turn.filter((m, i) => i !== replyIndex && !isNote(m));
     const durationMs = turn.reduce<number | null>((max, m) => (m.turnDurationMs != null && m.turnDurationMs > (max ?? -1) ? m.turnDurationMs : max), null);
     if (steps.length || durationMs != null) rows.push({ kind: 'work', id: `w${turn[0].id}`, steps, durationMs });
-    // Errors stay visible after the work, and after a reply that came before them.
-    for (const m of turn) if (m.role === 'error' && (!reply || m.id < reply.id)) rows.push({ kind: 'note', id: `n${m.id}`, message: m });
+    // Notes stay visible after the work, and after a reply that came before them.
+    for (const m of turn) if (isNote(m) && (!reply || m.id < reply.id)) rows.push({ kind: 'note', id: `n${m.id}`, message: m });
     if (reply) rows.push({ kind: 'reply', id: `r${reply.id}`, message: reply });
-    for (const m of turn) if (m.role === 'error' && reply && m.id > reply.id) rows.push({ kind: 'note', id: `n${m.id}`, message: m });
+    for (const m of turn) if (isNote(m) && reply && m.id > reply.id) rows.push({ kind: 'note', id: `n${m.id}`, message: m });
     turn = [];
   };
   for (const m of messages) {

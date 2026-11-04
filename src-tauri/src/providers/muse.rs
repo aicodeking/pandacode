@@ -542,7 +542,8 @@ impl Protocol {
             .map(|command| format!("Run `{command}`"))
             .or_else(|| subject["path"].as_str().map(|path| format!("{} {path}", field(params, "toolName"))))
             .unwrap_or_else(|| format!("Allow {}?", field(params, "toolName")));
-        self.approval(value, label, step)
+        self.approval(value, label, step);
+        Ok(())
     }
 
     /// MSP questions become the shared structured-input form. `isOther` lets the

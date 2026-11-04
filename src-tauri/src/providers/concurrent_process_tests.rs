@@ -22,7 +22,11 @@ impl Drop for TestRun {
 }
 impl TestRun {
     fn start(id: &str, script: &str) -> Self {
-        let mut config = tests::config("claude");
+        Self::start_as("claude", id, script)
+    }
+
+    fn start_as(provider: &str, id: &str, script: &str) -> Self {
+        let mut config = tests::config(provider);
         config.session_id = id.into();
         let (input, receiver) = unbounded_channel();
         let (emit, events) = unbounded_channel();
@@ -68,7 +72,7 @@ impl TestRun {
             .lock()
             .unwrap()
             .iter()
-            .filter(|e| e.kind == "text")
+            .filter(|e| e.kind == "text" || e.kind == "note")
             .map(|e| e.text.as_str())
             .collect()
     }
@@ -95,6 +99,36 @@ case "$response" in
   *) exit 0 ;;
 esac
 "#;
+
+/// Codex's app-server: the main agent spawns a child (settled when `$1` is `settled`) and ends its turn.
+const CODEX_SPAWN_SCRIPT: &str = r#"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"root"}}}' ;;
+    *'"method":"turn/start"'*)
+      id=$(printf '%s' "$line" | sed -E 's/^\{"id":([0-9]+).*/\1/')
+      printf '{"id":%s,"result":{"turn":{"id":"t1"}}}\n' "$id"
+      printf '%s\n' '{"method":"item/completed","params":{"threadId":"root","turnId":"t1","item":{"type":"collabAgentToolCall","id":"call","tool":"spawnAgent","status":"completed","senderThreadId":"root","receiverThreadIds":["kid"],"prompt":"Review","agentsStates":{"kid":{"status":"running","message":null}}}}}'
+      if [ "$1" = settled ]; then
+        printf '%s\n' '{"method":"thread/status/changed","params":{"threadId":"kid","status":{"type":"idle"}}}'
+      fi
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"root","turn":{"id":"t1","status":"completed"}}}'
+      ;;
+  esac
+done
+"#;
+
+#[tokio::test]
+async fn a_codex_run_that_ends_before_its_subagent_says_the_report_was_lost() {
+    let _serial = process_test_lock().lock().await;
+    let mut running = TestRun::start_as("codex", "running", CODEX_SPAWN_SCRIPT);
+    running.finish().await.unwrap();
+    assert!(running.text().contains("The report from Subagent did not reach the agent"), "{}", running.text());
+    let mut settled = TestRun::start_as("codex", "settled", CODEX_SPAWN_SCRIPT);
+    settled.finish().await.unwrap();
+    assert!(!settled.text().contains("did not reach"), "{}", settled.text());
+}
 
 #[tokio::test]
 async fn concurrent_processes_isolate_streams_approvals_stop_and_failure() {

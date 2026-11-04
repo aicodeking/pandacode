@@ -1,7 +1,6 @@
 //! Short-lived, authenticated loopback MCP for team and opt-in browser tools.
 //! No credentials or server definitions are written into the user's configuration.
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Semaphore,
@@ -9,8 +8,6 @@ use tokio::{
 };
 
 const HEADER_LIMIT: usize = 8192;
-// Room for a full batch of team assignments (12 × 8 KiB prompts) plus JSON-RPC framing.
-const BODY_LIMIT: usize = 160 * 1024;
 const RESULT_LIMIT: usize = 128 * 1024;
 const SERVER_NAME: &str = "pandacode_architect";
 
@@ -98,8 +95,13 @@ impl Server {
             loop {
                 tokio::select! {
                     result = listener.accept() => {
-                        let Ok((mut stream, peer)) = result else { break };
-                        if !peer.ip().is_loopback() || clients.len() >= 16 { continue; }
+                        // No connection cap: every subagent of a run may sit in a slow or approval-gated
+                        // call here at once. Running out of descriptors passes, so it never ends the server.
+                        let Ok((mut stream, peer)) = result else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        };
+                        if !peer.ip().is_loopback() { continue; }
                         let context = current(&context);
                         clients.spawn(async move {
                             let response = match tokio::time::timeout(Duration::from_secs(5), read_request(&mut stream, &context)).await {
@@ -169,6 +171,9 @@ fn current(context: &std::sync::RwLock<Arc<Context>>) -> Arc<Context> {
     }
 }
 
+/// How long a call waits for one of the running slots.
+const SLOT_WAIT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(30) };
+
 struct Context {
     authority: String,
     authorization: String,
@@ -177,7 +182,6 @@ struct Context {
     sink: Sink,
     calls: Semaphore,
     active: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
-    requests: AtomicUsize,
     mode: String,
     approvals: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 }
@@ -190,9 +194,8 @@ impl Context {
             host,
             session_id,
             sink,
-            calls: Semaphore::new(8),
+            calls: Semaphore::new(host_tools::MAX_CALLS),
             active: Mutex::new(HashMap::new()),
-            requests: AtomicUsize::new(0),
             mode: mode.into(),
             approvals: Mutex::new(HashMap::new()),
         }
@@ -348,7 +351,7 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
         .ok_or(400u16)?
         .parse::<usize>()
         .map_err(|_| 400u16)?;
-    if length > BODY_LIMIT {
+    if length > host_tools::REQUEST_LIMIT {
         return Err(413);
     }
     let expected = header_end + length;
@@ -368,9 +371,6 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
 
 impl Context {
     async fn respond(&self, bytes: Vec<u8>) -> HttpResponse {
-        if self.requests.fetch_add(1, Ordering::Relaxed) >= 4096 {
-            return HttpResponse::empty(429);
-        }
         let request: Value = match serde_json::from_slice(&bytes) {
             Ok(request) => request,
             Err(_) => return HttpResponse::error(Value::Null, -32700, "Invalid JSON"),
@@ -428,10 +428,6 @@ impl Context {
                 if !args.is_object() {
                     return HttpResponse::error(id, -32602, "Tool arguments must be an object");
                 }
-                // Models often read several workers at once: wait briefly for a slot.
-                let Ok(Ok(_permit)) = tokio::time::timeout(Duration::from_secs(30), self.calls.acquire()).await else {
-                    return HttpResponse::error(id, -32000, "Too many active architect tools; retry this call alone.");
-                };
                 let key = id.to_string();
                 let cancel = Arc::new(tokio::sync::Notify::new());
                 {
@@ -453,6 +449,11 @@ impl Context {
                 let result = tokio::select! {
                     result = async {
                         self.authorize(name, &args).await?;
+                        // Models often read several workers at once: wait briefly for a slot,
+                        // which a call waiting on the user's approval does not take up.
+                        let Ok(Ok(_permit)) = tokio::time::timeout(SLOT_WAIT, self.calls.acquire()).await else {
+                            return Err("Too many PandaCode tools are running at once; retry this call in a moment.".to_string());
+                        };
                         tokio::time::timeout(Duration::from_secs(60),(self.host.handler)(name.into(),args)).await
                             .unwrap_or_else(|_|Err("PandaCode tool timed out".into()))
                     } => result,
@@ -513,9 +514,6 @@ impl Context {
                 .approvals
                 .lock()
                 .map_err(|_| "Approval state is unavailable")?;
-            if pending.len() >= 8 {
-                return Err("Too many pending app approvals".into());
-            }
             pending.insert(id.clone(), send);
         }
         let _pending = PendingApproval {
@@ -562,6 +560,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     fn host() -> ToolHost {
         ToolHost {
             tools: vec![
@@ -849,6 +848,68 @@ mod tests {
         assert!(!server.approve(&pending, true), "a late Approve finds nothing");
         tokio::task::yield_now().await;
         assert_eq!(count.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn calls_waiting_for_approval_leave_slots_free_and_requests_have_no_cap() {
+        let mut protected = host();
+        protected.approval_tools.insert("pandacode_delegate".into());
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "ask").await.unwrap();
+        let context = current(&server.context);
+        // Past the old cap of 8 pending approvals, and past the 64 running calls too.
+        const WAITING: usize = 70;
+        let waiting: Vec<_> = (0..WAITING).map(|id| Box::pin(context.respond(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":{}}})).unwrap()))).collect();
+        let mut waiting = futures_util::future::join_all(waiting);
+        let mut asked = Vec::new();
+        while asked.len() < WAITING {
+            tokio::select! {
+                _ = &mut waiting => panic!("the calls wait for the user"),
+                event = events.recv() => { let event = event.unwrap(); if event.kind == "approval" { asked.push(event.request_id.unwrap()); } }
+            }
+        }
+        assert_eq!(context.calls.available_permits(), host_tools::MAX_CALLS, "a call waiting for the user holds no slot");
+        // Past the old cap of 4096 requests, on a server with every approval slot in use.
+        for _ in 0..4100 {
+            let answer = context.respond(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":100,"method":"ping"})).unwrap()).await;
+            assert_eq!(answer.status, 200);
+        }
+        for pending in &asked {
+            assert!(server.approve(pending, false));
+        }
+        waiting.await;
+    }
+    /// Through real sockets: past the old 16-connection cap (which reset the connection) and the
+    /// old 8 slots, every call runs at once, here released only when all of them are running.
+    #[tokio::test]
+    async fn every_concurrent_client_is_served_up_to_64_running_calls() {
+        let barrier = Arc::new(tokio::sync::Barrier::new(host_tools::MAX_CALLS));
+        let mut slow = host();
+        slow.handler = Arc::new(move |_, args| {
+            let barrier = barrier.clone();
+            Box::pin(async move {
+                barrier.wait().await;
+                Ok(args)
+            })
+        });
+        let server = server_from_host(slow).await;
+        let replies = futures_util::future::join_all((0..host_tools::MAX_CALLS).map(|id| request(&server, call(json!(id), json!({"prompt":"x"})), "")));
+        let replies = tokio::time::timeout(Duration::from_secs(20), replies).await.expect("all 64 run at once");
+        for (status, body) in replies {
+            assert_eq!(status, 200);
+            assert_eq!(body["result"]["isError"], false, "{body}");
+        }
+    }
+    /// A call past every slot says so plainly, whatever the tool is.
+    #[tokio::test]
+    async fn a_call_past_every_slot_gets_a_neutral_retry_error() {
+        let mut slow = host();
+        slow.handler = Arc::new(|_, _| Box::pin(std::future::pending()));
+        let server = server_from_host(slow).await;
+        let context = current(&server.context);
+        let _held = context.calls.acquire_many(host_tools::MAX_CALLS as u32).await.unwrap();
+        let answer = context.respond(serde_json::to_vec(&call(json!(1), json!({}))).unwrap()).await;
+        let body = String::from_utf8_lossy(&answer.body).into_owned();
+        assert!(body.contains("Too many PandaCode tools are running at once") && !body.contains("architect"), "{body}");
     }
     #[tokio::test]
     async fn cloud_cli_asks_even_in_full_mode() {

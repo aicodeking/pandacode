@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{Emitter, State};
 
+/// A fired message is the prompt plus its trace block, and must still fit a message.
+const PROMPT_LIMIT: usize = crate::MESSAGE_LIMIT - 4096;
 /// First line of the trace block a fired schedule appends to its message.
 pub const TRACE_HEADER: &str = "Scheduled wake-up (PandaCode scheduler)";
 const MINUTE: i64 = 60_000;
@@ -252,8 +254,8 @@ fn validate(store: &Store, input: &ScheduleInput, existing: Option<&str>, now: i
     if prompt.is_empty() {
         return Err("Write the message the thread should be sent.".into());
     }
-    if prompt.chars().count() > 8000 {
-        return Err("Keep the message under 8000 characters.".into());
+    if prompt.len() > PROMPT_LIMIT {
+        return Err("Keep the message under 16 MiB.".into());
     }
     let title = input.title.trim();
     if title.chars().count() > 120 {

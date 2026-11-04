@@ -215,3 +215,10 @@ test('assistant updates remain before trailing tools and only a trailing answer 
   assert.equal(legacy.final.content, 'Verified the fix');
   assert.deepEqual(ids(legacy.activity), [2, 3, 4, 5]);
 });
+
+test('a system note stays out of the fold and never takes the reply', () => {
+  const [turn] = groupTurns([message(1, 'user', 'Go'), message(2, 'tool', tool('a')), message(3, 'assistant', 'Done: fixed X'), message(4, 'system', 'A report was lost.')]);
+  assert.deepEqual(ids([turn.final]), [3]);
+  assert.deepEqual(ids(turn.notes), [4]);
+  assert.deepEqual(ids(turn.activity), [2]);
+});

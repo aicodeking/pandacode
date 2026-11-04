@@ -34,3 +34,11 @@ test('attachment headers in a prompt become file names', () => {
   ]);
   assert.deepEqual(attachments('just text'), []);
 });
+
+test('a system note shows outside the fold, after the reply it follows', () => {
+  const rows = turnRows([m(1, 'user'), m(2, 'tool'), m(3, 'assistant'), m(4, 'system')]);
+  assert.deepEqual(rows.map(r => r.id), ['u1', 'w2', 'r3', 'n4']);
+  const work = rows[1];
+  assert.ok(work.kind === 'work');
+  assert.deepEqual(work.steps.map(s => s.id), [2]);
+});

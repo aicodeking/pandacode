@@ -95,7 +95,7 @@ import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
 import { isMac, isWindows, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
-import { teamActive, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
+import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
@@ -219,7 +219,7 @@ function onArchitect(team: TeamEvent): void {
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
-  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error)) notify(team.error);
+  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error) && !LEAD_RETRY.test(team.error)) notify(team.error);
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
@@ -927,6 +927,12 @@ const pendingPromptActivity = new Map<string, number>();
 function session(): Session | undefined { return state.sessions.find(s => s.id === state.sessionId); }
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
+/** A team waiting out its lead's usage limit with nothing at work. It stays active (Stop works, prompts
+ *  queue, it retries by itself), so `isRunning` holds; the sidebar and composer say limited, not working. */
+function teamHeld(id = state.sessionId): boolean {
+  const team = teams.get(id), task = state.sessions.find(s => s.id === id);
+  return Boolean(team && teamHeldUntil(team) && task && limitActive(task) && !state.streams.has(id) && !team.workers.some(w => w.status === 'running' || w.status === 'waiting'));
+}
 function newTaskView(): boolean { const s = session(); return Boolean(s && !s.resumeId && !isRunning() && !state.messagesLoading && !state.messagesError && state.messages.length === 0); }
 function stream(id: string): Stream {
   let s = state.streams.get(id);
@@ -1271,10 +1277,11 @@ function renderNavigation(): void {
     const activityAt = lastActivity(s);
     const live = state.streams.get(s.id);
     const startedAt = live?.startedAt ?? s.lastPromptAt;
-    const elapsed = isRunning(s.id) && startedAt != null ? formatDuration(now - startedAt) : '';
+    const working = isRunning(s.id) && !teamHeld(s.id);
+    const elapsed = working && startedAt != null ? formatDuration(now - startedAt) : '';
     const age = elapsed || (activityAt == null ? '' : responseAge(activityAt, now));
     const answer = Boolean(live?.inputs.size);
-    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) ? 'running' : limitActive(s, now) ? 'limited' : failed(s) ? 'failed' : '';
+    const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : working ? 'running' : limitActive(s, now) ? 'limited' : failed(s) ? 'failed' : '';
     const statusLabel = status === 'attention' ? answer ? 'Needs your answer' : 'Needs approval' : status === 'limited' ? `Usage limit · ${resetLabel(s.limitedUntil, now)}` : status === 'failed' ? s.status === 'interrupted' ? 'Interrupted' : 'Failed' : 'Running';
     // States that need you say so in a word; running shows its clock, the rest their age.
     const word = status === 'attention' ? answer ? 'Answer' : 'Approval' : status === 'failed' ? statusLabel : status === 'limited' ? (limitReset(s.limitedUntil, now) ? `Limited · ${limitReset(s.limitedUntil, now)}` : 'Limited') : '';
@@ -1528,7 +1535,7 @@ function renderTranscript(preservePosition = false): void {
   const turns = groupTurns(visibleMessages());
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity) : '') + turn.errors.map(message => messageHtml(message)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool')) : '') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => (turn.user ? messageHtml(turn.user) : '') + (turn.handoff ? messageHtml(turn.handoff) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '') + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity) : '') + turn.errors.map(message => messageHtml(message)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool')) : '') + turn.notes.map(message => messageHtml(message)).join('') + workerSlot(turn) + changesRow(s.id, turn.changes)).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
   const byId = new Map(state.messages.map(message => [String(message.id), message]));
   transcript.querySelectorAll<HTMLElement>('[data-markdown]').forEach(el => {
     const message = byId.get(el.dataset.markdown!);
@@ -1647,6 +1654,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true): string {
   }
   if (m.role === 'status') return renderToolStatus(m.content);
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
+  if (m.role === 'system') return `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, state.messages, session()?.provider ?? state.defaultProvider);
   return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
@@ -2081,7 +2089,7 @@ function renderComposer(): void {
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
-  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running ? '' : limitBanner(s, Date.now(), limitAlternatives(s))) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name }));
+  $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))) + wakeStrip(s.id) + queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name }));
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -2317,7 +2325,7 @@ async function editBoardTask(): Promise<void> {
 function showBoardTaskForm(task?: Session): void {
   const p = task ? state.projects.find(p => p.id === task.projectId) : project() ?? state.projects[0];
   if (!p) { notify('Open a project to add a task.'); return; }
-  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="131072" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`);
+  modal(task ? 'Task details' : 'Add task', `<form id="board-task-form" class="board-task-form" data-project-id="${escape(p.id)}" ${task ? `data-session-id="${escape(task.id)}"` : ''}><p class="board-task-project">${icon('folder')}${escape(p.name)}</p><label class="field-label" for="board-task-title">Task title</label><input id="board-task-title" name="title" maxlength="200" placeholder="What needs to be done?" value="${escape(task?.title ?? '')}" required><label class="field-label" for="board-task-description">Task description</label><textarea id="board-task-description" name="description" rows="5" maxlength="${MESSAGE_LIMIT}" placeholder="Describe the outcome, context, and anything the agent should know.">${escape(task?.taskDescription ?? '')}</textarea><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${task ? 'Save details' : 'Add to pending'}</button></div></form>`);
   document.querySelector<HTMLInputElement>('#board-task-title')?.focus();
   const description = document.querySelector<HTMLTextAreaElement>('#board-task-description')!;
   description.setAttribute('aria-description', 'Type @ to mention a project file.');
@@ -2371,6 +2379,7 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
 }
 let fullTaskDescription: { id: string; value: string } | undefined;
 let sessionsReload = 0;
+let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
@@ -2625,7 +2634,15 @@ async function selectProject(id: string): Promise<void> {
   const generation = ++state.generation; activateProject(id, false); state.sessionId = ''; restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
   render(); if (generation !== state.generation) return; await refreshInspector();
 }
-async function reloadSessions(): Promise<void> {
+/** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
+function reloadSessions(): Promise<void> {
+  if (!sessionsLoading) {
+    sessionsLoading = loadSessions().finally(() => { sessionsLoading = null; });
+    return sessionsLoading;
+  }
+  return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
+}
+async function loadSessions(): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
   const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
@@ -3066,6 +3083,7 @@ function scheduleLimitResumes(): void {
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
+  if (teamHeld(task.id)) return clearLimit(task);
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishingStreams.has(task.id)) return;
   const hold = state.queueHolds.get(task.id);
   if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
@@ -3088,17 +3106,25 @@ function limitAlternatives(s: Session): { id: string; name: string }[] {
  *  across config folders, so connection_assign starts a fresh one that context recovery fills in. */
 async function continueOnConnection(task: Session, id: string): Promise<void> {
   const target = limitAlternatives(task).find(c => c.id === id);
-  if (!target || isRunning(task.id) || state.queueBusy.has(task.id)) return;
+  if (!target || (isRunning(task.id) && !teamHeld(task.id)) || state.queueBusy.has(task.id)) return;
   const from = taskConnection(task)?.name ?? `the default ${provider(task.provider)?.name ?? task.provider} setup`;
   onNamedConnections(await call('connection_assign', { sessionId: task.id, connectionId: id }));
   task.resumeId = null;
   await continueAfterLimit(task, `Continue where you left off. (Moved to the connection “${target.name}” because ${from} reached its usage limit.)`);
 }
+/** Drops a task's limit; a team held by it retries on the scheduler's next tick. */
+async function clearLimit(task: Session): Promise<void> {
+  await call('clear_usage_limit', { sessionId: task.id });
+  task.limitedAt = null; task.limitedUntil = null; task.resumeAtReset = false;
+  const team = teams.get(task.id);
+  if (team?.leadFailure) onArchitect({ ...team, leadFailure: { ...team.leadFailure, heldUntil: null } });
+  scheduleLimitResumes(); renderComposer(); renderNavigation();
+}
 async function limitAction(action: string, element: HTMLElement): Promise<void> {
   const s = session(); if (!s) return;
   if (action === 'limit-continue') return continueAfterLimit(s);
   if (action === 'limit-switch') return continueOnConnection(s, element.dataset.connection ?? '');
-  if (action === 'limit-dismiss') { await call('clear_usage_limit', { sessionId: s.id }); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; scheduleLimitResumes(); renderComposer(); renderNavigation(); return; }
+  if (action === 'limit-dismiss') return clearLimit(s);
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
     try { Object.assign(s, await call<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
@@ -3450,6 +3476,8 @@ function completeTurnChanges(event: AgentEvent): void {
     }).catch(report);
   }
 }
+/** `MESSAGE_LIMIT` in lib.rs. */
+const MESSAGE_LIMIT = 16 * 1024 * 1024;
 function onAgent(event: AgentEvent): void {
   remoteStartAttached(event.sessionId);
   queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
@@ -3499,6 +3527,7 @@ function onAgent(event: AgentEvent): void {
     return;
   }
   if (event.kind === 'done') {
+    subagents.runEnded(event.sessionId);
     if (s) refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
     if (s && botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
