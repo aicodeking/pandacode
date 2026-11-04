@@ -525,18 +525,6 @@ fn save_settled(store: &Store, team: &mut TeamSnapshot) -> bool {
         }
     }
 }
-/// A team as events carry it. No listener reads the catalog (up to 1000 models), the objective or
-/// the pending prompt (up to 16 MiB each), and every save sends an event.
-fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
-    let mut lean = team.clone();
-    lean.config.catalog = Vec::new();
-    lean.objective = String::new();
-    lean.pending_turn = None;
-    if let Some(setup) = &mut lean.pending_setup {
-        setup.config.catalog = Vec::new();
-    }
-    lean
-}
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
     let _ = app.emit("architect-event", redact_team(team));
     let _ = app.emit("sessions-changed", ());
