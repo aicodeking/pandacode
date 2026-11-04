@@ -161,6 +161,7 @@ function previewProviderConfiguration(): Record<string, unknown> {
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
+    providers: providers.map(provider => [provider.id, provider.name]),
     glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }

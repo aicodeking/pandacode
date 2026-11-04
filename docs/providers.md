@@ -164,9 +164,15 @@ it, and the harness would lose all its API traffic. The harness's own
 credentials and endpoints still win over inherited variables, and mirroring a
 task to another computer stays untouched — that computer uses its own settings.
 
-The per-provider list and the opt-out switch live on each provider's card here,
-so harnesses without a card (Codex and Kimi Code) currently take only the
-global set.
+The per-provider list and the opt-out switch live on each provider's card here.
+Every harness has one: those with sign-in specifics are written by hand, and the
+rest of the roster (Codex and Kimi Code today) gets a generated card with an
+executable location and these environment settings.
+
+A saved executable location must be an absolute path to an existing executable
+file; it is started directly, never through a shell. GLM Coding Plan and MiMo
+Token Plan run the Claude executable, so they have no location of their own and
+use the one on the Claude Code card.
 
 ## GitHub Copilot CLI
 

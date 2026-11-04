@@ -18,6 +18,7 @@ interface Configuration {
   globalEnvironment?: string[];
   environment?: Record<string, string[]>;
   useGlobalEnvironment?: Record<string, boolean>;
+  providers?: [string, string][];
   glmKeySaved: boolean;
   glmKeyFromEnvironment: boolean;
   deepseekKeySaved: boolean;
@@ -57,6 +58,11 @@ function envDetails(provider: string): string {
   </details>`;
 }
 
+/** A plain card for a harness without setup copy of its own: executable location and environment variables. */
+function generatedCard(id: string, name: string): string {
+  return `<details class="connection-card"><summary><h3>${providerLogo(id as ProviderId)}${escape(name)}</h3><span class="connection-state"></span>${icon('chevron')}</summary>${pathForm(id, `${name} executable`, `/path/to/${id}`)}${envDetails(id)}</details>`;
+}
+
 function keyForm(provider: KeyedProvider, label: string): string {
   return `<form id="${provider}-key-form" data-key-provider="${provider}"><label for="${provider}-key">${escape(label)}</label><div class="connection-input-row"><input id="${provider}-key" type="password" autocomplete="off" spellcheck="false" placeholder="Enter API key" maxlength="4096"><button class="primary-button" type="submit">Save key</button></div></form>
       <div class="connection-key-status"><span id="${provider}-key-status" role="status">Checking connection…</span><button type="button" class="secondary-button" id="remove-${provider}-key" data-remove-key="${provider}" hidden>Remove saved key</button></div>`;
@@ -64,7 +70,7 @@ function keyForm(provider: KeyedProvider, label: string): string {
 
 export function mountProviderSettings(host: HTMLElement, saved: () => Promise<unknown>, named?: { harnesses: { id: ProviderId; name: string; installed?: boolean }[]; saved: (snapshot: ConnectionSnapshot) => void }): () => void {
   let disposed = false, pending = false, unmountNamed: (() => void) | undefined;
-  let configurationRevision = 0;
+  let configurationRevision = 0, generatedMounted = false;
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
   host.innerHTML = `<div class="settings-heading"><h3>Sign-ins and keys</h3>${infoMark(howProvidersWork, 'How providers relate to agents')}<span class="sr-only">${escape(howProvidersWork)}</span></div>${named ? '<section id="named-connections"></section>' : ''}
@@ -78,6 +84,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <div class="connection-key-status"><span class="claude-auth-source" role="status">Checking Claude login…</span><button type="button" class="secondary-button" data-check-claude>Check login</button><span class="claude-auth-details"></span></div>
       <p class="claude-auth-endpoint" hidden></p><p class="claude-auth-conflict" hidden>Environment credentials can override your saved Claude login.</p><p class="claude-auth-login" hidden></p>
       <a href="https://code.claude.com/docs/en/authentication" target="_blank" rel="noopener noreferrer">Claude sign-in help ${icon('forward')}</a>
+      ${pathForm('claude', 'Claude Code executable', '/path/to/claude')}
       ${envDetails('claude')}
     </details>
     <details class="connection-card"><summary><h3>${providerLogo('glm')}GLM Coding Plan<small>via Claude Code</small></h3><span class="connection-state"></span>${icon('chevron')}</summary>
@@ -158,6 +165,13 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   function message(text: string, error = false): void { feedback.textContent = text; feedback.hidden = false; feedback.classList.toggle('error', error); }
   function keysDisabled(config: Configuration): boolean { return !config.secureStorageAvailable || preview; }
   function render(config: Configuration): void {
+    // One card, once, for each harness in the roster without a hand-written
+    // one. Ids reach attributes and selectors, so only plain ones are drawn.
+    if (!generatedMounted) {
+      generatedMounted = true;
+      const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
+      feedback.insertAdjacentHTML('beforebegin', cards);
+    }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
     for (const input of host.querySelectorAll<HTMLInputElement>('[data-executable]')) {
       const id = input.dataset.executable!;
