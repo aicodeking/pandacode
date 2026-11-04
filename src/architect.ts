@@ -1,4 +1,5 @@
 import './architect.css';
+import { t } from './i18n.ts';
 import { renderTurnChanges, captureChangeCards, restoreChangeCards } from './turn-changes';
 import { call } from './bridge';
 import { escape, icon, markdown, morph } from './dom';
@@ -28,7 +29,6 @@ import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { AgentEvent, Message, MessagePage, Provider, ProviderId, ProviderModel, Session, ToolActivity } from './types';
 import { errorText } from './error-text';
-import { t } from './i18n.ts';
 
 type SetupOptions = {
   task: Session; team: TeamSnapshot | null; library: TeamLibrary; providers: Provider[];
@@ -49,7 +49,7 @@ export function openArchitectSetup(anchor: HTMLElement, load: () => Promise<Setu
   panel.setAttribute('role', 'dialog');
   panel.setAttribute('aria-label', t('Architect & workers'));
   panel.tabIndex = -1;
-  panel.innerHTML = `<header class="architect-setup-heading"><h2>${t('Architect & workers')}</h2><button type="button" class="icon-button" aria-label="${t('Close dialog')}">${icon('close')}</button></header><div class="architect-setup-scroll"><div id="architect-setup-host"><p class="architect-loading" role="status">${t('Loading team setup…')}</p></div></div>`;
+  panel.innerHTML = `<header class="architect-setup-heading"><h2>Architect & workers</h2><button type="button" class="icon-button" aria-label=t("Close dialog")>${icon('close')}</button></header><div class="architect-setup-scroll"><div id="architect-setup-host"><p class="architect-loading" role="status">Loading team setup…</p></div></div>`;
   const host = panel.querySelector<HTMLElement>('#architect-setup-host')!;
   let closed = false, frame = 0, setup: SetupController | undefined;
   const expanded = anchor.getAttribute('aria-expanded'), controls = anchor.getAttribute('aria-controls');
@@ -185,7 +185,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
     });
   }
   function renderProfiles(): void {
-    profiles.innerHTML = config.workers.map((profile, index) => `<div class="architect-profile" data-profile-id="${escape(profile.id)}"><div class="architect-profile-heading"><span class="architect-profile-number">${index + 1}</span><input aria-label="${t`Worker profile ${index + 1} name`}" maxlength="60" value="${escape(profile.name)}"><button type="button" class="icon-button" aria-label="${t`Remove worker profile ${index + 1}`}" ${config.workers.length === 1 ? 'disabled' : ''}>${icon('close')}</button></div><button type="button" class="architect-model" aria-label="${t`Choose model for worker ${index + 1}`}" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(profile, providers)}</button></div>`).join('');
+    profiles.innerHTML = config.workers.map((profile, index) => `<div class="architect-profile" data-profile-id="${escape(profile.id)}"><div class="architect-profile-heading"><span class="architect-profile-number">${index + 1}</span><input aria-label="Worker profile ${index + 1} name" maxlength="60" value="${escape(profile.name)}"><button type="button" class="icon-button" aria-label="Remove worker profile ${index + 1}" ${config.workers.length === 1 ? 'disabled' : ''}>${icon('close')}</button></div><button type="button" class="architect-model" aria-label="Choose model for worker ${index + 1}" aria-haspopup="dialog" aria-expanded="false">${modelMarkup(profile, providers)}</button></div>`).join('');
     profiles.querySelectorAll<HTMLElement>('.architect-profile').forEach((row, index) => {
       row.querySelector('input')!.addEventListener('input', event => { config.workers[index].name = (event.target as HTMLInputElement).value; });
       row.querySelector('.icon-button')!.addEventListener('click', () => { picker?.(); config.workers.splice(index, 1); renderProfiles(); savedProfiles.changed(); });
@@ -204,7 +204,7 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   void Promise.allSettled([...new Set(providers.filter(p => p.installed).map(p => p.id))].map(options.loadModels)).then(refreshModelLabels);
   host.querySelector<HTMLButtonElement>('.architect-model')!.addEventListener('click', event => choose(event.currentTarget as HTMLButtonElement, architect, Boolean(team) || !task.resumeId));
   host.querySelector('.architect-add')!.addEventListener('click', () => {
-    picker?.(); config.workers.push({ ...config.workers[config.workers.length - 1], id: crypto.randomUUID(), name: t`Worker ${config.workers.length + 1}` }); renderProfiles(); savedProfiles.changed();
+    picker?.(); config.workers.push({ ...config.workers[config.workers.length - 1], id: crypto.randomUUID(), name: `Worker ${config.workers.length + 1}` }); renderProfiles(); savedProfiles.changed();
     profiles.lastElementChild?.querySelector<HTMLInputElement>('input')?.select();
   });
   const parallel = host.querySelector<HTMLInputElement>('#team-parallel')!;
@@ -231,7 +231,6 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
     error.hidden = true;
     config.leadGuidance = guidanceField.value.trim() || null;
     if (!disable && !unlimited.checked && (!Number.isSafeInteger(config.maxParallel) || config.maxParallel < 1)) { error.textContent = t('Choose a whole worker count or Unlimited.'); error.hidden = false; return; }
-    if (!disable && new TextEncoder().encode(config.leadGuidance ?? '').length > 2000) { error.textContent = t('Lead guidance must be under 2000 bytes.'); error.hidden = false; guidanceField.focus(); return; }
     if (!disable && config.workers.some(p => !p.name.trim())) { error.textContent = t('Give each worker profile a name.'); error.hidden = false; return; }
     const profileId = disable ? null : savedProfiles.selectedId();
     setBusy(true);
@@ -307,7 +306,7 @@ export class ArchitectView {
   setAssistEnabled(enabled: boolean): void { this.assistEnabled = enabled; this.paintAssist(); }
   private paintAssist(): void {
     const button = this.panel?.querySelector<HTMLButtonElement>('.architect-assist'); if (!button) return;
-    button.hidden = !this.assistEnabled || !this.options.assist;
+    button.hidden = !this.assistEnabled || !this.options.assist || Boolean(this.options.remote?.(this.taskId));
     button.textContent = this.selected ? t('Review with Jev') : t('Suggest worker');
   }
   setTask(taskId: string, team: TeamSnapshot | null, providers: Provider[]): void {
@@ -565,7 +564,7 @@ export class ArchitectView {
       if (queue.textContent !== (queueReason ?? '')) { queue.textContent = queueReason ?? ''; queue.dataset.tip = queueReason ?? ''; }
       if (error.textContent !== (worker.error ?? '')) { error.textContent = worker.error ?? ''; error.title = worker.error ?? ''; }
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
-      panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? t('Read only · no writes') : worker.files.length ? t`Write scope: ${worker.files.join(', ')}` : t('Write scope: shared checkout');
+      panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? t('Read only · no writes') : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : t('Write scope: shared checkout');
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;
       checkpoint.hidden = !worker.checkpoint;
       if (checkpoint.dataset.workerId !== worker.id) { checkpoint.open = false; checkpoint.dataset.workerId = worker.id; }
