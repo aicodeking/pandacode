@@ -158,6 +158,18 @@ test('queue ignores the Enter that commits an IME composition', async ({ page })
   await expect(rows(page).locator('.queue-text')).toHaveText(['変換']);
 });
 
+test('an Escape that cancels an IME conversion does not stop the run, and a normal one does', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Escape', keyCode: 229 });
+  // A stop would be recorded by the time this later command is.
+  await page.evaluate(() => (window as any).__queueInvoke('list_projects'));
+  expect(await calls(page, 'stop_session')).toEqual([]);
+  await expect(prompt(page)).toHaveValue('変換');
+  await prompt(page).press('Escape');
+  await expect.poll(async () => (await calls(page, 'stop_session')).length).toBe(1);
+});
+
 for (const [name, ime] of [['keyCode 229', { keyCode: 229 }], ['isComposing', { isComposing: true }]] as const) {
   const enter = { key: 'Enter', ...ime };
 

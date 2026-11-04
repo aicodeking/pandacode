@@ -6819,6 +6819,8 @@ document.addEventListener('keydown', event => {
     }
     return;
   }
+  // An Escape that cancels an IME conversion belongs to the IME: it never stops a run or clears a field.
+  if (event.key === 'Escape' && isImeKey(event)) return;
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
   if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
   if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
