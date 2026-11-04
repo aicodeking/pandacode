@@ -139,7 +139,7 @@ html[data-theme="dark"]{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .4),0 8px 24
 .provider-avatar .provider-logo{width:20px;height:20px}
 .transcript{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:28px 36px 25px;scroll-behavior:auto;scrollbar-gutter:stable}
 .transcript:focus{outline:none}
-.transcript>*,#stream-region>*{max-width:830px;margin-left:auto;margin-right:auto}
+.transcript>*,#stream-region>*{max-width:var(--thread-column-width);margin-left:auto;margin-right:auto}
 .message{margin-bottom:20px}
 .message-meta{display:flex;align-items:center;gap:8px;margin-bottom:9px;font-size:var(--text-sm)}
 .message-meta strong{font-weight:var(--weight-strong);color:var(--text)}

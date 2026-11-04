@@ -15,6 +15,31 @@ async function open(page: Page): Promise<string[]> {
   return errors;
 }
 
+for (const theme of ['light', 'dark']) test(`layout preferences: replies and composer share a column when resizing (${theme})`, async ({ page }, testInfo) => {
+  await page.addInitScript(theme => localStorage.setItem('pandacode.theme', theme), theme);
+  const errors = await open(page);
+  if (await page.locator('#inspector').isVisible()) await page.locator('#inspector-toggle').click();
+  await expect(page.locator('#inspector')).toBeHidden();
+  await page.locator('#prompt').fill('Keep this draft while resizing.');
+  const aligned = async () => {
+    const reply = (await cards(page).last().boundingBox())!, composer = (await page.locator('#composer').boundingBox())!;
+    return { left: Math.round(reply.x - composer.x), right: Math.round(reply.x + reply.width - composer.x - composer.width) };
+  };
+  for (const width of [2560, 1440, 960, 1920]) {
+    await page.setViewportSize({ width, height: 940 });
+    await expect.poll(aligned, { message: `The reply and input share both edges at ${width}px` }).toEqual({ left: 0, right: 0 });
+    await expect(page.locator('#prompt')).toHaveValue('Keep this draft while resizing.');
+    if (width === 960 || width === 1920) await page.screenshot({ path: testInfo.outputPath(`column-${theme}-${width}.png`) });
+  }
+  await page.keyboard.press('ControlOrMeta+b');
+  await expect(page.locator('.workspace')).toHaveClass(/sidebar-collapsed/);
+  await expect.poll(aligned).toEqual({ left: 0, right: 0 });
+  await page.locator('#inspector-toggle').click();
+  await expect(page.locator('#inspector')).toBeVisible();
+  await expect.poll(aligned).toEqual({ left: 0, right: 0 });
+  expect(errors).toEqual([]);
+});
+
 test('saved turns: header sentence and time, clamped reply, footer only with changes', async ({ page }) => {
   const errors = await open(page);
   const [short, long] = [cards(page).nth(0), cards(page).nth(1)];

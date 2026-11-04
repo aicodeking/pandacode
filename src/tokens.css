@@ -10,6 +10,7 @@
 /* Line icons match the reference's weight: ≈1.7 units at 20px (≈1.4px drawn), a touch heavier as they shrink. */
 --icon-stroke-xs:2.1;--icon-stroke-sm:1.9;--icon-stroke-md:1.75;--icon-stroke-lg:1.65;
 --row-sm:24px;--row:28px;--row-lg:32px;
+--thread-column-width:830px;
 --control-sm:24px;--control:28px;--control-lg:32px;
 --switch-w:30px;--switch-h:18px;
 --surface-1:var(--bg);--surface-2:var(--panel);--surface-3:var(--raised);
