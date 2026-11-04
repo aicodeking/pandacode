@@ -630,6 +630,10 @@ pub(crate) fn tool_path(name: &str) -> Option<std::path::PathBuf> {
     launch::find(name)
 }
 
+pub(crate) fn sweep_cline_mcp_settings(data: &Path) {
+    cline::sweep_mcp_settings(data);
+}
+
 pub(crate) fn opencode_configuration(mode: &str) -> String {
     acp::configuration(mode)
 }
@@ -1700,7 +1704,9 @@ impl Protocol {
         self.tools.insert(id, tool.clone());
         // The authenticated bridge emits these calls itself. Provider tool
         // frames are retained for joining sparse results, but not shown twice.
-        if self.mcp_tool_names.contains(&tool.name) {
+        if self.mcp_tool_names.contains(&tool.name)
+            || (self.config.provider == "cline" && cline::host_tool(&tool.name).is_some_and(|name| self.mcp_tool_names.contains(name)))
+        {
             return;
         }
         let mut event = self.event("tool", format!("{} · {}", tool.name, tool.status), None);
@@ -2782,7 +2788,7 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| optional_metadata_tool(tool) || crate::bots::tools::self_scoped(tool) || crate::schedules::tools::self_scoped(tool) || crate::architect::team_tool(tool))
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(self_scoped_host_tool)
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
@@ -3391,6 +3397,10 @@ async fn run_process(
     run_process_with_tools(config, sink, input, command, image_blocks, None).await
 }
 
+/// Host tools that need no permission prompt once registered for the run.
+fn self_scoped_host_tool(name: &str) -> bool {
+    optional_metadata_tool(name) || crate::bots::tools::self_scoped(name) || crate::schedules::tools::self_scoped(name) || crate::architect::team_tool(name)
+}
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL
 }
@@ -3518,6 +3528,16 @@ async fn run_process_with_tools(
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
+    let cline_settings = match &mcp {
+        Some(server) if config.provider == "cline" && !crate::cloud_agents::transport::is_cloud(&config.session_id) => {
+            match cline::mcp_settings(&mut command, &server.kimi_config()) {
+                Ok(folder) => Some(folder),
+                Err(error) if server.required() => return Err(error),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
     reached_harness();
     let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let mut agent_temp = None;
@@ -3557,7 +3577,8 @@ async fn run_process_with_tools(
     }
     protocol.image_blocks = image_blocks;
     protocol.host = host;
-    protocol.mcp_server = mcp.as_ref().map(mcp_host::Server::kimi_config);
+    // Cline already has the server from its settings file, not from `session/new`.
+    protocol.mcp_server = mcp.as_ref().filter(|_| cline_settings.is_none()).map(mcp_host::Server::kimi_config);
     protocol.mcp_required = mcp.as_ref().is_some_and(mcp_host::Server::required);
     protocol.codex_mcp_servers = mcp
         .as_ref()

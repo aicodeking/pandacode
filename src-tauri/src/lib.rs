@@ -3860,6 +3860,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     secret_store::setup(&dir);
+    providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
     connections::setup(&dir)?;
     model_routing::setup(&dir);

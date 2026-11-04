@@ -765,13 +765,31 @@ session only after it has received a prompt. It has no `session/resume`.
 **Not available from Cline's ACP server (3.0.73).** Images: `image: true` is
 advertised, but the prompt keeps only text blocks, so screenshots are sent as
 file paths that its `read_files` tool opens. Cline ignores the ACP `mcpServers`
-list and does not advertise HTTP MCP, so PandaCode tools (titles, run/preview,
-team tools) are unavailable, and a task that requires them fails at startup.
+list and does not advertise HTTP MCP, so PandaCode tools reach it another way (below).
 There are also no `available_commands_update` (slash commands), no `usage_update`
 (context meter) and no usage limits. Mid-turn messages stay queued.
 
+**PandaCode tools.** For a run that has PandaCode tools (titles, run/preview, team
+tools), PandaCode writes a per-run settings file and points `CLINE_MCP_SETTINGS_PATH`
+at it. The file holds your Cline MCP servers (read from where Cline looks, unchanged;
+a file that can't be parsed counts as empty, and those servers are then missing for
+that run) with PandaCode's own server over them, as direct HTTP to its loopback host
+(`http://127.0.0.1:<port>/mcp`). No package is downloaded. Your own settings file is
+never written, and anything Cline saves to its MCP settings during the run is
+discarded with the copy. The run's bearer token is only in that file: mode 0600, in
+a private `cline-mcp/<uuid>/` folder under PandaCode's app data, never in arguments
+or environment values. The folder is removed at run end; one a crash leaves behind
+is swept at a later startup once it is a day old, and its token died with the run.
+Cloud runs can't reach the loopback host, so they keep the startup error when they
+require the tools. Tools limited to the task's own state (titles, change tracking,
+team and schedule tools) skip Cline's permission prompt, as they do on Claude; others
+keep the normal approval. `CLINE_MCP_SETTINGS_PATH` is undocumented Cline behaviour:
+a Cline that stops reading it would run without PandaCode tools rather than fail at
+startup. To check it: `cargo test --lib live_cline_calls_pandacode_tools -- --ignored`
+(sends one short prompt on a free model).
+
 Verified against `cline` 3.0.73 on 2026-10-22 by driving `cline --acp`
-directly. The recorded frames back the unit tests in `providers/cline.rs`, and
+directly, and the tools route against 3.0.74 on 2026-11-04. The recorded frames back the unit tests in `providers/cline.rs`, and
 an ignored smoke test (`live_cline_lists_models`) reads the real catalog without
 spending tokens.
 

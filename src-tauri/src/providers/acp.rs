@@ -414,6 +414,16 @@ impl Protocol {
             // ACP modes aren't universally approval policies. Keep user prompts
             // intact unless Full access, or Auto edits for an explicit edit call.
             let options = value["params"]["options"].as_array();
+            // As for Claude: a registered self-scoped tool can't touch the checkout.
+            if self.config.provider == "cline"
+                && super::cline::host_tool(field(&value["params"]["toolCall"], "title"))
+                    .is_some_and(|tool| super::self_scoped_host_tool(tool) && self.mcp_tool_names.contains(tool))
+            {
+                if let Some(allow) = options.and_then(|values| values.iter().find(|entry| entry["kind"] == "allow_once")) {
+                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":allow["optionId"]}}}));
+                    return Ok(step);
+                }
+            }
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
             if self.config.provider == "kilo" {
