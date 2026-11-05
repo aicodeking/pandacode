@@ -902,11 +902,19 @@ const observeTranscript = (): void => { transcriptResize.disconnect(); for (cons
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
 const releaseTranscript = (): void => { if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
+const composerArea = $('#composer-area');
 // Rebuilding or measuring the composer briefly shrinks it; a layout read then grows the transcript
 // and clamps its scroll up. Re-pin in the mutation's microtask, before that clamp can paint or
 // reach the scroll handler, where any upward scroll means the reader left.
-new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target))) followTranscript(); })
-  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
+// Only attributes that can move the transcript are observed: `class` (a card turning `is-live`, a
+// trace folding), `style` (a result card's height animation, the tail room), `hidden` and
+// `data-state` (the transcript's own state selectors). Everything else, and every mutation inside
+// #composer-area - the textarea's own height write, a rebuilt composer, a disabled send button -
+// cannot re-pin anything: the composer is a flex sibling, so when it does resize the transcript, the
+// ResizeObserver on the transcript already reports it.
+const TRANSCRIPT_ATTRIBUTES = ['style', 'class', 'data-state', 'hidden'];
+new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target) && !composerArea.contains(record.target))) followTranscript(); })
+  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: TRANSCRIPT_ATTRIBUTES });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
