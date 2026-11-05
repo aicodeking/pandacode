@@ -4321,12 +4321,20 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
   const timer = window.setTimeout(() => { endHold(); renderStream(); }, WAKE_LOAD_HOLD_MS);
   clearTimeout(wakeHolds.get(sessionId));
   wakeHolds.set(sessionId, timer);
-  void latestMessagePage(sessionId).then(page => {
-    endHold();
-    const boundary = [...page.messages].reverse().find(message => message.role === 'user' || message.role === 'coordination' || message.role === 'changes');
-    if (generation === state.generation && sessionId === state.sessionId && state.streams.get(sessionId) === current && !current.earlier && boundary?.role === 'coordination') { setMessagePage(page); renderTranscript(); }
-    else renderStream();
-  }).catch(error => { endHold(); renderStream(); report(error); });
+  // Only the newest page: a wake's coordination message is saved just before its run starts, so it is there. A run
+  // that has no boundary on it is not looked into further, so this never asks for older pages (latestMessagePage
+  // bridges a gap with them). setMessagePage keeps the older pages the reader loaded.
+  // ponytail: a wake that saved over a page before its first event shows two cards until it ends; bridge here if that happens.
+  const fresh = (): boolean => generation === state.generation && sessionId === state.sessionId && state.streams.get(sessionId) === current && !current.earlier;
+  void call<MessagePage>('get_messages', { sessionId }).then(async newest => {
+    const boundary = [...newest.messages].reverse().find(message => message.role === 'user' || message.role === 'coordination' || message.role === 'changes');
+    if (boundary?.role !== 'coordination' || !fresh()) return;
+    // The page reaches what is loaded, so it joins it as is; with a gap in between, the gap is loaded first.
+    const known = [...state.messages].reverse().find(message => message.id > 0)?.id;
+    const page = newest.hasOlder && known !== undefined && newest.messages[0]?.id > known ? await latestMessagePage(sessionId) : newest;
+    if (!fresh()) return;
+    endHold(); setMessagePage(page); renderTranscript();
+  }).catch(report).finally(() => { if (wakeHolds.get(sessionId) === timer) { endHold(); renderStream(); } });
 }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;

@@ -592,7 +592,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   await expect(prompt(page)).toHaveValue('Keep this draft while choosing reasoning effort');
 });
 
-test('the effort thumb sits under the chosen segment in the neutral active fill', async ({ page }) => {
+test('the effort thumb sits under the chosen segment in the raised thumb fill', async ({ page }) => {
   await page.evaluate(async () => {
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__colorEffortSaves = [];
@@ -604,7 +604,7 @@ test('the effort thumb sits under the chosen segment in the neutral active fill'
     });
   });
   const thumb = reasoningGroup(page).locator('.segment-thumb');
-  const fill = await thumb.evaluate(element => { const probe = document.createElement('span'); probe.style.backgroundColor = 'var(--fill-active)'; element.append(probe); const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; });
+  const fill = await thumb.evaluate(element => { const probe = document.createElement('span'); probe.style.backgroundColor = 'var(--ds-thumb)'; element.append(probe); const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; });
   await expect(thumb).toHaveCSS('background-color', fill);
   for (const name of ['Medium', 'Max']) {
     await effortRadio(page, name).click();

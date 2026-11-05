@@ -75,7 +75,12 @@ async function installArchitect(page: Page, snapshots: Record<string, TeamSnapsh
       fixture.calls.push({ command, args: structuredClone(args) });
       if (command === 'get_messages' && fixture.messagesDelay) await new Promise(resolve => setTimeout(resolve, fixture.messagesDelay));
       if (fixture.failures[command]) throw new Error(fixture.failures[command]);
-      if (command === 'get_messages' && Object.hasOwn(fixture.taskMessages, args.sessionId)) return { messages: structuredClone(fixture.taskMessages[args.sessionId]), hasOlder: false };
+      if (command === 'get_messages' && Object.hasOwn(fixture.taskMessages, args.sessionId)) {
+        // With pageSize set, pages work as the app's do: the newest pageSize messages before beforeId.
+        const all = fixture.taskMessages[args.sessionId].filter(message => !args.beforeId || message.id < args.beforeId);
+        const size = window.__pageSize ?? all.length;
+        return { messages: structuredClone(all.slice(-size)), hasOlder: all.length > size };
+      }
       if (command === 'architect_get' && Object.hasOwn(fixture.snapshots, args.sessionId)) {
         const value = structuredClone(fixture.snapshots[args.sessionId]);
         if (fixture.hold[args.sessionId]) await new Promise(resolve => { (fixture.release[args.sessionId] ??= []).push(resolve); });
@@ -749,6 +754,36 @@ test.describe('architect teams', () => {
     await page.evaluate(() => { (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'A scheduled run.' }); });
     await expect(transcript(page).locator('.turn-card.is-live .live-message')).toContainText('A scheduled run.', { timeout: 1000 });
     await expect(transcript(page).locator('.turn-card:not(.is-live) > .turn-card-reply')).toContainText('Delegated to the workers.');
+  });
+
+  // A wake's first event reloads the newest page. With older history loaded, that must neither drop it nor ask for
+  // more: not for a wake (its coordination message is on the newest page), nor for a run that already saved more than a page.
+  for (const saved of [0, 105]) test(`a wake keeps the older history the reader loaded and asks for no older page (${saved} saved steps)`, async ({ page }) => {
+    const older = Array.from({ length: 120 }, (_, index) => ({ id: 10 + index, sessionId: 'session-2', role: index % 2 ? 'assistant' : 'user', content: `Older message ${index + 1}`, createdAt: 1000 + index })) as Message[];
+    const recent = wakeThread().map(message => ({ ...message, id: message.id + 200, createdAt: message.createdAt + 2000 }));
+    await page.addInitScript(() => { (window as any).__pageSize = 100; });
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': [...older, ...recent] });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply').last()).toContainText('Delegated to the workers.');
+    await expect(transcript(page).getByText('Older message 1', { exact: true })).toHaveCount(0);
+    await transcript(page).evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+    await expect(transcript(page).getByText('Older message 1', { exact: true })).toBeAttached();
+    const olderCalls = () => page.evaluate(() => (window as any).__architectTest.calls.filter((call: any) => call.command === 'get_messages' && call.args.beforeId).length);
+    const before = await olderCalls();
+    await page.evaluate(([wake, tool, saved]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(wake, ...Array.from({ length: saved }, (_, index) => ({ id: 1000 + index, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, id: `saved-${index}`, name: 'Read', status: 'completed', input: `src/${index}.ts`, output: 'ok' }), createdAt: 900001 + index })));
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool });
+    }, [wakeMessage, wakeTool, saved] as const);
+    await expect(transcript(page).locator('.turn-card.is-live')).toBeAttached();
+    if (!saved) {
+      await expect(transcript(page).locator('.turn-card.is-live details.live-earlier')).toBeAttached();
+      await expect(transcript(page).locator('.turn-card')).toHaveCount(older.length / 2 + 1);
+    }
+    // Past the hold, whatever the load did is done.
+    await page.waitForTimeout(500);
+    await expect(transcript(page).getByText('Older message 1', { exact: true })).toBeAttached();
+    await expect(transcript(page).getByText('Older message 120', { exact: true })).toBeAttached();
+    expect(await olderCalls()).toBe(before);
   });
 
   test('a thread tile shows a live wake as one card', async ({ page }) => {
