@@ -64,7 +64,7 @@ export interface SettingsView { show(section: SettingsSection): void; dispose():
 const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
 /** Key-based plans that run through Claude Code; they are set up under Providers, not listed as agents. */
-const PLANS = new Set<ProviderId>(['glm', 'mimo']);
+const PLANS = new Set<ProviderId>(['glm', 'mimo', 'openai-compatible']);
 
 /** A row: title, its control, then the info mark named after it (after the control in Tab order); the help's
  * text stays in the DOM for screen readers. */
@@ -133,7 +133,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
       </div>
-      <h3 class="settings-heading">Colors</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
+      <h3 class="settings-heading">Colors <small class="settings-colors-summary"></small></h3><div class="settings-embed settings-colors" data-embed="colors"></div>
       <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">Wallpapers</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
     case 'agents': return `<div class="settings-group">
         <div class="setting-row settings-default-row"><div><strong>Default agent</strong></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="Default agent for new tasks" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
@@ -147,6 +147,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
       ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
       ${fold('Advanced', '<h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>')}`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
+    case 'usage': return '<div class="settings-usage"><p role="status">Loading usage panel…</p></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
@@ -264,6 +265,14 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (mounted.has(id)) return;
     mounted.add(id);
     const panel = panels.get(id)!;
+    if (id === 'usage') {
+      const slot = panel.querySelector<HTMLElement>('.settings-usage')!;
+      void import('./agent-usage').then(({ mountAgentUsage }) => {
+        if (!disposed) cleanups.push(mountAgentUsage(slot, options.providers));
+      }).catch(() => {
+        if (!disposed) slot.innerHTML = '<p class="settings-embed-error" role="alert">Usage couldn’t load. Close Settings and try again.</p>';
+      });
+    }
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));

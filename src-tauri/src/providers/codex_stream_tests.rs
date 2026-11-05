@@ -38,6 +38,32 @@ fn text(step: &Step) -> String {
 }
 
 #[test]
+fn normal_codex_tasks_enable_structured_questions_in_every_permission_mode() {
+    for mode in ["ask", "auto", "full", "plan"] {
+        let mut config = protocol().config;
+        config.mode = mode.into();
+        let mut command = Command::new("codex");
+        configure_command(&mut command, &config);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect();
+        assert!(args.windows(2).any(|args| args == ["--enable", "default_mode_request_user_input"]), "questions must be available in {mode}");
+
+        let mut p = Protocol::new(config);
+        let step = p.receive(json!({"id":"question","method":"item/tool/requestUserInput","params":{"questions":[{"id":"choice","header":"Approach","question":"Which approach?","options":[{"label":"Small change (Recommended)","description":"Focused fix"},{"label":"Full revision","description":"Broader change"}]}]}})).unwrap();
+        assert!(step.write.is_empty(), "{mode} must never choose the recommendation automatically");
+        assert!(!step.done);
+        assert_eq!(step.events[0].kind, "input_request");
+        let request_id = step.events[0].request_id.as_ref().unwrap();
+        let reply = p.user_input(request_id, json!({"answers":{"choice":["Full revision"]}})).unwrap();
+        assert_eq!(reply.write[0]["id"], "question");
+        assert_eq!(reply.write[0]["result"]["answers"]["choice"]["answers"], json!(["Full revision"]));
+    }
+}
+
+#[test]
 fn commentary_and_final_messages_start_separately_before_their_text() {
     let mut p = protocol();
     let mut events = Vec::new();

@@ -51,6 +51,7 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
         // Claude: https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode
         // Kimi: https://agentclientprotocol.com/protocol/v1/content#image-content
         images.push(match provider {
+            "openai-compatible" => json!({"type":"image_url","image_url":{"url":format!("data:image/png;base64,{}", STANDARD.encode(&bytes))}}),
             "codex" => json!({"type":"localImage","path":path}),
             "claude" | "glm" | "mimo" => json!({"type":"image","source":{
                 "type":"base64","media_type":"image/png","data":STANDARD.encode(&bytes)

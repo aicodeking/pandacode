@@ -719,7 +719,7 @@ fn open_entry(root: &Path, path: &str) -> std::io::Result<(File, String)> {
     ))
 }
 #[cfg(unix)]
-fn read_bytes(
+pub(crate) fn read_bytes(
     root: &Path,
     path: &str,
     limit: usize,
@@ -789,7 +789,7 @@ fn read_bytes(
     Ok((bytes, after, false))
 }
 #[cfg(windows)]
-fn read_bytes(
+pub(crate) fn read_bytes(
     root: &Path,
     path: &str,
     limit: usize,
@@ -859,7 +859,7 @@ fn read_bytes(
     Ok((bytes, after, false))
 }
 #[cfg(not(any(unix, windows)))]
-fn read_bytes(
+pub(crate) fn read_bytes(
     _root: &Path,
     _path: &str,
     _limit: usize,

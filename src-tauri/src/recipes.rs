@@ -14,8 +14,9 @@ const KINDS: [&str; 4] = ["prompt", "slash", "check", "approval"];
 /// Harnesses whose running turn takes a message. Claude-family harnesses steer on
 /// stream input, Codex uses `turn/steer`, Pi and omp use their own steer, Muse takes
 /// one on the wire, and OpenCode folds a second `session/prompt` into its running loop.
-const STEERING: [&str; 9] = ["claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode", "devin"];
-const HARNESSES: [&str; 19] = [
+const STEERING: [&str; 10] = ["openai-compatible", "claude", "glm", "mimo", "codex", "pi", "omp", "muse", "opencode", "devin"];
+const HARNESSES: [&str; 20] = [
+    "openai-compatible",
     "claude", "codex", "kimi", "glm", "opencode", "antigravity", "grok", "mimo", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes",
 ];
 

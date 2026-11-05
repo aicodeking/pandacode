@@ -426,6 +426,18 @@ async fn inspect(installation: Installation) -> Checked {
             source: None,
         };
     }
+    if install::managed_by_chatgpt(&installation) {
+        // Its release channel belongs to the containing app. Never compare it
+        // with standalone Codex releases or offer it as an update candidate.
+        row.method = Some("ChatGPT".into());
+        row.message = Some(install::CHATGPT_MANAGED_MESSAGE.into());
+        row.docs_url = None;
+        let local = installation.clone();
+        if let Ok(Ok(version)) = tokio::task::spawn_blocking(move || install::version(&local.path, "codex")).await {
+            row.installed_version = Some(version.text);
+        }
+        return Checked { install: installation, row, source: None };
+    }
     if family(&installation.provider) == "antigravity" {
         row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
         return Checked {
@@ -817,6 +829,28 @@ mod tests {
         assert_eq!(groups[0].providers, ["claude", "glm"]);
         assert_eq!(groups[1].providers, ["mimo"]);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bundled_chatgpt_codex_skips_release_checks_and_update_candidates() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-managed-codex-{}", uuid::Uuid::new_v4()));
+        let path = root.join("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        for version in ["0.165.0-alpha.1.2", "0.165.0"] {
+            std::fs::write(&path, format!("#!/bin/sh\necho 'codex-cli {version}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let group = group_installations(vec![("codex".into(), "Codex".into(), path.clone())]).remove(0);
+            let checked = inspect(group).await;
+            assert_eq!(checked.row.installed_version.as_deref(), Some(version));
+            assert_eq!(checked.row.status, "unsupported");
+            assert_eq!(checked.row.method.as_deref(), Some("ChatGPT"));
+            assert!(checked.row.latest_version.is_none());
+            assert!(!checked.row.can_update);
+            assert!(checked.source.is_none());
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(unix)]

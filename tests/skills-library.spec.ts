@@ -161,3 +161,13 @@ test('a pstack-sized collection is scanned as a catalog and imports past 64 file
   await expect(page.getByRole('status')).toHaveText('Refreshed acme/pstack. Library copies stay as imported.');
 });
 });
+
+test('OpenAI Compatible skills and rules can be enabled without a CLI', async ({ page }) => {
+  await open(page);
+  const toggle = page.getByRole('checkbox', { name: 'Release notes: OpenAI Compatible · User', exact: true });
+  await expect(toggle).toBeVisible(); await toggle.check();
+  await expect(toggle).toBeChecked();
+  await expect(page.getByRole('status')).toContainText('adds this to its messages');
+  await expect(page.getByRole('columnheader', { name: /OpenAI Compatible/ })).toBeVisible();
+  await toggle.uncheck(); await expect(toggle).not.toBeChecked();
+});

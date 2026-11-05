@@ -1,5 +1,16 @@
 # PandaCode
 
+**This is a fork of PandaCode**, the original open-source project by
+[aicodeking](https://github.com/aicodeking), available at
+[aicodeking/pandacode](https://github.com/aicodeking/pandacode).
+This modified version is maintained by [SUP3RMASS1VE](https://github.com/SUP3RMASS1VE).
+Huge thanks to aicodeking and the PandaCode contributors for creating the original
+app and making it open source.
+
+This fork adds per-task token and estimated-cost breakdowns, saved file checkpoints
+with comparison and rewind, and adjustments to live reply cards. Downloads below
+are builds of this modified version.
+
 A small, native desktop workspace for coding agents. PandaCode runs the coding
 CLIs you already use — **Claude Code, Codex, Kimi Code, OpenCode, GLM Coding
 Plan and Xiaomi MiMo** (through Claude Code), **GitHub Copilot CLI, Antigravity,
@@ -19,13 +30,13 @@ embedded editor engine.
 
 <p align="center">
   <b>Download:</b>
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg">macOS (Apple silicon)</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg">macOS (Intel)</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe">Windows x64</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe">Windows arm64</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage">Linux arm64</a> ·
-  <a href="https://github.com/aicodeking/pandacode/releases">All releases</a>
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg">macOS (Apple silicon)</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg">macOS (Intel)</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe">Windows x64</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe">Windows arm64</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage">Linux x64</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage">Linux arm64</a> ·
+  <a href="https://github.com/SUP3RMASS1VE/pandacode/releases">All releases</a>
 </p>
 
 <p align="center">
@@ -156,9 +167,11 @@ information:
 | What | Where | How often |
 | --- | --- | --- |
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org` (Cline) | About every 6 hours |
+| Google subscription (optional): the official Antigravity engine handles personal Google OAuth and authenticated model discovery | Google, through its installed engine | Sign-in only when requested; after enabling it, saved account authentication accompanies model discovery and tasks. Usage is checked only when opened or refreshed |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
-| PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
+| App updates | None in this fork | Disabled to preserve custom features; update by merging upstream and rebuilding |
+| Direct model server (optional) | The Base URL you enter in Providers | Model list when you enter or refresh the URL or reopen provider settings, and every 10 seconds while visible or on window focus for saved loopback servers; prompts, attached images and file/tool context only during tasks you start |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
 | Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Agents → Jev and run a decision check; sends the selected evidence with your key |
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
@@ -169,19 +182,22 @@ information:
 
 ## Install
 
+Download this modified version from the releases linked below. The `npx pandacode`
+package and `aicodeking/pandacode` Homebrew tap install the original upstream app.
+
 Download the latest build from
-[GitHub Releases](https://github.com/aicodeking/pandacode/releases/latest):
+[GitHub Releases](https://github.com/SUP3RMASS1VE/pandacode/releases/latest):
 
 | Platform | File | Requirements |
 | --- | --- | --- |
-| macOS (Apple silicon) | [`PandaCode-macOS-arm64.dmg`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg) | macOS 12+ |
-| macOS (Intel) | [`PandaCode-macOS-x64.dmg`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg) | macOS 12+ |
-| Windows x64 | [`PandaCode-Windows-x64-setup.exe`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe) | Windows 10 1809+ or Windows 11 |
-| Windows arm64 | [`PandaCode-Windows-arm64-setup.exe`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe) | Windows 11 on ARM (Snapdragon X and similar) |
-| Linux x64 | [`PandaCode-Linux-x86_64.AppImage`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage) | Ubuntu 22.04+ or compatible, X11 or XWayland |
-| Linux arm64 | [`PandaCode-Linux-aarch64.AppImage`](https://github.com/aicodeking/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage) | Ubuntu 24.04+ aarch64 or compatible, X11 or XWayland |
+| macOS (Apple silicon) | [`PandaCode-macOS-arm64.dmg`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-macOS-arm64.dmg) | macOS 12+ |
+| macOS (Intel) | [`PandaCode-macOS-x64.dmg`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-macOS-x64.dmg) | macOS 12+ |
+| Windows x64 | [`PandaCode-Windows-x64-setup.exe`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Windows-x64-setup.exe) | Windows 10 1809+ or Windows 11 |
+| Windows arm64 | [`PandaCode-Windows-arm64-setup.exe`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Windows-arm64-setup.exe) | Windows 11 on ARM (Snapdragon X and similar) |
+| Linux x64 | [`PandaCode-Linux-x86_64.AppImage`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Linux-x86_64.AppImage) | Ubuntu 22.04+ or compatible, X11 or XWayland |
+| Linux arm64 | [`PandaCode-Linux-aarch64.AppImage`](https://github.com/SUP3RMASS1VE/pandacode/releases/latest/download/PandaCode-Linux-aarch64.AppImage) | Ubuntu 24.04+ aarch64 or compatible, X11 or XWayland |
 
-Or from a terminal: `npx pandacode` downloads the latest build, verifies its
+For the **original upstream app only**, `npx pandacode` downloads its latest build, verifies its
 signature and installs it (on macOS it is signed locally for you, so no
 Gatekeeper prompt). `npx pandacode --dry-run` only downloads and verifies.
 
@@ -189,7 +205,7 @@ With [Homebrew](https://brew.sh): `brew install --cask aicodeking/pandacode/pand
 on macOS, or `brew install aicodeking/pandacode/pandacode` on Linux
 ([details](docs/homebrew.md)).
 
-Release builds are not code-signed, so your OS will warn the first time:
+Mac release builds are ad-hoc signed but not notarized; Windows installers are unsigned. Your OS may warn the first time:
 
 - **macOS:** the build carries an ad-hoc signature and is not notarized, so macOS
   refuses to open it, and **Open Anyway** in **System Settings → Privacy &
@@ -203,13 +219,11 @@ Release builds are not code-signed, so your OS will warn the first time:
   stays blank there, try GTK's native Wayland backend with
   `GDK_BACKEND=wayland ./PandaCode-Linux-x86_64.AppImage`.
 
-Each file has a `.sha256` checksum beside it. Once installed, PandaCode updates
-itself: it checks the latest release, downloads a newer version in the background,
-verifies its signature, and restarts to install it when no agent is working and
-you've stepped away (or when you click **Restart to update**). In Settings → About,
-**Notify me** checks but asks first (**Install and restart** / **Later**), and **Off**
-stops checking. On Linux only the AppImage updates itself; an unpacked AppImage or a
-package just reports new versions. See [platform support](docs/platform-support.md) for details.
+Each release file has a `.sha256` checksum beside it. This custom fork
+keeps app updates **Off**, including for existing installations that previously
+selected Automatic. It never checks, downloads or installs upstream releases.
+Update this modified version by downloading a newer release from this repository,
+or by merging changes and rebuilding.
 
 Then install Git and at least one coding CLI and sign in with its normal login.
 PandaCode does not include provider plans or usage.
@@ -293,6 +307,12 @@ on-request approvals. **Full access** enables the harness's broadest mode. See
 
 Type `/` at the start of a message for the harness's commands and skills
 ([slash commands](docs/slash-commands.md)).
+
+The sidebar lists expandable **Projects**, with each project's chats underneath.
+Running chats stay in their project and show their status; settled chats fold
+inside that project. Projectless chats appear under **Recents**. Use a project's
+**…** menu to rename or remove it, or its **+** button to start a chat there.
+**Sort and view → Group by → Status** restores the Active/Finished layout.
 
 Keyboard shortcuts: `⌘/Ctrl N` new task, `⌘/Ctrl K` command palette,
 `⌘/Ctrl J` terminal, `⌘/Ctrl B` sidebar, `⌘/Ctrl ,` settings, `⌘/Ctrl F` find

@@ -39,7 +39,18 @@ type Pending = { version: string; download(onEvent: (event: { event: string; dat
 let instance: AppUpdates | undefined;
 export const appUpdates = (): AppUpdates | undefined => instance;
 
-export function startAppUpdates(host: UpdatesHost): AppUpdates {
+export function startAppUpdates(_host: UpdatesHost): AppUpdates {
+  // This fork is updated by merging and rebuilding, never by replacing it with upstream.
+  try { localStorage.setItem(KEY, 'off'); } catch { /* Still disabled without storage. */ }
+  return instance = {
+    state: { kind: 'off' }, mode: 'off', supported: false, installable: false,
+    subscribe: () => () => {}, setMode: () => {},
+    check: async () => {}, restart: async () => {},
+  };
+}
+
+/** Upstream implementation retained for future merges; not started in this fork. */
+export function startUpstreamAppUpdates(host: UpdatesHost): AppUpdates {
   const listeners = new Set<() => void>();
   let state: UpdateState = preview ? { kind: 'off' } : { kind: 'idle' };
   let mode: UpdateMode = (() => { try { return parseUpdateMode(localStorage.getItem(KEY)); } catch { return 'automatic' as const; } })();

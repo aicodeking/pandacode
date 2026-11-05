@@ -46,8 +46,8 @@
 .connection-env-var code{font-family:var(--mono,ui-monospace,monospace);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
 .connection-env-var button{font-size:var(--ds-text-meta);min-height:26px;padding:0 8px}
 .connection-path small{display:block;font-size:var(--ds-text-meta);color:var(--muted);margin-top:4px}
-.connection-feedback{font-size:var(--ds-text-meta);margin:0;line-height:1.5;color:var(--muted)}
-.connection-feedback.error{color:var(--ds-danger)}
+.connection-feedback,.compatible-feedback,.chatgpt-feedback{font-size:var(--ds-text-meta);margin:0;line-height:1.5;color:var(--muted)}
+.connection-feedback.error,.compatible-feedback.error,.chatgpt-feedback.error{color:var(--ds-danger)}
 .connection-model-actions{display:flex;flex-direction:column}
 .connection-model-actions button{font-size:var(--ds-text-meta)}
 .connection-auth-label{display:flex;align-items:center;gap:.4rem;margin:.75rem 0 .45rem}.connection-auth-label label{margin:0}

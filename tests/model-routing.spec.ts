@@ -402,7 +402,10 @@ test('the warning shows when every model of every harness is off', async ({ page
     await expand.click();
     const list = group.locator(`#${await expand.getAttribute('aria-controls')}`);
     await expect(list).not.toHaveText('Loading…');
-    for (const box of await list.locator('.routing-pool-model').all()) await box.uncheck();
+    const models = await list.locator('.routing-pool-model').all();
+    for (const box of models) await box.uncheck();
+    // A harness without a configured catalog still offers its default model.
+    if (!models.length) await expand.locator('..').locator('.routing-pool-provider').uncheck();
   }
   await expect(warning).toHaveText("No model is on for teams. Workers will use the lead's model.");
   await expect(group.getByRole('status')).toHaveText('0 models on');

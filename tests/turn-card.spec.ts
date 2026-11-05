@@ -15,6 +15,31 @@ async function open(page: Page): Promise<string[]> {
   return errors;
 }
 
+for (const theme of ['light', 'dark']) test(`layout preferences: replies and composer share a column when resizing (${theme})`, async ({ page }, testInfo) => {
+  await page.addInitScript(theme => localStorage.setItem('pandacode.theme', theme), theme);
+  const errors = await open(page);
+  if (await page.locator('#inspector').isVisible()) await page.locator('#inspector-toggle').click();
+  await expect(page.locator('#inspector')).toBeHidden();
+  await page.locator('#prompt').fill('Keep this draft while resizing.');
+  const aligned = async () => {
+    const reply = (await cards(page).last().boundingBox())!, composer = (await page.locator('#composer').boundingBox())!;
+    return { left: Math.round(reply.x - composer.x), right: Math.round(reply.x + reply.width - composer.x - composer.width) };
+  };
+  for (const width of [2560, 1440, 960, 1920]) {
+    await page.setViewportSize({ width, height: 940 });
+    await expect.poll(aligned, { message: `The reply and input share both edges at ${width}px` }).toEqual({ left: 0, right: 0 });
+    await expect(page.locator('#prompt')).toHaveValue('Keep this draft while resizing.');
+    if (width === 960 || width === 1920) await page.screenshot({ path: testInfo.outputPath(`column-${theme}-${width}.png`) });
+  }
+  await page.keyboard.press('ControlOrMeta+b');
+  await expect(page.locator('.workspace')).toHaveClass(/sidebar-collapsed/);
+  await expect.poll(aligned).toEqual({ left: 0, right: 0 });
+  await page.locator('#inspector-toggle').click();
+  await expect(page.locator('#inspector')).toBeVisible();
+  await expect.poll(aligned).toEqual({ left: 0, right: 0 });
+  expect(errors).toEqual([]);
+});
+
 test('saved turns: header sentence and time, clamped reply, footer only with changes', async ({ page }) => {
   const errors = await open(page);
   const [short, long] = [cards(page).nth(0), cards(page).nth(1)];
@@ -268,6 +293,29 @@ test('reduced motion leaves no card animations', async ({ page }) => {
   expect(await animations()).toBe(0);
 });
 
+test('folded live output releases its height during the run', async ({ page }) => {
+  await open(page);
+  await page.clock.install();
+  await page.locator('#prompt').fill('Explain the preview');
+  await page.locator('#prompt').press('Enter');
+  const card = page.locator('#stream-region .turn-card.is-live');
+  await expect(card).toBeVisible();
+  await card.locator('.live-tools').evaluate(tools => {
+    const output = document.createElement('div');
+    output.id = 'tall-live-output';
+    output.style.height = '2400px';
+    tools.append(output);
+  });
+  await page.clock.runFor(100);
+  expect((await card.boundingBox())!.height).toBeGreaterThan(2400);
+  await page.locator('#tall-live-output').evaluate(output => output.remove());
+  await page.clock.runFor(200);
+  expect((await card.boundingBox())!.height).toBeLessThan(400);
+  await transcript(page).evaluate(log => { log.scrollTop = log.scrollHeight; });
+  await expect(card.locator('.turn-card-reply')).toBeInViewport();
+  await page.screenshot({ path: '/tmp/pandacode-live-reply-fixed.png' });
+});
+
 test('the live card hands off to the saved card in one frame, eases once at the end, and the prompt does not jump', async ({ page }) => {
   const errors = await open(page);
   // Sampled every frame from the send until well after the saved card took over.
@@ -295,17 +343,14 @@ test('the live card hands off to the saved card in one frame, eases once at the 
   expect(liveFrames.length).toBeGreaterThan(5);
   // Never two cards for one turn: two saved turns plus either the live card or the new saved one.
   expect(Math.max(...frames.map(frame => frame.cards))).toBe(3);
+  expect(liveFrames.some((frame, i) => i > 0 && frame.liveHeight! < liveFrames[i - 1].liveHeight! - 0.5)).toBe(true);
   const folded = liveFrames.findIndex(frame => frame.folded);
   expect(folded, 'the trace folds while the reply streams').toBeGreaterThan(-1);
   expect(liveFrames[folded].done, 'the trace folded before the run ended').toBe(false);
-  // From the first token on, the prompt above the card moves only with the follow (the reply growing; a result card
-  // unfolding is followed at most FOLLOW_MAX_LAG behind), never down while the trace folds (blank room takes its
-  // height), and not at all from the handoff on: the live card is at its saved shape and nothing moves by itself.
   const from = liveFrames.find(frame => frame.text)!.index, swap = liveFrames.at(-1)!.index + 1;
   for (let i = from + 1; i < frames.length; i++) {
     const step = frames[i].bubble! - frames[i - 1].bubble!;
     expect(Math.abs(step), `prompt moved ${step}px at frame ${i}`).toBeLessThanOrEqual(i >= swap ? 1 : 40);
-    if (i < swap) expect(step, `prompt slid down ${step}px at frame ${i}`).toBeLessThanOrEqual(1);
   }
   expect(frames.length - swap, 'sampled a second after the run').toBeGreaterThan(40);
   // The handoff is one ease (the footer): one direction, gently.

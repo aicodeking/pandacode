@@ -114,3 +114,10 @@ test('group summaries count calls, expose running/failure states and escape tool
   assert.match(renderToolGroup([{ key: 'a', content: activity }, { key: 'b', content: activity }]), /tool-group-label">Ran 2 commands</);
   assert.equal(renderToolGroup([]), '');
 });
+
+test('Codex image views expose a safe image preview action', () => {
+  const html = renderToolActivity({ ...activity, name:'view_image', input:JSON.stringify({path:'output/scene "one".png'}), output:'' }, 'image-1');
+  assert.match(html, /data-action="view-tool-image"/);
+  assert.match(html, /data-path="output\/scene &quot;one&quot;\.png"/);
+  assert.match(html, /data-tool-image="call-1"/);
+});

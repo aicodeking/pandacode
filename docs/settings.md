@@ -38,3 +38,9 @@ organization policies can still affect authentication; see
 Section tabs move with the up and down arrows and page tabs with left and right; both support Home and End. The layout uses rem-based dimensions and stacks controls in narrow windows, including at 140–160% text size. System colors and reduced-motion preferences apply throughout.
 
 The Settings module and styles load when opened, and each page mounts the first time it is shown, so Model routing and other pages make no calls until then. A closed fold mounts what it holds on its first opening. General uses local state immediately; harness discovery starts only when Harnesses is opened or refreshed. A delayed discovery response cannot replace a different dialog or discard wallpaper edits. Closing or replacing a settings view removes its event handlers and contents.
+
+## Workspace themes
+
+Appearance includes six palette cards: System (PandaCode’s original colors), Ocean, Amethyst, Forest, Rose and Amber. Each card previews the workspace in the current light or dark appearance. Choosing a palette updates the surfaces and its accent immediately and saves locally; accent and wallpaper controls remain available. Arrow keys select nearby cards, with Home and End jumping to the first and last.
+
+Imported VS Code themes keep their own colors. Choosing a built-in card leaves the imported theme; choosing PandaCode in the VS Code theme list restores the remembered built-in palette.

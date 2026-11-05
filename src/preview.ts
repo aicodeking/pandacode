@@ -1,4 +1,5 @@
 import { previewHub, previewRepos } from './preview-github-hub';
+import { createPreviewFileExplorer } from './preview-file-explorer';
 import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
@@ -27,6 +28,7 @@ const previewWorkspaceFiles = ['index.html', '.gitignore', 'README.md', 'package
 const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters results as the query changes\n  ✓ preserves keyboard selection\n\nTests: 12 passed, 12 total\nTime: 0.8s\nSample output — no command was executed.';
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
+const previewExplorer = createPreviewFileExplorer();
 let sessions: Session[] = [
   { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
@@ -144,6 +146,9 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewChatgptSignedIn = false;
+let previewChatgptLogin: { id: string; cancel: () => void } | undefined;
+const previewChatgptStatus = () => ({ installed: true, state: previewChatgptSignedIn ? 'chatgpt' : 'signedOut', email: previewChatgptSignedIn ? 'preview@example.test' : null, plan: previewChatgptSignedIn ? 'plus' : null });
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -213,6 +218,7 @@ const providers: Provider[] = [
   { id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: ['sonnet', 'opus', 'haiku'].map(id => fallbackModel('claude', id)) },
   { id: 'codex', name: 'Codex', installed: true, path: '/sample/bin/codex', version: 'Sample provider', models: [] },
   { id: 'kimi', name: 'Kimi Code', installed: true, path: '/sample/bin/kimi', version: 'Sample provider', models: [] },
+  { id: 'openai-compatible', name: 'OpenAI Compatible', installed: true, path: null, version: '', models: [] },
   { id: 'opencode', name: 'OpenCode', installed: true, path: '/sample/bin/opencode', version: 'Sample provider', models: [] },
   { id: 'glm', name: 'GLM Coding Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
   { id: 'antigravity', name: 'Antigravity', installed: false, path: null, version: '', models: [] },
@@ -248,14 +254,14 @@ const previewAgentsDockSnapshot = {
 };
 /** Named connections; secret values are dropped, only their names are kept, as on the native side. */
 let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
-function previewSaveConnection(input: { id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
+function previewSaveConnection(input: { openaiCompatible?: import('./connections').OpenaiCompatible | null; id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
   const name = String(input.name ?? '').trim();
   if (!name || name.length > 60) throw new Error('Give the connection a name of up to 60 characters.');
   if ((input.args ?? []).length > 32 || (input.args ?? []).some(arg => arg.includes('\0'))) throw new Error('Launch arguments must be non-empty, under 1024 characters and contain no NUL.');
   const existing = previewConnections.connections.find(c => c.id === input.id);
   if (input.id && !existing) throw new Error('This connection no longer exists.');
   const env = input.env ?? [];
-  const next = { id: existing?.id ?? `connection-${Date.now().toString(36)}`, provider: existing?.provider ?? input.provider, name, executable: input.executable || null, args: input.args ?? [], env: Object.fromEntries(env.filter(v => !v.secret).map(v => [v.name, v.value ?? ''])), secretEnv: env.filter(v => v.secret).map(v => v.name), configDir: input.configDir || null, revision: (existing?.revision ?? 0) + 1 };
+  const next = { openaiCompatible: input.openaiCompatible ?? null, id: existing?.id ?? `connection-${Date.now().toString(36)}`, provider: input.openaiCompatible ? input.provider : existing?.provider ?? input.provider, name, executable: input.executable || null, args: input.args ?? [], env: Object.fromEntries(env.filter(v => !v.secret).map(v => [v.name, v.value ?? ''])), secretEnv: env.filter(v => v.secret).map(v => v.name), configDir: input.configDir || null, revision: (existing?.revision ?? 0) + 1 };
   const connections = existing ? previewConnections.connections.map(c => c.id === next.id ? next : c) : [...previewConnections.connections, next];
   previewConnections = { ...previewConnections, connections };
   return previewConnections;
@@ -268,6 +274,7 @@ function remoteCatalog(id: ProviderId): ProviderModel[] {
   return id === 'codex' ? ['gpt-5-codex', 'gpt-5'].map(model => fallbackModel('codex', model)) : [];
 }
 const catalogs: Record<ProviderId, ProviderModel[]> = {
+  'openai-compatible': [],
   // Recorded from `kilo acp` 7.3.41; efforts belong to its current model only.
   kilo: [
     { id: 'kilo/stealth/claude-sonnet-4.6', name: 'Kilo Gateway/Stealth: Claude Sonnet 4.6 (20% off)', description: '', reasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'].map(id => ({ id, name: id, description: '' })), defaultReasoningEffort: 'none' },
@@ -859,11 +866,16 @@ function slashCatalog(provider: ProviderId) {
     ['memories', 'Configure memory preferences', 'preferences'], ['ps', 'Inspect background jobs', 'jobs'],
     ['stop', 'Choose jobs to stop', 'jobs'], ['clean', 'Choose jobs to stop', 'jobs'],
   ];
-  const accepts = new Set(['rename', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
+  const accepts = new Set(['rename', 'skills', 'btw', 'goal', 'usage', 'conversations', 'fork', 'export', 'worktree', 'plan', 'fast', 'mention', 'cd', 'init', 'recap', 'console']);
   const commands = [...local, ...(provider === 'codex' ? codex : [])].map(([name, description, action]) => ({ id: `pandacode:${name}`, name: `/${name}`, description, kind: 'action', source: 'PandaCode', action, argumentHint: accepts.has(action) ? '[arguments]' : undefined }));
+  if (provider === 'openai-compatible') {
+    const skills = (previewSkills.call('skills_list', {}) as import('./skills-library').SkillItem[])
+      .filter(item => item.kind === 'skill' && item.activations.some(a => a.harness === provider));
+    return { commands: [...commands, ...skills.flatMap(item => [item.id, `skills:${item.id}`].map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: item.description, kind: 'prompt', skill: true, source: 'Skills library', action: undefined, argumentHint: '[request]' })))], warnings: [] };
+  }
   const native = provider === 'codex' ? ['review', 'compact', 'project-guide'] : provider === 'claude' ? ['compact', 'review', 'project-guide'] : ['compact', 'usage', 'tasks', 'skill:project-guide'];
   const terminal = provider === 'codex' ? ['exit', 'quit', 'keymap', 'vim', 'raw', 'title', 'statusline', 'pets', 'pet', 'clear', 'app', 'ide', 'logout', 'feedback', 'approve'] : provider === 'claude' ? ['exit', 'quit', 'login', 'logout', 'doctor'] : ["yolo", "yes", "auto", "permission", "config", "plan", "swarm", "effort", "thinking", "provider", "providers", "h", "?", "clear", "sessions", "task", "plugins", "add-dir", "experiments", "experimental", "reload", "reload-tui", "goal", "init", "fork", "title", "feedback", "undo", "editor", "logout", "disconnect", "login", "export-md", "export", "export-debug-zip", "web", "exit", "quit", "q", "version"];
-  return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
+  return { commands: [...commands, ...native.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Sample ${provider} command`, kind: 'prompt', skill: provider === 'codex' && name === 'project-guide', source: provider, action: undefined, argumentHint: '[arguments]' })), ...terminal.map(name => ({ id: `${provider}:${name}`, name: `/${name}`, description: `Open /${name} in the harness console`, kind: 'action', source: `${provider} console`, action: `console:${name}`, argumentHint: '[arguments]' }))], warnings: [] };
 }
 function resolveSlash(provider: ProviderId, text: string): { action: string | null; arguments: string } {
   const match = /^\/([\p{L}\p{N}_:.-]+|\?)(?:\s+([\s\S]*))?$/u.exec(text.trim());
@@ -998,6 +1010,8 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
   throw new Error(`Unknown running-agents command: ${command}`);
 }
 
+const checkpointReviews = new Map<string, { sessionId: string; messageId: number }>();
+const checkpointSamplePatch = "diff --git a/src/App.tsx b/src/App.tsx\n--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-export const title = 'Updated workspace';\n+export const title = 'Original workspace';\n";
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
   if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
     sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),
@@ -1129,6 +1143,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
+    case 'provider_chatgpt_status': result = previewChatgptStatus(); break;
+    case 'provider_chatgpt_login': {
+      if (previewChatgptLogin) throw new Error('ChatGPT sign-in is already changing.');
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { previewChatgptLogin = undefined; previewChatgptSignedIn = true; resolve(); }, 1500);
+        previewChatgptLogin = { id: args.loginId, cancel: () => { clearTimeout(timer); previewChatgptLogin = undefined; reject(new Error('ChatGPT sign-in cancelled.')); } };
+      });
+      result = previewChatgptStatus(); break;
+    }
+    case 'provider_chatgpt_cancel': { const pending = previewChatgptLogin; if (pending && pending.id === args.loginId) pending.cancel(); break; }
+    case 'provider_chatgpt_logout': previewChatgptSignedIn = false; result = previewChatgptStatus(); break;
     case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
       const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
       return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
@@ -1156,6 +1181,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
     }
+    case 'provider_discover_compatible_models': result = ['org/local-test-model', 'another-model'].map(id => ({ id, name: id, description: 'From your model server' })); break;
+    case 'connections_refresh_local_models':
     case 'connections_list': result = previewConnections; break;
     case 'connection_save': result = previewSaveConnection(args.connection); break;
     case 'connection_delete': {
@@ -1277,6 +1304,27 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
       else task.codexSettings.serviceTier = request.enabled ? 'fast' : null;
       task.updatedAt = Date.now(); result = task; break;
+    }
+    case 'list_checkpoints': {
+      session(args.sessionId);
+      result = (messages[args.sessionId] ?? []).filter(message => message.role === 'user' && message.id > 0).map(message => ({ messageId: message.id, createdAt: message.createdAt, skipped: 0 })); break;
+    }
+    case 'compare_checkpoints':
+    case 'preview_rewind': {
+      const task = session(args.sessionId);
+      if (task.remoteDevice || task.cloud) throw new Error('Checkpoints are available only for local checkouts.');
+      const ids = command === 'preview_rewind' ? [args.messageId] : [args.fromMessage, args.toMessage];
+      if (ids.some(id => !(messages[task.id] ?? []).some(message => message.id === id && message.role === 'user'))) throw new Error('No checkpoint is available for this message.');
+      const token = command === 'preview_rewind' ? crypto.randomUUID() : null;
+      if (token) checkpointReviews.set(token, { sessionId: task.id, messageId: args.messageId });
+      result = { patch: checkpointSamplePatch, files: ['src/App.tsx'], skipped: ['node_modules'], truncated: false, token }; break;
+    }
+    case 'discard_rewind': checkpointReviews.delete(args.token); break;
+    case 'rewind_checkpoint': {
+      const review = checkpointReviews.get(args.token);
+      if (!review || review.sessionId !== args.sessionId || review.messageId !== args.messageId) throw new Error('Reopen the rewind preview before restoring.');
+      assertIdle(session(args.sessionId)); checkpointReviews.delete(args.token);
+      result = await invoke('fork_session_at_message', { sessionId: args.sessionId, messageId: args.messageId, exclusive: true }); break;
     }
     case 'get_message_content': {
       const task = session(args.sessionId);
@@ -1460,7 +1508,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = reordered.map(taskSummary); break;
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
-    case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : providers.map(p => { if (p.id !== 'openai-compatible') return p; const endpoint = previewConnections.connections.find(c => c.openaiCompatible)?.openaiCompatible; return {...p, models: (endpoint?.models ?? (endpoint ? [endpoint.modelId] : [])).map(id => ({id, name: id, description: 'From your model server'}))}; }); break;
+    case 'provider_google_login':
+    case 'provider_google_cancel': result = null; break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
@@ -1475,7 +1525,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'app_update_install_supported': result = true; break;
     case 'support_details': result = { version: 'Preview', platform: 'Browser preview', architecture: 'Not reported' }; break;
     case 'browser_inspect': result = args.action === 'read' ? { url: browserState.url, title: browserState.title, text: 'Browser preview sample page', elements: [] } : { dispatched: true }; break;
-    case 'list_provider_models': result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
+    case 'list_provider_models': if (args.provider === 'openai-compatible') { const endpoint = previewConnections.connections.find(c => c.openaiCompatible)?.openaiCompatible; result = (endpoint?.models ?? (endpoint ? [endpoint.modelId] : [])).map(id => ({id, name: id, description: 'From your model server'})); break; } result = args.deviceId ? remoteCatalog(args.provider as ProviderId) : args.provider === 'opencode' ? previewOpenCodeChoices() : catalogs[args.provider as ProviderId] ?? []; break;
     case 'list_opencode_models': result = {models: openCodePreviewModels, selectedModelIds: previewOpenCodeSelection(), error: null}; break;
     case 'save_opencode_models': {
       if (!Array.isArray(args.modelIds) || args.modelIds.length > 100 || args.modelIds.some((id: unknown) => typeof id !== 'string' || !id.includes('/') || id.length > 200)) throw new Error('Choose valid OpenCode models.');
@@ -1486,6 +1536,29 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
+    case 'rename_project': {
+      const project = projects.find(project => project.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      const name = String(args.name).trim();
+      if (!name || [...name].length > 120 || /[\u0000-\u001f\u007f-\u009f]/.test(name)) throw new Error('Use a project name of 1–120 characters without control characters.');
+      project.name = name; result = { ...project }; break;
+    }
+    case 'relocate_project': {
+      const project = projects.find(project => project.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      const path = String(args.path).trim().replace(/\\/g, '/').replace(/\/$/, '');
+      if (!path || (!path.startsWith('/') && !/^[A-Za-z]:\//.test(path))) throw new Error('Choose an existing folder using its full path.');
+      if (projects.some(other => other.id !== project.id && other.path === path)) throw new Error('That folder already belongs to another project.');
+      const tasks = sessions.filter(task => task.projectId === project.id);
+      for (const task of tasks) { assertIdle(task); if (architect.isActive(task.id)) throw new Error('Stop this project’s teams first.'); }
+      const oldPath = project.path;
+      project.path = path;
+      for (const task of tasks) {
+        if (task.worktreePath?.startsWith(oldPath + '/')) task.worktreePath = path + task.worktreePath.slice(oldPath.length);
+        if (!task.remoteDevice && !task.cloud) task.resumeId = null;
+      }
+      result = { ...project }; break;
+    }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
     case 'relink_project': {
       const project = projects.find(p => p.id === args.projectId);
@@ -1562,6 +1635,16 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const supported = catalogs[s.provider].find(model => model.id === (s.model || 'default'))?.reasoningEfforts ?? [];
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
+    }
+    case 'move_session': {
+      const s = session(args.sessionId), project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      if (s.status === 'running' || s.status === 'waiting' || timers.has(s.id)) throw new Error('Stop the agent before moving this chat.');
+      if (s.worktreePath || s.remoteDevice || s.cloud || architect.get(s.id)) throw new Error('Worktree, remote, and team tasks stay with their original project.');
+      if (s.projectId !== project.id) {
+        s.projectId = project.id; s.resumeId = null; s.contextUsage = null; s.goalState = null; s.updatedAt = Date.now();
+      }
+      result = s; break;
     }
     case 'configure_session': {
       const s = session(args.sessionId);
@@ -1774,7 +1857,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: pull.title, state: 'open', checkedAt: Date.now() };
       result = s; break;
     }
-    case 'task_token_usage': result = { input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
+    case 'task_token_usage': result = { costUsd: 2.43, unpricedTokens: 0, missingSessions: 0, models: [{ provider: 'codex', model: 'gpt-5.4', tokens: 1288574, costUsd: 2.43 }], pricing: { source: 'bundled', fetchedAt: null }, input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
     case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk' }; break;
     case 'token_saver_install': {
       if (args.tool !== 'rtk') throw new Error('Unknown tool.');
@@ -1835,7 +1918,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    case 'list_files': result = previewExplorer.list(args); break;
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
       const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
@@ -1912,6 +1995,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
       result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
     }
+    case 'tool_image': {
+      const row = (messages[args.sessionId] ?? []).find(message => {try {return JSON.parse(message.content).id === args.toolId;} catch {return false;}});
+      const path = row ? JSON.parse(JSON.parse(row.content).input).path : 'output/scene.png';
+      return invoke<T>('workspace_image', {sessionId:args.sessionId, path});
+    }
     case 'workspace_image': {
       // A drawn stand-in for any workspace image a question shows.
       if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(String(args.path)) || String(args.path).includes('..')) throw new Error('Only workspace images can be shown');
@@ -1928,7 +2016,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
-      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
+      result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
+    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
+    case 'write_workspace_file': {
+      const original = await invoke<string>('read_file', args);
+      previewExplorer.save(args, original); result = null; break;
+    }
+    case 'open_workspace_file': result = null; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

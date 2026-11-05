@@ -14,7 +14,7 @@
 .accent-swatch{width:16px;height:16px;border-radius:var(--radius-full);background:var(--swatch)}
 .accent-choice[aria-checked="true"] .accent-swatch{box-shadow:0 0 0 2px var(--panel-surface,var(--bg)),0 0 0 3.5px var(--swatch)}
 .accent-custom input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.colors-note{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
+.colors-note,.builtin-note{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
 /* The VS Code theme card: the theme rows, then import and install as its last row. */
 .colors-card{display:flex;flex-direction:column;gap:2px;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
 .vsix-list{display:flex;flex-direction:column;gap:2px;max-height:min(40vh,20rem);overflow:auto}
@@ -38,6 +38,24 @@
 .vsix-status{margin:0;min-height:1.2em;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted);overflow-wrap:anywhere}
 @media(prefers-contrast:more){.accent-choice[aria-checked="true"]{outline:2px solid var(--text)}}
 
+/* Palette previews use the same tokens as the workspace. */
+.builtin-themes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.builtin-theme{display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px;border-radius:var(--radius-md);font-size:var(--text-sm);cursor:pointer}
+.builtin-theme:hover{background:var(--fill-hover)}
+.builtin-theme[aria-checked="true"]{background:var(--accent-dim);color:var(--accent-ink)}
+.builtin-preview{display:flex;width:100%;height:88px;position:relative;overflow:hidden;border-radius:var(--radius-md);background:var(--bg);color:var(--accent)}
+.builtin-mini-sidebar{display:flex;flex-direction:column;gap:8px;width:28%;padding:16px 8px;background:var(--sidebar)}
+.builtin-mini-sidebar i{height:4px;border-radius:var(--radius-full);background:var(--muted);opacity:.4}
+.builtin-mini-sidebar i:first-child{background:var(--accent);opacity:1}
+.builtin-mini-thread{display:flex;flex:1;flex-direction:column;gap:8px;padding:24px 16px 12px}
+.builtin-mini-thread i{height:4px;border-radius:var(--radius-full);background:var(--muted);opacity:.4}
+.builtin-mini-thread i:nth-child(2){width:70%}
+.builtin-mini-thread b{margin-top:auto;height:16px;border-radius:var(--radius-sm);background:var(--raised)}
+.builtin-check{position:absolute;right:8px;top:8px;display:none;place-items:center;width:20px;height:20px;border-radius:var(--radius-full);background:var(--accent);color:var(--on-accent)}
+.builtin-check svg{width:12px;height:12px}
+.builtin-theme[aria-checked="true"] .builtin-check{display:grid}
+@media(max-width:520px){.builtin-themes{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.builtin-mini-thread{padding:24px 8px 12px}}
+@media(prefers-contrast:more),(forced-colors:active){.builtin-theme[aria-checked="true"]{outline:2px solid var(--focus)}}
 
 .vsix-status:empty{min-height:0}
 /* In Settings → Appearance the page's "Colors" heading names the accent card; the embed's own

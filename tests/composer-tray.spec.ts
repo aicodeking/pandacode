@@ -6,6 +6,83 @@ const saver = (page: Page) => page.locator('.composer-saver-button');
 const iconColor = (page: Page) => mode(page).locator('.icon').first().evaluate(el => getComputedStyle(el).color);
 const popped = (page: Page) => page.evaluate(() => (window as unknown as { trayLog: TrayLog }).trayLog.popped);
 
+test.describe('composer-tray folder picker', () => {
+  const folder = (page: Page) => tray(page).getByRole('button', { name: 'Change task folder', exact: true });
+  const picker = (page: Page) => page.getByRole('dialog', { name: 'Choose project', exact: true });
+
+  for (const theme of ['light', 'dark']) test(`changes the folder of a new task and keeps its draft (${theme})`, async ({ page }, testInfo) => {
+    await page.addInitScript(theme => localStorage.setItem('pandacode.theme', theme), theme);
+    await page.goto('/');
+    await page.locator('.new-task-button').click();
+    const prompt = page.locator('#prompt');
+    await expect(folder(page)).toBeVisible();
+    const taskId = await prompt.getAttribute('data-session-id');
+    await prompt.fill('Build this in the selected folder');
+    await folder(page).hover();
+    await expect(page.locator('.tip-bubble')).toHaveText('Local: /Users/you/Projects/orbit · Change folder…');
+    await folder(page).click();
+    await expect(folder(page)).toHaveAttribute('aria-expanded', 'true');
+    const search = picker(page).getByRole('searchbox', { name: 'Search projects', exact: true });
+    await expect(search).toBeFocused();
+    await expect(picker(page)).toHaveCSS('opacity', '1');
+    await page.screenshot({ path: testInfo.outputPath(`folder-picker-${theme}.png`) });
+    // This anchor is at the bottom of the window: the picker must fit above it.
+    const panel = (await picker(page).boundingBox())!, anchor = (await folder(page).boundingBox())!;
+    expect(panel.y).toBeGreaterThanOrEqual(0);
+    expect(panel.y + panel.height).toBeLessThanOrEqual(anchor.y);
+    await search.press('Escape');
+    await expect(folder(page)).toBeFocused();
+    await expect(folder(page)).toHaveAttribute('aria-expanded', 'false');
+    await expect(prompt).toHaveValue('Build this in the selected folder');
+    await folder(page).press('Space');
+    await search.fill('panda');
+    await search.press('Enter');
+    await expect(picker(page)).toBeHidden();
+    await expect(page.locator('#welcome-project')).toHaveText('pandacode');
+    await expect(folder(page)).toHaveAttribute('aria-description', 'Local: /Users/you/Projects/pandacode');
+    await expect(prompt).toHaveAttribute('data-session-id', taskId!);
+    await expect(prompt).toHaveValue('Build this in the selected folder');
+    await expect(prompt).toBeFocused();
+  });
+
+  test('browses to another folder from a new task without replacing the draft', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('.new-task-button').click();
+    const prompt = page.locator('#prompt');
+    await expect(folder(page)).toBeVisible();
+    const taskId = await prompt.getAttribute('data-session-id');
+    await prompt.fill('Use the folder I choose from disk');
+    await folder(page).click();
+    await picker(page).getByRole('button', { name: 'Open project…', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Open project', exact: true });
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(folder(page)).toBeFocused();
+    await expect(prompt).toHaveValue('Use the folder I choose from disk');
+    await folder(page).click();
+    await picker(page).getByRole('button', { name: 'Open project…', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Browse…', exact: true }).click();
+    await expect(dialog.getByRole('textbox', { name: 'Project folder', exact: true })).toHaveValue('/Users/you/Projects/new-project');
+    await dialog.getByRole('button', { name: 'Open project', exact: true }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('#welcome-project')).toHaveText('new-project');
+    await expect(folder(page)).toHaveAttribute('aria-description', 'Local: /Users/you/Projects/new-project');
+    await expect(prompt).toHaveAttribute('data-session-id', taskId!);
+    await expect(prompt).toHaveValue('Use the folder I choose from disk');
+  });
+
+  test('keeps the new task folder button available in a narrow composer', async ({ page }) => {
+    await page.setViewportSize({ width: 620, height: 800 });
+    await page.goto('/');
+    await page.locator('.new-task-button').click();
+    await expect(folder(page)).toBeVisible();
+    expect(await tray(page).evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+    await folder(page).click();
+    await expect(picker(page).getByRole('button', { name: 'Open project…', exact: true })).toBeInViewport();
+    await page.keyboard.press('Escape');
+    await expect(folder(page)).toBeFocused();
+  });
+});
+
 test('mode, Team, Saver and checkout are icons whose labels stay in the DOM', async ({ page }) => {
   await page.goto('/');
   await expect(tray(page)).toBeVisible();
@@ -90,8 +167,8 @@ for (const width of [1200, 829, 640, 520, 420]) test(`the tray fits a ${width}px
     return { overflow: el.scrollWidth - el.clientWidth, past: items.filter(item => item.getBoundingClientRect().right > edge + 1).length, tops: new Set(items.map(item => Math.round(item.getBoundingClientRect().top + item.offsetHeight / 2))).size };
   });
   expect(fit).toEqual({ overflow: 0, past: 0, tops: 1 });
-  // The composer sits inside #composer-area's 30px side padding; plain Local hides at composer ≤460px by design.
-  await expect(tray(page).locator('.composer-local')).toBeVisible({ visible: width - 60 > 460 });
+  // This fixture has no messages: its folder picker stays available at every width.
+  await expect(tray(page).getByRole('button', { name: 'Change task folder', exact: true })).toBeVisible();
 });
 
 test('every tray icon gives one tip, state first, on hover and on keyboard focus', async ({ page, browserName }) => {

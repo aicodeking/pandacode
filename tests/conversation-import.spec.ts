@@ -5,6 +5,8 @@ const row = (page: Page, title: string) => dialog(page).locator('.import-row', {
 const calls = (page: Page, name: string): Promise<any[]> => page.evaluate(name => ((window as any).__importCalls ?? []).filter((call: any) => call.command === name), name);
 
 test.beforeEach(async ({ page }) => {
+  // These assertions read project names from flat rows; the project tree has its own suite.
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(), source = await response.text();
     const marker = /switch\s*\(command\)\s*\{/;

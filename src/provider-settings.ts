@@ -3,6 +3,9 @@ import { call, preview } from './bridge';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
+import { mountOpenaiCompatible } from './openai-compatible';
+import { mountGoogleConnection } from './google-connection';
+import { mountChatgptConnection } from './chatgpt-connection';
 import type { ConnectionSnapshot } from './connections';
 import type { ProviderId } from './types';
 
@@ -74,6 +77,17 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const editedPaths = new Set<HTMLInputElement>();
   host.classList.add('provider-connections');
   host.innerHTML = `<div class="settings-heading"><h3>Sign-ins and keys</h3>${infoMark(howProvidersWork, 'How providers relate to agents')}<span class="sr-only">${escape(howProvidersWork)}</span></div>${named ? '<section id="named-connections"></section>' : ''}
+    <section class="connection-card" id="openai-compatible"></section>
+    <section class="connection-card" id="chatgpt-connection"><h3>${providerLogo('codex')}ChatGPT subscription<small>via Codex</small></h3>
+      <p>Sign in in your browser to use your ChatGPT plan. Then choose Codex in the task's model selector; available models and usage limits depend on your plan.</p>
+      <div class="connection-key-status"><span data-chatgpt-status role="status">Checking Codex sign-in…</span><button type="button" class="secondary-button" data-chatgpt-refresh>Refresh</button></div>
+      <div class="connection-input-row"><button type="button" class="primary-button" data-chatgpt-login>Sign in with ChatGPT</button><button type="button" class="secondary-button" data-chatgpt-cancel hidden>Cancel sign-in</button><button type="button" class="secondary-button" data-chatgpt-logout title="Also signs out the Codex CLI using this configuration" hidden>Sign out</button></div>
+      <p><button type="button" class="secondary-button" data-action="chatgpt-usage">${icon('activity')}ChatGPT usage</button></p>
+      <p class="chatgpt-feedback" data-chatgpt-feedback role="status" hidden></p>
+      <details class="connection-path"><summary>Advanced setup ${icon('down')}</summary><p>Install Codex with <code>npm install -g @openai/codex</code>, then refresh agents in Settings → Agents. For terminal sign-in, run <code>codex login</code>; check it with <code>codex login status</code>. API-key sign-in uses separate API billing. Signing out here also signs out the Codex CLI using this configuration.</p></details>
+      <a href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">ChatGPT sign-in help ${icon('forward')}</a>
+      ${pathForm('codex', 'Codex executable', '/path/to/codex')}${envDetails('codex')}
+    </section>
     <details class="connection-card" id="global-environment"><summary><h3>Global environment variables</h3><span class="connection-state"></span>${icon('chevron')}</summary>
       <p>Added to every agent harness PandaCode starts — for example <code>HTTP_PROXY</code>, <code>HTTPS_PROXY</code> and <code>NO_PROXY</code> behind a proxy.${infoMark(globalEnvHelp, 'How the global environment is applied')}<span class="sr-only">${escape(globalEnvHelp)}</span></p>
       ${envEditor('*')}
@@ -101,8 +115,14 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       <a href="https://platform.xiaomimimo.com/token-plan" target="_blank" rel="noopener noreferrer">Token Plan ${icon('forward')}</a>
       ${envDetails('mimo')}
     </details>
-    <details class="connection-card"><summary><h3>${providerLogo('opencode')}OpenCode</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts and models configured in OpenCode. Sign in once with <code>opencode auth login</code>.</p><p>Choose which OpenCode models appear in the model selector in Settings → Agents.</p><a href="https://opencode.ai/docs/" target="_blank" rel="noopener noreferrer">Install & sign in ${icon('forward')}</a>${pathForm('opencode', 'OpenCode executable', '/path/to/opencode')}${envDetails('opencode')}</details>
-    <details class="connection-card"><summary><h3>${providerLogo('antigravity')}Antigravity</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Connect the official Google Antigravity ACP server. Without it, PandaCode uses the <code>agy</code> CLI's <code>agy acp</code> server.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP server ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
+    <details class="connection-card"><summary><h3>${providerLogo('opencode')}OpenCode</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the models configured in OpenCode. Cloud providers may need <code>opencode auth login</code>; local servers need no sign-in. Use OpenAI Compatible above for a local server.</p><p>Choose which OpenCode models appear in the model selector in Settings → Agents.</p><a href="https://opencode.ai/docs/" target="_blank" rel="noopener noreferrer">Install & sign in ${icon('forward')}</a>${pathForm('opencode', 'OpenCode executable', '/path/to/opencode')}${envDetails('opencode')}</details>
+    <section class="connection-card" id="google-connection"><h3>${providerLogo('antigravity')}Google subscription<small>Gemini via Antigravity</small></h3>
+      <p>Use your Google account's Antigravity models and plan allowance. The standalone Google engines run on demand; the Antigravity desktop app does not need to be installed or running.</p>
+      <div class="connection-key-status"><span data-google-status role="status">Checking Google connection…</span><button type="button" class="secondary-button" data-google-refresh>Refresh</button></div>
+      <div class="connection-input-row"><button type="button" class="primary-button" data-google-login>Sign in with Google</button><button type="button" class="secondary-button" data-google-cancel hidden>Cancel sign-in</button></div>
+      <p><button type="button" class="secondary-button" data-action="google-usage">${icon('activity')}Google model usage</button></p><p data-google-feedback role="status" hidden></p>
+      <details class="connection-path"><summary>Advanced setup ${icon('down')}</summary><p>Models use the official Antigravity ACP engine, or <code>agy acp</code> when that engine is unavailable. Quotas use the standalone agy CLI (1.1.11 or later). Both share Google's account sign-in. Google AI Pro or Ultra benefits depend on your account; Gemini API keys use separate billing.</p><a href="https://antigravity.google/docs/ide/extensions" target="_blank" rel="noopener noreferrer">Get the official ACP engine ${icon('forward')}</a><a href="https://antigravity.google/docs/getting-started/" target="_blank" rel="noopener noreferrer">Install the standalone Google CLI ${icon('forward')}</a>${pathForm('antigravity', 'Antigravity ACP executable', '/path/to/agy_acp_server.par')}${envDetails('antigravity')}</details>
+    </section>
     <details class="connection-card"><summary><h3>${providerLogo('grok')}Grok Build<small>xAI, via ACP</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses your Grok sign-in and models. Install with <code>curl -fsSL https://x.ai/cli/install.sh | bash</code>, then run <code>grok login</code> once; PandaCode talks to <code>grok agent stdio</code>.</p><a href="https://docs.x.ai/build/overview" target="_blank" rel="noopener noreferrer">Grok Build docs ${icon('forward')}</a>${pathForm('grok', 'Grok executable', '/path/to/grok')}${envDetails('grok')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('pi')}Pi</h3><span class="connection-state"></span>${icon('chevron')}</summary><p>Uses the accounts, models and extensions configured in Pi. Install Pi and sign in from its CLI before starting a task.</p><a href="https://github.com/earendil-works/pi" target="_blank" rel="noopener noreferrer">Install Pi ${icon('forward')}</a>${pathForm('pi', 'Pi executable', '/path/to/pi')}${envDetails('pi')}</details>
     <details class="connection-card"><summary><h3>${providerLogo('omp')}Oh My Pi<small>omp</small></h3><span class="connection-state"></span>${icon('chevron')}</summary><p>A Pi fork with its own accounts and models. Install it with <code>bun install -g @oh-my-pi/pi-coding-agent</code>, then sign in from the <code>omp</code> CLI before starting a task.</p><a href="https://github.com/can1357/oh-my-pi" target="_blank" rel="noopener noreferrer">Install omp ${icon('forward')}</a>${pathForm('omp', 'omp executable', '/path/to/omp')}${envDetails('omp')}</details>
@@ -158,7 +178,9 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
   const installedState = (id: string) => { const found = named?.harnesses.find(h => h.id === id); return found?.installed === undefined ? '' : found.installed ? 'Installed' : 'Not installed'; };
   /** A closed card's one line: the state of its sign-in, key or path, in a status tone. */
   function cardState(inside: Element, text: string, tone = ''): void {
-    const state = inside.closest('.connection-card')!.querySelector<HTMLElement>('.connection-state')!;
+    const state = inside.closest('.connection-card')?.querySelector<HTMLElement>('.connection-state');
+    // Always-open local and subscription cards already show their own detailed status.
+    if (!state) return;
     state.textContent = text; state.dataset.tone = tone;
   }
   let endpointEdited = false;
@@ -169,7 +191,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     // one. Ids reach attributes and selectors, so only plain ones are drawn.
     if (!generatedMounted) {
       generatedMounted = true;
-      const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
+      const cards = (config.providers ?? []).filter(([id]) => /^[a-z0-9-]+$/.test(id) && id !== 'openai-compatible' && !host.querySelector(`[data-use-global="${id}"]`)).map(([id, name]) => generatedCard(id, name)).join('');
       feedback.insertAdjacentHTML('beforebegin', cards);
     }
     if (!claudeEdited) claudeMode.value = config.claudeConnectionMode ?? 'inherit';
@@ -336,11 +358,14 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     const chosen = endpoint.value;
     void perform(() => call('provider_set_mimo_endpoint', { endpoint: chosen }), 'MiMo endpoint saved.').finally(() => { endpointEdited = false; });
   };
+  const unmountCompatible = mountOpenaiCompatible(host.querySelector<HTMLElement>('#openai-compatible')!, async snapshot => { named?.saved(snapshot); await saved(); });
+  const unmountGoogle = mountGoogleConnection(host.querySelector<HTMLElement>('#google-connection')!, saved);
+  const unmountChatgpt = mountChatgptConnection(host.querySelector<HTMLElement>('#chatgpt-connection')!, saved);
   host.addEventListener('submit', submit); host.addEventListener('click', click); host.addEventListener('input', input); host.addEventListener('change', change);
   void call<Configuration>('provider_configuration').then(config => { if (!disposed && configurationRevision === 0) render(config); }).catch(error => { if (!disposed && configurationRevision === 0) message(String(error), true); });
   void checkClaude();
   if (named) void import('./connections').then(({ mountConnections }) => { if (!disposed) unmountNamed = mountConnections(host.querySelector<HTMLElement>('#named-connections')!, named.harnesses, named.saved); });
-  return () => { disposed = true; unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
+  return () => { disposed = true; unmountCompatible(); unmountChatgpt(); unmountGoogle(); unmountNamed?.(); for (const input of keyInputs) input.value = ''; editedPaths.clear(); host.removeEventListener('submit', submit); host.removeEventListener('click', click); host.removeEventListener('input', input); host.removeEventListener('change', change); };
 }
 
 function pathForm(provider: string, label: string, placeholder: string): string {

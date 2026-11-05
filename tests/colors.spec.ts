@@ -115,3 +115,44 @@ for (const theme of ['dark', 'light'] as const) {
     await expect.poll(async () => { const value = await fill(); return value.image === 'none' && value.rgb === value.accent; }).toBe(true);
   });
 }
+
+test('workspace palette cards persist with accents, adapt to appearance, and restore after imported themes', async ({ page }) => {
+  await page.goto('/');
+  await openColors(page);
+  const ocean = page.getByRole('radio', { name: 'Ocean', exact: true });
+  await ocean.click();
+  await expect(ocean).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('.settings-colors-summary')).toHaveText('Ocean palette');
+  const dark = await token(page, '--bg');
+  const oceanAccent = await accent(page);
+  await page.screenshot({ path: 'playwright-report/palette-dark.png' });
+  await page.reload();
+  await expect.poll(() => token(page, '--bg')).toBe(dark);
+  await expect.poll(() => accent(page)).toBe(oceanAccent);
+  await openColors(page);
+  await expect(ocean).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('button', { name: 'Use light', exact: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect.poll(() => token(page, '--bg')).not.toBe(dark);
+  await expect(ocean).toHaveAttribute('aria-checked', 'true');
+  const light = await token(page, '--bg');
+  await page.screenshot({ path: 'playwright-report/palette-light.png' });
+  await ocean.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('radio', { name: 'Amethyst', exact: true })).toBeFocused();
+  await expect(page.getByRole('radio', { name: 'Amethyst', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await ocean.click();
+  await page.getByRole('radio', { name: /GitHub Light Default/ }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-vsix', '');
+  await expect(ocean).toHaveAttribute('aria-checked', 'false');
+  await page.getByRole('radio', { name: /PandaCode/ }).click();
+  await expect.poll(() => token(page, '--bg')).toBe(light);
+  await expect(ocean).toHaveAttribute('aria-checked', 'true');
+  await page.getByRole('radio', { name: 'Classic', exact: true }).click();
+  await expect.poll(() => accent(page)).toBe('#ffd43b');
+  await page.setViewportSize({ width: 700, height: 900 });
+  await page.screenshot({ path: 'playwright-report/palette-narrow.png' });
+  await page.getByRole('radio', { name: 'System', exact: true }).click();
+  await expect(page.getByRole('radio', { name: 'System', exact: true })).toHaveAttribute('aria-checked', 'true');
+  expect(await token(page, '--bg')).not.toBe(light);
+});

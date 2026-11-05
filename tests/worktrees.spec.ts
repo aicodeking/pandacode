@@ -186,7 +186,7 @@ test('the checkout items share one row with the model, the branch and PR at its 
   expect((await branch.boundingBox())!.x).toBeLessThan(last.x);
   expect(await fits()).toEqual({ overflow: 0, past: 0, tops: 1 });
   await page.locator('#composer-area').evaluate(el => { el.style.maxWidth = '420px'; });
-  await expect(tray.locator('.composer-local')).toBeHidden();
+  await expect(tray.getByRole('button', { name: 'Change task folder', exact: true })).toBeVisible();
   await expect(pull).toBeVisible();
   expect(await fits()).toEqual({ overflow: 0, past: 0, tops: 1 });
 });

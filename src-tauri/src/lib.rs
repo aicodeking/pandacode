@@ -1,6 +1,8 @@
 mod agent_tools;
 mod agents_dock;
 mod agent_usage;
+mod chatgpt_auth;
+mod google_auth;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
@@ -67,6 +69,7 @@ mod task_deletion;
 mod terminal;
 mod terminal_preferences;
 mod turn_changes;
+mod checkpoints;
 mod usage_keychain;
 mod usage_ledger;
 mod workspace;
@@ -569,7 +572,7 @@ pub(crate) const MESSAGE_LIMIT: usize = 16 * 1024 * 1024;
 const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Background Agent subagents in Claude Code are different: they do report back, because the run stays open until they finish. On any other harness, a subagent still running when you reply is stopped and its report is lost: wait for every subagent you started (Codex: its wait tool) before you reply. Wait for long-running commands in the foreground (or poll them) before you reply.";
 
 /// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
-const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
+const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run. When you need an answer from the user, use request_user_input with explicit options when useful (Yes/No for binary questions). Treat the question as blocking: wait for the user's submitted answer before continuing work; do not ask in progress text and then carry on, use an asynchronous question, or assume the recommended option. If the tool is unavailable, include a generative UI form with select or checkbox fields and a prompt containing their selected answers, then end your turn and wait for the user to submit. Never treat an unchecked or default value as an answer.";
 
 /// Replies may carry generative UI blocks that PandaCode draws in the thread.
 const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
@@ -661,6 +664,39 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
         .lock()
         .map_err(|e| e.to_string())?
         .add_project(&PathBuf::from(path))
+}
+#[tauri::command]
+async fn rename_project(window: tauri::WebviewWindow, state: State<'_, AppState>, project_id: String, name: String) -> Result<Project> {
+    if window.label() != "main" { return Err("Rename projects in the main window.".into()); }
+    state.store.lock().map_err(|e| e.to_string())?.rename_project(&project_id, &name)
+}
+#[tauri::command]
+async fn relocate_project(window: tauri::WebviewWindow, state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
+    if window.label() != "main" { return Err("Change project folders in the main window.".into()); }
+    let store = state.store.clone();
+    let agents = state.agents.clone();
+    let terminals = state.terminals.clone();
+    blocking(move || {
+        let agents = agents.lock().map_err(|e| e.to_string())?;
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let project = store.project(&project_id)?;
+        let mut roots = vec![PathBuf::from(&project.path)];
+        let mut query = store.db.prepare("SELECT id,worktree_path FROM sessions WHERE project_id=?1").map_err(|e| e.to_string())?;
+        let sessions = query.query_map([&project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))).map_err(|e| e.to_string())?.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        drop(query);
+        for (sid, worktree) in &sessions {
+            if agents.contains_key(sid) || terminal::harness_running(&terminals, sid)? {
+                return Err("Stop this project's agents and harness consoles before changing its folder.".into());
+            }
+            if let Some(path) = worktree { roots.push(PathBuf::from(path)); }
+        }
+        if terminal::has_open_roots(&terminals, &roots)? {
+            return Err("Close this project's terminals before changing its folder.".into());
+        }
+        let updated = store.relocate_project(&project_id, std::path::Path::new(&path))?;
+        for (sid, _) in sessions { providers::discard_warm_agent(&sid); }
+        Ok(updated)
+    }).await
 }
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
@@ -869,6 +905,15 @@ async fn set_task_stage(
     // Reopened: machine threads that settled meanwhile are reported now.
     remote::orchestrate::retry(&app, &session_id);
     Ok(task)
+}
+#[tauri::command]
+async fn move_session(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, project_id: String) -> Result<Session> {
+    if window.label() != "main" { return Err("Move chats in the main window.".into()); }
+    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    if agents.contains_key(&session_id) || terminal::harness_running(&state.terminals, &session_id)? {
+        return Err("Stop the agent or harness console before moving this chat.".into());
+    }
+    state.store.lock().map_err(|e| e.to_string())?.move_session(&session_id, &project_id)
 }
 #[tauri::command]
 async fn configure_session(
@@ -2130,6 +2175,13 @@ async fn launch_operation_admitted(
     }
     tauri::async_runtime::spawn(async move {
         let changes_root = config.cwd.clone();
+        if !cloud && !cloud_attach && turn_message_id > 0 {
+            let root = config.cwd.clone();
+            let sid = session_id.clone();
+            if let Err(error) = blocking(move || checkpoints::capture(&root, &sid, turn_message_id)).await {
+                eprintln!("PandaCode: checkpoint unavailable: {error}");
+            }
+        }
         let changes_cache = app
             .path()
             .app_cache_dir()
@@ -2862,6 +2914,23 @@ async fn reveal_path(path: String) -> Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+async fn open_workspace_file(state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String) -> Result<()> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    let target = workspace::scoped_path(&root, &path)?;
+    if !target.is_file() { return Err("Choose an existing file.".into()); }
+    #[cfg(target_os = "macos")]
+    let mut command = tokio::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "windows")]
+    let mut command = tokio::process::Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = tokio::process::Command::new("xdg-open");
+    child_env::sanitize(&mut command);
+    command.arg(target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    tokio::time::timeout(std::time::Duration::from_secs(5), command.status()).await.map_err(|_| "Opening the file timed out.")?.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// A sent image or screenshot from the shared capture registry, for the transcript's chips.
 #[tauri::command]
 async fn prompt_image(app: tauri::AppHandle, id: String) -> Result<Option<String>> {
@@ -3440,6 +3509,29 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     .await
 }
 #[tauri::command]
+async fn manage_workspace_entry(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>,
+    action: String, path: String, name: Option<String>,
+) -> Result<String> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::manage_entry(&root, &action, &path, name.as_deref())).await
+}
+#[tauri::command]
+async fn write_workspace_file(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>,
+    path: String, content: String, expected: String,
+) -> Result<()> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::write_file(&root, &path, &content, &expected)).await
+}
+#[tauri::command]
+async fn workspace_file_stamp(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String,
+) -> Result<String> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::file_stamp(&root, &path)).await
+}
+#[tauri::command]
 async fn list_files(
     state: State<'_, AppState>,
     project_id: String,
@@ -3498,6 +3590,21 @@ async fn read_document_file(
     let root = state.root(&project_id, session_id.as_deref())?;
     blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
 }
+#[tauri::command]
+async fn tool_image(window: tauri::WebviewWindow, state: State<'_, AppState>, session_id: String, tool_id: String) -> Result<String> {
+    if window.label() != "main" { return Err("View tool images in the main window.".into()); }
+    let (path, project_id) = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        (store.tool_image_path(&session_id, &tool_id)?, store.session(&session_id)?.project_id)
+    };
+    let root = state.root(&project_id, Some(&session_id))?;
+    blocking(move || {
+        let target = std::path::PathBuf::from(path);
+        let target = if target.is_absolute() { target } else { root.join(target) };
+        workspace::recorded_image_data_url(&target)
+    }).await
+}
+
 #[tauri::command]
 async fn workspace_image(
     state: State<'_, AppState>,
@@ -3654,11 +3761,11 @@ async fn start_run_script_terminal(
     rows: u16,
 ) -> Result<String> {
     if state.shutdown.load(Ordering::SeqCst) != 0 { return Err("PandaCode is shutting down.".into()); }
-    let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
         let _admission = state.agents.lock().map_err(|_| "Agent state is unavailable.")?;
+        let root = state.root(&project_id, session_id.as_deref())?;
         agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
@@ -3678,7 +3785,6 @@ async fn start_terminal(
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
     }
-    let root = state.root(&project_id, session_id.as_deref())?;
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
@@ -3686,6 +3792,7 @@ async fn start_terminal(
             .agents
             .lock()
             .map_err(|_| "Agent state is unavailable.")?;
+        let root = state.root(&project_id, session_id.as_deref())?;
         agent_updates::ensure_not_installing()?;
         terminal::start(app.clone(), terms, &root, cols, rows)
     })
@@ -4141,6 +4248,14 @@ pub fn run() {
                 cloud_agents::tasks::cloud_agent_set_claude_token,
                 remote::mirror::remote_repo_check,
                 provider_settings::provider_configuration,
+                chatgpt_auth::provider_chatgpt_status,
+                google_auth::provider_google_login,
+                google_auth::provider_google_cancel,
+                chatgpt_auth::provider_chatgpt_login,
+                chatgpt_auth::provider_chatgpt_cancel,
+                chatgpt_auth::provider_chatgpt_logout,
+                providers::openai_compatible::provider_discover_compatible_models,
+                connections::connections_refresh_local_models,
                 connections::connections_list,
                 connections::connection_save,
                 connections::connection_delete,
@@ -4260,6 +4375,8 @@ pub fn run() {
                 list_projects,
                 add_project,
                 remove_project,
+                rename_project,
+                relocate_project,
                 relink_project,
                 list_sessions,
                 pin_session,
@@ -4272,12 +4389,18 @@ pub fn run() {
                 set_task_stage,
                 start_task,
                 configure_session,
+                move_session,
                 set_reasoning_effort,
                 update_session,
                 delete_session_with_attachment_cleanup,
                 chats::chat_create,
                 chats::chat_cleanup,
                 get_messages,
+                checkpoints::list_checkpoints,
+                checkpoints::compare_checkpoints,
+                checkpoints::preview_rewind,
+                checkpoints::rewind_checkpoint,
+                checkpoints::discard_rewind,
                 turn_changes::turn_change_diff,
                 turn_changes::turn_change_summary,
                 list_subagents,
@@ -4395,10 +4518,14 @@ pub fn run() {
                 read_clipboard_image,
                 prompt_image,
                 reveal_path,
+                open_workspace_file,
                 read_document,
                 dragged_file_paths,
                 describe_folder,
                 list_files,
+                manage_workspace_entry,
+                write_workspace_file,
+                workspace_file_stamp,
                 search_files,
                 search_text,
                 read_file,
@@ -4412,6 +4539,7 @@ pub fn run() {
                 progress::progress_thumb,
                 progress::progress_clear,
                 workspace_image,
+                tool_image,
                 resolve_workspace_files,
                 prepare_file_preview,
                 get_run_script,

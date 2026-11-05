@@ -71,6 +71,14 @@ OpenCode authentication content takes precedence over its saved file, and saved 
 
 ## Code and verification
 
+### Per-task totals
+
+The clickable total below the composer shows this task's tokens and estimated API cost in USD. Its breakdown separates uncached input, output, cache reads and cache writes, and lists usage and cost by harness/model. It refreshes after a response and when reopened. Context-window occupancy remains a separate indicator.
+
+Totals use available local Codex and Claude Code logs linked to the task, including earlier harness sessions after a model or agent switch. Separate worker tasks are excluded. Missing linked logs and unknown model prices are labeled partial; unavailable usage or pricing is never presented as zero. Tiny nonzero estimates display as less than one cent. These are API-equivalent estimates, not bills or allocations of subscription fees; service-tier and plan discounts may differ.
+
+The composer reads the saved price book or the bundled fallback, with no network request. The breakdown identifies that source. The Agent usage overview can refresh the saved price book. Task totals include all available linked history, including logs older than the overview's one-year window.
+
 - `src/agent-usage.ts` / `src/agent-usage.css`: lazy modal content, tabs, per-provider loading, accessible meters and reset details.
 - `src/usage-overview.ts`, `src/usage-cost-chart.ts`, `src/usage-ledger.ts`, `src/usage-heatmap.ts`: the overview, the cost chart, local-day grouping, and the activity calendar. Agents keep one fixed color each, in the validated categorical order.
 - `src-tauri/src/usage_ledger.rs` and `usage_ledger/`: log discovery, incremental parsing, pricing, and the `usage_ledger` IPC command.

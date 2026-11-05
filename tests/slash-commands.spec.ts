@@ -190,6 +190,20 @@ test('slash commands refresh on request and retain option order while filtering'
   await expect(menu(page).getByRole('option')).toHaveCount(3);
 });
 
+test('changing enabled skills discards the composer catalog immediately', async ({ page }) => {
+  await setup(page);
+  await draft(page).fill('/');
+  await expect(menu(page).getByRole('option', { name: /\/review/ })).toBeVisible();
+  const callsBefore = await page.evaluate(() => (window as any).__slash.calls.length);
+  await page.evaluate(() => {
+    (window as any).__slash.commands = [{ id: 'rewrite', name: '/rewrite-lyrics', description: 'Rewrite lyrics', kind: 'prompt', skill: true, source: 'Codex skill' }];
+    window.dispatchEvent(new Event('pandacode:skills-changed'));
+  });
+  await expect(menu(page).getByRole('option', { name: /\/rewrite-lyrics/ })).toBeVisible();
+  await expect(menu(page).getByRole('option', { name: /\/review/ })).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__slash.calls.length)).toBeGreaterThan(callsBefore);
+});
+
 test('slash commands remain within resized viewport and keep focus at large text sizes', async ({ page }) => {
   await setup(page);
   await page.setViewportSize({ width: 740, height: 540 });
@@ -226,9 +240,10 @@ async function installAppProbe(page: Page): Promise<void> {
       window.__appSlashEmit ??= event => agent(event);
       window.__appSlashCalls.push({command,args:structuredClone(args),provider:args.sessionId ? session(args.sessionId).provider : undefined});
       if (command === 'list_slash_commands') {
+        if (window.__appSlashSkillsFail) throw new Error('Skills service unavailable.');
         const catalog = slashCatalog(session(args.sessionId).provider);
         if (window.__appSlashHoldDiscovery && !args.cachedOnly) await new Promise(resolve => {window.__appSlashFinishDiscovery=resolve;});
-        return {...catalog,commands:[...catalog.commands,...window.__appSlashExtra].map(item => ({...item,argumentHint:item.argumentHint ?? null,reason:item.reason ?? null}))};
+        return {...catalog,commands:[...catalog.commands,...window.__appSlashExtra].map(item => ({...item,skill:window.__appSlashEmptySkills ? false : item.skill,argumentHint:item.argumentHint ?? null,reason:item.reason ?? null}))};
       }
       if (command === 'resolve_slash_command' && window.__appSlashHold) await new Promise(resolve => {window.__appSlashRelease=resolve;});
       if (command === 'resolve_slash_command' && window.__appSlashNoAttachments) return {...resolveSlash(session(args.sessionId).provider,String(args.text)),acceptsAttachments:false};
@@ -244,6 +259,80 @@ const appCalls = (page: Page, command: string): Promise<any[]> => page.evaluate(
 
 test.describe('slash commands app integration', () => {
   test.beforeEach(async ({ page }) => { await installAppProbe(page); });
+
+  test('skills selection opens a searchable picker and inserts a skill without sending or losing the draft', async ({ page }, testInfo) => {
+    await page.locator('.task-item[data-id="session-2"]').click();
+    await page.evaluate(() => { (window as any).__appSlashExtra = [
+      {id:'test-lyrics',name:'/lyric-rewriter',description:'Rewrite a song draft',kind:'prompt',source:'Codex skill · user',skill:true},
+      {id:'not-a-skill',name:'/ordinary-command',description:'An ordinary command',kind:'prompt',source:'Codex',skill:false},
+    ]; });
+    await page.getByRole('button', { name: 'Attach files for context', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Project files', exact: true }).click();
+    await page.getByRole('button', { name: 'Attach README.md', exact: true }).click();
+    const prompt = page.locator('#prompt');
+    const body = '\n\nFirst original line\nSecond original line';
+    await prompt.fill(`/ski${body}`);
+    await prompt.evaluate((node: HTMLTextAreaElement) => { node.setSelectionRange(4,4); node.dispatchEvent(new Event('input', {bubbles:true})); });
+    await menu(page).getByRole('option', {name:/^\/skills\b/}).click();
+    const picker = page.getByRole('dialog', { name:'Skills', exact:true });
+    await expect(picker).toBeVisible();
+    await expect.poll(async () => (await appCalls(page, 'list_slash_commands')).some(call => call.args.force === true)).toBe(true);
+    await expect(prompt).toHaveValue(`/skills${body}`);
+    await expect(picker.getByRole('option', {name:'ordinary-command',exact:true})).toHaveCount(0);
+    await picker.getByRole('combobox', {name:'Search skills',exact:true}).fill('rewrite');
+    await expect(picker.getByRole('option')).toHaveCount(1);
+    await picker.screenshot({path:testInfo.outputPath('skills-picker.png')});
+    await picker.getByRole('combobox', {name:'Search skills',exact:true}).press('Enter');
+    await expect(picker).toBeHidden();
+    await expect(prompt).toHaveValue(`/lyric-rewriter${body}`);
+    await expect(page.locator('#attachments')).toContainText('README.md');
+    expect(await appCalls(page,'send_message')).toHaveLength(0);
+    expect(await appCalls(page,'resolve_slash_command')).toHaveLength(0);
+  });
+
+  test('skills browser can be cancelled or opened by sending the command without consuming text', async ({ page }) => {
+    await page.locator('.task-item[data-id="session-2"]').click();
+    const prompt = page.locator('#prompt'), picker = page.getByRole('dialog',{name:'Skills',exact:true});
+    await prompt.fill('/skills');
+    await prompt.press('Enter');
+    await expect(picker).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(picker).toBeHidden();
+    await expect(prompt).toHaveValue('/skills ');
+    await prompt.fill('/skills\n\nKeep this paragraph');
+    await prompt.press('Enter');
+    await expect(picker).toBeVisible();
+    await expect(prompt).toHaveValue('/skills\n\nKeep this paragraph');
+    await page.keyboard.press('Escape');
+    expect(await appCalls(page,'send_message')).toHaveLength(0);
+  });
+
+  test('skills picker explains an empty library and opens skills management', async ({ page }) => {
+    await page.locator('.task-item[data-id="session-2"]').click();
+    await page.evaluate(() => { (window as any).__appSlashEmptySkills = true; });
+    await page.locator('#prompt').fill('/skills');
+    await page.locator('#prompt').press('Enter');
+    const picker = page.getByRole('dialog',{name:'Skills',exact:true});
+    await expect(picker.getByRole('status')).toContainText('No enabled skills found');
+    await picker.getByRole('button',{name:'Manage skills…',exact:true}).click();
+    await expect(page.getByRole('region',{name:'Settings',exact:true}).getByRole('tab',{name:'Skills & rules',exact:true})).toHaveAttribute('aria-selected','true');
+    expect(await appCalls(page,'send_message')).toHaveLength(0);
+  });
+
+  test('skills picker reports discovery failures and recovers on Refresh', async ({ page }) => {
+    await page.locator('.task-item[data-id="session-2"]').click();
+    await page.locator('#prompt').fill('/skills'); await page.locator('#prompt').press('Enter');
+    const picker = page.getByRole('dialog',{name:'Skills',exact:true});
+    await expect(picker.getByRole('option',{name:'project-guide',exact:true})).toBeVisible();
+    await page.evaluate(() => { (window as any).__appSlashSkillsFail = true; });
+    await picker.getByRole('button',{name:'Refresh',exact:true}).click();
+    await expect(picker.getByRole('alert')).toContainText('Skills service unavailable');
+    await page.evaluate(() => { (window as any).__appSlashSkillsFail = false; });
+    await picker.getByRole('button',{name:'Refresh',exact:true}).click();
+    await expect(picker.getByRole('alert')).toBeHidden();
+    await expect(picker.getByRole('option',{name:'project-guide',exact:true})).toBeVisible();
+    expect(await appCalls(page,'send_message')).toHaveLength(0);
+  });
 
   test('inserts a local command first, then opens its control without a turn or conversation reset', async ({ page }) => {
     await page.getByRole('button', { name: 'Attach files for context', exact: true }).click();
@@ -417,4 +506,18 @@ test.describe('slash commands app integration', () => {
     expect(await appCalls(page, 'send_message')).toHaveLength(0);
     expect(await appCalls(page, 'read_file')).toHaveLength(0);
   });
+});
+
+test('OpenAI Compatible discovers enabled skills and inserts them from the slash menu', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `${await response.text()}\nsessions[0].provider = 'openai-compatible'; sessions[0].model = 'local-model'; previewSkills.call('skills_activate', {id: 'release-notes', harness:'openai-compatible', scope:'user'});` });
+  });
+  await page.goto('/');
+  const prompt = page.locator('#prompt'); await prompt.fill('/release');
+  const skill = page.locator('.slash-menu').getByRole('option', { name: /release-notes/ });
+  await expect(skill).toBeVisible(); await skill.click();
+  await expect(prompt).toHaveValue('/release-notes ');
+  await prompt.fill('/skills:release');
+  await expect(page.locator('.slash-menu').getByRole('option', { name: /skills:release-notes/ })).toBeVisible();
 });

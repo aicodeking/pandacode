@@ -12,6 +12,7 @@ async function open(page: Page): Promise<void> {
     const body = (await response.text()).replace(/const providers\s*=/, `for (const s of sessions) s.taskStage = 'pending';\n$&`);
     await route.fulfill({ response, body });
   });
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
   await page.goto('/');
   await expect(row(page, 'session-1')).toHaveAttribute('aria-current', 'page');
 }

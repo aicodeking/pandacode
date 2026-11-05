@@ -34,6 +34,7 @@ async function open(page: Page, seed = ''): Promise<void> {
       switch (command) {`);
     await route.fulfill({ response, body: body + '\nwindow.__threadOrderUrl = import.meta.url; window.__threadOrderEmit = emit;\n' });
   });
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
   await page.goto('/');
   await expect(row(page, 'session-1')).toHaveAttribute('aria-current', 'page');
   await expect(prompt(page)).toBeEnabled();

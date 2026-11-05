@@ -717,6 +717,15 @@ impl Store {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Project not found.".into())
     }
+    pub fn rename_project(&self, project_id: &str, name: &str) -> Result<Project> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 120 || name.chars().any(char::is_control) {
+            return Err("Use a project name of 1–120 characters without control characters.".into());
+        }
+        let changed = self.db.execute("UPDATE projects SET name=?1 WHERE id=?2", params![name, project_id]).map_err(|e| e.to_string())?;
+        if changed == 0 { return Err("Project not found.".into()); }
+        self.project(project_id)
+    }
     /// Point a project at its folder's new location after the folder was renamed or
     /// moved outside PandaCode. Chats, tasks and history keep their ids.
     pub fn relink_project(&self, project_id: &str, path: &Path) -> Result<Project> {
@@ -783,6 +792,51 @@ impl Store {
             .execute("DELETE FROM projects WHERE id=?1", [project_id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+    /// Relink a moved folder without replacing the project or its conversations.
+    /// Callers hold the agent admission lock while validating and committing.
+    pub fn relocate_project(&self, project_id: &str, destination: &Path) -> Result<Project> {
+        let project = self.project(project_id)?;
+        if !destination.is_absolute() { return Err("Choose an absolute folder location.".into()); }
+        let destination = destination.canonicalize().map_err(|e| format!("Cannot open the new folder: {e}"))?;
+        if !destination.is_dir() { return Err("Choose a folder.".into()); }
+        let destination_text = destination.to_str().ok_or("The folder path must be valid Unicode.")?;
+        if destination_text == project.path { return Ok(project); }
+        if self.projects()?.iter().any(|other| other.id != project_id && Path::new(&other.path).canonicalize().unwrap_or_else(|_| PathBuf::from(&other.path)) == destination) {
+            return Err("That folder already belongs to another project. Choose a different folder; neither project's chats were changed.".into());
+        }
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let busy: bool = self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=?1 AND (status IN ('running','waiting') OR resume_at_reset=1 OR (goal_state IS NOT NULL AND json_extract(goal_state,'$.status')<>'complete'))) OR EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))", [project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if busy { return Err("Stop this project's agents and teams, clear unfinished task goals, and turn off automatic limit resumes before changing its folder.".into()); }
+        let mut query = self.db.prepare("SELECT id,worktree_path,cloud FROM sessions WHERE project_id=?1 AND remote_device IS NULL").map_err(|e| e.to_string())?;
+        let local = query.query_map([project_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))).map_err(|e| e.to_string())?.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+        drop(query);
+        // Only rebase path components, never a textual prefix ("repo" != "repo-other").
+        // Git links may still point to the old main checkout after a Finder move.
+        // Validate them rather than modifying Git metadata outside our transaction.
+        let common = |root: &Path| -> Result<PathBuf> {
+            let output = crate::workspace::checked(crate::workspace::run_git_bounded(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"], 8192, false, std::time::Duration::from_secs(5))?)?;
+            if output.truncated { return Err("Git metadata path was too long.".into()); }
+            Path::new(std::str::from_utf8(&output.bytes).map_err(|e| e.to_string())?.trim()).canonicalize().map_err(|e| e.to_string())
+        };
+        for (sid, worktree, cloud) in local {
+            if let Some(worktree) = worktree {
+                let old = Path::new(&worktree);
+                let moved = old.strip_prefix(&project.path).map(|suffix| destination.join(suffix)).unwrap_or_else(|_| old.to_path_buf());
+                let valid = moved.join(".git").is_file() && common(&moved).ok().zip(common(&destination).ok()).is_some_and(|(a, b)| a == b);
+                if !valid { return Err(format!("Repair Git worktrees for the new project folder first, including {}. No project or chats were changed.", moved.display())); }
+                self.db.execute("UPDATE sessions SET worktree_path=?2 WHERE id=?1", params![sid, moved.to_string_lossy()]).map_err(|e| e.to_string())?;
+            }
+            // Remote/cloud harnesses keep their own working directory and native context.
+            if cloud.is_none() {
+                crate::context_recovery::queue(self, &sid)?;
+                self.db.execute("INSERT OR IGNORE INTO task_usage_links(session_id,harness_id,created_at) SELECT id,resume_id,?2 FROM sessions WHERE id=?1 AND resume_id IS NOT NULL AND trim(resume_id)<>''", params![sid, now()]).map_err(|e| e.to_string())?;
+                self.db.execute("UPDATE sessions SET resume_id=NULL,context_used_tokens=NULL,context_window=NULL,goal_state=NULL WHERE id=?1", [&sid]).map_err(|e| e.to_string())?;
+            }
+        }
+        self.db.execute("UPDATE projects SET path=?2 WHERE id=?1", params![project_id, destination_text]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        self.project(project_id)
     }
     fn session_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         let used_tokens: Option<i64> = r.get(14)?;
@@ -1217,6 +1271,7 @@ impl Store {
             "codex",
             "kimi",
             "opencode",
+            "openai-compatible",
             "glm",
             "antigravity",
             "grok",
@@ -1390,6 +1445,30 @@ impl Store {
         self.session(&sid)
     }
 
+    /// Move only the conversation. Files stay in their original folders.
+    /// The caller holds the agent admission lock through this transaction.
+    pub fn move_session(&self, sid: &str, project_id: &str) -> Result<Session> {
+        let current = self.session(sid)?;
+        let destination = self.project(project_id)?;
+        if current.project_id == project_id { return Ok(current); }
+        if !Path::new(&destination.path).is_dir() { return Err("The destination folder is unavailable. Open the project folder and try again.".into()); }
+        if current.worktree_path.is_some() || current.remote_device.is_some() || current.cloud.is_some() {
+            return Err("Worktree and remote tasks stay with their original project.".into());
+        }
+        crate::architect::check_manual(self, sid)?;
+        let restricted: bool = self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND (status IN ('running','waiting') OR resume_at_reset=1 OR (goal_state IS NOT NULL AND json_extract(goal_state,'$.status')<>'complete'))) OR EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1) OR EXISTS(SELECT 1 FROM machine_threads WHERE session_id=?1 OR parent_session_id=?1)",
+            [sid], |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+        if restricted { return Err("Stop the agent, clear unfinished goals, and turn off automatic limit resumes before moving. Team and linked machine tasks stay with their original project.".into()); }
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        crate::context_recovery::queue(self, sid)?;
+        self.db.execute("INSERT OR IGNORE INTO task_usage_links(session_id,harness_id,created_at) SELECT id,resume_id,?2 FROM sessions WHERE id=?1 AND resume_id IS NOT NULL AND trim(resume_id)<>''", params![sid, now()]).map_err(|e| e.to_string())?;
+        self.db.execute("UPDATE sessions SET project_id=?2,resume_id=NULL,context_used_tokens=NULL,context_window=NULL,goal_state=NULL,updated_at=?3 WHERE id=?1", params![sid, project_id, now()]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        self.session(sid)
+    }
+
     pub fn configure(
         &self,
         sid: &str,
@@ -1403,6 +1482,7 @@ impl Store {
             "codex",
             "kimi",
             "opencode",
+            "openai-compatible",
             "glm",
             "antigravity",
             "grok",
@@ -1761,6 +1841,23 @@ impl Store {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+    pub fn tool_image_path(&self, sid: &str, tool_id: &str) -> Result<String> {
+        self.session(sid)?;
+        let content: String = self.db.query_row(
+            "SELECT content FROM messages WHERE session_id=?1 AND tool_id=?2 AND role='tool'",
+            params![sid, tool_id], |row| row.get(0),
+        ).map_err(|_| "This image tool is no longer available.".to_string())?;
+        let record: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        if record["type"] != "tool_activity" || record["version"] != 1
+            || !matches!(record["name"].as_str(), Some("view_image" | "imageView")) {
+            return Err("This tool did not view an image.".into());
+        }
+        let input: serde_json::Value = serde_json::from_str(record["input"].as_str().unwrap_or(""))
+            .map_err(|_| "The image path was not recorded.".to_string())?;
+        input["path"].as_str().filter(|p| !p.is_empty() && p.len() <= 4096 && !p.chars().any(char::is_control))
+            .map(str::to_owned).ok_or_else(|| "The image path was not recorded.".into())
+    }
+
     pub fn finish_tools(&self, sid: &str) -> Result<()> {
         settle_unfinished_tools(
             &self.db,
@@ -2025,6 +2122,10 @@ fn handoff_from_provider(content: &str) -> Option<String> {
 mod sidebar_tests;
 
 #[cfg(test)]
+#[path = "storage_relocation_tests.rs"]
+mod relocation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     fn empty_session() -> (Store, Session) {
@@ -2072,6 +2173,29 @@ mod tests {
         // Reordering two other tasks keeps it on top instead of ranking it last.
         store.reorder_sessions(&[second.id.clone(), first.id.clone()]).unwrap();
         assert_eq!(ids(&store), vec![draft.id.clone(), second.id.clone(), first.id.clone(), early.id.clone()]);
+    }
+
+    #[test]
+    fn project_rename_persists_without_changing_folder_or_tasks() {
+        let root = std::env::temp_dir().join(format!("pandacode-project-rename-{}", id()));
+        std::fs::create_dir_all(root.join("original-folder")).unwrap();
+        let database = root.join("app.sqlite");
+        let store = Store::open(&database).unwrap();
+        let original = store.add_project(&root.join("original-folder")).unwrap();
+        let task = store.create_session(&original.id, "codex", "default", "auto").unwrap();
+        let renamed = store.rename_project(&original.id, "  My project  ").unwrap();
+        assert_eq!(renamed.name, "My project");
+        assert_eq!(renamed.path, original.path);
+        assert_eq!(renamed.added_order, original.added_order);
+        for invalid in [" ", "a\nb", &"x".repeat(121)] { assert!(store.rename_project(&original.id, invalid).is_err()); }
+        assert!(store.rename_project("missing", "Name").is_err());
+        drop(store);
+        let store = Store::open(&database).unwrap();
+        assert_eq!(store.project(&original.id).unwrap().name, "My project");
+        assert_eq!(store.session(&task.id).unwrap().project_id, original.id);
+        assert!(root.join("original-folder").is_dir());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -3100,6 +3224,18 @@ mod tests {
     }
 
     #[test]
+    fn tool_images_are_scoped_to_the_recorded_call_and_session() {
+        let (store, session) = empty_session();
+        let record = serde_json::json!({"type":"tool_activity","version":1,"name":"view_image","input":"{\"path\":\"/tmp/scene.png\"}"}).to_string();
+        store.tool_message(&session.id, "image-1", &record).unwrap();
+        assert_eq!(store.tool_image_path(&session.id, "image-1").unwrap(), "/tmp/scene.png");
+        assert!(store.tool_image_path("other-session", "image-1").is_err());
+        assert!(store.tool_image_path(&session.id, "missing").is_err());
+        store.tool_message(&session.id, "image-1", &record.replace("view_image", "Command")).unwrap();
+        assert!(store.tool_image_path(&session.id, "image-1").is_err());
+    }
+
+    #[test]
     fn tool_updates_share_one_message_and_preserve_response_activity() {
         let (store, session) = empty_session();
         let started = r#"{"type":"tool_activity","version":1,"id":"call-1","name":"Bash","status":"running","input":"pwd","output":""}"#;
@@ -3825,6 +3961,68 @@ mod tests {
     }
 
     #[test]
+    fn move_session_keeps_history_and_recovers_context_in_the_destination() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-move-{}", id()));
+        std::fs::create_dir_all(root.join("source")).unwrap();
+        std::fs::create_dir_all(root.join("destination")).unwrap();
+        let source = store.add_project(&root.join("source")).unwrap();
+        let destination = store.add_project(&root.join("destination")).unwrap();
+        let task = store.create_session(&source.id, "claude", "default", "ask").unwrap();
+        store.message(&task.id, "user", "Keep the remastering plan").unwrap();
+        store.message(&task.id, "assistant", "Use the mastering workspace").unwrap();
+        store.resume(&task.id, "old-native-context").unwrap();
+        let before = store.messages(&task.id, None).unwrap();
+        let moved = store.move_session(&task.id, &destination.id).unwrap();
+        assert_eq!(moved.id, task.id);
+        assert_eq!(moved.project_id, destination.id);
+        assert_eq!(moved.mode, "ask");
+        assert!(moved.resume_id.is_none());
+        let after = store.messages(&task.id, None).unwrap();
+        assert_eq!(before.iter().map(|m| (&m.id, &m.content)).collect::<Vec<_>>(), after.iter().map(|m| (&m.id, &m.content)).collect::<Vec<_>>());
+        assert!(crate::context_recovery::pending(&store, &moved).unwrap());
+        let (prompt, _) = crate::context_recovery::prepare(&store, &moved, "Continue here").unwrap();
+        assert!(prompt.contains("Keep the remastering plan"));
+        assert!(store.usage_links(&task.id).unwrap().contains(&"old-native-context".to_string()));
+        assert_eq!(store.project(&source.id).unwrap().path, source.path);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn move_session_rolls_back_context_when_the_move_cannot_be_saved() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let source = store.add_project(&std::env::temp_dir()).unwrap();
+        let destination = store.add_project(&std::env::current_dir().unwrap()).unwrap();
+        let task = store.create_session(&source.id, "claude", "default", "ask").unwrap();
+        store.message(&task.id, "user", "Keep me").unwrap();
+        store.resume(&task.id, "original-context").unwrap();
+        store.db.execute_batch("CREATE TRIGGER reject_move BEFORE UPDATE OF project_id ON sessions BEGIN SELECT RAISE(ABORT,'injected move failure'); END;").unwrap();
+        assert!(store.move_session(&task.id, &destination.id).is_err());
+        let unchanged = store.session(&task.id).unwrap();
+        assert_eq!(unchanged.project_id, source.id);
+        assert_eq!(unchanged.resume_id.as_deref(), Some("original-context"));
+        let queued: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM context_recovery WHERE session_id=?1)", [&task.id], |r| r.get(0)).unwrap();
+        assert!(!queued);
+        assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn move_session_rejects_busy_or_bound_tasks_without_changing_history() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let source = store.add_project(&std::env::temp_dir()).unwrap();
+        let destination = store.add_project(&std::env::current_dir().unwrap()).unwrap();
+        let task = store.create_session(&source.id, "claude", "default", "ask").unwrap();
+        store.message(&task.id, "user", "Keep me").unwrap();
+        for assignment in ["status='running'", "status='waiting'", "resume_at_reset=1", "worktree_path='/test/worktree'", "cloud='{}'"] {
+            store.db.execute("UPDATE sessions SET status='idle',resume_at_reset=0,worktree_path=NULL,cloud=NULL WHERE id=?1", [&task.id]).unwrap();
+            store.db.execute(&format!("UPDATE sessions SET {assignment} WHERE id=?1"), [&task.id]).unwrap();
+            assert!(store.move_session(&task.id, &destination.id).is_err(), "{assignment}");
+            assert_eq!(store.session(&task.id).unwrap().project_id, source.id);
+            assert_eq!(store.messages(&task.id, None).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
     fn transcript_pages_have_a_byte_budget_and_do_not_skip_history() {
         let store = Store::open(Path::new(":memory:")).unwrap();
         let p = store.add_project(&std::env::temp_dir()).unwrap();
@@ -3907,6 +4105,7 @@ mod tests {
                 "kimi",
                 "glm",
                 "opencode",
+            "openai-compatible",
                 "antigravity",
                 "grok",
                 "mimo",

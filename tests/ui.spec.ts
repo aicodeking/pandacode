@@ -1,4 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+
+// Keep the status/filter layout explicit; project-first navigation is covered by sidebar-projects.spec.ts.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
+});
 import { openInspectorTab } from './inspector-tab-helper';
 // The workspace view (Conversation, Board, GitHub) is picked from the sidebar's view menu.
 const showView = async (page: Page, name: string) => { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name, exact: true }).click(); };
@@ -1338,7 +1343,7 @@ test('keeps the Settings agent menu clickable at the minimum desktop window size
     return { inViewport: rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight,
       reachable: element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)) };
   }));
-  expect(hitTargets).toHaveLength(19);
+  expect(hitTargets).toHaveLength(20);
   expect(hitTargets.every(target => target.inViewport && target.reachable)).toBe(true);
   await menu.getByRole('menuitemradio', { name: 'Kimi Code', exact: true }).click();
   await expect(settings.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toHaveText('Kimi Code');
@@ -2030,7 +2035,7 @@ async function emitStatusEvents(page: Page, sessionId: string, events: Array<Rec
   await page.clock.runFor(20);
 }
 
-/** /status names what the harness reported; the prompt box no longer shows it. */
+/** /status gives the detailed report alongside the custom composer indicator. */
 async function statusText(page: Page): Promise<string> {
   await prompt(page).fill('/status '); // The space leaves the command menu closed, so Enter sends.
   await page.keyboard.press('Enter');
@@ -2046,6 +2051,8 @@ test('keeps reported context usage for /status and late usage from creating a ph
   await expect(page.locator('#composer').getByRole('meter')).toHaveCount(0);
   await expect(modelTrigger(page)).toBeDisabled();
   await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: 200000 } }]);
+  await expect(page.locator('.context-indicator')).toBeVisible();
+  await expect(page.locator('.context-indicator')).toHaveAttribute('title', /24,000.*200,000/);
   await emitStatusEvents(page, sessionId, [
     { kind: 'usage', text: '', data: { usedTokens: -10, contextWindow: 200000 } },
     { kind: 'usage', text: '', data: { usedTokens: 'fake', contextWindow: 200000 } },
@@ -2057,6 +2064,7 @@ test('keeps reported context usage for /status and late usage from creating a ph
   await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 25000, contextWindow: 200000 } }]);
   await emitStatusEvents(page, 'unknown-usage-task', [{ kind: 'usage', text: '', data: { usedTokens: 100000, contextWindow: 200000 } }]);
   expect(await statusText(page)).toMatch(/25,000.*200,000/);
+  await expect(page.locator('.context-indicator')).toHaveAttribute('title', /25,000.*200,000/);
   await expect(page.locator('#stream-region .turn-activity')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   await expect(prompt(page)).toBeEnabled();
@@ -2726,6 +2734,7 @@ for (const delayedCommand of ['add_project', 'list_projects']) {
       await route.fulfill({ response, body: previewBody(body) });
     });
     await page.reload();
+    await expect(prompt(page)).toBeVisible();
     await page.locator('.new-task-button').click();
     await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in orbit?');
     const sessionId = await draftTaskId(page);
@@ -2927,15 +2936,16 @@ test('browses a file and includes its contents as attached message context', asy
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
+  await expect(page.locator('.file-editor')).toContainText('"name": "orbit"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await expect(page.locator('#attachments')).toContainText('package.json');
   await prompt(page).fill('Explain this package configuration');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const chip = page.locator('.user-message').last().locator('.message-attachments .prompt-chip');
   await expect(chip).toHaveText(/package\.json\s*Project file/);
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
   await chip.click();
-  await expect(page.locator('#inspector #file-view')).toContainText('"name": "orbit"');
+  await expect(page.locator('#file-view')).toContainText('"name": "orbit"');
   await expect(page.locator('#attachments')).toBeEmpty();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -3135,7 +3145,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await openInspectorTab(page, 'Files');
   await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"checkout":"worktree"');
+  await expect(page.locator('.file-editor')).toContainText('"checkout":"worktree"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await prompt(page).fill('Read the package from this worktree');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -3148,8 +3158,6 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
     expect(calls).toContainEqual(expect.objectContaining({ command, args: expect.objectContaining({ projectId: 'project-1', sessionId: taskId }) }));
   }
-  // Opened, attached, and re-read at run end because the file stays on screen in the inspector.
-  expect(calls.filter((call: any) => call.command === 'read_file' && call.args.sessionId === taskId)).toHaveLength(3);
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
@@ -3510,6 +3518,85 @@ test('streaming keeps the transcript at the bottom after sending and leaves a re
   expect(Math.abs(await historyOffset(anchor) - anchorY)).toBeLessThan(2);
 });
 
+
+test('moves conversation history to another project while preserving the open draft', async ({ page }) => {
+  const before = await page.locator('#transcript').innerText();
+  await prompt(page).fill('Continue the remaster here');
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Choose project', exact: true });
+  await expect(picker.getByRole('searchbox', { name: 'Search projects' })).toBeFocused();
+  await expect(picker).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: '/private/tmp/pandacode-move-project.png' });
+  await picker.getByRole('option', { name: /pandacode/ }).click();
+  await expect(picker).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(prompt(page)).toHaveValue('Continue the remaster here');
+  expect(await page.locator('#transcript').innerText()).toBe(before);
+  const task = await page.evaluate(async () => (await import((window as any).__pandacodePreviewUrl)).invoke('get_task', { sessionId: 'session-1' }));
+  expect(task.projectId).toBe('project-2');
+  expect(task.resumeId).toBeNull();
+  await expect(page.locator('.composer-context').getByRole('img', { name: 'Local: /Users/you/Projects/pandacode', exact: true })).toBeVisible();
+});
+
+test('moving a background conversation keeps the current thread and draft open', async ({ page }) => {
+  await prompt(page).fill('Keep the current draft');
+  await taskRow(page, 'session-2').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('option', { name: /pandacode/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Choose project', exact: true })).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(prompt(page)).toHaveValue('Keep the current draft');
+  const task = await page.evaluate(async () => (await import((window as any).__pandacodePreviewUrl)).invoke('get_task', { sessionId: 'session-2' }));
+  expect(task.projectId).toBe('project-2');
+});
+
+test('moving a conversation can be cancelled and is disabled while its agent runs', async ({ page }) => {
+  await page.getByRole('button', { name: 'Task actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Choose project', exact: true })).toBeHidden();
+  await prompt(page).fill('Implement this');
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Move to project…', exact: true })).toBeDisabled();
+});
+
+
+test('moves conversation history to a newly opened folder', async ({ page }) => {
+  await page.getByRole('button', { name: 'Task actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('button', { name: 'Open project…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Open project', exact: true });
+  await dialog.getByRole('textbox', { name: 'Project folder', exact: true }).fill('/projects/remastering');
+  await dialog.getByRole('button', { name: 'Open project', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.composer-context').getByRole('img', { name: 'Local: /projects/remastering', exact: true })).toBeVisible();
+  await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
+});
+
+
+test('moves conversation only after a successful save and shows a failed save in the picker', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const body = source.replace(/case ['"]move_session['"]\s*:/, `$& throw new Error('Unable to save the move. Try again.');`);
+    await route.fulfill({ response, body: previewBody(body) });
+  });
+  await page.reload();
+  await expect(taskRow(page, 'session-1')).toHaveAttribute('aria-current', 'page');
+  await prompt(page).fill('Keep this draft after failure');
+  await taskRow(page, 'session-1').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Move to project…', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Choose project', exact: true });
+  await picker.getByRole('option', { name: /pandacode/ }).click();
+  await expect(picker.getByRole('alert')).toHaveText('Unable to save the move. Try again.');
+  await page.keyboard.press('Escape');
+  await expect(prompt(page)).toHaveValue('Keep this draft after failure');
+  await expect(page.locator('.composer-context').getByRole('img', { name: 'Local: /Users/you/Projects/orbit', exact: true })).toBeVisible();
+});
 
 test('state pulses share one phase, whenever they mount', async ({ page }) => {
   await page.goto('/');

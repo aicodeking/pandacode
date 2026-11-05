@@ -3,6 +3,16 @@
  * model-picker.css, wallpapers.css) that load later or carry more specificity. */
 
 /* ---------- Composer (the reference's left column): an outer card holding the input's inner card and a tray ---------- */
+/* The transcript and input share one column, including their gutters before the width cap. */
+.conversation-pane{--thread-gutter:36px}
+.workspace:not(.side-thread) .conversation-pane:not(.channel-thread)>.transcript{padding-inline:var(--thread-gutter)}
+.workspace:not(.side-thread) .conversation-pane:not(.channel-thread)>.composer-area{padding-inline:var(--thread-gutter);max-width:calc(var(--thread-column-width) + 2 * var(--thread-gutter))}
+.workspace:not(.side-thread) .conversation-pane:not(.channel-thread)>.goal-banner{width:min(calc(100% - 2 * var(--thread-gutter)),var(--thread-column-width))}
+@media(min-width:1450px){.conversation-pane{--thread-gutter:45px}}
+@media(max-width:1100px){.conversation-pane{--thread-gutter:24px}}
+@media(max-width:650px){.conversation-pane{--thread-gutter:17px}}
+@container tile (max-width:520px){.conversation-pane>:is(.transcript,.composer-area,.goal-banner){--thread-gutter:10px}}
+
 .conversation-pane .composer-area .composer{display:flex;flex-direction:column;gap:4px;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);transition:border-color var(--ds-ease-out) ease-out}
 .workspace .conversation-pane .composer-area .composer:focus-within,.workspace[data-scene] .conversation-pane .composer-area .composer:focus-within{border-color:var(--ds-border);box-shadow:var(--ds-shadow-card)}
 .workspace[data-scene] .conversation-pane .composer-area .composer{border-color:var(--ds-border);background:var(--ds-card)}
@@ -137,6 +147,8 @@ html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,
 .conversation-pane .transcript:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 /* User bubbles keep their 16px radius (bots-thread.spec). */
 .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-content{padding:14px 18px;border-radius:16px;background:var(--ds-fill);line-height:1.55}
+/* A short bubble still has room for every checkpoint action within the thread. */
+html .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-actions{left:auto;right:0}
 .conversation-pane :is(#transcript,.thread-mirror-rows)>.agent-message>.message-content{line-height:1.6}
 /* Changed files: a card; its tree rows are ds rows. */
 .conversation-pane .turn-changes{padding:8px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
@@ -195,7 +207,7 @@ html[data-theme] .conversation-pane .approval-allow:hover:not(:disabled){backgro
   .composer-tray .composer-context>.link-chip>span:not(.link-chip-state){display:none}
 }
 @container composer (max-width:460px){
-  .composer-tray .composer-context>.composer-local[data-checkout="local"]{display:none}
+  .composer-tray .composer-context>span.composer-local[data-checkout="local"]{display:none}
 }
 
 /* ---------- The composer's segmented controls hand their highlight to the gliding thumb (trackSegment) ---------- */

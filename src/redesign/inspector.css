@@ -29,6 +29,8 @@
 
 /* Changes: the toolbar and per-file headers as rows; commit is the solid neutral primary. */
 #inspector .cv-header{height:40px}
+#inspector .cv-checkpoints{flex:none;width:auto;margin:6px 8px;padding:8px 10px;text-align:left;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+#inspector .cv-checkpoints .ds-row-sub{font-size:var(--ds-text-meta);white-space:normal}
 #inspector .cv-scope{height:28px;padding:0 8px;border-radius:var(--ds-radius-control)}
 #inspector :is(.cv-scope,.cv-icon,.cv-toggle):hover:not(:disabled){background:var(--ds-row-hover)}
 #inspector .cv-icon{border-radius:var(--ds-radius-control)}

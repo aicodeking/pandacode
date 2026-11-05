@@ -11,6 +11,7 @@ const menu = (page: Page) => page.getByRole('dialog', { name: 'Task actions', ex
 const ids = (page: Page, name: string) => section(page, name).locator('.task-item').evaluateAll(rows => rows.map(r => (r as HTMLElement).dataset.id));
 
 async function open(page: Page): Promise<void> {
+  await page.addInitScript(() => { const key = 'pandacode.sidebar.sort'; localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), group: 'flat' })); });
   await page.goto('/?sections');
   await expect(page.locator('.task-item.selected')).toHaveCount(1);
 }
@@ -269,7 +270,7 @@ test.describe('sidebar sections', () => {
     // Finished follows the sidebar sort, so its rows can move.
     await expect(menu(page).getByRole('menuitem', { name: 'Move up', exact: true })).toBeVisible();
     await expect(menu(page).getByRole('menuitem', { name: 'Copy task ID', exact: true })).toBeVisible();
-    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Open beside', 'Rename…', 'Schedule a wake-up…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
+    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Open beside', 'Rename…', 'Move to project…', 'Schedule a wake-up…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
     await page.keyboard.press('Escape');
     // A worktree task offers its branch.
     await showAllFinished(page);
@@ -401,7 +402,7 @@ $&`);
 
 test('every row keeps one indicator node: a state change fades and moves nothing', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('pandacode.sidebar.completedOpen', 'true'));
-  await page.goto('/?sections');
+  await open(page);
   const unread = page.locator('#navigation .task-item[data-id="sections-review-1"]');
   await expect(unread.locator('.task-indicator.unread')).toHaveAttribute('aria-label', 'Unread');
   for (const rowLocator of await page.locator('#navigation .task-item').all()) await expect(rowLocator.locator('.task-indicator')).toHaveCount(1);

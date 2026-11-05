@@ -56,9 +56,8 @@ jobs:
     timeout-minutes: 90
     env:
       RELEASE_TARGET: ${{ matrix.target }}
-      # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
-      # an ad-hoc signature instead (see docs/releasing.md).
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      # This fork ships ad-hoc signed Mac bundles; build.mjs verifies the signature.
+      APPLE_CERTIFICATE: ''
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -179,7 +178,7 @@ jobs:
         env:
           # A Developer ID signed build is notarized; an ad-hoc one is not, and
           # macOS then needs a step the notes have to name.
-          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          SIGNED: 'false'
         run: |
           {
             cat "releases/$VERSION.md"
@@ -203,7 +202,7 @@ jobs:
 
   npm:
     needs: [prepare, publish]
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && github.repository == 'aicodeking/pandacode'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

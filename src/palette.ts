@@ -1,15 +1,16 @@
 import './palette.css';
 import { parseHex, toOklch } from './color';
-import { accentTokens, statusClearOf, TONE_TOKENS, vsixTokens, type Tokens, type VsixTheme } from './palette-core';
+import { accentTokens, builtinTokens, BUILTIN_THEMES, statusClearOf, TONE_TOKENS, vsixTokens, type BuiltinTheme, type Tokens, type VsixTheme } from './palette-core';
 import { wallpaperAccents } from './wallpaper-accents';
-export type { VsixTheme } from './palette-core';
+export { BUILTIN_THEMES, builtinTokens } from './palette-core';
+export type { BuiltinTheme, VsixTheme } from './palette-core';
 
 /* The app's colors: PandaCode's own palette with an accent that is classic yellow,
  * a fixed color, or drawn from the current wallpaper — or, when a VS Code theme is
  * active, that theme's colors, which then stay put whatever the wallpaper does. */
 
 export type AccentChoice = { mode: 'wallpaper' } | { mode: 'classic' } | { mode: 'custom'; color: string };
-type Saved = { accent: AccentChoice; vsix: VsixTheme | null; cache: { key: string; tokens: Tokens; terminal: Record<string, string> } | null };
+type Saved = { builtin: BuiltinTheme; accent: AccentChoice; vsix: VsixTheme | null; cache: { key: string; tokens: Tokens; terminal: Record<string, string> } | null };
 
 const STORE = 'pandacode.palette';
 export const CLASSIC = '#ffd43b';
@@ -23,8 +24,8 @@ function read(): Saved {
     const saved = JSON.parse(localStorage.getItem(STORE) ?? 'null') as Partial<Saved> | null;
     const accent = saved?.accent;
     const valid = accent && (accent.mode === 'wallpaper' || accent.mode === 'classic' || (accent.mode === 'custom' && parseHex(accent.color)));
-    return { accent: valid ? accent : { mode: 'wallpaper' }, vsix: saved?.vsix ?? null, cache: saved?.cache ?? null };
-  } catch { return { accent: { mode: 'wallpaper' }, vsix: null, cache: null }; }
+    return { builtin: BUILTIN_THEMES.some(theme => theme.id === saved?.builtin) ? saved!.builtin! : 'system', accent: valid ? accent : { mode: 'wallpaper' }, vsix: saved?.vsix ?? null, cache: saved?.cache ?? null };
+  } catch { return { builtin: 'system', accent: { mode: 'wallpaper' }, vsix: null, cache: null }; }
 }
 let state = read();
 let wallpaperId: string | undefined;
@@ -64,9 +65,12 @@ function compute(): { key: string; tokens: Tokens; terminal: Record<string, stri
   }
   const color = state.accent.mode === 'custom' ? state.accent.color : state.accent.mode === 'wallpaper' ? wallpaperColor : undefined;
   const source = color && parseHex(color)?.rgb;
-  if (!source) return { key: `classic:${mode}`, tokens: statusClearOf(toOklch(parseHex(CLASSIC)!.rgb).h, mode), terminal: {} };
-  const tokens = accentTokens(source, mode);
-  return { key: `${color}:${mode}`, tokens, terminal: { cursor: tokens['--focus'], selectionBackground: tokens['--accent'] + '40' } };
+  const base = builtinTokens(state.builtin, mode);
+  // Accent controls remain independent of the selected surface palette.
+  for (const name of Object.keys(accentTokens(parseHex(CLASSIC)!.rgb, mode))) delete base[name];
+  if (!source && state.builtin === 'system') return { key: `classic:${mode}`, tokens: statusClearOf(toOklch(parseHex(CLASSIC)!.rgb).h, mode), terminal: {} };
+  const tokens = { ...base, ...(source ? accentTokens(source, mode) : statusClearOf(toOklch(parseHex(CLASSIC)!.rgb).h, mode)) };
+  return { key: `${color ?? 'builtin'}:${mode}:${state.builtin}`, tokens, terminal: source ? { cursor: tokens['--focus'], selectionBackground: tokens['--accent'] + '40' } : {} };
 }
 /** Apply the palette now; announces a change only when the colors actually moved. */
 function apply(): void {
@@ -82,6 +86,13 @@ function apply(): void {
 }
 
 export const palette = {
+  get builtin(): BuiltinTheme { return state.builtin; },
+  setBuiltin(builtin: BuiltinTheme): void {
+    if (!BUILTIN_THEMES.some(theme => theme.id === builtin)) return;
+    const color = builtinTokens(builtin, theme())['--accent'];
+    state = { ...state, builtin, accent: color ? { mode: 'custom', color } : { mode: 'wallpaper' } };
+    palette.setVsix(null);
+  },
   get accent(): AccentChoice { return state.accent; },
   get vsix(): VsixTheme | null { return state.vsix; },
   get wallpaperColor(): string | undefined { return wallpaperColor; },

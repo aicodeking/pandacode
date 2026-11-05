@@ -49,8 +49,10 @@ function mountUpdates(host: HTMLElement): () => void {
   const action = host.querySelector<HTMLButtonElement>('.settings-update-action')!;
   const modeSelect = host.querySelector<HTMLSelectElement>('[data-update-mode]')!;
   if (!updates?.supported) {
-    status.textContent = describeUpdate({ kind: 'off' }, 'off');
-    host.querySelector<HTMLElement>('.settings-updates-auto')?.remove();
+    status.textContent = 'Off — updates are disabled to preserve this custom build.';
+    modeSelect.value = 'off';
+    modeSelect.disabled = true;
+    host.querySelector<HTMLElement>('.settings-updates-auto small')!.textContent = 'Update this build by merging upstream changes and rebuilding.';
     return () => {};
   }
   const paint = () => {
