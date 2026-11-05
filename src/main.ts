@@ -947,7 +947,18 @@ transcriptScroller.addEventListener('scroll', () => {
   lastTranscriptTop = top;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => {
+  const target = event.target as Element;
+  // A fold the reader opens by hand holds the view where it is: reading a trace is not following new output.
+  if (target.closest('summary')) { stickToBottom = false; return; }
+  // Read more and the Workers toggle sit in the newest card, so the reader is at the bottom and they must not drop
+  // the follow (0.3.92-97 did, and nothing re-armed it until they scrolled). The card grows or gives height back
+  // under them, so hold the view still across that one repaint: anchored now, restored after the element's own
+  // handler has repainted it, before the frame.
+  if (!target.closest('.turn-card-more, .team-progress-toggle')) return;
+  const restore = captureTranscriptAnchor(transcriptScroller);
+  queueMicrotask(() => { restore(); lastTranscriptTop = transcriptScroller.scrollTop; });
+}, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
 transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
