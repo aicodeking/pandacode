@@ -214,10 +214,35 @@ fn an_unreadable_store_is_an_error_not_an_empty_list() {
 }
 
 #[test]
+fn a_broken_history_read_is_an_error_not_an_empty_history() {
+    // Broken part table: the session row reads, but history cannot.
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE part; CREATE TABLE part (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::conversation(&db, ZNEW).unwrap().is_some(), "the session itself is still readable");
+    assert!(zcode::history(&db, ZNEW).is_err(), "a failed part query is an error, not an empty history");
+    assert!(zcode::read(&db, ZNEW).is_err(), "a failed history read fails the import, not an empty task");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // Broken message table: same for the message query and the model read.
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE message; CREATE TABLE message (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::history(&db, ZNEW).is_err(), "a failed message query is an error, not an empty history");
+    assert!(zcode::model(&db, ZNEW).is_err(), "a failed message query is an error, not no model");
+    assert!(zcode::read(&db, ZNEW).is_err(), "a failed history read fails the import, not an empty task");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn zcode_history_keeps_text_and_tool_names_but_skips_runtime_injections() {
     let dir = temp();
     let db = zcode_db(&dir);
-    let history = zcode::history(&db, ZNEW);
+    let history = zcode::history(&db, ZNEW).unwrap();
     let roles: Vec<_> = history.iter().map(|entry| entry.0).collect();
     assert_eq!(roles, ["user", "assistant", "tool"]);
     assert_eq!(history[0].1, "Make the widget retry twice");
@@ -226,11 +251,11 @@ fn zcode_history_keeps_text_and_tool_names_but_skips_runtime_injections() {
     let all = history.iter().map(|entry| entry.1.as_str()).collect::<Vec<_>>().join("\n");
     assert!(!all.contains("environment context"), "runtimeMessage rows are not conversation");
     assert!(!all.contains("widget.ts"), "tool payloads stay out");
-    assert_eq!(zcode::history(&db, "sess_00000000-0000-4000-8000-000000000000"), Vec::new());
-    assert_eq!(zcode::model(&db, ZNEW).as_deref(), Some("glm-5.3"));
-    assert_eq!(zcode::model(&db, "sess_00000000-0000-4000-8000-000000000000"), None);
-    assert_eq!(zcode::conversation(&db, ZNEW).unwrap().created_at, ZT - 900_000);
-    assert_eq!(zcode::conversation(&db, "sess_00000000-0000-4000-8000-000000000000"), None);
+    assert_eq!(zcode::history(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), Vec::new());
+    assert_eq!(zcode::model(&db, ZNEW).unwrap().as_deref(), Some("glm-5.3"));
+    assert_eq!(zcode::model(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), None);
+    assert_eq!(zcode::conversation(&db, ZNEW).unwrap().unwrap().created_at, ZT - 900_000);
+    assert_eq!(zcode::conversation(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), None);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -240,7 +265,7 @@ fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes
     let db = zcode_db(&dir);
     let store = Store::open(Path::new(":memory:")).unwrap();
     // The reads gather outside the store lock; the helper holds only the import.
-    let import = |store: &Store, id: &str| import_zcode_row(store, id, "fallback-model", zcode::read(&db, id).unwrap());
+    let import = |store: &Store, id: &str| import_zcode_row(store, id, "fallback-model", zcode::read(&db, id).unwrap().unwrap());
     let task = import(&store, ZNEW).unwrap();
     assert_eq!(task.resume_id.as_deref(), Some(ZNEW));
     assert_eq!(task.provider, "zcode");
@@ -256,7 +281,7 @@ fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes
     assert_eq!(roles, ["user", "assistant", "tool"], "entries keep their conversation order");
     assert_eq!(store.imported_task("zcode", ZNEW).unwrap().as_deref(), Some(task.id.as_str()));
     assert_eq!(import(&store, ZNEW).unwrap().id, task.id, "a second import returns the existing task");
-    assert!(zcode::read(&db, "sess_00000000-0000-4000-8000-000000000000").is_none(), "a conversation gone from the store cannot be read");
+    assert!(zcode::read(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap().is_none(), "a conversation gone from the store cannot be read");
 
     let conn = rusqlite::Connection::open(&db).unwrap();
     // A folder that vanishes after the first import must not fail a re-import.
