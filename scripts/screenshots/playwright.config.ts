@@ -6,16 +6,16 @@ const chrome = process.env.PANDACODE_TEST_CHROME ?? '/Applications/Google Chrome
 export default defineConfig({
   testDir: '.',
   testMatch: ['capture.spec.ts'],
-  timeout: 60_000,
+  timeout: 120_000,
   workers: 1,
   reporter: 'list',
   outputDir: '/tmp/pandacode-screenshots/results',
   use: {
-    baseURL: 'http://127.0.0.1:1433',
+    baseURL: 'http://127.0.0.1:1437',
     viewport: { width: 1512, height: 945 },
     deviceScaleFactor: 2,
     launchOptions: { executablePath: chrome },
     reducedMotion: 'no-preference',
   },
-  webServer: { command: 'npx vite --host 127.0.0.1 --port 1433 --strictPort', cwd: '../..', url: 'http://127.0.0.1:1433', reuseExistingServer: false, timeout: 60_000 },
+  webServer: { command: 'npx vite --host 127.0.0.1 --port 1437 --strictPort', cwd: '../..', url: 'http://127.0.0.1:1437', reuseExistingServer: false, timeout: 60_000 },
 });
