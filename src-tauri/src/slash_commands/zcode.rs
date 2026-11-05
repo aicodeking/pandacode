@@ -1,56 +1,24 @@
 //! ZCode slash commands from a throwaway `session/create` snapshot. The
 //! app-server lists builtins (`/goal`, `/compact`) and the user's custom
 //! commands on that result; nothing is sent as a prompt.
-use super::{
-    claude::{parse_entries, Pipe},
-    Catalog,
-};
+use super::{claude::parse_entries, Catalog};
 use serde_json::{json, Value};
-use std::{collections::HashSet, path::Path, time::Duration};
+use std::{collections::HashSet, path::Path};
 
 const DISCOVERY_FAILED: &str =
     "ZCode commands could not be loaded. Check the installed CLI and try again.";
+/// Stdout cap for slash discovery, matching the shared `Pipe` total-bytes cap.
+const DISCOVERY_OUTPUT_LIMIT: u64 = 8 * 1024 * 1024;
 
 pub async fn discover(cwd: &Path) -> Result<Catalog, String> {
     let path =
         crate::providers::executable("zcode").ok_or("Install ZCode to discover its commands.")?;
     let mut command = crate::providers::provider_command("zcode", &path)?;
     command.arg("app-server");
-    let mut pipe = Pipe::spawn(command, cwd, Duration::from_secs(20))
+    let snapshot = crate::providers::zcode::create_snapshot(command, cwd, DISCOVERY_OUTPUT_LIMIT)
+        .await
         .map_err(|_| DISCOVERY_FAILED.to_owned())?;
-    let result = async {
-        let workspace = cwd.to_string_lossy().to_string();
-        pipe.send(&json!({"id": 1, "method": "session/create", "params": {
-            "workspace": {"workspacePath": workspace, "workspaceKey": workspace},
-            "persistence": "deferred",
-            "mode": "plan",
-            "titleGenerationEnabled": false,
-        }}))
-        .await?;
-        loop {
-            let value = pipe.read().await?;
-            if value.get("method").is_some() && value.get("id").is_some() {
-                pipe.send(&json!({"id": value["id"], "error": {"code": -32601, "message": "Method not found"}}))
-                    .await?;
-                continue;
-            }
-            if value["id"] != 1 {
-                continue;
-            }
-            if value.get("error").is_some() {
-                return Err(());
-            }
-            if let Some(session) = value["result"]["session"]["sessionId"].as_str() {
-                let _ = pipe
-                    .send(&json!({"id": 2, "method": "session/close", "params": {"sessionId": session}}))
-                    .await;
-            }
-            return parse_snapshot(&value["result"]).ok_or(());
-        }
-    }
-    .await;
-    pipe.finish().await;
-    result.map_err(|_| DISCOVERY_FAILED.to_owned())
+    parse_snapshot(&snapshot).ok_or_else(|| DISCOVERY_FAILED.to_owned())
 }
 
 /// Create-snapshot `slashCommands`: `{name, description, inputHint, source}`.
