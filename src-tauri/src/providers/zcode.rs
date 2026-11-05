@@ -242,7 +242,6 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= 1_000_000_000),
             image_input: input["supportsImage"] == true,
-            pdf_input: input["supportsPdf"] == true,
             max_output_tokens: entry["maxOutputTokens"]
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= 1_000_000_000),
@@ -1178,13 +1177,11 @@ mod tests {
         let models = parse_models(&catalog).unwrap();
         let flash = models.iter().find(|model| model.id == "GLM-5.3-Flash").unwrap();
         assert!(flash.image_input);
-        assert!(flash.pdf_input);
         assert_eq!(flash.max_output_tokens, Some(8192));
         assert_eq!(flash.description, "Z.AI: Multimodal Flash");
         assert_eq!(flash.disabled_reason, None);
         let glm = models.iter().find(|model| model.id == "GLM-5.3").unwrap();
         assert!(!glm.image_input);
-        assert!(!glm.pdf_input);
         assert_eq!(glm.disabled_reason.as_deref(), Some("Plan does not include this model"));
     }
 

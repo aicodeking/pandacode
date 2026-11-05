@@ -340,7 +340,7 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
   // Mirrors the session/create settings snapshot recorded from zcode app-server 3.16.3.
   zcode: [
     { id: 'zcproxy/GLM-5.3', name: 'zcproxy/GLM-5.3', description: 'OmniRouter', reasoningEfforts: ['low', 'high', 'max'].map(effort => ({ id: effort, name: effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'max', contextWindow: 200000, maxOutputTokens: 131072 },
-    { id: 'zcproxy/GLM-5.3-Flash', name: 'zcproxy/GLM-5.3-Flash', description: 'OmniRouter', reasoningEfforts: ['low', 'high', 'max'].map(effort => ({ id: effort, name: effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'max', contextWindow: 200000, imageInput: true, pdfInput: true },
+    { id: 'zcproxy/GLM-5.3-Flash', name: 'zcproxy/GLM-5.3-Flash', description: 'OmniRouter', reasoningEfforts: ['low', 'high', 'max'].map(effort => ({ id: effort, name: effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'max', contextWindow: 200000, imageInput: true },
   ],
 };
 // `?bench=diff` (or localStorage `pandacode.bench` = `diff`) adds synthetic, deterministic

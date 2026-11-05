@@ -941,8 +941,9 @@ source; builtins include `/goal` and `/compact`), `todos` and a `projection`
 (live context use against the window, pending permissions, active tool calls).
 Catalog entries carry `description`, `maxOutputTokens`, a `disabledReason` and
 `properties.inputFormat` (`supportsText`/`supportsImage`/`supportsVideo`/
-`supportsAudio`/`supportsPdf`); image support is per model (GLM-5.3-Flash
-reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
+`supportsAudio`/`supportsPdf`); PandaCode reads only `supportsImage` from it
+(`supportsPdf` is not consumed — there is no PDF input). Image support is per
+model (GLM-5.3-Flash reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
 service-tier field: the GLM Coding Plan sells speed per plan, never per model, so there is no
 ZCode equivalent of Codex's per-model speed tiers to select. `session/create`
 also accepts `mcpServers` (stdio or http/sse entries), `additionalDirectories`

@@ -530,9 +530,6 @@ pub struct ModelInfo {
     /// Catalog-advertised image input. Omitted when unknown or false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub image_input: bool,
-    /// Catalog-advertised PDF input. Omitted when unknown or false.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub pdf_input: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u64>,
     /// Present when the catalog marks the entry unusable. The picker keeps the
