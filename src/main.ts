@@ -840,7 +840,14 @@ function keepTopOnShrink(): void {
 }
 function followTranscript(): void {
   keepTopOnShrink();
-  if (!stickToBottom) return;
+  if (!stickToBottom) {
+    // A reader who is not following gives the blank room back: it is phantom scroll space under the last card,
+    // held only to keep that card's top still while following. Removing it cannot move what they are reading
+    // unless their scroll would clamp onto the shorter extent - `gap < room` means the room is already in their
+    // view, and that is the one case it stays for.
+    if (tailRoom && !tailBridging && transcriptGap() >= tailRoom) setTailRoom(0);
+    return;
+  }
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
   // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
   if (tailBridging && !tailFollows) return;
