@@ -811,6 +811,8 @@ transcriptScroller.tabIndex = 0;
 let stickToBottom = true, lastTranscriptTop = 0;
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+/** The line a card's top is brought to when a fold would otherwise leave it above the window (under the floating header). */
+const readingLine = (): number => transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
 /** The live card shrinking (a result card or the trace folding) would clamp the scroll and slide everything above it down:
  * the height it gave up becomes blank room under it, which new content grows back into. Only while the card's top is in
  * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
@@ -824,7 +826,7 @@ function keepTopOnShrink(): void {
   // At the end, the scroll has already lost what the card gave up (a clamp or scroll anchoring, in layout, before this runs).
   const end = transcriptScroller.scrollHeight - transcriptScroller.clientHeight, top = transcriptScroller.scrollTop;
   if (top < end - 1) return;
-  const clear = transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
+  const clear = readingLine();
   const aim = Math.min(top + before.height - box.height, top + box.top - clear);
   if (aim <= top) return;
   tailSession = state.sessionId;
@@ -1834,7 +1836,8 @@ function renderTranscript(preservePosition = false): void {
 /** The live card is gone and the saved one stands in its place, in the same task: its reply stays open and the
  * footer fades in. If the live trace was still open (no reply folded it), the saved trace opens in its place and
  * folds (foldInPlace), unless the reader is in it (then it stays open). Pinned, the card's top stays where the live
- * card's was and blank room under it (`tailRoom`) takes any height given up, so nothing above it moves. */
+ * card's was, or comes down to the reading line if that top was above the window, while blank room under it
+ * (`tailRoom`) takes any height given up. */
 function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, live: DOMRect, pinned: boolean, traceOpen: boolean, focus?: string, reopened = false): void {
   const card = [...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].at(-1);
   if (!card || shown.has(card.dataset.turnCard)) return;
@@ -1892,7 +1895,9 @@ function refocusCard(card: HTMLElement, selector: string): void {
 /** Folds the saved card's trace starting from the live card's height, so its bottom never steps: the card closes from
  * there to its folded height on the fold's own timing (`holdCard`). Pinned, its top stays where the live card's was
  * and the height it gives up (and any the composer just let go of) grows as blank room under it on the same timing
- * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it. */
+ * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it.
+ * A live card whose top was above the window comes down to the reading line instead, since holding it would leave the
+ * window showing only the fold's blank room. */
 function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect, pinned: boolean): void {
   const open = card.offsetHeight, total = transcriptScroller.scrollHeight, from = tailRoom;
   trace.open = false;
@@ -1904,7 +1909,9 @@ function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect
   if (!pinned) return;
   tailSession = state.sessionId;
   // The room must let the scroll reach the held top with the card at its starting height.
-  const shown = timing ? live.height : shut, target = transcriptScroller.scrollTop + card.getBoundingClientRect().top - live.top;
+  const shown = timing ? live.height : shut;
+  const keepTop = Math.max(live.top, readingLine());
+  const target = Math.max(0, transcriptScroller.scrollTop + card.getBoundingClientRect().top - keepTop);
   const start = Math.max(from, target + transcriptScroller.clientHeight - (total - open - from) - shown), end = Math.max(0, start + shown - shut);
   setTailRoom(Math.max(start, end));
   transcriptScroller.scrollTop = target;

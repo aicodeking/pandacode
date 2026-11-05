@@ -700,3 +700,53 @@ test('completion refresh links a file that the agent mentioned before creating i
   await expect(page.locator('#file-link-fixture .workspace-file-link')).toHaveCount(1);
   expect(await page.evaluate(() => (window as any).__fileLinks.calls)).toBe(2);
 });
+
+test.describe('a run ending with an open trace', () => {
+  test.beforeEach(async ({ page }) => {
+    await installControlledStreaming(page);
+    await page.goto('/?cards');
+    await page.locator('.task-item', { hasText: 'Turn cards' }).click();
+    await expect(page.locator('.task-item.selected .task-title')).toHaveText('Turn cards');
+  });
+
+  test('keeps the final reply in view when the trace folds at the handoff', async ({ page }) => {
+    await expect(prompt(page)).toBeEnabled();
+    await prompt(page).fill('Controlled streaming response');
+    await prompt(page).press('Enter');
+    await expect.poll(() => page.evaluate(() => (window as any).__latestStreamId ?? '')).not.toBe('');
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+    const id = await page.evaluate(() => (window as any).__latestStreamId);
+    await expect(page.locator('#stream-region .turn-card.is-live')).toBeVisible();
+    // Steps only, no text yet: nothing starts the trace's own fold timer before the run ends.
+    await page.evaluate(id => {
+      const fixture = (window as any).__streamFixtures[id];
+      for (let i = 0; i < 20; i++) fixture.tool();
+    }, id);
+    await expect(page.locator('#stream-region .tool-activity')).toHaveCount(20);
+    // The card is taller than the window, so its top is above the viewport.
+    const before = await page.evaluate(() => {
+      const scroller = document.querySelector<HTMLElement>('#transcript')!;
+      const card = document.querySelector<HTMLElement>('#stream-region .turn-card.is-live')!;
+      return { viewTop: scroller.getBoundingClientRect().top, cardTop: card.getBoundingClientRect().top };
+    });
+    expect(before.cardTop).toBeLessThan(before.viewTop);
+    // The final text and the end of the run in one task, so the handoff folds the trace, not the
+    // reply's 200 ms fold timer (`CARD_TRACE_FOLD_MS`): waiting even a little could fold it first and
+    // the test would then pass without the fix.
+    await page.evaluate(({ id, text }) => {
+      const fixture = (window as any).__streamFixtures[id];
+      fixture.push(text);
+      fixture.done();
+    }, { id, text: 'All done. This is the final answer.' });
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden();
+    await expect(prompt(page)).toBeEnabled();
+    await expect(page.locator('#stream-region .turn-card')).toHaveCount(0);
+    const reply = transcript(page).locator('.turn-card:not(.is-live)').last().locator('.turn-card-reply');
+    await expect(reply).toContainText('All done. This is the final answer.');
+    // Its top comes down to the reading line, instead of leaving the window showing only the fold's blank room.
+    await expect.poll(async () => {
+      const [box, bounds] = await Promise.all([reply.boundingBox(), transcript(page).boundingBox()]);
+      return Boolean(box && bounds && box.y >= bounds.y - 1 && box.y + box.height <= bounds.y + bounds.height + 1);
+    }).toBe(true);
+  });
+});
