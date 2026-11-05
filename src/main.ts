@@ -6769,12 +6769,23 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
+/** `.composer textarea`'s max-height in styles.css; the box is border-box, so the applied height is
+ * the box the content is measured against. */
+const PROMPT_MAX_HEIGHT = 180;
 function resizePrompt(): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (!prompt) return;
-  prompt.style.height = 'auto'; prompt.style.height = Math.min(prompt.scrollHeight, 180) + 'px';
-  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar.
-  prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? 'auto' : 'hidden';
+  // The composer textarea is the box the transcript is measured around: every forced layout here is
+  // paid on every keystroke, once by this and once by the transcript observer. Reset once, read once.
+  prompt.style.height = 'auto';
+  const natural = prompt.scrollHeight;
+  // Restoring the height is what the reset obliges; a keystroke that does not change it ends on the
+  // value it started with, so the box does not move.
+  prompt.style.height = Math.min(natural, PROMPT_MAX_HEIGHT) + 'px';
+  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar. `natural` against
+  // the cap is the test the old read of `scrollHeight` against `clientHeight` made after the height
+  // write, without that second layout.
+  prompt.style.overflowY = natural > PROMPT_MAX_HEIGHT + 1 ? 'auto' : 'hidden';
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
 document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
