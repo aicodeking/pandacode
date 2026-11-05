@@ -132,6 +132,7 @@ test.describe('streamed responses', () => {
     await expect(liveGroups(page).first().locator('.tool-group-summary')).toBeHidden();
     await expect.poll(openTools).toEqual([4, 5]);
     await page.keyboard.press('Meta+,');
+    await page.getByRole('tab', { name: 'General', exact: true }).click();
     await page.getByRole('checkbox', { name: 'Expand tool activity', exact: true }).check();
     await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
     await expect(activity).toHaveAttribute('open', '');
@@ -145,6 +146,7 @@ test.describe('streamed responses', () => {
     await expect(tools.first()).toHaveAttribute('open', '');
     await expect(liveGroups(page).last()).toHaveAttribute('open', '');
     await page.keyboard.press('Meta+,');
+    await page.getByRole('tab', { name: 'General', exact: true }).click();
     await page.getByRole('checkbox', { name: 'Expand tool activity', exact: true }).uncheck();
     await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
     await expect(activity).toHaveAttribute('open', '');

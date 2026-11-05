@@ -23,7 +23,6 @@
 .queue-panel .queue-now{height:30px;padding:0 8px;gap:6px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .queue-panel .queue-now:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
 .queue-panel .queue-now .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
-.queue-down .icon{transform:rotate(180deg)}
 .queue-row.editing{flex-direction:column;align-items:stretch;gap:6px;padding:4px}
 .queue-panel .queue-edit{overflow:auto;width:100%;min-height:52px;resize:vertical;padding:7px 9px;border-radius:var(--ds-radius-control);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--text);font:inherit;font-size:var(--text-sm)}
 .queue-panel .queue-edit:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 14%,transparent)}
@@ -37,7 +36,13 @@
 .queue-row:focus-visible{outline:none;box-shadow:0 0 0 2px color-mix(in srgb,var(--focus) 40%,transparent)}
 .queue-row.dragging{opacity:.45}
 .queue-row.drag-over{box-shadow:inset 0 2px 0 var(--accent)}
+.queue-row.drag-over-after{box-shadow:inset 0 -2px 0 var(--accent)}
+.queue-row[draggable=true]:active{cursor:grabbing}
 .queue-index .icon{width:12px;height:12px}
+/* The row's mark turns into a grip where it can be picked up. */
+.queue-index .queue-grip{display:none}
+.queue-row[draggable=true]:is(:hover,:focus-visible) .queue-index .icon:not(.queue-grip){display:none}
+.queue-row[draggable=true]:is(:hover,:focus-visible) .queue-index .queue-grip{display:inline-block}
 .queue-badge{flex:none;padding:1px 7px;border-radius:var(--ds-radius-chip);font-size:.68rem;font-weight:var(--weight-medium);color:var(--muted);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border)}
 .queue-badge.warn{color:var(--ds-warn)}
 .queue-edit-head{display:flex;align-items:center;gap:8px;font-size:.74rem;color:var(--muted)}

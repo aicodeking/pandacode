@@ -90,6 +90,7 @@ test('setting rows on the Settings page stay one line tall with notes behind mar
   await page.keyboard.press('Meta+,');
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   const group = (name: string) => settings.getByRole('tab', { name, exact: true });
+  await group('General').click();
   const rows = settings.locator('.settings-panel:not([hidden]) .setting-row');
   await expect(rows.first()).toBeVisible();
   const heights = await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));

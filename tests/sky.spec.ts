@@ -240,6 +240,7 @@ for (const scene of SCENE_IDS) for (const theme of ['light', 'dark'] as const) {
     });
     test(`header items read on bare ${over} at ${time} in ${theme}`, async ({ page }) => {
       await page.setViewportSize({ width: 1440, height: 860 });
+      await page.addInitScript(() => localStorage.setItem('pandacode.preview.agents-dock', JSON.stringify({ enabled: true, keepOnScreen: true, pinned: false })));
       await open(page, time, theme, scene);
       await expect(sky(page)).toHaveAttribute('data-gl', '');
       // The count badge overlaps the icon's corner by design; measure the icon against the sky behind it.

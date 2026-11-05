@@ -73,6 +73,7 @@ async function installArchitect(page: Page, snapshots: Record<string, TeamSnapsh
       };
       const fixture = window.__architectTest;
       fixture.calls.push({ command, args: structuredClone(args) });
+      if (command === 'get_messages' && fixture.messagesDelay) await new Promise(resolve => setTimeout(resolve, fixture.messagesDelay));
       if (fixture.failures[command]) throw new Error(fixture.failures[command]);
       if (command === 'get_messages' && Object.hasOwn(fixture.taskMessages, args.sessionId)) return { messages: structuredClone(fixture.taskMessages[args.sessionId]), hasOlder: false };
       if (command === 'architect_get' && Object.hasOwn(fixture.snapshots, args.sessionId)) {
@@ -512,6 +513,261 @@ test.describe('architect teams', () => {
     expect(await transcript(page).locator('.team-progress-worker[data-worker-id="review"]').evaluate((row, tool) => Boolean(row.compareDocumentPosition(tool!) & Node.DOCUMENT_POSITION_FOLLOWING), await later.elementHandle())).toBe(true);
   });
 
+  const wakeThread = (): Message[] => [
+    { id: 301, sessionId: 'session-2', role: 'user', content: 'Build search and review it.', createdAt: 2000, turnDurationMs: 5000 },
+    { id: 300, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, id: 'spawn', name: 'Read', status: 'completed', input: 'README.md', output: 'Notes' }), createdAt: 2500 },
+    { id: 302, sessionId: 'session-2', role: 'assistant', content: 'Delegated to the workers.', createdAt: 3000 },
+    { id: 303, sessionId: 'session-2', role: 'changes', content: '', createdAt: 3100, turnChanges: { attributed: true, id: 'first-files', files: [{ path: 'src/a.ts', status: 'added', additions: 1, deletions: 0 }], additions: 1, deletions: 0, truncated: false, concurrent: false } },
+  ] as Message[];
+  const wakeMessage = { id: 304, sessionId: 'session-2', role: 'coordination', coordinationKind: 'worker_review', content: 'Reviewing worker results', createdAt: 900000 };
+  const wakeTool = { id: 'review-diff', name: 'Bash', status: 'running', input: 'git diff', output: '' };
+
+  test('a lead wake stays one card while it streams and after it ends', async ({ page }) => {
+    const workers = [worker('build', { status: 'completed', createdAt: 2500 })];
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': wakeThread() });
+    const cards = transcript(page).locator('.turn-card'), card = cards.first();
+    await expect(card.locator('> .turn-card-reply')).toContainText('Delegated to the workers.');
+    await expect(cards).toHaveCount(1);
+    const key = await card.getAttribute('data-turn-card');
+    // The reader's open trace is theirs: it comes back open once the wake hands the card back.
+    await card.locator('> details.turn-activity > summary').click();
+    await page.evaluate(([wake, tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(wake);
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool });
+    }, [wakeMessage, wakeTool] as const);
+
+    const live = transcript(page).locator('.turn-card.is-live');
+    await expect(live.locator('.live-earlier .coordination-status[aria-label="Team status"]')).toBeAttached();
+    await expect(cards).toHaveCount(1);
+    await expect(transcript(page).locator('.user-message')).toHaveCount(1);
+    await expect(live.locator('details.turn-activity')).toHaveAttribute('open', '');
+    await expect(live.locator('.live-earlier')).toContainText('Delegated to the workers.');
+    await expect(live.locator('.turn-card-foot')).toContainText('1 changed file');
+    await expect(transcript(page).locator('.team-progress-slot')).toHaveCount(1);
+    await expect(live.locator('.team-progress-worker[data-worker-id="build"]')).toBeAttached();
+    // The earlier rows come first, outside the host paintLiveActivity manages; the time carries on from their total.
+    expect(await live.locator('.turn-activity-body').evaluate(body => [...body.children].map(child => child.className).slice(0, 2))).toEqual(['live-earlier', 'live-tools']);
+    await expect(live.locator('.live-tools [data-tool-key="tool:review-diff"]')).toBeAttached();
+    await expect(live.locator('.turn-activity-label')).toContainText('Ran');
+    await expect(live.locator('.turn-card-time')).toHaveText(/^[5-9]s$/);
+    // Until the wake's first text the reply holds its skeleton, and the earlier text is still in the trace.
+    await expect(live.locator('.turn-card-reply .live-message')).toBeHidden();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'The review passed.' }));
+    await expect(live.locator('.turn-card-reply .live-message')).toContainText('The review passed.');
+    await expect(cards).toHaveCount(1);
+    await expect(live.locator('.live-earlier')).toContainText('Delegated to the workers.');
+
+    await page.evaluate(([tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(
+        { id: 305, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, ...tool, status: 'completed' }), createdAt: 900500 },
+        { id: 306, sessionId: 'session-2', role: 'assistant', content: 'The review passed.', createdAt: 902000 },
+      );
+      // Native saves a wake's exact time on its coordination message when the run ends.
+      fixture.taskMessages['session-2'].find((message: Message) => message.id === 304).turnDurationMs = 2000;
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+    }, [wakeTool] as const);
+    const saved = transcript(page).locator('.turn-card:not(.is-live)');
+    await expect(saved).toHaveCount(1);
+    await expect(cards).toHaveCount(1);
+    await expect(saved).toHaveAttribute('data-turn-card', key!);
+    await expect(saved.locator('> .turn-card-reply')).toContainText('The review passed.');
+    await expect(saved.locator('> details.turn-activity')).toHaveAttribute('open', '');
+    await expect(saved.locator('> details.turn-activity > .turn-activity-body')).toContainText('Delegated to the workers.');
+    await expect(saved.locator('.coordination-status')).toHaveCount(1);
+    await expect(saved.locator('.turn-card-foot')).toContainText('1 changed file');
+    // The work's total, without the 15 minutes spent waiting on workers.
+    await expect(saved.locator('.turn-card-time')).toHaveText('7s');
+    await expect(transcript(page).locator('.team-progress-slot')).toHaveCount(1);
+    await expect(saved.locator('.team-progress-worker[data-worker-id="build"]')).toBeAttached();
+  });
+
+  test('a wake hands its live card to the saved one without moving its top, trace folded', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    const finished = { ...wakeTool, status: 'completed', output: 'clean' };
+    await page.evaluate(([wake, tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(wake);
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool });
+    }, [wakeMessage, finished] as const);
+    const live = transcript(page).locator('.turn-card.is-live');
+    await expect(live.locator('.live-earlier')).toBeAttached();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'The review passed.' }));
+    await expect(live.locator('details.turn-activity')).toHaveAttribute('data-folded', '');
+    await expect(live.locator('details.turn-activity')).not.toHaveAttribute('open', '');
+    const samples = await page.evaluate(async ([tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(
+        { id: 305, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, ...tool }), createdAt: 900500 },
+        { id: 306, sessionId: 'session-2', role: 'assistant', content: 'The review passed.', createdAt: 902000 },
+      );
+      const top = () => document.querySelector('#transcript .turn-card')!.getBoundingClientRect().top;
+      const seen = [top()];
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+      const until = performance.now() + 700;
+      while (performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(top()); }
+      return { seen, live: Boolean(document.querySelector('.turn-card.is-live')), cards: document.querySelectorAll('#transcript .turn-card').length };
+    }, [finished] as const);
+    expect(samples.live).toBe(false);
+    expect(samples.cards).toBe(1);
+    expect(Math.max(...samples.seen) - Math.min(...samples.seen)).toBeLessThan(2);
+    await expect(transcript(page).locator('.turn-card > details.turn-activity')).not.toHaveAttribute('open', '');
+  });
+
+  const toolMessage = (id: number, createdAt: number): Message => ({ id, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, id: `step-${id}`, name: 'Read', status: 'completed', input: `src/file-${id}.ts`, output: 'ok' }), createdAt } as Message);
+  const startWake = (page: Page) => page.evaluate(([wake, tool]) => {
+    const fixture = (window as any).__architectTest;
+    fixture.taskMessages['session-2'].push(wake);
+    fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool });
+  }, [wakeMessage, wakeTool] as const);
+
+  test('a long exchange does not make the card grow at wake start: its rows wait in one closed fold', async ({ page }) => {
+    const steps = Array.from({ length: 24 }, (_, index) => toolMessage(1000 + index, 2100 + index));
+    const [user, , reply, changes] = wakeThread();
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': [{ ...user, id: 301 }, ...steps, { ...reply, id: 1100 }, { ...changes, id: 1101 }] as Message[] });
+    const card = transcript(page).locator('.turn-card').first();
+    await expect(card.locator('> .turn-card-reply')).toContainText('Delegated to the workers.');
+    const summary = await card.locator('> details.turn-activity .trace-summary-text').textContent();
+    const before = await card.evaluate(node => node.getBoundingClientRect().height);
+    await startWake(page);
+    const live = transcript(page).locator('.turn-card.is-live'), fold = live.locator('details.live-earlier');
+    await expect(fold).toBeAttached();
+    await expect(transcript(page).locator('.turn-card')).toHaveCount(1);
+    await expect(fold).not.toHaveAttribute('open', '');
+    await expect(fold.locator('> summary')).toHaveText(summary!);
+    const row = fold.locator('[data-tool-key="tool:step-1000"]');
+    await expect(row).toBeHidden();
+    await expect(fold.getByText('Delegated to the workers.')).toBeHidden();
+    await expect(fold.locator('.coordination-status')).toBeHidden();
+    const size = await live.evaluate(node => ({
+      card: node.getBoundingClientRect().height,
+      head: node.querySelector('.turn-activity-summary')!.getBoundingClientRect().height,
+      skeleton: node.querySelector('.turn-card-reply')!.getBoundingClientRect().height,
+    }));
+    expect(size.card - before).toBeLessThanOrEqual(size.head + size.skeleton);
+    // Measured: the saved card plus about one line; a flat 24-step trace would add well over 500 px.
+    expect(size.card - before).toBeLessThan(120);
+    // The earlier reply is one click away and the fold stays as the reader left it across the run.
+    await fold.locator('> summary').click();
+    await expect(fold.getByText('Delegated to the workers.')).toBeVisible();
+    await expect(fold.locator('.coordination-status')).toBeVisible();
+    await fold.locator('> summary').click();
+    await expect(fold.getByText('Delegated to the workers.')).toBeHidden();
+    // The reader has left the trace and the step finished, so the reply folds it as usual.
+    await page.evaluate(([tool]) => {
+      (document.activeElement as HTMLElement | null)?.blur();
+      const fixture = (window as any).__architectTest;
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool: { ...tool, status: 'completed', output: 'clean' } });
+      fixture.event({ sessionId: 'session-2', kind: 'text', text: 'The review passed.' });
+    }, [wakeTool] as const);
+    await expect(live.locator('details.turn-activity')).not.toHaveAttribute('open', '');
+    const handoff = await page.evaluate(async ([tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(
+        { id: 2000, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, ...tool, status: 'completed' }), createdAt: 900500 },
+        { id: 2001, sessionId: 'session-2', role: 'assistant', content: 'The review passed.', createdAt: 902000 },
+      );
+      const top = () => document.querySelector('#transcript .turn-card')!.getBoundingClientRect().top;
+      const seen = [top()];
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+      const until = performance.now() + 700;
+      while (performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(top()); }
+      return { seen, live: document.querySelectorAll('.turn-card.is-live').length, cards: document.querySelectorAll('#transcript .turn-card').length };
+    }, [wakeTool] as const);
+    expect(handoff.live).toBe(0);
+    expect(handoff.cards).toBe(1);
+    expect(Math.max(...handoff.seen) - Math.min(...handoff.seen)).toBeLessThan(2);
+    await expect(transcript(page).locator('.turn-card > details.turn-activity')).not.toHaveAttribute('open', '');
+  });
+
+  test('a fold the reader opens during a wake leaves the saved trace open at the end', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    await startWake(page);
+    const fold = transcript(page).locator('.turn-card.is-live details.live-earlier');
+    await fold.locator('> summary').click();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'done', text: '' }));
+    await expect(transcript(page).locator('.turn-card.is-live')).toHaveCount(0);
+    await expect(transcript(page).locator('.turn-card > details.turn-activity')).toHaveAttribute('open', '');
+  });
+
+  // Every frame from the run's first event, so a single frame with two cards fails.
+  const sampleCards = (page: Page, ms: number) => page.evaluate(async ms => {
+    const counts: number[] = [], until = performance.now() + ms;
+    const placeholder = () => document.querySelector<HTMLTextAreaElement>('#prompt')?.placeholder ?? '';
+    const before = placeholder();
+    let composerMoved = false, heldFrames = 0;
+    while (performance.now() < until) {
+      await new Promise(requestAnimationFrame);
+      const shown = document.querySelectorAll('#transcript .turn-card').length;
+      counts.push(shown);
+      if (!document.querySelector('.turn-card.is-live')) { heldFrames++; if (placeholder() !== before) composerMoved = true; }
+    }
+    return { counts, composerMoved, heldFrames };
+  }, ms);
+
+  test('a slow page load never shows the saved card beside the live one, and the composer does not wait', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    await page.evaluate(() => { (window as any).__architectTest.messagesDelay = 180; });
+    const [frames] = await Promise.all([sampleCards(page, 600), startWake(page)]);
+    expect(frames.counts.length).toBeGreaterThan(5);
+    expect(Math.max(...frames.counts)).toBe(1);
+    expect(Math.min(...frames.counts)).toBe(1);
+    expect(frames.heldFrames, 'the saved card stayed while the page loaded').toBeGreaterThan(0);
+    expect(frames.composerMoved, 'the composer shows the run while the card waits').toBe(true);
+    await expect(transcript(page).locator('.turn-card.is-live details.live-earlier')).toBeAttached();
+  });
+
+  test('a load slower than the hold still shows the live card, then joins up', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    await page.evaluate(() => { (window as any).__architectTest.messagesDelay = 2500; });
+    await startWake(page);
+    const live = transcript(page).locator('.turn-card.is-live');
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'Still reaches the reader.' }));
+    await expect(live.locator('.live-message')).toContainText('Still reaches the reader.', { timeout: 1500 });
+    await expect(live.locator('details.live-earlier')).toBeAttached({ timeout: 5000 });
+    await expect(transcript(page).locator('.turn-card')).toHaveCount(1);
+    await expect(live.locator('.live-message')).toContainText('Still reaches the reader.');
+  });
+
+  test('a failed page load still shows the live card', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    await page.evaluate(() => { (window as any).__architectTest.failures.get_messages = 'disk busy'; });
+    await startWake(page);
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'Still reaches the reader.' }));
+    await expect(transcript(page).locator('.turn-card.is-live .live-message')).toContainText('Still reaches the reader.', { timeout: 1500 });
+  });
+
+  test('a run that is not a wake paints its live card right after the page returns', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await expect(transcript(page).locator('.turn-card > .turn-card-reply')).toContainText('Delegated to the workers.');
+    await page.evaluate(() => { (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'A scheduled run.' }); });
+    await expect(transcript(page).locator('.turn-card.is-live .live-message')).toContainText('A scheduled run.', { timeout: 1000 });
+    await expect(transcript(page).locator('.turn-card:not(.is-live) > .turn-card-reply')).toContainText('Delegated to the workers.');
+  });
+
+  test('a thread tile shows a live wake as one card', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
+    await page.locator('.task-item[data-id="session-1"]').click({ modifiers: ['Meta'] });
+    const tile = page.locator('.thread-tile[data-tile="session-2"] .thread-mirror');
+    await expect(tile.locator('.turn-card')).toHaveCount(1);
+    await page.evaluate(([wake, tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(wake);
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool });
+    }, [wakeMessage, wakeTool] as const);
+    await expect(tile.locator('.turn-card.is-live .live-earlier .coordination-status')).toBeAttached();
+    await expect(tile.locator('.turn-card')).toHaveCount(1);
+    await expect(tile.locator('.turn-card.is-live .live-earlier')).toContainText('Delegated to the workers.');
+    await expect(tile.locator('.turn-card.is-live .thread-mirror-time .turn-card-time')).toHaveText(/^[5-9]s$/);
+  });
+
   test('workers in the thread have no surface of their own and stay collapsed until opened', async ({ page }) => {
     const workers = [worker('build', { status: 'completed' }), worker('review', { status: 'failed' })];
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': [
@@ -558,17 +814,17 @@ test.describe('architect teams', () => {
       await installArchitect(page, { 'session-2': team('session-2') }, { 'session-2': coordinationHistory('session-2') });
       if (view === 'board') { await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click(); await selectTask(page, 'session-2', view); }
       const verify = async () => {
+        // One card for the whole exchange: the labels and earlier replies are rows in its trace.
+        await expect(transcript(page).locator('.turn-card')).toHaveCount(1);
+        const trace = transcript(page).locator('.turn-card > details.turn-activity');
+        if (!await trace.evaluate(node => (node as HTMLDetailsElement).open)) await trace.locator('> summary').click();
         const status = transcript(page).locator('.coordination-status[aria-label="Team status"]');
         await expect(status).toHaveCount(2);
         await expect(status.nth(0)).toBeVisible(); await expect(status.nth(0)).toContainText('Checking worker updates');
         await expect(status.nth(1)).toBeVisible(); await expect(status.nth(1)).toContainText('Reviewing worker results');
         expect(await status.evaluateAll(rows => rows.every(el => !el.closest('.user-message, .agent-message')))).toBe(true);
         await expect(status.locator('.provider-logo, .message-avatar')).toHaveCount(0);
-        // The status sits in the conversation column, aligned with the turn cards' edge (replies now sit inside the cards).
-        if (view === 'conversation') {
-          const [line, reply] = [(await status.nth(0).boundingBox())!, (await transcript(page).locator('.turn-card').first().boundingBox())!];
-          expect(Math.abs(line.x - reply.x)).toBeLessThan(2);
-        }
+        expect(await status.evaluateAll(rows => rows.every(el => el.parentElement!.classList.contains('turn-activity-body')))).toBe(true);
         await expect(transcript(page).locator('.user-message')).toHaveCount(1);
         await expect(transcript(page).locator('.user-message .message-content')).toHaveText(userJson);
         const responses = transcript(page).locator('.agent-message .message-content');

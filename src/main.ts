@@ -32,7 +32,7 @@ import './redesign/board.css';
 import './redesign/bots.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
-import { moved, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
+import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
@@ -62,7 +62,7 @@ import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
-import { groupTurns, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
+import { groupTurns, mergeLeadTurns, splitLiveExchange, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -83,6 +83,7 @@ import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
 import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
+import { installPointerDrag } from './pointer-drag';
 import type { RemoteHost, RemoteRepoCheck, RemoteStatus, RemoteTarget } from './remote-types';
 import type { RemoteStart } from './remote-progress';
 import type { RoutingMode, RoutingStatus } from './model-routing';
@@ -129,7 +130,9 @@ import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges };
+type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
+/** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
+type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
 const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
@@ -803,6 +806,7 @@ const disposeMessageActions = bindMessageActions($('#transcript'), {
       ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
   }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
 });
+installPointerDrag();
 const transcriptScroller = $('#transcript');
 transcriptScroller.tabIndex = 0;
 /* Following the latest output is an intent, not a measurement. Growing content and a resizing
@@ -971,6 +975,10 @@ const sky = mountSky($('.main-pane'), $('.workspace'), {
 const skyTime = preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null;
 /** Threads tiled beside the open one (src/thread-tiles.ts); `tilePages` holds what the read-only views show. */
 const tilePages = new Map<string, MessagePage>();
+/** Longest a run this window did not start waits for its page before its live card paints anyway (loadWakeExchange). */
+const WAKE_LOAD_HOLD_MS = 300;
+/** Open threads whose new run is holding its live card back, by the timer that ends the hold. */
+const wakeHolds = new Map<string, number>();
 const tiles = mountThreadTiles({
   area: $('.work-area'), pane: $('.conversation-pane'), workspace: $('.workspace'),
   title: id => state.sessions.find(s => s.id === id)?.title || 'New task',
@@ -1628,8 +1636,8 @@ function botCrumb(bot: import('./bots').Bot): string {
   return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
-function workerSlot(turn: { user?: Message; coordination?: Message }, sessionId = state.sessionId): string {
-  const start = turn.user?.createdAt ?? turn.coordination?.createdAt;
+function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId): string {
+  const start = turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
   return teams.has(sessionId) && start !== undefined ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
 }
 /** Each spawned worker shows in the turn it was spawned in; while that turn is still running,
@@ -1669,15 +1677,24 @@ function changesFoot(sessionId: string, changes: TurnChanges | undefined): strin
  *  messages change, so a stream's ticks touch just its live card. */
 function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const page = tilePages.get(id) ?? threadPages.get(id);
-  if (!tilePages.has(id)) void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => { tilePages.set(id, fresh); if (rows.isConnected) drawTile(id, rows, scroller); }).catch(report);
+  if (!tilePages.has(id)) void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => { tilePages.set(id, fresh); if (rows.isConnected) drawTile(id, rows, scroller); }).catch(error => {
+    report(error);
+    // The live card must still show: the page this view already has stands in for the one that failed.
+    const known = threadPages.get(id);
+    if (known) { tilePages.set(id, known); if (rows.isConnected) drawTile(id, rows, scroller); }
+  });
   if (!page) return;
-  const live = state.streams.get(id);
+  // Until the fresh page is in, the saved rows stay alone: a wake's exchange joins its live card only once its message is known.
+  const live = tilePages.has(id) ? state.streams.get(id) : undefined;
   let messages = page.messages;
   if (live) { let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; }); messages = messages.slice(0, lastUser + 1); }
-  const key = `${messages.length}:${messages.at(-1)?.id ?? ''}`;
+  const key = `${messages.length}:${messages.at(-1)?.id ?? ''}:${live ? 'live' : ''}`;
   if (rows.dataset.key !== key) {
     rows.dataset.key = key;
-    rows.innerHTML = `${groupTurns(messages).map(turn => turnHtml(turn, id, false, { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider })).join('')}<div class="thread-mirror-live"></div>`;
+    const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
+    const turns = mergeLeadTurns(groupTurns(messages));
+    const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
+    rows.innerHTML = `${saved.map(turn => turnHtml(turn, id, false, thread)).join('')}${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`;
     rows.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
     const byId = new Map(messages.map(message => [String(message.id), message]));
     rows.querySelectorAll<HTMLElement>('[data-markdown]').forEach(node => { const message = byId.get(node.dataset.markdown!); if (message) void markdown(node, message.content, scroller).catch(report); });
@@ -1686,17 +1703,38 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const slot = rows.querySelector<HTMLElement>('.thread-mirror-live');
   if (!slot) return;
   if (!live) { slot.replaceChildren(); return; }
-  if (!slot.firstElementChild) slot.innerHTML = '<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div><div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div></section>';
   const records = liveToolRecords(live);
   slot.querySelector<HTMLElement>('.turn-activity-label')!.innerHTML = records.length ? foldedLabelHtml(records) : 'Thinking';
-  slot.querySelector<HTMLElement>('.thread-mirror-time')!.innerHTML = timeHtml(Date.now() - live.startedAt, true);
+  slot.querySelector<HTMLElement>('.thread-mirror-time')!.innerHTML = timeHtml(Date.now() - live.startedAt + Number(slot.dataset.earlierMs), true);
   const reply = slot.querySelector<HTMLElement>('.turn-card-reply')!;
   reply.hidden = !live.text;
-  if (live.text && reply.dataset.source !== live.text) { reply.dataset.source = live.text; void markdown(slot.querySelector<HTMLElement>('.markdown')!, live.text, scroller).catch(report); }
+  if (live.text && reply.dataset.source !== live.text) { reply.dataset.source = live.text; void markdown(reply.querySelector<HTMLElement>('.markdown')!, live.text, scroller).catch(report); }
+}
+/** A tile's live card: its read-only header and reply, with the exchange a wake continues folded between them. */
+function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
+  const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
+  const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + earlierFeetHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}`;
+}
+/** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
+function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
+  return `<details class="live-earlier" data-earlier-key="${escape(earlier.key)}"${wakeOpenTraces.has(earlier.key) ? ' open' : ''}><summary class="tool-group-summary">${tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn'}${icon('chevron')}</summary><div class="tool-group-body">${savedActivityHtml(earlier.activity)}</div></details>`;
+}
+/** What stands above a turn's card: the user's bubble, a handoff, or a coordination label with no earlier card to join. */
+function turnLeadHtml(turn: TranscriptTurn, thread = shownThread()): string {
+  return (turn.user ? messageHtml(turn.user, false, true, thread) : '') + (turn.handoff ? messageHtml(turn.handoff, false, true, thread) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '');
+}
+const notesHtml = (turn: TranscriptTurn, thread: Thread): string => turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
+const cardErrorsHtml = (turn: TranscriptTurn, thread: Thread): string => turn.errors.length ? `<div class="turn-card-errors">${turn.errors.map(message => messageHtml(message, false, true, thread)).join('')}</div>` : '';
+const earlierChangeSets = (turn: TranscriptTurn): TurnChanges[] => [...(turn.earlierChanges ?? []), ...(turn.changes ? [turn.changes] : [])];
+/** Footers the card already showed before its newest one, wrapped so only a run's own footer fades in at the handoff (fadeInFoot). */
+function earlierFeetHtml(sessionId: string, changes: TurnChanges[]): string {
+  const feet = changes.map(set => changesFoot(sessionId, set)).join('');
+  return feet ? `<div class="turn-card-earlier-changes">${feet}</div>` : '';
 }
 function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
-  const lead = (turn.user ? messageHtml(turn.user, false, true, thread) : '') + (turn.handoff ? messageHtml(turn.handoff, false, true, thread) : '') + (turn.coordination ? renderCoordination(turn.coordination) : '');
-  const notes = turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
+  const lead = turnLeadHtml(turn, thread);
+  const notes = notesHtml(turn, thread);
   if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + turn.errors.map(message => messageHtml(message, false, true, thread)).join('') + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
   if (!turn.activity.length && !turn.final && !turn.errors.length) return lead + notes + workerSlot(turn, sessionId) + changesRow(sessionId, turn.changes);
   return lead + turnCardHtml(turn, sessionId, thread) + notes;
@@ -1711,8 +1749,7 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
     : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
   const final = turn.final;
   const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0)) : '';
-  const errors = turn.errors.length ? `<div class="turn-card-errors">${turn.errors.map(message => messageHtml(message, false, true, thread)).join('')}</div>` : '';
-  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${errors}${changesFoot(sessionId, turn.changes)}</section>`;
+  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${earlierFeetHtml(sessionId, turn.earlierChanges ?? [])}${changesFoot(sessionId, turn.changes)}</section>`;
 }
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
@@ -1796,7 +1833,16 @@ function renderTranscript(preservePosition = false): void {
     transcript.innerHTML = `<div class="new-task-welcome"><span class="new-task-mark" aria-hidden="true">${icon('bamboo')}</span><h1 aria-label="What should we build in ${escape(name)}?">What should we build in <button id="welcome-project" class="welcome-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project()?.path)}" ${s.worktreePath ? 'disabled' : ''}>${escape(name)}</button>?</h1></div><div id="stream-region"></div>`;
     return;
   }
-  const turns = groupTurns(visibleMessages());
+  const grouped = groupTurns(visibleMessages());
+  const turns = bot ? grouped : mergeLeadTurns(grouped);
+  // A lead's wake run takes the exchange it continues into its live card, so one reply is one card while it streams too.
+  const running = bot || wakeHolds.has(s.id) ? undefined : state.streams.get(s.id) ?? finishingStreams.get(s.id)?.stream;
+  const { saved, earlier } = running ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
+  if (running) running.earlier = earlier && { turn: earlier, tools: earlier.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) };
+  // Whether the earlier rows show is the reader's: a trace open before the wake, or the fold as they left it.
+  if (earlier && turnViews.some(view => view.key === earlier.key && view.open)) wakeOpenTraces.add(earlier.key);
+  const earlierFold = transcript.querySelector<HTMLDetailsElement>('#stream-region .live-earlier');
+  if (earlierFold) { if (earlierFold.open) wakeOpenTraces.add(earlierFold.dataset.earlierKey!); else wakeOpenTraces.delete(earlierFold.dataset.earlierKey!); }
   // A run that just ended hands its live card over to the saved one in place: the reply stays open and the footer folds in.
   const liveRegion = document.getElementById('stream-region');
   const liveCard = liveRegion?.dataset.sessionId === s.id ? liveRegion.querySelector<HTMLElement>('.turn-card.is-live') : null;
@@ -1809,10 +1855,12 @@ function renderTranscript(preservePosition = false): void {
   const traceReopened = Boolean(liveTrace?.open && liveTrace.dataset.folded !== undefined && liveTrace.dataset.closing === undefined);
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${turns.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${saved.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
   paintSavedMarkdown(transcript, state.messages, previousMarkdown, workspaceContext(), followTranscript);
   watchReplies(transcript);
+  reusableMarkdown = previousMarkdown;
   renderStream();
+  reusableMarkdown = undefined;
   refreshTeamProgress();
   restoreTurns(transcript, turnViews);
   if (unfolded && !shownCards) foldSavedTurn(transcript, unfolded);
@@ -1835,13 +1883,18 @@ function renderTranscript(preservePosition = false): void {
  * footer fades in. If the live trace was still open (no reply folded it), the saved trace opens in its place and
  * folds (foldInPlace), unless the reader is in it (then it stays open). Pinned, the card's top stays where the live
  * card's was and blank room under it (`tailRoom`) takes any height given up, so nothing above it moves. */
+// ponytail: a key stays if the run's card never hands off (a thread switch); a few short strings per wake.
+/** Saved traces the reader had open when a wake took their card into the live one; they stay open when it hands back. */
+const wakeOpenTraces = new Set<string>();
+/** Formatted rows renderTranscript just took down, for the live card's earlier rows to reuse. */
+let reusableMarkdown: Map<string, HTMLElement> | undefined;
 function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, live: DOMRect, pinned: boolean, traceOpen: boolean, focus?: string, reopened = false): void {
   const card = [...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].at(-1);
   if (!card || shown.has(card.dataset.turnCard)) return;
   const trace = card.querySelector<HTMLDetailsElement>(':scope > details.turn-activity');
   stopTailEase();
   // A reader in the trace (a focused step) keeps it: the saved trace stays open, with no fold, and the same step is focused.
-  const reading = Boolean((reopened || focus?.startsWith('[data-tool-key')) && trace);
+  const reading = Boolean((wakeOpenTraces.delete(card.dataset.turnCard!) || reopened || focus?.startsWith('[data-tool-key')) && trace);
   if (reading) trace!.open = true;
   if (focus) refocusCard(card, focus);
   const reply = card.querySelector<HTMLElement>(':scope > .turn-card-reply');
@@ -1995,7 +2048,7 @@ function activityHtml(key: string, labelHtml: string, body: string, options: { l
 type ToolGroupView = { key: string; toolKeys: string[]; open: boolean; focused: boolean };
 function captureToolGroups(root: ParentNode): ToolGroupView[] {
   // Live groups always show their steps, so their open state carries over only around a tool the reader opened.
-  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].filter(group => !group.closest('.live-activity') || readingTrace(group)).map(group => ({
+  return [...root.querySelectorAll<HTMLDetailsElement>('.tool-group')].filter(group => !group.closest('.live-tools') || readingTrace(group)).map(group => ({
     key: group.dataset.toolGroupKey!, open: group.open, focused: document.activeElement === group.querySelector('.tool-group-summary'),
     toolKeys: [...group.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey!),
   }));
@@ -2029,7 +2082,9 @@ function foldSavedTurn(root: ParentNode, live: TurnView): void {
 function restoreTurns(root: ParentNode, views: TurnView[]): void {
   root.querySelectorAll<HTMLDetailsElement>('.turn-activity').forEach(turn => {
     const keys = new Set([...turn.querySelectorAll<HTMLElement>('[data-tool-key]')].map(tool => tool.dataset.toolKey));
-    const view = views.find(view => view.key === turn.dataset.turnKey || view.toolKeys.some(key => keys.has(key)));
+    // A live trace holds a wake's earlier tools, but a saved card's folded state is not its own.
+    const live = turn.classList.contains('live-activity');
+    const view = views.find(view => view.key === turn.dataset.turnKey || (!live && view.toolKeys.some(key => keys.has(key))));
     if (!view) return;
     turn.open = view.open;
     if (view.focused) turn.querySelector<HTMLElement>('.turn-activity-summary')?.focus({ preventScroll: true });
@@ -2137,14 +2192,14 @@ function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
   });
 }
 function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
-  if (state.streams.has(sessionId) || finishingStreams.has(sessionId)) {
+  if ((state.streams.has(sessionId) || finishingStreams.has(sessionId)) && !wakeHolds.has(sessionId)) {
     let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; });
     return messages.slice(0, lastUser + 1);
   }
   return messages.slice();
 }
 function renderStream(): void {
-  if (!transcriptVisible()) { updateWorkTimer(); return; }
+  if (!transcriptVisible() || wakeHolds.has(state.sessionId)) { updateWorkTimer(); return; }
   const region = document.getElementById('stream-region'); if (!region) return;
   // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
   if ((state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
@@ -2165,10 +2220,12 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (region.dataset.sessionId !== sessionId || !parts || !region.contains(parts.output)) {
     const thinkingHtml = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>`;
     const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
-    const trace = (meta = '') => activityHtml(current.turnKey, '', '<div class="live-tools"></div><div class="live-status"></div>', { live: true, meta });
+    const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
+    const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - current.startedAt, true))}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}<div class="live-errors turn-card-errors"></div></section>`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? earlierFeetHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+    if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
     streamParts.set(region, parts = queryStreamParts(region));
@@ -2176,7 +2233,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   const { activity, message, thinking, output, status } = parts;
   if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
   const answered = answerAge(current);
-  paintLiveHeader(activity, current, finishing ? finishing.finishedAt - current.startedAt : undefined, answered);
+  paintLiveHeader(activity, current, finishing ? finishing.finishedAt - workStart(current) : undefined, answered);
   scheduleAnswerFolds(answered, main ? 'main' : sessionId, main ? renderStream : () => paintStream(region, sessionId, transcript));
   if (region.dataset.revision !== String(current.revision)) {
     paintLiveActivity(region, current, transcript, context);
@@ -2210,7 +2267,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     choreograph(parts.tools, current.turnKey, { answering, expandAll, hold });
   }
   // The answer to a traced turn hangs flush under the trace, as in the reference: no avatar/name row.
-  message.classList.toggle('after-trace', liveToolRecords(current).length > 0);
+  message.classList.toggle('after-trace', liveToolRecords(current).length > 0 || Boolean(current.earlier));
   // One closed Thinking fold per turn; it keeps the reader's open state while the text streams in.
   const thought = current.thinking ?? '';
   if (thinking.dataset.turnKey !== current.turnKey) { thinking.dataset.turnKey = current.turnKey; thinking.open = false; }
@@ -2361,7 +2418,7 @@ const answerTimers = new Map<string, number>();
  * A tool that starts after narration resets it, so the trace unfolds again for the new steps. */
 function answerAge(current: Stream): number {
   const tools = liveToolRecords(current);
-  if (!current.text || !tools.length || tools.some(tool => tool.status === 'running')) { answerStarts.delete(current); return -1; }
+  if (!current.text || (!tools.length && !current.earlier) || tools.some(tool => tool.status === 'running')) { answerStarts.delete(current); return -1; }
   let mark = answerStarts.get(current);
   if (!mark || mark.tools !== tools.length) answerStarts.set(current, mark = { at: Date.now(), tools: tools.length });
   return Date.now() - mark.at;
@@ -2392,7 +2449,7 @@ function traceGlyphHtml(kind: 'dots' | 'bars' | 'step', iconName = ''): string {
  * becomes the turn's summary and the steps fold under it, as the saved turn will render. */
 function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs: number | undefined, answerMs: number): void {
   const label = activity.querySelector<HTMLElement>('.turn-activity-label')!;
-  const tools = liveToolRecords(current);
+  const tools = liveToolRecords(current), allTools = current.earlier ? [...current.earlier.tools, ...tools] : tools;
   const narrated = current.tools.some(tool => tool.commentary && tool.key !== current.retainedMessageKey);
   const last = tools[tools.length - 1];
   const status = current.inputs.size || current.approvals.size || current.status === 'Stopping agent';
@@ -2410,12 +2467,12 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
     // A tool-only turn folds to its summary mid-answer (a card's as the answer starts); a narrated one keeps its steps until it ends.
     mode = 'folded';
     // In a card the time stands on the right, so the label is the steps' summary; bot rows keep `Worked for`.
-    html = tools.length && (!narrated || carded) ? foldedLabelHtml(tools) : carded ? escape('Replied') : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+    html = allTools.length && (!narrated || carded) ? foldedLabelHtml(allTools) : carded ? escape('Replied') : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
   } else if (last && !status && carded && (last.status !== 'running' || last.output)) {
     // In a card, once the step the header mirrored finishes or prints, its own row shows it: the header moves on
     // to the turn's running summary (`Ran 1 command`), so header and rows never say the same thing.
     mode = 'summary';
-    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : ''}${foldedLabelHtml(tools)}`;
+    html = `${answerMs >= 0 ? traceGlyphHtml('bars') : ''}${foldedLabelHtml(allTools)}`;
   } else if (last && !status) {
     const trace = describeTool(last);
     mode = 'step'; step = last.id;
@@ -2442,7 +2499,7 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
   if (label.dataset.html !== html) { label.innerHTML = html; label.dataset.html = html; loadStepImage(label); }
   const time = summary.querySelector<HTMLElement>('.turn-card-time');
   if (time) {
-    const shown = formatDuration(workedMs ?? Date.now() - current.startedAt);
+    const shown = formatDuration(workedMs ?? Date.now() - workStart(current));
     if (time.textContent !== shown) time.textContent = shown;
     if (workedMs !== undefined && time.hasAttribute('data-live')) {
       time.removeAttribute('data-live');
@@ -2478,18 +2535,20 @@ function workingLabel(current: Stream): string {
   if (current.status === 'Stopping agent') label = current.status;
   return !label || STARTUP_STATUS.has(label) ? 'Thinking' : label;
 }
+/** When the card's time would have started: a wake's card counts the work its exchange already did, not the wait between. */
+const workStart = (current: Stream): number => current.startedAt - (current.earlier?.turn.durationMs ?? 0);
 function updateWorkTimer(): void {
   if (document.hidden || ((!transcriptVisible() || !state.streams.has(state.sessionId)) && !document.querySelector('.task-runtime'))) { clearTimeout(workTimer); workTimer = 0; return; }
   if (workTimer) return;
   // Each tick lands just past the next whole second since the prompt, so the shown time never drifts.
-  const startedAt = state.streams.get(state.sessionId)?.startedAt;
-  const wait = startedAt === undefined ? 1000 : 1000 - (Date.now() - startedAt) % 1000 + 4;
+  const running = state.streams.get(state.sessionId);
+  const wait = running ? 1000 - (Date.now() - workStart(running)) % 1000 + 4 : 1000;
   workTimer = window.setTimeout(() => {
     workTimer = 0;
     const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
     if (current && summary && !summary.closest('.turn-card')) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
     const time = document.querySelector<HTMLElement>('#stream-region .turn-card-time[data-live]');
-    if (current && time) time.textContent = formatDuration(Date.now() - current.startedAt);
+    if (current && time) time.textContent = formatDuration(Date.now() - workStart(current));
     const now = Date.now();
     for (const timer of document.querySelectorAll<HTMLElement>('.task-runtime')) {
       const elapsed = formatDuration(now - Number(timer.dataset.startedAt));
@@ -3595,6 +3654,11 @@ async function saveQueueEdit(s = session()): Promise<void> {
 }
 /** Redraws the composer that shows `s`: the main one, or the By the way panel's. */
 function refreshComposer(s: Session): void { if (s.id === state.sessionId) renderComposer(); else btwPanel.refresh(); }
+onQueueReorder(async (row, ids) => {
+  const s = actionTask(row); if (!s) return false;
+  try { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids })); refreshComposer(s); return true; }
+  catch (error) { report(error); return false; }
+});
 async function queueAction(action: string, element: HTMLElement): Promise<void> {
   const s = actionTask(element); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
@@ -3604,7 +3668,6 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-cancel') { state.queueEditing = ''; refreshComposer(s); return; }
   if (action === 'queue-save') return saveQueueEdit(s);
   if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); refreshComposer(s); return; }
-  if (action === 'queue-up' || action === 'queue-down') { setQueue(s.id, await call<QueuedMessage[]>('queue_reorder', { sessionId: s.id, ids: moved(queueOf(s.id), id, action === 'queue-up' ? -1 : 1) })); refreshComposer(s); return; }
   if (action === 'queue-resume') { state.queueHolds.delete(s.id); refreshComposer(s); await dispatchQueue(s.id); }
 }
 /** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
@@ -4247,6 +4310,24 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
     }).catch(report);
   }
 }
+/** A run this window did not start may be a lead's wake, whose coordination message is saved but not loaded yet.
+ * Its live card waits for that page, so the saved card never shows beside it; the run's state updates at once, and a
+ * failed or slow load (WAKE_LOAD_HOLD_MS) lets the card paint, so no reply is hidden. Any other run keeps the page it has. */
+function loadWakeExchange(sessionId: string, current: Stream): void {
+  tilePages.delete(sessionId);
+  if (sessionId !== state.sessionId || botForThread()) return;
+  const generation = state.generation;
+  const endHold = (): void => { if (wakeHolds.get(sessionId) === timer) { clearTimeout(timer); wakeHolds.delete(sessionId); } };
+  const timer = window.setTimeout(() => { endHold(); renderStream(); }, WAKE_LOAD_HOLD_MS);
+  clearTimeout(wakeHolds.get(sessionId));
+  wakeHolds.set(sessionId, timer);
+  void latestMessagePage(sessionId).then(page => {
+    endHold();
+    const boundary = [...page.messages].reverse().find(message => message.role === 'user' || message.role === 'coordination' || message.role === 'changes');
+    if (generation === state.generation && sessionId === state.sessionId && state.streams.get(sessionId) === current && !current.earlier && boundary?.role === 'coordination') { setMessagePage(page); renderTranscript(); }
+    else renderStream();
+  }).catch(error => { endHold(); renderStream(); report(error); });
+}
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
 function onAgent(event: AgentEvent): void {
@@ -4342,6 +4423,7 @@ function onAgent(event: AgentEvent): void {
   const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
   if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
   const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
+  if (firstEvent) loadWakeExchange(event.sessionId, current);
   let becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
   if (event.kind === 'text') {
@@ -4981,6 +5063,12 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
 }
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
+  // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
+  if (taskCreation && !anchor.closest('.btw-panel')) {
+    await taskCreation;
+    anchor = document.querySelector<HTMLElement>('#model-picker-trigger') ?? anchor;
+    target = session();
+  }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
   const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
@@ -5095,7 +5183,15 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
     await send();
   } });
 }
-async function createTask(projectId = state.projectId): Promise<void> {
+/** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */
+let taskCreation: Promise<unknown> | undefined;
+function createTask(projectId = state.projectId): Promise<void> {
+  const run = startTask(projectId);
+  const tracked: Promise<unknown> = Promise.allSettled([taskCreation, run]).finally(() => { if (taskCreation === tracked) taskCreation = undefined; });
+  taskCreation = tracked;
+  return run;
+}
+async function startTask(projectId: string): Promise<void> {
   if (bootPending) await bootPending.catch(() => undefined);
   if (creatingTask) return;
   const projects = state.projects.filter(p => !isChatProject(p));

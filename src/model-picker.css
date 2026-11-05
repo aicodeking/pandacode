@@ -1,94 +1,121 @@
-/* Harness and model picker (src/model-picker.ts): search, a harness rail beside one-line models, segmented effort.
-   Loaded with the workspace (main.ts) and the launcher (overlay-model-picker.ts); the glass is .floating-menu's. */
-.model-menu.floating-menu{padding:0;max-width:calc(100vw - 24px);font-size:var(--text-sm)}
+/* Harness and model picker (src/model-picker.ts): a small inset shell. The glass (.floating-menu's) is the frame; search, the
+   harness rail and effort sit on it unfilled, and the model list is the one inset panel beside the rail. The effort track lines
+   up with that panel. Loaded with the workspace (main.ts) and the launcher (overlay-model-picker.ts, which maps every --ds token used here). */
+.model-menu{--model-rail:160px;--model-gap:var(--ds-card-pad)}
+/* Card radius less the 6px gap is the panel's inner radius, as in .ds-card > .ds-card-inner. */
+.model-menu.floating-menu{padding:0;max-width:calc(100vw - 24px);border-radius:var(--ds-radius-card);font-size:var(--ds-text-meta)}
 .model-menu [hidden]{display:none!important}
 .model-menu button{font:inherit;color:inherit}
 .model-menu *{transition:none}
 
-.model-menu-search{display:flex;align-items:center;gap:var(--space-2);flex-shrink:0;height:var(--row-lg);padding:0 var(--space-3);color:var(--muted)}
-.model-menu-search .icon{width:var(--icon-sm);height:var(--icon-sm);flex-shrink:0}
-html[data-theme] .model-menu-search input{flex:1;min-width:0;height:100%;padding:0;border:0;border-radius:0;background:none;box-shadow:none;outline:none;color:var(--text);font-size:var(--text-sm)}
+/* Search: a bare line on the glass, its icon over the rail's. Always focused, so focus draws nothing. */
+.model-menu-search{display:flex;align-items:center;gap:var(--space-2);flex-shrink:0;height:calc(var(--row-lg) + var(--model-gap));padding:0 calc(var(--model-gap) + var(--space-2));color:var(--muted)}
+.model-menu-search .icon{width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
+html[data-theme] .model-menu-search input{flex:1;min-width:0;height:100%;padding:0;border:0;border-radius:0;background:none;box-shadow:none;outline:none;color:var(--text);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking)}
 .model-menu-search input::placeholder{color:var(--faint)}
 .model-menu-search input::-webkit-search-cancel-button{display:none}
 
-.model-menu-body{display:grid;grid-template-columns:160px minmax(0,1fr);flex:1;min-height:0}
-.model-menu-rail,.model-menu-list{overflow:auto;min-height:0;padding:var(--space-1);overscroll-behavior:contain;scrollbar-width:thin}
-.model-menu-rail{background:var(--ds-card)}
+.model-menu-body{display:grid;grid-template-columns:var(--model-rail) minmax(0,1fr);gap:var(--model-gap);flex:1;min-height:0;padding:0 var(--model-gap) var(--model-gap)}
+.model-menu-rail,.model-menu-list{overflow:auto;min-height:0;overscroll-behavior:contain;scrollbar-width:thin}
+
+/* Rail: no fill, on the glass like the sidebar on the frame; rows as Settings nav's. */
 .model-menu-rail.has-more{mask-image:linear-gradient(to bottom,black calc(100% - var(--row)),transparent)}
-.model-menu-rail-heading{padding:var(--space-2) var(--space-2) var(--space-1);color:var(--muted);font-size:var(--text-xs);font-weight:var(--weight-medium)}
-.model-menu-tab{display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);color:var(--muted);font-size:var(--text-sm);text-align:left;white-space:nowrap}
+.model-menu-rail-heading{padding:var(--space-2) var(--space-2) var(--space-1);color:var(--muted);font-size:var(--ds-text-chip)}
+.model-menu-tab{position:relative;display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);color:var(--ds-row-ink);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking);text-align:left;white-space:nowrap}
+.model-menu-tab+.model-menu-tab{margin-top:1px}
 .model-menu-tab.is-connection{padding-left:calc(var(--space-2) + var(--icon-md) + var(--space-2))}
 .model-menu-tab.is-connection>.provider-logo{display:none}
 .model-menu-tab>:is(.provider-logo,.icon){width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
+.model-menu-tab>.icon{color:var(--muted)}
 .model-menu-tab-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .model-menu-tab.has-current>.model-menu-tab-label::after{content:"";display:inline-block;width:5px;height:5px;margin-left:var(--space-2);border-radius:50%;background:currentColor;vertical-align:1px}
-.model-menu-count{color:var(--faint);font-size:var(--text-xs);font-variant-numeric:tabular-nums}
+.model-menu-count{color:var(--faint);font-size:var(--ds-text-chip);font-variant-numeric:tabular-nums}
 .model-menu-count:empty{display:none}
-.model-menu-tab:hover{background:var(--ds-row-hover);color:var(--text)}
+.model-menu-tab:hover{background:var(--ds-row-hover)}
+.model-menu-tab:active{background:var(--ds-row-press)}
 .model-menu-tab[aria-selected="true"]{background:var(--ds-fill-hover);color:var(--text);font-weight:var(--weight-medium)}
+.model-menu-tab[aria-selected="true"]>.icon{color:var(--text)}
 /* Dimmed rows (no hits during a query, locked): the mark fades, the label stays at muted, which holds 4.5:1. */
 html[data-theme] .model-menu-tab.is-dim:not(:hover,[aria-selected="true"]){color:var(--muted)}
 .model-menu-tab.is-dim>:is(.provider-logo,.icon){opacity:.45}
 
+/* The inset panel: the inner-card fill, a hairline as the shell's panels have, the soft card shadow. */
+.model-menu-list{display:flex;flex-direction:column;padding:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+.model-menu-list>*{flex-shrink:0}
 .model-menu-group-heading{display:flex;align-items:center;gap:var(--space-2);height:var(--row);padding:0 var(--space-2);color:var(--muted)}
-.model-menu-group-heading>:is(.provider-logo,.icon){width:var(--icon-lg);height:var(--icon-lg);flex-shrink:0}
-.model-menu-group-name{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:var(--text-sm);font-weight:var(--weight-medium)}
-.model-menu-group-heading>span{color:var(--faint);font-size:var(--text-xs);white-space:nowrap}
+.model-menu-group-heading>:is(.provider-logo,.icon){width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
+.model-menu-group-name{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--ds-text-chip);font-weight:var(--weight-regular);letter-spacing:var(--ds-row-tracking)}
+.model-menu-group-heading>span:not(.model-menu-group-name){color:var(--faint);font-size:var(--ds-text-chip);white-space:nowrap}
 
-.model-menu-option{display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);text-align:left;white-space:nowrap;color:var(--text)}
+.model-menu-option{display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);text-align:left;white-space:nowrap;color:var(--ds-row-ink);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking)}
 .model-menu-option>.provider-logo{width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
 .model-menu-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-.model-menu-meta{flex:0 100 auto;min-width:0;margin-left:auto;padding-left:var(--space-2);overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--muted);font-size:var(--text-xs);font-variant-numeric:tabular-nums}
+/* The meta (a context size, a harness) stays whole and the name truncates, so the column never shrinks to a stub; the cap only bites a very long connection name. */
+.model-menu-meta{flex:none;max-width:45%;min-width:0;margin-left:auto;padding-left:var(--space-2);overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--muted);font-size:var(--ds-text-chip);letter-spacing:0;font-variant-numeric:tabular-nums}
 .model-menu-option>.model-menu-check{width:var(--icon-sm);height:var(--icon-sm);flex-shrink:0;margin-left:auto;color:var(--text)}
 .model-menu-meta+.model-menu-check{margin-left:0}
-.model-menu-team .model-menu-meta{flex-shrink:0}
+/* A team row: the name and the worker count stay whole; only the lead between them gives way (any shrink at all would ellipsize the name). */
+.model-menu-team .model-menu-name{flex:none;max-width:45%}
+.model-menu-team .model-menu-meta{display:flex;flex:1 1 0;max-width:none;justify-content:flex-end}
+.model-menu-meta-lead{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.model-menu-meta-count{flex:none;white-space:pre}
 .model-menu-custom .model-menu-name{color:var(--muted)}
 .model-menu-option.model-menu-active{background:var(--ds-row-hover)}
-.model-menu-option.model-menu-current{background:var(--ds-fill-hover,var(--fill-hover))}
+.model-menu-option.model-menu-current{background:var(--ds-fill-hover);color:var(--text);font-weight:var(--weight-medium)}
+.model-menu-option:not(:disabled):active{background:var(--ds-row-press)}
 /* The selected row's fill lifts what is behind the meta, so it takes a step toward the text to stay at 4.5:1. */
-.model-menu-current .model-menu-meta{color:color-mix(in srgb,var(--text) 80%,transparent)}
+.model-menu-current .model-menu-meta{color:color-mix(in srgb,var(--text) 80%,transparent);font-weight:var(--weight-regular)}
 .model-menu-option:disabled{opacity:.45}
 .model-menu-option[data-available="true"]:disabled{opacity:1;cursor:wait}
 .model-menu-stack{display:inline-flex;flex-shrink:0}
 .model-menu-stack>.provider-logo{width:var(--icon-md);height:var(--icon-md);border-radius:var(--radius-xs)}
 .model-menu-stack>*+*{margin-left:-3px}
 
-.model-menu-empty,.model-menu-error{flex-shrink:0;margin:var(--space-2) var(--space-3);color:var(--muted);font-size:var(--text-xs);line-height:var(--leading-ui);overflow-wrap:anywhere}
-.model-menu-error{color:var(--ds-danger)}
+.model-menu-empty{margin:var(--space-2);color:var(--muted);font-size:var(--ds-text-chip);line-height:var(--leading-ui);overflow-wrap:anywhere}
+.model-menu-error{flex-shrink:0;margin:0 calc(var(--model-gap) + var(--space-2)) var(--model-gap);color:var(--ds-danger);font-size:var(--ds-text-chip);line-height:var(--leading-ui);overflow-wrap:anywhere}
 .model-menu-pending{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 
 /* Harnesses without a logo asset (provider-logos.ts): a neutral letter at the logo's size. */
-.provider-logo-tile{display:inline-grid;place-items:center;width:20px;height:20px;flex-shrink:0;border-radius:var(--radius-xs);background:var(--fill-hover);color:var(--muted);font-size:var(--text-xs);font-weight:var(--weight-strong);line-height:1;overflow:hidden}
+.provider-logo-tile{display:inline-grid;place-items:center;width:20px;height:20px;flex-shrink:0;border-radius:var(--radius-sm);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--muted);font-size:var(--text-2xs);font-weight:var(--weight-medium);line-height:1;overflow:hidden}
 
-/* Footer: effort as a segmented radiogroup, one hint line below. */
-.model-menu-settings{flex-shrink:0;padding:var(--space-1) var(--space-2) var(--space-2)}
-.model-menu-effort-row{display:flex;align-items:center;gap:var(--space-2);min-height:32px}
-.model-menu-effort-label{flex:0 0 auto;width:44px;color:var(--faint);font-size:var(--text-xs)}
-.model-menu-effort-note{color:var(--muted);font-size:var(--text-xs)}
-.model-menu-effort{position:relative;display:flex;flex:1;min-width:0;height:30px;padding:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-track)}
-.model-menu-effort>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);translate:var(--seg-x,0px) var(--seg-y,0px);transform-origin:0 0;will-change:translate;border-radius:calc(var(--ds-radius-control) - 2px);background:var(--fill-active);pointer-events:none}
-.model-menu-effort>button{position:relative;z-index:1;flex:1;min-width:0;padding:0 var(--space-1);border-radius:calc(var(--ds-radius-control) - 2px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--text-xs)}
+/* Footer on the glass: "Effort" over the rail's column, the segmented track under the panel, one hint line below. */
+.model-menu-settings{flex-shrink:0;padding:0 var(--model-gap) var(--space-2)}
+.model-menu-effort-row{display:grid;grid-template-columns:var(--model-rail) minmax(0,1fr);gap:var(--model-gap);align-items:center;min-height:30px}
+.model-menu-effort-label{padding-left:var(--space-2);color:var(--muted);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking)}
+.model-menu-effort-note{padding-left:var(--space-2);color:var(--muted);font-size:var(--ds-text-chip)}
+.model-menu-effort{position:relative;display:flex;gap:2px;min-width:0;height:30px;padding:2px;border:1px solid var(--ds-border);border-top-color:var(--ds-seg-edge-top);border-bottom-color:var(--ds-seg-edge-bottom);border-radius:var(--ds-radius-control);background:var(--ds-track);box-shadow:var(--ds-seg-shadow)}
+.model-menu-effort>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);translate:var(--seg-x,0px) var(--seg-y,0px);transform-origin:0 0;will-change:translate;border-radius:var(--ds-radius-chip);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow);pointer-events:none}
+.model-menu-effort>button{position:relative;z-index:1;flex:1 1 0;min-width:0;padding:0 var(--space-1);border-radius:var(--ds-radius-chip);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--ds-text-chip)}
 .model-menu-effort>button:hover:not(:disabled){color:var(--text)}
-.model-menu-effort>button[aria-checked="true"]{color:var(--text);font-weight:var(--weight-medium)}
+.model-menu-effort>button[aria-checked="true"]{color:var(--text)}
 .model-menu-effort>button[data-model-default]::after{content:"";position:absolute;left:50%;bottom:1px;width:3px;height:3px;margin-left:-1.5px;border-radius:50%;background:var(--faint)}
 .model-menu-effort>button:disabled{cursor:wait}
-.model-menu-effort-hint{margin:var(--space-1) 0 0 calc(44px + var(--space-2));min-height:1lh;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:var(--text-xs);line-height:var(--leading-ui)}
+.model-menu-effort-hint{margin:var(--space-1) 0 0;padding-left:var(--space-2);min-height:1lh;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--faint);font-size:var(--text-xs);line-height:var(--leading-ui)}
 
 .model-menu :is(.model-menu-tab,.model-menu-option,.model-menu-effort>button):focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 
-/* Narrow windows keep only the rail's logos. */
+/* Narrow windows keep only the rail's logos; the track takes the whole footer. */
 @media (max-width:519px){
-  .model-menu-body{grid-template-columns:44px minmax(0,1fr)}
+  .model-menu{--model-rail:36px}
   .model-menu-tab{justify-content:center;padding:0}
+  .model-menu-tab.is-connection{padding:0}
   .model-menu-tab.is-connection>.provider-logo{display:block;opacity:.6}
   .model-menu-tab :is(.model-menu-tab-label,.model-menu-count),.model-menu-rail-heading{display:none}
-  .model-menu-tab.has-current{box-shadow:none;background:var(--ds-fill-hover)}
-  .model-menu-effort-label{display:none}.model-menu-effort-hint{margin-left:0}
+  .model-menu-tab.has-current::after{content:"";position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%;background:currentColor}
+  .model-menu-effort-row{grid-template-columns:minmax(0,1fr)}
+  .model-menu-effort-label{display:none}
 }
 @media (prefers-contrast:more){
   .model-menu :is(.model-menu-current,.model-menu-tab[aria-selected="true"]){outline:1px solid var(--focus);outline-offset:-1px}
   .model-menu :is(.model-menu-meta,.model-menu-count,.model-menu-effort-hint){color:var(--text)}
-  .model-menu-effort{box-shadow:inset 0 0 0 1px var(--text)}
+  .model-menu :is(.model-menu-list,.model-menu-effort){border-color:var(--text);box-shadow:none}
+}
+@media (forced-colors:active){
+  .model-menu :is(.icon,.provider-logo){color:CanvasText}
+  .model-menu :is(.model-menu-list,.model-menu-effort){border:1px solid CanvasText}
+  .model-menu :is(.model-menu-current,.model-menu-active,.model-menu-tab[aria-selected="true"]){outline:1px solid Highlight;outline-offset:-1px}
+  .model-menu-effort>.segment-thumb{forced-color-adjust:none;background:Highlight}
+  .model-menu-effort>button[aria-checked="true"]{forced-color-adjust:none;color:HighlightText}
 }
 
 /* Composer trigger: logo (or a team's stacked roster), model name, effort word. */

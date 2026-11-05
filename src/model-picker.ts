@@ -31,7 +31,7 @@ type ModelPickerOptions = {
 };
 
 const RECENT_LIMIT = 5;
-const WIDTH = 460;
+const WIDTH = 520;
 const HEIGHT = 440;
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
@@ -195,8 +195,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     return `<span class="model-menu-stack">${roster.map(id => providerLogo(id)).join('')}</span>`;
   }
 
+  /** "lead · N workers": the lead may truncate, the count may not. */
+  function teamDetail(detail: string): string {
+    const split = detail.lastIndexOf(' · ');
+    if (split < 0) return `<span class="model-menu-meta-lead">${escape(detail)}</span>`;
+    return `<span class="model-menu-meta-lead">${escape(detail.slice(0, split))}</span><span class="model-menu-meta-count">${escape(detail.slice(split))}</span>`;
+  }
+
   function teamRow(team: PickerTeam): string {
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${escape(team.detail)}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${teamDetail(team.detail)}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
   }
 
   /** One line: name left, context (or the harness in mixed lists) right, a check on the current model. */

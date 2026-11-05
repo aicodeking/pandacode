@@ -1,9 +1,10 @@
 # Settings
 
-Settings is a full page with seven sections in the left column. A section with several pages shows them in a segmented control at the top of the content. Preferences save automatically. Every page can also be opened from the command palette: search its name, such as "providers" or "skills".
+Settings is a full page with eight sections in the left column, opening on Recommended. A section with several pages shows them in a segmented control at the top of the content. Preferences save automatically. Every page can also be opened from the command palette: search its name, such as "providers" or "skills".
 
 | Section | Pages |
 | --- | --- |
+| Recommended | Recommended |
 | General | General |
 | Appearance | Appearance |
 | Agents | Harnesses, Providers, Agent teams, Model routing |
@@ -12,7 +13,9 @@ Settings is a full page with seven sections in the left column. A section with s
 | Connections | Cloud sandboxes, Remote access, GitHub |
 | About | About |
 
-**General** holds text size, compact conversations, expanded tool activity, the quick launcher, the running agents widget and your projects.
+**Recommended** is the page Settings opens on: the settings worth having, each saying whether it is set and opening the page that owns it. It changes nothing itself. Installing an agent, automatic updates, agent telemetry and model routing count toward its `N of N set` line; project checks, Connect and GitHub sit apart under When you need them, since they fit some work, not everyone's, and project checks run with your credentials. A status it cannot read shows nothing.
+
+**General** holds text size, compact conversations, expanded tool activity, the quick launcher, the running agents widget (off until you turn it on) and your projects.
 
 **Appearance** holds the theme, the Wallpapers switch (off by default: the thread shows a live sky), colors and imported VS Code themes, and wallpaper customization: separate live visibility and blur controls, the scene sets, and a fixed favorite.
 

@@ -229,3 +229,9 @@ html[data-theme] .settings-page-root select:disabled{opacity:.5;cursor:default}
 /* Over a wallpaper the content panel is a frost and the inner cards sit a step lighter on it, so muted
    text there leans further toward the text colour to keep 4.5:1 (subtitles, statuses, meta). */
 .workspace[data-wallpaper] .settings-content{--muted:color-mix(in srgb,var(--text) 78%,var(--bg));--faint:var(--muted)}
+/* Settings → Recommended (src/recommended-settings.ts). */
+.recommended-summary{margin:0 0 var(--ds-section-gap);font-size:var(--ds-text-sub);color:var(--muted)}
+.recommended-actions{display:flex;align-items:center;justify-content:flex-end;flex:none;gap:var(--ds-row-gap)}
+.recommended-state{display:inline-flex;align-items:center;gap:4px;font-size:var(--ds-text-meta);white-space:nowrap;color:var(--faint)}
+.recommended-state.ds-success{color:var(--ds-success)}
+.recommended-state .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}

@@ -149,6 +149,9 @@ pub fn emit_changed(app: &AppHandle) {
     }
 }
 
+/// Version 1 made the widget opt-in: it turns off once for everyone, keeping the rest.
+const PREFERENCES_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AgentsDockPreferences {
@@ -156,14 +159,18 @@ pub struct AgentsDockPreferences {
     pub keep_on_screen: bool,
     pub pinned: bool,
     position: Option<Position>,
+    /// Missing from files saved before the widget became opt-in, which reads as 0.
+    #[serde(default)]
+    version: u32,
 }
 impl Default for AgentsDockPreferences {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             keep_on_screen: true,
             pinned: false,
             position: None,
+            version: PREFERENCES_VERSION,
         }
     }
 }
@@ -198,12 +205,25 @@ impl DockState {
     }
 }
 
+/// Not written back: every later save carries the new version, and until then this gives the same answer.
+fn read_preferences(bytes: Option<&[u8]>) -> AgentsDockPreferences {
+    let saved: AgentsDockPreferences = bytes
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or_default();
+    if saved.version >= PREFERENCES_VERSION {
+        return saved;
+    }
+    AgentsDockPreferences {
+        enabled: false,
+        pinned: false,
+        version: PREFERENCES_VERSION,
+        ..saved
+    }
+}
+
 pub fn setup(app: &AppHandle, app_data: &Path) -> crate::Result<()> {
     let path = app_data.join("agents-dock.json");
-    let preferences: AgentsDockPreferences = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
+    let preferences = read_preferences(std::fs::read(&path).ok().as_deref());
     let pinned = preferences.enabled && preferences.pinned;
     app.manage(DockState {
         path,
@@ -544,7 +564,35 @@ pub async fn agents_dock_open_task(
 
 #[cfg(test)]
 mod tests {
-    use super::{changes_dock, shape_snapshot, Candidate, DockStatus};
+    use super::{
+        changes_dock, read_preferences, shape_snapshot, AgentsDockPreferences, Candidate,
+        DockStatus,
+    };
+
+    #[test]
+    fn the_widget_starts_off_and_stays_as_chosen_afterwards() {
+        let fresh = read_preferences(None);
+        assert!(!fresh.enabled && !fresh.pinned && fresh.keep_on_screen);
+
+        // Saved before it became opt-in: off once, keeping everything else.
+        let older = read_preferences(Some(
+            br#"{"enabled":true,"keepOnScreen":false,"pinned":true,"position":{"x":7,"y":9}}"#,
+        ));
+        assert!(!older.enabled && !older.pinned && !older.keep_on_screen);
+        assert_eq!(older.position.map(|at| (at.x, at.y)), Some((7, 9)));
+
+        // Turned on since then, including after a save and a reload.
+        let chosen = AgentsDockPreferences {
+            enabled: true,
+            pinned: true,
+            ..older
+        };
+        let saved = serde_json::to_vec(&chosen).unwrap();
+        let reloaded = read_preferences(Some(&saved));
+        assert!(reloaded.enabled && reloaded.pinned);
+
+        assert!(!read_preferences(Some(b"not json")).enabled);
+    }
 
     #[test]
     fn only_state_changes_wake_the_dock() {

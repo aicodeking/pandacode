@@ -14,6 +14,12 @@ export interface TranscriptTurn {
   durationMs: number | null;
   estimated: boolean;
   changes?: TurnChanges;
+  /** A merged lead exchange only (mergeLeadTurns): the change sets before `changes`, oldest first. */
+  earlierChanges?: TurnChanges[];
+  /** A merged lead exchange only: when its workers' slot starts, for a first segment with no start of its own. */
+  workerStart?: number;
+  /** A merged lead exchange only: `activity` with `final` still at its point in the timeline. */
+  timeline?: Message[];
 }
 
 function validTime(value: unknown): value is number {
@@ -87,6 +93,59 @@ export function groupTurns(messages: Message[]): TranscriptTurn[] {
   }
   if (current.length) turns.push(makeTurn(current));
   return turns;
+}
+
+/** One card's worth of segments. A later segment's coordination label and all but the newest final are timeline rows. */
+function joinSegments(segments: TranscriptTurn[]): TranscriptTurn {
+  const first = segments[0];
+  const final = [...segments].reverse().find(segment => segment.final)?.final;
+  const timeline = segments.flatMap((segment, index) => [
+    ...(index && segment.coordination ? [segment.coordination] : []),
+    ...segment.activity,
+    ...(segment.final ? [segment.final] : []),
+  ]);
+  // A segment that did work with no usable time makes the sum a lower bound; a wake that has done nothing costs nothing.
+  const worked = segments.filter(segment => segment.durationMs !== null || segment.activity.length || segment.final || segment.errors.length);
+  const timed = worked.filter(segment => segment.durationMs !== null);
+  const changes = segments.flatMap(segment => segment.changes ? [segment.changes] : []);
+  return {
+    user: first.user, coordination: first.coordination, key: first.key, final, timeline,
+    activity: timeline.filter(message => message !== final),
+    errors: segments.flatMap(segment => segment.errors),
+    notes: segments.flatMap(segment => segment.notes),
+    durationMs: timed.length ? timed.reduce((total, segment) => total + segment.durationMs!, 0) : null,
+    estimated: timed.length > 0 && (timed.length < worked.length || timed.some(segment => segment.estimated)),
+    changes: changes.at(-1), earlierChanges: changes.slice(0, -1),
+    workerStart: first.user?.createdAt ?? first.coordination?.createdAt ?? segments.find(segment => segment.coordination)?.coordination?.createdAt,
+  };
+}
+
+/** Everything between one user message and the next is one card when a lead woke in it. For drawing cards only:
+ * chat rows, the launcher and worker history read `groupTurns`. A range with no wake (a goal run's turns) is left alone. */
+export function mergeLeadTurns(turns: TranscriptTurn[]): TranscriptTurn[] {
+  const merged: TranscriptTurn[] = [];
+  let range: TranscriptTurn[] = [];
+  const close = () => {
+    if (range.length > 1 && range.some(turn => turn.coordination)) merged.push(joinSegments(range));
+    else merged.push(...range);
+    range = [];
+  };
+  for (const turn of turns) {
+    if (turn.handoff) { close(); merged.push(turn); continue; }
+    if (turn.user) close();
+    range.push(turn);
+  }
+  close();
+  return merged;
+}
+
+/** A wake run is streaming: the exchange it continues leaves the saved turns, to be drawn inside the live card.
+ * `earlier` holds its rows with no reply, since the live card's reply belongs to the run; its text reads in the trace. */
+export function splitLiveExchange(turns: TranscriptTurn[]): { saved: TranscriptTurn[]; earlier?: TranscriptTurn } {
+  const last = turns.at(-1);
+  if (!last || last.handoff || !(last.timeline || last.coordination)) return { saved: turns };
+  const activity = last.timeline ?? [...last.activity, ...(last.final ? [last.final] : [])];
+  return { saved: turns.slice(0, -1), earlier: { ...last, activity, final: undefined } };
 }
 
 export function formatDuration(ms: number): string {

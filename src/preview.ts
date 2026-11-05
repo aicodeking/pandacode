@@ -238,7 +238,9 @@ const previewMimoEndpoints = [
   { id: 'api', url: 'https://api.xiaomimimo.com/anthropic', label: 'Pay-as-you-go API' },
 ];
 let previewMimoEndpoint: string | null = null;
-let previewAgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
+let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
+try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 const previewAgentsDockSnapshot = {
   agents: [
     { id: 'preview-active', title: 'Polish the new onboarding', projectName: 'PandaCode', provider: 'codex', model: 'gpt-5.6-sol', status: 'running', elapsedSeconds: 94 },
@@ -975,6 +977,7 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
       keepOnScreen: Boolean(args.keepOnScreen),
       pinned: args.enabled ? previewAgentsDockPreferences.pinned : false,
     };
+    localStorage.setItem(AGENTS_DOCK_KEY, JSON.stringify(previewAgentsDockPreferences));
     emit('agents-dock-preferences-changed', structuredClone(previewAgentsDockPreferences));
     return structuredClone(previewAgentsDockPreferences) as T;
   }

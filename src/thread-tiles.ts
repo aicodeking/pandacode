@@ -217,7 +217,8 @@ export function mountThreadTiles(host: TileHost) {
       const saved = load().filter(host.exists);
       if (saved.length > 1 && saved.includes(id)) ids = saved;
     }
-    if (!id) return;
+    // Nothing open (a new task's page): a later drag has no thread to sit beside.
+    if (!id) { if (!ids.length) focused = ''; return; }
     const previous = focused;
     if (ids.length) {
       if (!ids.includes(id)) ids = ids.includes(previous) ? ids.map(other => other === previous ? id : other) : [...ids.slice(0, -1), id];
@@ -273,9 +274,11 @@ export function mountThreadTiles(host: TileHost) {
   const dragOver = (event: DragEvent): void => {
     if (!dragId || !event.dataTransfer?.types.includes('application/x-pandacode-thread')) return;
     const bounds = area.getBoundingClientRect(), x = event.clientX - bounds.left, y = event.clientY - bounds.top;
-    if (!previewAt(x, y)) return;
+    // With nothing open (a new task's page) there is nothing to sit beside: the drop just opens the thread.
+    const opensAlone = !ids.length && !focused;
+    if (!opensAlone && !previewAt(x, y)) return;
     event.preventDefault(); event.dataTransfer.dropEffect = 'move';
-    previewTo(x, y);
+    if (!opensAlone) previewTo(x, y);
   };
   // Entering a new element reports the pointer too, so the preview answers before the next dragover.
   area.addEventListener('dragenter', dragOver);
@@ -290,6 +293,7 @@ export function mountThreadTiles(host: TileHost) {
   area.addEventListener('drop', event => {
     if (!dragId) return;
     clearTimeout(settling);
+    if (!ids.length && !focused) { event.preventDefault(); event.stopPropagation(); dropped = true; void host.open(dragId); return; }
     const bounds = area.getBoundingClientRect();
     const list = previewAt(event.clientX - bounds.left, event.clientY - bounds.top) ?? preview?.list;
     if (!list) return;

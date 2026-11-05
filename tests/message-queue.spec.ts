@@ -44,7 +44,7 @@ test('queues messages during a run, edits and reorders them, and steers mid-turn
   await expect(rows(page).locator('.queue-text')).toHaveText(['First follow-up', 'Second follow-up']);
   await expect(prompt(page)).toHaveValue('');
   await expect(panel(page)).toContainText(/Waiting – .+ is working/);
-  await panel(page).getByRole('button', { name: 'Move queued message 2 up' }).click();
+  await rows(page).nth(1).dragTo(rows(page).nth(0));
   await expect(rows(page).locator('.queue-text')).toHaveText(['Second follow-up', 'First follow-up']);
   await panel(page).getByRole('button', { name: 'Edit queued message 1' }).click();
   await panel(page).getByRole('textbox', { name: 'Edit queued message' }).fill('Second follow-up, edited');

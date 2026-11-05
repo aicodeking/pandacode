@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupTurns, formatDuration, turnLabel } from '../src/turn-activity.ts';
+import { groupTurns, mergeLeadTurns, splitLiveExchange, formatDuration, turnLabel } from '../src/turn-activity.ts';
 
 const message = (id, role, content, createdAt = id * 1000, extra = {}) =>
   ({ id, sessionId: 'task', role, content, createdAt, ...extra });
@@ -221,4 +221,168 @@ test('a system note stays out of the fold and never takes the reply', () => {
   assert.deepEqual(ids([turn.final]), [3]);
   assert.deepEqual(ids(turn.notes), [4]);
   assert.deepEqual(ids(turn.activity), [2]);
+});
+
+const changeSet = id => ({ id, files: [], additions: 0, deletions: 0, truncated: false, concurrent: false });
+const wake = (id, createdAt = id * 1000, extra = {}) => message(id, 'coordination', 'Reviewing worker results', createdAt, { coordinationKind: 'worker_review', ...extra });
+const merged = input => mergeLeadTurns(groupTurns(input));
+
+test('every wake between two user messages joins one turn, with coordination in the timeline', () => {
+  const input = [
+    message(1, 'user', 'Build'), message(2, 'tool', tool('spawn')), message(3, 'assistant', 'Delegated.'),
+    wake(4), message(5, 'tool', tool('mailbox')), message(6, 'assistant', 'Reviewing.'),
+    wake(7), message(8, 'assistant', 'Verified.'),
+    message(9, 'user', 'Next'), message(10, 'assistant', 'Sure.'),
+  ];
+  const original = structuredClone(input);
+  const turns = merged(input);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].user, input[0]);
+  assert.equal(turns[0].coordination, undefined);
+  assert.deepEqual(ids(turns[0].activity), [2, 3, 4, 5, 6, 7]);
+  assert.equal(turns[0].final, input[7]);
+  assert.equal(turns[0].key, 'turn:tool:spawn');
+  assert.equal(turns[1].final, input[9]);
+  assert.deepEqual(input, original, 'merging must not mutate saved messages');
+});
+
+test('a turn that is not a lead exchange passes through untouched', () => {
+  const input = groupTurns([
+    message(1, 'user', 'Keep working'), message(2, 'assistant', 'First'), message(3, 'changes', '', 3000, { turnChanges: changeSet('a') }),
+    message(4, 'assistant', 'Second'), message(5, 'changes', '', 5000, { turnChanges: changeSet('b') }),
+    message(6, 'user', 'Again'), message(7, 'assistant', 'Third'),
+  ]);
+  assert.deepEqual(mergeLeadTurns(input), input);
+  mergeLeadTurns(input).forEach((turn, index) => assert.equal(turn, input[index]));
+});
+
+test('the newest final is the reply; without one the latest earlier final stays the reply', () => {
+  const stopped = merged([
+    message(1, 'user', 'Build'), message(2, 'assistant', 'First.'),
+    wake(3), message(4, 'assistant', 'Second.'),
+    wake(5), message(6, 'tool', tool('check')),
+  ]);
+  assert.equal(stopped.length, 1);
+  assert.equal(stopped[0].final.id, 4);
+  assert.deepEqual(ids(stopped[0].activity), [2, 3, 5, 6]);
+  const quiet = merged([message(1, 'user', 'Build'), message(2, 'assistant', 'Done.'), wake(3)]);
+  assert.equal(quiet[0].final.id, 2);
+  assert.deepEqual(ids(quiet[0].activity), [3]);
+});
+
+test('errors, notes and every change set survive in order, including a changes row before a wake', () => {
+  const [turn, ...rest] = merged([
+    message(1, 'user', 'Build'), message(2, 'assistant', 'First.'), message(3, 'error', 'Lost a worker'), message(4, 'system', 'Note one'),
+    message(5, 'changes', '', 5000, { turnChanges: changeSet('first') }),
+    wake(6), message(7, 'assistant', 'Second.'), message(8, 'changes', '', 8000, { turnChanges: changeSet('second') }),
+    wake(9), message(10, 'error', 'Stopped'), message(11, 'system', 'Note two'),
+  ]);
+  assert.deepEqual(rest, []);
+  assert.deepEqual(ids(turn.errors), [3, 10]);
+  assert.deepEqual(ids(turn.notes), [4, 11]);
+  assert.deepEqual(turn.earlierChanges.map(changes => changes.id), ['first']);
+  assert.equal(turn.changes.id, 'second');
+  assert.equal(turn.final.id, 7);
+});
+
+test('time sums the segments, leaving out the wait, and says when it is not exact', () => {
+  const [exact] = merged([
+    message(1, 'user', 'Build', 1000, { turnDurationMs: 2000 }), message(2, 'assistant', 'A', 3000),
+    wake(3, 100000, { turnDurationMs: 500 }), message(4, 'assistant', 'B', 100500),
+  ]);
+  assert.equal(exact.durationMs, 2500);
+  assert.equal(exact.estimated, false);
+  const [timed] = merged([
+    message(1, 'user', 'Build', 1000, { turnDurationMs: 2000 }), message(2, 'assistant', 'A', 3000),
+    wake(3, 100000), message(4, 'assistant', 'B', 104000),
+  ]);
+  assert.equal(timed.durationMs, 6000);
+  assert.equal(timed.estimated, true);
+  // A segment that did work with no usable time makes the sum a lower bound.
+  const [partial] = merged([
+    message(1, 'user', 'Build', 1000, { turnDurationMs: 2000 }), message(2, 'assistant', 'A', 3000),
+    wake(3, 100000), message(4, 'tool', tool('running'), 104000),
+  ]);
+  assert.equal(partial.durationMs, 2000);
+  assert.equal(partial.estimated, true);
+  // A wake that has not done anything yet costs nothing and leaves the time exact.
+  const [idle] = merged([message(1, 'user', 'Build', 1000, { turnDurationMs: 2000 }), message(2, 'assistant', 'A', 3000), wake(3, 100000)]);
+  assert.equal(idle.durationMs, 2000);
+  assert.equal(idle.estimated, false);
+  const [unknown] = merged([message(1, 'assistant', 'Earlier'), wake(2), message(3, 'tool', tool('a'))]);
+  assert.equal(unknown.durationMs, null);
+  assert.equal(unknown.estimated, false);
+});
+
+test('a page that starts mid-turn still works, and workers keep the first start', () => {
+  const [alone] = merged([wake(3), message(4, 'assistant', 'Only this.')]);
+  assert.equal(alone.coordination.id, 3);
+  assert.equal(alone.key, 'turn:coordination:3');
+  assert.deepEqual(alone.activity, []);
+  const [resumed] = merged([wake(3), message(4, 'assistant', 'One.'), wake(5), message(6, 'assistant', 'Two.')]);
+  assert.equal(resumed.coordination.id, 3, 'the first label has no earlier card to join');
+  assert.deepEqual(ids(resumed.activity), [4, 5]);
+  assert.equal(resumed.workerStart, 3000);
+  const [unanchored] = merged([message(2, 'assistant', 'Earlier'), wake(3), message(4, 'assistant', 'Later')]);
+  assert.equal(unanchored.user, undefined);
+  assert.equal(unanchored.coordination, undefined);
+  assert.equal(unanchored.key, 'turn:message:2');
+  assert.deepEqual(ids(unanchored.activity), [2, 3]);
+  assert.equal(unanchored.workerStart, 3000);
+  const [anchored] = merged([message(1, 'user', 'Go'), message(2, 'assistant', 'A'), wake(3), message(4, 'assistant', 'B')]);
+  assert.equal(anchored.workerStart, 1000);
+});
+
+test('a handoff row stays out of the merge', () => {
+  const turns = merged([
+    message(1, 'user', 'Build'), message(2, 'assistant', 'A'), message(3, 'handoff', '{}'), wake(4), message(5, 'assistant', 'B'),
+  ]);
+  assert.equal(turns.length, 3);
+  assert.equal(turns[1].key, 'handoff:3');
+  assert.equal(turns[2].coordination.id, 4);
+});
+
+test('the key does not move as the exchange gains wakes', () => {
+  const start = [message(1, 'user', 'Build'), message(2, 'tool', tool('first')), message(3, 'assistant', 'A')];
+  const before = merged(start)[0].key;
+  const waking = [...start, wake(4)];
+  const finished = [...waking, message(5, 'tool', tool('later')), message(6, 'assistant', 'B')];
+  assert.equal(merged(waking)[0].key, before);
+  assert.equal(merged(finished)[0].key, before);
+  assert.equal(splitLiveExchange(merged(waking)).earlier.key, before);
+});
+
+test('a live wake takes the whole exchange out of the saved turns, its text readable in the timeline', () => {
+  const input = [
+    message(1, 'user', 'Older'), message(2, 'assistant', 'Older reply'),
+    message(3, 'user', 'Build', 3000, { turnDurationMs: 1000 }), message(4, 'assistant', 'Delegated.'), message(5, 'error', 'Lost one'),
+    message(6, 'changes', '', 6000, { turnChanges: changeSet('first') }),
+    wake(7),
+  ];
+  const { saved, earlier } = splitLiveExchange(merged(input));
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].final.id, 2);
+  assert.equal(earlier.user.id, 3);
+  assert.equal(earlier.final, undefined);
+  assert.deepEqual(ids(earlier.activity), [4, 7]);
+  assert.deepEqual(ids(earlier.errors), [5]);
+  assert.equal(earlier.changes.id, 'first');
+  assert.equal(earlier.durationMs, 1000);
+});
+
+test('an ordinary run has nothing to take out; a resumed page start keeps its label as the lead', () => {
+  const ordinary = merged([message(1, 'user', 'Older'), message(2, 'assistant', 'Reply'), message(3, 'user', 'Go')]);
+  const split = splitLiveExchange(ordinary);
+  assert.equal(split.earlier, undefined);
+  assert.equal(split.saved.length, 2);
+  // A goal run's next turn is not a wake, so its saved card stays where it is.
+  assert.equal(splitLiveExchange(merged([message(1, 'user', 'Go'), message(2, 'assistant', 'A'), message(3, 'changes', '', 3000, { turnChanges: changeSet('a') })])).earlier, undefined);
+  assert.deepEqual(splitLiveExchange([]), { saved: [] });
+  const { saved, earlier } = splitLiveExchange(merged([wake(3)]));
+  assert.deepEqual(saved, []);
+  assert.equal(earlier.coordination.id, 3);
+  assert.deepEqual(earlier.activity, []);
+  const single = splitLiveExchange(merged([wake(3), message(4, 'assistant', 'A'), message(5, 'changes', '', 5000, { turnChanges: changeSet('a') })])).earlier;
+  assert.deepEqual(ids(single.activity), [4]);
+  assert.equal(single.final, undefined);
 });

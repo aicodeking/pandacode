@@ -48,7 +48,8 @@ test('Grok Build lists its models with context windows and reasoning efforts, an
   await expect(efforts.getByRole('radio', { name: 'Extra High', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
   expect((await calls(page, 'configure_session')).pop()?.args).toMatchObject({ provider: 'grok', model: 'grok-4.7' });
-  expect((await calls(page, 'set_reasoning_effort')).pop()?.args).toMatchObject({ reasoningEffort: 'xhigh' });
+  // The control shows the choice as it is sent; the save itself lands a moment later.
+  await expect.poll(async () => (await calls(page, 'set_reasoning_effort')).pop()?.args?.reasoningEffort).toBe('xhigh');
 });
 
 test('Grok approval modes describe its permission modes, including read-only planning', async ({ page }) => {

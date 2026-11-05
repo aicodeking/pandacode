@@ -56,12 +56,13 @@ function row(entry: QueuedMessage, index: number, view: QueueView): string {
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span><span class="queue-status" role="status">${SPINNER}Steering…</span></li>`;
   }
   const steer = view.running && view.steerable && !view.busy && !entry.attachments.length ? `<button type="button" class="queue-now" data-action="queue-steer" title="Steer message" aria-label="Steer now: ${preview}">${icon('spark')}<span>Steer</span></button>` : '';
-  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('arrow')}<span>Send now</span></button>` : '';
+  const sendNow = view.sendable && !view.busy ? `<button type="button" class="queue-now" data-action="queue-send-now" title="${!view.running ? 'Send this now' : view.steerable && !entry.attachments.length ? 'Send into the running turn' : 'Stop the run and send this next'}" aria-label="Send now: ${preview}">${icon('forward')}<span>Send now</span></button>` : '';
   const failure = view.notSteered?.get(entry.id);
   const badge = failure !== undefined ? `<span class="queue-badge warn" title="${escape(failure)}" tabindex="0">Not steered</span>` : '';
-  return `<li class="queue-row" data-queue-id="${escape(entry.id)}" draggable="${view.busy ? 'false' : 'true'}" tabindex="0" aria-label="Queued message ${index + 1}: ${preview}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"><span class="queue-index" aria-hidden="true">${icon('spark')}</span>
+  const movable = !view.busy && view.entries.length > 1;
+  return `<li class="queue-row" data-queue-id="${escape(entry.id)}" draggable="${movable ? 'true' : 'false'}" tabindex="0" aria-label="Queued message ${index + 1}: ${preview}"${movable ? ' aria-description="Drag to reorder, or press Alt with an arrow key." aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''}><span class="queue-index" aria-hidden="true">${icon('spark')}${movable ? icon('grip', 'queue-grip') : ''}</span>
     <span class="queue-text" title="${escape(entry.text)}">${escape(entry.text.split('\n')[0] || '(attachments only)')}</span>${attachmentLabel(entry)}${badge}
-    <span class="queue-actions">${steer}${sendNow}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit message" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-up" aria-label="Move queued message ${index + 1} up" title="Move up" ${index === 0 || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button queue-down" data-action="queue-down" aria-label="Move queued message ${index + 1} down" title="Move down" ${last || view.busy ? 'disabled' : ''}>${icon('arrow')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Delete message" data-held="${view.hold ? '1' : ''}" ${view.busy ? 'disabled' : ''}>${icon('trash')}</button></span></li>`;
+    <span class="queue-actions">${steer}${sendNow}<button type="button" class="icon-button" data-action="queue-edit" aria-label="Edit queued message ${index + 1}" title="Edit message" ${view.busy ? 'disabled' : ''}>${icon('edit')}</button><button type="button" class="icon-button" data-action="queue-remove" aria-label="Remove queued message ${index + 1}" title="Delete message" data-held="${view.hold ? '1' : ''}" ${view.busy ? 'disabled' : ''}>${icon('trash')}</button></span></li>`;
 }
 
 /** Markup for the queue panel, or an empty string when nothing is queued. */
@@ -75,13 +76,12 @@ export function queuePanel(view: QueueView): string {
   return `<section class="queue-panel" aria-label="Queued messages"><header class="queue-heading"><strong>Queued</strong><span class="queue-count">${count}</span>${status}</header><ol class="queue-list">${view.entries.map((entry, index) => row(entry, index, view)).join('')}</ol></section>`;
 }
 
-/** Moves an entry one place and returns the new order of ids. */
-export function moved(entries: readonly QueuedMessage[], id: string, step: -1 | 1): string[] {
-  const ids = entries.map(entry => entry.id);
-  const index = ids.indexOf(id), target = index + step;
-  if (index < 0 || target < 0 || target >= ids.length) return ids;
-  [ids[index], ids[target]] = [ids[target], ids[index]];
-  return ids;
+/** The order of ids once `id` has moved to `target`: dragged down it lands after that row, dragged up before it. */
+export function moved(ids: readonly string[], id: string, target: number): string[] {
+  const from = ids.indexOf(id), to = Math.max(0, Math.min(ids.length - 1, target));
+  if (from < 0 || from === to) return [...ids];
+  const rest = ids.filter(other => other !== id);
+  return [...rest.slice(0, to), id, ...rest.slice(to)];
 }
 
 const LIVE = 'queue-live';
@@ -92,55 +92,55 @@ function announce(text: string): void {
   live.textContent = text;
 }
 const rowOf = (id: string): HTMLElement | null => document.querySelector<HTMLElement>(`.queue-row[data-queue-id="${CSS.escape(id)}"]`);
-const idsInDom = (): string[] => [...document.querySelectorAll<HTMLElement>('.queue-list > .queue-row')].map(row => row.dataset.queueId ?? '');
-/** Waits for the panel to redraw after a move (the app re-renders the composer asynchronously). */
-const redrawn = (): Promise<void> => new Promise(resolve => {
-  const list = document.querySelector('.queue-list')?.parentElement?.parentElement ?? document.body;
-  const done = () => { observer.disconnect(); clearTimeout(timer); resolve(); };
-  const observer = new MutationObserver(done), timer = setTimeout(done, 600);
-  observer.observe(list, { childList: true, subtree: true });
-});
+/** Each list is its own thread's queue: the main prompt's, or the By the way panel's beside it. */
+const idsIn = (list: Element): string[] => [...list.querySelectorAll<HTMLElement>(':scope > .queue-row')].map(row => row.dataset.queueId ?? '');
 
-/** Steps a row one place at a time through the panel's own move buttons, so state stays with the app. */
-async function moveTo(id: string, target: number): Promise<void> {
-  for (let guard = 0; guard < 50; guard++) {
-    const at = idsInDom().indexOf(id);
-    if (at < 0 || at === target) break;
-    const button = rowOf(id)?.querySelector<HTMLButtonElement>(at > target ? '[data-action="queue-up"]' : '[data-action="queue-down"]');
-    if (!button || button.disabled) break;
-    const next = redrawn(); button.click(); await next;
-  }
-  const total = idsInDom().length, position = idsInDom().indexOf(id) + 1;
-  if (position) announce(`Moved queued message to position ${position} of ${total}.`);
-  rowOf(id)?.focus();
+let reorder: (row: HTMLElement, ids: string[]) => Promise<boolean> = async () => false;
+/** main.ts saves the order for the thread the row belongs to; false when it could not. */
+export function onQueueReorder(handler: typeof reorder): void { reorder = handler; }
+
+async function moveTo(row: HTMLElement, target: number): Promise<void> {
+  const list = row.closest('.queue-list'), id = row.dataset.queueId ?? '';
+  if (!list) return;
+  const ids = idsIn(list), next = moved(ids, id, target);
+  if (next.join('\0') === ids.join('\0') || !await reorder(row, next)) return;
+  announce(`Moved queued message to position ${next.indexOf(id) + 1} of ${next.length}.`);
+  // The By the way panel redraws on the next frame.
+  requestAnimationFrame(() => rowOf(id)?.focus());
 }
 
-let dragged = '';
+let dragged: HTMLElement | null = null;
 function dropTarget(event: DragEvent): HTMLElement | null { return (event.target as HTMLElement | null)?.closest<HTMLElement>('.queue-list > .queue-row') ?? null; }
+const clearDropLine = (): void => document.querySelectorAll('.queue-row.drag-over').forEach(other => other.classList.remove('drag-over', 'drag-over-after'));
 function installQueueInteractions(): void {
   document.addEventListener('dragstart', event => {
     const row = dropTarget(event); if (!row || row.classList.contains('editing')) return;
-    dragged = row.dataset.queueId ?? ''; row.classList.add('dragging');
-    event.dataTransfer?.setData('text/plain', dragged); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    dragged = row; row.classList.add('dragging');
+    event.dataTransfer?.setData('text/plain', row.dataset.queueId ?? ''); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   });
   document.addEventListener('dragover', event => {
-    if (!dragged) return; const row = dropTarget(event); if (!row) return;
+    if (!dragged) return;
+    const row = dropTarget(event), list = dragged.closest('.queue-list');
+    clearDropLine();
+    if (!row || !list || row.parentElement !== list) return;
     event.preventDefault();
-    document.querySelectorAll('.queue-row.drag-over').forEach(other => other.classList.remove('drag-over'));
-    if (row.dataset.queueId !== dragged) row.classList.add('drag-over');
+    if (row === dragged) return;
+    // The line shows where it lands: below the row when it moves down, above it when it moves up.
+    const ids = idsIn(list), down = ids.indexOf(dragged.dataset.queueId ?? '') < ids.indexOf(row.dataset.queueId ?? '');
+    row.classList.add('drag-over'); row.classList.toggle('drag-over-after', down);
   });
-  document.addEventListener('dragend', () => { dragged = ''; document.querySelectorAll('.queue-row.dragging,.queue-row.drag-over').forEach(row => row.classList.remove('dragging', 'drag-over')); });
+  document.addEventListener('dragend', () => { dragged = null; clearDropLine(); document.querySelectorAll('.queue-row.dragging').forEach(row => row.classList.remove('dragging')); });
   document.addEventListener('drop', event => {
-    const row = dropTarget(event), id = dragged; if (!row || !id) return;
-    event.preventDefault(); dragged = '';
-    void moveTo(id, idsInDom().indexOf(row.dataset.queueId ?? ''));
+    const row = dropTarget(event), source = dragged, list = source?.closest('.queue-list');
+    if (!row || !source || !list || row.parentElement !== list) return;
+    event.preventDefault();
+    void moveTo(source, idsIn(list).indexOf(row.dataset.queueId ?? ''));
   });
   document.addEventListener('keydown', event => {
     if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
-    const row = (event.target as HTMLElement | null)?.closest<HTMLElement>('.queue-list > .queue-row'); if (!row || row.classList.contains('editing')) return;
+    const row = (event.target as HTMLElement | null)?.closest<HTMLElement>('.queue-list > .queue-row'); if (!row || row.getAttribute('draggable') !== 'true') return;
     event.preventDefault();
-    const id = row.dataset.queueId ?? '', at = idsInDom().indexOf(id);
-    void moveTo(id, Math.max(0, Math.min(idsInDom().length - 1, at + (event.key === 'ArrowUp' ? -1 : 1))));
+    void moveTo(row, idsIn(row.parentElement!).indexOf(row.dataset.queueId ?? '') + (event.key === 'ArrowUp' ? -1 : 1));
   });
   // Deleting while the queue is held asks first: the held message would otherwise vanish unseen.
   document.addEventListener('click', event => {

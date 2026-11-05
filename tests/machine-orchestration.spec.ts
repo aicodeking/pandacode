@@ -511,6 +511,8 @@ test('machine orchestration: a wake turn reads as machine threads finishing, not
   await openTask(page, 'Make search feel instant');
   await page.evaluate(() => (window as any).__machineWake('session-1'));
   await reloadTranscript(page);
+  // The wake's label is a row in the exchange's one card, so it shows with the trace open.
+  await page.locator('#transcript .turn-card > details.turn-activity:has(.coordination-status) > summary').click();
   const note = page.getByRole('note', { name: 'Machines status: Machine threads finished' });
   await expect(note).toContainText('Machines');
   await expect(note).toContainText('Machine threads finished');

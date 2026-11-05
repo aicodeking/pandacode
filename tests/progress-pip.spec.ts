@@ -134,6 +134,34 @@ test('keeps a portrait snapshot short on a blurred band, in the light theme', as
   await shoot(page, 'expanded-light', { width: 520, height: 640 });
 });
 
+test('the pill and card are the action dock\'s material, and the large view is the dialog glass', async ({ page }) => {
+  const material = (el: Element) => { const s = getComputedStyle(el); return { radius: s.borderRadius, shadow: s.boxShadow, fill: s.backgroundColor, blur: s.backdropFilter }; };
+  await open(page, { theme: 'dark' });
+  await settled(page, 6);
+  const dock = await page.locator('.action-dock').evaluate(material);
+  expect(dock.radius).toBe('16px');
+  expect(dock.shadow).toContain('inset');
+  expect(await card(page).evaluate(material)).toEqual(dock);
+  // A pressed toggle is the dock's neutral inner card, with no accent in it.
+  const marks = card(page).getByRole('button', { name: 'Show annotations' });
+  await expect(marks).toHaveAttribute('aria-pressed', 'true');
+  await page.mouse.move(0, 0);
+  const inner = await page.evaluate(() => { const probe = document.createElement('i'); probe.style.backgroundColor = 'var(--ds-card-inner)'; document.body.append(probe); const value = getComputedStyle(probe).backgroundColor; probe.remove(); return value; });
+  expect(await marks.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(inner);
+  await card(page).getByRole('button', { name: 'Open large view' }).click();
+  const plate = page.locator('.pp-lb-plate');
+  await expect(plate).toBeVisible();
+  const glass = await page.evaluate(() => { const probe = document.createElement('i'); probe.style.cssText = 'color:var(--glass-warm);border:1px solid var(--glass-border)'; document.body.append(probe); const s = getComputedStyle(probe), value = { fill: s.color, line: s.borderTopColor }; probe.remove(); return value; });
+  expect(await plate.evaluate(el => { const s = getComputedStyle(el); return { fill: s.backgroundColor, line: s.borderTopColor, width: s.borderTopWidth, radius: s.borderRadius }; })).toEqual({ ...glass, width: '1px', radius: '16px' });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('dialog.pp-lightbox')).toHaveCount(0);
+  await card(page).getByRole('button', { name: 'Collapse visual progress' }).click();
+  await expect(pill(page)).toBeVisible();
+  await expect(card(page)).toHaveCount(0);
+  await page.mouse.move(0, 0);
+  expect(await pill(page).evaluate(material)).toEqual(dock);
+});
+
 test('collapses to a pill, persists, and expands again', async ({ page }) => {
   await open(page);
   await card(page).getByRole('button', { name: 'Collapse visual progress' }).click();

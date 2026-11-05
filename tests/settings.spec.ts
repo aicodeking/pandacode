@@ -6,7 +6,7 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['General', 'Appearance', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
+const GROUPS = ['Recommended', 'General', 'Appearance', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
@@ -166,8 +166,8 @@ test('support details recover from a fetch error and offer manual copying when c
 async function settings(page: Page): Promise<void> {
   await page.keyboard.press('Meta+,');
   await expect(dialog(page).getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await expect(tab(page, 'General')).toHaveAttribute('aria-selected', 'true');
-  await expect(tab(page, 'General')).toBeFocused();
+  await expect(tab(page, 'Recommended')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab(page, 'Recommended')).toBeFocused();
 }
 
 for (const pending of [false, true]) {
@@ -236,11 +236,12 @@ for (const pending of [false, true]) {
   });
 }
 
-test('settings organization opens General immediately and supports keyboard groups during agent discovery', async ({ page }) => {
+test('settings organization shows General at once and supports keyboard groups during agent discovery', async ({ page }) => {
   await open(page);
   const startupCalls = await providerCalls(page);
   await page.evaluate(() => { (window as any).__settingsProviders.hold = true; });
   await settings(page);
+  await tab(page, 'General').click();
   await expect(page.getByRole('group', { name: 'Interface size', exact: true })).toBeVisible();
   await expect(page.getByRole('checkbox', { name: 'Compact conversation', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Default agent for new tasks', exact: true })).toBeHidden();
@@ -270,8 +271,8 @@ test('settings organization opens General immediately and supports keyboard grou
   await expect(tab(page, 'About')).toBeFocused();
   await expect(tab(page, 'About')).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Home');
-  await expect(tab(page, 'General')).toBeFocused();
-  await expect(tab(page, 'General')).toHaveAttribute('aria-selected', 'true');
+  await expect(tab(page, 'Recommended')).toBeFocused();
+  await expect(tab(page, 'Recommended')).toHaveAttribute('aria-selected', 'true');
   expect(await providerCalls(page)).toBe(startupCalls + 1);
 });
 
@@ -350,8 +351,8 @@ test('settings organization lists groups in order, moves between them by keyboar
   const list = dialog(page).getByRole('tablist', { name: 'Settings', exact: true });
   await expect(list).toHaveAttribute('aria-orientation', 'vertical');
   await expect(list.getByRole('tab')).toHaveText(GROUPS);
-  await expect(tab(page, 'General')).toBeFocused();
-  await expect(panel(page, 'General').getByRole('heading', { name: 'General', exact: true })).toBeVisible();
+  await expect(tab(page, 'Recommended')).toBeFocused();
+  await expect(panel(page, 'Recommended').getByRole('heading', { name: 'Recommended', exact: true })).toBeVisible();
   await expect(dialog(page).getByRole('tabpanel')).toHaveCount(1);
   // Arrow keys move through the groups in order and wrap around.
   for (const name of GROUPS.slice(1)) {
@@ -361,10 +362,11 @@ test('settings organization lists groups in order, moves between them by keyboar
     await expect(panel(page, FIRST[name] ?? name)).toBeVisible();
   }
   await page.keyboard.press('ArrowDown');
-  await expect(tab(page, 'General')).toBeFocused();
+  await expect(tab(page, 'Recommended')).toBeFocused();
   await page.keyboard.press('ArrowUp');
   await expect(tab(page, 'About')).toBeFocused();
   await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowDown');
   await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Appearance')).toHaveAttribute('aria-selected', 'true');
   await expect(tab(page, 'General')).toHaveAttribute('aria-selected', 'false');
@@ -397,7 +399,10 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
     expect(size.x).toBeGreaterThanOrEqual(0);
     expect(size.x + size.width).toBeLessThanOrEqual(layout.width);
     expect(await dialog(page).locator('.settings-content').evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
-    const rows = panel(page, 'General').locator('.setting-row');
+    // Recommended is what opens first, so it has to fit too.
+    for (const group of ['Recommended', 'General']) {
+    await tab(page, group).click();
+    const rows = panel(page, group).locator('.setting-row');
     const bounds = await rows.evaluateAll(nodes => nodes.map(node => {
       const row = node.getBoundingClientRect();
       const children = Array.from(node.children).map(child => {
@@ -421,6 +426,7 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
         const verticalOverlap = Math.min(before.bottom, current.bottom) - Math.max(before.top, current.top);
         expect(horizontalOverlap <= 1 || verticalOverlap <= 1).toBe(true);
       }
+    }
     }
     await page.screenshot({ path: testInfo.outputPath(`settings-${layout.width}-${layout.scale}.png`), animations: 'disabled' });
     await tab(page, 'Appearance').click();
@@ -513,4 +519,45 @@ test('Model routing is its own Agents page and mounts only when shown', async ({
   await expect(page.locator('#model-routing-settings')).toBeEmpty();
   await page.getByRole('tab', { name: 'Model routing', exact: true }).click();
   await expect(page.locator('#model-routing-settings .model-routing')).toBeVisible();
+});
+
+test('settings open on Recommended, which says what is set and opens the page that owns it', async ({ page }) => {
+  await open(page);
+  await settings(page);
+  const recommended = panel(page, 'Recommended');
+  await expect(tab(page, 'Recommended')).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog(page).locator('.settings-nav-list>[role="tab"]').first()).toHaveText('Recommended');
+  const row = (id: string) => recommended.locator(`[data-recommendation="${id}"]`);
+  await expect(row('agent').locator('.recommended-state')).toHaveText('Set');
+  await expect(recommended.locator('.recommended-summary')).toHaveText(/^(All set|\d of \d set)$/);
+  // Project checks run with the user's credentials, so they are offered apart and off until chosen.
+  await expect(recommended.getByRole('heading', { name: 'When you need them', exact: true })).toBeVisible();
+  await expect(row('checks').locator('.recommended-state')).toHaveText('Not set');
+  // A status that must be asked for arrives.
+  await expect(row('routing').locator('.recommended-state')).toHaveText(/^(Set|Not set)$/);
+
+  // Going there lands on the page, focus included, with a setting in a closed fold revealed.
+  await row('telemetry').getByRole('button').click();
+  await expect(tab(page, 'Agents')).toHaveAttribute('aria-selected', 'true');
+  await expect(panel(page, 'Harnesses')).toBeVisible();
+  await expect(tab(page, 'Agents')).toBeFocused();
+  await expect(panel(page, 'Harnesses').locator('details.settings-fold').first()).toHaveAttribute('open', '');
+  await expect(page.getByRole('checkbox', { name: 'Turn off agent telemetry' })).toBeVisible();
+
+  // Nothing was changed by recommending it; changing it reads correctly on the way back.
+  const box = page.getByRole('checkbox', { name: 'Project checks after turns', exact: true });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await tab(page, 'Recommended').click();
+  await expect(row('checks').locator('.recommended-state')).toHaveText('Set');
+});
+
+test('settings deep links still land on their own page', async ({ page }) => {
+  await open(page);
+  await settings(page);
+  await tab(page, 'General').click();
+  await expect(page.getByRole('checkbox', { name: 'Compact conversation', exact: true })).toBeVisible();
+  await tab(page, 'Recommended').click();
+  await panel(page, 'Recommended').locator('[data-recommendation="routing"]').getByRole('button').click();
+  await expect(panel(page, 'Model routing')).toBeVisible();
 });

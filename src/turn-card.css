@@ -29,7 +29,11 @@ html .workspace :is(#transcript,.thread-mirror-rows,#stream-region) .turn-card>.
 .turn-card>.team-progress-slot>.team-progress{margin:0}
 /* The running step the header mirrors is not repeated as the trace's newest row (main.ts sets data-mirrored). */
 .turn-card.is-live details.tool-trace[data-mirrored]{display:none}
-.turn-card.is-live>.turn-activity>.turn-activity-body:not(:has(details.tool-trace:not([data-mirrored]),.live-message:not([hidden]),.activity-limit,.live-status:not([hidden]):not(:empty),.tool-group-summary)){display:none}
+.turn-card.is-live>.turn-activity>.turn-activity-body:not(:has(details.tool-trace:not([data-mirrored]),.live-earlier:not(:empty),.live-message:not([hidden]),.activity-limit,.live-status:not([hidden]):not(:empty),.tool-group-summary)){display:none}
+
+/* A wake's earlier rows: one closed line at the top of the live trace, with the saved card's groups inside. */
+.live-earlier[open]>.tool-group-summary>.icon:last-child{rotate:90deg}
+.turn-card .live-earlier .tool-group>.tool-group-summary{display:flex}
 
 /* ---------- Reply (inner card) ---------- */
 .turn-card>.turn-card-reply{gap:0;padding:12px 14px 4px}

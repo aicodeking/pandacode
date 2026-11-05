@@ -22,6 +22,8 @@ import { appUpdates } from './app-updates';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
 import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-sections';
+import { mountRecommended } from './recommended-settings';
+import { enabled as turnChecksEnabled } from './turn-checks';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -77,7 +79,7 @@ const fold = (title: string, body: string) => `<details class="settings-fold"><s
 
 function mountAgentsDockSettings(host: HTMLElement): () => void {
   let disposed = false;
-  let preferences: AgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+  let preferences: AgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
   let error = '';
   let unsubscribe: (() => void) | undefined;
   // Disabling a focused switch while saving blurs it, so the change handler remembers it.
@@ -87,7 +89,7 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
     const active = document.activeElement;
     const focused = refocus || (active instanceof HTMLElement && host.contains(active) ? active.id : '');
     refocus = '';
-    host.innerHTML = `<div class="settings-group">${switchRow('agents-dock-enabled', 'Running agents widget', 'Show the live header widget. Turning this off also closes the pinned window.', preferences.enabled)}${switchRow('agents-dock-keep-on-screen', 'Keep pinned widget on screen', 'Keep the floating widget inside the current display when it expands.', preferences.keepOnScreen)}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div>`;
+    host.innerHTML = `<div class="settings-group">${switchRow('agents-dock-enabled', 'Running agents widget', 'Show every running agent from a button at the top right of the window. Turning this off also closes the pinned window.', preferences.enabled)}${preferences.enabled ? switchRow('agents-dock-keep-on-screen', 'Keep pinned widget on screen', 'Keep the floating widget inside the current display when it expands.', preferences.keepOnScreen) : ''}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div>`;
     if (focused) host.querySelector<HTMLElement>(`#${focused}`)?.focus({ preventScroll: true });
   };
   const change = async (event: Event) => {
@@ -127,6 +129,7 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
 function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
+    case 'recommended': return '<div id="recommended-settings"></div>';
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
@@ -191,7 +194,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   const readinessCleanup: (() => void)[] = [];
   const live = () => !disposed && host.isConnected && !host.hidden;
 
+  let providersNow = options.providers;
   function updateProviders(all: Provider[]): void {
+    providersNow = all;
     const providers = all.filter(provider => !PLANS.has(provider.id));
     const rows = new Map(Array.from(list.querySelectorAll<HTMLDetailsElement>('details')).map(row => [row.dataset.provider!, row]));
     for (const [index, provider] of providers.entries()) {
@@ -259,11 +264,36 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     return () => slot.removeEventListener('click', onClick);
   }
 
+  /** Each answer is local, and one that fails leaves its row without a status. */
+  const askRecommended = async () => {
+    const read = <T>(command: string, pick: (value: T) => boolean | undefined): Promise<boolean | null> => call<T>(command).then(value => pick(value) ?? null, () => null);
+    const [telemetryOff, routingOn, connectSignedIn] = await Promise.all([
+      read<{ off: boolean }>('harness_privacy', value => value.off),
+      read<{ enabled: boolean }>('model_routing_status', value => value.enabled),
+      read<{ signedIn: boolean }>('remote_status', value => value.signedIn),
+    ]);
+    return { telemetryOff, routingOn, connectSignedIn };
+  };
+  const knownRecommended = () => {
+    const updates = appUpdates();
+    return {
+      agentInstalled: providersNow.some(provider => provider.installed && !PLANS.has(provider.id)),
+      updateMode: updates?.supported ? updates.mode : null,
+      telemetryOff: null, routingOn: null, connectSignedIn: null,
+      turnChecks: turnChecksEnabled(),
+    };
+  };
+  let recommended: ReturnType<typeof mountRecommended> | undefined;
+
   /** A group's live parts mount the first time it opens, and stay mounted while Settings is open. */
   function mountSection(id: SettingsPage): void {
     if (mounted.has(id)) return;
     mounted.add(id);
     const panel = panels.get(id)!;
+    if (id === 'recommended') {
+      recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
+      cleanups.push(() => recommended?.dispose());
+    }
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
@@ -310,6 +340,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     pageTabs.forEach(tab => { const on = tab.dataset.section === page; tab.setAttribute('aria-selected', String(on)); tab.tabIndex = on ? 0 : -1; });
     subnavs.forEach(subnav => { subnav.hidden = subnav.dataset.sectionPages !== section.id; });
     panels.forEach((panel, key) => { panel.hidden = key !== page; });
+    if (page === 'recommended' && mounted.has(page)) recommended?.refresh();
     mountSection(page);
     const selected = pageTabs.find(tab => tab.dataset.section === page);
     if (selected) trackSegment(selected.parentElement!, selected);
@@ -325,7 +356,12 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-section], [data-settings-close]') : null;
     if (!target || !host.contains(target)) return;
     if ('settingsClose' in target.dataset) { options.close(); return; }
-    show(target.dataset.section as SettingsSection);
+    // A recommendation's button goes away with its page, so focus moves to the page it opened.
+    show(target.dataset.section as SettingsSection, Boolean(target.closest('#recommended-settings')));
+    if (target.dataset.fold) {
+      const fold = [...panels.get(target.dataset.section as SettingsPage)!.querySelectorAll<HTMLDetailsElement>('details.settings-fold')].find(item => item.querySelector('summary')?.textContent?.trim() === target.dataset.fold);
+      if (fold) { fold.open = true; fold.scrollIntoView({ block: 'nearest' }); }
+    }
   };
   /** The section list moves like a native sidebar and a section's pages like a segmented control: arrows, Home and End. */
   const keydown = (event: KeyboardEvent) => {
@@ -355,7 +391,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   host.addEventListener('click', click);
   host.addEventListener('keydown', keydown);
   refreshButton.addEventListener('click', refresh);
-  show(options.section ?? 'general', true);
+  show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
     dispose: () => {

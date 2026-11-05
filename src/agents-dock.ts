@@ -17,7 +17,7 @@ export interface AgentsDockSnapshot { agents: AgentsDockAgent[] }
 export interface AgentsDockPreferences { enabled: boolean; keepOnScreen: boolean; pinned: boolean }
 export interface AgentsDockDeps { openTask(id: string): void }
 
-const DEFAULT_PREFERENCES: AgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+const DEFAULT_PREFERENCES: AgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
 export const subscribeDockEvent = subscribe as unknown as <T>(name: string, callback: (event: T) => void) => Promise<() => void>;
 const statusLabel: Record<AgentsDockStatus, string> = {
   running: 'Running',
@@ -184,15 +184,21 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
     void promise.then(cleanup => { if (disposed) cleanup(); else cleanups.push(cleanup); }).catch(() => undefined);
   };
   rememberCleanup(subscribeDockEvent<AgentsDockSnapshot>('agents-dock-changed', next => { accept(next); draw(); }));
-  rememberCleanup(subscribeDockEvent<Partial<AgentsDockPreferences>>('agents-dock-preferences-changed', next => { preferences = { ...preferences, ...next }; draw(); }));
-  void Promise.all([
-    call<AgentsDockPreferences>('agents_dock_preferences').catch(() => DEFAULT_PREFERENCES),
-    call<AgentsDockSnapshot>('agents_dock_snapshot').catch(() => ({ agents: [] })),
-  ]).then(([saved, current]) => {
+  // Off, native sends no updates and nothing here asks, so turning it on has to catch up.
+  const refresh = () => call<AgentsDockSnapshot>('agents_dock_snapshot').then(current => {
+    if (!disposed) { accept(current); draw(); }
+  }).catch(() => undefined);
+  rememberCleanup(subscribeDockEvent<Partial<AgentsDockPreferences>>('agents-dock-preferences-changed', next => {
+    const turnedOn = next.enabled && !preferences.enabled;
+    preferences = { ...preferences, ...next };
+    draw();
+    if (turnedOn) void refresh();
+  }));
+  void call<AgentsDockPreferences>('agents_dock_preferences').catch(() => DEFAULT_PREFERENCES).then(saved => {
     if (disposed) return;
     preferences = { ...DEFAULT_PREFERENCES, ...saved };
-    accept(current);
     draw();
+    if (preferences.enabled) void refresh();
   });
   draw();
   return () => {

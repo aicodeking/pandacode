@@ -35,7 +35,6 @@ html .btw-composer:has(.btw-input:placeholder-shown) .send-button:not(.stop-butt
 .btw-panel .queue-row{flex-wrap:wrap}
 .btw-panel .queue-text{min-width:0;flex:1 1 60%}
 .btw-panel .queue-actions{flex:1 1 100%;flex-wrap:wrap;justify-content:flex-end;min-width:0}
-.btw-panel .queue-row:only-child :is([data-action="queue-up"],[data-action="queue-down"]){display:none}
 /* While the side agent runs the model trigger is disabled: its chevron gives the name the room. */
 .btw-panel .btw-composer .model-picker:disabled>.icon:last-child{display:none}
 .btw-panel [hidden]{display:none!important}

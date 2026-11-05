@@ -41,7 +41,7 @@ test('opens on the current harness with one-line rows, a scrollable rail and a f
   await expect(search(page)).toBeFocused();
   await expect(search(page)).toHaveAttribute('placeholder', /^Search \d+ models, \d+ harnesses…$/);
   // The popover's entrance spring scales it, so wait for it to settle.
-  await expect.poll(async () => (await picker(page).boundingBox())!.width).toBeCloseTo(460, 0);
+  await expect.poll(async () => (await picker(page).boundingBox())!.width).toBeCloseTo(520, 0);
   expect((await picker(page).boundingBox())!.height).toBeLessThanOrEqual(440);
   const rail = picker(page).getByRole('tablist', { name: 'Harnesses' });
   await expect(rail.getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
@@ -59,6 +59,78 @@ test('opens on the current harness with one-line rows, a scrollable rail and a f
   await expect(list.locator('.model-menu-option .provider-logo')).toHaveCount(0);
   // Instant: no transitions or running animations in the panel, apart from the effort control's sliding thumb.
   expect(await picker(page).evaluate(panel => [panel, ...panel.querySelectorAll('*:not(.segment-thumb)')].filter(node => getComputedStyle(node).transitionDuration.split(',').some(value => parseFloat(value) > 0)).length)).toBe(0);
+});
+
+test('the picker is a small inset shell: a bare rail beside one inset list panel', async ({ page }) => {
+  await open(page);
+  const look = await picker(page).evaluate(panel => {
+    // Resolve a token the way the browser paints it, so the comparison holds in any theme.
+    const resolved = (property: 'color' | 'backgroundColor', token: string) => {
+      const probe = document.createElement('span');
+      probe.style[property] = `var(${token})`;
+      panel.append(probe);
+      const value = getComputedStyle(probe)[property];
+      probe.remove();
+      return value;
+    };
+    const list = getComputedStyle(panel.querySelector('.model-menu-list')!);
+    const thumb = getComputedStyle(panel.querySelector('.model-menu-effort>.segment-thumb')!);
+    const box = (selector: string) => panel.querySelector(selector)!.getBoundingClientRect();
+    return {
+      rail: getComputedStyle(panel.querySelector('.model-menu-rail')!).backgroundColor,
+      listBorder: [list.borderTopWidth, list.borderTopColor], border: resolved('color', '--ds-border'),
+      listFill: list.backgroundColor, inner: resolved('backgroundColor', '--ds-card-inner'),
+      listRadius: list.borderTopLeftRadius, radius: getComputedStyle(document.documentElement).getPropertyValue('--ds-radius-inner').trim(),
+      thumb: thumb.backgroundColor, thumbToken: resolved('backgroundColor', '--ds-thumb'),
+      listEdges: [box('.model-menu-list').left, box('.model-menu-list').right], trackEdges: [box('.model-menu-effort').left, box('.model-menu-effort').right],
+    };
+  });
+  expect(look.rail).toBe('rgba(0, 0, 0, 0)');
+  expect(look.listBorder).toEqual(['1px', look.border]);
+  expect(look.listFill).toBe(look.inner);
+  expect(look.listRadius).toBe(look.radius);
+  expect(look.thumb).toBe(look.thumbToken);
+  // The effort track lines up under the panel.
+  expect(look.trackEdges).toEqual(look.listEdges);
+});
+
+test('a team row keeps its name readable; the detail gives way first', async ({ page }) => {
+  await open(page);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  const names = picker(page).locator('.model-menu-team .model-menu-name');
+  await expect(names).toHaveCount(2);
+  expect(await names.evaluateAll(nodes => nodes.every(node => node.scrollWidth <= Math.ceil(node.getBoundingClientRect().width)))).toBe(true);
+});
+
+// True when the element's own text fits, and nothing of it is cut by its row.
+const notClipped = (node: Element) => {
+  const row = node.closest('.model-menu-option')!.getBoundingClientRect(), box = node.getBoundingClientRect();
+  return node.scrollWidth <= Math.ceil(box.width) && box.width > 0 && box.right <= row.right;
+};
+
+test('a long custom ID truncates its quoted text and keeps the harness name whole', async ({ page }) => {
+  await open(page);
+  await page.keyboard.type('no-such-thing-at-all-and-then-a-great-deal-more-text-than-any-row-can-hold');
+  const row = picker(page).getByRole('option', { name: /^Use "/ });
+  await expect(row.locator('.model-menu-meta')).toHaveText('Claude Code');
+  expect(await row.locator('.model-menu-meta').evaluate(notClipped)).toBe(true);
+  expect(await row.locator('.model-menu-name').evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+  await expect(row).toHaveAccessibleName('Use "no-such-thing-at-all-and-then-a-great-deal-more-text-than-any-row-can-hold" with Claude Code');
+});
+
+test('a team row keeps the worker count when its lead cannot fit', async ({ page }) => {
+  await open(page);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  const rows = picker(page).locator('.model-menu-team');
+  await expect(rows).toHaveCount(2);
+  for (const count of await rows.locator('.model-menu-meta-count').all()) {
+    await expect(count).toContainText(/\d+ workers?$/);
+    expect(await count.evaluate(notClipped)).toBe(true);
+  }
+  await expect(rows.first().locator('.model-menu-meta')).toHaveText('Claude Opus 5 · 3 workers');
+  // In a narrow window the lead gives way and the count still shows whole.
+  await page.setViewportSize({ width: 480, height: 800 });
+  await expect.poll(() => rows.first().locator('.model-menu-meta-count').evaluate(notClipped)).toBe(true);
 });
 
 test('search flattens matches across harnesses and the rail becomes a hit map', async ({ page }) => {
@@ -178,6 +250,45 @@ test('narrow windows collapse the rail to logos', async ({ page }) => {
   const tab = picker(page).getByRole('tab', { name: 'Claude Code', exact: true });
   expect((await tab.boundingBox())!.width).toBeLessThan(50);
   await expect(tab.locator('.model-menu-tab-label')).toBeHidden();
+});
+
+/** Holds these preview commands back, so the app reaches the given moment with them still unanswered. */
+async function delayCommands(page: Page, commands: string[], ms = 500): Promise<void> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const marker = /switch\s*\(command\)\s*\{/;
+    await route.fulfill({ response, body: `${(await response.text()).replace(marker, `if (${JSON.stringify(commands)}.includes(command)) await new Promise(done => setTimeout(done, ${ms}));\nswitch (command) {`)}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
+  });
+}
+
+test('a harness list that answers late still fills the picker', async ({ page }) => {
+  await delayCommands(page, ['list_providers']);
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  await trigger(page).click();
+  await expect(picker(page).locator('[role="tab"][data-view="h:grok"]')).toBeVisible();
+  // Typing keeps its place in the same picker.
+  await page.keyboard.type('sonne');
+  await expect(search(page)).toHaveValue('sonne');
+  await expect(picker(page).getByRole('tab', { name: 'Grok Build', exact: true })).toBeVisible();
+});
+
+test('the Model button pressed while New task is on its way opens on the new task and stays open', async ({ page }) => {
+  await delayCommands(page, ['create_session']);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  const before = (await page.evaluate(async () => { const { invoke } = await import((window as any).__pandacodePreviewUrl); return invoke('get_task', { sessionId: 'session-1' }); }) as any);
+  await page.locator('.new-task-button').click();
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
+  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  // The pick landed on the new task, not on the one the button belonged to when it was pressed.
+  expect(await task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
+  const after = await page.evaluate(async () => { const { invoke } = await import((window as any).__pandacodePreviewUrl); return invoke('get_task', { sessionId: 'session-1' }); }) as any;
+  expect([after.provider, after.model]).toEqual([before.provider, before.model]);
 });
 
 test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async ({ page }) => {

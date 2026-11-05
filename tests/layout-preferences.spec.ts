@@ -204,6 +204,7 @@ test('layout preferences offer text size controls in Settings without replacing 
   await open(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'General', exact: true }).click();
   const row = settings.locator('.setting-row').filter({ hasText: 'Interface size' });
   await expect(row).toBeVisible();
   const node = await row.elementHandle();
@@ -353,6 +354,7 @@ test('layout preferences keep controls readable at 160 percent in wide and narro
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     const settings = page.getByRole('region', { name: 'Settings', exact: true });
+    await settings.getByRole('tab', { name: 'General', exact: true }).click();
     const controls = settings.getByRole('group', { name: 'Interface size', exact: true });
     await controls.scrollIntoViewIfNeeded();
     await expect(controls.getByRole('button', { name: 'Increase interface size', exact: true })).toBeDisabled();

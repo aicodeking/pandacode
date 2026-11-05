@@ -292,20 +292,22 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
   }
 
   /* ---------- collapse / expand: interruptible clip morph between pill and card ---------- */
-  function clipFor(pill: DOMRect, card: DOMRect): string {
+  function clipFor(pill: DOMRect, card: DOMRect, radius: string): string {
     const dx = Math.max(0, card.width - pill.width), dy = Math.max(0, card.height - pill.height), c = saved.corner;
-    return `inset(${c[0] === 't' ? 0 : dy}px ${c[1] === 'l' ? dx : 0}px ${c[0] === 't' ? dy : 0}px ${c[1] === 'l' ? 0 : dx}px round 24px)`;
+    return `inset(${c[0] === 't' ? 0 : dy}px ${c[1] === 'l' ? dx : 0}px ${c[0] === 't' ? dy : 0}px ${c[1] === 'l' ? 0 : dx}px round ${radius})`;
   }
-  function transition(to: State): void {
+  /** `activated`: the PiP's own control asked for this. WebKit doesn't focus a clicked button, so activeElement can't tell. */
+  function transition(to: State, activated = false): void {
     if (state() === to) return;
     const card = q<HTMLElement>('.pp-card') ?? buildCard(), pill = q<HTMLElement>('.pp-pill') ?? buildPill();
-    const hadFocus = root.contains(document.activeElement);
+    const hadFocus = activated || root.contains(document.activeElement);
     // Interrupted mid-way: start from where the running animations have things now.
     const was = morph ? { clip: getComputedStyle(card).clipPath, card: getComputedStyle(card).opacity, pill: getComputedStyle(pill).opacity } : null;
     morph?.anims.forEach(a => a.cancel());
     card.classList.toggle('is-overlay', to === 'collapsed'); pill.classList.toggle('is-overlay', to === 'expanded');
     if (to === 'expanded') root.prepend(card); else root.prepend(pill);
-    const full = 'inset(0px 0px 0px 0px round 16px)', small = clipFor(pill.getBoundingClientRect(), card.getBoundingClientRect());
+    const radius = getComputedStyle(card).borderRadius;
+    const full = `inset(0px 0px 0px 0px round ${radius})`, small = clipFor(pill.getBoundingClientRect(), card.getBoundingClientRect(), radius);
     const anims = (to === 'expanded' ? [
       play(card, [{ clipPath: was?.clip ?? small, opacity: was?.card ?? 1 }, { clipPath: full, opacity: 1 }], 460, { fill: 'both' }),
       play(pill, [{ opacity: was?.pill ?? 1 }, { opacity: 0 }], 180, { fill: 'forwards' }),
@@ -321,17 +323,17 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
       if (morph !== current) return;
       morph = null;
       anims.forEach(a => a.cancel());
-      if (to === 'expanded') { pill.remove(); card.classList.remove('is-overlay'); if (hadFocus || !still()) q<HTMLElement>('[data-pp="collapse"]')?.focus({ preventScroll: true }); }
+      if (to === 'expanded') { pill.remove(); card.classList.remove('is-overlay'); if (hadFocus) q<HTMLElement>('[data-pp="collapse"]')?.focus({ preventScroll: true }); }
       else { card.remove(); observer?.disconnect(); observer = null; pill.classList.remove('is-overlay'); stageHover = false; }
       dim.apply();
     };
     if (!anims.length) done(); else Promise.all(anims.map(a => a.finished)).then(done, () => undefined);
   }
-  function expand(): void { userExpanded = true; save({ collapsed: false }); transition('expanded'); }
-  function collapse(): void { stopPlay(); save({ collapsed: true }); transition('collapsed'); }
+  function expand(activated = false): void { userExpanded = true; save({ collapsed: false }); transition('expanded', activated); }
+  function collapse(activated = false): void { stopPlay(); save({ collapsed: true }); transition('collapsed', activated); }
   function arrive(): void {
     const pill = q('.pp-pill');
-    if (pill) play(pill, [{ scale: '1', boxShadow: '0 0 0 0 rgb(var(--accent-rgb) / .5)' }, { scale: '1.04', boxShadow: '0 0 0 8px rgb(var(--accent-rgb) / .18)', offset: 0.35 }, { scale: '1', boxShadow: '0 0 0 14px rgb(var(--accent-rgb) / 0)' }], 900);
+    if (pill) play(pill, [{ scale: '1' }, { scale: '1.04', offset: 0.35 }, { scale: '1' }], 900);
     const newest = q('.pp-stack img:last-child');
     if (newest) play(newest, [{ opacity: 0, transform: 'translateY(-6px) scale(.8)' }, { opacity: 1, transform: 'none' }], 420);
   }
@@ -368,8 +370,8 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     if (dragged) { dragged = false; event.preventDefault(); return; }
     const button = (event.target as Element).closest<HTMLElement>('[data-pp]');
     switch (button?.dataset.pp) {
-      case 'expand': expand(); break;
-      case 'collapse': collapse(); break;
+      case 'expand': expand(true); break;
+      case 'collapse': collapse(true); break;
       case 'prev': stopPlay(); go(index - 1); break;
       case 'next': stopPlay(); go(index + 1); break;
       case 'thumb': stopPlay(); go(Number(button.dataset.index)); break;
