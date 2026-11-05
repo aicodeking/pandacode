@@ -816,6 +816,11 @@ const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.clo
  * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
 let liveCardSeen: { card: Element; height: number } | undefined;
 function keepTopOnShrink(): void {
+  // Only a following reader is repaired, so nothing is measured when the reader is elsewhere: it is
+  // their scroll, not this, that decides where the thread sits. The card's height is dropped with it,
+  // so a shrink that happened while they were away is not compensated on their return (the baseline
+  // below is re-seeded on the first re-pin instead of leaving blank room under the last card).
+  if (!stickToBottom) { liveCardSeen = undefined; return; }
   const card = document.querySelector('#stream-region .turn-card.is-live'), before = liveCardSeen;
   if (!card) { liveCardSeen = undefined; return; }
   const box = card.getBoundingClientRect();
