@@ -278,7 +278,7 @@ async fn import_codex(state: &AppState, id: &str, fallback_model: &str) -> Resul
 
 fn import_zcode(state: &AppState, id: &str, fallback_model: &str) -> Result<Session> {
     // The CLI's store is read before the app's store locks, like the Claude importer.
-    let read = zcode::read(&zcode::db_path(), id).ok_or("This ZCode conversation was not found. Refresh the list.")?;
+    let read = zcode::read(&zcode::db_path(), id)?.ok_or("This ZCode conversation was not found. Refresh the list.")?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     import_zcode_row(&store, id, fallback_model, read)
 }

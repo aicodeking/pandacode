@@ -67,9 +67,10 @@ pub(crate) fn conversations(db: &Path) -> crate::Result<Vec<Conversation>> {
 }
 
 /// The conversation to import, still present, not deleted and not a subagent.
-pub(crate) fn conversation(db: &Path, id: &str) -> Option<Conversation> {
-    let Ok(conn) = open(db) else { return None };
-    conn.query_row(
+/// A store that opens but cannot be read is an error, not a missing conversation.
+pub(crate) fn conversation(db: &Path, id: &str) -> crate::Result<Option<Conversation>> {
+    let conn = open(db).map_err(|e| e.to_string())?;
+    match conn.query_row(
         "SELECT id, directory, title, time_created FROM session WHERE id = ?1 AND time_deleted IS NULL AND parent_id IS NULL AND id NOT LIKE 'sess_subagent_%'",
         rusqlite::params![id],
         |row| {
@@ -82,41 +83,43 @@ pub(crate) fn conversation(db: &Path, id: &str) -> Option<Conversation> {
                 messages: 0,
             })
         },
-    )
-    .ok()
+    ) {
+        Ok(conversation) => Ok(Some(conversation)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The model of the newest assistant message that names one.
-pub(crate) fn model(db: &Path, id: &str) -> Option<String> {
-    let Ok(conn) = open(db) else { return None };
+/// A failed message query is an error, not no model.
+pub(crate) fn model(db: &Path, id: &str) -> crate::Result<Option<String>> {
+    let conn = open(db).map_err(|e| e.to_string())?;
     // NULL sequences sort last so pre-trigger rows cannot masquerade as the newest.
     let mut messages = conn
         .prepare("SELECT data FROM message WHERE session_id = ?1 ORDER BY sequence IS NULL, sequence DESC, time_created DESC")
-        .ok()?;
-    let rows = messages.query_map(rusqlite::params![id], |row| row.get::<_, String>(0)).ok()?;
+        .map_err(|e| e.to_string())?;
+    let rows = messages.query_map(rusqlite::params![id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     for data in rows.filter_map(Result::ok) {
         let Ok(data) = serde_json::from_str::<Value>(&data) else { continue };
         if data["role"] == "assistant" {
             let name = crate::command_operations::clean(&data["modelId"], 160);
             if !name.is_empty() {
-                return Some(name);
+                return Ok(Some(name));
             }
         }
     }
-    None
+    Ok(None)
 }
 
 /// The readable history, oldest first, bounded like the Claude importer:
 /// user and assistant text plus tool names only. Synthetic `runtimeMessage`
 /// injections, reasoning, step markers and tool payloads stay out.
-pub(crate) fn history(db: &Path, id: &str) -> Vec<Entry> {
-    let Ok(conn) = open(db) else { return Vec::new() };
+pub(crate) fn history(db: &Path, id: &str) -> crate::Result<Vec<Entry>> {
+    let conn = open(db).map_err(|e| e.to_string())?;
     // NULL sequences sort last so pre-trigger rows follow their sequenced neighbours.
-    let Ok(mut messages) = conn.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY sequence IS NULL, sequence, time_created") else { return Vec::new() };
-    let Ok(rows) = messages.query_map(rusqlite::params![id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?))) else {
-        return Vec::new();
-    };
-    let Ok(mut parts) = conn.prepare("SELECT data FROM part WHERE message_id = ?1 ORDER BY sequence") else { return Vec::new() };
+    let mut messages = conn.prepare("SELECT id, data, time_created FROM message WHERE session_id = ?1 ORDER BY sequence IS NULL, sequence, time_created").map_err(|e| e.to_string())?;
+    let rows = messages.query_map(rusqlite::params![id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<i64>>(2)?))).map_err(|e| e.to_string())?;
+    let mut parts = conn.prepare("SELECT data FROM part WHERE message_id = ?1 ORDER BY sequence").map_err(|e| e.to_string())?;
     let mut entries = std::collections::VecDeque::new();
     let mut push = |entry: Entry| {
         if entries.len() == claude::MAX_ENTRIES {
@@ -138,7 +141,7 @@ pub(crate) fn history(db: &Path, id: &str) -> Vec<Entry> {
         };
         let at = at.unwrap_or(last);
         last = at;
-        let Ok(parts) = parts.query_map(rusqlite::params![message_id], |row| row.get::<_, String>(0)) else { continue };
+        let parts = parts.query_map(rusqlite::params![message_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
         let mut text = Vec::new();
         let mut tools = Vec::new();
         for part in parts.filter_map(Result::ok) {
@@ -164,7 +167,7 @@ pub(crate) fn history(db: &Path, id: &str) -> Vec<Entry> {
             push(("tool", tool, at));
         }
     }
-    entries.into()
+    Ok(entries.into())
 }
 
 /// Everything an import needs from the store, read up front so the app's
@@ -175,6 +178,7 @@ pub(crate) struct Read {
     pub model: Option<String>,
 }
 
-pub(crate) fn read(db: &Path, id: &str) -> Option<Read> {
-    Some(Read { conversation: conversation(db, id)?, entries: history(db, id), model: model(db, id) })
+pub(crate) fn read(db: &Path, id: &str) -> crate::Result<Option<Read>> {
+    let Some(conversation) = conversation(db, id)? else { return Ok(None) };
+    Ok(Some(Read { conversation, entries: history(db, id)?, model: model(db, id)? }))
 }
