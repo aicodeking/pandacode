@@ -3193,7 +3193,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
-  stickToBottom = true; render();
+  // A new thread is pinned from the top: the offset the last thread was left at must not judge its first scroll.
+  stickToBottom = true; lastTranscriptTop = 0; render();
   if (remembered) stickTranscript();
   // A thread switch settles in once, after its real content draws: here for a remembered page,
   // below once the page arrives (never on the loading placeholder).
