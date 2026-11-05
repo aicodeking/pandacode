@@ -29,82 +29,174 @@ embedded editor engine.
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/conversation.webp" alt="PandaCode with a finished Claude Code task: the reply explains the change, with the project's tasks in the sidebar and the composer below" width="100%">
+  <img src="docs/screenshots/conversation.webp" alt="PandaCode with a finished Claude Code task as one turn card over a dusk alpine scene, with the task sidebar, the prompt box and the Changes inspector" width="100%">
 </p>
 
 ## Features
 
+### The interface
+
+- **A live scene in every thread.** The conversation is a window onto one of eight
+  procedural scenes (sky, alpine, aurora, dunes, lagoon, nebula, ocean, rain) that
+  follows your local clock, and each thread keeps its own. In dark, light and
+  imported VS Code themes. Prefer a picture? Turn on
+  [wallpapers](docs/wallpapers.md) in Settings → Appearance.
+- **One card per turn.** The header shows the running step and elapsed time, the
+  latest reply sits inside with **Read more**, and changed files open the diff from
+  the footer.
+- **Tile up to six threads.** Drag a thread from the sidebar, `⌘/Ctrl`-click it or
+  choose **Open beside** to see threads side by side. The focused tile is the full
+  thread, the others update live, and `⌘⌥←/→` moves between them.
+- **A sidebar that sorts itself.** Tasks sit in Active, Finished or Settled, plus
+  Pinned, with a filter field and keyboard navigation.
+- **A floating action dock.** Panels, Agents, Run, Deploy and task actions float over
+  the thread and take no layout space.
+- **Three views.** Conversation, Board and GitHub, from the view menu beside the
+  PandaCode name.
+- **Quick overlay and menu bar item.** A global shortcut (default ⌘/Ctrl + Shift +
+  Space) opens a launcher for new and running tasks from anywhere. The menu bar item
+  lists running, waiting and finished tasks with your plan usage, and Settings →
+  General adds a small running agents widget.
+- **Find and search.** `⌘/Ctrl F` searches your messages and the agent's, with every
+  match highlighted. The inspector's Search tab finds file names and text in files.
+
+### Agents
+
 - **Every harness in one place.** Pick the harness, model and reasoning effort
   per task; switch between them from the composer. See [providers](docs/providers.md).
 - **Tasks and a task board.** Parallel tasks across projects, a Pending → In
-  progress → Review → Completed [board](docs/task-board.md), message queueing
+  progress → Review → Settled [board](docs/task-board.md), message queueing
   and steering while an agent runs.
 - **Agent teams.** An [architect and its workers](docs/architect-workers.md),
   mixing harnesses and models, or named team profiles; workers run at once with no
-  limit unless you set one. Team starts an automatic team; with **Classic team setup**
-  on (Settings → Agents → Agent teams) it opens Architect & workers, where you choose
-  the worker models and how many run at once. Each spawned worker is one line in the
-  turn that started it; click it to open the worker.
+  limit unless you set one, can start their own helpers and share a notes board. Team
+  starts an automatic team; with **Classic team setup** on (Settings → Agents → Agent
+  teams) it opens Architect & workers, where you choose the worker models and how many
+  run at once. Each spawned worker is one line in the turn that started it, and the
+  dock's **Agents** item shows them all.
 - **Model routing.** In automatic teams (Cheap, Balanced or Best, from the Team
   button) the lead can let a local router pick each worker's model, in about 10–25 ms
   and without sending the task anywhere; a failed worker's replacement escalates to a
-  stronger model. See
+  stronger model. Models that keep failing pause on their own, and a failed worker
+  moves to the same model on another harness. Intel Mac, x86_64 Linux and x86_64
+  Windows builds route with a simpler keyword heuristic. See
   [model routing](docs/model-routing.md).
+- **`/btw` side threads.** Ask a question on the side while the agent keeps working,
+  in a By the way tab that can read the main thread. See [/btw](docs/btw.md).
+- **Schedules.** You or an agent can wake a thread later, on a repeat or after another
+  thread finishes. See [schedules](docs/schedules.md).
 - **Bots.** Put an agent behind Telegram, Slack, Discord, WhatsApp or a local web
   chat; each conversation is an ordinary task. The sidebar's **Bots** view lists
   every bot with its latest message. See [bots](docs/bots.md).
-- **Local VMs and cloud sandboxes.** Headless macOS/Linux VMs on Apple silicon
-  (Tart), and Daytona, Cloudflare and AWS sandboxes that agents can drive.
-- **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
-  agent runs on a machine in your own account (Daytona, Cloudflare, AWS, Google Cloud,
-  E2B, Modal, Vercel Sandbox, CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle,
-  boat). PandaCode installs the harness there, copies your login, and keeps the run
-  going while your laptop sleeps; changes come back to a local worktree. See
-  [cloud agents](docs/cloud-agents.md).
-- **Simulators.** iOS Simulator and Android emulator tools for agents.
-- **Deploys.** Start a deploy task for Vercel, Cloudflare, Railway, Netlify, AWS or Google
-  Cloud from the header ([Netlify setup](docs/netlify.md)), with approval-gated CLI runs (AWS and Google Cloud use
-  your installed CLI and its login).
-- **GitHub view.** Your repositories with their threads, pull requests and issues;
-  review, fix checks, merge or solve an issue in one click. Each opens as a linked
-  thread beside the GitHub view, where you can keep chatting. See [GitHub](docs/github.md).
-- **Git and worktrees.** Diffs, staging, commits, per-task [worktrees](docs/worktrees.md)
-  with a one-click local **Merge into main**, branch switching from the branch chip,
-  and optional [GitHub](docs/github.md) issues and pull requests through `gh`,
-  including merging a task's linked pull request.
-- **Approvals at hand.** Requests wait in a slim bar above the prompt, one line
-  each, grouped with **Approve all** when there are several.
-- **Find in thread.** `⌘/Ctrl F` searches your messages and the agent's, with
-  every match highlighted.
-- **Review every turn.** Saved [turn changes](docs/turn-changes.md) with
-  unified/split diffs, an embedded [browser](docs/browser.md), and file previews.
+- **Projectless chats.** **New chat** starts a conversation with no codebase, in its
+  own folder under `~/PandaCode Chats`. See [chats](docs/chats.md).
+- **Named connections and environment variables.** Keep profiles such as "Claude Work"
+  and "Claude Personal", and set global or per-agent environment variables and a custom
+  executable location. See [providers](docs/providers.md#environment-variables).
 - **Token saver.** Per-task response-style packs that cut output tokens.
-- **Quick overlay.** A global shortcut (default ⌘/Ctrl + Shift + Space) opens a
-  launcher for new and running tasks from anywhere.
 - **Agent usage.** Account limits and cost estimates for each installed harness
   ([agent usage](docs/agent-usage.md)), and one-click CLI updates
   ([agent updates](docs/agent-updates.md)).
-- **Attachments.** Images, PDFs, documents, folders and a built-in mockup
-  sketcher ([attachments](docs/attachments.md)).
+- **Skills, recipes and capabilities.** Import a skill or rule once and turn it on per
+  agent ([skills library](docs/skills-library.md)), save multi-step
+  [recipes](docs/recipes.md) with a dry run per harness, and compare each agent's
+  commands, MCP servers, hooks and skills ([capabilities](docs/capabilities.md)).
+- **Codex goals.** `/goal` sets an objective with an optional token budget. See
+  [goals](docs/goals-and-command-workflows.md).
+
+### Review and build
+
+- **Review every turn.** Saved [turn changes](docs/turn-changes.md) with
+  unified/split diffs, an embedded [browser](docs/browser.md), and file previews.
+  [Edit a sent prompt](docs/rewind.md) to fork the thread from just before it.
+- **Approvals at hand.** Requests wait in a slim bar above the prompt, one line
+  each, grouped with **Approve all** when there are several.
+- **Turn checks.** After a clean turn, optionally run the project's own test or check
+  command; a failure queues one editable fix message
+  ([settings](docs/settings.md)).
+- **Visual progress and design canvas.** A picture-in-picture
+  [timeline](docs/visual-progress.md) of annotated screenshots of what the agent is
+  building, and HTML artboards beside the chat that you
+  [comment on](docs/design-canvas.md) element by element.
+- **Run and preview.** The Run button starts the project's `pandacode-run.sh` and opens
+  its preview. See [run project](docs/run-project.md).
+- **Simulators.** iOS Simulator and Android emulator tools for agents.
+- **Attachments and documents.** Images, PDFs, documents, folders and a built-in mockup
+  sketcher ([attachments](docs/attachments.md)), per-project
+  [moodboards](docs/moodboards.md), and PDF, Word and spreadsheet viewers in file tabs.
+- **Git and worktrees.** Diffs, staging, commits, per-task [worktrees](docs/worktrees.md)
+  with a one-click local **Merge into main**, branch switching from the branch chip,
+  and optional [GitHub](docs/github.md) issues and pull requests through `gh`,
+  including merging a task's linked pull request. [Jujutsu](docs/jj.md) checkouts get
+  their own Changes panel.
+- **GitHub view.** Your repositories with their threads, pull requests, issues and
+  actions; review, fix checks, merge or solve an issue in one click. Each opens as a
+  linked thread beside the GitHub view, where you can keep chatting. See
+  [GitHub](docs/github.md).
+- **Deploys.** Start a deploy task for Vercel, Cloudflare, Railway, Netlify, AWS or Google
+  Cloud from the action dock ([Netlify setup](docs/netlify.md)), with approval-gated CLI
+  runs (AWS and Google Cloud use your installed CLI and its login).
+
+### Run it anywhere
+
+- **PandaCode Connect.** Sign in with GitHub to start and control tasks on your other
+  computers over an end-to-end encrypted relay. Off until you sign in. See
+  [remote access](docs/remote-access.md).
+- **Mobile app.** Watch, steer and approve tasks from an iPhone or Android phone; tasks
+  never run on the phone. Build it from [`mobile/`](mobile/README.md).
+- **Headless server.** `pandacode serve` runs PandaCode on an always-on machine with no
+  window, as one more computer in Connect. See [headless](docs/headless.md).
+- **Machine orchestration.** Let agents launch and wait on threads on computers you
+  linked, with access you set per computer. Off by default. See
+  [machine orchestration](docs/machine-orchestration.md).
+- **Local VMs and cloud sandboxes.** Headless macOS/Linux VMs on Apple silicon (Tart),
+  and Daytona, Docker, DigitalOcean, Vultr, Hetzner, RunPod, Cloudflare and AWS machines
+  that agents can drive.
+- **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
+  agent runs on a machine in your own account (Daytona, Docker, DigitalOcean, Vultr,
+  Hetzner, RunPod, Cloudflare, AWS, Google Cloud, E2B, Modal, Vercel Sandbox,
+  CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, boat, InstaBox). PandaCode
+  installs the harness there, copies your login, and keeps the run going while your
+  laptop sleeps; changes come back to a local worktree. See
+  [cloud agents](docs/cloud-agents.md).
 
 ## Screenshots
 
-**A board for everything in flight.** Tasks from every project move from Pending to
-Review, each with its harness, model and linked issue.
+**One card per turn.** The running step and elapsed time on top, the latest reply
+inside, and the changed files in the footer.
 
-<img src="docs/screenshots/board.webp" alt="The task board with Pending, In progress, Review and Completed columns" width="100%">
+<img src="docs/screenshots/turn-card.webp" alt="A finished turn card: a summary of its steps, 2m 14s elapsed, a shortened reply with Read more, and a footer with 3 changed files" width="100%">
+
+**Up to six threads at once.** Tile threads inside the thread area, each with its own
+scene. The focused tile is the full thread and the others update live.
+
+<img src="docs/screenshots/tiled-threads.webp" alt="Four threads tiled in a grid, each with its own scene, with the prompt box in the focused tile" width="100%">
+
+**Light or dark, with a scene that follows the clock.**
+
+<img src="docs/screenshots/scenes.webp" alt="The light theme with a daytime ocean scene behind a finished turn card, the task sidebar and the Changes inspector" width="100%">
 
 <table>
   <tr>
-    <td width="62%" valign="top"><img src="docs/screenshots/streaming.webp" alt="A reply streaming in, with the live working row and tool activity above it" width="100%"><br><sub><b>Live replies.</b> Responses stream in as Markdown, with tool activity folded above.</sub></td>
-    <td width="38%" valign="top"><img src="docs/screenshots/model-picker.webp" alt="The harness and model picker listing Claude Code, Codex and Kimi Code models" width="100%"><br><sub><b>Any harness, any model.</b> Switch per task, with context size and reasoning effort.</sub></td>
+    <td width="62%" valign="top"><img src="docs/screenshots/streaming.webp" alt="A live turn card with a reply still streaming and a running timer, over an aurora scene beside the action dock" width="100%"><br><sub><b>Live replies.</b> Responses stream in as Markdown, under the step the agent is on.</sub></td>
+    <td width="38%" valign="top"><img src="docs/screenshots/model-picker.webp" alt="The searchable model picker with harnesses on the left, Claude Code's models with context sizes, and an effort control" width="100%"><br><sub><b>Any harness, any model.</b> Switch per task, with context size and reasoning effort.</sub></td>
   </tr>
 </table>
 
 **Agent teams.** An architect plans the work, runs workers in parallel across
-harnesses, and reviews what they bring back.
+harnesses, and reviews what they bring back. The dock's Agents item shows every worker.
 
-<img src="docs/screenshots/agent-team.webp" alt="An agent team's finished run: the architect's summary, the combined changed files and two completed workers" width="100%">
+<img src="docs/screenshots/agents-flyout.webp" alt="A finished team run with the architect's summary and changed files, and the Agents flyout listing two workers ready for review" width="100%">
+
+**A board for everything in flight.** Tasks from every project move from Pending to
+Settled, each with its harness and linked issue.
+
+<img src="docs/screenshots/board.webp" alt="The task board with Pending, In progress, Review and Settled columns" width="100%">
+
+**GitHub in one view.** Your repositories with their threads, pull requests, issues
+and actions, including review and CI status.
+
+<img src="docs/screenshots/github.webp" alt="The GitHub view with repositories on the left and a repository's pull requests with review and CI status" width="100%">
 
 **Your app beside the chat.** The iOS Simulator and Android emulator run in the
 inspector on a lifelike device, so you can tap through what an agent just built.
@@ -116,14 +208,19 @@ On Windows and Linux the tab lists Android emulators only.
 the same streaming, composer and model picker; reach it from Telegram, Slack,
 Discord, WhatsApp or a browser too.
 
-<img src="docs/screenshots/bot.webp" alt="A bot named Scout replying with a morning digest" width="100%">
+<img src="docs/screenshots/bot.webp" alt="A bot named Scout replying with a morning digest over an aurora scene" width="100%">
 
 <table>
   <tr>
     <td width="58%" valign="top"><img src="docs/screenshots/diff.webp" alt="The changed-files viewer with a syntax-highlighted unified diff" width="100%"><br><sub><b>Review every turn.</b> Each turn saves its changes, with unified and split diffs.</sub></td>
-    <td width="42%" valign="top"><img src="docs/screenshots/bot-settings.webp" alt="Bot settings with tabs for profile, conversations, memory, schedules, channels, rules and activity" width="100%"><br><sub><b>Bot settings.</b> Memory, schedules, channels and rules, in one place.</sub></td>
+    <td width="42%" valign="top"><img src="docs/screenshots/bot-settings.webp" alt="A bot's settings on the Connections tab, with cards for Web chat, Telegram, Slack, Discord and WhatsApp" width="100%"><br><sub><b>Bot settings.</b> Connections, schedules, memory and skills, in one place.</sub></td>
   </tr>
 </table>
+
+**Settings in seven sections.** General, Appearance, Agents, Schedules, Tools,
+Connections and About, with colors and imported VS Code themes.
+
+<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the seven sections listed on the left and theme, color and VS Code theme controls" width="100%">
 
 <sub>Screenshots come from the browser preview with sample data. Regenerate them with
 `npm run screenshots` (see [`scripts/screenshots`](scripts/screenshots/capture.spec.ts)).</sub>
@@ -140,9 +237,9 @@ Discord, WhatsApp or a browser too.
   only by your user (0600), never the Keychain, so updates never ask for your
   login password; keys saved in the Keychain by older versions move there on
   first use. Linux keeps them in the Secret Service and Windows in Credential
-  Manager.
+  Manager; `pandacode serve` uses the 0600 file there too by default.
 - **Agent telemetry can be turned off in one place.** Settings → Agents →
-  Privacy → **Turn off agent telemetry** starts every agent with its vendor's
+  Harnesses → Advanced → Privacy → **Turn off agent telemetry** starts every agent with its vendor's
   own opt-outs (Claude Code, Codex, Kimi, Grok, DeepSeek, Command Code, Pi,
   Muse, and OpenCode sharing) plus `DO_NOT_TRACK=1`. Your agent config files
   are not changed. Each agent's row shows what the switch covers. Cline has no
@@ -155,17 +252,18 @@ information:
 
 | What | Where | How often |
 | --- | --- | --- |
-| Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org` (Cline) | About every 6 hours |
+| Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org`, `releases.openai.com`, `storage.googleapis.com`, `pypi.org` | About every 6 hours |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
-| Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Agents → Jev and run a decision check; sends the selected evidence with your key |
+| Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Tools → Add-ons → Jev and run a decision check; sends the selected evidence with your key |
+| Jev decisions on TypeSafe (optional, the default service): sends the selected evidence with your key | TypeSafe | Only when you save a TypeSafe key in Jev's setup and run a decision check |
 | Cloud agents (optional): the task's checkout, prompt and harness login go to the machine you chose; PandaCode checks on its active runs | The cloud provider you connected | Only for tasks you start on a cloud provider; while a run is active and at launch to re-attach |
-| Model routing profiler (optional): `model.int8.onnx` and `tokenizer.json`, from a pinned commit, verified by SHA-256 | `raw.githubusercontent.com` | Once, the first time you turn on a team (with routing on) or click Download or Route in Settings → Agents → Model routing; never at launch |
-| PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Remote access; nothing before |
+| Model routing profiler (optional): `model.int8.onnx` and `tokenizer.json`, from a pinned commit, verified by SHA-256 | `raw.githubusercontent.com` | Once, the first time you turn on a team (with routing on) or click Download or Route in Settings → Agents → Model routing; never at launch, and never on macOS older than 13.4 or on Intel Mac, x86_64 Linux and x86_64 Windows builds |
+| PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; nothing before |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
-| Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Agents → Cloud sandboxes |
+| Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
 
 ## Install
 
@@ -218,14 +316,16 @@ PandaCode does not include provider plans or usage.
 
 [omp (Oh My Pi)](https://github.com/can1357/oh-my-pi), a Pi fork that runs on Bun, installs with `bun install -g @oh-my-pi/pi-coding-agent`; sign in through `omp` itself. PandaCode drives it with the same RPC bridge as Pi and passes `--approval-mode yolo` so the bridge stays the only approval gate.
 
-[DeepSeek](https://platform.deepseek.com/api_keys) installs with `npm i -g @deepseek-ai/dsh`; PandaCode launches `dsh --profile acp`. An API key is optional (Settings → Providers, or `DEEPSEEK_API_KEY`); dsh can use its own stored credentials. With a saved key (or `DEEPSEEK_API_KEY`), the Usage dialog shows the account balance from `api.deepseek.com`.
+[DeepSeek](https://platform.deepseek.com/api_keys) installs with `npm i -g @deepseek-ai/dsh`; PandaCode launches `dsh --profile acp`. An API key is optional (Settings → Agents → Providers, or `DEEPSEEK_API_KEY`); dsh can use its own stored credentials. With a saved key (or `DEEPSEEK_API_KEY`), the Usage dialog shows the account balance from `api.deepseek.com`.
 
-[Command Code](https://commandcode.ai/docs/acp) installs with `npm i -g command-code` (Node 22 or newer); PandaCode launches `command-code acp`. Sign in once with `command-code login`, or save an API key in Settings → Providers (or set `COMMAND_CODE_API_KEY`); either one authenticates the same account. Usage limits are not shown in PandaCode; check Command Code Studio.
+[Command Code](https://commandcode.ai/docs/acp) installs with `npm i -g command-code` (Node 22 or newer); PandaCode launches `command-code acp`. Sign in once with `command-code login`, or save an API key in Settings → Agents → Providers (or set `COMMAND_CODE_API_KEY`); either one authenticates the same account. Usage limits are not shown in PandaCode; check Command Code Studio.
 [Cline](https://docs.cline.bot/usage/cli-overview) installs with `npm i -g cline`; PandaCode launches `cline --acp`. Sign in once with `cline auth` (or set `CLINE_API_KEY`); the provider and models chosen in Cline apply. See [provider details](docs/providers.md#cline).
 
 [Kilo Code](https://kilo.ai/docs/code-with-ai/platforms/cli) installs with `npm i -g @kilocode/cli`; sign in with `kilo auth login`, then select **Kilo Code** in PandaCode. PandaCode launches `kilo acp` and uses Kilo's configured providers and models. See [provider details](docs/providers.md#kilo-code).
 
 Muse Code installs with Meta's launcher into `~/.local/bin/muse`; run `muse login` once in a terminal. PandaCode launches `muse serve` and speaks MSP, Muse's JSON-RPC session protocol, with its sandbox and approval modes; see [docs/providers.md](docs/providers.md#muse-code) for what each mode does and what Muse cannot express.
+
+Antigravity runs Google's `agy_acp_server`, or `agy acp` through the `agy` CLI when that server isn't installed. See [provider details](docs/providers.md).
 
 [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli) installs with `npm install -g @github/copilot`; run `copilot login` in a terminal, then select **GitHub Copilot CLI** in PandaCode. PandaCode launches the local `copilot` executable over ACP. The CLI manages its own sign-in. See [provider details](docs/providers.md#github-copilot-cli).
 
@@ -267,19 +367,25 @@ inspect and stage diffs, or the terminal to run shell commands. Conversations
 and provider session IDs persist across restarts; agents start only for active
 turns.
 
-In **Files**, click an HTML, SVG, image or PDF to open it in the sidebar browser.
+In **Files**, an HTML file opens in the Browser panel; other files, including images,
+PDFs, Word documents and spreadsheets, open in a file tab beside the conversation.
 Filenames mentioned in responses become clickable and resolve against the task's
 own project or worktree.
 
-The bar above the prompt shows the project, checkout and branch. Its branch chip
+The row at the bottom of the prompt box holds the model, permissions, Team, token
+saver, checkout and branch. Its branch chip
 is the one place for [worktrees](docs/worktrees.md): an unstarted task moves into
 a new worktree in place, a started one spawns a sibling task, and settling a
 clean worktree task offers to remove its checkout and merged branch.
 
-Choose **Board** in the header to manage tasks by status. Choose **Team** in the
-composer for an automatic team, or set up an architect and workers. Each turn's
-tool calls sit inside a compact **Worked for …** row; final answers and errors
-stay visible, and approval requests wait in the bar above the prompt.
+Pick **Board** from the view menu beside the PandaCode name to manage tasks by
+status. Choose **Team** in the composer for an automatic team, or set up an architect
+and workers. Each agent turn is one card, with its tool calls behind the header;
+approval requests wait in the bar above the prompt.
+
+On macOS and Windows, closing the window hides it and running agents keep going; the
+menu bar item, the Dock or launching the app again brings it back. On Linux, closing
+the window quits PandaCode.
 
 The branch chip also switches the project checkout to `main` or another local
 branch, and in a worktree task offers **Merge into main**: it merges the
@@ -297,14 +403,14 @@ Type `/` at the start of a message for the harness's commands and skills
 Keyboard shortcuts: `⌘/Ctrl N` new task, `⌘/Ctrl K` command palette,
 `⌘/Ctrl J` terminal, `⌘/Ctrl B` sidebar, `⌘/Ctrl ,` settings, `⌘/Ctrl F` find
 in thread (`⌘/Ctrl G` next match), `Enter` send (queues while an agent runs),
-`⌘/Ctrl Enter` steer, `Shift Enter` newline, `⌘/Ctrl +/−/0` interface size (the
-whole interface scales, not just text).
+`⌘/Ctrl Enter` steer, `Shift Enter` newline, `⌘⌥←/→` move between tiled threads,
+`⌘/Ctrl +/−/0` interface size (the whole interface scales, not just text).
 
 On macOS, if folder access is denied, use **Browse** to select the folder, or
 allow PandaCode under **System Settings → Privacy & Security → Files & Folders**.
 
-The thread shows a live sky that follows the time of day, and PandaCode also
-includes [21 anime scenery wallpapers](docs/wallpapers.md), a different morning,
+The thread shows one of eight live scenes that follows the time of day, and each
+thread keeps its own. PandaCode also includes [21 anime scenery wallpapers](docs/wallpapers.md), a different morning,
 afternoon and night scene for each weekday: turn them on in **Settings →
 Appearance → Wallpapers**. You can also import VS Code color themes.
 
@@ -315,12 +421,13 @@ fully without it.
 ## Resource limits
 
 No background directory polling or recursive file watchers. Agents exit after
-each turn and resume by provider session ID. After a Claude Code turn, the next
+each turn and resume by provider session ID; a run stays open only while background
+subagents finish or a Codex goal is active. After a Claude Code turn, the next
 turn's process starts in the background so a follow-up skips the CLI's startup;
 at most two wait at a time, each for up to 10 minutes. PandaCode's fixed
 instructions go to Claude-family harnesses once as a cached system prompt rather
-than in every message. The interface has no transitions: everything appears at
-once, and a thread you return to is drawn in a single frame. Terminal and Markdown code load only
+than in every message. Motion is short and subtle, and the system's reduced-motion setting turns it off; a
+thread you return to draws from its saved page at once. Terminal and Markdown code load only
 when needed. Terminal history, provider frames, files, diffs and streamed text
 all have explicit limits; only the current 100-message page of a conversation is
 loaded. **Resource usage** reports native core RSS, active agents, terminals and
