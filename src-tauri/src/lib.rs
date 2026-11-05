@@ -3149,6 +3149,23 @@ async fn reveal_path(path: String) -> Result<()> {
     Ok(())
 }
 
+#[tauri::command]
+async fn open_workspace_file(state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String) -> Result<()> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    let target = workspace::scoped_path(&root, &path)?;
+    if !target.is_file() { return Err("Choose an existing file.".into()); }
+    #[cfg(target_os = "macos")]
+    let mut command = tokio::process::Command::new("/usr/bin/open");
+    #[cfg(target_os = "windows")]
+    let mut command = tokio::process::Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = tokio::process::Command::new("xdg-open");
+    child_env::sanitize(&mut command);
+    command.arg(target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    tokio::time::timeout(std::time::Duration::from_secs(5), command.status()).await.map_err(|_| "Opening the file timed out.")?.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// A sent image or screenshot from the shared capture registry, for the transcript's chips.
 #[tauri::command]
 async fn prompt_image(app: tauri::AppHandle, id: String) -> Result<Option<String>> {
@@ -3770,6 +3787,29 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
         store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
     })
     .await
+}
+#[tauri::command]
+async fn manage_workspace_entry(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>,
+    action: String, path: String, name: Option<String>,
+) -> Result<String> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::manage_entry(&root, &action, &path, name.as_deref())).await
+}
+#[tauri::command]
+async fn write_workspace_file(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>,
+    path: String, content: String, expected: String,
+) -> Result<()> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::write_file(&root, &path, &content, &expected)).await
+}
+#[tauri::command]
+async fn workspace_file_stamp(
+    state: State<'_, AppState>, project_id: String, session_id: Option<String>, path: String,
+) -> Result<String> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::file_stamp(&root, &path)).await
 }
 #[tauri::command]
 async fn list_files(
@@ -4908,10 +4948,14 @@ pub fn run() {
                 prompt_image,
                 reveal_path,
                 open_third_party_notices,
+                open_workspace_file,
                 read_document,
                 dragged_file_paths,
                 describe_folder,
                 list_files,
+                manage_workspace_entry,
+                write_workspace_file,
+                workspace_file_stamp,
                 search_files,
                 search_text,
                 read_file,
