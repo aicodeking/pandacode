@@ -81,8 +81,8 @@ export function createPreviewVm() {
 /* Cloud sandboxes in the preview: connections that accept any key (except "bad"),
  * machines per provider, a drawn desktop for providers with screens, and recorded input. */
 const BASE = ['daytona', 'cloudflare', 'aws', 'vercel', 'railway', 'netlify', 'gcloud', 'docker', 'colab'];
-const KEYED = ['digitalocean', 'vultr', 'hetzner', 'runpod', 'e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat', 'instabox'];
-const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['docker', 'Docker'], ['digitalocean', 'DigitalOcean'], ['vultr', 'Vultr'], ['hetzner', 'Hetzner'], ['runpod', 'RunPod'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['instabox', 'InstaBox'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud'], ['colab', 'Google Colab']] as const;
+const KEYED = ['digitalocean', 'vultr', 'hetzner', 'runpod', 'e2b', 'modal', 'codesandbox', 'runloop', 'blaxel', 'tensorlake', 'freestyle', 'boat', 'instabox', 'boxd'];
+const AGENT_TARGETS = [['e2b', 'E2B'], ['daytona', 'Daytona'], ['docker', 'Docker'], ['digitalocean', 'DigitalOcean'], ['vultr', 'Vultr'], ['hetzner', 'Hetzner'], ['runpod', 'RunPod'], ['modal', 'Modal'], ['vercel', 'Vercel Sandbox'], ['codesandbox', 'CodeSandbox'], ['runloop', 'Runloop'], ['blaxel', 'Blaxel'], ['tensorlake', 'Tensorlake'], ['freestyle', 'Freestyle'], ['boat', 'boat'], ['instabox', 'InstaBox'], ['boxd', 'boxd'], ['cloudflare', 'Cloudflare'], ['aws', 'AWS EC2'], ['gcloud', 'Google Cloud'], ['colab', 'Google Colab']] as const;
 type PreviewCloudMachine = { id: string; provider: string; name: string; state: string; os: string; desktop: boolean; detail: string };
 const COLAB_ACCELERATORS = ['NONE', 'T4', 'L4', 'G4', 'A100', 'H100', 'V5E1', 'V6E1'];
 const COLAB_EMAIL = 'alex@example.com';
