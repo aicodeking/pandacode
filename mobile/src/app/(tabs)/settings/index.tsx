@@ -11,6 +11,7 @@ import { clearLocal } from '../../../store/local.ts';
 import { APPEARANCES, setAppearance, useAppearance } from '../../../ui/appearance.ts';
 import { useBackdrop } from '../../../ui/Backdrop.tsx';
 import { WallpaperSettings } from '../../../ui/WallpaperSettings.tsx';
+import { setOnDeviceOnly, useVoice } from '../../../ui/speech.ts';
 
 const SOURCE = 'https://github.com/aicodeking/pandacode';
 const SUPPORT = `${SOURCE}/issues`;
@@ -33,6 +34,7 @@ export default function Settings() {
     } catch { setPushOn(false); }
   })(); };
   const [deleting, setDeleting] = useState(false);
+  const onDeviceOnly = useVoice(s => s.onDeviceOnly);
   const signOut = () => Alert.alert('Sign out?', 'This phone stops seeing your computers until you sign in again.', [
     { text: 'Cancel', style: 'cancel' },
     { text: 'Sign out', style: 'destructive', onPress: () => void connect.signOut() },
@@ -95,6 +97,19 @@ export default function Settings() {
               <Pressable key={a.id} onPress={() => setAppearance(a.id)} accessibilityRole="radio" accessibilityState={{ selected }}
                 style={[styles.chip, { backgroundColor: selected ? colors.tint : colors.fill }]}>
                 <Text style={[styles.chipText, { color: selected ? colors.onTint : colors.text }]}>{a.label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </Section>
+      <Section title="Voice input" footer="Dictate into the composer with the phone's own speech recognition, on the device when the language supports it. With On-device only, speech never leaves the phone; otherwise the phone's speech service may process it, under its own privacy terms.">
+        <View style={styles.chips} accessibilityRole="radiogroup">
+          {[[false, 'Allow network'], [true, 'On-device only']].map(([value, label]) => {
+            const selected = onDeviceOnly === value;
+            return (
+              <Pressable key={String(value)} onPress={() => setOnDeviceOnly(value as boolean)} accessibilityRole="radio" accessibilityState={{ selected }}
+                style={[styles.chip, { backgroundColor: selected ? colors.tint : colors.fill }]}>
+                <Text style={[styles.chipText, { color: selected ? colors.onTint : colors.text }]}>{label as string}</Text>
               </Pressable>
             );
           })}

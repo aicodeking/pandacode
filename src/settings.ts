@@ -12,6 +12,7 @@ import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings
 import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
+import { mountVoiceSettings, type VoiceSettingsHost } from './voice-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
 import { call, subscribe } from './bridge';
 import { settleIn, trackSegment } from './motion';
@@ -53,6 +54,8 @@ interface SettingsOptions {
   schedules?: { intent?: { newForSession?: string; editScheduleId?: string }; openThread(sessionId: string): void };
   /** Cloud sandbox connections (Daytona, Cloudflare, AWS). */
   cloud?: CloudSettingsHost;
+  /** Voice dictation: engines and downloadable models. */
+  voice?: VoiceSettingsHost;
   /** Skills library and rules registry. */
   skills?: SkillsLibraryHost;
   /** PandaCode Connect: sign-in, remote control and devices. */
@@ -148,7 +151,9 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
-      ${fold('Advanced', '<h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>')}`;
+      <h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div>
+      <h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>`;
+    case 'voice': return '<div id="voice-settings"></div>';
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
@@ -309,6 +314,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });
     }
     if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
+    if (id === 'voice' && options.voice) cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!, options.voice));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
     if (id === 'about') {
       cleanups.push(mountSupportDetails(panel.querySelector<HTMLDetailsElement>('.support-details')!));
