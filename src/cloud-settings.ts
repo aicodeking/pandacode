@@ -4,9 +4,13 @@
  * this view never reads them back. */
 import './cloud-settings.css';
 import { escape, icon } from './dom';
+import { trackSegment } from './motion';
+import { isMac } from './platform';
 import { infoMark } from './tooltip';
 
-export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
+export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean; /** CLI-backed providers (Docker engines, AWS, Google Cloud): whether that CLI is on this machine. */ installed?: boolean | null };
+/** `cloud_provider_test`: one real, cheap request with the saved credentials. */
+type CloudTestResult = { ok: boolean; message: string; durationMs: number };
 export type CloudSettingsHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen(name: 'cloud-setup', callback: (event: { provider: string; label: string }) => void): Promise<() => void>;
@@ -73,9 +77,9 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: 'Uses your installed gcloud CLI and its sign-in (run `gcloud auth login` first); PandaCode downloads nothing and stores only the project, region and zone.', connect: 'Connect',
   },
   docker: {
-    name: 'Docker', summary: 'Containers on this machine or any Docker host.',
-    fields: [{ name: 'engine', label: 'Engine', placeholder: 'Optional; docker (default), podman, apple or lxc', optional: true }, { name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
-    note: 'Runs each task in its own container (label or name prefix pandacode) — Docker, Podman, Apple Containers, or the lxc client (LXD/Incus, which uses its own configured remotes; Podman remote hosts take ssh://). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: 'Connect',
+    name: 'Docker', summary: 'Task containers on Docker, Podman, Apple Containers or LXC.',
+    fields: [{ name: 'endpoint', label: 'Docker host', placeholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, e.g. ubuntu:24.04', optional: true }, { name: 'tlsCa', label: 'TLS CA path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsCert', label: 'TLS cert path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }, { name: 'tlsKey', label: 'TLS key path', placeholder: 'Optional; for tcp:// Docker hosts', optional: true, sparse: true }],
+    note: 'Runs each task in its own container (label or name prefix pandacode). For ssh:// and tcp:// hosts, that daemon is root-equivalent — only point at machines you trust. Containers keep their disk until deleted and use this machine’s or the host’s resources; nothing is billed.', connect: 'Connect',
   },
   ...Object.fromEntries(Object.entries(KEYED).map(([id, provider]) => [id, {
     name: provider.name, summary: 'Cloud machines for agents.',
@@ -83,6 +87,27 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
     note: `Create a key at ${provider.docs}. Cloud agents run on machines in your own account.`, connect: 'Connect',
   }])) as Record<KeyedProvider, { name: string; summary: string; key?: Field; fields: Field[]; note: string; connect: string }>,
 };
+/* The Docker card's engine picker (cloud/docker.rs parses these exact values). Apple Containers
+ * and the lxc client are local-only, so their Docker host field hides; Podman remotes take ssh://. */
+type EngineId = 'docker' | 'podman' | 'apple' | 'lxc';
+const ENGINES: { id: EngineId; label: string; hint: string; mac?: boolean }[] = [
+  { id: 'docker', label: 'Docker', hint: 'The standard Docker engine, on this machine or any remote host (ssh://, unix:// or tcp:// with TLS).' },
+  { id: 'podman', label: 'Podman', hint: 'Podman on this machine, or a remote host over ssh://.' },
+  { id: 'apple', label: 'Apple', hint: 'Apple’s container runtime — this Mac only, so no Docker host.', mac: true },
+  { id: 'lxc', label: 'LXC', hint: 'The lxc client (LXD or Incus) manages its own remotes — configure one with `lxc remote add`.' },
+];
+const ENGINE_BY_ID = new Map(ENGINES.map(engine => [engine.id, engine]));
+/* Per-engine form: which fields show, and the labels and placeholders each engine's own fields
+ * carry. The hidden combinations are the ones cloud/docker.rs refuses (any endpoint for Apple
+ * Containers and LXC, tcp:// and TLS for Podman). The Image field is the same for every engine
+ * (all four take a docker-style reference; the default is ubuntu:24.04). */
+const ENGINE_FORM: Record<EngineId, { endpoint: boolean; tls: boolean; endpointLabel: string; endpointPlaceholder: string }> = {
+  docker: { endpoint: true, tls: true, endpointLabel: 'Docker host', endpointPlaceholder: 'Optional; empty for this machine, ssh://user@host or tcp://host:2376' },
+  podman: { endpoint: true, tls: false, endpointLabel: 'Podman host', endpointPlaceholder: 'Optional; empty for this machine, or ssh://user@host' },
+  apple: { endpoint: false, tls: false, endpointLabel: 'Docker host', endpointPlaceholder: '' },
+  lxc: { endpoint: false, tls: false, endpointLabel: 'Docker host', endpointPlaceholder: '' },
+};
+const ENGINE_HTML = `<div class="cloud-engine"><span id="cloud-engine-label">Engine</span><div class="cloud-engine-picker" role="radiogroup" aria-labelledby="cloud-engine-label">${ENGINES.filter(engine => !engine.mac || isMac).map(engine => `<label class="cloud-engine-option"><input type="radio" name="engine" value="${engine.id}"${engine.id === 'docker' ? ' checked' : ''}><span>${engine.label}</span></label>`).join('')}</div></div><p class="cloud-engine-hint" data-engine-hint hidden></p>`;
 /** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
 type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
 const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
@@ -94,8 +119,8 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   const providerRow = (id: CloudConnection['provider']) => {
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
-    return `<div class="cloud-provider" data-provider="${id}">
-      <div class="setting-row"><div><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success"></small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}</div>
+    return `<details class="cloud-provider" data-provider="${id}">
+      <summary aria-label="${escape(`${provider.name} details`)}"><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success">${escape(provider.summary)}</small><span class="provider-availability"><span class="status-dot"></span></span><span class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></span>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}${icon('chevron')}</summary>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
       <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'instabox' ? `
       <div class="cloud-image" hidden>
@@ -104,27 +129,28 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <p class="cloud-image-error" role="alert" hidden></p>
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">Try again</button></div>
       </div>` : ''}
+      <div class="cloud-test"><button type="button" class="secondary-button" data-cloud="test" aria-label="Test ${escape(provider.name)}">Test</button><span role="status"></span></div>
       <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
-        ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
+        ${id === 'docker' ? ENGINE_HTML : ''}${fields.map(field => `<label data-field="${field.name}"><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
         <div class="cloud-actions"><button type="button" class="secondary-button" data-cloud="cancel">Cancel</button><button type="submit" class="primary-button">${escape(provider.connect)}</button></div>
       </form>
-    </div>`;
+    </details>`;
   };
   // The keyed long tail folds away; the fold opens by itself once one of them is connected.
   host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud providers">${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
     <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
-    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}</div></div>
+    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><details class="cloud-provider cloud-claude">
+      <summary aria-label="Claude login for cloud agents details"><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}<small class="cloud-detail">Optional long-lived token</small>${icon('chevron')}</summary>
       <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
         <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
         <p class="cloud-progress" role="status" hidden></p>
         <p class="cloud-error" role="alert" hidden></p>
         <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
       </form>
-    </div></div></details>`;
+    </details></div></details>`;
   let connections: CloudConnection[] = [], disposed = false, busy = '';
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
@@ -156,7 +182,10 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const toggle = root.querySelector<HTMLButtonElement>('[data-cloud="toggle"]')!;
       const form = root.querySelector<HTMLFormElement>('form')!;
       const sandboxes = id === 'cloudflare' && connection?.connected ? (connection.sandboxes ? ' · sandboxes ready' : ' · sandboxes not set up') : '';
-      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : '';
+      const statusText = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : connection?.installed === false ? 'Not installed' : PROVIDERS[id].summary;
+      root.querySelector('.cloud-detail')!.textContent = connection?.connected || connection?.installed === false ? statusText : (id in KEYED ? '' : statusText);
+      root.querySelector('summary')?.setAttribute('aria-label', `${PROVIDERS[id].name} details, ${statusText}`);
+      root.querySelector('.provider-availability')?.classList.toggle('available', Boolean(connection?.connected));
       const setup = root.querySelector<HTMLButtonElement>('[data-cloud="sandboxes"]');
       if (setup) { setup.hidden = !connection?.connected || Boolean(connection.sandboxes); setup.disabled = Boolean(busy); }
       toggle.textContent = connection?.connected ? 'Disconnect' : form.hidden ? 'Connect' : 'Close';
@@ -164,6 +193,10 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       toggle.setAttribute('aria-label', `${toggle.textContent} ${PROVIDERS[id].name}`);
       form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled = Boolean(busy);
       const inheritRow = root.querySelector<HTMLElement>('[data-inherit-row]')!;
+      // A test runs against the saved credentials, so it can never race a connect or
+      // disconnect, and a render from another card's business must not re-enable it mid-flight.
+      const testButton = root.querySelector<HTMLButtonElement>('[data-cloud="test"]');
+      if (testButton) testButton.disabled = Boolean(busy) || testing.has(id);
       const supported = connection?.inheritEnvironment !== undefined;
       inheritRow.hidden = !supported || !connection?.connected;
       if (supported) {
@@ -171,6 +204,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.checked = Boolean(connection?.inheritEnvironment);
         box.disabled = Boolean(busy);
       }
+      if (id === 'docker') paintEngine(root);
     }
     arrange();
   }
@@ -220,6 +254,34 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
     line.textContent = text; line.hidden = !text;
   }
+  /* The Docker card's engine picker: slide the thumb, swap the hint, and show only the fields
+   * the chosen engine takes (Apple and LXC are local-only; Podman has no Docker-style TLS). */
+  function paintEngine(root: HTMLElement): void {
+    const form = root.querySelector<HTMLFormElement>('.cloud-form'), picker = form?.querySelector<HTMLElement>('.cloud-engine-picker');
+    if (!form || !picker) return;
+    const engine = ENGINE_BY_ID.get(form.querySelector<HTMLInputElement>('input[name="engine"]:checked')?.value as EngineId)!;
+    picker.querySelectorAll('.cloud-engine-option').forEach(option => option.classList.toggle('selected', option.querySelector<HTMLInputElement>('input')!.value === engine.id));
+    trackSegment(picker, picker.querySelector<HTMLElement>('.selected'));
+    const hint = form.querySelector<HTMLElement>('[data-engine-hint]')!;
+    hint.textContent = engine.hint;
+    hint.hidden = false;
+    const spec = ENGINE_FORM[engine.id];
+    const endpointField = form.querySelector<HTMLElement>('[data-field="endpoint"]')!;
+    endpointField.hidden = !spec.endpoint;
+    const endpointInput = endpointField.querySelector<HTMLInputElement>('input')!;
+    // Disabled inputs leave the FormData, so a typed host never reaches the backend for an engine that refuses one.
+    endpointInput.disabled = !spec.endpoint;
+    if (spec.endpoint) {
+      endpointField.querySelector<HTMLElement>('span')!.textContent = spec.endpointLabel;
+      endpointInput.placeholder = spec.endpointPlaceholder;
+      endpointInput.setAttribute('aria-label', `Docker ${spec.endpointLabel}`);
+    }
+    for (const name of ['tlsCa', 'tlsCert', 'tlsKey']) {
+      const field = form.querySelector<HTMLElement>(`[data-field="${name}"]`)!;
+      field.hidden = !spec.tls;
+      field.querySelector<HTMLInputElement>('input')!.disabled = !spec.tls;
+    }
+  }
   async function connect(id: CloudConnection['provider'], form: HTMLFormElement): Promise<void> {
     const root = section(id), data = new FormData(form);
     const value = (name: string) => String(data.get(name) ?? '').trim();
@@ -228,6 +290,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     busy = id; say(root, 'error', ''); say(root, 'progress', id === 'cloudflare' ? 'Preparing the deploy…' : 'Checking…'); render();
     try {
       const fields = Object.fromEntries(PROVIDERS[id].fields.filter(field => !field.sparse || value(field.name)).map(field => [field.name, value(field.name)]));
+      if (id === 'docker') fields.engine = value('engine');
       connections = await options.call<CloudConnection[]>('cloud_connect', { provider: id, key: value('key'), options: fields });
       if (disposed) return;
       form.reset(); form.hidden = true;
@@ -256,17 +319,57 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     catch (error) { say(section(id), 'error', error instanceof Error ? error.message : String(error)); }
     finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
+  /* The per-provider quick test: one real request with the saved credentials. A stale answer
+   * (another test started since) never paints, and neither does one whose credentials were
+   * connected or disconnected while it ran. */
+  const testTickets = new Map<string, number>();
+  const testing = new Set<string>();
+  async function testProvider(root: HTMLElement, id: CloudConnection['provider'], button: HTMLButtonElement): Promise<void> {
+    if (testing.has(id)) return;
+    testing.add(id);
+    const status = root.querySelector<HTMLElement>('.cloud-test [role="status"]')!;
+    const ticket = (testTickets.get(id) ?? 0) + 1;
+    testTickets.set(id, ticket);
+    const connectedWhenStarted = connections.find(c => c.provider === id)?.connected;
+    button.disabled = true; button.textContent = 'Testing…';
+    status.classList.remove('cloud-error'); status.textContent = 'Checking…';
+    try {
+      const result = await options.call<CloudTestResult>('cloud_provider_test', { provider: id });
+      if (disposed || testTickets.get(id) !== ticket) return;
+      if (connections.find(c => c.provider === id)?.connected !== connectedWhenStarted) return;
+      status.textContent = `${result.ok ? 'Working' : 'Failed'} · ${result.message} · ${(result.durationMs / 1000).toFixed(1)} s`;
+      status.classList.toggle('cloud-error', !result.ok);
+    } catch (error) {
+      if (disposed || testTickets.get(id) !== ticket) return;
+      status.textContent = `Failed · ${error instanceof Error ? error.message : String(error)}`;
+      status.classList.add('cloud-error');
+    } finally { testing.delete(id); if (!disposed) { button.disabled = false; button.textContent = 'Test again'; } }
+  }
 
   host.addEventListener('click', event => {
-    const target = event.target instanceof Element ? event.target.closest<HTMLButtonElement>('[data-cloud]') : null;
-    if (!target || target.disabled) return;
+    const hit = event.target instanceof Element ? event.target : null;
+    const summary = hit?.closest('summary') ?? null;
+    const target = hit?.closest<HTMLButtonElement>('[data-cloud]') ?? null;
+    if (summary) {
+      // The fold is driven here: preventDefault alone does not stop WebKit from toggling a
+      // summary click, and the row's buttons must act without folding the card.
+      event.preventDefault();
+      if (!target) {
+        const card = summary.closest('details');
+        if (card) card.open = !card.open;
+        return;
+      }
+      if (target.disabled) return;
+    } else if (!target || target.disabled) return;
     const root = target.closest<HTMLElement>('.cloud-provider[data-provider]')!, id = root.dataset.provider as CloudConnection['provider'];
     const form = root.querySelector<HTMLFormElement>('form')!;
     if (target.dataset.cloud === 'cancel') { form.hidden = true; say(root, 'error', ''); render(); return; }
     if (target.dataset.cloud === 'sandboxes') { void setupSandboxes(root); return; }
     if (target.dataset.cloud === 'images') { void loadImages(); return; }
+    if (target.dataset.cloud === 'test') { void testProvider(root, id, target); return; }
     if (connections.find(c => c.provider === id)?.connected) { void disconnect(id); return; }
     form.hidden = !form.hidden;
+    if (!form.hidden) (root as HTMLDetailsElement).open = true;
     render();
     if (!form.hidden) form.querySelector<HTMLInputElement>('input')!.focus();
   });
@@ -279,6 +382,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   });
   host.addEventListener('change', event => {
     const target = event.target;
+    if (target instanceof HTMLInputElement && target.name === 'engine') { paintEngine(target.closest<HTMLElement>('.cloud-provider[data-provider]')!); return; }
     if (target instanceof HTMLInputElement && target.matches('[data-cloud-inherit]')) {
       const root = target.closest<HTMLElement>('.cloud-provider[data-provider]')!;
       const id = root.dataset.provider as CloudConnection['provider'];

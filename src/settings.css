@@ -164,6 +164,12 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 @media(forced-colors:active){.settings-page-root .settings-switch{border:1px solid CanvasText}.settings-page-root .settings-switch::before{background:CanvasText}}
 
 .provider-readiness{padding:4px var(--ds-row-pad-x) 12px calc(var(--ds-row-pad-x) + 32px - var(--ds-card-pad));font-size:var(--ds-text-meta);color:var(--muted)}.provider-readiness>div{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap}.provider-readiness p{margin:.5rem 0 0;overflow-wrap:anywhere;line-height:1.5}.provider-readiness button{font-size:var(--ds-text-meta);min-height:30px;padding:0 10px}
+/* Settings → Agents: the quick test inside an opened agent card. */
+.provider-test{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:4px var(--ds-row-pad-x) 12px;font-size:var(--ds-text-meta);color:var(--muted)}
+.provider-test button{font-size:var(--ds-text-meta);min-height:30px;padding:0 10px}
+.provider-test [role=status]{white-space:nowrap}
+.provider-test p{margin:.4rem 0 0;overflow-wrap:anywhere;line-height:1.5;flex-basis:100%}
+.provider-test-failed{color:var(--ds-danger)}
 /* Embedded panels were dialogs; their rows stretch to the column here. */
 .settings-page-root .vsix-row{width:100%}
 .settings-page-root .vsix-choice{flex:1;justify-content:flex-start;text-align:left}

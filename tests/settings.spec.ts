@@ -309,6 +309,22 @@ test('settings organization keeps agent diagnostics collapsed and retains the de
   await expect(defaultAgent).toHaveText('Kimi Code');
 });
 
+test('settings agents run the quick test on an installed agent', async ({ page }) => {
+  await open(page);
+  await settings(page);
+  await tab(page, 'Agents').click();
+  const row = dialog(page).locator('.provider-diagnostic[data-provider="claude"]');
+  await row.locator('summary').click();
+  const status = row.locator('.provider-test [role="status"]');
+  await row.getByRole('button', { name: 'Test Claude Code', exact: true }).click();
+  await expect(status).toContainText('Working');
+  await expect(row.locator('.provider-test p')).toContainText('sample 1.2.3');
+  await page.evaluate(() => { (globalThis as any).__providerTestFail = true; });
+  await row.getByRole('button', { name: 'Test Claude Code', exact: true }).click();
+  await expect(status).toContainText('Failed');
+  await expect(row.locator('.provider-test p')).toContainText('exited with 1');
+});
+
 test('settings organization does not let a late provider refresh replace wallpaper controls or the draft', async ({ page }) => {
   await open(page);
   await prompt(page).fill('Keep my task draft through settings refresh.');
