@@ -48,7 +48,7 @@ mod kimi_models;
 mod kilo;
 mod launch;
 mod pi;
-mod zcode;
+pub(crate) mod zcode;
 mod diagnostics;
 pub(crate) mod claude_auth;
 pub(crate) mod privacy;
