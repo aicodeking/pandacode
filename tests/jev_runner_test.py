@@ -25,7 +25,7 @@ def request(directory, **changes):
         "maxSteps": 4, "timeoutSeconds": 30, "viewport": "desktop", "expectedText": "",
         "expectedTitle": "", "expectedUrl": "", "chromePath": "", "typesafeKey": "typesafe-secret-key",
         "textKey": "text-secret-key", "textModel": "small-model", "textBaseUrl": "https://api.example.com/v1",
-        "outputDir": str(directory), **changes,
+        "outputDir": str(directory), "decisionBaseUrl": "", **changes,
     }
 
 
@@ -56,6 +56,21 @@ class RequestTests(unittest.TestCase):
         for url in ("http://api.example.com", "https://user:secret@example.com", "https://api.example.com?key=secret"):
             with self.assertRaises(runner.InvalidRequest):
                 runner.validate_request(request(self.directory, textBaseUrl=url))
+
+    def test_local_decision_endpoint_must_be_loopback(self):
+        result = runner.validate_request(request(self.directory, typesafeKey="", decisionBaseUrl="http://127.0.0.1:8000/"))
+        self.assertEqual(result["decisionBaseUrl"], "http://127.0.0.1:8000")
+        result = runner.validate_request(request(self.directory, typesafeKey="", decisionBaseUrl="http://localhost:8123"))
+        self.assertEqual(result["decisionBaseUrl"], "http://localhost:8123")
+        result = runner.validate_request(request(self.directory, typesafeKey="", decisionBaseUrl="http://[::1]:8000"))
+        self.assertEqual(result["decisionBaseUrl"], "http://[::1]:8000")
+        result = runner.validate_request(request(self.directory, typesafeKey="", decisionBaseUrl="http://127.9.0.1:8000"))
+        self.assertEqual(result["decisionBaseUrl"], "http://127.9.0.1:8000")
+        for url in ("https://api.example.com", "http://0.0.0.0:8000", "10.0.0.1:8000", "http://127.0.0.1:8000/?x=1", "http://127.0.0.1.evil.com:8000", "http://user@127.0.0.1:8000"):
+            with self.subTest(url=url), self.assertRaises(runner.InvalidRequest):
+                runner.validate_request(request(self.directory, typesafeKey="", decisionBaseUrl=url))
+        with self.assertRaises(runner.InvalidRequest):
+            runner.validate_request(request(self.directory, typesafeKey=""))
 
     def test_url_restrictions_and_canonical_origins(self):
         for url in ("file:///tmp/a", "javascript:alert(1)", "https://x:99999/", "https://user:password@example.com", "https://a\\@b", "https://a\n.example.com"):
@@ -497,6 +512,54 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(stop.call_args_list, [unittest.mock.call(processes[1]), unittest.mock.call(processes[0])])
                 self.assertIs(browser_module.browser_operation, original_operation)
             self.assertFalse(Path(runtime.temporary.name).exists())
+
+    def test_local_decisions_redirect_typesafe_and_restore_on_close(self):
+        with tempfile.TemporaryDirectory() as directory:
+            configuration = request(directory, typesafeKey="", decisionBaseUrl="http://127.0.0.1:8000")
+            calls, processes = [], []
+
+            def popen(command, **kwargs):
+                calls.append((command, kwargs))
+                process = MagicMock()
+                process.poll.return_value = None
+                processes.append(process)
+                if command[0] == "/fake/chrome":
+                    profile = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--user-data-dir=")))
+                    (profile / "DevToolsActivePort").write_text("39111\n/devtools/browser/abc-123\n")
+                return process
+
+            browser = FakeBrowser()
+            browser.call = lambda method, **params: None
+            agent = MagicMock(browser=browser, state={"page": {"url": configuration["url"]}})
+            admin = MagicMock()
+            admin.daemon_alive.return_value = True
+            browser_module = MagicMock()
+            agent_module = MagicMock()
+            agent_module.Agent.return_value = agent
+            model_module = MagicMock()
+            original_post = MagicMock(return_value={"answers": {}})
+            model_module.post_json = original_post
+            modules = {"browser_harness.admin": admin, "jev_ultrafast.browser": browser_module,
+                       "jev_ultrafast.agent": agent_module, "jev_ultrafast.model": model_module}
+
+            def import_module(name):
+                return modules[name]
+
+            runtime = runner.Runtime(configuration, "/fake/chrome")
+            with patch.object(runner.subprocess, "Popen", side_effect=popen), \
+                 patch.object(runner.importlib, "import_module", side_effect=import_module), \
+                 patch.object(runner, "stop_process"):
+                self.assertIs(runtime.start(), agent)
+                self.assertEqual(os.environ["TYPESAFE_API_KEY"], "local")
+                self.assertIsNot(model_module.post_json, original_post)
+                # Only the pinned decision endpoint is redirected; other destinations pass through.
+                redirected = model_module.post_json("https://api.typesafe.ai/v1/systemone", "local", {"state": {}})
+                self.assertEqual(redirected, {"answers": {}})
+                original_post.assert_called_once_with("http://127.0.0.1:8000/v1/systemone", "local", {"state": {}})
+                model_module.post_json("https://api.example.com/v1/chat/completions", "text-key", {})
+                original_post.assert_called_with("https://api.example.com/v1/chat/completions", "text-key", {})
+                runtime.close()
+                self.assertIs(model_module.post_json, original_post)
 
 
 if __name__ == "__main__":

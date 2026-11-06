@@ -7,8 +7,9 @@ import type { LocalServer } from './types';
 export interface JevConfiguration {
   enabled: boolean;
   decisionsEnabled: boolean;
-  decisionProvider: 'typesafe' | 'openrouter';
+  decisionProvider: 'typesafe' | 'openrouter' | 'laya';
   decisionModel: string;
+  decisionBaseUrl: string;
   openrouterKeySaved: boolean;
   pythonPath: string;
   chromePath: string;
@@ -152,14 +153,15 @@ export async function showJevSettings(dialog: HTMLDialogElement): Promise<void> 
     <fieldset class="jev-fields" disabled>
       <label class="jev-enable-row" for="jev-enabled"><span><strong>Let your agents test their apps</strong><small>Available to your architect and workers when enabled.</small></span><input class="jev-switch" type="checkbox" id="jev-enabled" role="switch"></label>
       <label class="jev-enable-row" for="jev-decisions-enabled"><span><strong>Decision assistance</strong><small>Optional reviews, project rules, context search, and worker suggestions.</small></span><input class="jev-switch" type="checkbox" id="jev-decisions-enabled" role="switch"></label>
-      <p class="jev-privacy">Browser tests send your goal and visible page text to TypeSafe and your text model provider, using a separate Chrome profile. Decision assistance sends selected task text and diffs to TypeSafe, or to OpenRouter if you choose it below. Reports stay on this device.</p>
+      <p class="jev-privacy">Browser tests send your goal and visible page text to your text model provider, and their decision calls to TypeSafe unless Local Laya is selected below. Decision assistance sends selected task text and diffs to the decision provider you choose; Local Laya keeps those inputs on this device. Reports stay on this device.</p>
       <section class="jev-section"><div class="jev-section-heading"><h3>Connections</h3><span>Usage is billed by your providers</span></div>
         <div class="jev-field-grid">
-          <label>Decision provider<select id="jev-decision-provider"><option value="typesafe">TypeSafe (default)</option><option value="openrouter">OpenRouter</option></select></label>
+          <label>Decision provider<select id="jev-decision-provider"><option value="typesafe">TypeSafe (default)</option><option value="openrouter">OpenRouter</option><option value="laya">Local Laya</option></select></label>
           <div class="jev-model-field"><label for="jev-decision-model">Decision model</label><div><select id="jev-decision-model"></select><button type="button" class="jev-text-button" data-jev-models-refresh hidden>Refresh</button></div></div>
+          <label data-jev-laya-field hidden>Local decision URL<input id="jev-decision-url" type="url" autocomplete="off" spellcheck="false" maxlength="2048" placeholder="http://127.0.0.1:8000"></label>
         </div>
         ${keyField('typesafe', 'TypeSafe API key')}${keyField('openrouter', 'OpenRouter API key')}${keyField('text', 'Text model API key')}
-        <p class="jev-hint">PandaCode works without Jev or a TypeSafe key. Optional decision assistance only needs the key for the provider you pick. OpenRouter models are listed only when you open the model menu. Keys are saved privately on this device, outside the keychain. Leave a field empty to keep its saved key.</p>
+        <p class="jev-hint">PandaCode works without Jev or a TypeSafe key. Optional decision assistance only needs the key for the provider you pick; Local Laya needs no key, it calls your own decision server and fails while it is not running. OpenRouter models are listed only when you open the model menu. Keys are saved privately on this device, outside the keychain. Leave a field empty to keep its saved key.</p>
       </section>
       <details class="jev-section jev-advanced" data-jev-browser-runtime><summary>Browser runtime <span class="jev-runtime-badge" role="status">Checking setup…</span>${icon('down')}</summary>
         <p class="jev-hint">Only browser tests need Python 3.12+, Chrome, and a text model key. Decision assistance works without the browser runtime. Jev is installed separately and only runs when testing.</p>
@@ -198,7 +200,7 @@ export async function showJevSettings(dialog: HTMLDialogElement): Promise<void> 
     const options = [...(selected && !known ? [{ id: selected, name: selected }] : []), ...models];
     select.innerHTML = (provider().value === 'openrouter' ? '<option value="">Choose a model…</option>' : '') + options.map(model => `<option value="${escape(model.id)}">${escape(model.name === model.id ? model.id : `${model.name} (${model.id})`)}</option>`).join('');
     select.value = selected;
-    if (provider().value === 'typesafe') select.value = options[0]?.id ?? '';
+    if (provider().value !== 'openrouter') select.value = options[0]?.id ?? '';
   }
   // TypeSafe's list is built in; OpenRouter's is fetched when the menu opens (or on Refresh), never before.
   async function loadModels(force = false) {
@@ -213,10 +215,11 @@ export async function showJevSettings(dialog: HTMLDialogElement): Promise<void> 
     } catch (error) { if (view.alive() && provider().value === name) tell(errorText(error), true); }
   }
   function renderProvider() {
-    const openrouter = provider().value === 'openrouter';
+    const openrouter = provider().value === 'openrouter', laya = provider().value === 'laya';
     query('[data-jev-models-refresh]').hidden = !openrouter;
-    for (const [name, show] of [['typesafe', !openrouter], ['openrouter', openrouter]] as const) query(`#jev-${name}-key`).closest<HTMLElement>('.jev-key-field')!.hidden = !show;
-    renderModels(modelCache.get(provider().value) ?? (provider().value === 'typesafe' ? [] : []), provider().value === config?.decisionProvider ? config?.decisionModel ?? '' : '');
+    query('[data-jev-laya-field]').hidden = !laya;
+    for (const [name, show] of [['typesafe', !openrouter && !laya], ['openrouter', openrouter]] as const) query(`#jev-${name}-key`).closest<HTMLElement>('.jev-key-field')!.hidden = !show;
+    renderModels(modelCache.get(provider().value) ?? [], provider().value === config?.decisionProvider ? config?.decisionModel ?? '' : '');
     if (!openrouter) void loadModels();
   }
   function renderKeys() {
@@ -249,7 +252,7 @@ export async function showJevSettings(dialog: HTMLDialogElement): Promise<void> 
   query('form').addEventListener('submit', event => {
     event.preventDefault(); event.stopPropagation();
     if (!config) return;
-    const settings = { enabled: input('enabled').checked, decisionsEnabled: input('decisions-enabled').checked, decisionProvider: provider().value, decisionModel: modelSelect().value, pythonPath: input('python-path').value.trim(), chromePath: input('chrome-path').value.trim(), textModel: input('text-model').value.trim(), textBaseUrl: input('text-base').value.trim() };
+    const settings = { enabled: input('enabled').checked, decisionsEnabled: input('decisions-enabled').checked, decisionProvider: provider().value, decisionModel: modelSelect().value, decisionBaseUrl: input('decision-url').value.trim(), pythonPath: input('python-path').value.trim(), chromePath: input('chrome-path').value.trim(), textModel: input('text-model').value.trim(), textBaseUrl: input('text-base').value.trim() };
     const args: Record<string, unknown> = { settings };
     if (!preview) for (const [name, field] of [['typesafe', 'typesafeKey'], ['openrouter', 'openrouterKey'], ['text', 'textKey']]) {
       const value = input(`${name}-key`).value.trim();
@@ -286,7 +289,7 @@ export async function showJevSettings(dialog: HTMLDialogElement): Promise<void> 
       if (!view.alive()) return;
       config = configuration; input('enabled').checked = config.enabled; input('decisions-enabled').checked = config.decisionsEnabled ?? false;
       query<HTMLDetailsElement>('[data-jev-browser-runtime]').open = config.enabled;
-      for (const [id, value] of [['python-path', config.pythonPath], ['chrome-path', config.chromePath], ['text-model', config.textModel], ['text-base', config.textBaseUrl]]) input(id).value = value ?? '';
+      for (const [id, value] of [['python-path', config.pythonPath], ['chrome-path', config.chromePath], ['text-model', config.textModel], ['text-base', config.textBaseUrl], ['decision-url', config.decisionBaseUrl]]) input(id).value = value ?? '';
       provider().value = config.decisionProvider ?? 'typesafe'; renderKeys(); renderProvider(); tell(''); controls();
     }).catch(error => tell(errorText(error), true)),
     checkDoctor('jev_doctor').catch(error => {

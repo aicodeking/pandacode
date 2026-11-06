@@ -67,6 +67,27 @@ OpenRouter it fetches the public `https://openrouter.ai/api/v1/models` catalog
 `supported_parameters` include `response_format` or `structured_outputs`.
 Nothing contacts OpenRouter until you pick it.
 
+**Local Laya (optional).** Decision assistance can also call a decision server
+you run on this device instead of a hosted provider. Choose **Local Laya**, keep
+the loopback URL at its default `http://127.0.0.1:8000`, and start a server that
+speaks Jev's `POST /v1/systemone` contract, such as the upstream Python server
+(`pip install "laya[serve]"`, then `laya-serve`). It serves the open-source
+System-1 decision model and downloads its model bundle from Hugging Face on
+first start (about 1.7 GB, explicit, then fully offline); model downloads and
+updates are the server's own business, and PandaCode never downloads models or
+contacts the server in the background. PandaCode sends the same bounded state
+and typed questions, with no API key, to the loopback address you configured
+(127.0.0.1, ::1, or localhost only), and holds the answers to the same
+probability validation rules as TypeSafe's; the one difference is that a local
+server names its own model instead of the pinned `jev-1.13.0`. The URL you save
+is normalized and must be a loopback address (localhost, ::1, or 127.0.0.0/8)
+without credentials, query parameters, or fragments. A local decision
+that cannot complete fails visibly and never falls back to TypeSafe or
+OpenRouter. **Check setup** runs one real local evaluation to verify the server.
+Browser tests can use the same local decisions (the runner redirects their
+decision calls to your server), but their text helper still needs its own key
+and provider, and page text still goes to that text model.
+
 Contract sources: [TypeSafe API](https://docs.typesafe.ai/api),
 [Choice](https://docs.typesafe.ai/primitives/choice),
 [Noul](https://docs.typesafe.ai/primitives/noul),
@@ -78,9 +99,10 @@ a guarantee that an answer is correct. Source text is treated as untrusted data.
 ## Set up browser testing
 
 1. Open **Settings → Agents → Jev · Optional add-on → Set up Jev**.
-2. Add a TypeSafe API key and a text model API key. The default text helper uses
-   OpenRouter with `inception/mercury-2.5`; Advanced allows an HTTPS
-   OpenAI-compatible base URL and model name.
+2. Add a text model API key, plus a TypeSafe API key unless you chose Local Laya
+   for decisions. The default text helper uses OpenRouter with
+   `inception/mercury-2.5`; Advanced allows an HTTPS OpenAI-compatible base URL
+   and model name.
 3. Save settings, then choose **Install Jev runtime**. Install `uv` or Python
    3.12+ first if neither is found. The installer uses `uv` when available and
    otherwise creates a venv with Python. It installs only in PandaCode's private
@@ -175,9 +197,10 @@ Listing reports, waiting, and viewing existing screenshots do not run a model.
 
 Enabling Jev authorizes an additional integration, not background monitoring.
 Only a requested test launches a browser and model work. The test goal and
-visible page representation go directly to TypeSafe; text entry can call the
-configured helper provider. Provider usage is billed separately. Their privacy
-policies apply. No report or page content goes to PandaCode's servers.
+visible page representation go to the decision provider (TypeSafe, or your own
+loopback server with Local Laya) and to the configured text helper provider.
+Provider usage is billed separately. Their privacy policies apply. No report or
+page content goes to PandaCode's servers.
 
 Every test owns a new Chrome profile and a private Browser Harness daemon;
 personal tabs, cookies, and browser profiles are not reused. Browser Harness
