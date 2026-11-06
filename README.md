@@ -155,7 +155,7 @@ embedded editor engine.
 - **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
   agent runs on a machine in your own account (Daytona, Docker, DigitalOcean, Vultr,
   Hetzner, RunPod, Cloudflare, AWS, Google Cloud, E2B, Modal, Vercel Sandbox,
-  CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, boat, InstaBox). PandaCode
+  CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, boat, InstaBox, boxd). PandaCode
   installs the harness there, copies your login, and keeps the run going while your
   laptop sleeps; changes come back to a local worktree. See
   [cloud agents](docs/cloud-agents.md).
