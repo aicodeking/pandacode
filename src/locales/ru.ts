@@ -9,6 +9,8 @@ export default {
 " Commit or discard them first.": " Сначала закоммитьте или отклоните их.",
 " Could not read {0}.": " Не удалось прочитать {0}.",
 " Not installed yet: turning it on installs it ({0}).": " Ещё не установлено: при включении будет установлено ({0}).",
+"Recommended": "Рекомендуемые",
+"Replied": "Ответ отправлен",
 " Reopen it above to continue.": " Чтобы продолжить, снова откройте его выше.",
 " Reported model default: {0}.": " Заявленное моделью значение по умолчанию: {0}.",
 " Search to narrow the list.": " Ищите, чтобы сузить список.",
