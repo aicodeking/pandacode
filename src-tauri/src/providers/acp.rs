@@ -905,14 +905,14 @@ impl Protocol {
 /// Grok Build lists its models, context sizes and reasoning efforts in the
 /// `initialize` result, so discovery never has to create a session.
 pub(super) async fn grok_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::provider_command("grok", path)?;
+    let mut command = super::provider_command("grok", path, true)?;
     command.args(["--no-auto-update", "agent", "stdio"]);
     let capabilities = handshake(command, &std::env::temp_dir()).await?;
     let models = parse_grok_models(&capabilities["_meta"]["modelState"]);
     if models.len() > 1 {
         return Ok(models);
     }
-    let mut command = super::provider_command("grok", path)?;
+    let mut command = super::provider_command("grok", path, true)?;
     command.args(["--no-auto-update", "agent", "stdio"]);
     let (metadata, _) = inspect_with(command, &std::env::temp_dir(), false, true).await?;
     Ok(parse_models(&metadata))
@@ -991,7 +991,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let discovery = super::acp_catalog::begin("antigravity", path);
-    let mut command = super::provider_command("antigravity", path)?;
+    let mut command = super::provider_command("antigravity", path, true)?;
     antigravity_args(&mut command);
     let _temp = super::AgentTemp::redirect(&mut command);
     let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
@@ -1195,7 +1195,7 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
     let Some(path) = super::executable(&provider).filter(|path| path.is_file()) else {
         return Ok(ConnectionStatus { installed: false, acp_ready: false, session_ready: false, state: "missing", message: "Install the agy CLI or select the official Antigravity ACP server executable.".into() });
     };
-    let command = match super::provider_command(&provider, &path) {
+    let command = match super::provider_command(&provider, &path, true) {
         Ok(command) => command,
         Err(message) => return Ok(connection_status(Err(DiscoveryFailure { acp_ready: false, authentication_required: false, message }))),
     };

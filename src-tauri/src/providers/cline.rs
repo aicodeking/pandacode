@@ -369,7 +369,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
             models
         } else {
             let discovery = acp_catalog::begin("cline", path);
-            let mut command = super::provider_command("cline", path)?;
+            let mut command = super::provider_command("cline", path, true)?;
             configure_environment(&mut command);
             command.arg("--acp");
             let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false)
@@ -772,7 +772,7 @@ mod tests {
         cfg.mode = "ask".into();
         cfg.cwd = root.clone();
         cfg.prompt = "Call the tool whose name ends in pandacode_title with title \"probe\", then the tool whose name ends in pandacode_probe with title \"probe\". Then reply with what they returned.".into();
-        let mut command = crate::providers::provider_command("cline", &path).unwrap();
+        let mut command = crate::providers::provider_command("cline", &path, true).unwrap();
         super::super::configure_command(&mut command, &cfg);
         // The free model is on the signed-in account, whatever provider this machine last used.
         command.env_remove("CLINE_PROVIDER").env_remove("CLINE_API_KEY");

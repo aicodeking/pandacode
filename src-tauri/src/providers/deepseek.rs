@@ -60,7 +60,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = acp_catalog::refresh_lock("deepseek", path).await;
     if let Some(models) = acp_catalog::get("deepseek", path) { return Ok(models); }
     let discovery = acp_catalog::begin("deepseek", path);
-    let mut command = super::provider_command("deepseek", path)?;
+    let mut command = super::provider_command("deepseek", path, true)?;
     command.args(acp::DEEPSEEK_ARGS);
     let key = configure(&mut command)?;
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false)

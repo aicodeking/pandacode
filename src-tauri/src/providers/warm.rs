@@ -53,6 +53,11 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
+        // So does a team environment: one team's warm agent is never adopted by a
+        // run with another team's variables, and a changed global-inheritance
+        // choice starts cold too.
+        "teamEnvironment": serde_json::to_string(&config.team_environment).unwrap_or_default(),
+        "teamUseGlobalEnvironment": config.team_use_global_environment,
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::privacy::telemetry_off(),
         // So does a saved executable location.
@@ -130,7 +135,9 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     config.cwd = external_path(&config.cwd);
     let key = key(&config, &tools);
     let mut command = command(&path)?;
-    crate::provider_settings::apply_environment(&config.provider, &mut command);
+    crate::provider_settings::apply_provider_environment(&config.provider, config.team_use_global_environment, &mut command);
+    // The team's own variables, after the provider's saved ones so they win.
+    crate::provider_settings::apply_team_environment(&config.team_environment, &mut command);
     configure_command(&mut command, &config);
     if let Some(connection) = &connection {
         connection.apply(&mut command);
@@ -223,6 +230,23 @@ mod tests {
         assert!(supported(&base));
         assert!(!supported(&crate::providers::tests::config("glm")));
         assert!(!supported(&RunConfig { skill: Some(("review".into(), PathBuf::from("/skills/review"))), ..base.clone() }));
+    }
+
+    #[test]
+    fn warm_key_distinguishes_team_environments() {
+        let base = crate::providers::tests::config("claude");
+        let tools = vec![json!({"type":"function","name":"pandacode_title"})];
+        let original = key(&base, &tools);
+        assert_eq!(original, key(&base.clone(), &tools));
+        let with_team = |vars: &[(&str, &str)]| RunConfig {
+            team_environment: vars.iter().map(|(name, value)| ((*name).to_string(), (*value).to_string())).collect(),
+            ..base.clone()
+        };
+        // A warm process spawned with one team's environment is never adopted by a
+        // run with another team's environment; equal environments keep matching keys.
+        assert_ne!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), original);
+        assert_ne!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), key(&with_team(&[("TEAM_MODE", "ship")]), &tools));
+        assert_eq!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), key(&with_team(&[("TEAM_MODE", "review")]), &tools));
     }
 
     #[test]

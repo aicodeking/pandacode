@@ -120,7 +120,7 @@ fn initialize() -> Value {
 
 /// Reads the model catalog from a memory-only host. No session and no prompt.
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::provider_command("muse", path)?;
+    let mut command = super::provider_command("muse", path, true)?;
     command.args(["serve", "--no-session-log"]).args(super::privacy::muse_arguments()).env("MUSE_LOGIN", "0");
     command
         .current_dir(std::env::temp_dir())

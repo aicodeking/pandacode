@@ -1241,6 +1241,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
     case 'architect_delete_profile': result = architect.deleteProfile(args.id); break;
+    case 'architect_set_team_environment_variable': architect.setEnvironmentVariable(args.profileId, args.name, args.value); break;
+    case 'architect_remove_team_environment_variable': architect.removeEnvironmentVariable(args.profileId, args.name); break;
+    case 'architect_set_team_use_global_environment': architect.setUseGlobalEnvironment(args.profileId, args.useGlobalEnvironment); break;
     case 'architect_start': architect.start(args.sessionId, args.text, args.imageIds); break;
     case 'architect_control': result = architect.control(args.sessionId, args.action); break;
     case 'architect_worker_messages': result = architect.workerMessages(args.sessionId, args.workerId, args.beforeId); break;

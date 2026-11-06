@@ -132,7 +132,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
 }
 
 pub(super) async fn list(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::provider_command("kimi", path)?;
+    let mut command = super::provider_command("kimi", path, true)?;
     command
         .args(["provider", "list", "--json"])
         .current_dir(std::env::temp_dir())

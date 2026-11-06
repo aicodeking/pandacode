@@ -158,6 +158,18 @@ pub struct TeamConfig {
     /// replaced: the built-in rules and the guard against worker output stay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead_guidance: Option<String>,
+    /// The team's own environment variables for every harness it starts. Values are
+    /// write-only: they are set through a dedicated command, frozen into saved
+    /// snapshots and never shown or round-tripped through the webview.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// Whether the team's launches also inherit the shared global environment set.
+    /// Always serialized: skipping `false` would read back as the `true` default.
+    #[serde(default = "default_true")]
+    pub use_global_environment: bool,
+}
+fn default_true() -> bool {
+    true
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -513,8 +525,13 @@ fn save_settled(store: &Store, team: &mut TeamSnapshot) -> bool {
         }
     }
 }
-/// A team as events carry it. No listener reads the catalog (up to 1000 models), the objective or
-/// the pending prompt (up to 16 MiB each), and every save sends an event.
+fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
+    let _ = app.emit("architect-event", redact_team(team));
+    let _ = app.emit("sessions-changed", ());
+}
+/// A team as events carried it before redaction took over: the tests still pin its
+/// lean shape (catalog, objective and pending prompt dropped from the payload).
+#[cfg(test)]
 fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
     let mut lean = team.clone();
     lean.config.catalog = Vec::new();
@@ -525,9 +542,33 @@ fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
     }
     lean
 }
-fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    let _ = app.emit("architect-event", &event_payload(team));
-    let _ = app.emit("sessions-changed", ());
+/// The webview's view of a team snapshot: environment values stay on this
+/// computer. Storage keeps the values (`save` serializes the snapshot whole), so
+/// only the copy that leaves the process is redacted. The variable names ride at
+/// the snapshot's top level; `config.environment` and the pending setup's own map
+/// are dropped, so echoing the config back never carries a value. One helper for
+/// every emission: `architect_get`, `architect_configure`, `architect_control`
+/// and `architect-event` all route through it.
+pub(crate) fn redact_team(team: &TeamSnapshot) -> serde_json::Value {
+    let mut value = serde_json::to_value(team).unwrap_or(serde_json::Value::Null);
+    let names = value
+        .get("config")
+        .and_then(|config| config.get("environment"))
+        .and_then(|environment| environment.as_object())
+        .map(|environment| environment.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    value["environmentNames"] = serde_json::json!(names);
+    if let Some(config) = value.get_mut("config").and_then(|config| config.as_object_mut()) {
+        config.remove("environment");
+    }
+    if let Some(config) = value
+        .get_mut("pendingSetup")
+        .and_then(|setup| setup.get_mut("config"))
+        .and_then(|config| config.as_object_mut())
+    {
+        config.remove("environment");
+    }
+    value
 }
 pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
     store
@@ -790,10 +831,10 @@ pub(super) fn new_team(session_id: String, config: TeamConfig) -> TeamSnapshot {
 pub async fn architect_get(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Option<TeamSnapshot>> {
+) -> Result<Option<serde_json::Value>> {
     {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        load(&store, &session_id)
+        Ok(load(&store, &session_id)?.as_ref().map(redact_team))
     }
 }
 #[tauri::command]
@@ -804,7 +845,7 @@ pub async fn architect_configure(
     config: Option<TeamConfig>,
     architect: Option<profiles::ModelSelection>,
     profile_id: Option<String>,
-) -> Result<Option<TeamSnapshot>> {
+) -> Result<Option<serde_json::Value>> {
     let changed = configure_state(
         &state,
         &session_id,
@@ -821,7 +862,7 @@ pub async fn architect_configure(
             json!({"sessionId":session_id,"removed":true}),
         );
     }
-    Ok(changed)
+    Ok(changed.as_ref().map(redact_team))
 }
 /// A task on another computer runs its team there (docs/remote-access.md): this computer
 /// only shows it, so nothing may configure, start or control a local team for it.
@@ -901,6 +942,24 @@ pub(super) fn configure_state(
         return Ok(None);
     };
     let fresh = existing.is_none();
+    // Environment values are write-only: they never come from the webview. A named
+    // profile carries the variables it stored through the dedicated commands; any
+    // other edit keeps the team's own set unchanged.
+    let mut config = config;
+    config.environment = existing
+        .as_ref()
+        .map(|team| team.config.environment.clone())
+        .unwrap_or_default();
+    config.use_global_environment = existing
+        .as_ref()
+        .map(|team| team.config.use_global_environment)
+        .unwrap_or(true);
+    if let Some((environment, use_global)) =
+        profile_id.and_then(|id| profiles::profile_environment(&store, id).ok())
+    {
+        config.environment = environment;
+        config.use_global_environment = use_global;
+    }
     let mut team = existing.unwrap_or_else(|| new_team(session_id.into(), config.clone()));
     let selection = architect.unwrap_or_else(|| profiles::ModelSelection::from_session(&session));
     let setup = profiles::TeamSetup {
@@ -1129,7 +1188,7 @@ pub async fn architect_control(
     state: State<'_, AppState>,
     session_id: String,
     action: String,
-) -> Result<Value> {
+) -> Result<serde_json::Value> {
     // A mirror's team runs on its host, which resumes it and answers with its snapshot.
     if action == "resume" {
         if let Some(team) = crate::remote::mirror::resume_team(&app, &state, &session_id).await? {
@@ -1157,7 +1216,7 @@ pub async fn architect_control(
     };
     emit(&app, &team);
     wake(app);
-    serde_json::to_value(&team).map_err(|e| e.to_string())
+    Ok(redact_team(&team))
 }
 /// The states Resume applies to, on the panel, the phone and `task.teamResume`.
 pub(crate) fn can_resume(status: &str) -> bool {

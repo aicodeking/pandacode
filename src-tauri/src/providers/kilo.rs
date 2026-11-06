@@ -61,7 +61,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let _refresh = acp_catalog::refresh_lock("kilo", path).await;
     if let Some(models) = acp_catalog::get("kilo", path) { return Ok(models); }
     let discovery = acp_catalog::begin("kilo", path);
-    let mut command = super::provider_command("kilo", path)?;
+    let mut command = super::provider_command("kilo", path, true)?;
     command.arg("acp").env("KILO_DISABLE_AUTOUPDATE", "true");
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await?;
     acp_catalog::store(discovery, &metadata);
