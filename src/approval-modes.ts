@@ -8,6 +8,12 @@ const CLAUDE_FAMILY: ProviderId[] = ['claude', 'glm', 'mimo'];
 export const MODE_TONES: Record<Mode, string> = { ask: '', auto: 'edit', review: 'edit', plan: 'plan', full: 'full' };
 /** An icon's markup carrying a state tone, for a menu row's `leading`. */
 export const toned = (svg: string, tone: string): string => tone ? svg.replace('<svg ', `<svg data-state-tone="${tone}" `) : svg;
+/** Harnesses whose write-class approvals PandaCode can answer through the per-task toggle (issue #200). */
+const AUTO_WRITE_PROVIDERS: ProviderId[] = [...CLAUDE_FAMILY, 'opencode', 'antigravity', 'grok', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'hermes', 'codex'];
+
+export function supportsAutoWrites(provider: ProviderId): boolean {
+  return AUTO_WRITE_PROVIDERS.includes(provider);
+}
 
 /** Labels describe the native policy for each harness, not a simulated approval layer. */
 export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMode[] {

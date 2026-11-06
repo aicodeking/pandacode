@@ -546,6 +546,7 @@ mod tests {
             reasoning_effort: None,
             mode: "full".into(),
             cwd: dir.clone(),
+            auto_writes: false,
             resume_id: None,
             prompt: "hello".into(),
             instructions: String::new(),
