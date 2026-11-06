@@ -42,13 +42,13 @@ import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
-import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards } from './turn-changes';
+import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
 import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -62,7 +62,7 @@ import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
-import { groupTurns, mergeLeadTurns, splitLiveExchange, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
+import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -1714,7 +1714,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + earlierFeetHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -1727,10 +1727,10 @@ function turnLeadHtml(turn: TranscriptTurn, thread = shownThread()): string {
 const notesHtml = (turn: TranscriptTurn, thread: Thread): string => turn.notes.map(message => messageHtml(message, false, true, thread)).join('');
 const cardErrorsHtml = (turn: TranscriptTurn, thread: Thread): string => turn.errors.length ? `<div class="turn-card-errors">${turn.errors.map(message => messageHtml(message, false, true, thread)).join('')}</div>` : '';
 const earlierChangeSets = (turn: TranscriptTurn): TurnChanges[] => [...(turn.earlierChanges ?? []), ...(turn.changes ? [turn.changes] : [])];
-/** Footers the card already showed before its newest one, wrapped so only a run's own footer fades in at the handoff (fadeInFoot). */
-function earlierFeetHtml(sessionId: string, changes: TurnChanges[]): string {
-  const feet = changes.map(set => changesFoot(sessionId, set)).join('');
-  return feet ? `<div class="turn-card-earlier-changes">${feet}</div>` : '';
+/** A card's one footer: a single run's snapshot as it is, several runs of a merged exchange combined (combineChanges). */
+function cardFootHtml(sessionId: string, changes: TurnChanges[]): string {
+  const shown = changes.filter(set => set.attributed && set.files.length);
+  return shown.length > 1 ? changesFoot(sessionId, combineChanges(shown)) : shown[0] ? changesFoot(sessionId, shown[0]) : '';
 }
 function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
   const lead = turnLeadHtml(turn, thread);
@@ -1749,7 +1749,7 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
     : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
   const final = turn.final;
   const reply = final ? replyHtml(messageHtml(final, true, false, thread), turn.key, messageActionsHtml(final.sessionId, final.id, final.id > 0)) : '';
-  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${earlierFeetHtml(sessionId, turn.earlierChanges ?? [])}${changesFoot(sessionId, turn.changes)}</section>`;
+  return `<section class="turn-card" data-turn-card="${escape(turn.key)}">${head}${reply}${workerSlot(turn, sessionId)}${cardErrorsHtml(turn, thread)}${cardFootHtml(sessionId, earlierChangeSets(turn))}</section>`;
 }
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
@@ -1850,6 +1850,8 @@ function renderTranscript(preservePosition = false): void {
   // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
   const liveRect = liveCard ? handoffRect ?? liveCard.getBoundingClientRect() : undefined; handoffRect = undefined;
   const focusRole = liveCard ? focusedRole(liveCard) : undefined;
+  // A wake's live card already shows the exchange's footer; the saved card's replaces it in place rather than fading in.
+  const liveFoot = Boolean(liveCard?.querySelector(':scope > .turn-card-foot'));
   const liveTrace = liveCard?.querySelector<HTMLDetailsElement>(':scope > details.turn-activity'), liveTraceOpen = Boolean(liveTrace?.open && liveTrace.dataset.folded === undefined);
   // A trace that folded as the reply started and the reader opened again stays open in the saved card.
   const traceReopened = Boolean(liveTrace?.open && liveTrace.dataset.folded !== undefined && liveTrace.dataset.closing === undefined);
@@ -1872,7 +1874,7 @@ function renderTranscript(preservePosition = false): void {
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
   // After every restore and the pin, so the saved card is measured where it will stay.
-  if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened);
+  if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
   if (bot) {
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
@@ -1888,7 +1890,7 @@ function renderTranscript(preservePosition = false): void {
 const wakeOpenTraces = new Set<string>();
 /** Formatted rows renderTranscript just took down, for the live card's earlier rows to reuse. */
 let reusableMarkdown: Map<string, HTMLElement> | undefined;
-function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, live: DOMRect, pinned: boolean, traceOpen: boolean, focus?: string, reopened = false): void {
+function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, live: DOMRect, pinned: boolean, traceOpen: boolean, focus?: string, reopened = false, hadFoot = false): void {
   const card = [...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].at(-1);
   if (!card || shown.has(card.dataset.turnCard)) return;
   const trace = card.querySelector<HTMLDetailsElement>(':scope > details.turn-activity');
@@ -1903,7 +1905,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   if (traceOpen && trace && !trace.open) {
     trace.open = true;
     foldInPlace(card, trace, live, pinned);
-    fadeInFoot(card);
+    if (!hadFoot) fadeInFoot(card);
     return;
   }
   if (!pinned) { bridgeCard(card, live.height); return; }
@@ -2224,7 +2226,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? earlierFeetHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
@@ -5004,6 +5006,11 @@ async function openSavedDiff(sessionId: string, changes: TurnChanges, path?: str
   try {
     const { mountChangeReview } = await import('./change-review');
     if (!dialog.open || !host.isConnected) return;
+    // A merged card's footer: each run's diff comes from its own snapshot, and Jev reviews the run in view.
+    if (isCombined(changes)) {
+      changeReviewCleanup = mountCombinedReview(host, sessionId, changes, (changeId, file) => call<TurnChangeDiff>('turn_change_diff', { sessionId, changeId, path: file }), path, jevDecisionsEnabled ? snapshot => run(openJevAssist('review', sessionId, snapshot)) : undefined);
+      return;
+    }
     changeReviewCleanup = mountChangeReview(host, sessionId, changes, path, jevDecisionsEnabled ? () => run(openJevAssist('review', sessionId, changes)) : undefined);
   } catch (error) {
     if (dialog.open && host.isConnected) host.innerHTML = `<p role="alert">Unable to load the diff viewer. Close this window and try again. ${escape(errorText(error))}</p>`;

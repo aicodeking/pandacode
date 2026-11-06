@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupTurns, mergeLeadTurns, splitLiveExchange, formatDuration, turnLabel } from '../src/turn-activity.ts';
+import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel } from '../src/turn-activity.ts';
 
 const message = (id, role, content, createdAt = id * 1000, extra = {}) =>
   ({ id, sessionId: 'task', role, content, createdAt, ...extra });
@@ -385,4 +385,72 @@ test('an ordinary run has nothing to take out; a resumed page start keeps its la
   const single = splitLiveExchange(merged([wake(3), message(4, 'assistant', 'A'), message(5, 'changes', '', 5000, { turnChanges: changeSet('a') })])).earlier;
   assert.deepEqual(ids(single.activity), [4]);
   assert.equal(single.final, undefined);
+});
+
+const run = (id, files, extra = {}) => ({ attributed: true, id, files, truncated: false, concurrent: false, ...extra,
+  additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0), deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0) });
+const file = (path, status, additions, deletions, extra = {}) => ({ path, status, additions, deletions, ...extra });
+
+test('a file changed in two runs counts once, its lines summed and marked as summed', () => {
+  const runs = [run('a', [file('src/a.ts', 'modified', 3, 1), file('src/b.ts', 'added', 5, 0)]), run('b', [file('src/a.ts', 'modified', 2, 2)])];
+  const original = structuredClone(runs);
+  const combined = combineChanges(runs);
+  assert.deepEqual(combined.files.map(entry => [entry.path, entry.status, entry.additions, entry.deletions]), [['src/a.ts', 'modified', 5, 3], ['src/b.ts', 'added', 5, 0]]);
+  assert.equal(combined.files.length, 2);
+  assert.equal(combined.additions, 10);
+  assert.equal(combined.deletions, 3);
+  assert.deepEqual(combined.runs.map(entry => entry.id), ['a', 'b']);
+  assert.deepEqual(combined.touched['src/a.ts'], ['a', 'b']);
+  assert.deepEqual(combined.touched['src/b.ts'], ['a']);
+  assert.match(combined.note, /added up/);
+  assert.equal(combined.id, 'exchange:a,b');
+  assert.equal(combined.attributed, true);
+  assert.deepEqual(runs, original, 'combining must not mutate saved snapshots');
+});
+
+test('a rename then an edit is one renamed file under its new name', () => {
+  const combined = combineChanges([
+    run('a', [file('src/new.ts', 'renamed', 1, 1, { oldPath: 'src/old.ts' })]),
+    run('b', [file('src/new.ts', 'modified', 4, 0)]),
+  ]);
+  assert.equal(combined.files.length, 1);
+  assert.deepEqual(combined.files[0], { path: 'src/new.ts', oldPath: 'src/old.ts', status: 'renamed', additions: 5, deletions: 1, binary: false, truncated: false });
+  assert.deepEqual(combined.touched['src/new.ts'], ['a', 'b']);
+  // Renamed and then renamed back is an edit in place.
+  const back = combineChanges([run('a', [file('y.ts', 'renamed', 0, 0, { oldPath: 'x.ts' })]), run('b', [file('x.ts', 'renamed', 0, 0, { oldPath: 'y.ts' })])]);
+  assert.deepEqual(back.files.map(entry => [entry.path, entry.status, entry.oldPath]), [['x.ts', 'modified', undefined]]);
+  // An added file renamed later is still an added file.
+  const added = combineChanges([run('a', [file('n.ts', 'added', 2, 0)]), run('b', [file('m.ts', 'renamed', 0, 0, { oldPath: 'n.ts' })])]);
+  assert.deepEqual(added.files.map(entry => [entry.path, entry.status, entry.oldPath]), [['m.ts', 'added', undefined]]);
+});
+
+test('a file added and then deleted leaves the list, and the note says so', () => {
+  const combined = combineChanges([
+    run('a', [file('tmp.txt', 'added', 4, 0), file('keep.ts', 'modified', 1, 0)]),
+    run('b', [file('tmp.txt', 'deleted', 0, 4)]),
+  ]);
+  assert.deepEqual(combined.files.map(entry => entry.path), ['keep.ts']);
+  assert.match(combined.note, /1 file was added and removed again/);
+  assert.equal(combined.additions, 5);
+  assert.equal(combined.deletions, 4);
+  // Deleted and then added back is an edit; modified and then deleted is a deletion.
+  const back = combineChanges([run('a', [file('x.ts', 'deleted', 0, 3)]), run('b', [file('x.ts', 'added', 3, 0)])]);
+  assert.deepEqual(back.files.map(entry => entry.status), ['modified']);
+  const gone = combineChanges([run('a', [file('x.ts', 'modified', 1, 0)]), run('b', [file('x.ts', 'deleted', 0, 5)])]);
+  assert.deepEqual(gone.files.map(entry => entry.status), ['deleted']);
+  // A renamed file later deleted is gone under its first name.
+  const renamedGone = combineChanges([run('a', [file('b.ts', 'renamed', 0, 0, { oldPath: 'a.ts' })]), run('b', [file('b.ts', 'deleted', 0, 2)])]);
+  assert.deepEqual(renamedGone.files.map(entry => [entry.path, entry.status, entry.oldPath]), [['a.ts', 'deleted', undefined]]);
+});
+
+test('truncated, concurrent and failed captures and unknown counts survive the combination', () => {
+  const combined = combineChanges([
+    run('a', [file('a.ts', 'modified', null, null)], { truncated: true }),
+    run('b', [file('a.ts', 'modified', 2, 0), file('img.png', 'modified', null, null, { binary: true })], { concurrent: true, error: 'Disk busy' }),
+  ]);
+  assert.equal(combined.truncated, true);
+  assert.equal(combined.concurrent, true);
+  assert.equal(combined.error, 'Disk busy');
+  assert.deepEqual(combined.files.map(entry => [entry.path, entry.additions, entry.deletions, entry.binary]), [['a.ts', null, null, false], ['img.png', null, null, true]]);
+  assert.equal(combineChanges([run('a', [], { truncated: true }), run('b', [], { error: 'x' }), run('c', [], { error: 'x' })]).error, 'x');
 });

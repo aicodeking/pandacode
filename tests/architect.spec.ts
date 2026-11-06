@@ -73,6 +73,11 @@ async function installArchitect(page: Page, snapshots: Record<string, TeamSnapsh
       };
       const fixture = window.__architectTest;
       fixture.calls.push({ command, args: structuredClone(args) });
+      if (command === 'turn_change_diff' && fixture.diffs) {
+        const diff = fixture.diffs[args.changeId + ':' + args.path];
+        if (!diff) throw new Error('No saved diff for this run.');
+        return { path: args.path, patch: diff, binary: false, truncated: false };
+      }
       if (command === 'get_messages' && fixture.messagesDelay) await new Promise(resolve => setTimeout(resolve, fixture.messagesDelay));
       if (fixture.failures[command]) throw new Error(fixture.failures[command]);
       if (command === 'get_messages' && Object.hasOwn(fixture.taskMessages, args.sessionId)) {
@@ -786,6 +791,95 @@ test.describe('architect teams', () => {
     expect(await olderCalls()).toBe(before);
   });
 
+  const runChanges = (id: string, files: [string, 'added' | 'modified' | 'deleted', number, number][], extra = {}) => ({ attributed: true, id, files: files.map(([path, status, additions, deletions]) => ({ path, status, additions, deletions })), additions: files.reduce((sum, file) => sum + file[2], 0), deletions: files.reduce((sum, file) => sum + file[3], 0), truncated: false, concurrent: false, ...extra });
+  const twoRuns = (): Message[] => [
+    { id: 701, sessionId: 'session-2', role: 'user', content: 'Build search and review it.', createdAt: 1000, turnDurationMs: 3000 },
+    { id: 702, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, id: 'run-a', name: 'Read', status: 'completed', input: 'README.md', output: 'ok' }), createdAt: 1500 },
+    { id: 703, sessionId: 'session-2', role: 'assistant', content: 'Delegated to the workers.', createdAt: 2000 },
+    { id: 704, sessionId: 'session-2', role: 'changes', content: '', createdAt: 2100, turnChanges: runChanges('run-a', [['src/a.ts', 'modified', 3, 1], ['src/b.ts', 'added', 5, 0]]) },
+    { id: 705, sessionId: 'session-2', role: 'coordination', coordinationKind: 'worker_update', content: 'Checking worker updates', createdAt: 5000, turnDurationMs: 1000 },
+    { id: 706, sessionId: 'session-2', role: 'assistant', content: 'Merged the worker change.', createdAt: 5500 },
+    { id: 707, sessionId: 'session-2', role: 'changes', content: '', createdAt: 5600, turnChanges: runChanges('run-b', [['src/a.ts', 'modified', 2, 2]], { truncated: true }) },
+  ] as Message[];
+  const diffPatch = (path: string, line: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+${line}\n`;
+
+  test('a merged card has one changes footer for every run, and its viewer lists a file changed twice once', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': twoRuns() });
+    await page.evaluate(([a, b, c]) => { (window as any).__architectTest.diffs = { 'run-a:src/a.ts': a, 'run-a:src/b.ts': b, 'run-b:src/a.ts': c }; }, [diffPatch('src/a.ts', 'first run'), diffPatch('src/b.ts', 'added'), diffPatch('src/a.ts', 'second run')]);
+    const card = transcript(page).locator('.turn-card');
+    await expect(card).toHaveCount(1);
+    const foot = card.locator('.turn-card-foot');
+    await expect(foot).toHaveCount(1);
+    await expect(foot.locator('strong')).toHaveText('2 changed files');
+    await expect(foot.locator('.turn-card-foot-runs')).toHaveText('across 2 runs');
+    await expect(foot.locator('.change-additions')).toHaveText('+10');
+    await expect(foot.locator('.change-deletions')).toHaveText('−3');
+    await expect(foot.locator('.turn-changes-run')).toHaveCount(1);
+    // The truncated run and the summed counts are said, not hidden.
+    await expect(foot.locator('.turn-change-notice')).toContainText('Change tracking is limited');
+    await expect(foot.locator('.turn-change-notice')).toContainText('added up across runs');
+    await foot.locator('.turn-card-foot-open').click();
+    const dialog = page.locator('dialog.change-review-dialog');
+    const files = dialog.locator('.change-review-files button');
+    await expect(files).toHaveCount(2);
+    await expect(files.nth(0)).toHaveAttribute('data-path', 'src/a.ts');
+    await expect(files.nth(0)).toContainText('2 runs, summed');
+    await expect(files.nth(0).locator('.change-additions')).toHaveText('+5');
+    await expect(dialog.locator('.change-review-summary')).toContainText('Across 2 runs');
+    const tabs = dialog.locator('.change-review-runs button');
+    await expect(tabs).toHaveText(['Run 1 of 2', 'Run 2 of 2']);
+    await expect(tabs.nth(0)).toHaveAttribute('aria-pressed', 'true');
+    await expect(dialog.locator('.change-review-viewer')).toContainText('first run');
+    await tabs.nth(1).click();
+    await expect(dialog.locator('.change-review-viewer')).toContainText('second run');
+    // A file one run changed has that run alone, and its diff comes from that run's snapshot.
+    await files.nth(1).click();
+    await expect(tabs).toHaveText(['Run 1 of 2']);
+    await expect(dialog.locator('.change-review-viewer')).toContainText('added');
+    const asked = await page.evaluate(() => (window as any).__architectTest.calls.filter((call: any) => call.command === 'turn_change_diff').map((call: any) => `${call.args.changeId}:${call.args.path}`));
+    expect(asked).toEqual(['run-a:src/a.ts', 'run-b:src/a.ts', 'run-a:src/b.ts']);
+  });
+
+  test('a live wake shows the earlier runs as one footer, and the handoff keeps one footer without moving the card', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': twoRuns() });
+    await expect(transcript(page).locator('.turn-card-foot')).toHaveCount(1);
+    await startWake(page);
+    const live = transcript(page).locator('.turn-card.is-live');
+    await expect(live.locator('details.live-earlier')).toBeAttached();
+    await expect(transcript(page).locator('.turn-card-foot')).toHaveCount(1);
+    await expect(live.locator('.turn-card-foot strong')).toHaveText('2 changed files');
+    await expect(live.locator('.turn-card-foot .turn-card-foot-runs')).toHaveText('across 2 runs');
+    await page.evaluate(([tool]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.event({ sessionId: 'session-2', kind: 'tool', text: '', tool: { ...tool, status: 'completed', output: 'clean' } });
+      fixture.event({ sessionId: 'session-2', kind: 'text', text: 'The review passed.' });
+    }, [wakeTool] as const);
+    await expect(live.locator('details.turn-activity')).not.toHaveAttribute('open', '');
+    const handoff = await page.evaluate(async ([tool, changes]) => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push(
+        { id: 2000, sessionId: 'session-2', role: 'tool', content: JSON.stringify({ type: 'tool_activity', version: 1, ...tool, status: 'completed' }), createdAt: 900500 },
+        { id: 2001, sessionId: 'session-2', role: 'assistant', content: 'The review passed.', createdAt: 902000 },
+        { id: 2002, sessionId: 'session-2', role: 'changes', content: '', createdAt: 902100, turnChanges: changes },
+      );
+      const read = () => ({ top: document.querySelector('#transcript .turn-card')!.getBoundingClientRect().top, feet: document.querySelectorAll('#transcript .turn-card-foot').length });
+      const seen = [read()];
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+      const until = performance.now() + 700;
+      while (performance.now() < until) { await new Promise(requestAnimationFrame); seen.push(read()); }
+      return { seen, live: document.querySelectorAll('.turn-card.is-live').length };
+    }, [wakeTool, runChanges('run-c', [['src/c.ts', 'added', 4, 0]])] as const);
+    expect(handoff.live).toBe(0);
+    expect(Math.max(...handoff.seen.map(frame => frame.feet))).toBe(1);
+    expect(Math.min(...handoff.seen.map(frame => frame.feet))).toBe(1);
+    const tops = handoff.seen.map(frame => frame.top);
+    expect(Math.max(...tops) - Math.min(...tops), `card top per frame: ${tops.map(Math.round).join(',')}`).toBeLessThan(2);
+    const foot = transcript(page).locator('.turn-card-foot');
+    await expect(foot.locator('strong')).toHaveText('3 changed files');
+    await expect(foot.locator('.turn-card-foot-runs')).toHaveText('across 3 runs');
+    await expect(foot.locator('.change-additions')).toHaveText('+14');
+  });
+
   test('a thread tile shows a live wake as one card', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: [] }) }, { 'session-2': wakeThread() });
@@ -868,8 +962,8 @@ test.describe('architect teams', () => {
         await expect(responses.nth(1)).toBeVisible(); await expect(responses.nth(1)).toHaveText('The worker completed the search implementation.');
         await expect(responses.nth(2)).toBeVisible(); await expect(responses.nth(2)).toHaveText('The review passed and the task is ready.');
         const cards = transcript(page).locator('.turn-changes:visible');
-        // The turn card's footer names the count and line counts; the per-turn file tree it replaced listed paths.
-        await expect(cards).toHaveCount(2); await expect(cards.nth(0)).toContainText('1 changed file+12'); await expect(cards.nth(1)).toContainText('1 changed file+5');
+        // One footer for the merged card, covering both runs' files.
+        await expect(cards).toHaveCount(1); await expect(cards).toContainText('2 changed filesacross 2 runs+17');
       };
       await verify();
       await page.reload();

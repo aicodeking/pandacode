@@ -42,3 +42,15 @@
 
 /* Micro-interactions: only without reduced motion. */
 @media(prefers-reduced-motion:no-preference){.turn-changes-open,.turn-change-file,.turn-change-folder>summary{transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out}.turn-changes details[open][data-opened]>.turn-change-children,.turn-changes details[open][data-opened]>.turn-change-tree{animation:tc-fade 160ms ease-out}@keyframes tc-fade{from{opacity:0}}}
+
+/* A merged card's single footer says it spans runs; its viewer lists each file once with one tab per run. */
+.turn-card-foot-runs{flex:none;color:var(--muted);font-size:var(--ds-text-sub);white-space:nowrap}
+.change-review-times{color:var(--muted)}
+.change-review-runs{display:flex;flex-wrap:wrap;gap:6px;padding:0 1px 10px;flex-shrink:0}
+.change-review-runs:empty{display:none}
+.change-review-runs>button{min-height:28px;padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--text-xs);transition:background-color 150ms var(--ds-ease-out),color 150ms var(--ds-ease-out)}
+.change-review-runs>button:hover{background:var(--ds-row-hover);color:var(--text)}
+.change-review-runs>button[aria-pressed=true]{background:color-mix(in srgb,var(--accent-dim) 66%,transparent);color:var(--text)}
+.change-review-runs>button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+@media(forced-colors:active){.change-review-runs>button{border-color:ButtonText}.change-review-runs>button[aria-pressed=true]{background:Highlight;color:HighlightText}}
+@media(prefers-reduced-motion:reduce){.change-review-runs>button{transition:none}}

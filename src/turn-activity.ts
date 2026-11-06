@@ -1,4 +1,4 @@
-import type { Message, TurnChanges } from './types.ts';
+import type { Message, TurnChangeFile, TurnChanges } from './types.ts';
 import { decodeToolActivity } from './tool-activity.ts';
 
 export interface TranscriptTurn {
@@ -160,4 +160,69 @@ export function turnLabel(durationMs: number | null, estimated = false): string 
   return validTime(durationMs)
     ? `Worked for ${estimated ? 'about ' : ''}${formatDuration(durationMs)}`
     : 'Tool activity';
+}
+
+/** Several runs' change snapshots as one summary: each file once under its latest name. */
+export interface CombinedChanges extends TurnChanges {
+  /** The snapshots combined, oldest first; each keeps its own id for diffs and review. */
+  runs: TurnChanges[];
+  /** For each listed path, the ids of the runs that changed it, in order. */
+  touched: Record<string, string[]>;
+  /** For each listed path, its name in each of those runs (a rename changes it), matching `touched`. */
+  paths: Record<string, string[]>;
+  /** How the numbers were put together, for the row's details; empty when nothing needs saying. */
+  note: string;
+}
+
+type Tracked = { file: TurnChangeFile; runs: string[]; paths: string[] };
+const sumCount = (a: number | null, b: number | null): number | null => a === null || b === null ? null : a + b;
+
+/** The file a path ends as after `next` follows `previous`; undefined when it was added and then removed again. */
+function followFile(previous: TurnChangeFile, next: TurnChangeFile): TurnChangeFile | undefined {
+  const counts = { additions: sumCount(previous.additions, next.additions), deletions: sumCount(previous.deletions, next.deletions),
+    binary: Boolean(previous.binary || next.binary), truncated: Boolean(previous.truncated || next.truncated) };
+  const at = (path: string, status: TurnChangeFile['status'], oldPath?: string | null): TurnChangeFile =>
+    ({ path, status, ...(oldPath ? { oldPath } : {}), ...counts });
+  if (previous.status === 'added') return next.status === 'deleted' ? undefined : at(next.path, 'added');
+  if (previous.status === 'deleted') return at(next.path, next.status === 'added' ? 'modified' : next.status, next.oldPath);
+  if (previous.status === 'renamed' && previous.oldPath) {
+    if (next.status === 'deleted') return at(previous.oldPath, 'deleted');
+    return next.path === previous.oldPath ? at(next.path, 'modified') : at(next.path, 'renamed', previous.oldPath);
+  }
+  if (next.status === 'renamed') return at(next.path, 'renamed', next.oldPath);
+  return at(next.path, next.status === 'added' ? 'modified' : next.status);
+}
+
+/** One summary for a merged card's runs. Native keeps each run's before and after, but no command diffs one run's start
+ * against a later run's end, so a file changed in several runs has its runs' line counts added up (the note says so):
+ * the lines each run changed, which can be more than the net change. Status follows the file across runs. */
+export function combineChanges(runs: TurnChanges[]): CombinedChanges {
+  let files = new Map<string, Tracked>();
+  let transient = 0;
+  for (const run of runs) {
+    for (const next of run.files) {
+      const key = next.status === 'renamed' && next.oldPath && files.has(next.oldPath) ? next.oldPath : next.path;
+      const previous = files.get(key);
+      const rest = new Map([...files].filter(([path]) => path !== key));
+      if (!previous) { files = new Map([...rest, [next.path, { file: { ...next, binary: Boolean(next.binary), truncated: Boolean(next.truncated) }, runs: [run.id], paths: [next.path] }]]); continue; }
+      const followed = followFile(previous.file, next);
+      if (!followed) transient++;
+      files = followed ? new Map([...rest, [followed.path, { file: followed, runs: [...previous.runs, run.id], paths: [...previous.paths, next.path] }]]) : rest;
+    }
+  }
+  const listed = [...files.values()].sort((a, b) => a.file.path.localeCompare(b.file.path));
+  const repeated = listed.some(entry => entry.runs.length > 1);
+  const note = [
+    repeated ? 'Line counts are added up across runs, so a file changed in more than one run may net out to fewer lines.' : '',
+    transient ? `${transient} ${transient === 1 ? 'file was' : 'files were'} added and removed again.` : '',
+  ].filter(Boolean).join(' ');
+  const errors = [...new Set(runs.map(run => run.error).filter((error): error is string => Boolean(error)))];
+  return {
+    attributed: true, id: `exchange:${runs.map(run => run.id).join(',')}`,
+    files: listed.map(entry => entry.file),
+    additions: runs.reduce((total, run) => total + run.additions, 0), deletions: runs.reduce((total, run) => total + run.deletions, 0),
+    truncated: runs.some(run => run.truncated), concurrent: runs.some(run => run.concurrent), error: errors.join(' ') || null,
+    runs, touched: Object.fromEntries(listed.map(entry => [entry.file.path, entry.runs])),
+    paths: Object.fromEntries(listed.map(entry => [entry.file.path, entry.paths])), note,
+  };
 }
