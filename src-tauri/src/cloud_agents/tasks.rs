@@ -354,6 +354,10 @@ pub(crate) async fn cloud_agent_start(
         }
         let (root, id, created) = with_store(&worker, |store| {
             let root = store.workspace_root(&project_id, None)?;
+            // A cloud task syncs one repository's bundle; multi-folder projects stay local.
+            if store.project_folders(&project_id).map(|folders| folders.len() > 1)? {
+                return Err("Multi-repository projects cannot run on cloud machines yet.".into());
+            }
             let (id, created) = task_row(store, session_id.as_deref(), &project_id, &harness, &model, mode.as_deref(), effort.as_deref())?;
             Ok((root, id, created))
         })?;

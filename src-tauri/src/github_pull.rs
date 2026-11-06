@@ -280,6 +280,54 @@ pub fn detect(root: &Path, repo: &Repository, turn: &[String], branch: &str, tur
     Ok(None)
 }
 
+/// The turn's candidate PRs for one repository, newest first, each read in the
+/// LINK_FIELDS shape; candidates gh cannot resolve are skipped.
+pub(crate) fn turn_candidates(root: &Path, name_with_owner: &str, turn: &[String]) -> Vec<serde_json::Value> {
+    let mut numbers: Vec<i64> = Vec::new();
+    for message in turn {
+        for number in pull_numbers(message, name_with_owner).into_iter().rev() {
+            if !numbers.contains(&number) {
+                numbers.push(number);
+            }
+        }
+    }
+    numbers
+        .into_iter()
+        .take(MAX_CANDIDATES)
+        .filter_map(|number| view(root, "pull", number, LINK_FIELDS).ok())
+        .collect()
+}
+
+/// One repository's detection input: its task_links repo key, the checkout's
+/// branch, and the turn's candidate PRs in the LINK_FIELDS shape.
+pub struct DetectRepo {
+    pub repo: String,
+    pub branch: String,
+    pub pulls: Vec<serde_json::Value>,
+}
+
+/// Per-repository PR detection: each repository links its first candidate that
+/// is on the checkout's branch or was created during the turn, under its own
+/// repo key; an open link in `open_repo_keys` shields only that repository's key.
+pub fn detect_links(repos: &[DetectRepo], turn_started: i64, open_repo_keys: &[&str]) -> Vec<(String, TaskLink)> {
+    let mut links = Vec::new();
+    for entry in repos {
+        if open_repo_keys.contains(&entry.repo.as_str()) {
+            continue;
+        }
+        for value in &entry.pulls {
+            if !belongs_to_turn(value, &entry.branch, turn_started) {
+                continue;
+            }
+            if let Some(link) = link_from(value) {
+                links.push((entry.repo.clone(), link));
+                break;
+            }
+        }
+    }
+    links
+}
+
 /// Look a pull request up so a manual link carries its real title and state.
 pub fn lookup(root: &Path, number: i64) -> Result<TaskLink, String> {
     let value = run_gh(root, &["pr", "view", &number.to_string(), "--json", LINK_FIELDS], TIMEOUT)
@@ -367,5 +415,139 @@ mod tests {
         assert!(belongs_to_turn(&pr("other", "2026-10-14T09:59:30Z"), "feat/x", start));
         assert!(!belongs_to_turn(&pr("other", "2026-10-13T10:00:00Z"), "feat/x", start));
         assert!(!belongs_to_turn(&pr("", "not a date"), "", start));
+    }
+
+    // `gh pr view --json number,title,state,url,isDraft,headRefName,createdAt` shapes.
+    fn candidate(number: i64, head: &str, created: &str) -> serde_json::Value {
+        serde_json::json!({
+            "number": number,
+            "title": format!("PR {number}"),
+            "state": "OPEN",
+            "url": format!("https://github.com/o/r/pull/{number}"),
+            "isDraft": false,
+            "headRefName": head,
+            "createdAt": created,
+        })
+    }
+    fn detected(links: Vec<(String, TaskLink)>) -> Vec<(String, i64)> {
+        links.into_iter().map(|(repo, link)| (repo, link.number)).collect()
+    }
+
+    /// PR detection links every repository that owns one: the primary keeps the
+    /// legacy '' key while an additional repository links under its own, and each
+    /// link carries the PR's real shape.
+    #[test]
+    fn detection_links_every_repository_that_owns_a_pr() {
+        let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
+        let links = detect_links(
+            &[
+                DetectRepo {
+                    repo: String::new(),
+                    branch: "task/primary".into(),
+                    pulls: vec![candidate(11, "task/primary", "2020-01-01T00:00:00Z")],
+                },
+                DetectRepo {
+                    repo: "o/lib".into(),
+                    branch: "task/lib".into(),
+                    pulls: vec![candidate(7, "unrelated", "2026-10-14T10:05:00Z")],
+                },
+            ],
+            start,
+            &[],
+        );
+        assert_eq!(
+            detected(links.clone()),
+            vec![(String::new(), 11), ("o/lib".into(), 7)],
+            "each repository links under its own key, the primary first"
+        );
+        assert_eq!(
+            (
+                links[0].1.kind.as_str(),
+                links[0].1.url.as_str(),
+                links[0].1.title.as_str(),
+                links[0].1.state.as_str(),
+                links[0].1.checked_at
+            ),
+            ("pull", "https://github.com/o/r/pull/11", "PR 11", "open", 0)
+        );
+    }
+
+    /// An open link shields only its own repo key: an open primary link stops only
+    /// the primary's replacement, never the additional repositories' (and the
+    /// other way around).
+    #[test]
+    fn an_open_link_shields_only_its_own_repo_key() {
+        let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
+        let matching = |repo: &str, number: i64| DetectRepo {
+            repo: repo.into(),
+            branch: "task/x".into(),
+            pulls: vec![candidate(number, "task/x", "2020-01-01T00:00:00Z")],
+        };
+        assert_eq!(
+            detected(detect_links(&[matching("", 11), matching("o/lib", 7)], start, &[""])),
+            vec![("o/lib".into(), 7)],
+            "an open primary link stops only the primary's replacement"
+        );
+        assert_eq!(
+            detected(detect_links(&[matching("", 11), matching("o/lib", 7)], start, &["o/lib"])),
+            vec![(String::new(), 11)],
+            "an open additional link stops only that repository's replacement"
+        );
+    }
+
+    /// A PR belongs to the repository whose task branch it is on: the same PR
+    /// mentioned for two repositories links only the one whose branch matches.
+    #[test]
+    fn a_pr_belongs_to_the_repository_whose_branch_it_is_on() {
+        let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
+        let pulls = vec![candidate(5, "task/lib", "2020-01-01T00:00:00Z")];
+        assert_eq!(
+            detected(detect_links(
+                &[
+                    DetectRepo { repo: String::new(), branch: "task/primary".into(), pulls: pulls.clone() },
+                    DetectRepo { repo: "o/lib".into(), branch: "task/lib".into(), pulls },
+                ],
+                start,
+                &[],
+            )),
+            vec![("o/lib".into(), 5)]
+        );
+    }
+
+    /// Within one repository the first candidate that belongs to the turn wins.
+    #[test]
+    fn each_repository_links_its_first_matching_candidate() {
+        let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
+        assert_eq!(
+            detected(detect_links(
+                &[DetectRepo {
+                    repo: "o/lib".into(),
+                    branch: "task/lib".into(),
+                    pulls: vec![
+                        candidate(9, "someone-elses-branch", "2020-01-01T00:00:00Z"),
+                        candidate(8, "task/lib", "2020-01-01T00:00:00Z"),
+                    ],
+                }],
+                start,
+                &[],
+            )),
+            vec![("o/lib".into(), 8)]
+        );
+    }
+
+    /// A turn that owns no PR anywhere links nothing.
+    #[test]
+    fn turns_without_their_own_prs_link_nothing() {
+        let start = epoch_ms("2026-10-14T10:00:00Z").unwrap();
+        assert!(detect_links(
+            &[DetectRepo {
+                repo: "o/lib".into(),
+                branch: "task/lib".into(),
+                pulls: vec![candidate(9, "someone-elses-branch", "2026-10-13T10:00:00Z")],
+            }],
+            start,
+            &[],
+        )
+        .is_empty());
     }
 }

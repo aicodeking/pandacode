@@ -484,6 +484,31 @@ pub fn create_pull_request(root: &Path, title: &str, body: &str, base: &str, hea
     })
 }
 
+/// The task_links repo key of one folder: the primary always keeps the legacy
+/// empty key (whatever remote it has, or none), an additional folder keys by
+/// its origin's `owner/name` read at its effective checkout, and a folder
+/// without a parsable GitHub origin has no identity, so its links are skipped.
+pub fn folder_link_key(folder: &crate::storage::RepoFolder) -> Option<String> {
+    if folder.is_primary {
+        return Some(String::new());
+    }
+    crate::github_hub::project_repo(&folder.path)
+}
+
+/// One link key per GitHub identity, the primary's empty key first, then folder
+/// order; identity-less folders are skipped.
+pub fn folder_link_keys(folders: &[crate::storage::RepoFolder]) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for folder in folders {
+        if let Some(key) = folder_link_key(folder) {
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -549,5 +574,143 @@ mod tests {
     fn a_missing_cli_is_named_and_other_failures_pass_through() {
         assert_eq!(start_failure("Could not start GitHub CLI: No such file or directory"), "GitHub CLI (gh) is not installed.");
         assert_eq!(start_failure("GitHub CLI operation timed out. Check the repository before retrying."), "GitHub CLI operation timed out. Check the repository before retrying.");
+    }
+
+    // A throwaway git repository for origin-derived link keys; `origin` is the
+    // remote URL it configures, and Drop removes the whole scratch directory.
+    struct GitCheckout {
+        base: std::path::PathBuf,
+    }
+    impl GitCheckout {
+        fn new(origin: Option<&str>) -> Self {
+            let base = std::env::temp_dir().join(format!("pandacode-gh-keys-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(base.join("repo")).unwrap();
+            let this = Self { base };
+            this.git(&["init", "-b", "main"]);
+            this.git(&["config", "user.name", "GitHub key tests"]);
+            this.git(&["config", "user.email", "github@example.invalid"]);
+            this.git(&["config", "commit.gpgSign", "false"]);
+            this.git(&["-c", "core.hooksPath=/dev/null", "commit", "--allow-empty", "-m", "Initial"]);
+            if let Some(origin) = origin {
+                this.git(&["remote", "add", "origin", origin]);
+            }
+            this
+        }
+        fn path(&self) -> std::path::PathBuf {
+            self.base.join("repo")
+        }
+        fn git(&self, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(self.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        fn worktree(&self, name: &str) -> std::path::PathBuf {
+            let path = self.base.join(name);
+            self.git(&["worktree", "add", path.to_string_lossy().as_ref(), "-b", name]);
+            path
+        }
+    }
+    impl Drop for GitCheckout {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    fn folder_at(path: std::path::PathBuf, is_primary: bool) -> crate::storage::RepoFolder {
+        crate::storage::RepoFolder {
+            path,
+            label: if is_primary { "project".into() } else { "extra".into() },
+            is_primary,
+            worktree: None,
+            branch: None,
+        }
+    }
+
+    /// The task_links repo key of one folder: the primary always keeps the legacy
+    /// empty key (whatever remote it has, or none), an additional folder keys by
+    /// its origin's `owner/name` read at its effective checkout, and a folder
+    /// without a parsable GitHub origin has no identity, so its links are skipped.
+    #[test]
+    fn folder_link_keys_map_folders_to_their_repo_keys() {
+        let primary = GitCheckout::new(Some("https://github.com/o/primary.git"));
+        assert_eq!(
+            folder_link_key(&folder_at(primary.path(), true)).as_deref(),
+            Some(""),
+            "the primary keys as the primary even with its own remote"
+        );
+
+        let lib = GitCheckout::new(Some("https://github.com/octo/lib.git"));
+        assert_eq!(folder_link_key(&folder_at(lib.path(), false)).as_deref(), Some("octo/lib"));
+        let ssh = GitCheckout::new(Some("git@github.com:octo/ssh.git"));
+        assert_eq!(folder_link_key(&folder_at(ssh.path(), false)).as_deref(), Some("octo/ssh"));
+
+        // A task worktree of the repository shares its origin.
+        let side = lib.worktree("side");
+        let worktree_folder = crate::storage::RepoFolder {
+            path: side.clone(),
+            label: "lib".into(),
+            is_primary: false,
+            worktree: Some(side),
+            branch: Some("side".into()),
+        };
+        assert_eq!(
+            folder_link_key(&worktree_folder).as_deref(),
+            Some("octo/lib"),
+            "a task worktree keys by its repository's origin"
+        );
+
+        // No origin, or one that is not GitHub, leaves the folder identity-less.
+        let local = GitCheckout::new(None);
+        assert_eq!(folder_link_key(&folder_at(local.path(), false)), None);
+        let elsewhere = GitCheckout::new(Some("https://gitlab.com/octo/lib.git"));
+        assert_eq!(
+            folder_link_key(&folder_at(elsewhere.path(), false)),
+            None,
+            "only GitHub origins carry a link key"
+        );
+
+        // The primary stays the legacy key even with no repository at all.
+        let plain = std::env::temp_dir().join(format!("pandacode-gh-plain-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&plain).unwrap();
+        assert_eq!(folder_link_key(&folder_at(plain.clone(), true)).as_deref(), Some(""));
+        let _ = std::fs::remove_dir_all(&plain);
+    }
+
+    /// Every folder with a GitHub identity contributes its key once, the primary's
+    /// legacy empty key first, in folder order; folders without one are skipped, so
+    /// a project with two GitHub folders yields exactly two repo identities.
+    #[test]
+    fn folder_link_keys_list_each_github_folder_once_with_the_primary_first() {
+        let primary = GitCheckout::new(Some("https://github.com/o/primary.git"));
+        let lib = GitCheckout::new(Some("https://github.com/o/lib.git"));
+        assert_eq!(
+            folder_link_keys(&[folder_at(primary.path(), true), folder_at(lib.path(), false)]),
+            vec![String::new(), "o/lib".into()],
+            "two GitHub folders yield two repo identities"
+        );
+
+        let web = GitCheckout::new(Some("git@github.com:octo/web.git"));
+        let mirror = GitCheckout::new(Some("https://github.com/o/lib.git"));
+        let plain = GitCheckout::new(None);
+        assert_eq!(
+            folder_link_keys(&[
+                folder_at(primary.path(), true),
+                folder_at(lib.path(), false),
+                folder_at(web.path(), false),
+                folder_at(mirror.path(), false),
+                folder_at(plain.path(), false),
+            ]),
+            vec![String::new(), "o/lib".into(), "octo/web".into()],
+            "one key per GitHub identity; identity-less folders are skipped"
+        );
+        assert!(folder_link_keys(&[]).is_empty());
     }
 }

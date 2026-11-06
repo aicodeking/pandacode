@@ -1,5 +1,5 @@
 import { previewHub, previewRepos } from './preview-github-hub';
-import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
+import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, LinkedPull, Message, MessagePage, Project, ProjectFolder, Provider, ProviderId, ProviderModel, RepoStatusInfo, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { isPreviewableFile } from './file-links';
@@ -415,16 +415,72 @@ function previewWorktree(source: Session, args: Record<string, any>): { path: st
   worktreeGit.set(path, { branch, isRepo: true, files: [] });
   return { path, branch };
 }
-/** A tiny GitHub for the browser preview: one connected repository and a few issues. */
+// Multi-folder projects: every project starts with its own single folder, as the native
+// store seeds one row per project; ?folders adds the sample's two more for project-1.
+const showFolders = typeof location !== 'undefined' && new URLSearchParams(location.search).has('folders');
+const previewFolders = new Map<string, ProjectFolder[]>();
+const folderLabel = (path: string): string => path.split('/').pop() || path;
+const foldersFor = (projectId: unknown): ProjectFolder[] => {
+  const id = String(projectId);
+  let folders = previewFolders.get(id);
+  if (!folders) {
+    const project = projects.find(p => p.id === id);
+    if (!project) throw new Error('This project no longer exists.');
+    folders = [{ path: project.path, position: 0, isPrimary: true }];
+    previewFolders.set(id, folders);
+  }
+  return folders;
+};
+const foldersOut = (projectId: unknown): ProjectFolder[] => foldersFor(projectId).map(folder => ({ ...folder }));
+if (showFolders) {
+  const orbit = projects.find(p => p.id === 'project-1')!.path;
+  previewFolders.set('project-1', [
+    { path: orbit, position: 0, isPrimary: true },
+    { path: `${orbit}-web`, position: 1, isPrimary: false },
+    { path: `${orbit}-docs`, position: 2, isPrimary: false },
+  ]);
+  // The primary repository's pull request mirrors into the task, as the native single-link readers serve it.
+  const sample = sessions.find(s => s.id === 'session-1');
+  if (sample) sample.pullRequest = { kind: 'pull', number: 130, url: 'https://github.com/orbit-labs/orbit/pull/130', title: 'Debounce library search', state: 'open', checkedAt: now };
+}
+// One status group per sample folder: the primary repository, the web repository,
+// and the plain docs folder that reports nothing. A task's worktree puts every
+// repository on the same branch, as the native worktree creation does.
+const folderRepos = (task: Session, primary: GitStatus): RepoStatusInfo[] => foldersOut(task.projectId).map((folder, index) => index === 0
+  ? { label: folderLabel(folder.path), branch: primary.branch, ahead: 1, behind: 0, files: primary.files }
+  : index === 1
+    ? { label: folderLabel(folder.path), branch: task.worktreePath ? primary.branch : 'main', ahead: 0, behind: task.worktreePath ? 2 : 0, files: [{ path: 'src/refresh-button.tsx', index: ' ', working: 'M' }, { path: 'package.json', index: '?', working: '?' }] }
+    : { label: folderLabel(folder.path), branch: '', ahead: 0, behind: 0, files: [] });
+/** The flat per-repository entries a worktree command reply carries beside its
+ * primary payload: the primary first, then the ?folders sample's web repository,
+ * which rides the task's branch beside its own checkout. */
+const worktreeRepos = (task: Session, primary: unknown): { label: string; result?: unknown; error?: string }[] => {
+  const folders = foldersOut(task.projectId);
+  const repos: { label: string; result?: unknown; error?: string }[] = [{ label: folderLabel(folders[0].path), result: primary }];
+  if (showFolders && task.projectId === 'project-1' && task.worktreePath && task.worktreeBranch) {
+    const web = folders.find(f => !f.isPrimary && f.path.endsWith('-web'));
+    if (web) repos.push({ label: folderLabel(web.path), result: primary });
+  }
+  return repos;
+};
+/** A tiny GitHub for the browser preview: one connected repository and a few issues.
+ * The ?folders sample's web repository joins under its own 'orbit-web' namespace so its
+ * linked pull request (#57) serves detail and diff without touching the primary's lists. */
 const previewClones = new Map<string, string>();
 const previewGithub = (() => {
-  const repos: Record<string, { nameWithOwner: string; defaultBranch: string; url: string }> = { 'project-1': { nameWithOwner: 'orbit-labs/orbit', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit' } };
+  const repos: Record<string, { nameWithOwner: string; defaultBranch: string; url: string }> = {
+    'project-1': { nameWithOwner: 'orbit-labs/orbit', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit' },
+    ...(showFolders ? { 'orbit-web': { nameWithOwner: 'orbit-labs/orbit-web', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit-web' } } : {}),
+  };
   const issues = [
     { projectId: 'project-1', number: 128, title: 'Search index rebuilds on every keystroke', body: 'Typing in the search box feels sluggish.\n\nSteps:\n1. Open the library view\n2. Type quickly\n\nThe index is recreated per input event.', state: 'open', labels: ['bug', 'performance'], assignees: ['you'], updatedAt: new Date(now - 3600_000).toISOString(), author: 'mara' },
     { projectId: 'project-1', number: 131, title: 'Keyboard shortcut cheat sheet', body: 'Add a `?` overlay listing shortcuts.', state: 'open', labels: ['enhancement'], assignees: [], updatedAt: new Date(now - 86400_000).toISOString(), author: 'devon' },
     { projectId: 'project-1', number: 97, title: 'Dark mode contrast for muted text', body: 'Muted text fails WCAG AA on the charcoal surfaces.', state: 'open', labels: ['design'], assignees: ['you'], updatedAt: new Date(now - 2 * 86400_000).toISOString(), author: 'you' },
   ];
-  const pulls: { projectId: string; number: number; title: string; body: string; base: string; head: string }[] = [{ projectId: 'project-1', number: 130, title: 'Debounce library search', body: '', base: 'main', head: 'feat/debounce' }];
+  const pulls: { projectId: string; number: number; title: string; body: string; base: string; head: string }[] = [
+    { projectId: 'project-1', number: 130, title: 'Debounce library search', body: '', base: 'main', head: 'feat/debounce' },
+    ...(showFolders ? [{ projectId: 'orbit-web', number: 57, title: 'Refresh button polish', body: 'Polishes the refresh button states.', base: 'main', head: 'main' }] : []),
+  ];
   let next = 200;
   const url = (projectId: string, kind: 'issue' | 'pull', number: number) => `${repos[projectId]?.url}/${kind === 'pull' ? 'pull' : 'issues'}/${number}`;
   return {
@@ -1489,7 +1545,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
-    case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
+    case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); previewFolders.delete(args.projectId); break;
     case 'relink_project': {
       const project = projects.find(p => p.id === args.projectId);
       if (!project) throw new Error('Project not found.');
@@ -1497,6 +1553,51 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       // The located folder reads again, like the real relink.
       (window as any).__filesFail = false;
       result = { ...project, addedOrder: projects.indexOf(project) + 1 }; break;
+    }
+    case 'project_folders': result = foldersOut(args.projectId); break;
+    case 'add_project_folder': {
+      const folders = foldersFor(args.projectId);
+      const path = String(args.path ?? '').replace(/\/+$/, '');
+      if (!path.startsWith('/')) throw new Error('Choose a folder.');
+      if (folders.some(f => f.path === path) || [...previewFolders.values()].flat().some(f => f.path === path)) throw new Error('Folder already belongs to a project.');
+      folders.push({ path, position: Math.max(-1, ...folders.map(f => f.position)) + 1, isPrimary: false });
+      result = foldersOut(args.projectId); break;
+    }
+    case 'remove_project_folder': {
+      const folders = foldersFor(args.projectId);
+      if (folders.length <= 1) throw new Error('A project keeps at least one folder.');
+      const path = String(args.path ?? '').replace(/\/+$/, ''), at = folders.findIndex(f => f.path === path);
+      if (at < 0) throw new Error('Folder not found.');
+      const [removed] = folders.splice(at, 1);
+      if (removed.isPrimary) {
+        const next = folders.reduce((a, b) => a.position <= b.position ? a : b);
+        next.isPrimary = true;
+        const project = projects.find(p => p.id === args.projectId);
+        if (project) project.path = next.path;
+      }
+      result = foldersOut(args.projectId); break;
+    }
+    case 'set_primary_folder': {
+      const folders = foldersFor(args.projectId);
+      const folder = folders.find(f => f.path === String(args.path ?? '').replace(/\/+$/, ''));
+      if (!folder) throw new Error('Folder not found.');
+      if (!folder.isPrimary) {
+        for (const f of folders) f.isPrimary = f === folder;
+        const project = projects.find(p => p.id === args.projectId);
+        if (project) project.path = folder.path;
+      }
+      result = foldersOut(args.projectId); break;
+    }
+    case 'workspace_folders': {
+      const s = args.sessionId ? session(args.sessionId) : null;
+      result = foldersOut(args.projectId).map(folder => ({
+        path: folder.isPrimary && s?.worktreePath ? s.worktreePath : folder.path,
+        label: folderLabel(folder.path),
+        isPrimary: folder.isPrimary,
+        worktree: folder.isPrimary ? s?.worktreePath ?? null : null,
+        branch: folder.isPrimary ? s?.worktreeBranch ?? null : null,
+      }));
+      break;
     }
     case 'delete_session': {
       const task = session(args.sessionId); assertIdle(task);
@@ -1649,7 +1750,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const stopped = session(args.sessionId); stopped.status = 'idle'; if (stopped.goalState?.status === 'active') { stopped.goalState.status = 'paused'; emitGoal(stopped); } syncMirror(args.sessionId); agent({ sessionId: args.sessionId, kind: 'done', text: 'Stopped' }); break;
     }
     case 'respond_approval': case 'respond_user_input': break;
-    case 'git_status': result = checkoutGit(args.sessionId); break;
+    case 'git_status': {
+      const status = checkoutGit(args.sessionId), s = args.sessionId ? session(args.sessionId) : null;
+      result = showFolders && s && s.projectId === 'project-1' ? { ...status, repos: folderRepos(s, status) } : status;
+      break;
+    }
     case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
     case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
     case 'git_commit': {
@@ -1661,7 +1766,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const source = session(args.sessionId);
       const worktree = previewWorktree(source, args);
       const created: Session = { ...source, id: crypto.randomUUID(), pinned: false, sidebarOrder: null, worktreePath: worktree.path, worktreeBranch: worktree.branch, title: 'New conversation', mode: 'full', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, resumeId: null, lastResponseAt: null, lastPromptAt: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null, issue: null, pullRequest: null };
-      sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id); result = created; break;
+      sessions.unshift(created); messages[created.id] = []; architect.inherit(created.id);
+      // One outcome per additional repository checkout beside the new task, as the native reply carries.
+      const web = showFolders && created.projectId === 'project-1' ? foldersOut(created.projectId).find(f => !f.isPrimary && f.path.endsWith('-web')) : undefined;
+      result = { ...created, repos: web ? [{ label: folderLabel(web.path), result: { path: `${web.path}-worktrees/${worktree.branch.replaceAll('/', '-')}`, branch: worktree.branch } }] : [] };
+      break;
     }
     case 'attach_worktree': {
       const s = session(args.sessionId);
@@ -1680,7 +1789,23 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'worktree_status': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
       const checkout = worktreeGit.get(s.worktreePath);
-      result = checkout ? { exists: true, branch: checkout.branch, changes: checkout.files.length, clean: !checkout.files.length, hasUpstream: pushedBranches.has(checkout.branch), ahead: pushedBranches.has(checkout.branch) ? 0 : 1, merged: mergedBranches.has(checkout.branch) } : { exists: false, branch: s.worktreeBranch ?? '', changes: 0, clean: true, hasUpstream: false, ahead: 0, merged: false };
+      const status = checkout ? { exists: true, branch: checkout.branch, changes: checkout.files.length, clean: !checkout.files.length, hasUpstream: pushedBranches.has(checkout.branch), ahead: pushedBranches.has(checkout.branch) ? 0 : 1, merged: mergedBranches.has(checkout.branch) } : { exists: false, branch: s.worktreeBranch ?? '', changes: 0, clean: true, hasUpstream: false, ahead: 0, merged: false };
+      result = { ...status, repos: worktreeRepos(s, status) };
+      break;
+    }
+    case 'worktree_paths': {
+      const s = session(args.sessionId);
+      if (!s.worktreePath) throw new Error('This task uses the main checkout.');
+      const checkout = worktreeGit.get(s.worktreePath);
+      const branch = checkout?.branch ?? s.worktreeBranch ?? '';
+      const folders = foldersOut(s.projectId), primary = folders.find(f => f.isPrimary)!;
+      const repos: { label: string; main: string; worktree: string | null; branch: string | null }[] = [{ label: folderLabel(primary.path), main: primary.path, worktree: s.worktreePath, branch: branch || null }];
+      // The ?folders sample's web repository shares the task's branch beside its own folder.
+      if (showFolders && s.projectId === 'project-1') {
+        const web = folders.find(f => !f.isPrimary && f.path.endsWith('-web'));
+        if (web && branch) repos.push({ label: folderLabel(web.path), main: web.path, worktree: `${web.path}-worktrees/${branch.replaceAll('/', '-')}`, branch });
+      }
+      result = { main: primary.path, path: s.worktreePath, branch: branch || null, repos };
       break;
     }
     case 'merge_worktree': {
@@ -1690,7 +1815,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (checkout.files.length) throw new Error('The worktree has uncommitted changes. Commit or discard them first; only committed work is merged.');
       const commits = mergedBranches.has(checkout.branch) ? 0 : 1;
       mergedBranches.add(checkout.branch);
-      result = { branch: checkout.branch, target: 'main', commits, switchedFrom: null }; break;
+      const merged = { branch: checkout.branch, target: 'main', commits, switchedFrom: null };
+      result = { ...merged, repos: worktreeRepos(s, merged) }; break;
     }
     case 'remove_worktree': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
@@ -1700,16 +1826,30 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       worktreeGit.delete(s.worktreePath);
       const deletable = args.deleteBranch && mergedBranches.has(branch);
       if (deletable) previewBranches.delete(branch);
-      result = { removed: Boolean(checkout), branch, branchDeleted: Boolean(deletable), note: args.deleteBranch && !deletable && branch ? `Branch ${branch} was kept: error: the branch '${branch}' is not fully merged` : '' }; break;
+      const removal = { removed: Boolean(checkout), branch, branchDeleted: Boolean(deletable), note: args.deleteBranch && !deletable && branch ? `Branch ${branch} was kept: error: the branch '${branch}' is not fully merged` : '' };
+      result = { ...removal, repos: worktreeRepos(s, removal) }; break;
     }
     case 'recreate_worktree': {
       const s = session(args.sessionId); if (!s.worktreePath) throw new Error('This task uses the main checkout.');
       if (worktreeGit.has(s.worktreePath)) throw new Error('The worktree folder already exists.');
       if (!s.worktreeBranch || !previewBranches.has(s.worktreeBranch)) throw new Error('The worktree\u2019s branch is unknown; create a new worktree instead.');
-      worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] }); result = s; break;
+      worktreeGit.set(s.worktreePath, { branch: s.worktreeBranch, isRepo: true, files: [] });
+      const folders = foldersOut(s.projectId);
+      const repos: { label: string; result?: unknown; error?: string }[] = [{ label: folderLabel(folders[0].path), result: s.worktreePath }];
+      // Each repository recreates its own checkout, as the native reply lists.
+      if (showFolders && s.projectId === 'project-1') {
+        const web = folders.find(f => !f.isPrimary && f.path.endsWith('-web'));
+        if (web) repos.push({ label: folderLabel(web.path), result: `${web.path}-worktrees/${s.worktreeBranch.replaceAll('/', '-')}` });
+      }
+      result = { ...s, repos }; break;
     }
     case 'git_push': { const checkout = checkoutGit(args.sessionId); pushedBranches.add(checkout.branch); result = `branch '${checkout.branch}' set up to track 'origin/${checkout.branch}'.`; break; }
-    case 'github_status': result = previewGithub.status(args.projectId); break;
+    case 'github_status':
+      // The ?folders sample's web repository answers for itself, as the qualified command does.
+      result = args.folder === 'orbit-web' && showFolders
+        ? { installed: true, version: '2.62.0', authenticated: true, login: 'you', repo: { nameWithOwner: 'orbit-labs/orbit-web', defaultBranch: 'main', url: 'https://github.com/orbit-labs/orbit-web' }, error: null }
+        : previewGithub.status(args.projectId);
+      break;
     case 'github_repos': result = structuredClone(previewRepos); break;
     // The sample orbit project has an app icon; others show the sidebar's default.
     case 'project_icon': result = args.projectId === 'project-1' ? 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjN2M5Y2ZmJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjNWI1YmQ2Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nOCcgZmlsbD0ndXJsKCNnKScvPjxjaXJjbGUgY3g9JzE2JyBjeT0nMTYnIHI9JzcnIGZpbGw9J25vbmUnIHN0cm9rZT0nd2hpdGUnIHN0cm9rZS13aWR0aD0nMycvPjxjaXJjbGUgY3g9JzIzJyBjeT0nOScgcj0nMi41JyBmaWxsPSd3aGl0ZScvPjwvc3ZnPg==' : null; break;
@@ -1727,7 +1867,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'github_search': result = previewGithub.search(args.projectId, String(args.query ?? '')); break;
     case 'github_issues': result = previewGithub.issues(args.projectId, args.filter ?? {}); break;
     case 'github_resolve': result = previewGithub.resolve(args.projectId, (args.numbers ?? []) as number[]); break;
-    case 'github_refresh_links': result = sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue, s.pullRequest].filter(Boolean).map(link => ({ sessionId: s.id, link: previewGithub.refresh(s.projectId, link!) }))); break;
+    case 'github_refresh_links': result = sessions.filter(s => s.projectId === args.projectId).flatMap(s => [s.issue, s.pullRequest].filter(Boolean).map(link => ({ sessionId: s.id, repo: '', link: previewGithub.refresh(s.projectId, link!) }))); break;
     case 'set_task_link': {
       const s = session(args.sessionId);
       if (!['issue', 'pull'].includes(args.kind)) throw new Error('Unknown link kind.');
@@ -1748,6 +1888,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = s; break;
     }
     case 'github_pull_request': {
+      // The ?folders sample's web repository serves its own linked pull request.
+      if (args.folder === 'orbit-web' && showFolders) { result = previewGithub.detail('orbit-web', 57); break; }
       const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
       result = previewGithub.detail(s.projectId, s.pullRequest.number); break;
     }
@@ -1759,12 +1901,24 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = s; break;
     }
     case 'github_pull_request_diff': {
+      // The ?folders sample's web repository serves its own diff.
+      if (args.folder === 'orbit-web' && showFolders) { result = { patch: 'diff --git a/src/refresh-button.tsx b/src/refresh-button.tsx\nindex 1111111..2222222 100644\n--- a/src/refresh-button.tsx\n+++ b/src/refresh-button.tsx\n@@ -1,3 +1,4 @@\n export function RefreshButton() {\n+  const [busy, setBusy] = useState(false);\n   return <button onClick={refresh}>Refresh</button>;\n }\n', truncated: false }; break; }
       const s = session(args.sessionId); if (!s.pullRequest) throw new Error('This task has no linked pull request.');
       result = { patch: previewGithub.diff, truncated: false }; break;
     }
     case 'github_detect_pull_request': {
       // The sample agent never mentions a PR; tests hook this command to simulate one.
       result = null; break;
+    }
+    case 'linked_pulls': {
+      const s = session(args.sessionId);
+      const pulls: LinkedPull[] = s.pullRequest ? [['', s.pullRequest]] : [];
+      // The ?folders sample links one pull request per repository, the primary's legacy '' key first.
+      if (showFolders && s.projectId === 'project-1') {
+        if (!pulls.length) pulls.push(['', { kind: 'pull', number: 130, url: 'https://github.com/orbit-labs/orbit/pull/130', title: 'Debounce library search', state: 'open', checkedAt: now }]);
+        pulls.push(['orbit-labs/orbit-web', { kind: 'pull', number: 57, url: 'https://github.com/orbit-labs/orbit-web/pull/57', title: 'Refresh button polish', state: 'open', checkedAt: now }]);
+      }
+      result = pulls; break;
     }
     case 'github_link_pull_request': {
       const s = session(args.sessionId), repo = previewGithub.status(s.projectId).repo;
@@ -1838,12 +1992,25 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    case 'list_files': {
+      // The ?folders sample's web repository and plain docs folder list their own trees.
+      const folderFiles = args.folder === 'orbit-web'
+        ? (String(args.path) === 'src' ? [{ name: 'app.tsx', isDir: false }, { name: 'theme.css', isDir: false }] : String(args.path) ? [] : [{ name: 'src', isDir: true }, { name: 'package.json', isDir: false }, { name: 'index.html', isDir: false }])
+        : args.folder === 'orbit-docs'
+          ? (String(args.path) ? [] : [{ name: 'setup.md', isDir: false }, { name: 'guide.md', isDir: false }])
+          : null;
+      if (folderFiles) { result = folderFiles.map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break; }
+      result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    }
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
-      const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
+      // Each folder searches its own files; the primary keeps the sample checkout.
+      const pool = args.folder === 'orbit-web' ? ['src/app.tsx', 'src/theme.css', 'package.json']
+        : args.folder === 'orbit-docs' ? ['setup.md', 'guide.md']
+        : previewWorkspaceFiles;
+      const files = pool.map(path => ({ path, isDir: false }));
       // Folders join typed queries only, like the native index.
-      const folders = query ? ['src', 'src/components', 'src/lib', 'public', 'docs'].map(path => ({ path, isDir: true })) : [];
+      const folders = query && !args.folder ? ['src', 'src/components', 'src/lib', 'public', 'docs'].map(path => ({ path, isDir: true })) : [];
       result = [...files, ...folders]
         .filter(entry => entry.path.toLocaleLowerCase().includes(query))
         .map(entry => ({ name: entry.path.split('/').pop()!, ...entry }))
@@ -1859,7 +2026,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
         const source = args.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         pattern = new RegExp(args.wholeWord ? `\\b(?:${source})\\b` : source, args.matchCase ? 'g' : 'gi');
       } catch (error) { throw new Error(`Invalid regular expression: ${(error as Error).message}`); }
-      const files = previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path)).map(path => {
+      const pool = args.folder === 'orbit-web' ? ['src/app.tsx', 'src/theme.css']
+        : args.folder === 'orbit-docs' ? ['setup.md', 'guide.md']
+        : previewWorkspaceFiles.filter(path => /\.(ts|md)$/.test(path));
+      const files = pool.map(path => {
         const lines = (path.endsWith('.md') ? sampleReadme : sampleSource).split('\n');
         const matches = lines.flatMap((line, index) => {
           const text = line.trimStart(), ranges = [...text.matchAll(pattern)].filter(m => m[0]).map(m => [m.index!, m.index! + m[0].length]);
@@ -1930,7 +2100,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       break;
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
-    case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
+    // Folder-qualified reads come from the ?folders sample's extra folders.
+    case 'read_file': {
+      const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`);
+      if (args.folder) { result = String(args.path).endsWith('.md') ? sampleReadme : sampleSource; break; }
+    }
       result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;

@@ -11,6 +11,8 @@ export interface BranchList { current: string; branches: string[]; defaultBranch
 export interface WorktreeStatus { exists: boolean; branch: string; changes: number; clean: boolean; hasUpstream: boolean; ahead: number; merged: boolean; }
 export interface WorktreeMerge { branch: string; target: string; commits: number; switchedFrom: string | null; }
 export interface WorktreeRemoval { removed: boolean; branch: string; branchDeleted: boolean; note: string; }
+/** One repository's result beside today's top-level payload in a multi-repo worktree reply. */
+export interface RepoOutcome { label: string; result?: unknown; error?: string; }
 export interface GithubRepository { nameWithOwner: string; defaultBranch: string; url: string; }
 export interface GithubStatus { installed: boolean; version: string; authenticated: boolean; login: string | null; repo: GithubRepository | null; error: string | null; }
 export interface GithubItem { kind: 'issue' | 'pull'; number: number; title: string; state: string; url: string; author: string; }
@@ -25,7 +27,14 @@ export interface ReasoningEffort { id: string; name: string; description: string
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null; }
 export interface Provider { id: ProviderId; name: string; installed: boolean; path: string | null; version: string; models: ProviderModel[]; }
 export interface GitFile { path: string; index: string; working: string; }
-export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; }
+export interface GitStatus { branch: string; files: GitFile[]; isRepo: boolean; /** One entry per project folder, the primary first; set for multi-folder projects. */ repos?: RepoStatusInfo[]; }
+export interface RepoStatusInfo { label: string; branch: string; ahead: number; behind: number; files: GitFile[]; }
+/** One folder of a multi-folder project; exactly one is primary. */
+export interface ProjectFolder { path: string; position: number; isPrimary: boolean; }
+/** A task's working folder: the project folder itself, or the task's own checkout. */
+export interface RepoFolderInfo { path: string; label: string; isPrimary: boolean; worktree: string | null; branch: string | null; }
+/** One repository's linked pull request: the task_links repo key ('' = primary) beside the link. */
+export type LinkedPull = [string, TaskLink];
 export interface FileEntry { name: string; path: string; isDir: boolean; }
 export interface ToolActivity { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string; }
 export interface SubagentActivity { id: string; parentId: string | null; name: string; prompt: string; status: 'running' | 'waiting' | 'completed' | 'failed' | 'stopped'; response: string; tools: ToolActivity[]; startedAt: number; updatedAt: number; }

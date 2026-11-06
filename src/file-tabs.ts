@@ -6,8 +6,8 @@ import { escape, fileIcon, icon } from './dom';
 import { isPreviewableFile } from './file-links';
 import type { OfficeKind } from './office-viewer';
 
-type Context = { projectId: string; sessionId?: string };
-/** `source` shows a viewer-handled file (e.g. an SVG) as text. */
+type Context = { projectId: string; sessionId?: string; /** A non-primary project folder: tabs key as `label/path` and read through the qualifier. */ folder?: string };
+/** `source` shows a viewer-handled file (e.g. an SVG) as text. `path` is the tab key: bare in the primary folder, `label/relative` in another. */
 type Tab = { path: string; context: Context; content?: string | ArrayBuffer; reads?: number; source?: boolean; used?: number };
 /** Document bytes kept for tabs not on screen, across all tasks; evicted tabs read their file again when shown. */
 const DOCUMENT_CACHE_BYTES = 64 * 1024 * 1024;
@@ -26,7 +26,8 @@ type Deps = {
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
   /** Attaching only applies to the task shown, so the host decides. */
   canAttach(context: Context): boolean;
-  attach(path: string): void;
+  /** The tab key (`label/relative` in another folder) with its folder, so the host never re-derives the qualifier. */
+  attach(path: string, folder?: string): void;
   preview(path: string, context: Context): Promise<void>;
   notify(text: string): void;
   report(error: unknown): void;
@@ -48,6 +49,10 @@ export function createFileTabs(deps: Deps) {
   const thread = (): Thread | undefined => threads.get(key);
   const current = (): Tab | undefined => thread()?.tabs.find(tab => tab.path === thread()!.active);
   const name = (path: string) => path.split('/').pop() ?? path;
+  /** The file path a tab reads: its key minus the folder qualifier. */
+  const readPath = (tab: Tab) => tab.context.folder ? tab.path.slice(tab.context.folder.length + 1) : tab.path;
+  /** The tab strip's label: the file name, suffixed with the folder when it is not the primary. */
+  const tabLabel = (tab: Tab) => tab.context.folder ? `${name(tab.path)} · ${tab.context.folder}` : name(tab.path);
 
   /** Keeps the shown tab's bytes and the most recently shown background documents that fit the cache. */
   function trim(): void {
@@ -83,11 +88,12 @@ export function createFileTabs(deps: Deps) {
     strip.hidden = !entry?.tabs.length;
     view.hidden = !active;
     if (!entry?.tabs.length) { strip.innerHTML = ''; view.innerHTML = ''; return; }
-    const tabButton = (path: string, label: string, glyph: string) => {
-      const selected = entry.active === path;
-      return `<div class="file-tab${selected ? ' selected' : ''}" role="presentation" data-tab="${escape(path)}"><button role="tab" aria-selected="${selected}" aria-controls="file-view" tabindex="${selected ? 0 : -1}" data-file-tab="select" title="${escape(path)}">${glyph}<span>${escape(label)}</span></button><button class="icon-button" tabindex="-1" data-file-tab="close" aria-label="Close ${escape(label)}" title="Close (Delete)">${icon('close')}</button></div>`;
+    const tabButton = (tab: Tab, glyph: string) => {
+      const selected = entry.active === tab.path;
+      const label = name(tab.path), suffix = tab.context.folder ? `<small> · ${escape(tab.context.folder)}</small>` : '';
+      return `<div class="file-tab${selected ? ' selected' : ''}" role="presentation" data-tab="${escape(tab.path)}"><button role="tab" aria-selected="${selected}" aria-controls="file-view" tabindex="${selected ? 0 : -1}" data-file-tab="select" title="${escape(tab.path)}">${glyph}<span>${escape(label)}${suffix}</span></button><button class="icon-button" tabindex="-1" data-file-tab="close" aria-label="Close ${escape(label)}" title="Close (Delete)">${icon('close')}</button></div>`;
     };
-    strip.innerHTML = entry.tabs.map(tab => tabButton(tab.path, name(tab.path), fileIcon(name(tab.path), false))).join('');
+    strip.innerHTML = entry.tabs.map(tab => tabButton(tab, fileIcon(name(tab.path), false))).join('');
     if (!active) { view.innerHTML = ''; return; }
     const attach = deps.canAttach(active.context) ? `<button data-file-tab="attach">${icon('attach')} Attach</button>` : '';
     const preview = isPreviewableFile(active.path) ? `<button class="icon-button" data-file-tab="preview" aria-label="Preview in browser" title="Preview in browser">${icon('globe')}</button>` : '';
@@ -115,9 +121,10 @@ export function createFileTabs(deps: Deps) {
   async function load(tab: Tab): Promise<void> {
     const read = tab.reads = (tab.reads ?? 0) + 1;
     try {
+      const path = readPath(tab);
       const content = officeKind(tab.path) && !tab.source
-        ? await deps.call<ArrayBuffer>('read_document_file', { ...tab.context, path: tab.path })
-        : await deps.call<string>('read_file', { ...tab.context, path: tab.path });
+        ? await deps.call<ArrayBuffer>('read_document_file', { ...tab.context, path })
+        : await deps.call<string>('read_file', { ...tab.context, path });
       // An older reply arriving after a newer one must not put stale text back.
       if (read !== tab.reads || sameContent(content, tab.content)) return;
       tab.content = content;
@@ -170,7 +177,7 @@ export function createFileTabs(deps: Deps) {
     const action = (event.target as Element).closest<HTMLElement>('[data-file-tab]')?.dataset.fileTab, tab = current();
     if (!action || !tab) return;
     // Attaching is the first step of writing about the file, so focus goes to the prompt beside it.
-    if (action === 'attach') { deps.attach(tab.path); deps.focusConversation(); }
+    if (action === 'attach') { deps.attach(tab.path, tab.context.folder); deps.focusConversation(); }
     if (action === 'preview') void deps.preview(tab.path, tab.context).catch(deps.report);
     if (action === 'copy' && typeof tab.content === 'string') void navigator.clipboard.writeText(tab.content).then(() => deps.notify('File copied'), deps.report);
   });
@@ -190,11 +197,13 @@ export function createFileTabs(deps: Deps) {
     open(path: string, context: Context, source = false): void {
       let entry = thread();
       if (!entry) { entry = { workspace, tabs: [], active: '' }; threads.set(key, entry); }
-      const fresh: Tab = { path, context: { ...context }, ...(source ? { source } : {}) };
-      const existing = entry.tabs.find(tab => tab.path === path);
+      // A non-primary folder's file keys as `label/path`, so the same relative path can be open from two repositories.
+      const tabPath = context.folder ? `${context.folder}/${path}` : path;
+      const fresh: Tab = { path: tabPath, context: { ...context }, ...(source ? { source } : {}) };
+      const existing = entry.tabs.find(tab => tab.path === tabPath);
       if (!existing) entry.tabs = [...entry.tabs, fresh];
       else if (Boolean(existing.source) !== source) entry.tabs = entry.tabs.map(tab => tab === existing ? fresh : tab);
-      activate(path);
+      activate(tabPath);
     },
     /** Re-reads the file on screen, e.g. after an agent run may have changed it. */
     // Documents can be tens of megabytes, so they are re-read only when their tab is opened again.

@@ -808,9 +808,35 @@ async fn dispatch(
             let store = state.store.clone();
             let sid = sid.to_owned();
             let branch = string(&args, "branch");
-            value(
-                crate::blocking(move || crate::create_worktree_task(&store, &sid, branch)).await?,
-            )?
+            // Called directly so a repository whose checkout failed is reported
+            // instead of silently staying on its main checkout.
+            let (task, outcomes) = crate::blocking(move || {
+                crate::create_worktree_task_with_repos(&store, &sid, branch, None, false, false)
+            })
+            .await?;
+            let mut reply = value(&task)?;
+            let failed: Vec<String> = outcomes
+                .iter()
+                .filter_map(|outcome| {
+                    outcome
+                        .result
+                        .as_ref()
+                        .err()
+                        .map(|error| format!("{}: {error}", outcome.label))
+                })
+                .collect();
+            if !failed.is_empty() {
+                if let Some(object) = reply.as_object_mut() {
+                    object.insert(
+                        "note".into(),
+                        json!(format!(
+                            "These repositories stayed on their main checkout:\n{}",
+                            failed.join("\n")
+                        )),
+                    );
+                }
+            }
+            reply
         }
         "pandacode_list_local_servers" => value(crate::local_servers::list().await?)?,
         "pandacode_search_tasks" => json!({"tasks": state.store.lock().map_err(|e| e.to_string())?.search_tasks(&current.project_id, &string(&args, "query"), 20)?}),
@@ -867,6 +893,7 @@ async fn dispatch(
                     current.project_id,
                     Some(sid.to_owned()),
                     string(&args, "path"),
+                    None,
                 )
                 .await?;
             }

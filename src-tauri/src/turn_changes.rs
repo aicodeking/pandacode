@@ -87,7 +87,7 @@ struct Entry {
     truncated: bool,
 }
 struct Snapshot {
-    directory: Option<PathBuf>,
+    directories: Vec<PathBuf>,
     entries: BTreeMap<String, Entry>,
     known: BTreeSet<String>,
     absent: BTreeSet<String>,
@@ -99,7 +99,7 @@ struct Snapshot {
 impl Snapshot {
     fn unavailable(error: &str) -> Self {
         Self {
-            directory: None,
+            directories: Vec::new(),
             entries: BTreeMap::new(),
             known: BTreeSet::new(),
             absent: BTreeSet::new(),
@@ -112,7 +112,7 @@ impl Snapshot {
 }
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        if let Some(path) = &self.directory {
+        for path in &self.directories {
             let _ = fs::remove_dir_all(path);
         }
     }
@@ -123,7 +123,7 @@ struct Lease {
     conflicts: Arc<Mutex<BTreeSet<String>>>,
 }
 struct Live {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     concurrent: Arc<AtomicBool>,
     paths: BTreeMap<PathBuf, String>,
     conflicts: Arc<Mutex<BTreeSet<String>>>,
@@ -133,13 +133,26 @@ fn live() -> &'static Mutex<HashMap<String, Live>> {
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 impl Lease {
+    #[cfg_attr(not(test), allow(dead_code))]
     fn start(root: &Path) -> Self {
+        Self::start_roots(&[root.to_path_buf()])
+    }
+    fn start_roots(roots: &[PathBuf]) -> Self {
         let id = storage::id();
         let concurrent = Arc::new(AtomicBool::new(false));
         let conflicts = Arc::new(Mutex::new(BTreeSet::new()));
         let mut active = live().lock().unwrap_or_else(|e| e.into_inner());
+        // Two trackers are concurrent when any folder of one's set sits inside any
+        // folder of the other's — the single-root rule, applied per folder pair.
+        let shares = |left: &[PathBuf], right: &[PathBuf]| {
+            left.iter().any(|root| {
+                right
+                    .iter()
+                    .any(|other| root.starts_with(other) || other.starts_with(root))
+            })
+        };
         for other in active.values() {
-            if root.starts_with(&other.root) || other.root.starts_with(root) {
+            if shares(roots, &other.roots) {
                 other.concurrent.store(true, Ordering::SeqCst);
                 concurrent.store(true, Ordering::SeqCst);
             }
@@ -147,7 +160,7 @@ impl Lease {
         active.insert(
             id.clone(),
             Live {
-                root: root.to_path_buf(),
+                roots: roots.to_vec(),
                 concurrent: concurrent.clone(),
                 paths: BTreeMap::new(),
                 conflicts: conflicts.clone(),
@@ -214,8 +227,10 @@ fn bounded_snapshot(work: impl FnOnce() -> Snapshot + Send + 'static, wait: Dura
 /// One tracker per provider run. Only successful tools with explicit file paths
 /// contribute bytes; neither the checkout inventory nor Git status establishes ownership.
 pub struct Tracker {
-    root: PathBuf,
-    requested_root: PathBuf,
+    /// The task's folder set as given (Store::workspace_folders output).
+    folders: Vec<storage::RepoFolder>,
+    /// Canonical and as-configured spellings of each folder's effective root.
+    roots: Vec<FolderRoot>,
     cache: PathBuf,
     before: Snapshot,
     after: Snapshot,
@@ -227,11 +242,20 @@ pub struct Tracker {
     dirty_since_boundary: bool,
     limited: bool,
     snapshot_bytes: usize,
+    /// Recorded spelling -> (folder, folder-relative path) for every tracked path.
+    recorded: Mutex<BTreeMap<String, (usize, String)>>,
     observed_paths: BTreeSet<String>,
+}
+/// A folder's effective root in both spellings agents may report.
+struct FolderRoot {
+    canonical: PathBuf,
+    requested: PathBuf,
+    label: String,
+    primary: bool,
 }
 fn empty_snapshot() -> Snapshot {
     Snapshot {
-        directory: None,
+        directories: Vec::new(),
         entries: BTreeMap::new(),
         known: BTreeSet::new(),
         absent: BTreeSet::new(),
@@ -263,13 +287,46 @@ fn same_path(a: &Snapshot, b: &Snapshot, path: &str) -> bool {
     }
 }
 impl Tracker {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start(root: PathBuf, cache: PathBuf) -> Self {
-        let requested_root = root.clone();
-        let root = root.canonicalize().unwrap_or(root);
-        let lease = Lease::start(&root);
+        Self::start_in_folders(
+            &[storage::RepoFolder {
+                path: root,
+                label: String::new(),
+                is_primary: true,
+                worktree: None,
+                branch: None,
+            }],
+            cache,
+        )
+    }
+    /// Track writes across every folder of a multi-folder task. The primary entry
+    /// keeps today's bare project-relative spellings; every other folder records
+    /// `label/relative` paths and is snapshotted under its own root. The lease
+    /// covers the whole set: two trackers sharing any folder are concurrent.
+    pub fn start_in_folders(folders: &[storage::RepoFolder], cache: PathBuf) -> Self {
+        let mut roots: Vec<FolderRoot> = folders
+            .iter()
+            .map(|folder| FolderRoot {
+                canonical: folder
+                    .path
+                    .canonicalize()
+                    .unwrap_or_else(|_| folder.path.clone()),
+                requested: folder.path.clone(),
+                label: folder.label.clone(),
+                primary: folder.is_primary,
+            })
+            .collect();
+        if !roots.iter().any(|folder| folder.primary) {
+            if let Some(first) = roots.first_mut() {
+                first.primary = true;
+            }
+        }
+        let lease_roots: Vec<PathBuf> = roots.iter().map(|f| f.canonical.clone()).collect();
+        let lease = Lease::start_roots(&lease_roots);
         Self {
-            root,
-            requested_root,
+            folders: folders.to_vec(),
+            roots,
             cache,
             before: empty_snapshot(),
             after: empty_snapshot(),
@@ -281,33 +338,79 @@ impl Tracker {
             dirty_since_boundary: true,
             limited: false,
             snapshot_bytes: 0,
+            recorded: Mutex::new(BTreeMap::new()),
             observed_paths: BTreeSet::new(),
         }
     }
     pub fn started(&mut self) {
         self.dirty_since_boundary = true;
         if self.lease.is_none() {
-            self.lease = Some(Lease::start(&self.root));
+            let roots: Vec<PathBuf> = self.roots.iter().map(|f| f.canonical.clone()).collect();
+            self.lease = Some(Lease::start_roots(&roots));
         }
     }
+    #[cfg_attr(not(test), allow(dead_code))]
     fn relative_path(&self, path: &str) -> Option<String> {
-        let path = Path::new(path);
-        #[cfg(windows)]
-        let (path, root, requested) = (
-            dunce::simplified(path),
-            dunce::simplified(&self.root),
-            dunce::simplified(&self.requested_root),
-        );
-        #[cfg(not(windows))]
-        let (root, requested) = (self.root.as_path(), self.requested_root.as_path());
-        let relative = if path.is_absolute() {
-            path.strip_prefix(root)
-                .or_else(|_| path.strip_prefix(requested))
-                .ok()?
+        self.resolve_path(path).map(|(key, _, _)| key)
+    }
+    /// Record a reported path's origin so captures and claims can find its file.
+    fn record_path(&mut self, path: &str) -> Option<String> {
+        let (key, index, relative) = self.resolve_path(path)?;
+        self.remember(key, (index, relative))
+    }
+    fn remember(&mut self, key: String, origin: (usize, String)) -> Option<String> {
+        let mut recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = recorded.get(&key) {
+            // One spelling pointing at two files cannot be attributed; refuse it.
+            if *existing != origin {
+                return None;
+            }
         } else {
-            path
+            recorded.insert(key.clone(), origin);
+        }
+        Some(key)
+    }
+    /// Map a reported write path onto (recorded key, folder, folder-relative path).
+    /// Absolute input joins the one folder that contains it, longest match first;
+    /// relative input means the primary folder, as it always has.
+    fn resolve_path(&self, value: &str) -> Option<(String, usize, String)> {
+        let path = Path::new(value);
+        #[cfg(windows)]
+        let path = dunce::simplified(path);
+        let (index, stripped) = if path.is_absolute() {
+            let mut best: Option<(usize, usize, &Path)> = None;
+            for (index, folder) in self.roots.iter().enumerate() {
+                #[cfg(windows)]
+                let (canonical, requested) = (
+                    dunce::simplified(&folder.canonical),
+                    dunce::simplified(&folder.requested),
+                );
+                #[cfg(not(windows))]
+                let (canonical, requested) =
+                    (folder.canonical.as_path(), folder.requested.as_path());
+                for root in [canonical, requested] {
+                    let Ok(candidate) = path.strip_prefix(root) else {
+                        continue;
+                    };
+                    if candidate.as_os_str().is_empty() {
+                        continue;
+                    }
+                    if best.is_none_or(|(_, length, _)| root.as_os_str().len() > length) {
+                        best = Some((index, root.as_os_str().len(), candidate));
+                    }
+                }
+            }
+            let (index, _, candidate) = best?;
+            (index, candidate)
+        } else {
+            let index = self
+                .roots
+                .iter()
+                .position(|folder| folder.primary)
+                .unwrap_or(0);
+            (index, path)
         };
-        let relative = relative
+        let relative = stripped
             .components()
             .filter(|part| !matches!(part, Component::CurDir))
             .collect::<PathBuf>()
@@ -315,7 +418,91 @@ impl Tracker {
             .to_owned();
         #[cfg(windows)]
         let relative = relative.replace('\\', "/");
-        safe_relative(&relative).then_some(relative)
+        let folder = self.roots.get(index)?;
+        let key = if folder.primary {
+            relative.clone()
+        } else {
+            format!("{}/{}", folder.label, relative)
+        };
+        safe_relative(&key).then_some((key, index, relative))
+    }
+    /// The track_files tool's spellings: bare relative paths (primary folder, as
+    /// always), absolute paths inside any folder (resolved by the workspace
+    /// resolver's rules), or `label/relative` naming a folder by its label.
+    /// Returns the recorded key plus the file's absolute path, so the reported
+    /// event can re-resolve to the same folder instead of reading the key as
+    /// primary-relative.
+    fn resolve_reported(&mut self, value: &str) -> Option<(String, PathBuf)> {
+        if Path::new(value).is_absolute() {
+            let (index, absolute) =
+                crate::workspace::resolve_in_folders(&self.folders, value).ok()?;
+            let relative = absolute
+                .strip_prefix(&self.folders[index].path)
+                .ok()?
+                .components()
+                .filter(|part| !matches!(part, Component::CurDir))
+                .collect::<PathBuf>()
+                .to_str()?
+                .to_owned();
+            #[cfg(windows)]
+            let relative = relative.replace('\\', "/");
+            let key = self.key_for(index, &relative)?;
+            let resolved = self.roots.get(index)?.canonical.join(&relative);
+            return self
+                .remember(key, (index, relative))
+                .map(|key| (key, resolved));
+        }
+        let (key, index, relative) = self.resolve_path(value)?;
+        // `label/relative` names a folder directly; labels may carry slashes
+        // (parent-disambiguated), so match whole label prefixes. A relative path
+        // still means the primary first: the label only reassigns it when the
+        // primary folder has no such file.
+        let mut named: Option<(usize, &str)> = None;
+        for (index, folder) in self.roots.iter().enumerate() {
+            if folder.primary {
+                continue;
+            }
+            let prefix = format!("{}/", folder.label);
+            if let Some(rest) = key.strip_prefix(&prefix) {
+                if named.is_none_or(|(_, best)| folder.label.len() > best.len()) {
+                    named = Some((index, rest));
+                }
+            }
+        }
+        if let Some((index, rest)) = named {
+            let primary = self
+                .roots
+                .iter()
+                .position(|folder| folder.primary)
+                .unwrap_or(0);
+            let in_primary = self
+                .roots
+                .get(primary)
+                .is_some_and(|folder| folder.canonical.join(&relative).exists());
+            if !in_primary {
+                let origin = (index, rest.to_owned());
+                let resolved = self.roots.get(index)?.canonical.join(rest);
+                return self
+                    .remember(key.clone(), origin)
+                    .map(|key| (key, resolved));
+            }
+        }
+        let resolved = self
+            .roots
+            .get(index)?
+            .canonical
+            .join(&relative);
+        self.remember(key, (index, relative))
+            .map(|key| (key, resolved))
+    }
+    fn key_for(&self, index: usize, relative: &str) -> Option<String> {
+        let folder = self.roots.get(index)?;
+        let key = if folder.primary {
+            relative.to_owned()
+        } else {
+            format!("{}/{}", folder.label, relative)
+        };
+        safe_relative(&key).then_some(key)
     }
 
     fn capture_paths(&mut self, paths: &BTreeSet<String>) -> Snapshot {
@@ -325,18 +512,74 @@ impl Tracker {
         {
             return Snapshot::unavailable("This turn reached its change snapshot limit.");
         }
-        let (root, cache, paths) = (self.root.clone(), self.cache.clone(), paths.clone());
+        let recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+        let mut grouped: BTreeMap<usize, BTreeSet<String>> = BTreeMap::new();
+        for path in paths {
+            let (index, relative) = recorded
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| (0, path.clone()));
+            grouped.entry(index).or_default().insert(relative);
+        }
+        drop(recorded);
+        let mut folders: Vec<(String, PathBuf, BTreeSet<String>)> = Vec::new();
+        for (index, set) in grouped {
+            if let Some(folder) = self.roots.get(index) {
+                let prefix = if folder.primary {
+                    String::new()
+                } else {
+                    format!("{}/", folder.label)
+                };
+                folders.push((prefix, folder.canonical.clone(), set));
+            }
+        }
+        let (cache, paths) = (self.cache.clone(), paths.clone());
         let snapshot = bounded_snapshot(
             move || {
-                scan_paths(
-                    &root,
-                    &cache,
-                    paths,
-                    vec![],
-                    true,
-                    None,
-                    Instant::now() + SCAN_TIME,
-                )
+                let mut merged = Snapshot {
+                    directories: Vec::new(),
+                    entries: BTreeMap::new(),
+                    known: paths.iter().cloned().collect(),
+                    absent: BTreeSet::new(),
+                    excluded: vec![],
+                    complete: true,
+                    truncated: false,
+                    error: None,
+                };
+                for (prefix, root, set) in folders {
+                    let mut part = scan_paths(
+                        &root,
+                        &cache,
+                        set,
+                        vec![],
+                        true,
+                        None,
+                        Instant::now() + SCAN_TIME,
+                    );
+                    // Take the capture directories: part's Drop would otherwise
+                    // delete the blobs merged still references.
+                    merged
+                        .directories
+                        .extend(std::mem::take(&mut part.directories));
+                    // Snapshots implement Drop, so fields drain through mem::take
+                    // and the re-keyed spellings replace the folder-relative ones.
+                    merged.entries.extend(
+                        std::mem::take(&mut part.entries)
+                            .into_iter()
+                            .map(|(relative, entry)| (format!("{prefix}{relative}"), entry)),
+                    );
+                    merged.absent.extend(
+                        std::mem::take(&mut part.absent)
+                            .into_iter()
+                            .map(|relative| format!("{prefix}{relative}")),
+                    );
+                    merged.complete &= part.complete;
+                    merged.truncated |= part.truncated;
+                    if merged.error.is_none() {
+                        merged.error = std::mem::take(&mut part.error);
+                    }
+                }
+                merged
             },
             SNAPSHOT_WAIT,
         );
@@ -354,11 +597,23 @@ impl Tracker {
         let Some(lease) = &self.lease else {
             return;
         };
+        let recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
         let mut active = live().lock().unwrap_or_else(|e| e.into_inner());
         let claims: Vec<_> = paths
             .iter()
             .map(|path| {
-                let absolute = self.root.join(path);
+                let absolute = match recorded.get(path) {
+                    Some((index, relative)) => self
+                        .roots
+                        .get(*index)
+                        .map(|folder| folder.canonical.join(relative))
+                        .unwrap_or_else(|| path.into()),
+                    None => self
+                        .roots
+                        .first()
+                        .map(|folder| folder.canonical.join(path))
+                        .unwrap_or_else(|| path.into()),
+                };
                 // macOS and Windows commonly resolve case aliases to one file.
                 // Treat them conservatively as conflicts even on a case-sensitive
                 // volume, rather than attributing another task's bytes.
@@ -367,6 +622,7 @@ impl Tracker {
                 (absolute, path.clone())
             })
             .collect();
+        drop(recorded);
         for (id, other) in active.iter() {
             if id == &lease.id {
                 continue;
@@ -432,7 +688,7 @@ impl Tracker {
         let mut paths: BTreeSet<_> = reported
             .iter()
             .take(CHANGE_FILES)
-            .filter_map(|p| self.relative_path(p))
+            .filter_map(|p| self.record_path(p))
             .collect();
         self.limited |= paths.len() != reported.iter().collect::<BTreeSet<_>>().len()
             || (reported.is_empty()
@@ -468,7 +724,7 @@ impl Tracker {
             if !missing.is_empty() {
                 self.claim_paths(&missing);
                 let captured = self.capture_paths(&missing);
-                if captured.directory.is_none() {
+                if captured.directories.is_empty() {
                     self.limited = true;
                     return;
                 }
@@ -515,7 +771,7 @@ impl Tracker {
             }
             copy_path(&mut self.after, &after, path);
         }
-        if after.directory.is_some() {
+        if !after.directories.is_empty() {
             self.retained.push(after);
         }
     }
@@ -970,7 +1226,7 @@ fn scan_paths(
         );
     }
     let mut result = Snapshot {
-        directory: None,
+        directories: Vec::new(),
         entries: BTreeMap::new(),
         known: paths.iter().cloned().collect(),
         absent: BTreeSet::new(),
@@ -991,7 +1247,7 @@ fn scan_paths(
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
     }
-    result.directory = Some(dir.clone());
+    result.directories.push(dir.clone());
     let mut bytes_left = SCAN_BYTES;
     for path in paths {
         if !safe_relative(&path) {

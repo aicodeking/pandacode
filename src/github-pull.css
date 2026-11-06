@@ -115,3 +115,13 @@
 @container pull (max-width:360px){.pull-merge .pull-merge-main{padding:0 6px}.pull-merge .pull-merge-main .icon{display:none}.pull-merge .ds-btn-split>.ds-btn:not(:first-child){padding:0 10px}.pull-merge-meta,.pull-stats{display:none}.pull-section-head>.pull-stats+.icon-button{margin-left:auto}}
 
 @media(prefers-reduced-motion:no-preference){.pull-check-icon.pull-tone-pending>.icon{animation:state-pulse 1.6s ease-in-out infinite}}
+
+/* One entry per repository above the detail when the task spans several; a single
+   pull request keeps the plain view. The selected entry mirrors the section tabs. */
+.pull-entries{display:flex;gap:6px;flex-wrap:wrap;margin:0 14px;padding:8px 0 2px}
+.pull-entry{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:var(--ds-radius-chip);color:var(--muted);font-size:var(--ds-text-meta);background:var(--ds-raised)}
+.pull-entry .icon{width:var(--icon-sm);height:var(--icon-sm)}
+.pull-entry[aria-selected="true"]{color:var(--text);font-weight:var(--weight-medium);background:var(--accent-dim)}
+.pull-entry:disabled{opacity:.55;color:var(--muted);background:var(--raised);cursor:default}
+.pull-entry-state{font-size:var(--text-2xs);color:var(--faint);text-transform:capitalize}
+.pull-repo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--text-2xs)}

@@ -22,6 +22,11 @@ pub fn valid_permission_mode(mode: &str) -> bool {
 // selected mode, including restrictive modes chosen before this default changed.
 pub const DEFAULT_PERMISSION_MODE: &str = "full";
 
+// Links stored under the legacy '' repo key belong to whichever folder is
+// primary, so moving the primary is refused while any of them exist.
+const PRIMARY_LINKS_REFUSAL: &str =
+    "This project has tasks with linked GitHub items. Settle them before changing the primary folder.";
+
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +134,80 @@ pub struct TaskLink {
     pub state: String,
     pub checked_at: i64,
 }
+/// One folder of a multi-folder project; `projects.path` always equals the primary row's path.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Folder {
+    pub path: String,
+    pub position: i64,
+    pub is_primary: bool,
+}
+/// A task's working folder: the project folder itself, or a checkout recorded for it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepoFolder {
+    pub path: PathBuf,
+    pub label: String,
+    pub is_primary: bool,
+    pub worktree: Option<PathBuf>,
+    pub branch: Option<String>,
+}
+/// Folder display names: the basename, parent-qualified only where basenames
+/// collide, with as many parent levels as the collision needs (`/a/john/x` and
+/// `/b/john/x` stay `john/x`; a shared parent grows another level).
+pub fn folder_labels(paths: &[PathBuf]) -> Vec<String> {
+    let base = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.to_string_lossy().to_string())
+    };
+    // The last `levels` components joined with '/', fewer when the path is shorter.
+    let qualified = |p: &Path, levels: usize| -> String {
+        let mut parts = vec![base(p)];
+        let mut parent = p.parent();
+        while parts.len() < levels {
+            match parent {
+                Some(ancestor) if !ancestor.as_os_str().is_empty() => {
+                    parts.push(base(ancestor));
+                    parent = ancestor.parent();
+                }
+                _ => break,
+            }
+        }
+        parts.reverse();
+        parts.join("/")
+    };
+    let basenames: Vec<String> = paths.iter().map(|p| base(p)).collect();
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for name in &basenames {
+        *counts.entry(name.as_str()).or_insert(0) += 1;
+    }
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, p)| {
+            if counts[basenames[index].as_str()] <= 1 {
+                return basenames[index].clone();
+            }
+            // Grow parent levels until this spelling differs from every other
+            // colliding path's; the common case settles at one level.
+            let mut levels = 1;
+            loop {
+                let label = qualified(p, levels + 1);
+                if paths.iter().enumerate().all(|(other, q)| {
+                    other == index
+                        || counts[basenames[other].as_str()] <= 1
+                        || basenames[other] != basenames[index]
+                        || qualified(q, levels + 1) != label
+                }) {
+                    return label;
+                }
+                levels += 1;
+                if levels + 1 > p.components().count() {
+                    return label;
+                }
+            }
+        })
+        .collect()
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -161,7 +240,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 const SIDEBAR_ORDER: &str = "pinned DESC,sidebar_order IS NULL,sidebar_order,COALESCE(MAX(last_response_at,last_prompt_at),last_response_at,last_prompt_at,created_at) DESC,id";
 
@@ -529,7 +608,23 @@ impl Store {
                     }
                 }
                 migration.execute_batch("CREATE INDEX IF NOT EXISTS machine_threads_reported_by ON machine_threads(reported_by) WHERE reported_by IS NOT NULL;
-                  PRAGMA user_version=36;").map_err(|e| e.to_string())?;
+                  PRAGMA user_version=36;").map_err(|e|e.to_string())?;
+            }
+            if version < 37 {
+                // Multi-folder projects: each project keeps an ordered folder list with one
+                // primary (projects.path follows it), a task can point a folder at its own
+                // checkout, and task links are keyed per repo ('' stays the primary link
+                // today's single-link readers serve). SQLite cannot alter a primary key,
+                // so task_links is rebuilt and every legacy row lands under repo=''.
+                migration.execute_batch("CREATE TABLE IF NOT EXISTS project_folders(project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,path TEXT NOT NULL,position INTEGER NOT NULL DEFAULT 0,is_primary INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(project_id,path),UNIQUE(path));
+                  CREATE TABLE IF NOT EXISTS session_repos(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,path TEXT NOT NULL,worktree_path TEXT,worktree_branch TEXT,PRIMARY KEY(session_id,path));
+                  INSERT OR IGNORE INTO project_folders(project_id,path,position,is_primary) SELECT id,path,0,1 FROM projects;").map_err(|e|e.to_string())?;
+                migration.execute_batch("ALTER TABLE task_links RENAME TO task_links_v36;
+                  CREATE TABLE task_links(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,kind TEXT NOT NULL CHECK(kind IN ('issue','pull')),repo TEXT NOT NULL DEFAULT '',number INTEGER NOT NULL,url TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',state TEXT NOT NULL DEFAULT '',checked_at INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(session_id,kind,repo));
+                  INSERT INTO task_links(session_id,kind,repo,number,url,title,state,checked_at) SELECT session_id,kind,'',number,url,title,state,checked_at FROM task_links_v36;
+                  DROP TABLE task_links_v36;
+                  CREATE INDEX IF NOT EXISTS task_links_number ON task_links(kind,number);
+                  PRAGMA user_version=37;").map_err(|e|e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
@@ -674,6 +769,18 @@ impl Store {
             return Err("Choose a folder.".into());
         }
         let path_str = path.to_string_lossy().to_string();
+        // A folder already on another project's folder list cannot become its own project.
+        let claimed: bool = self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_folders f JOIN projects p ON p.id=f.project_id WHERE f.path=?1 AND p.path<>?1)",
+                [&path_str],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if claimed {
+            return Err("Folder already belongs to another project.".into());
+        }
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -684,10 +791,11 @@ impl Store {
                 params![id(), name, path_str],
             )
             .map_err(|e| e.to_string())?;
-        self.db
+        let project = self
+            .db
             .query_row(
                 "SELECT id,name,path,rowid FROM projects WHERE path=?1",
-                [path_str],
+                [&path_str],
                 |r| {
                     Ok(Project {
                         id: r.get(0)?,
@@ -697,7 +805,15 @@ impl Store {
                     })
                 },
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // Every project starts as its own single primary folder.
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO project_folders(project_id,path,position,is_primary) VALUES(?1,?2,0,1)",
+                params![project.id, path_str],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(project)
     }
     pub fn project(&self, project_id: &str) -> Result<Project> {
         self.db
@@ -782,6 +898,163 @@ impl Store {
         self.db
             .execute("DELETE FROM projects WHERE id=?1", [project_id])
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    /// Canonicalize a folder argument the way add_project does: existing directories only.
+    fn canonical_folder(path: &Path) -> Result<PathBuf> {
+        let path = path
+            .canonicalize()
+            .map_err(|e| format!("Cannot open folder: {e}"))?;
+        if !path.is_dir() {
+            return Err("Choose a folder.".into());
+        }
+        Ok(path)
+    }
+    /// The project's folders in order; exactly one is primary and projects.path follows it.
+    pub fn project_folders(&self, project_id: &str) -> Result<Vec<Folder>> {
+        self.project(project_id)?;
+        let mut stmt = self
+            .db
+            .prepare("SELECT path,position,is_primary FROM project_folders WHERE project_id=?1 ORDER BY position")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([project_id], |r| {
+                Ok(Folder {
+                    path: r.get(0)?,
+                    position: r.get(1)?,
+                    is_primary: r.get(2)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+    /// Add a folder: canonical, not already claimed by any project, appended by position.
+    pub fn add_project_folder(&self, project_id: &str, path: &Path) -> Result<Folder> {
+        self.project(project_id)?;
+        let path_str = Self::canonical_folder(path)?.to_string_lossy().to_string();
+        // A folder joins at most one project, a primary path included.
+        let taken: bool = self
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_folders WHERE path=?1)",
+                [&path_str],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if taken {
+            return Err("Folder already belongs to a project.".into());
+        }
+        let position: i64 = self
+            .db
+            .query_row(
+                "SELECT COALESCE(MAX(position)+1,0) FROM project_folders WHERE project_id=?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        self.db
+            .execute(
+                "INSERT INTO project_folders(project_id,path,position,is_primary) VALUES(?1,?2,?3,0)",
+                params![project_id, path_str, position],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(Folder {
+            path: path_str,
+            position,
+            is_primary: false,
+        })
+    }
+    /// Whether any task of the project still holds a GitHub link under the
+    /// legacy primary key: those links belong to whichever folder is primary,
+    /// so the primary must stay put until they are settled.
+    fn project_has_unqualified_links(&self, project_id: &str) -> Result<bool> {
+        let count: i64 = self.db.query_row(
+            "SELECT COUNT(*) FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 AND l.repo='' AND l.kind IN ('pull','issue')",
+            [project_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(count > 0)
+    }
+    /// Remove a folder; the last one stays, and removing the primary promotes the
+    /// next folder by position, with projects.path following it in one transaction.
+    pub fn remove_project_folder(&self, project_id: &str, path: &Path) -> Result<()> {
+        let path_str = Self::canonical_folder(path)?.to_string_lossy().to_string();
+        let folders = self.project_folders(project_id)?;
+        if folders.len() <= 1 {
+            return Err("A project keeps at least one folder.".into());
+        }
+        let removed = folders
+            .iter()
+            .find(|f| f.path == path_str)
+            .ok_or_else(|| "Folder not found.".to_string())?;
+        let was_primary = removed.is_primary;
+        if was_primary && self.project_has_unqualified_links(project_id)? {
+            return Err(PRIMARY_LINKS_REFUSAL.into());
+        }
+        let next = folders
+            .iter()
+            .filter(|f| f.path != path_str)
+            .min_by_key(|f| f.position);
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        transaction
+            .execute(
+                "DELETE FROM project_folders WHERE project_id=?1 AND path=?2",
+                params![project_id, path_str],
+            )
+            .map_err(|e| e.to_string())?;
+        if was_primary {
+            let next = next.expect("checked above that a folder remains");
+            transaction
+                .execute(
+                    "UPDATE project_folders SET is_primary=1 WHERE project_id=?1 AND path=?2",
+                    params![project_id, next.path],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE projects SET path=?2 WHERE id=?1",
+                    params![project_id, next.path],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    /// Make one of the project's own folders primary; projects.path follows it.
+    pub fn set_primary_folder(&self, project_id: &str, path: &Path) -> Result<()> {
+        let path_str = Self::canonical_folder(path)?.to_string_lossy().to_string();
+        let folders = self.project_folders(project_id)?;
+        let folder = folders
+            .iter()
+            .find(|f| f.path == path_str)
+            .ok_or_else(|| "Folder not found.".to_string())?;
+        if !folder.is_primary {
+            if self.project_has_unqualified_links(project_id)? {
+                return Err(PRIMARY_LINKS_REFUSAL.into());
+            }
+            let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE project_folders SET is_primary=0 WHERE project_id=?1 AND is_primary=1",
+                    [project_id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE project_folders SET is_primary=1 WHERE project_id=?1 AND path=?2",
+                    params![project_id, path_str],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE projects SET path=?2 WHERE id=?1",
+                    params![project_id, path_str],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
         Ok(())
     }
     fn session_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
@@ -1052,9 +1325,10 @@ impl Store {
         if sessions.is_empty() {
             return Ok(());
         }
+        // The single-link readers (the Session, the sidebar, mobile) see the primary repo's link.
         let mut stmt = self
             .db
-            .prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links")
+            .prepare("SELECT session_id,kind,number,url,title,state,checked_at FROM task_links WHERE repo=''")
             .map_err(|e| e.to_string())?;
         let links = stmt
             .query_map([], |r| {
@@ -1084,8 +1358,9 @@ impl Store {
         }
         Ok(())
     }
-    /// Replace the task's link of one kind; `None` removes it.
-    pub fn set_task_link(&self, sid: &str, kind: &str, link: Option<&TaskLink>) -> Result<Session> {
+    /// Replace the task's link of one kind for one repo; `''` is the primary repo
+    /// whose link the single-link readers serve. `None` removes it.
+    pub fn set_task_link(&self, sid: &str, kind: &str, repo: &str, link: Option<&TaskLink>) -> Result<Session> {
         if !["issue", "pull"].contains(&kind) {
             return Err("Unknown link kind.".into());
         }
@@ -1095,31 +1370,58 @@ impl Store {
                 if link.number <= 0 || link.url.len() > 2048 || link.title.len() > 1024 || link.state.len() > 32 {
                     return Err("Invalid GitHub link.".into());
                 }
-                self.db.execute("INSERT INTO task_links(session_id,kind,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(session_id,kind) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
-                    params![sid, kind, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
+                self.db.execute("INSERT INTO task_links(session_id,kind,repo,number,url,title,state,checked_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(session_id,kind,repo) DO UPDATE SET number=excluded.number,url=excluded.url,title=excluded.title,state=excluded.state,checked_at=excluded.checked_at",
+                    params![sid, kind, repo, link.number, link.url, link.title, link.state, now()]).map_err(|e| e.to_string())?;
             }
             None => {
                 self.db
-                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2", params![sid, kind])
+                    .execute("DELETE FROM task_links WHERE session_id=?1 AND kind=?2 AND repo=?3", params![sid, kind, repo])
                     .map_err(|e| e.to_string())?;
             }
         }
         self.session(sid)
     }
-    /// Linked numbers for one project, so states can be refreshed in one batch.
-    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, TaskLink)>> {
-        let mut stmt = self.db.prepare("SELECT l.session_id,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
+    /// Every repository's pull link for one task: the primary's '' first, then
+    /// the repositories by key; issue links never appear.
+    pub fn session_pull_links(&self, sid: &str) -> Result<Vec<(String, TaskLink)>> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT repo,number,url,title,state,checked_at FROM task_links WHERE session_id=?1 AND kind='pull' ORDER BY repo")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([sid], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    TaskLink {
+                        kind: "pull".to_string(),
+                        number: r.get(1)?,
+                        url: r.get(2)?,
+                        title: r.get(3)?,
+                        state: r.get(4)?,
+                        checked_at: r.get(5)?,
+                    },
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+    /// Linked numbers for one project with each link's repo key, so states can
+    /// be refreshed per repository in one batch.
+    pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, String, TaskLink)>> {
+        let mut stmt = self.db.prepare("SELECT l.session_id,l.repo,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([project_id], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
                     TaskLink {
-                        kind: r.get(1)?,
-                        number: r.get(2)?,
-                        url: r.get(3)?,
-                        title: r.get(4)?,
-                        state: r.get(5)?,
-                        checked_at: r.get(6)?,
+                        kind: r.get(2)?,
+                        number: r.get(3)?,
+                        url: r.get(4)?,
+                        title: r.get(5)?,
+                        state: r.get(6)?,
+                        checked_at: r.get(7)?,
                     },
                 ))
             })
@@ -1128,26 +1430,171 @@ impl Store {
             .map_err(|e| e.to_string())
     }
     /// Record refreshed states without touching which task owns which link.
-    pub fn update_link_states(&self, project_id: &str, states: &[(String, i64, String, String)]) -> Result<()> {
-        for (kind, number, state, title) in states {
-            self.db.execute("UPDATE task_links SET state=?3,title=CASE WHEN ?4='' THEN title ELSE ?4 END,checked_at=?5 WHERE kind=?1 AND number=?2 AND session_id IN (SELECT id FROM sessions WHERE project_id=?6)",
-                params![kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
+    /// Each state names its repository key, so two repos sharing a number never
+    /// cross-update each other's rows.
+    pub fn update_link_states(&self, project_id: &str, states: &[(String, String, i64, String, String)]) -> Result<()> {
+        for (repo, kind, number, state, title) in states {
+            self.db.execute("UPDATE task_links SET state=?4,title=CASE WHEN ?5='' THEN title ELSE ?5 END,checked_at=?6 WHERE repo=?1 AND kind=?2 AND number=?3 AND session_id IN (SELECT id FROM sessions WHERE project_id=?7)",
+                params![repo, kind, number, state, title, now(), project_id]).map_err(|e| e.to_string())?;
         }
         Ok(())
     }
     /// Give an unstarted task its own checkout, keeping the draft and settings.
+    /// The project's primary folder is pinned (a session_repos row for the
+    /// checkout) in the same transaction, so a later primary change cannot
+    /// relabel the attached task.
     pub fn attach_worktree(&self, sid: &str, path: &Path, branch: &str) -> Result<Session> {
         let path = path
             .canonicalize()
             .map_err(|e| format!("Worktree folder is unavailable: {e}"))?;
-        let changed = self.db.execute(
+        let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute(
             "UPDATE sessions SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE id=?1 AND worktree_path IS NULL AND resume_id IS NULL AND status NOT IN ('running','waiting') AND NOT EXISTS (SELECT 1 FROM messages WHERE session_id=?1)",
             params![sid, path.to_string_lossy(), branch, now()],
         ).map_err(|e| e.to_string())?;
         if changed == 0 {
             return Err("This conversation already started. Create a new task in a worktree instead.".into());
         }
+        let project_id: String = transaction
+            .query_row("SELECT project_id FROM sessions WHERE id=?1", [sid], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        if let Some(primary) = self
+            .project_folders(&project_id)?
+            .into_iter()
+            .find(|folder| folder.is_primary)
+        {
+            self.set_session_repo(sid, Path::new(&primary.path), Some(&path), Some(branch))?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
         self.session(sid)
+    }
+    /// Point one task's copy of a project folder at its own checkout; NULLs clear it.
+    pub fn set_session_repo(&self, session_id: &str, folder_path: &Path, worktree_path: Option<&Path>, worktree_branch: Option<&str>) -> Result<()> {
+        let folder = Self::canonical_folder(folder_path)?.to_string_lossy().to_string();
+        let worktree = worktree_path
+            .map(|path| {
+                path.canonicalize()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .map_err(|e| format!("Worktree folder is unavailable: {e}"))
+            })
+            .transpose()?;
+        self.db
+            .execute(
+                "INSERT INTO session_repos(session_id,path,worktree_path,worktree_branch) VALUES(?1,?2,?3,?4) ON CONFLICT(session_id,path) DO UPDATE SET worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch",
+                params![session_id, folder, worktree, worktree_branch],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    /// The task's working folders: the primary first (its own checkout when it has
+    /// one), then the project's folders with any per-task checkouts applied. Folders
+    /// a task recorded but the project has since dropped stay listed for that task.
+    pub fn workspace_folders(&self, project_id: &str, session_id: &str) -> Result<Vec<RepoFolder>> {
+        let project = self.project(project_id)?;
+        let session = self.session(session_id)?;
+        let folders = self.project_folders(project_id)?;
+        let primary = folders
+            .iter()
+            .find(|f| f.is_primary)
+            .map(|f| f.path.clone())
+            .unwrap_or_else(|| project.path.clone());
+        let mut stmt = self
+            .db
+            .prepare("SELECT path,worktree_path,worktree_branch FROM session_repos WHERE session_id=?1 ORDER BY path")
+            .map_err(|e| e.to_string())?;
+        let repos = stmt
+            .query_map([session_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        // A task created after multi-folder pinning records its primary: the
+        // session_repos row whose checkout is the task's own names the folder
+        // that was primary when the task was created, so a later primary change
+        // cannot relabel this task's checkout. Legacy tasks keep today's behavior.
+        let pinned: Option<String> = session.worktree_path.as_ref().and_then(|worktree| {
+            repos
+                .iter()
+                .find(|(_, row_worktree, _)| row_worktree.as_deref() == Some(worktree.as_str()))
+                .map(|(path, _, _)| path.clone())
+        });
+        let primary = pinned.clone().unwrap_or(primary);
+        // Under the pin every other folder is secondary, the current primary
+        // included: the pinned row took the primary slot.
+        let secondary = |f: &Folder| {
+            Some(f.path.as_str()) != pinned.as_deref() && (pinned.is_some() || !f.is_primary)
+        };
+        // Labels always come from the folder paths: the primary, the folders, then
+        // the dropped folders a task still holds a checkout for.
+        let mut label_paths = vec![PathBuf::from(&primary)];
+        for folder in folders.iter().filter(|f| secondary(f)) {
+            label_paths.push(PathBuf::from(&folder.path));
+        }
+        let folder_set: std::collections::HashSet<&str> =
+            folders.iter().map(|f| f.path.as_str()).collect();
+        let orphans: Vec<_> = repos
+            .iter()
+            .filter_map(|(path, worktree, branch)| {
+                worktree
+                    .as_ref()
+                    .map(|wt| (path.clone(), wt.clone(), branch.clone()))
+            })
+            .filter(|(path, _, _)| {
+                !folder_set.contains(path.as_str()) && Some(path.as_str()) != pinned.as_deref()
+            })
+            .collect();
+        for (path, _, _) in &orphans {
+            label_paths.push(PathBuf::from(path));
+        }
+        let labels = folder_labels(&label_paths);
+        let mut entries = Vec::new();
+        // The task's own worktree takes the primary entry's place, under its label.
+        let worktree = session.worktree_path.clone().map(PathBuf::from);
+        let branch = if worktree.is_some() { session.worktree_branch.clone() } else { None };
+        entries.push(RepoFolder {
+            path: worktree.clone().unwrap_or_else(|| PathBuf::from(&primary)),
+            label: labels[0].clone(),
+            is_primary: true,
+            worktree,
+            branch,
+        });
+        let mut label_index = 1;
+        for folder in folders.iter().filter(|f| secondary(f)) {
+            let entry = match repos.iter().find(|(path, _wt, _)| *path == folder.path) {
+                Some((_, Some(wt), branch)) => RepoFolder {
+                    path: PathBuf::from(wt),
+                    label: labels[label_index].clone(),
+                    is_primary: false,
+                    worktree: Some(PathBuf::from(wt)),
+                    branch: branch.clone(),
+                },
+                _ => RepoFolder {
+                    path: PathBuf::from(&folder.path),
+                    label: labels[label_index].clone(),
+                    is_primary: false,
+                    worktree: None,
+                    branch: None,
+                },
+            };
+            entries.push(entry);
+            label_index += 1;
+        }
+        for (_path, worktree, branch) in &orphans {
+            entries.push(RepoFolder {
+                path: PathBuf::from(worktree),
+                label: labels[label_index].clone(),
+                is_primary: false,
+                worktree: Some(PathBuf::from(worktree)),
+                branch: branch.clone(),
+            });
+            label_index += 1;
+        }
+        Ok(entries)
     }
     /// How many messages the user has sent in a task, including the one being sent.
     pub fn user_turns(&self, sid: &str) -> Result<i64> {
@@ -2023,6 +2470,14 @@ fn handoff_from_provider(content: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "storage_sidebar_tests.rs"]
 mod sidebar_tests;
+
+#[cfg(test)]
+#[path = "storage_folder_tests.rs"]
+mod folder_tests;
+
+#[cfg(test)]
+#[path = "storage_identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {

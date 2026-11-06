@@ -20,17 +20,19 @@ async function open(page: Page) {
   await expect(page.locator('#projects-settings .project-row').first()).toBeVisible();
 }
 const rows = (page: Page) => page.locator('#projects-settings .project-row');
+// The row also holds per-folder buttons ("Remove folder <path>"); the project one is data-project-remove.
+const projectRemove = (row: ReturnType<typeof rows>) => row.locator('[data-project-remove]');
 
 test('cancel keeps the project, confirm removes it', async ({ page }) => {
   await open(page);
   const before = await rows(page).count();
   const first = rows(page).first();
   const id = await first.getAttribute('data-project');
-  await first.getByRole('button', { name: /^Remove / }).click();
+  await projectRemove(first).click();
   await expect(first).toContainText('The folder stays on disk');
   await first.getByRole('button', { name: 'Cancel' }).click();
   await expect(rows(page)).toHaveCount(before);
-  await rows(page).first().getByRole('button', { name: /^Remove / }).click();
+  await projectRemove(rows(page).first()).click();
   await rows(page).first().getByRole('button', { name: 'Remove project' }).click();
   await expect(page.locator(`#projects-settings [data-project="${id}"]`)).toHaveCount(0);
   expect(await page.evaluate(() => (window as any).__removed)).toEqual([id]);
@@ -40,7 +42,7 @@ test('a native refusal is shown and the project stays', async ({ page }) => {
   await open(page);
   await page.evaluate(() => { (window as any).__refuse = true; });
   const before = await rows(page).count();
-  await rows(page).first().getByRole('button', { name: /^Remove / }).click();
+  await projectRemove(rows(page).first()).click();
   await rows(page).first().getByRole('button', { name: 'Remove project' }).click();
   await expect(page.locator('#projects-settings [role="alert"]')).toContainText('Stop this project');
   await expect(rows(page)).toHaveCount(before);

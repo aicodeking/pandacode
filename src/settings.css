@@ -169,6 +169,17 @@ html[data-native-platform=macos] .settings-nav-head{padding-left:72px}
 .settings-page-root .vsix-choice{flex:1;justify-content:flex-start;text-align:left}
 .settings-page-root .project-path{overflow-wrap:anywhere}
 .settings-page-root .project-row-actions{display:flex;gap:8px}
+/* A project's folders: one line each, the primary marked with the accent chip. */
+.settings-page-root .project-folders{list-style:none;margin:.3rem 0 0;padding:0;display:flex;flex-direction:column;gap:.35rem}
+.settings-page-root .project-folder{display:flex;align-items:center;gap:.5rem;min-width:0}
+.settings-page-root .project-folder>.icon{flex:none;width:.85rem;height:.85rem;color:var(--muted)}
+.settings-page-root .project-folder-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--ds-text-meta);color:var(--muted)}
+.settings-page-root .project-folder-mark{flex:none;font-size:var(--ds-text-meta);line-height:1.5;padding:0 6px;border-radius:var(--ds-radius-chip);background:rgb(var(--accent-rgb) / .14);color:var(--accent-ink);white-space:nowrap}
+.settings-page-root .project-folder-actions{display:flex;gap:.4rem;margin-left:auto}
+.settings-page-root .project-folder-actions .secondary-button{font-size:var(--ds-text-meta);min-height:28px;padding:0 8px}
+.settings-page-root .project-folder-add{display:flex;align-items:center;gap:.35rem;margin-top:.45rem;border-radius:var(--ds-radius-control);color:var(--muted);font-size:var(--ds-text-meta);padding:.25rem .35rem;white-space:nowrap}
+.settings-page-root .project-folder-add>.icon{width:.85rem;height:.85rem}
+.settings-page-root .project-folder-add:not(:disabled):hover{background:var(--ds-raised);color:var(--text)}
 /* Settings → Agents → Privacy: one row per harness with what the telemetry switch does there. */
 .harness-privacy-list{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-direction:column;gap:2px}
 .harness-privacy-list .setting-row>div{display:flex;align-items:center;flex-wrap:nowrap;gap:12px}

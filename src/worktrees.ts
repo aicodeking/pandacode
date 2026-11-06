@@ -2,13 +2,13 @@ import './worktrees.css';
 import { escape, icon } from './dom';
 import { toned } from './approval-modes';
 import { githubEnabled } from './github';
-import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
+import type { BranchList, GitStatus, Project, RepoOutcome, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
 
 /* One branch control for every task. The chip above the prompt names the checkout
  * and opens the only worktree menu; dialogs convert an unstarted task in place,
  * spawn a sibling task for a started one, and never remove work without consent. */
 
-type ChoiceItem = { id: string; label: string; description?: string; icon?: string; disabled?: boolean; selected?: boolean };
+type ChoiceItem = { id: string; label: string; description?: string; icon?: string; disabled?: boolean; selected?: boolean; /** Starts a named group (each repository's own rows). */ heading?: string; leading?: string };
 export type WorktreeHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
@@ -72,10 +72,12 @@ export function createWorktrees(host: WorktreeHost) {
     const branch = session.worktreePath && (missing || !git?.branch) ? session.worktreeBranch || '' : git?.branch || '';
     const path = session.worktreePath ?? project?.path ?? '';
     // A task on another computer has its checkout there: name the branch, offer no local actions.
+    const repos = git?.repos?.length ?? 0;
+    const extra = repos > 1 ? `<span class="branch-chip-repos" title="${repos} repositories in this task">+${repos - 1}</span>` : '';
     const chip = session.remoteDevice
       ? `<span class="branch-chip branch-chip-fixed" data-tip="${escape(`Branch ${session.worktreeBranch || 'unknown'} · actions run on ${session.remoteDevice.name}, not here`)}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || 'Remote checkout')}</span></span>`
       : git?.isRepo || session.worktreePath
-      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
+      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${extra}${icon('down')}</button>`
       : '';
     const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
     return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${host.computer(session, fresh)}<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>${chip}${links}</div>`;
@@ -87,12 +89,20 @@ export function createWorktrees(host: WorktreeHost) {
     const path = session.worktreePath ?? project?.path ?? '';
     const branch = missing ? session.worktreeBranch || 'unknown branch' : git?.branch || session.worktreeBranch || 'Detached HEAD';
     const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, ...session.worktreePath ? { leading: toned(icon('worktree'), 'worktree') } : { icon: 'branch' }, selected: true }];
+    // A multi-folder task names every repository with its own branch and remote distance.
+    const repos = git?.repos ?? [];
+    if (repos.length > 1) {
+      for (const [index, repo] of repos.entries()) {
+        const distance = `${repo.ahead ? ` · ↑${repo.ahead}` : ''}${repo.behind ? ` · ↓${repo.behind}` : ''}`;
+        items.push({ id: `repo:${repo.label}`, label: repo.label, description: repo.branch ? `${repo.branch}${distance}` : 'Not a Git repository', icon: 'branch', disabled: true, ...(index === 0 ? { heading: 'Repositories' } : {}) });
+      }
+    }
     if (missing) {
       items.push({ id: 'worktree-recreate', label: 'Recreate worktree', description: 'Check the branch out again at the same path.', icon: 'refresh' });
       items.push({ id: 'settle-task', label: 'Settle task', description: 'Keep the history; forget the checkout.', icon: 'check' });
     } else if (session.worktreePath) {
       const target = (await host.call<BranchList>('git_branches', { projectId: session.projectId, sessionId: session.id }).catch(() => null))?.defaultBranch || 'main';
-      items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
+      items.push({ id: 'worktree-merge', label: `Merge into ${target}`, description: host.running() ? 'Wait for the agent to finish.' : repos.length > 1 ? 'Locally, in each repository. Commit first.' : 'Locally, in the project checkout. Commit first.', icon: 'merge', disabled: host.running() });
       items.push(...host.extraItems(session));
       items.push({ id: 'worktree-remove', label: 'Remove worktree…', description: 'Settles the task; refuses when work would be lost.', icon: 'close', disabled: host.running() });
       items.push({ id: 'copy-path', label: 'Copy worktree path', icon: 'copy' });
@@ -190,11 +200,12 @@ export function createWorktrees(host: WorktreeHost) {
     const error = form.querySelector<HTMLElement>('.worktree-error')!, existingRow = form.querySelector<HTMLElement>('.worktree-existing')!;
     if (!BRANCH_PATTERN.test(branch)) { error.textContent = 'Use letters, numbers, hyphens, underscores, and slashes.'; error.hidden = false; return true; }
     try {
-      const saved = await host.call<Session>(mode === 'attach' ? 'attach_worktree' : 'create_worktree', { sessionId: session.id, branch, ...(base ? { base } : {}), existing });
+      const saved = await host.call<Session & { repos?: RepoOutcome[] }>(mode === 'attach' ? 'attach_worktree' : 'create_worktree', { sessionId: session.id, branch, ...(base ? { base } : {}), existing });
       // A dialog dismissed meanwhile must not steal navigation or close whatever replaced it.
       const live = form.isConnected && Boolean(form.closest('dialog[open]'));
       if (mode === 'attach') await host.afterAttach(saved, live); else await host.afterCreate(saved, live, host.session()?.id === session.id);
       host.notify(mode === 'attach' ? `Working in ${saved.worktreeBranch ?? finalBranchName(branch)}` : 'Worktree task created');
+      if (mode !== 'attach') reportRepoFailures(saved, 'create');
     } catch (cause) {
       if (!form.isConnected) return true;
       const message = cause instanceof Error ? cause.message : String(cause);
@@ -207,10 +218,31 @@ export function createWorktrees(host: WorktreeHost) {
   /** Ask before settling a worktree task or removing its checkout; nothing is removed here. */
   function cleanupOffer(session: Session, intent: CleanupIntent): Promise<CleanupDecision> {
     if (!session.worktreePath) return Promise.resolve({ proceed: true, remove: false });
-    return host.call<WorktreeStatus>('worktree_status', { sessionId: session.id }).catch(() => undefined).then(status => new Promise<CleanupDecision>(resolve => {
+    return host.call<WorktreeStatus & { repos?: RepoOutcome[] }>('worktree_status', { sessionId: session.id }).catch(() => undefined).then(status => new Promise<CleanupDecision>(resolve => {
       if (!status) { resolve({ proceed: true, remove: false }); return; }
       if (!status.exists && intent !== 'remove') { resolve({ proceed: true, remove: false }); return; }
       const verb = intent === 'complete' ? 'Settle task' : 'Remove worktree';
+      const perRepo = (status.repos ?? []).map(repo => ({ label: repo.label, value: repo.result as WorktreeStatus | undefined, error: repo.error }));
+      if (perRepo.length > 1) {
+        // One line per repository; removal waits until every checkout is clean or gone.
+        const lines = perRepo.map(repo => {
+          if (repo.error) return `<strong>${escape(repo.label)}</strong> — ${escape(repo.error)}`;
+          const value = repo.value;
+          if (!value) return `<strong>${escape(repo.label)}</strong> — could not be checked.`;
+          if (!value.exists) return `<strong>${escape(repo.label)}</strong> — the checkout folder is already gone.`;
+          if (!value.clean) return `<strong>${escape(repo.label)}</strong> — ${value.changes} uncommitted change${value.changes === 1 ? '' : 's'}.`;
+          const unpublished = !value.merged && (!value.hasUpstream || value.ahead > 0);
+          return `<strong>${escape(repo.label)}</strong> — clean${value.merged ? ', merged' : unpublished ? `, <strong>${escape(value.branch)}</strong> has unpublished commits` : ''}.`;
+        });
+        const dirty = perRepo.some(repo => repo.value?.exists && !repo.value.clean);
+        const summary = `This task works in ${perRepo.length} repositories:${intent === 'remove' && dirty ? ' commit or discard the changes first.' : ''}<br>${lines.join('<br>')}`;
+        const control = `<label class="worktree-cleanup-option"><input type="checkbox" name="remove" ${intent === 'remove' && !dirty ? 'checked' : ''}><span>Remove the checkout folders</span></label>`;
+        const dialog = host.modal(verb, `<form id="worktree-cleanup-form" data-session-id="${escape(session.id)}"><p class="dialog-description">${summary}</p>${control}<div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button" ${intent !== 'remove' || !dirty ? '' : 'disabled'}>${intent === 'remove' ? 'Remove and settle' : verb}</button></div></form>`, 'compact-dialog worktree-dialog');
+        cleanup?.resolve({ proceed: false, remove: false });
+        cleanup = { resolve, dialog };
+        dialog.addEventListener('close', () => { if (cleanup?.dialog === dialog) { cleanup = undefined; resolve({ proceed: false, remove: false }); } }, { once: true });
+        return;
+      }
       const branch = status.branch || session.worktreeBranch || 'its branch';
       const unpublished = !status.merged && (!status.hasUpstream || status.ahead > 0);
       let summary: string, control = '';
@@ -228,9 +260,15 @@ export function createWorktrees(host: WorktreeHost) {
     }));
   }
 
+  /** Repositories whose share of a multi-repo worktree command failed; each says so in a toast. */
+  function reportRepoFailures(reply: { repos?: RepoOutcome[] }, verb: string): void {
+    for (const repo of reply.repos ?? []) if (repo.error) host.notify(`Couldn’t ${verb} ${repo.label}: ${repo.error}`);
+  }
+
   async function remove(session: Session): Promise<WorktreeRemoval> {
-    const removal = await host.call<WorktreeRemoval>('remove_worktree', { sessionId: session.id, deleteBranch: true });
+    const removal = await host.call<WorktreeRemoval & { repos?: RepoOutcome[] }>('remove_worktree', { sessionId: session.id, deleteBranch: true });
     host.notify(removal.note || (removal.branchDeleted ? `Removed the worktree and deleted ${removal.branch}` : removal.removed ? `Removed the worktree; ${removal.branch} is kept` : 'Worktree registration pruned'));
+    reportRepoFailures(removal, 'remove');
     return removal;
   }
 
@@ -243,22 +281,24 @@ export function createWorktrees(host: WorktreeHost) {
 
   /** Merge the worktree's committed branch into main locally, then offer to clean it up. */
   async function merge(session: Session): Promise<void> {
-    let merged: WorktreeMerge;
+    let merged: WorktreeMerge & { repos?: RepoOutcome[] };
     try {
-      merged = await host.call<WorktreeMerge>('merge_worktree', { sessionId: session.id });
+      merged = await host.call<WorktreeMerge & { repos?: RepoOutcome[] }>('merge_worktree', { sessionId: session.id });
     } catch (cause) {
       host.notify(`Couldn’t merge: ${cause instanceof Error ? cause.message : String(cause)}`);
       return;
     }
     const moved = merged.switchedFrom ? ` (the project checkout moved from ${merged.switchedFrom})` : '';
     host.notify(merged.commits ? `Merged ${merged.commits} commit${merged.commits === 1 ? '' : 's'} from ${merged.branch} into ${merged.target}${moved}` : `${merged.target} already has everything from ${merged.branch}`);
+    reportRepoFailures(merged, 'merge');
     window.setTimeout(() => void host.branchChanged(), 0);
     // The merged branch can go now; the offer explains and asks first.
     await removeInteractive(session);
   }
 
   async function recreate(session: Session): Promise<void> {
-    const restored = await host.call<Session>('recreate_worktree', { sessionId: session.id });
+    const restored = await host.call<Session & { repos?: RepoOutcome[] }>('recreate_worktree', { sessionId: session.id });
+    reportRepoFailures(restored, 'restore');
     await host.afterAttach(restored, false);
     host.notify(`Worktree restored on ${restored.worktreeBranch ?? 'its branch'}`);
   }

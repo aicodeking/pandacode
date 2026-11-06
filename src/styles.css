@@ -379,6 +379,9 @@ html[data-theme="dark"] .jj-log-row.current strong::before{color:var(--accent)}
 .file-folder-path{display:flex;align-items:center;justify-content:space-between;font-size:var(--text-xs);color:var(--muted);padding:13px 18px;overflow-wrap:anywhere;gap:8px}
 .file-folder-path .icon-button{width:22px;height:22px}
 .file-folder-path .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+.file-folder-heading{display:flex;align-items:center;gap:8px;margin:10px 18px 4px;font-size:var(--text-2xs);font-weight:var(--weight-strong);color:var(--muted)}
+.file-folder-heading::after{content:'';flex:1;min-width:12px;height:1px;background:color-mix(in srgb,var(--muted) 22%,transparent)}
+@media(prefers-contrast:more){.file-folder-heading::after{background:var(--border)}}
 .file-list{padding:4px 9px}
 .file-row{display:flex;align-items:center;border-radius:var(--radius-xs)}
 .file-row:hover{background:var(--raised)}
@@ -628,6 +631,7 @@ button:not(:disabled):active{background-color:var(--accent-dim);transition:none}
 .project-menu-option>.icon:last-child:not(:first-child){--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent-ink)}
 .project-menu-label{display:flex;align-items:baseline;gap:8px;min-width:0;flex:1}
 .project-menu-name{font-size:var(--text-sm);font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 0 auto;max-width:100%}
+.project-menu-folders{flex:0 0 auto;font-size:var(--text-xs);color:var(--faint);white-space:nowrap}
 .project-menu-path{font-size:var(--text-xs);line-height:1.35;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0%;min-width:0}
 .project-menu-option:focus-visible,.project-menu-open:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .project-menu-footer{margin-top:6px;padding-top:5px;flex-shrink:0}

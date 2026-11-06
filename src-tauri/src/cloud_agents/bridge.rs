@@ -31,6 +31,10 @@ pub(crate) struct Spec {
     pub remote_dir: String,
     /// The mirror worktree; paths in the protocol are mapped between it and `remote_dir`.
     pub local_dir: String,
+    /// The task's other local checkouts. Cloud tasks run one checkout today, so
+    /// this arrives empty; carried for the multi-folder follow-up.
+    #[serde(default)]
+    pub extra_dirs: Vec<String>,
     pub program: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -500,6 +504,7 @@ pub(crate) mod tests {
             run_id: run.into(),
             remote_dir: remote.to_string_lossy().into_owned(),
             local_dir: "/Users/me/project".into(),
+            extra_dirs: Vec::new(),
             program: "sh".into(),
             args: vec![harness],
             env: vec![("KEY".into(), "it's secret".into())],

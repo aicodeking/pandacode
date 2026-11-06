@@ -21,6 +21,10 @@ export type GithubHost = {
   project(id: string): Project | undefined;
   /** Harness and model for tasks created by an import. */
   defaultHarness(): { provider: string; model: string };
+  /** The task's folders for per-repository pull requests, the primary first. */
+  taskFolders(): { label: string; isPrimary: boolean }[];
+  /** A pull request was created in `folder` (undefined = primary); show it in the inspector. */
+  pullCreated(folder?: string): void;
   upsert(session: Session): void;
   changed(): void;
   /** Open the task's linked pull request in the inspector. */
@@ -69,21 +73,24 @@ export function createGithub(host: GithubHost) {
     const entry = statuses.get(projectId);
     return entry && entry.value ? entry.value : undefined;
   }
-  /** Connection state for a project; cached, and never queried while switched off. */
-  function status(projectId: string, force = false): Promise<GithubStatus | null> {
+  /** Connection state for a project, or one folder's when `folder` names it (`sessionId`
+   *  resolves the folder against that task's own folders, orphaned ones included);
+   *  cached, and never queried while switched off. */
+  function status(projectId: string, force = false, folder?: string, sessionId?: string): Promise<GithubStatus | null> {
     if (!githubEnabled() || !projectId) return Promise.resolve(null);
-    const entry = statuses.get(projectId);
+    const key = sessionId ? `${projectId}\0${folder ?? ''}\0${sessionId}` : folder ? `${projectId}\0${folder}` : projectId;
+    const entry = statuses.get(key);
     if (entry?.pending) return entry.pending;
     if (entry && !force && Date.now() - entry.at < STATUS_TTL) return Promise.resolve(entry.value);
-    const pending = host.call<GithubStatus>('github_status', { projectId }).then(value => {
-      statuses.set(projectId, { at: Date.now(), value });
-      host.changed();
+    const pending = host.call<GithubStatus>('github_status', { projectId, ...(folder ? { folder } : {}), ...(sessionId ? { sessionId } : {}) }).then(value => {
+      statuses.set(key, { at: Date.now(), value });
+      if (!folder) host.changed();
       return value;
     }).catch(() => {
-      statuses.set(projectId, { at: Date.now(), value: null });
+      statuses.set(key, { at: Date.now(), value: null });
       return null;
     });
-    statuses.set(projectId, { at: entry?.at ?? 0, value: entry?.value ?? null, pending });
+    statuses.set(key, { at: entry?.at ?? 0, value: entry?.value ?? null, pending });
     return pending;
   }
   function connected(projectId: string): boolean {
@@ -228,19 +235,32 @@ export function createGithub(host: GithubHost) {
     if (!value?.repo) { host.notify('Connect GitHub in Settings to open pull requests.'); return; }
     const closes = session.issue ? `\n\nCloses #${session.issue.number}` : '';
     const body = `${session.taskDescription?.trim() ?? ''}${closes}`.trim();
-    const dialog = host.modal('Push & open pull request', `<form id="github-pr-form" data-session-id="${escape(session.id)}"><p class="dialog-description">Pushes <code>${escape(session.worktreeBranch || 'the current branch')}</code> to its remote and opens a pull request in <strong>${escape(value.repo.nameWithOwner)}</strong>. Uncommitted changes stop it; commit them in the Changes tab first.</p><label class="field-label" for="pr-title">Title</label><input id="pr-title" name="title" value="${escape(session.title === 'New conversation' ? '' : session.title)}" maxlength="256" required autocomplete="off"><label class="field-label" for="pr-body">Description</label><textarea id="pr-body" name="body" rows="6" maxlength="65536" placeholder="What changed and why.">${escape(body)}</textarea><label class="field-label" for="pr-base">Base branch</label><select id="pr-base" name="base"><option value="${escape(value.repo.defaultBranch)}">${escape(value.repo.defaultBranch)}</option></select><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${icon('upload')}Push & open pull request</button></div></form>`, 'settings-dialog github-pr-dialog');
+    const folders = host.taskFolders();
+    const repoPicker = folders.length > 1
+      ? `<label class="field-label" for="pr-repo">Repository</label><select id="pr-repo" name="repo" aria-describedby="pr-repo-help"><option value="">${escape(value.repo.nameWithOwner)} (this project)</option>${folders.filter(folder => !folder.isPrimary).map(folder => `<option value="${escape(folder.label)}">${escape(folder.label)}</option>`).join('')}</select><p class="field-help" id="pr-repo-help">Each repository opens its own pull request from its own checkout.</p>`
+      : '';
+    const dialog = host.modal('Push & open pull request', `<form id="github-pr-form" data-session-id="${escape(session.id)}"><p class="dialog-description">Pushes <code>${escape(session.worktreeBranch || 'the current branch')}</code> to its remote and opens a pull request in <strong>${escape(value.repo.nameWithOwner)}</strong>. Uncommitted changes stop it; commit them in the Changes tab first.</p>${repoPicker}<label class="field-label" for="pr-title">Title</label><input id="pr-title" name="title" value="${escape(session.title === 'New conversation' ? '' : session.title)}" maxlength="256" required autocomplete="off"><label class="field-label" for="pr-body">Description</label><textarea id="pr-body" name="body" rows="6" maxlength="65536" placeholder="What changed and why.">${escape(body)}</textarea><label class="field-label" for="pr-base">Base branch</label><select id="pr-base" name="base"><option value="${escape(value.repo.defaultBranch)}">${escape(value.repo.defaultBranch)}</option></select><p class="github-pr-error field-help" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">${icon('upload')}Push & open pull request</button></div></form>`, 'settings-dialog github-pr-dialog');
     const select = dialog.querySelector<HTMLSelectElement>('#pr-base')!;
     void host.call<{ current: string; branches: string[] }>('git_branches', { projectId: session.projectId, sessionId: session.id }).then(list => {
       if (!select.isConnected) return;
       for (const name of list.branches) if (name !== value.repo!.defaultBranch && name !== list.current) { const option = document.createElement('option'); option.value = name; option.textContent = name; select.append(option); }
     }).catch(() => { /* The default branch stays selected. */ });
+    // Name each repository's GitHub identity beside its folder once it is known.
+    for (const option of [...dialog.querySelectorAll<HTMLSelectElement>('#pr-repo option')].slice(1)) {
+      void status(session.projectId, false, option.value).then(found => {
+        if (option.isConnected && found?.repo) option.textContent = `${option.value} · ${found.repo.nameWithOwner}`;
+      });
+    }
     dialog.querySelector<HTMLInputElement>('#pr-title')?.focus();
   }
   async function submitPullRequest(form: HTMLFormElement, data: FormData): Promise<void> {
     const error = form.querySelector<HTMLElement>('.github-pr-error')!;
     try {
-      const saved = await host.call<Session>('github_create_pull_request', { sessionId: form.dataset.sessionId, title: String(data.get('title') ?? '').trim(), body: String(data.get('body') ?? ''), base: String(data.get('base') ?? '') });
+      const folder = String(data.get('repo') ?? '').trim();
+      const saved = await host.call<Session>('github_create_pull_request', { sessionId: form.dataset.sessionId, title: String(data.get('title') ?? '').trim(), body: String(data.get('body') ?? ''), base: String(data.get('base') ?? ''), ...(folder ? { folder } : {}) });
       host.upsert(saved); host.closeModal(); host.changed();
+      // Another repository's link lives outside the task row; the inspector reloads and shows it.
+      if (folder) { host.pullCreated(folder); return; }
       host.notify(saved.pullRequest ? `Pull request #${saved.pullRequest.number} opened` : 'Pull request opened');
       if (saved.pullRequest) host.showPull(saved);
     } catch (cause) { error.textContent = cause instanceof Error ? cause.message : String(cause); error.hidden = false; }
@@ -290,9 +310,12 @@ export function createGithub(host: GithubHost) {
     if (!force && Date.now() - last < REFRESH_INTERVAL) return;
     refreshed.set(projectId, Date.now());
     try {
-      const updates = await host.call<{ sessionId: string; link: TaskLink }[]>('github_refresh_links', { projectId });
+      const updates = await host.call<{ sessionId: string; repo: string; link: TaskLink }[]>('github_refresh_links', { projectId });
       let changed = false;
-      for (const { sessionId, link } of updates) {
+      for (const { sessionId, repo, link } of updates) {
+        // Only the primary identity feeds session.pullRequest/issue; the other
+        // repositories' links are read from their per-repo rows by the PR tab.
+        if (repo !== '') continue;
         const session = host.sessions().find(s => s.id === sessionId); if (!session) continue;
         const key = link.kind === 'pull' ? 'pullRequest' : 'issue';
         if (session[key]?.state !== link.state || session[key]?.title !== link.title) { session[key] = link; changed = true; }

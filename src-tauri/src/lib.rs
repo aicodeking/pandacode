@@ -583,6 +583,23 @@ fn reminder_turn(turns: i64) -> bool {
     turns > 0 && turns % INSTRUCTION_REMINDER_EVERY == 1
 }
 
+/// The per-message note naming a multi-folder task's other checkouts with absolute
+/// paths. Empty for single-folder tasks, so their prompts stay byte-identical.
+fn folders_note(folders: &[storage::RepoFolder]) -> String {
+    let extra: Vec<String> = folders
+        .iter()
+        .filter(|folder| !folder.is_primary)
+        .map(|folder| format!("{}={}", folder.label, folder.path.display()))
+        .collect();
+    if extra.is_empty() {
+        return String::new();
+    }
+    format!(
+        "\n\n<PandaCode task metadata>\nAdditional repositories (absolute paths): {}.\n</PandaCode task metadata>",
+        extra.join(", ")
+    )
+}
+
 #[cfg(test)]
 mod instruction_tests {
     use super::*;
@@ -612,6 +629,27 @@ mod instruction_tests {
             assert!(!worker.contains(gone), "{gone}");
         }
         eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
+    }
+
+    #[test]
+    fn the_folder_note_lists_other_checkouts_and_single_folder_tasks_get_nothing() {
+        let folder = |path: &str, label: &str, primary: bool| storage::RepoFolder {
+            path: PathBuf::from(path),
+            label: label.into(),
+            is_primary: primary,
+            worktree: None,
+            branch: None,
+        };
+        assert_eq!(folders_note(&[]), "");
+        assert_eq!(folders_note(&[folder("/repo/main", "main", true)]), "");
+        assert_eq!(
+            folders_note(&[
+                folder("/repo/main", "main", true),
+                folder("/repo/backend", "backend", false),
+                folder("/repo/web", "web", false),
+            ]),
+            "\n\n<PandaCode task metadata>\nAdditional repositories (absolute paths): backend=/repo/backend, web=/repo/web.\n</PandaCode task metadata>"
+        );
     }
 }
 
@@ -676,6 +714,74 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
         return Err("Stop this project's architect teams first.".into());
     }
     store.remove_project(&project_id)
+}
+/// One folder of a multi-folder project, as the Settings folder list reads it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderOut {
+    path: String,
+    position: i64,
+    is_primary: bool,
+}
+/// A task's working folder: the project folder itself, or the task's own checkout.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoFolderOut {
+    path: PathBuf,
+    label: String,
+    is_primary: bool,
+    worktree: Option<PathBuf>,
+    branch: Option<String>,
+}
+fn folders_out(folders: &[storage::Folder]) -> Vec<FolderOut> {
+    folders
+        .iter()
+        .map(|folder| FolderOut {
+            path: folder.path.clone(),
+            position: folder.position,
+            is_primary: folder.is_primary,
+        })
+        .collect()
+}
+fn repo_folders_out(folders: Vec<storage::RepoFolder>) -> Vec<RepoFolderOut> {
+    folders
+        .into_iter()
+        .map(|folder| RepoFolderOut {
+            path: folder.path,
+            label: folder.label,
+            is_primary: folder.is_primary,
+            worktree: folder.worktree,
+            branch: folder.branch,
+        })
+        .collect()
+}
+#[tauri::command]
+async fn project_folders(state: State<'_, AppState>, project_id: String) -> Result<Vec<FolderOut>> {
+    Ok(folders_out(&state.store.lock().map_err(|e| e.to_string())?.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn add_project_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.add_project_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn remove_project_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.remove_project_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+#[tauri::command]
+async fn set_primary_folder(state: State<'_, AppState>, project_id: String, path: String) -> Result<Vec<FolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    store.set_primary_folder(&project_id, &PathBuf::from(path))?;
+    Ok(folders_out(&store.project_folders(&project_id)?))
+}
+/// The task's working folders, the primary first, each with its checkout and branch.
+#[tauri::command]
+async fn workspace_folders(state: State<'_, AppState>, project_id: String, session_id: Option<String>) -> Result<Vec<RepoFolderOut>> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    Ok(repo_folders_out(git_status_folders(&store, &project_id, session_id.as_deref())?))
 }
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
@@ -1632,6 +1738,14 @@ fn prepare_task_run_in_project(
         return Err("Message and attached context must be under 16 MiB.".into());
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    let folders = store.workspace_folders(&session.project_id, &session_id)?;
+    // Cloud tasks sync one checkout to their machine; a folder added after the
+    // task was created must not flow its local path into the remote run config.
+    let extra_dirs: Vec<PathBuf> = if session.cloud.is_some() {
+        Vec::new()
+    } else {
+        folders.iter().filter(|folder| !folder.is_primary).map(|folder| folder.path.clone()).collect()
+    };
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
     let (prompt, skill, maintenance) = match admission.command {
@@ -1728,7 +1842,15 @@ fn prepare_task_run_in_project(
         }
         error
     };
-    let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    let mut prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
+    // A multi-folder task's harness learns the other checkouts through the run
+    // config (its own mechanism) and this note; empty for single-folder tasks,
+    // and for cloud runs, whose machine only holds the one synced checkout
+    // (extra_dirs are stripped for them above). Maintenance turns keep the
+    // prompt bare, like the title note and instructions.
+    if !maintenance && session.cloud.is_none() {
+        prompt.push_str(&folders_note(&folders));
+    }
     let config = RunConfig {
         session_id: session_id.clone(),
         provider: session.provider,
@@ -1736,6 +1858,7 @@ fn prepare_task_run_in_project(
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
         cwd,
+        extra_dirs,
         resume_id: session.resume_id,
         prompt,
         instructions: String::new(),
@@ -1784,6 +1907,8 @@ fn prepare_cloud_attach(
         .filter(|cloud| cloud.active())
         .ok_or("This cloud run already ended.")?;
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    // Cloud tasks sync one checkout; the run config never carries local folder paths.
+    let extra_dirs: Vec<PathBuf> = Vec::new();
     store.db.execute("DELETE FROM messages WHERE session_id=?1 AND id>?2", rusqlite::params![session_id, cloud.turn_message]).map_err(|e| e.to_string())?;
     store.reattach_turn(&session_id)?;
     let config = RunConfig {
@@ -1793,6 +1918,7 @@ fn prepare_cloud_attach(
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
         cwd,
+        extra_dirs,
         resume_id: session.resume_id,
         prompt: String::new(),
         instructions: String::new(),
@@ -2146,8 +2272,28 @@ async fn launch_operation_admitted(
         ) {
             None
         } else {
+            let changes_session = session_id.clone();
+            let changes_store = store.clone();
             tauri::async_runtime::spawn_blocking(move || {
-                turn_changes::Tracker::start(changes_root, changes_cache)
+                // A multi-folder task tracks every folder; a single-folder task's
+                // set is one primary entry over today's root, behavior unchanged.
+                let folders = changes_store
+                    .lock()
+                    .ok()
+                    .and_then(|store| {
+                        let project_id = store.session(&changes_session).ok()?.project_id;
+                        store.workspace_folders(&project_id, &changes_session).ok()
+                    })
+                    .unwrap_or_else(|| {
+                        vec![storage::RepoFolder {
+                            path: changes_root.clone(),
+                            label: String::new(),
+                            is_primary: true,
+                            worktree: None,
+                            branch: None,
+                        }]
+                    });
+                turn_changes::Tracker::start_in_folders(&folders, changes_cache)
             })
             .await
             .ok()
@@ -2900,15 +3046,58 @@ async fn jj_log(state: State<'_, AppState>, project_id: String, session_id: Opti
     blocking(move || jj::log(&root, limit.unwrap_or(20))).await
 }
 
+/// The task's folders as the multi-repo status payload reads them: every folder
+/// of the project, the task's checkouts applied; without a task just the primary.
+fn git_status_folders(
+    store: &storage::Store,
+    project_id: &str,
+    session_id: Option<&str>,
+) -> Result<Vec<storage::RepoFolder>> {
+    match session_id {
+        Some(session_id) => {
+            // Keep root resolution's error for an unavailable folder or checkout.
+            store.workspace_root(project_id, Some(session_id))?;
+            store.workspace_folders(project_id, session_id)
+        }
+        None => {
+            let root = store.workspace_root(project_id, None)?;
+            let label = storage::folder_labels(std::slice::from_ref(&root))[0].clone();
+            Ok(vec![storage::RepoFolder {
+                path: root,
+                label,
+                is_primary: true,
+                worktree: None,
+                branch: None,
+            }])
+        }
+    }
+}
+
 #[tauri::command]
 async fn git_status(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
-) -> Result<workspace::GitStatus> {
-    let root = state.root(&project_id, session_id.as_deref())?;
-    blocking(move || workspace::git_status(&root)).await
+) -> Result<workspace::GitStatusAll> {
+    let folders = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        git_status_folders(&store, &project_id, session_id.as_deref())?
+    };
+    blocking(move || Ok(workspace::git_status_all(&folders))).await
 }
+
+/// The checkout a qualified Git or GitHub command runs in: the repository named
+/// by `folder`, else the task's primary exactly as before.
+fn qualified_root(
+    state: &State<'_, AppState>,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<PathBuf> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    Ok(git_repo_folder(&store, project_id, session_id, qualifier)?.path)
+}
+
 #[tauri::command]
 async fn git_diff(
     state: State<'_, AppState>,
@@ -2916,8 +3105,9 @@ async fn git_diff(
     session_id: Option<String>,
     path: Option<String>,
     staged: Option<bool>,
+    folder: Option<String>,
 ) -> Result<String> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::git_diff(&root, path, staged.unwrap_or(false))).await
 }
 #[tauri::command]
@@ -2927,8 +3117,9 @@ async fn git_stage(
     session_id: Option<String>,
     paths: Vec<String>,
     staged: bool,
+    folder: Option<String>,
 ) -> Result<()> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::git_stage(&root, paths, staged)).await
 }
 #[tauri::command]
@@ -2937,10 +3128,14 @@ async fn git_commit(
     project_id: String,
     session_id: Option<String>,
     message: String,
+    folder: Option<String>,
 ) -> Result<String> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::git_commit(&root, message)).await
 }
+// The plain wrappers stay for the frozen tests that pin their Session signature;
+// the agent tool and the commands read the per-repo outcomes themselves.
+#[cfg_attr(not(test), allow(dead_code))]
 fn create_worktree_task(
     store: &Arc<Mutex<Store>>,
     session_id: &str,
@@ -2948,6 +3143,7 @@ fn create_worktree_task(
 ) -> Result<Session> {
     create_worktree_task_with_defaults(store, session_id, branch, None, false, false)
 }
+#[cfg_attr(not(test), allow(dead_code))]
 fn create_worktree_task_with_defaults(
     store: &Arc<Mutex<Store>>,
     session_id: &str,
@@ -2956,24 +3152,113 @@ fn create_worktree_task_with_defaults(
     existing: bool,
     inherit_defaults: bool,
 ) -> Result<Session> {
-    let (source, root) = {
+    Ok(create_worktree_task_with_repos(store, session_id, branch, base, existing, inherit_defaults)?.0)
+}
+
+/// One additional repository's worktree result for a multi-folder task.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoWorktreeOutcome {
+    pub label: String,
+    /// `Result<workspace::Worktree, String>` (the crate's `Result` alias).
+    pub result: Result<workspace::Worktree>,
+}
+
+/// A task's checkout situation for one repository folder: the folder's main
+/// checkout and this task's own worktree when one exists.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoWorktreePaths {
+    pub label: String,
+    pub main: PathBuf,
+    pub worktree: Option<PathBuf>,
+    pub branch: Option<String>,
+}
+
+/// The project's non-primary folders in folder order, each under its display label.
+fn extra_repo_folders(store: &Store, project_id: &str) -> Result<Vec<(String, PathBuf)>> {
+    let folders = store.project_folders(project_id)?;
+    let primary = folders
+        .iter()
+        .find(|folder| folder.is_primary)
+        .map(|folder| folder.path.clone())
+        .unwrap_or_default();
+    let mut label_paths = vec![PathBuf::from(&primary)];
+    for folder in folders.iter().filter(|folder| !folder.is_primary) {
+        label_paths.push(PathBuf::from(&folder.path));
+    }
+    let labels = storage::folder_labels(&label_paths);
+    let extras: Vec<&storage::Folder> = folders.iter().filter(|folder| !folder.is_primary).collect();
+    Ok(extras
+        .iter()
+        .enumerate()
+        .map(|(index, folder)| (labels[index + 1].clone(), PathBuf::from(&folder.path)))
+        .collect())
+}
+
+/// Create a task with one checkout per repository folder: the primary's worktree
+/// in sessions.worktree_path as before, each additional repository's beside its
+/// own folder, all on the same branch. Plain folders are skipped, and a
+/// repository whose checkout fails never aborts the task: it rides the outcome
+/// for that repository instead.
+pub fn create_worktree_task_with_repos(
+    store: &Arc<Mutex<Store>>,
+    session_id: &str,
+    branch: String,
+    base: Option<String>,
+    existing: bool,
+    inherit_defaults: bool,
+) -> Result<(Session, Vec<RepoWorktreeOutcome>)> {
+    let (source, root, extras, primary_folder) = {
         let store = store.lock().map_err(|e| e.to_string())?;
         let source = store.session(session_id)?;
-        let root = store.workspace_root(&source.project_id, Some(session_id))?;
-        (source, root)
+        let project_id = source.project_id.clone();
+        let root = store.workspace_root(&project_id, Some(session_id))?;
+        let extras = extra_repo_folders(&store, &project_id)?;
+        // The primary folder is pinned like the extras, so a later primary
+        // change cannot relabel this task's checkout (workspace_folders).
+        let primary_folder = store
+            .project_folders(&project_id)?
+            .into_iter()
+            .find(|folder| folder.is_primary)
+            .map(|folder| PathBuf::from(folder.path));
+        (source, root, extras, primary_folder)
     };
     let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing)?;
+    let mut outcomes = Vec::new();
+    let mut created = Vec::new();
+    for (label, folder) in extras {
+        if !matches!(workspace::is_repository(&folder), Ok(true)) {
+            continue;
+        }
+        match workspace::create_worktree_with(&folder, &branch, base.as_deref(), existing) {
+            Ok(worktree) => {
+                created.push((folder, worktree.path.clone(), worktree.branch.clone()));
+                outcomes.push(RepoWorktreeOutcome {
+                    label,
+                    result: Ok(worktree),
+                });
+            }
+            Err(error) => outcomes.push(RepoWorktreeOutcome { label, result: Err(error) }),
+        }
+    }
     let store = store.lock().map_err(|e| e.to_string())?;
     let transaction = store
         .db
         .unchecked_transaction()
         .map_err(|e| e.to_string())?;
-    let created = (|| {
+    let task = (|| {
         let mut source = source.clone();
         if inherit_defaults {
             source.mode = storage::DEFAULT_PERMISSION_MODE.into();
         }
         let task = store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
+        if let Some(primary) = &primary_folder {
+            store.set_session_repo(&task.id, primary, Some(&worktree.path), Some(&worktree.branch))?;
+        }
+        for (folder, path, worktree_branch) in &created {
+            store.set_session_repo(&task.id, folder, Some(path), Some(worktree_branch))?;
+        }
         if inherit_defaults {
             architect::profiles::apply_default(&store, &task.id)?;
         }
@@ -2986,7 +3271,18 @@ fn create_worktree_task_with_defaults(
         )
     })?;
     transaction.commit().map_err(|e| e.to_string())?;
-    Ok(created)
+    Ok((task, outcomes))
+}
+
+/// The created task with its primary fields at the top level, plus one flat
+/// entry per additional repository checkout (success or failure), in the
+/// RepoOutcome shape the other worktree commands reply with.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreatedWorktreeTask {
+    #[serde(flatten)]
+    session: Session,
+    repos: Vec<RepoOutcome>,
 }
 
 #[tauri::command]
@@ -2996,10 +3292,22 @@ async fn create_worktree(
     branch: String,
     base: Option<String>,
     existing: Option<bool>,
-) -> Result<Session> {
+) -> Result<CreatedWorktreeTask> {
     let store = state.store.clone();
     blocking(move || {
-        create_worktree_task_with_defaults(&store, &session_id, branch, base, existing.unwrap_or(false), true)
+        let (session, repos) =
+            create_worktree_task_with_repos(&store, &session_id, branch, base, existing.unwrap_or(false), true)?;
+        let repos = repos
+            .into_iter()
+            .map(|repo| match repo.result {
+                Ok(worktree) => match serde_json::to_value(worktree) {
+                    Ok(result) => RepoOutcome { label: repo.label, result: Some(result), error: None },
+                    Err(error) => RepoOutcome { label: repo.label, result: None, error: Some(error.to_string()) },
+                },
+                Err(error) => RepoOutcome { label: repo.label, result: None, error: Some(error) },
+            })
+            .collect();
+        Ok(CreatedWorktreeTask { session, repos })
     })
     .await
 }
@@ -3036,37 +3344,294 @@ async fn attach_worktree(
     .await
 }
 
-/// The main checkout and this task's worktree, or an error when it has none.
-fn worktree_paths(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<(PathBuf, PathBuf, Option<String>)> {
+/// Every repository of the task's project with its main checkout and this
+/// task's checkout: the primary first, then the other repositories in folder
+/// order. Plain folders never appear; a repository whose checkout failed lists
+/// with no worktree.
+pub fn worktree_paths_all(store: &Arc<Mutex<Store>>, session_id: &str) -> Result<Vec<RepoWorktreePaths>> {
     let store = store.lock().map_err(|e| e.to_string())?;
     let task = store.session(session_id)?;
     if let Some(device) = task.remote_device {
         return Err(format!("This task runs on {}.", device.name));
     }
-    let worktree = task.worktree_path.ok_or("This task uses the main checkout.")?;
+    let worktree = task.worktree_path.clone().ok_or("This task uses the main checkout.")?;
     let main = store.workspace_root(&task.project_id, None)?;
-    Ok((main, PathBuf::from(worktree), task.worktree_branch))
+    let folders = store.workspace_folders(&task.project_id, session_id)?;
+    let repos = session_repo_rows(&store, session_id)?;
+    let mut paths = vec![RepoWorktreePaths {
+        label: folders[0].label.clone(),
+        main,
+        worktree: Some(PathBuf::from(worktree)),
+        branch: task.worktree_branch.clone(),
+    }];
+    for folder in folders.iter().skip(1) {
+        // `workspace_folders` points `path` at the checkout when one exists, so
+        // recover the folder itself from the stored repo row.
+        let folder_path = match &folder.worktree {
+            Some(_) => repos
+                .iter()
+                .find(|(_, worktree, _)| Some(worktree) == folder.worktree.as_ref())
+                .map(|(folder, _, _)| folder.clone()),
+            None => Some(folder.path.clone()),
+        };
+        let Some(folder_path) = folder_path else { continue };
+        let is_git = matches!(workspace::is_repository(&folder_path), Ok(true))
+            || folder
+                .worktree
+                .as_ref()
+                .is_some_and(|worktree| matches!(workspace::is_repository(worktree), Ok(true)));
+        if !is_git {
+            continue;
+        }
+        paths.push(RepoWorktreePaths {
+            label: folder.label.clone(),
+            main: folder_path,
+            worktree: folder.worktree.clone(),
+            branch: folder.branch.clone(),
+        });
+    }
+    Ok(paths)
+}
+
+/// The stored per-task checkouts: (folder, checkout, branch) rows in path order.
+fn session_repo_rows(
+    store: &storage::Store,
+    session_id: &str,
+) -> Result<Vec<(PathBuf, PathBuf, Option<String>)>> {
+    let mut statement = store
+        .db
+        .prepare("SELECT path,worktree_path,worktree_branch FROM session_repos WHERE session_id=?1 ORDER BY path")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([session_id], |row| {
+            Ok((
+                PathBuf::from(row.get::<_, String>(0)?),
+                PathBuf::from(row.get::<_, String>(1)?),
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Exact folder identity after symlinks resolve; raw comparison when either
+/// side cannot be canonicalized.
+fn same_folder(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Every repository folder of a project outside a task: the primary's checkout,
+/// then each project folder, labelled exactly as task qualification labels them.
+fn project_git_folders(store: &storage::Store, project_id: &str) -> Result<Vec<storage::RepoFolder>> {
+    let primary = store.workspace_root(project_id, None)?;
+    let project_folders = store.project_folders(project_id)?;
+    let mut label_paths = vec![primary.clone()];
+    for folder in project_folders.iter().filter(|folder| !folder.is_primary) {
+        label_paths.push(PathBuf::from(&folder.path));
+    }
+    let labels = storage::folder_labels(&label_paths);
+    let extras: Vec<&storage::Folder> = project_folders
+        .iter()
+        .filter(|folder| !folder.is_primary)
+        .collect();
+    let mut entries = vec![storage::RepoFolder {
+        path: primary,
+        label: labels[0].clone(),
+        is_primary: true,
+        worktree: None,
+        branch: None,
+    }];
+    for (index, folder) in extras.iter().enumerate() {
+        entries.push(storage::RepoFolder {
+            path: PathBuf::from(&folder.path),
+            label: labels[index + 1].clone(),
+            is_primary: false,
+            worktree: None,
+            branch: None,
+        });
+    }
+    Ok(entries)
+}
+
+/// The repository a qualified Git operation runs against: without a qualifier
+/// the primary's effective checkout, with one the folder whose label or
+/// canonical effective path matches exactly.
+pub fn git_repo_folder(
+    store: &storage::Store,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<storage::RepoFolder> {
+    let folders = match session_id {
+        Some(session_id) => {
+            // Membership guard and canonical paths, exactly as root resolution.
+            store.workspace_root(project_id, Some(session_id))?;
+            store.workspace_folders(project_id, session_id)?
+        }
+        None => project_git_folders(store, project_id)?,
+    };
+    let folder = match qualifier {
+        None => folders.first(),
+        Some(qualifier) => folders.iter().find(|folder| {
+            folder.label == qualifier || same_folder(&folder.path, std::path::Path::new(qualifier))
+        }),
+    };
+    match folder {
+        Some(folder) => Ok(folder.clone()),
+        None => {
+            let names: Vec<&str> = folders.iter().map(|folder| folder.label.as_str()).collect();
+            Err(format!(
+                "No repository matches {qualifier:?}; this task's repositories are {}.",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
+/// The task_links repo key a qualified GitHub link belongs under: the primary
+/// keeps the legacy '' key, an additional repository keys by its origin's
+/// `owner/name`. `None` for a repository without a GitHub identity; unknown
+/// qualifiers keep git_repo_folder's refusal.
+pub fn task_link_repo(
+    store: &storage::Store,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<Option<String>> {
+    let folder = git_repo_folder(store, project_id, session_id, qualifier)?;
+    Ok(github::folder_link_key(&folder))
+}
+
+/// The checkout branch switching runs in. A repository with its own task
+/// checkout keeps its branch; every other checkout may switch.
+pub fn switch_branch_root(
+    store: &storage::Store,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<PathBuf> {
+    let folder = git_repo_folder(store, project_id, session_id, qualifier)?;
+    if folder.worktree.is_some() {
+        return Err("This task works in its own worktree; its branch stays as it is.".into());
+    }
+    Ok(folder.path)
+}
+
+/// The main checkout and this task's worktree, plus every repository's paths.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreePathsReply {
+    main: PathBuf,
+    path: PathBuf,
+    branch: Option<String>,
+    repos: Vec<RepoWorktreePaths>,
 }
 
 #[tauri::command]
-async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeStatus> {
+async fn worktree_paths(state: State<'_, AppState>, session_id: String) -> Result<WorktreePathsReply> {
     let store = state.store.clone();
     blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::worktree_status(&main, &path, branch.as_deref())
+        let repos = worktree_paths_all(&store, &session_id)?;
+        let primary = repos.first().ok_or("This task uses the main checkout.")?;
+        Ok(WorktreePathsReply {
+            main: primary.main.clone(),
+            path: primary.worktree.clone().ok_or("This task uses the main checkout.")?,
+            branch: primary.branch.clone(),
+            repos,
+        })
+    })
+    .await
+}
+
+/// One repository's result in a multi-repo worktree command reply.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoOutcome {
+    label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// Today's payload at the top level, one entry per repository beside it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeReposReply {
+    #[serde(flatten)]
+    primary: serde_json::Value,
+    repos: Vec<RepoOutcome>,
+}
+
+/// Run one worktree operation per repository, the primary's result doubling as
+/// today's top-level payload.
+fn per_repo_replies(
+    repos: Vec<RepoWorktreePaths>,
+    mut operation: impl FnMut(&RepoWorktreePaths) -> Result<serde_json::Value>,
+) -> Result<(serde_json::Value, Vec<RepoOutcome>)> {
+    let mut replies = Vec::with_capacity(repos.len());
+    let mut primary: Option<std::result::Result<serde_json::Value, String>> = None;
+    for repo in &repos {
+        let outcome = match operation(repo) {
+            Ok(result) => {
+                if primary.is_none() {
+                    primary = Some(Ok(result.clone()));
+                }
+                RepoOutcome { label: repo.label.clone(), result: Some(result), error: None }
+            }
+            Err(error) => {
+                if primary.is_none() {
+                    primary = Some(Err(error.clone()));
+                }
+                RepoOutcome { label: repo.label.clone(), result: None, error: Some(error) }
+            }
+        };
+        replies.push(outcome);
+    }
+    let primary = primary.ok_or("This task uses the main checkout.")?;
+    Ok((primary?, replies))
+}
+
+/// The checkout a repository's worktree operation runs on, or an error when the
+/// repository never got one.
+fn repo_checkout(repo: &RepoWorktreePaths) -> Result<(&PathBuf, &PathBuf, Option<&str>)> {
+    let worktree = repo.worktree.as_ref().ok_or("This repository has no task checkout.")?;
+    Ok((&repo.main, worktree, repo.branch.as_deref()))
+}
+
+#[tauri::command]
+async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Result<WorktreeReposReply> {
+    let store = state.store.clone();
+    blocking(move || {
+        let repos = worktree_paths_all(&store, &session_id)?;
+        let (primary, replies) = per_repo_replies(repos, |repo| {
+            let (main, worktree, branch) = repo_checkout(repo)?;
+            serde_json::to_value(workspace::worktree_status(main, worktree, branch)?)
+                .map_err(|e| e.to_string())
+        })?;
+        Ok(WorktreeReposReply { primary, repos: replies })
     })
     .await
 }
 
 #[tauri::command]
-async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
+async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<WorktreeReposReply> {
     if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Wait for the agent to finish before merging its worktree.".into());
     }
     let store = state.store.clone();
     blocking(move || {
-        let (main, path, _) = worktree_paths(&store, &session_id)?;
-        workspace::merge_worktree(&main, &path)
+        let repos = worktree_paths_all(&store, &session_id)?;
+        let (primary, replies) = per_repo_replies(repos, |repo| {
+            let (main, worktree, _) = repo_checkout(repo)?;
+            serde_json::to_value(workspace::merge_worktree(main, worktree)?).map_err(|e| e.to_string())
+        })?;
+        Ok(WorktreeReposReply { primary, repos: replies })
     })
     .await
 }
@@ -3076,23 +3641,70 @@ async fn remove_worktree(
     state: State<'_, AppState>,
     session_id: String,
     delete_branch: Option<bool>,
-) -> Result<workspace::WorktreeRemoval> {
+) -> Result<WorktreeReposReply> {
     if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
-    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
+    let delete_branch = delete_branch.unwrap_or(false);
+    let store = state.store.clone();
+    let repos = worktree_paths_all(&store, &session_id)?;
     // A lingering agent's working directory would block the removal on Windows.
-    providers::end_lingering_in(&path).await;
-    blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await
+    for repo in &repos {
+        if let Some(worktree) = &repo.worktree {
+            providers::end_lingering_in(worktree).await;
+        }
+    }
+    blocking(move || {
+        let (primary, replies) = per_repo_replies(repos, |repo| {
+            let (main, worktree, branch) = repo_checkout(repo)?;
+            serde_json::to_value(workspace::remove_worktree(main, worktree, branch, delete_branch)?)
+                .map_err(|e| e.to_string())
+        })?;
+        Ok(WorktreeReposReply { primary, repos: replies })
+    })
+    .await
+}
+
+/// The task with its primary fields, plus one entry per repository recreation.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecreatedWorktree {
+    #[serde(flatten)]
+    session: Session,
+    repos: Vec<RepoOutcome>,
 }
 
 #[tauri::command]
-async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Result<Session> {
+async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Result<RecreatedWorktree> {
     let store = state.store.clone();
     blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::recreate_worktree(&main, &path, branch.as_deref())?;
-        store.lock().map_err(|e| e.to_string())?.session(&session_id)
+        let repos = worktree_paths_all(&store, &session_id)?;
+        let mut replies = Vec::with_capacity(repos.len());
+        let mut primary_error = None;
+        for (index, repo) in repos.iter().enumerate() {
+            let outcome = match repo_checkout(repo) {
+                Ok((main, worktree, branch)) => match workspace::recreate_worktree(main, worktree, branch) {
+                    Ok(path) => RepoOutcome {
+                        label: repo.label.clone(),
+                        result: Some(serde_json::to_value(path).map_err(|e| e.to_string())?),
+                        error: None,
+                    },
+                    Err(error) => {
+                        if index == 0 {
+                            primary_error = Some(error.clone());
+                        }
+                        RepoOutcome { label: repo.label.clone(), result: None, error: Some(error) }
+                    }
+                },
+                Err(error) => RepoOutcome { label: repo.label.clone(), result: None, error: Some(error) },
+            };
+            replies.push(outcome);
+        }
+        if let Some(error) = primary_error {
+            return Err(error);
+        }
+        let session = store.lock().map_err(|e| e.to_string())?.session(&session_id)?;
+        Ok(RecreatedWorktree { session, repos: replies })
     })
     .await
 }
@@ -3107,21 +3719,20 @@ async fn git_branches(
     blocking(move || workspace::git_branches(&root)).await
 }
 
-/// Check out another local branch in the task's own checkout; worktree tasks keep their branch.
+/// Check out another local branch in the qualified repository's main checkout;
+/// repositories with their own task checkout keep their branch.
 #[tauri::command]
 async fn git_switch_branch(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     branch: String,
+    folder: Option<String>,
 ) -> Result<workspace::BranchList> {
-    if let Some(id) = session_id.as_deref() {
+    let root = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        if store.session(id)?.worktree_path.is_some() {
-            return Err("This task works in its own worktree; its branch stays as it is.".into());
-        }
-    }
-    let root = state.root(&project_id, session_id.as_deref())?;
+        switch_branch_root(&store, &project_id, session_id.as_deref(), folder.as_deref())?
+    };
     blocking(move || workspace::git_switch(&root, &branch)).await
 }
 
@@ -3130,8 +3741,9 @@ async fn git_push(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
+    folder: Option<String>,
 ) -> Result<String> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::git_push(&root)).await
 }
 
@@ -3227,8 +3839,9 @@ async fn github_status(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
+    folder: Option<String>,
 ) -> Result<github::GithubStatus> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || Ok(github::status(&root))).await
 }
 
@@ -3238,8 +3851,9 @@ async fn github_search(
     project_id: String,
     session_id: Option<String>,
     query: String,
+    folder: Option<String>,
 ) -> Result<Vec<github::Item>> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || github::search(&root, &query, 10)).await
 }
 
@@ -3248,8 +3862,9 @@ async fn github_issues(
     state: State<'_, AppState>,
     project_id: String,
     filter: Option<github::IssueFilter>,
+    folder: Option<String>,
 ) -> Result<Vec<github::Issue>> {
-    let root = state.root(&project_id, None)?;
+    let root = qualified_root(&state, &project_id, None, folder.as_deref())?;
     blocking(move || github::issues(&root, &filter.unwrap_or_default())).await
 }
 
@@ -3259,8 +3874,9 @@ async fn github_resolve(
     project_id: String,
     session_id: Option<String>,
     numbers: Vec<i64>,
+    folder: Option<String>,
 ) -> Result<Vec<github::Reference>> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = qualified_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || github::resolve(&root, &numbers)).await
 }
 
@@ -3268,31 +3884,54 @@ async fn github_resolve(
 #[serde(rename_all = "camelCase")]
 struct LinkedTask {
     session_id: String,
+    /// The task_links repo key the link belongs under: '' for the primary
+    /// identity, otherwise the repository's `owner/name`.
+    repo: String,
     link: storage::TaskLink,
 }
 
-/// Refresh every linked issue and pull request of a project in one batch.
+/// Refresh every linked issue and pull request of a project in one batch, each
+/// repository queried from its own folder.
 #[tauri::command]
 async fn github_refresh_links(state: State<'_, AppState>, project_id: String) -> Result<Vec<LinkedTask>> {
-    let root = state.root(&project_id, None)?;
     let store = state.store.clone();
+    let folders = {
+        let locked = store.lock().map_err(|e| e.to_string())?;
+        project_git_folders(&locked, &project_id)?
+    };
     blocking(move || {
         let links = store.lock().map_err(|e| e.to_string())?.project_links(&project_id)?;
         if !links.is_empty() {
-            let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
-            let wanted: Vec<(String, i64)> = links.iter().map(|(_, link)| (link.kind.clone(), link.number)).collect();
-            let states: Vec<(String, i64, String, String)> = github::link_states(&root, &repo, &wanted)?
-                .into_iter()
-                .map(|state| (state.kind, state.number, state.state, state.title))
-                .collect();
-            store.lock().map_err(|e| e.to_string())?.update_link_states(&project_id, &states)?;
+            let mut states: Vec<(String, String, i64, String, String)> = Vec::new();
+            for (index, folder) in folders.iter().enumerate() {
+                let Some(key) = github::folder_link_key(folder) else { continue };
+                // One refresh per identity: the first folder holding the key queries it.
+                if github::folder_link_keys(&folders[..index]).contains(&key) {
+                    continue;
+                }
+                let wanted: Vec<(String, i64)> = links
+                    .iter()
+                    .filter(|(_, repo, _)| *repo == key)
+                    .map(|(_, _, link)| (link.kind.clone(), link.number))
+                    .collect();
+                if wanted.is_empty() {
+                    continue;
+                }
+                let repo = github::repository(&folder.path).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
+                for state in github::link_states(&folder.path, &repo, &wanted)? {
+                    states.push((key.clone(), state.kind, state.number, state.state, state.title));
+                }
+            }
+            if !states.is_empty() {
+                store.lock().map_err(|e| e.to_string())?.update_link_states(&project_id, &states)?;
+            }
         }
         Ok(store
             .lock()
             .map_err(|e| e.to_string())?
             .project_links(&project_id)?
             .into_iter()
-            .map(|(session_id, link)| LinkedTask { session_id, link })
+            .map(|(session_id, repo, link)| LinkedTask { session_id, repo, link })
             .collect())
     })
     .await
@@ -3303,13 +3942,14 @@ async fn set_task_link(
     state: State<'_, AppState>,
     session_id: String,
     kind: String,
+    folder: Option<String>,
     link: Option<storage::TaskLink>,
 ) -> Result<Session> {
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_task_link(&session_id, &kind, link.as_ref())
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let task = store.session(&session_id)?;
+    let repo = task_link_repo(&store, &task.project_id, Some(&session_id), folder.as_deref())?
+        .ok_or("This repository has no GitHub remote.")?;
+    store.set_task_link(&session_id, &kind, &repo, link.as_ref())
 }
 
 /// Push the task's branch and open a pull request for it, linking the result.
@@ -3320,11 +3960,14 @@ async fn github_create_pull_request(
     title: String,
     body: String,
     base: String,
+    folder: Option<String>,
 ) -> Result<Session> {
-    let root = {
+    let (root, repo_key) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        store.workspace_root(&task.project_id, Some(&session_id))?
+        let folder = git_repo_folder(&store, &task.project_id, Some(&session_id), folder.as_deref())?;
+        let key = github::folder_link_key(&folder).ok_or("This repository has no GitHub remote.")?;
+        (folder.path, key)
     };
     let store = state.store.clone();
     blocking(move || {
@@ -3341,7 +3984,7 @@ async fn github_create_pull_request(
         workspace::git_push(&root)?;
         let pull = github::create_pull_request(&root, &title, &body, &base, &status.branch)?;
         let link = storage::TaskLink { kind: "pull".into(), number: pull.number, url: pull.url, title: pull.title, state: pull.state, checked_at: 0 };
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", &repo_key, Some(&link))
     })
     .await
 }
@@ -3353,41 +3996,92 @@ fn linked_pull(state: &AppState, session_id: &str) -> Result<(PathBuf, i64)> {
     Ok((store.workspace_root(&task.project_id, Some(session_id))?, number))
 }
 
+/// One repository's checkout and its linked pull request: the repo named by
+/// `folder` (label or path), reading the link from the per-repo task_links row.
+fn linked_pull_in(store: &storage::Store, session_id: &str, qualifier: &str) -> Result<(PathBuf, String, i64)> {
+    let task = store.session(session_id)?;
+    let folder = git_repo_folder(store, &task.project_id, Some(session_id), Some(qualifier))?;
+    let key = github::folder_link_key(&folder).ok_or("This repository has no GitHub remote.")?;
+    let number = store
+        .session_pull_links(session_id)?
+        .into_iter()
+        .find(|(repo, _)| *repo == key)
+        .map(|(_, link)| link.number)
+        .ok_or("This task has no linked pull request.")?;
+    Ok((folder.worktree.clone().unwrap_or(folder.path), key, number))
+}
+
 #[tauri::command]
-async fn github_pull_request(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDetail> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    folder: Option<String>,
+) -> Result<github_pull::PullDetail> {
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, _, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            (root, number)
+        }
+        None => linked_pull(&state, &session_id)?,
+    };
     blocking(move || github_pull::detail(&root, number)).await
 }
 
 #[tauri::command]
-async fn github_pull_request_diff(state: State<'_, AppState>, session_id: String) -> Result<github_pull::PullDiff> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_pull_request_diff(
+    state: State<'_, AppState>,
+    session_id: String,
+    folder: Option<String>,
+) -> Result<github_pull::PullDiff> {
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, _, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            (root, number)
+        }
+        None => linked_pull(&state, &session_id)?,
+    };
     blocking(move || github_pull::diff(&root, number)).await
 }
 
 /// Merge the task's linked pull request with the chosen method; returns the task with its link updated.
 #[tauri::command]
-async fn github_merge_pull_request(state: State<'_, AppState>, session_id: String, method: String) -> Result<Session> {
-    let (root, number) = linked_pull(&state, &session_id)?;
+async fn github_merge_pull_request(
+    state: State<'_, AppState>,
+    session_id: String,
+    method: String,
+    folder: Option<String>,
+) -> Result<Session> {
+    let repo_key;
+    let (root, number) = match folder.as_deref() {
+        Some(qualifier) => {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            let (root, key, number) = linked_pull_in(&store, &session_id, qualifier)?;
+            repo_key = key;
+            (root, number)
+        }
+        None => {
+            repo_key = String::new();
+            linked_pull(&state, &session_id)?
+        }
+    };
     github_pull::merge_flag(&method)?;
     let store = state.store.clone();
     blocking(move || {
         let link = github_pull::merge(&root, number, &method)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", &repo_key, Some(&link))
     })
     .await
 }
 
-/// After a turn, link the pull request the agent opened, if any. Returns the task only when it changed.
+/// After a turn, link the pull request the agent opened in each repository, if
+/// any. Returns the task only when a link changed.
 #[tauri::command]
 async fn github_detect_pull_request(state: State<'_, AppState>, session_id: String) -> Result<Option<Session>> {
-    let (root, turn, started) = {
+    let (folders, turn, started, open_keys) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let task = store.session(&session_id)?;
-        // An open link stays: the user or an earlier turn chose it.
-        if task.pull_request.as_ref().is_some_and(|link| ["open", "draft"].contains(&link.state.as_str())) {
-            return Ok(None);
-        }
         let mut turn = Vec::new();
         let mut started = 0;
         for message in store.messages(&session_id, None)? {
@@ -3400,24 +4094,64 @@ async fn github_detect_pull_request(state: State<'_, AppState>, session_id: Stri
         if !turn.iter().any(|text| text.contains("/pull/")) {
             return Ok(None);
         }
-        (store.workspace_root(&task.project_id, Some(&session_id))?, turn, started)
+        // An open link stays: the user or an earlier turn chose it; it shields
+        // only its own repository.
+        let open_keys: Vec<String> = store
+            .session_pull_links(&session_id)?
+            .into_iter()
+            .filter(|(_, link)| ["open", "draft"].contains(&link.state.as_str()))
+            .map(|(repo, _)| repo)
+            .collect();
+        (store.workspace_folders(&task.project_id, &session_id)?, turn, started, open_keys)
     };
     let store = state.store.clone();
     blocking(move || {
-        let repo = match github::repository(&root) {
-            Ok(repo) => repo,
-            Err(error) if error.is_empty() => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let branch = workspace::git_status(&root).map(|status| status.branch).unwrap_or_default();
-        let Some(link) = github_pull::detect(&root, &repo, &turn, &branch, started)? else { return Ok(None) };
-        let store = store.lock().map_err(|e| e.to_string())?;
-        if store.session(&session_id)?.pull_request.is_some_and(|current| current.number == link.number) {
+        let mut repos: Vec<github_pull::DetectRepo> = Vec::new();
+        for folder in &folders {
+            let Some(key) = github::folder_link_key(folder) else { continue };
+            if open_keys.contains(&key) || repos.iter().any(|entry| entry.repo == key) {
+                continue;
+            }
+            let identity = if folder.is_primary {
+                match github::repository(&folder.path) {
+                    Ok(repo) => repo.name_with_owner,
+                    Err(error) if error.is_empty() => continue,
+                    Err(error) => return Err(error),
+                }
+            } else {
+                match github_hub::project_repo(&folder.path) {
+                    Some(name_with_owner) => name_with_owner,
+                    None => continue,
+                }
+            };
+            let branch = workspace::git_status(&folder.path).map(|status| status.branch).unwrap_or_default();
+            let pulls = github_pull::turn_candidates(&folder.path, &identity, &turn);
+            repos.push(github_pull::DetectRepo { repo: key, branch, pulls });
+        }
+        let open: Vec<&str> = open_keys.iter().map(String::as_str).collect();
+        let links = github_pull::detect_links(&repos, started, &open);
+        if links.is_empty() {
             return Ok(None);
         }
-        store.set_task_link(&session_id, "pull", Some(&link)).map(Some)
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let mut task = None;
+        for (repo, link) in links {
+            task = Some(store.set_task_link(&session_id, "pull", &repo, Some(&link))?);
+        }
+        Ok(task)
     })
     .await
+}
+
+/// Every repository's linked pull request for one task, the primary first, for
+/// the inspector's PR tab.
+#[tauri::command]
+async fn linked_pulls(state: State<'_, AppState>, session_id: String) -> Result<Vec<(String, storage::TaskLink)>> {
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .session_pull_links(&session_id)
 }
 
 /// Link an existing pull request, given as a number or URL, to the task.
@@ -3435,18 +4169,33 @@ async fn github_link_pull_request(state: State<'_, AppState>, session_id: String
     blocking(move || {
         let repo = github::repository(&root).map_err(|error| if error.is_empty() { "This project has no GitHub remote.".to_string() } else { error })?;
         let link = github_pull::lookup(&root, github_pull::parse_reference(&reference, &repo.name_with_owner)?)?;
-        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", Some(&link))
+        store.lock().map_err(|e| e.to_string())?.set_task_link(&session_id, "pull", "", Some(&link))
     })
     .await
 }
+/// The checkout a file command reads: without a qualifier the task's primary
+/// exactly as before, with one the folder its label or effective path names.
+fn file_root(
+    state: &State<'_, AppState>,
+    project_id: &str,
+    session_id: Option<&str>,
+    qualifier: Option<&str>,
+) -> Result<PathBuf> {
+    match qualifier {
+        None => state.root(project_id, session_id),
+        Some(qualifier) => qualified_root(state, project_id, session_id, Some(qualifier)),
+    }
+}
+
 #[tauri::command]
 async fn list_files(
     state: State<'_, AppState>,
     project_id: String,
     session_id: Option<String>,
     path: Option<String>,
+    folder: Option<String>,
 ) -> Result<Vec<workspace::FileEntry>> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::list_files(&root, path)).await
 }
 #[tauri::command]
@@ -3456,15 +4205,23 @@ async fn search_files(
     session_id: Option<String>,
     query: String,
     limit: Option<usize>,
+    folder: Option<String>,
 ) -> Result<Vec<workspace::FileEntry>> {
-    let mirror = match session_id.as_deref() {
-        Some(id) => state.store.lock().map_err(|e| e.to_string())?.session(id)?.remote_device.is_some(),
-        None => false,
+    let root = match folder.as_deref() {
+        // A qualified search names a folder of this task, mirrors included.
+        Some(qualifier) => qualified_root(&state, &project_id, session_id.as_deref(), Some(qualifier))?,
+        None => {
+            let mirror = match session_id.as_deref() {
+                Some(id) => state.store.lock().map_err(|e| e.to_string())?.session(id)?.remote_device.is_some(),
+                None => false,
+            };
+            state.root(&project_id, if mirror { None } else { session_id.as_deref() })?
+        }
     };
-    let root = state.root(&project_id, if mirror { None } else { session_id.as_deref() })?;
     blocking(move || workspace::search_files(&root, query, limit)).await
 }
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn search_text(
     state: State<'_, AppState>,
     project_id: String,
@@ -3473,8 +4230,9 @@ async fn search_text(
     match_case: bool,
     whole_word: bool,
     regex: bool,
+    folder: Option<String>,
 ) -> Result<workspace::TextSearchResult> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::search_text(&root, &query, match_case, whole_word, regex)).await
 }
 #[tauri::command]
@@ -3483,8 +4241,9 @@ async fn read_file(
     project_id: String,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<String> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::read_file(&root, path)).await
 }
 /// A PDF, Word, spreadsheet or image file for the file viewer, sent as raw bytes rather than JSON.
@@ -3494,8 +4253,9 @@ async fn read_document_file(
     project_id: String,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<tauri::ipc::Response> {
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::read_document_bytes(&root, &path)).await.map(tauri::ipc::Response::new)
 }
 #[tauri::command]
@@ -3504,6 +4264,7 @@ async fn workspace_image(
     project_id: Option<String>,
     session_id: Option<String>,
     path: String,
+    folder: Option<String>,
 ) -> Result<String> {
     // A question belongs to one task: its images come from that task's checkout only.
     // The file viewer passes the same project and task it read the document with.
@@ -3514,7 +4275,7 @@ async fn workspace_image(
             state.store.lock().map_err(|e| e.to_string())?.session(session_id)?.project_id
         }
     };
-    let root = state.root(&project_id, session_id.as_deref())?;
+    let root = file_root(&state, &project_id, session_id.as_deref(), folder.as_deref())?;
     blocking(move || workspace::image_data_url(&root, &path)).await
 }
 
@@ -4261,6 +5022,10 @@ pub fn run() {
                 add_project,
                 remove_project,
                 relink_project,
+                project_folders,
+                add_project_folder,
+                remove_project_folder,
+                set_primary_folder,
                 list_sessions,
                 pin_session,
                 reorder_sessions,
@@ -4302,6 +5067,7 @@ pub fn run() {
                 list_providers,
                 list_provider_models,
                 git_status,
+                workspace_folders,
                 git_diff,
                 jj_status,
                 jj_diff,
@@ -4316,6 +5082,7 @@ pub fn run() {
                 git_push,
                 create_worktree,
                 attach_worktree,
+                worktree_paths,
                 worktree_status,
                 remove_worktree,
                 merge_worktree,
@@ -4339,6 +5106,7 @@ pub fn run() {
                 github_merge_pull_request,
                 github_detect_pull_request,
                 github_link_pull_request,
+                linked_pulls,
                 simulator::commands::simulator_status,
                 simulator::commands::simulator_select,
                 simulator::commands::simulator_create_duo,

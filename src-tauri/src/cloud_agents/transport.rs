@@ -143,6 +143,7 @@ pub(crate) async fn command(config: &RunConfig, configure: impl FnOnce(&mut Comm
         run_id: prepared.run_id,
         remote_dir: prepared.remote_dir,
         local_dir: config.cwd.to_string_lossy().into_owned(),
+        extra_dirs: config.extra_dirs.iter().map(|dir| dir.to_string_lossy().into_owned()).collect(),
         program: prepared.program,
         args,
         // Saved variables first, so the harness's credentials and this run's
