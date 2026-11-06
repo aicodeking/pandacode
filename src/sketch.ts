@@ -457,8 +457,10 @@ export function showSketch(options: SketchOptions): void {
   editor.addEventListener('keydown', event => {
     if ((event.target as HTMLElement).matches('textarea, select, input')) return;
     const command = event.metaKey || event.ctrlKey;
-    if (command && event.key.toLowerCase() === 'z') { event.preventDefault(); event.stopPropagation(); if (event.shiftKey) redo(); else undo(); return; }
-    if (command && event.key.toLowerCase() === 'd') { event.preventDefault(); event.stopPropagation(); duplicate(); return; }
+    // Physical key, stable across layouts and IME composition (the logical key is empty while composing).
+    const key = event.code.replace(/^Key/i, '').toLowerCase();
+    if (command && key === 'z') { event.preventDefault(); event.stopPropagation(); if (event.shiftKey) redo(); else undo(); return; }
+    if (command && key === 'd') { event.preventDefault(); event.stopPropagation(); duplicate(); return; }
     if (command) return;
     if (event.key === 'Backspace' || event.key === 'Delete') { if (current()) { event.preventDefault(); event.stopPropagation(); remove(); } return; }
     if (event.key === 'Enter' && current()) { event.preventDefault(); event.stopPropagation(); edit(current()!); return; }
@@ -467,7 +469,7 @@ export function showSketch(options: SketchOptions): void {
       const step = event.shiftKey ? 10 : 1, shape = current()!, dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0, dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
       shape.x += dx; shape.y += dy; if (shape.points) shape.points = shape.points.map((v, i) => v + (i % 2 === 0 ? dx : dy)); commit(); return;
     }
-    const shortcut = TOOLS.find(t => t.key.toLowerCase() === event.key.toLowerCase());
+    const shortcut = TOOLS.find(t => t.key.toLowerCase() === key);
     if (shortcut && !event.altKey) { event.preventDefault(); event.stopPropagation(); setTool(shortcut.id); }
   });
   canvas.tabIndex = 0;
