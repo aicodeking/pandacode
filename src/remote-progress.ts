@@ -1,5 +1,6 @@
 import { subscribe } from './bridge';
 import { escape, icon } from './dom';
+import { t } from './i18n.ts';
 
 /* PandaCode Connect start progress (docs/remote-access.md): while `remote_start_task`
  * waits for another computer to find or clone the project, the host reports its stages
@@ -23,14 +24,14 @@ let listening: Promise<unknown> | undefined;
 let observer: MutationObserver | undefined;
 
 export function startStageText(start: Pick<RemoteStart, 'stage' | 'repo' | 'percent' | 'detail'>): string {
-  const repo = start.repo ?? 'the repository';
+  const repo = start.repo ?? t('the repository');
   switch (start.stage) {
-    case 'connecting': return 'Connecting to computer';
-    case 'finding': return start.repo ? `Finding ${repo}` : 'Finding the project';
-    case 'downloading': return `Downloading ${repo}${start.percent == null ? '' : ` · ${Math.round(start.percent)}%`}`;
-    case 'preparing': return 'Preparing checkout';
-    case 'starting': return start.detail || 'Starting agent';
-    case 'error': return `Could not start: ${start.detail || 'the other computer did not answer'}`;
+    case 'connecting': return t('Connecting to computer');
+    case 'finding': return start.repo ? t`Finding ${repo}` : t('Finding the project');
+    case 'downloading': return t`Downloading ${repo}${start.percent == null ? '' : t` · ${Math.round(start.percent)}%`}`;
+    case 'preparing': return t('Preparing checkout');
+    case 'starting': return t('Starting agent');
+    case 'error': return t`Could not start: ${start.detail || t('the other computer did not answer')}`;
   }
 }
 
@@ -42,9 +43,9 @@ export function remoteStartStrip(sessionId: string): string {
   const start = starts.get(sessionId); if (!start || (start.onStage && start.stage !== 'error')) return '';
   const failed = start.stage === 'error', determinate = start.stage === 'downloading' && start.percent != null;
   const lead = failed ? icon('alert') : '<span class="support-spinner" aria-hidden="true"></span>';
-  const step = failed ? '' : ` aria-description="Step ${STAGES.indexOf(start.stage) + 1} of ${STAGES.length - 1}"`;
-  const bar = determinate ? `<progress class="remote-start-bar" max="100" value="${Math.round(start.percent!)}" aria-label="Download progress"></progress>` : '';
-  const actions = failed ? `<button type="button" class="remote-start-retry" data-remote-start="retry">${icon('refresh')}<span>Retry</span></button><button type="button" class="remote-start-dismiss" data-remote-start="dismiss" aria-label="Dismiss" title="Dismiss">${icon('close')}</button>` : '';
+  const step = failed ? '' : ` aria-description="${t`Step ${STAGES.indexOf(start.stage) + 1} of ${STAGES.length - 1}`}"`;
+  const bar = determinate ? `<progress class="remote-start-bar" max="100" value="${Math.round(start.percent!)}" aria-label="${t('Download progress')}"></progress>` : '';
+  const actions = failed ? `<button type="button" class="remote-start-retry" data-remote-start="retry">${icon('refresh')}<span>${t('Retry')}</span></button><button type="button" class="remote-start-dismiss" data-remote-start="dismiss" aria-label="${t('Dismiss')}" title="${t('Dismiss')}">${icon('close')}</button>` : '';
   return `<div class="remote-start-strip" data-stage="${start.stage}"><span class="remote-start-status" role="${failed ? 'alert' : 'status'}"${step}>${lead}<span class="remote-start-text"><span class="remote-start-device">${escape(start.device)}</span> · ${escape(startStageText(start))}</span></span>${bar}${actions}</div>`;
 }
 
@@ -90,7 +91,7 @@ function listen(): Promise<unknown> {
   return listening ??= (subscribe as unknown as (name: string, callback: typeof onRemoteStartProgress) => Promise<() => void>)(EVENT, onRemoteStartProgress).catch(() => { listening = undefined; });
 }
 
-const message = (error: unknown): string => error instanceof Error ? error.message : typeof error === 'string' ? error : 'the other computer did not answer';
+const message = (error: unknown): string => error instanceof Error ? error.message : typeof error === 'string' ? error : t('the other computer did not answer');
 
 /** Runs `start` (the `remote_start_task` call, given the start id to pass as `startId`)
  * with progress shown for `sessionId`. Resolves or rejects like `start`; a failure stays

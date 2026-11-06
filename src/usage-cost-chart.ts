@@ -1,4 +1,5 @@
 import type { ProviderId } from './types';
+import { t } from './i18n.ts';
 import { formatUsd, formatUsdAxis } from './usage-ledger.ts';
 
 export interface CostSeries { provider: ProviderId; name: string; values: number[]; }
@@ -82,11 +83,11 @@ export function costChart(options: CostChartOptions): HTMLElement {
   plot.append(chart, cursor);
   const frame = element('div', 'cost-chart-frame'); frame.append(axis, plot, dates);
   frame.tabIndex = 0; frame.setAttribute('role', 'img');
-  frame.setAttribute('aria-label', `Estimated API cost over time. ${series.map(line => `${line.name}: ${formatUsd(line.values.reduce((a, b) => a + b, 0))}`).join('. ')}. Use the arrow keys to read each point.`);
+  frame.setAttribute('aria-label', t`Estimated API cost over time. ${series.map(line => `${line.name}: ${formatUsd(line.values.reduce((a, b) => a + b, 0))}`).join('. ')}. Use the arrow keys to read each point.`);
   figure.append(readout, frame);
 
   const whole = bucketLabel({ start: buckets[0].start, end: buckets[buckets.length - 1].end });
-  const summary = () => { readout.replaceChildren(element('span', 'cost-chart-caption', `${whole} · point to read values`)); };
+  const summary = () => { readout.replaceChildren(element('span', 'cost-chart-caption', t`${whole} · point to read values`)); };
   let active = -1;
   const show = (index: number) => {
     active = Math.max(0, Math.min(buckets.length - 1, index));

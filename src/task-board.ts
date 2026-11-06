@@ -1,5 +1,6 @@
 import type { Project, Session, TaskStage } from './types';
 import { button, escape, icon } from './dom';
+import { t } from './i18n.ts';
 import { providerLogo } from './provider-logos';
 import { linkChip } from './worktrees';
 import './task-board.css';
@@ -20,8 +21,8 @@ function patch(target: HTMLElement, markup: string): void {
 /** What a card says about needing you, in the sidebar's words: approval, answer, failed, limited, or an unread dot. */
 export interface BoardSignal { status: string; statusLabel: string; word: string; unread: boolean }
 export function renderTaskBoard(host: HTMLElement, tasks: Session[], projects: Project[], selectedId: string, filter: string, running: (id: string) => boolean, importable = false, signal?: (task: Session) => BoardSignal): void {
-  if (!host.childElementCount) host.innerHTML = `<header class="board-heading"><div class="board-project-heading"><span class="board-eyebrow">${icon('bamboo')}Project board</span><h1><button id="board-project-filter" class="board-project-filter" data-action="filter-projects" aria-label="Filter projects" aria-haspopup="dialog" aria-expanded="false"><span></span>${icon('down')}</button></h1></div><div class="board-heading-actions">${button('add-project', 'Open project', 'folderPlus')}<button class="secondary-button board-import" data-action="board-import" aria-haspopup="dialog" hidden>${icon('download')}Import from GitHub</button><button class="primary-button" data-action="board-add">${icon('plus')}Add task</button></div></header><div class="board-columns">${Object.entries(stageNames).map(([stage, label]) => `<section class="board-column" data-stage="${stage}" aria-label="${label}"><header><span class="stage-dot"></span><h2>${label}</h2><span class="board-count"></span>${stage === 'pending' ? button('board-add', 'Add pending task', 'plus') : ''}</header><div class="board-cards"></div></section>`).join('')}</div>`;
-  const title = (projects.find(p => p.id === filter)?.name ?? 'All projects');
+  if (!host.childElementCount) host.innerHTML = `<header class="board-heading"><div class="board-project-heading"><span class="board-eyebrow">${icon('bamboo')}${t('Project board')}</span><h1><button id="board-project-filter" class="board-project-filter" data-action="filter-projects" aria-label="${t('Filter projects')}" aria-haspopup="dialog" aria-expanded="false"><span></span>${icon('down')}</button></h1></div><div class="board-heading-actions">${button('add-project', t('Open project'), 'folderPlus')}<button class="secondary-button board-import" data-action="board-import" aria-haspopup="dialog" hidden>${icon('download')}${t('Import from GitHub')}</button><button class="primary-button" data-action="board-add">${icon('plus')}${t('Add task')}</button></div></header><div class="board-columns">${Object.entries(stageNames).map(([stage, label]) => `<section class="board-column" data-stage="${stage}" aria-label="${label}"><header><span class="stage-dot"></span><h2>${label}</h2><span class="board-count"></span>${stage === 'pending' ? button('board-add', t('Add pending task'), 'plus') : ''}</header><div class="board-cards"></div></section>`).join('')}</div>`;
+  const title = (projects.find(p => p.id === filter)?.name ?? t('All projects'));
   host.querySelector('.board-project-filter>span')!.textContent = title;
   host.querySelector('h1')!.setAttribute('aria-label', title);
   host.querySelector<HTMLElement>('.board-import')!.hidden = !importable;

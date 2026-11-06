@@ -109,5 +109,6 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - Never commit secrets, API keys or personal paths. Provider keys belong in the
   OS keychain (`secret_store.rs`).
 - Keep files small and focused, and handle errors explicitly.
+- Wrap user-visible UI strings with `t()` from `src/i18n.ts` (mobile: `mobile/src/i18n/core.ts` via `useT()`), and add the new keys to the catalogs in `src/locales/` (and `mobile/src/i18n/catalogs.ts`). `tests/i18n.test.mjs` fails CI until both full Chinese catalogs carry the new keys with matching `{n}` placeholders — see [src/locales/GLOSSARY.md](src/locales/GLOSSARY.md).
 - By contributing, you agree your contributions are licensed under the
   [PandaCode License](LICENSE).

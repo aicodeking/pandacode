@@ -1,6 +1,7 @@
 import { escape, markdown } from './dom';
 import { captureFileLinkContext, decorateFileLinks, workspaceImagePath } from './file-links';
 import { trackSegment } from './motion';
+import { t } from './i18n.ts';
 
 export type DocumentView = 'rendered' | 'raw';
 /** Reads a workspace image (path from the workspace root) as a data: URL. */
@@ -32,13 +33,13 @@ export function setDocumentView(path: string, view: DocumentView): void {
 function stats(content: string): string {
   const words = content.match(/\S+/g)?.length ?? 0;
   const minutes = Math.max(1, Math.round(words / WORDS_PER_MINUTE));
-  return `${words.toLocaleString()} word${words === 1 ? '' : 's'} · ${minutes} min read`;
+  return `${words.toLocaleString()} ${words === 1 ? t('word') : t('words')} · ${t`${minutes} min read`}`;
 }
 
 function codeLines(content: string): string {
   const lines = content.split('\n', LINE_LIMIT).map((line, i) => `<div class="code-line"><span class="line-number">${i + 1}</span><code>${escape(line) || ' '}</code></div>`).join('');
   const capped = content.split('\n', LINE_LIMIT + 1).length > LINE_LIMIT;
-  return `<div class="code-preview">${lines}</div>${capped ? '<div class="inspector-hint">Preview limited to 2,000 lines.</div>' : ''}`;
+  return `<div class="code-preview">${lines}</div>${capped ? `<div class="inspector-hint">${t('Preview limited to 2,000 lines.')}</div>` : ''}`;
 }
 
 function paragraphs(content: string): string {
@@ -77,21 +78,21 @@ async function renderHtmlDocument(reader: HTMLElement, path: string, content: st
   for (const img of reader.querySelectorAll<HTMLImageElement>('img[data-src]')) {
     const src = img.dataset.src ?? '';
     img.removeAttribute('data-src');
-    const local = workspaceImagePath(src, path), label = img.alt || 'Image';
+    const local = workspaceImagePath(src, path), label = img.alt || t('Image');
     if (/^data:image\//i.test(src)) img.src = src;
     else if (local && image) image(local).then(url => { img.src = url; }, () => img.replaceWith(label));
     else if (!src || img.closest('a')) img.replaceWith(label);
     // Remote images link to their address instead, as in the transcript.
-    else img.replaceWith(Object.assign(document.createElement('a'), { className: 'md-media', href: src, textContent: img.alt || 'Image' }));
+    else img.replaceWith(Object.assign(document.createElement('a'), { className: 'md-media', href: src, textContent: img.alt || t('Image') }));
   }
   decorateFileLinks(reader, reader);
 }
 
 function toolbar(kind: Kind, view: DocumentView, wrap: boolean, content: string): string {
   const segment = (value: DocumentView, label: string) => `<button type="button" data-doc-view="${value}" aria-pressed="${view === value}">${label}</button>`;
-  const toggle = kind === 'code' ? '' : `<div class="doc-view-switch" role="group" aria-label="Document view">${segment('rendered', 'Rendered')}${segment('raw', 'Raw')}</div>`;
+  const toggle = kind === 'code' ? '' : `<div class="doc-view-switch" role="group" aria-label="${t('Document view')}">${segment('rendered', t('Rendered'))}${segment('raw', t('Raw'))}</div>`;
   const words = kind === 'code' ? '' : `<span class="doc-stats">${stats(content)}</span>`;
-  const wrapButton = kind !== 'code' && view === 'rendered' ? '' : `<button type="button" class="doc-wrap" data-doc-wrap aria-pressed="${wrap}">Wrap</button>`;
+  const wrapButton = kind !== 'code' && view === 'rendered' ? '' : `<button type="button" class="doc-wrap" data-doc-wrap aria-pressed="${wrap}">${t('Wrap')}</button>`;
   return `<div class="doc-toolbar">${toggle}${words}${wrapButton}</div>`;
 }
 

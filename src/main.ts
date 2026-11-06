@@ -65,6 +65,7 @@ import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, 
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
+import { languagePref, t } from './i18n.ts';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
@@ -1398,6 +1399,12 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
 }
 
 /** Whether a task needs you, as its sidebar row and board card say it: a state, its full label, and the word shown. */
+const STREAM_STATUSES = new Set(['Starting agent', 'Stopping agent', 'Generating response', 'Working…', 'Continuing task', 'Waiting for approval', 'Waiting for your answer', 'Waiting for response']);
+function statusLabel(status: string): string {
+  if (STREAM_STATUSES.has(status)) return t(status);
+  return status;
+}
+
 function taskSignal(s: Session, now: number): { status: string; statusLabel: string; word: string } {
   const live = state.streams.get(s.id), answer = Boolean(live?.inputs.size);
   const status = live && (live.approvals.size || live.inputs.size) || s.status === 'waiting_approval' ? 'attention' : isRunning(s.id) && !teamHeld(s.id) ? 'running' : limitActive(s, now) ? 'limited' : FAILED_STATUS.has(s.status) ? 'failed' : '';
@@ -1857,7 +1864,7 @@ function renderTranscript(preservePosition = false): void {
   const traceReopened = Boolean(liveTrace?.open && liveTrace.dataset.folded !== undefined && liveTrace.dataset.closing === undefined);
   const previousMarkdown = new Map([...transcript.querySelectorAll<HTMLElement>('[data-markdown]')]
     .map(node => [node.dataset.markdown!, node]));
-  transcript.innerHTML = `${state.messages.length === 0 && !bot ? '<div class="empty-conversation"><h2>What would you like to do?</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">Explore this project '+icon('chevron')+'</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">Review my changes '+icon('chevron')+'</button></div></div>' : ''}${saved.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
+  transcript.innerHTML = `${state.messages.length === 0 && !bot ? `<div class="empty-conversation"><h2>${t('What would you like to do?')}</h2><div class="prompt-suggestions"><button data-action="suggest" data-text="Explore this project and explain its architecture.">${t('Explore this project')}${icon('chevron')}</button><button data-action="suggest" data-text="Review the current changes for bugs and suggest improvements.">${t('Review my changes')}${icon('chevron')}</button></div></div>` : ''}${saved.map(turn => turnHtml(turn, s.id, Boolean(bot))).join('')}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`;
   paintSavedMarkdown(transcript, state.messages, previousMarkdown, workspaceContext(), followTranscript);
   watchReplies(transcript);
   reusableMarkdown = previousMarkdown;
@@ -2283,7 +2290,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (appeared && message.parentElement?.classList.contains('turn-card-reply-content')) fadeInReply(message);
   const card = region.querySelector<HTMLElement>('.turn-card.is-live');
   if (card && card.hasAttribute('data-done') !== Boolean(finishing)) card.toggleAttribute('data-done', Boolean(finishing));
-  const label = current.status || 'Working…'; if (status.textContent !== label) status.textContent = label;
+  const label = current.status || t('Working…'); if (status.textContent !== label) status.textContent = label;
   setHidden(status, Boolean(finishing) || current.approvals.size > 0 || current.inputs.size > 0);
   const bot = main ? botForThread() : undefined;
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
@@ -2469,7 +2476,7 @@ function paintLiveHeader(activity: HTMLDetailsElement, current: Stream, workedMs
     // A tool-only turn folds to its summary mid-answer (a card's as the answer starts); a narrated one keeps its steps until it ends.
     mode = 'folded';
     // In a card the time stands on the right, so the label is the steps' summary; bot rows keep `Worked for`.
-    html = allTools.length && (!narrated || carded) ? foldedLabelHtml(allTools) : carded ? escape('Replied') : escape(`Worked for ${formatDuration(workedMs ?? 0)}`);
+    html = allTools.length && (!narrated || carded) ? foldedLabelHtml(allTools) : carded ? escape(t('Replied')) : escape(t`Worked for ${formatDuration(workedMs ?? 0)}`);
   } else if (last && !status && carded && (last.status !== 'running' || last.output)) {
     // In a card, once the step the header mirrored finishes or prints, its own row shows it: the header moves on
     // to the turn's running summary (`Ran 1 command`), so header and rows never say the same thing.
@@ -2548,7 +2555,7 @@ function updateWorkTimer(): void {
   workTimer = window.setTimeout(() => {
     workTimer = 0;
     const current = state.streams.get(state.sessionId), summary = document.querySelector<HTMLElement>('#stream-region .live-activity:not([data-folded]) .turn-activity-summary');
-    if (current && summary && !summary.closest('.turn-card')) summary.title = `Working for ${formatDuration(Date.now() - current.startedAt)}`;
+    if (current && summary && !summary.closest('.turn-card')) summary.title = t`Working for ${formatDuration(Date.now() - current.startedAt)}`;
     const time = document.querySelector<HTMLElement>('#stream-region .turn-card-time[data-live]');
     if (current && time) time.textContent = formatDuration(Date.now() - workStart(current));
     const now = Date.now();
@@ -5644,7 +5651,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
       theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
       projects: { list: userProjects, remove: removeProject },
-      turnChecks: turnChecksEnabled(),
+      turnChecks: turnChecksEnabled(), language: languagePref(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },

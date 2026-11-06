@@ -1,5 +1,6 @@
 import './jev-live.css';
 import { call, subscribe } from './bridge';
+import { t } from './i18n.ts';
 import { escape, icon } from './dom';
 import type { JevReport } from './jev';
 
@@ -16,7 +17,7 @@ export interface JevLiveView {
 }
 type Options = { session(): string | undefined; changed(watching: boolean, available: boolean): void; returned(): void };
 const active = (report?: JevReport) => report?.status === 'starting' || report?.status === 'running';
-const statuses: Record<JevReport['status'], string> = { starting: 'Starting browser', running: 'Testing', done: 'Finished', blocked: 'Blocked', failed: 'Test failed', cancelled: 'Cancelled', limit: 'Limit reached' };
+const statuses: Record<JevReport['status'], string> = { starting: t('Starting browser'), running: t('Testing'), done: t('Finished'), blocked: t('Blocked'), failed: t('Test failed'), cancelled: t('Cancelled'), limit: t('Limit reached') };
 const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.floor(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.floor(ms % 60_000 / 1000)}s`;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 function validImage(value: unknown, live = false): value is string {
@@ -27,14 +28,14 @@ function validImage(value: unknown, live = false): value is string {
 /** A read-only view of Jev's isolated Chrome, with one ephemeral frame in memory. */
 export async function mountJevLive(host: HTMLElement, options: Options): Promise<JevLiveView> {
   host.className = 'jev-live'; host.hidden = true;
-  host.setAttribute('role', 'region'); host.setAttribute('aria-label', 'Jev live browser');
-  host.innerHTML = `<header class="jev-live-heading"><span class="jev-live-mark">${icon('spark')}</span><strong>Jev</strong><span class="jev-live-status" role="status"></span><button type="button" class="jev-live-stop" data-jev-live-stop>${icon('stop')}Stop test</button><button type="button" class="browser-tool" data-jev-live-return aria-label="Return to browser" title="Return to browser">${icon('back')}</button></header>
-    <div class="jev-live-run-picker" hidden><select aria-label="Jev run"></select>${icon('down')}</div>
+  host.setAttribute('role', 'region'); host.setAttribute('aria-label', t('Jev live browser'));
+  host.innerHTML = `<header class="jev-live-heading"><span class="jev-live-mark">${icon('spark')}</span><strong>Jev</strong><span class="jev-live-status" role="status"></span><button type="button" class="jev-live-stop" data-jev-live-stop>${icon('stop')}${t('Stop test')}</button><button type="button" class="browser-tool" data-jev-live-return aria-label="${t('Return to browser')}" title="${t('Return to browser')}">${icon('back')}</button></header>
+    <div class="jev-live-run-picker" hidden><select aria-label="${t('Jev run')}"></select>${icon('down')}</div>
     <div class="jev-live-context"><strong class="jev-live-goal"></strong><span class="jev-live-url"></span></div>
-    <figure class="jev-live-screen"><img alt="Jev browser live view" hidden><div class="jev-live-waiting">${icon('globe')}<span>Waiting for the browser…</span></div><figcaption>Live browser · read only</figcaption></figure>
+    <figure class="jev-live-screen"><img alt="${t('Jev browser live view')}" hidden><div class="jev-live-waiting">${icon('globe')}<span>${t('Waiting for the browser…')}</span></div><figcaption>${t('Live browser · read only')}</figcaption></figure>
     <div class="jev-live-progress"><span class="jev-live-step"></span><p class="jev-live-current"></p></div>
     <p class="jev-live-error" role="status" hidden></p>
-    <details class="jev-live-timeline"><summary>Browser actions <span class="jev-live-count">0</span>${icon('down')}</summary><ol></ol><p class="jev-live-no-actions">Actions will appear as Jev works.</p></details>`;
+    <details class="jev-live-timeline"><summary>${t('Browser actions')} <span class="jev-live-count">0</span>${icon('down')}</summary><ol></ol><p class="jev-live-no-actions">${t('Actions will appear as Jev works.')}</p></details>`;
   const query = <T extends HTMLElement = HTMLElement>(selector: string) => host.querySelector<T>(selector)!;
   const image = query<HTMLImageElement>('img'), selector = query<HTMLSelectElement>('select');
   const timeline = query<HTMLDetailsElement>('.jev-live-timeline'), stopButton = query<HTMLButtonElement>('[data-jev-live-stop]');
@@ -94,21 +95,21 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     const optionsKey = JSON.stringify(ordered.map(run => [run.id, run.goal, run.status]));
     if (optionKey !== optionsKey) {
       optionKey = optionsKey;
-      selector.replaceChildren(...ordered.map(run => new Option(`${statuses[run.status]} · ${run.goal || run.url}`, run.id)));
+      selector.replaceChildren(...ordered.map(run => new Option(t`${statuses[run.status]} · ${run.goal || run.url}`, run.id)));
     }
     selector.value = selected ?? ''; query('.jev-live-run-picker').hidden = reports.size < 2;
     if (!report) { syncLease(); notify(); return; }
     const running = active(report), last = report.events.at(-1);
-    query('.jev-live-status').textContent = `${statuses[report.status]} · ${duration(report.durationMs)}`;
+    query('.jev-live-status').textContent = t`${statuses[report.status]} · ${duration(report.durationMs)}`;
     host.dataset.running = String(running);
     query('.jev-live-goal').textContent = report.goal;
     query('.jev-live-url').textContent = last?.url || report.url;
     query('.jev-live-url').title = last?.url || report.url;
-    query('.jev-live-step').textContent = report.steps ? `Step ${report.steps}` : 'Getting ready';
+    query('.jev-live-step').textContent = report.steps ? t`Step ${report.steps}` : t('Getting ready');
     query('.jev-live-current').textContent = running && last ? `${last.operation.replaceAll('_', ' ')}${last.target ? ` · ${last.target}` : ''}` : report.summary;
     query('.jev-live-count').textContent = String(report.events.length);
-    query('figcaption').textContent = running ? 'Live browser · read only' : 'Final browser view · read only';
-    query('.jev-live-waiting span').textContent = running ? 'Waiting for the browser…' : 'No browser image available';
+    query('figcaption').textContent = running ? t('Live browser · read only') : t('Final browser view · read only');
+    query('.jev-live-waiting span').textContent = running ? t('Waiting for the browser…') : t('No browser image available');
     stopButton.hidden = !running; stopButton.disabled = stopping === report.id;
     if (!running && validImage(report.screenshot)) setImage(report.screenshot);
     showTimeline(); syncLease(); notify();
@@ -169,7 +170,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     refresh();
     const freshRun = !reports.has(report.id), selectedFinished = selected && !active(current());
     retain(report); eventVersions.set(report.id, ++eventVersion);
-    if (selected === report.id && !active(report) && query('.jev-live-error').textContent === 'Stopping the browser test…') tell('');
+    if (selected === report.id && !active(report) && query('.jev-live-error').textContent === t('Stopping the browser test…')) tell('');
     if (freshRun && active(report) && selectedFinished && !wasDismissed(report)) { choose(report.id); return; }
     if (selected) { render(); void readFinal(); } else autoWatch();
   }
@@ -197,7 +198,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
   }
   async function watch(runId?: string) {
     refresh(); const ticket = revision, task = session;
-    if (!task || disposed) throw new Error('Choose a task to watch its browser tests.');
+    if (!task || disposed) throw new Error(t('Choose a task to watch its browser tests.'));
     await listPending;
     if (!alive(ticket, task)) return;
     const id = runId ?? [...reports.values()].sort((a, b) => Number(active(b)) - Number(active(a)) || b.createdAt - a.createdAt)[0]?.id;
@@ -205,7 +206,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     if (!reports.has(id)) {
       const report = await call<JevReport>('jev_read_run', { sessionId: task, runId: id });
       if (!alive(ticket, task)) return;
-      if (report.sessionId !== task || report.id !== id) throw new Error('This browser test belongs to another task.');
+      if (report.sessionId !== task || report.id !== id) throw new Error(t('This browser test belongs to another task.'));
       if (!reports.has(id)) retain(report);
     }
     choose(id);
@@ -215,7 +216,7 @@ export async function mountJevLive(host: HTMLElement, options: Options): Promise
     const task = session, ticket = revision; stopping = report.id; tell(''); render();
     try {
       const result = await call<JevReport | undefined>('jev_cancel', { sessionId: task, runId: report.id });
-      if (alive(ticket, task) && selected === report.id && active(current())) tell('Stopping the browser test…');
+      if (alive(ticket, task) && selected === report.id && active(current())) tell(t('Stopping the browser test…'));
       if (alive(ticket, task) && result && result.sessionId === task && result.id === report.id) receiveReport(result);
     } catch (error) { if (alive(ticket, task) && selected === report.id) tell(errorText(error)); }
     finally { if (alive(ticket, task)) { stopping = undefined; render(); } }

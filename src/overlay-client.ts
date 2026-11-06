@@ -1,3 +1,4 @@
+import { t } from './i18n.ts';
 import type { AgentEvent, Message, Provider, ProviderId, ProviderModel, Session, SubagentActivity } from './types';
 /** The launcher has its own tiny bridge and never imports the workspace preview. */
 export interface LaunchContext { projectId: string | null; provider: string; model: string; mode: string; reasoningEffort?: string | null }
@@ -46,7 +47,7 @@ function previewThread(sessionId: string, subagentId?: string): OverlayThread {
   let thread = threads.get(key);
   if (!thread) {
     const task = tasks.find(task => task.sessionId === sessionId && (task.subagentId || '') === (subagentId || ''));
-    if (!task) throw new Error('This task is no longer available.');
+    if (!task) throw new Error(t('This task is no longer available.'));
     const response = subagentId ? 'I’m checking keyboard navigation and contrast across the onboarding screens.' : task.kind === 'worker' ? 'I’ve built the search index. Now I’m verifying that results stay fast as the project grows.' : task.status === 'waiting' ? 'The gallery is ready. I’m waiting for approval before running the next command.' : 'I’m refining the onboarding flow, starting with the welcome screen and keyboard navigation.';
     thread = {messages:[{id:1, sessionId, role:'user', content:task.title, createdAt:Date.now()-30_000}], hasOlder:false, liveText:subagentId ? '' : response, status:task.status,
       ...(subagentId ? {subagent:{id:subagentId,parentId:null,name:task.title,prompt:'Review the onboarding for accessibility.',status:'running',response,tools:[],startedAt:Date.now()-30_000,updatedAt:Date.now()}} : {})};
@@ -67,14 +68,14 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   if (command === 'overlay_preferences') return structuredClone(previewPreferences) as T;
   if (command === 'overlay_save_preferences') {
     const shortcut = String(args.shortcut);
-    if (!/^(?:(?:CommandOrControl|Command|Control|Alt|Option|Shift|Super|Meta)\+)+(?:Space|Key[A-Z]|[A-Z]|Digit\d|F\d{1,2}|Arrow(?:Up|Down|Left|Right))$/i.test(shortcut)) throw new Error('Use a shortcut such as CommandOrControl+Shift+Space.');
+    if (!/^(?:(?:CommandOrControl|Command|Control|Alt|Option|Shift|Super|Meta)\+)+(?:Space|Key[A-Z]|[A-Z]|Digit\d|F\d{1,2}|Arrow(?:Up|Down|Left|Right))$/i.test(shortcut)) throw new Error(t('Use a shortcut such as CommandOrControl+Shift+Space.'));
     previewPreferences = {...previewPreferences, enabled:Boolean(args.enabled), shortcut, error:null}; save(); return structuredClone(previewPreferences) as T;
   }
   if (command === 'overlay_sync_context') { previewPreferences.context = args.context as LaunchContext; save(); return undefined as T; }
   if (command === 'list_providers') return structuredClone(previewProviders) as T;
   if (command === 'list_provider_models') return structuredClone(args.provider === 'opencode' ? (await import('./preview-opencode')).previewOpenCodeChoices() : previewCatalogs[args.provider as ProviderId] || []) as T;
   if (command === 'overlay_select_model') {
-    if (!previewProviders.some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 256) throw new Error('Invalid harness or model.');
+    if (!previewProviders.some(provider => provider.id === args.provider) || typeof args.model !== 'string' || !args.model.trim() || args.model.length > 256) throw new Error(t('Invalid harness or model.'));
     previewPreferences.modelSelection = {provider:String(args.provider),model:args.model,reasoningEffort:args.reasoningEffort as string | null ?? null};
     save(); return effectiveContext() as T;
   }
@@ -90,15 +91,15 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   if (command === 'overlay_thread') return previewThread(String(args.sessionId), args.subagentId as string | undefined) as T;
   if (command === 'get_message_content') {
     const message = previewThread(String(args.sessionId)).messages.find(message => message.id === args.messageId && ['user','assistant'].includes(message.role));
-    if (!message) throw new Error('This message is no longer available.');
+    if (!message) throw new Error(t('This message is no longer available.'));
     return message.content as T;
   }
   if (command === 'fork_session_at_message') {
     const source = tasks.find(task => task.sessionId === args.sessionId && !task.subagentId);
-    if (!source) throw new Error('This task is no longer available.');
+    if (!source) throw new Error(t('This task is no longer available.'));
     const history = previewThread(source.sessionId).messages;
     const boundary = history.findIndex(message => message.id === args.messageId && ['user','assistant'].includes(message.role));
-    if (boundary < 0) throw new Error('Choose a saved message to fork from.');
+    if (boundary < 0) throw new Error(t('Choose a saved message to fork from.'));
     const id = crypto.randomUUID(), now = Date.now();
     const fork: Session = {id,projectId:source.projectId,worktreePath:null,title:`${source.title} (fork)`,provider:source.provider as ProviderId,model:'default',mode:'ask',status:'idle',createdAt:now,updatedAt:now,lastResponseAt:null,archived:false,resumeId:null,taskStage:'in_progress',taskDescription:'',completedAt:null};
     tasks.unshift({id,sessionId:id,kind:'task',title:fork.title,projectId:fork.projectId,projectName:source.projectName,provider:fork.provider,status:fork.status,updatedAt:now});
@@ -115,11 +116,11 @@ export async function overlayCall<T>(command: string, args: Record<string, unkno
   if (command === 'open_external_url') {
     const raw = String(args.url ?? '');
     const url = new URL(raw);
-    if (raw.length > 8192 || !['http:', 'https:'].includes(url.protocol) || !url.host || url.username || url.password) throw new Error('Use an HTTP or HTTPS URL without embedded credentials.');
+    if (raw.length > 8192 || !['http:', 'https:'].includes(url.protocol) || !url.host || url.username || url.password) throw new Error(t('Use an HTTP or HTTPS URL without embedded credentials.'));
     window.open(url.href, '_blank', 'noopener,noreferrer');
     return undefined as T;
   }
-  throw new Error(`Unknown launcher command: ${command}`);
+  throw new Error(t`Unknown launcher command: ${command}`);
 }
 let contextTimer: number | undefined;
 let latestContext: LaunchContext | null = null;

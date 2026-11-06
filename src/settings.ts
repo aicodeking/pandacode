@@ -24,6 +24,7 @@ import type { AgentsDockPreferences } from './agents-dock';
 import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-sections';
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
+import { LANGUAGES, setLanguagePref, t, type LanguagePref } from './i18n.ts';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -41,6 +42,8 @@ interface SettingsOptions {
   preview: boolean;
   /** Runs the checkout's fast check after a clean turn and queues one repair on failure. */
   turnChecks: boolean;
+  /** The current UI language preference; changing it reloads every window. */
+  language: LanguagePref;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
   /** Mounts the optional GitHub row; returns its cleanup. */
@@ -130,33 +133,35 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
     case 'recommended': return '<div id="recommended-settings"></div>';
-    case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
-      <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
+    case 'general': return `<div class="settings-group">
+        <div class="setting-row"><div><strong>${t('Language')}</strong><small>${t('Follows the system language until you pick one here.')}</small></div><select class="settings-select" data-language aria-label="${t('Language')}"><option value="auto">${t('System default')}</option>${LANGUAGES.map(language => `<option value="${language.id}">${language.native}</option>`).join('')}</select></div>
+        ${uiSizeControls()}${switchRow('compact-mode', t('Compact conversation'), '', options.compact)}${switchRow('expand-tool-activity', t('Expand tool activity'), '', options.activityExpanded)}</div>
+      <h3 class="settings-heading">${t('Quick launcher')}</h3><div id="launcher-settings"></div><h3 class="settings-heading">${t('Running agents widget')}</h3><div id="agents-dock-settings"></div>${options.projects ? `<h3 class="settings-heading">${t('Projects')}</h3><div id="projects-settings" class="settings-group"></div>` : ''}`;
     case 'appearance': return `<div class="settings-group">
-        ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
-        ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
+        ${settingRow(t('Theme'), `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}${t`Use ${options.theme === 'dark' ? t('light') : t('dark')}`}</button>`, t('Imported VS Code themes keep their own.'))}
+        ${switchRow('daily-wallpapers', t('Wallpapers'), t('Off, the thread shows a live sky that follows the time of day.'), options.wallpapers)}
       </div>
-      <h3 class="settings-heading">Colors</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
-      <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">Wallpapers</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
+      <h3 class="settings-heading">${t('Colors')}</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
+      <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">${t('Wallpapers')}</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
     case 'agents': return `<div class="settings-group">
-        <div class="setting-row settings-default-row"><div><strong>Default agent</strong></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="Default agent for new tasks" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
-        <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
-        <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
-        ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        <div class="setting-row settings-default-row"><div><strong>${t('Default agent')}</strong></div><button type="button" id="default-provider" class="settings-select" data-action="default-provider" aria-label="${t('Default agent for new tasks')}" aria-haspopup="dialog" aria-expanded="false">${providerLogo(options.defaultProvider)}<span>${escape(defaultName)}</span>${icon('down')}</button></div>
+        <div class="setting-row settings-default-row"><div><strong>${t('Default model')}</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="${t('Default model for new tasks')}" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
+        <div class="setting-row"><div><strong>${t('Agent updates')}</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">${t('Check updates')}</button></div>
+        ${switchRow('turn-checks', t('Project checks after turns'), t('When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.'), options.turnChecks)}
       </div>
-      <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>
+      <div class="settings-heading settings-agents-heading"><h3>${t('Installed agents')}</h3><button type="button" class="settings-refresh" aria-label="${t('Refresh agents')}" title="${t('Refresh agents')}">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
-      ${options.preview ? '<p class="settings-preview-note">Browser preview · sample agent availability.</p>' : ''}
-      ${fold('Advanced', '<h3 class="settings-heading">Privacy</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">OpenCode models</h3><div class="settings-embed" data-embed="openCodeModels"></div>')}`;
+      ${options.preview ? `<p class="settings-preview-note">${t('Browser preview · sample agent availability.')}</p>` : ''}
+      ${fold(t('Advanced'), `<h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`)}`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
-        <div class="setting-row"><div><strong>Tools & integrations</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
-        ${settingRow('Jev', '<button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button>', 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
+        <div class="setting-row"><div><strong>${t('Tools & integrations')}</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">${t('Manage')}</button></div>
+        ${settingRow(t('Jev'), `<button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button>`, t('Optional add-on for browser tests and decision assistance. Your agents work without it.'))}
       </div>
-      ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
+      ${fold(t('Capabilities and cache'), '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
@@ -297,6 +302,11 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
+      const language = panel.querySelector<HTMLSelectElement>('[data-language]');
+      if (language) {
+        language.value = options.language;
+        language.addEventListener('change', () => setLanguagePref(language.value as LanguagePref));
+      }
     }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));

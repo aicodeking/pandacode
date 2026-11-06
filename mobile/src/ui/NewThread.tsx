@@ -14,11 +14,13 @@ import { Menu, TextMenu, ViewMenu, type MenuItem } from './Menu.tsx';
 import { interactiveGlass, nativeGlass } from './NativeGlass.tsx';
 import { toggleSidebar, useSidebar } from './split.tsx';
 import { MODES } from './status.tsx';
+import { useT } from './language.ts';
 import { useBackdrop } from './Backdrop.tsx';
 import { useColors } from './theme.ts';
 import { useNewTask } from './useNewTask.ts';
 
 export function NewThread() {
+  const t = useT();
   const colors = useColors();
   const backdrop = useBackdrop();
   const insets = useSafeAreaInsets();
@@ -38,7 +40,7 @@ export function NewThread() {
       router.push({ pathname: '/task/[device]/[session]', params: { device: deviceId, session } });
       if (note) Alert.alert('Started in a worktree', note.replace(/^Started in a worktree: /, ''));
     } catch (e) {
-      Alert.alert('Could not start the task', (e as Error).message);
+      Alert.alert(t('Could not start the task'), (e as Error).message);
     }
   };
 
@@ -46,57 +48,59 @@ export function NewThread() {
   const chats = new Set(form.list?.tasks.filter(t => t.chat).map(t => t.projectId));
   const projectItems: MenuItem[] = projects.filter(p => !chats.has(p.id)).map(p => ({ label: p.name, ios: 'folder', android: 'folder', checked: p.id === projectId, onPress: () => pick({ projectId: p.id }) }));
   const computerItems: MenuItem[] = hosts.map(h => ({ label: h.name, ios: 'desktopcomputer', android: 'computer', checked: h.id === deviceId, onPress: () => form.pickDevice(h.id) }));
+  // MODES labels are data; the render site maps ids to translated labels.
+  const modeLabels: Record<string, string> = { ask: t('Standard'), auto: t('Auto-approve edits'), plan: t('Plan only'), full: t('Full access') };
   const optionItems: MenuItem[] = [
-    { label: 'New worktree', ios: 'arrow.triangle.branch', android: 'call_split', checked: worktree, onPress: () => form.setWorktree(w => !w) },
-    ...MODES.map(m => ({ label: m.label, section: 'Permissions', checked: m.id === mode, onPress: () => pick({ mode: m.id }) })),
-    ...efforts.map(e => ({ label: e.label, section: 'Effort', checked: e.value === effort, onPress: () => pick({ effort: e.value }) })),
+    { label: t('New worktree'), ios: 'arrow.triangle.branch', android: 'call_split', checked: worktree, onPress: () => form.setWorktree(w => !w) },
+    ...MODES.map(m => ({ label: modeLabels[m.id], section: t('Permissions'), checked: m.id === mode, onPress: () => pick({ mode: m.id }) })),
+    ...efforts.map(e => ({ label: e.label, section: t('Effort'), checked: e.value === effort, onPress: () => pick({ effort: e.value }) })),
   ];
   const harnessItems: MenuItem[] = [
-    ...options.harnesses.map(h => ({ label: h.label, section: 'Harness', checked: h.value === provider, onPress: () => form.pickProvider(h.value) })),
-    ...[{ value: 'default', label: 'Default' }, ...options.models.filter(m => m.value !== 'default')]
-      .map(m => ({ label: m.label, section: 'Model', checked: m.value === model, onPress: () => form.pickModel(m.value) })),
+    ...options.harnesses.map(h => ({ label: h.label, section: t('Harness'), checked: h.value === provider, onPress: () => form.pickProvider(h.value) })),
+    ...[{ value: 'default', label: t('Default') }, ...options.models.filter(m => m.value !== 'default')]
+      .map(m => ({ label: m.label, section: t('Model'), checked: m.value === model, onPress: () => form.pickModel(m.value) })),
   ];
   const ready = form.canStart(prompt);
 
   return (
     <KeyboardAvoidingView behavior="padding" style={[styles.pane, { paddingLeft: insets.left, paddingRight: insets.right, backgroundColor: backdrop.background }]}>
-      <Stack.Screen options={{ title: 'New thread' }} />
+      <Stack.Screen options={{ title: t('New thread') }} />
       {/* Native items, so iOS puts them in the rail; only the Duo's split view shows this pane. */}
       <Stack.Toolbar placement="left">
-        <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? 'Show sidebar' : 'Hide sidebar'} onPress={toggleSidebar} />
+        <Stack.Toolbar.Button icon="sidebar.left" accessibilityLabel={collapsed ? t('Show sidebar') : t('Hide sidebar')} onPress={toggleSidebar} />
       </Stack.Toolbar>
       <View style={styles.center}>
-        <Text style={[styles.title, { color: colors.text }]}>What should we work on?</Text>
+        <Text style={[styles.title, { color: colors.text }]}>{t('What should we work on?')}</Text>
         {hosts.length ? (
           <View style={styles.pickers}>
             {project ? (
               <View style={styles.project}>
                 <ProjectTile deviceId={deviceId} projectId={project.id} name={project.name} size={20} />
-                <TextMenu text={project.name} label="Project" items={projectItems} color={colors.secondary} />
+                <TextMenu text={project.name} label={t('Project')} items={projectItems} color={colors.secondary} />
               </View>
-            ) : <TextMenu ios="folder" android="folder" text="Pick a project" label="Project" items={projectItems} color={colors.secondary} />}
-            <TextMenu ios="desktopcomputer" android="computer" text={`on ${host?.name ?? ''}`} label="Computer" items={computerItems} color={colors.secondary} />
+            ) : <TextMenu ios="folder" android="folder" text={t('Pick a project')} label={t('Project')} items={projectItems} color={colors.secondary} />}
+            <TextMenu ios="desktopcomputer" android="computer" text={t`on ${host?.name ?? ''}`} label={t('Computer')} items={computerItems} color={colors.secondary} />
           </View>
-        ) : <Text style={[styles.note, { color: colors.secondary }]}>No computer with remote access is online.</Text>}
+        ) : <Text style={[styles.note, { color: colors.secondary }]}>{t('No computer with remote access is online.')}</Text>}
       </View>
       <Glass style={[styles.bar, { marginBottom: Math.max(insets.bottom, 10) }]}>
-        <TextInput value={prompt} onChangeText={setPrompt} placeholder={starting ? 'Starting on the computer…' : 'Ask the agent…'} placeholderTextColor={colors.tertiary as string}
-          multiline editable={!starting} style={[styles.input, { color: colors.text }]} accessibilityLabel="Message" />
+        <TextInput value={prompt} onChangeText={setPrompt} placeholder={starting ? t('Starting on the computer…') : t('Ask the agent…')} placeholderTextColor={colors.tertiary as string}
+          multiline editable={!starting} style={[styles.input, { color: colors.text }]} accessibilityLabel={t('Message')} />
         <View style={styles.row}>
-          <Menu ios="plus" android="add" color={colors.text} label="More options" items={optionItems}
+          <Menu ios="plus" android="add" color={colors.text} label={t('More options')} items={optionItems}
             modifiers={nativeGlass ? [frame({ width: SIZE, height: SIZE }), interactiveGlass('circle')] : undefined}>
             {icon => (nativeGlass ? icon : <View style={[styles.round, { backgroundColor: colors.fill }]}>{icon}</View>)}
           </Menu>
           <View style={styles.spacer} />
           {!!provider && (
-            <ViewMenu label={`${harnessName(provider)} model`} items={harnessItems}>
+            <ViewMenu label={t`${harnessName(provider)} model`} items={harnessItems}>
               <View style={styles.harness}>
                 <HarnessLogo id={provider} size={18} />
                 <Icon ios="chevron.down" android="expand_more" size={11} color={colors.secondary} />
               </View>
             </ViewMenu>
           )}
-          <Round label="Send" ios="arrow.up" android="arrow_upward" onPress={send} disabled={!ready}
+          <Round label={t('Send')} ios="arrow.up" android="arrow_upward" onPress={send} disabled={!ready}
             bg={ready ? colors.tint : colors.fill} fg={ready ? colors.onTint : colors.tertiary} />
         </View>
       </Glass>

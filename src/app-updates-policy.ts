@@ -1,6 +1,8 @@
 /* The updater's decisions, kept free of app imports so they can be tested on their own:
  * how often to check, when a downloaded update may restart PandaCode, and how Settings
  * describes each state. */
+import { t } from './i18n.ts';
+
 export type UpdateState =
   | { kind: 'off' }
   | { kind: 'idle' }
@@ -49,10 +51,10 @@ export function updatePrompt(state: UpdateState, installable: boolean, dismissed
     case 'available':
       if (state.version === dismissed) return null;
       return installable
-        ? { label: 'Install and restart', title: `PandaCode ${state.version} is available. Installs when your agents are done.`, later: true }
-        : { label: `${state.version} available`, title: `PandaCode ${state.version} is available. Open GitHub Releases to update this copy.`, later: true };
-    case 'ready': return { label: 'Restart to update', title: `PandaCode ${state.version} is ready. Restart now, or it restarts on its own when your agents are done.`, later: false };
-    case 'installing': return { label: 'Restart to update', title: `Installing ${state.version}…`, later: false };
+        ? { label: t('Install and restart'), title: t`PandaCode ${state.version} is available. Installs when your agents are done.`, later: true }
+        : { label: t`${state.version} available`, title: t`PandaCode ${state.version} is available. Open GitHub Releases to update this copy.`, later: true };
+    case 'ready': return { label: t('Restart to update'), title: t`PandaCode ${state.version} is ready. Restart now, or it restarts on its own when your agents are done.`, later: false };
+    case 'installing': return { label: t('Restart to update'), title: t`Installing ${state.version}…`, later: false };
     default: return null;
   }
 }
@@ -60,14 +62,14 @@ export function updatePrompt(state: UpdateState, installable: boolean, dismissed
 /** One line for Settings → About. */
 export function describeUpdate(state: UpdateState, mode: UpdateMode, now = Date.now(), installable = true): string {
   switch (state.kind) {
-    case 'off': return 'Updates are installed by the desktop app.';
-    case 'checking': return 'Checking GitHub Releases…';
-    case 'current': { const minutes = Math.round((now - state.checkedAt) / 60_000); return `Up to date · checked ${minutes < 1 ? 'just now' : minutes < 60 ? `${minutes}m ago` : `${Math.round(minutes / 60)}h ago`}`; }
-    case 'available': return installable ? `PandaCode ${state.version} is available.` : `PandaCode ${state.version} is available. Updates for this copy are installed by its package or a new AppImage.`;
-    case 'downloading': return `Downloading ${state.version}${state.percent === null ? '…' : ` · ${state.percent}%`}`;
-    case 'ready': return `${state.version} is ready. ${mode === 'automatic' ? 'PandaCode restarts when your agents are done and you step away.' : 'Restart to finish.'}`;
-    case 'installing': return `Installing ${state.version}…`;
-    case 'error': return `Couldn’t check for updates: ${state.message}`;
-    default: return mode === 'off' ? 'Automatic updates are off.' : 'Checks GitHub Releases automatically.';
+    case 'off': return t('Updates are installed by the desktop app.');
+    case 'checking': return t('Checking GitHub Releases…');
+    case 'current': { const minutes = Math.round((now - state.checkedAt) / 60_000); return t`Up to date · checked ${minutes < 1 ? t('just now') : minutes < 60 ? t`${minutes}m ago` : t`${Math.round(minutes / 60)}h ago`}`; }
+    case 'available': return installable ? t`PandaCode ${state.version} is available.` : t`PandaCode ${state.version} is available. Updates for this copy are installed by its package or a new AppImage.`;
+    case 'downloading': return t`Downloading ${state.version}${state.percent === null ? '…' : t` · ${state.percent}%`}`;
+    case 'ready': return t`${state.version} is ready. ${mode === 'automatic' ? t('PandaCode restarts when your agents are done and you step away.') : t('Restart to finish.')}`;
+    case 'installing': return t`Installing ${state.version}…`;
+    case 'error': return t`Couldn’t check for updates: ${state.message}`;
+    default: return mode === 'off' ? t('Automatic updates are off.') : t('Checks GitHub Releases automatically.');
   }
 }
