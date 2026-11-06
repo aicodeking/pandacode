@@ -14,6 +14,35 @@ async function openThread(page: Page, width = 1200): Promise<void> {
 }
 
 test.describe('thread header overlay', () => {
+  for (const kind of ['light', 'dark'] as const) {
+    for (const preference of ['none', 'contrast', 'transparency'] as const) {
+      test(`the header stays bare with an imported ${kind} theme and ${preference} preference`, async ({ page, browserName }) => {
+        test.skip(preference === 'transparency' && browserName !== 'chromium', 'Reduced transparency emulation requires CDP.');
+        if (preference === 'contrast') await page.emulateMedia({ contrast: 'more' });
+        if (preference === 'transparency') {
+          const cdp = await page.context().newCDPSession(page);
+          await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+        }
+        await page.addInitScript(kind => {
+          // Nonwhite light surface from the theme reported in #338; a tinted dark surface is a control.
+          localStorage.setItem('pandacode.palette', JSON.stringify({ vsix: {
+            id: 'header-test', name: 'Header test', extension: 'header-test', kind,
+            colors: { 'editor.background': kind === 'light' ? '#f1f5e0' : '#282a36', 'editor.foreground': kind === 'light' ? '#2c3320' : '#f8f8f2' },
+          } }));
+        }, kind);
+        await openThread(page);
+        await expect(page.locator('html')).toHaveAttribute('data-vsix', '');
+        await expect(page.locator('html')).toHaveAttribute('data-theme', kind);
+        await expect(page.locator('.workspace-header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+        if (preference !== 'none') {
+          // The solid panel, not a separate header stripe, provides the accessibility fallback.
+          await expect(page.locator('.workspace')).not.toHaveAttribute('data-scene');
+          await expect(page.locator('.main-pane')).toHaveCSS('background-color', kind === 'light' ? 'rgb(241, 245, 224)' : 'rgb(40, 42, 54)');
+        }
+      });
+    }
+  }
+
   for (const width of [1200, 900, 620]) {
     test(`the transcript scrolls under the bare header with no fade at ${width}px`, async ({ page }) => {
       await openThread(page, width);
