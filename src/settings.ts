@@ -132,6 +132,7 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
 function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
+    case 'recommended': return '<div id="recommended-settings"></div>';
     case 'general': return `<div class="settings-group">
         <div class="setting-row"><div><strong>${t('Language')}</strong><small>${t('Follows the system language until you pick one here.')}</small></div><select class="settings-select" data-language aria-label="${t('Language')}"><option value="auto">${t('System default')}</option>${LANGUAGES.map(language => `<option value="${language.id}">${language.native}</option>`).join('')}</select></div>
         ${uiSizeControls()}${switchRow('compact-mode', t('Compact conversation'), '', options.compact)}${switchRow('expand-tool-activity', t('Expand tool activity'), '', options.activityExpanded)}</div>
