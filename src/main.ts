@@ -5779,7 +5779,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
       theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
-      projects: { list: userProjects, remove: removeProject },
+      projects: { list: userProjects, remove: removeProject, notify, projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); } },
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
