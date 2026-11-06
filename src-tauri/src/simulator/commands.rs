@@ -114,3 +114,22 @@ pub async fn simulator_capture(app: AppHandle, udid: String) -> Result<Response>
     })
     .await
 }
+
+/// The saved Android emulator launch flags: a default plus per-AVD overrides.
+#[tauri::command]
+pub async fn simulator_emulator_flags() -> Result<super::emulator_flags::EmulatorFlags> {
+    crate::blocking(|| Ok(super::emulator_flags::read())).await
+}
+
+/// Saves the Android emulator launch flags. Device keys are `android:<AVD>` udids;
+/// an AVD with saved flags launches with them instead of the default.
+#[tauri::command]
+pub async fn simulator_set_emulator_flags(default: String, devices: std::collections::BTreeMap<String, String>) -> Result<()> {
+    let flags = super::emulator_flags::clean(
+        default,
+        devices.into_iter().map(|(udid, text)| {
+            super::android::avd(&udid).filter(|avd| super::android::valid_name(avd)).map(str::to_string).ok_or_else(|| "Unknown simulator.".to_string()).map(|avd| (avd, text))
+        }).collect::<std::result::Result<std::collections::BTreeMap<_, _>, String>>()?,
+    )?;
+    crate::blocking(move || super::emulator_flags::write(&flags)).await
+}

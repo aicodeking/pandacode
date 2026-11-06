@@ -142,7 +142,7 @@ pub fn screen(name: &str) -> Result<Screen, String> {
 }
 
 /// Headless, `-gpu auto` picks the software Vulkan renderer on Linux, which crashes the emulator.
-const GPU: &str = if cfg!(target_os = "linux") { "host" } else { "auto" };
+pub(super) const GPU: &str = if cfg!(target_os = "linux") { "host" } else { "auto" };
 
 /// Start an AVD headless and wait until Android reports the boot finished.
 pub fn boot(name: &str) -> Result<(), String> {
@@ -151,7 +151,7 @@ pub fn boot(name: &str) -> Result<(), String> {
     }
     let emulator = emulator_path().ok_or("Install the Android emulator to boot this device.")?;
     let mut command = Command::new(emulator);
-    command.args(["-avd", name, "-no-window", "-no-audio", "-no-boot-anim", "-gpu", GPU]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    command.args(super::emulator_flags::boot_args(name)).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
