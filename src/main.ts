@@ -48,7 +48,7 @@ import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
-import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
+import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, TaskTokenUsage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -66,7 +66,7 @@ import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDu
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
-import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
+import { contextSummary, fallbackModel, parseContextUsage, tokenCount } from './model-catalog';
 import { openCodeChoices, type OpenCodeModels } from './preview-opencode';
 import { SECTIONS } from './settings-sections';
 import { MODE_TONES, approvalMode, approvalModes, toned, type ApprovalMode } from './approval-modes';
@@ -106,6 +106,7 @@ import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
+import { createVoice } from './voice';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -590,6 +591,36 @@ const tokenSaver = createTokenSaver({
   },
 });
 void tokenSaver.loadTools();
+/* Per-task token totals from the agents' own logs; one fetch per session, refetched when a run ends. */
+const taskUsage = new Map<string, TaskTokenUsage | null>();
+function usageLine(usage: TaskTokenUsage): string {
+  return `This task so far: ${tokenCount(usage.input)} in, ${tokenCount(usage.output)} out, ${tokenCount(usage.cacheRead)} cache reads.`;
+}
+function renderContextUsage(): void {
+  const usage = state.sessionId ? taskUsage.get(state.sessionId) : undefined;
+  const line = document.querySelector<HTMLElement>('.composer-task-usage');
+  if (line) line.textContent = usage ? usageLine(usage) : '';
+}
+function ensureTaskUsage(sessionId: string): void {
+  if (taskUsage.has(sessionId)) return;
+  taskUsage.set(sessionId, null);
+  void call<TaskTokenUsage | null>('task_token_usage', { sessionId }).then(usage => {
+    taskUsage.set(sessionId, usage ?? null);
+    if (state.sessionId === sessionId) renderContextUsage();
+  }).catch(() => taskUsage.delete(sessionId));
+}
+/* Voice dictation: the mic records natively and streams partial text into the prompt. */
+const voice = createVoice({
+  call,
+  listen: (name, handler) => {
+    const unlisten = subscribe(name as 'voice-partial', handler as (event: { text: string }) => void);
+    return () => { void unlisten.then(off => off()); };
+  },
+  notify,
+  changed: () => renderComposer(),
+  setSettings: (settings, models) => voice.setSettings(settings, models),
+});
+void voice.load();
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
@@ -2656,19 +2687,8 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
-  // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
-  if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
-    const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (fresh) {
-      // Every attribute the template varies across renders; extend this list when the template gains one.
-      for (const name of ['placeholder', 'aria-description', 'rows']) {
-        const value = fresh.getAttribute(name);
-        if (value === null) oldPrompt.removeAttribute(name); else oldPrompt.setAttribute(name, value);
-      }
-      fresh.replaceWith(oldPrompt);
-    }
-  }
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}"><div id="attachments" class="attachments">${attachmentBar(s)}</div><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-toolbar"><div class="composer-tools">${button('attach', 'Attach files for context', 'plus', '', 'type="button"')}${modelTriggerHtml(s, modelLocked, true)}<span class="composer-separator"></span>${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${voice.button(s.id)}</div>${running && !team ? `<button type="button" class="steer-button" data-action="steer" title="Send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${icon('spark')}<span>Steer</span></button>` : ''}${sendControl}</div></form>`;
+  $('#composer-area').insertAdjacentHTML('afterbegin', worktrees.contextBar(s, newTaskView()));
   // Approvals sit above everything that rides on the prompt, the context bar included.
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="bot-failover-bar"></div>');
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
@@ -5648,6 +5668,16 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
+      voice: {
+        call,
+        listen: (name, handler) => {
+          const unlisten = subscribe(name as 'voice-download', handler as (event: { id: string; status: string }) => void);
+          return () => { void unlisten.then(off => off()); };
+        },
+        notify,
+        changed: () => renderComposer(),
+        setSettings: (settings, models) => voice.setSettings(settings, models),
+      },
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })) },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
@@ -6747,6 +6777,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
+    case 'voice': voice.handleAction(); break;
     case 'tab-pull': state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector(); break;
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;

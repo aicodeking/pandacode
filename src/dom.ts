@@ -4,6 +4,7 @@ export function escape(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 const paths: Record<string, string> = {
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>',
   images: '<rect x="6" y="3" width="15" height="15" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12M6 14l4-4 5 5 3-3 3 3"/><circle cx="16" cy="7" r="1"/>',
   play: '<path d="m8 4 12 8-12 8Z"/>',
   board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
