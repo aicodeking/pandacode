@@ -5525,10 +5525,10 @@ function sidebarShortcut(event: KeyboardEvent): boolean {
   // passed); when the field is not shown (a narrow window) the key is left alone.
   const filter = $('#sidebar-filter');
   const control = !$('#navigation').contains(target) && target.closest('button, a[href], [role="button"], [role="menuitem"], [role="tab"], summary');
-  if (event.key === '/' && !command && !event.altKey && !control && filter.getClientRects().length) {
+  if (event.code === 'Slash' && !command && !event.altKey && !control && filter.getClientRects().length) {
     event.preventDefault(); filter.focus(); return true;
   }
-  if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && toastUndo) {
+  if (command && !event.shiftKey && !event.altKey && event.code === 'KeyZ' && toastUndo) {
     event.preventDefault(); const undo = toastUndo; toastUndo = undefined; void hideToast($('#toast')); undo(); return true;
   }
   return false;
@@ -6919,10 +6919,11 @@ const threadFind = createThreadFind({
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
 });
 document.addEventListener('keydown', event => {
+  // Match the physical key (event.code) so a shortcut fires on any layout and even while an IME is composing.
   if (event.defaultPrevented) return;
   const command = event.metaKey || event.ctrlKey;
   const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
-  if (command && event.key.toLowerCase() === 'k') { event.preventDefault(); showCommands(); return; }
+  if (command && event.code === 'KeyK') { event.preventDefault(); showCommands(); return; }
   if (dialog.open) {
     if (dialog.classList.contains('command-dialog') && ['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key) && !isImeKey(event)) {
       event.preventDefault(); const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('#command-results button')]; const current = buttons.findIndex(b => b.classList.contains('command-selected'));
@@ -6933,13 +6934,13 @@ document.addEventListener('keydown', event => {
   // An Escape that cancels an IME conversion belongs to the IME: it never stops a run or clears a field.
   if (event.key === 'Escape' && isImeKey(event)) return;
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
-  if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
-  if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
+  if (command && !event.altKey && !event.shiftKey && event.code === 'KeyF') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
+  if (command && !event.altKey && event.code === 'KeyG' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
   if (sidebarShortcut(event)) return;
-  if (command && event.key.toLowerCase() === 'n') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
-  else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
-  else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
-  else if (command && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
+  if (command && event.code === 'KeyN') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
+  else if (command && event.code === 'KeyJ') { event.preventDefault(); run(toggleTerminal()); }
+  else if (command && event.code === 'Comma') { event.preventDefault(); run(showSettings()); }
+  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
