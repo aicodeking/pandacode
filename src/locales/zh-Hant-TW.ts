@@ -8,6 +8,8 @@ export default {
 " Commit or discard them first.": " 請先提交或放棄這些更改。",
 " Could not read {0}.": " 無法讀取 {0}。",
 " Not installed yet: turning it on installs it ({0}).": " 尚未安裝：開啟後會自動安裝（{0}）。",
+"Recommended": "推薦",
+"Replied": "已回覆",
 " Reopen it above to continue.": " 在上方重新開啟即可繼續。",
 " Reported model default: {0}.": " 報告的模型預設值：{0}。",
 " Search to narrow the list.": " 搜尋以縮小列表範圍。",

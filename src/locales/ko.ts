@@ -9,6 +9,8 @@ export default {
 " Commit or discard them first.": " 먼저 커밋하거나 버리세요.",
 " Could not read {0}.": " {0}을(를) 읽을 수 없습니다.",
 " Not installed yet: turning it on installs it ({0}).": " 아직 설치되지 않았습니다. 켜면 설치됩니다 ({0}).",
+"Recommended": "추천",
+"Replied": "응답함",
 " Reopen it above to continue.": " 계속하려면 위에서 다시 여세요.",
 " Reported model default: {0}.": " 보고된 모델 기본값: {0}.",
 " Search to narrow the list.": " 검색으로 목록을 좁혀 보세요.",

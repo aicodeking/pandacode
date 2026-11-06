@@ -9,6 +9,8 @@ export default {
 " Commit or discard them first.": " 先にコミットするか破棄してください。",
 " Could not read {0}.": " {0} を読み取れませんでした。",
 " Not installed yet: turning it on installs it ({0}).": " まだインストールされていません：オンにするとインストールされます（{0}）。",
+"Recommended": "おすすめ",
+"Replied": "返信済み",
 " Reopen it above to continue.": " 続行するには上で再度開いてください。",
 " Reported model default: {0}.": " 報告されたモデルのデフォルト：{0}。",
 " Search to narrow the list.": " 検索するとリストを絞り込めます。",

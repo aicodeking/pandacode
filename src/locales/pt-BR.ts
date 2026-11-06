@@ -9,6 +9,8 @@ export default {
 " Commit or discard them first.": " Faça commit ou descarte-as primeiro.",
 " Could not read {0}.": " Não foi possível ler {0}.",
 " Not installed yet: turning it on installs it ({0}).": " Ainda não instalado: ao ativar, ele é instalado ({0}).",
+"Recommended": "Recomendado",
+"Replied": "Respondido",
 " Reopen it above to continue.": " Reabra acima para continuar.",
 " Reported model default: {0}.": " Padrão de modelo informado: {0}.",
 " Search to narrow the list.": " Busque para reduzir a lista.",

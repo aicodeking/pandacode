@@ -9,6 +9,8 @@ export default {
 " Commit or discard them first.": " 请先提交或放弃这些更改。",
 " Could not read {0}.": " 无法读取 {0}。",
 " Not installed yet: turning it on installs it ({0}).": " 尚未安装：开启后会自动安装（{0}）。",
+"Recommended": "推荐",
+"Replied": "已回复",
 " Reopen it above to continue.": " 在上方重新打开即可继续。",
 " Reported model default: {0}.": " 报告的模型默认值：{0}。",
 " Search to narrow the list.": " 搜索以缩小列表范围。",
