@@ -1,10 +1,13 @@
 //! DigitalOcean droplets for cloud agents (docs/cloud-agents.md): regular VPS boxes in the
 //! user's account, driven by the REST API (docs.digitalocean.com/reference/api/digitalocean)
 //! with one personal token and reached over SSH (cloud/ssh.rs). Droplets carry the
-//! `pandacode` tag; new ones are the smallest 4 GB Ubuntu image in the saved region. Like
-//! AWS and Google Cloud VMs they run until stopped, and the panel stops them after idle runs.
+//! `pandacode` tag; new ones are a 4 GB Ubuntu image in the saved region and size (Settings →
+//! Cloud lists the account's, with any slug accepted). Like AWS and Google Cloud VMs they run
+//! until stopped, and the panel stops them after idle runs.
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::{http, http::block, sandbox::{Info, Sandbox}, ssh, Machine};
 use crate::Result;
@@ -25,6 +28,18 @@ const BOOT_TRIES: u32 = 60;
 const BOOT_PAUSE: u64 = 5;
 /// A power action completes within this many polls.
 const ACTION_TRIES: u32 = 60;
+/// Regions and sizes rarely change: one account's lists are remembered this long so
+/// reopening Settings → Cloud does not re-request them.
+const CATALOG_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// A cached catalog: the two lists, with when they were fetched.
+type CachedCatalog = (Instant, Value, Value);
+
+/// The cached region and size lists per (API base, token): another account refetches.
+fn catalog_cache() -> &'static Mutex<HashMap<(String, String), CachedCatalog>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), CachedCatalog>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub struct DigitalOcean {
     api: String,
@@ -50,6 +65,48 @@ impl DigitalOcean {
     /// The saved region, else New York 1.
     fn region() -> String {
         super::settings().providers.get("digitalocean").and_then(|options| options.get("region")).filter(|r| !r.is_empty()).cloned().unwrap_or_else(|| REGION.into())
+    }
+    /// The saved machine size, else the standard 2 vCPU / 4 GB.
+    fn size() -> String {
+        super::settings().providers.get("digitalocean").and_then(|options| options.get("size")).filter(|s| !s.is_empty()).cloned().unwrap_or_else(|| SIZE.into())
+    }
+    /// A saved option, else empty (create falls back to the defaults above).
+    fn saved(name: &str) -> String {
+        super::settings().providers.get("digitalocean").and_then(|options| options.get(name)).filter(|value| !value.is_empty()).cloned().unwrap_or_default()
+    }
+
+    /// The account's region and size lists, from the cache while it is fresh.
+    async fn catalog_lists(&self) -> Result<(Value, Value)> {
+        let account = (self.api.clone(), self.key.clone());
+        let cached = catalog_cache().lock().unwrap().get(&account).filter(|(at, _, _)| at.elapsed() < CATALOG_TTL).map(|(_, regions, sizes)| (regions.clone(), sizes.clone()));
+        if let Some(lists) = cached {
+            return Ok(lists);
+        }
+        let regions = self.api(reqwest::Method::GET, "/regions?per_page=200", None).await?;
+        let sizes = self.api(reqwest::Method::GET, "/sizes?per_page=200", None).await?;
+        catalog_cache().lock().unwrap().insert(account, (Instant::now(), regions.clone(), sizes.clone()));
+        Ok((regions, sizes))
+    }
+
+    /// The regions and sizes the account offers, with the saved pair, for Settings → Cloud.
+    pub async fn catalog(&self) -> Result<Value> {
+        let (regions, sizes) = self.catalog_lists().await?;
+        let regions: Vec<Value> = regions["regions"].as_array().map(|items| items.iter().filter(|item| item["available"].as_bool() == Some(true)).filter_map(|item| {
+            let slug = item["slug"].as_str()?;
+            Some(json!({"value": slug, "label": format!("{} ({slug})", item["name"].as_str().unwrap_or_default())}))
+        }).collect()).unwrap_or_default();
+        let sizes: Vec<Value> = sizes["sizes"].as_array().map(|items| items.iter().filter(|item| item["available"].as_bool() == Some(true)).filter_map(|item| {
+            let slug = item["slug"].as_str()?;
+            // RAM arrives in MB; a monthly price prints without trailing zeros ($4, not $4.0).
+            let gb = item["memory"].as_f64().unwrap_or(0.0) / 1024.0;
+            let price = item["price_monthly"].as_f64().unwrap_or(0.0);
+            Some(json!({
+                "value": slug,
+                "label": format!("{} vCPU · {gb} GB · ${price}/mo ({slug})", item["vcpus"].as_u64().unwrap_or(0)),
+                "regions": item["regions"].as_array().map(|list| list.iter().filter_map(Value::as_str).collect::<Vec<_>>()).unwrap_or_default(),
+            }))
+        }).collect()).unwrap_or_default();
+        Ok(json!({"regions": regions, "sizes": sizes, "region": Self::saved("region"), "size": Self::saved("size")}))
     }
 
     pub async fn list(&self) -> Result<Vec<Machine>> {
@@ -118,11 +175,12 @@ impl DigitalOcean {
     pub async fn create(&self, name: &str) -> Result<Machine> {
         let name = valid_name(name)?;
         let region = Self::region();
+        let size = Self::size();
         // ssh::key_pair and wait_ready are synchronous; this future already runs on a
         // blocking thread, so nesting `block` here would panic.
         let public = ssh::key_pair()?.1;
         let key = self.key_id(&public).await?;
-        let made = self.api(reqwest::Method::POST, "/droplets", Some(create_body(name, &region, key))).await?;
+        let made = self.api(reqwest::Method::POST, "/droplets", Some(create_body(name, &region, &size, key))).await?;
         let id = made["droplet"]["id"].as_u64().ok_or_else(|| "DigitalOcean did not report the new droplet.".to_string())?;
         let native = id.to_string();
         let mut address = Err(String::from("never tried"));
@@ -135,7 +193,7 @@ impl DigitalOcean {
         // The address may have been recycled from an older droplet with a different key.
         ssh::forget_host(&ip, 22);
         ssh::wait_ready(&ssh::Target::vps(ip), CLOUD_INIT_WAIT)?;
-        Ok(Machine { id: format!("digitalocean:{native}"), provider: "digitalocean".into(), name: name.into(), state: "running".into(), os: "linux".into(), desktop: false, detail: format!("{SERVICE} · {SIZE} · {region}") })
+        Ok(Machine { id: format!("digitalocean:{native}"), provider: "digitalocean".into(), name: name.into(), state: "running".into(), os: "linux".into(), desktop: false, detail: format!("{SERVICE} · {size} · {region}") })
     }
 
     pub async fn power(&self, id: &str, action: &str) -> Result<()> {
@@ -222,8 +280,8 @@ impl DigitalOcean {
     }
 }
 
-fn create_body(name: &str, region: &str, key: i64) -> Value {
-    json!({"name": name, "region": region, "size": SIZE, "image": IMAGE, "ssh_keys": [key], "tags": [TAG], "user_data": USER_DATA})
+fn create_body(name: &str, region: &str, size: &str, key: i64) -> Value {
+    json!({"name": name, "region": region, "size": size, "image": IMAGE, "ssh_keys": [key], "tags": [TAG], "user_data": USER_DATA})
 }
 
 fn state(status: &str) -> &'static str {
@@ -255,6 +313,19 @@ fn valid_name(name: &str) -> Result<&str> {
     ok.then_some(name).ok_or_else(|| "DigitalOcean names use lowercase letters, digits and dashes, starting with a letter or digit (up to 63).".to_string())
 }
 
+/// Region and size slugs are lowercase letters, digits, dashes and underscores (storage
+/// slugs like so1_5 carry one), up to 32 characters.
+fn check_slug(value: &str, kind: &str, examples: &str) -> Result<()> {
+    let ok = value.len() <= 32 && value.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    ok.then_some(()).ok_or_else(|| format!("That does not look like a DigitalOcean {kind} (for example {examples})."))
+}
+
+/// The Settings card detail: the saved size and region, else the token note.
+fn detail(options: &std::collections::BTreeMap<String, String>) -> String {
+    let pair = ["size", "region"].iter().filter_map(|name| options.get(*name)).filter(|value| !value.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+    if pair.is_empty() { "API token saved".into() } else { pair }
+}
+
 pub fn connect(key: &str, options: &Value) -> Result<()> {
     let key = key.trim();
     if key.is_empty() {
@@ -262,9 +333,11 @@ pub fn connect(key: &str, options: &Value) -> Result<()> {
     }
     let region = options["region"].as_str().map(str::trim).filter(|r| !r.is_empty());
     if let Some(region) = region {
-        if region.len() > 32 || !region.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
-            return Err("That does not look like a DigitalOcean region (for example nyc1 or fra1).".into());
-        }
+        check_slug(region, "region", "nyc1 or fra1")?;
+    }
+    let size = options["size"].as_str().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(size) = size {
+        check_slug(size, "machine size", "s-2vcpu-4gb or c-2")?;
     }
     block(DigitalOcean::new(None, key.into()).verify())?;
     super::set_secret("digitalocean_key", key)?;
@@ -273,7 +346,43 @@ pub fn connect(key: &str, options: &Value) -> Result<()> {
     if let Some(region) = region {
         entry.insert("region".into(), region.into());
     }
-    entry.insert("detail".into(), "API token saved".into());
+    if let Some(size) = size {
+        entry.insert("size".into(), size.into());
+    }
+    let detail = detail(entry);
+    entry.insert("detail".into(), detail);
+    super::save_settings(&settings)
+}
+/// Save the region and size new droplets use, from Settings → Cloud. Empty means "not set":
+/// the create-time defaults apply.
+pub fn set_options(region: Option<String>, size: Option<String>) -> Result<()> {
+    if super::secret("digitalocean_key").is_none() {
+        return Err("Connect DigitalOcean in Settings → Cloud first.".into());
+    }
+    let region = region.as_deref().map(str::trim).filter(|region| !region.is_empty());
+    let size = size.as_deref().map(str::trim).filter(|size| !size.is_empty());
+    if let Some(region) = region {
+        check_slug(region, "region", "nyc1 or fra1")?;
+    }
+    if let Some(size) = size {
+        check_slug(size, "machine size", "s-2vcpu-4gb or c-2")?;
+    }
+    let mut settings = super::settings();
+    let entry = settings.providers.entry("digitalocean".into()).or_default();
+    match region {
+        Some(region) => { entry.insert("region".into(), region.into()); }
+        None => { entry.remove("region"); }
+    }
+    match size {
+        Some(size) => { entry.insert("size".into(), size.into()); }
+        None => { entry.remove("size"); }
+    }
+    let detail = detail(entry);
+    entry.insert("detail".into(), detail);
+    // A disconnect that raced this save removed the key; do not resurrect the entry.
+    if super::secret("digitalocean_key").is_none() {
+        return Err("Connect DigitalOcean in Settings → Cloud first.".into());
+    }
     super::save_settings(&settings)
 }
 pub fn disconnect() -> Result<()> {
@@ -284,6 +393,10 @@ pub fn disconnect() -> Result<()> {
 }
 pub fn sandbox() -> Result<Box<dyn Sandbox>> {
     Ok(Box::new(DigitalOcean::connected()?))
+}
+/// The connected account's region and size catalog for Settings → Cloud.
+pub async fn catalog() -> Result<Value> {
+    DigitalOcean::connected()?.catalog().await
 }
 
 impl Sandbox for DigitalOcean {
@@ -333,6 +446,8 @@ mod tests {
     fn api() -> (DigitalOcean, mock::Seen) {
         let (base, seen) = mock::serve(|request, _| match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/account") => (200, br#"{"account":{"status":"active","email":"me@example.com"}}"#.to_vec()),
+            ("GET", "/regions?per_page=200") => (200, br#"{"regions":[{"available":true,"name":"New York 1","slug":"nyc1"},{"available":false,"name":"Retired","slug":"old1"},{"available":true,"name":"Frankfurt 1","slug":"fra1"}]}"#.to_vec()),
+            ("GET", "/sizes?per_page=200") => (200, br#"{"sizes":[{"available":true,"slug":"s-2vcpu-4gb","vcpus":2,"memory":4096,"price_monthly":24.0,"regions":["nyc1","fra1","ams3"]},{"available":false,"slug":"s-old","vcpus":1,"memory":1024,"price_monthly":5.0},{"available":true,"slug":"c-2","vcpus":2,"memory":3072,"price_monthly":15.75,"regions":[]},{"available":true,"slug":"s-1vcpu-1gb","vcpus":1,"memory":1024,"price_monthly":6.0}]}"#.to_vec()),
             ("GET", "/account/keys?per_page=200") => (200, br#"{"ssh_keys":[{"id":7,"name":"other","public_key":"ssh-rsa ZZZ"},{"id":9,"name":"pandacode","public_key":"ssh-ed25519 AAAA pandacode"}]}"#.to_vec()),
             ("POST", "/account/keys") => (201, br#"{"ssh_key":{"id":11,"name":"pandacode"}}"#.to_vec()),
             ("GET", "/droplets?tag_name=pandacode&per_page=200") => (200, br#"{"droplets":[{"id":1,"name":"job","status":"active","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":2,"name":"wip","status":"new","size_slug":"s-2vcpu-4gb","region":{"slug":"fra1"}},{"id":3,"name":"off","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":5,"name":"done","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}}]}"#.to_vec()),
@@ -377,7 +492,7 @@ mod tests {
         });
         let fresh = DigitalOcean::new(Some(base), "t".into());
         assert_eq!(fresh.key_id("ssh-ed25519 BBBB").await.unwrap(), 11);
-        assert_eq!(create_body("job", "fra1", 9), json!({"name":"job","region":"fra1","size":SIZE,"image":IMAGE,"ssh_keys":[9],"tags":[TAG],"user_data":USER_DATA}));
+        assert_eq!(create_body("job", "fra1", SIZE, 9), json!({"name":"job","region":"fra1","size":SIZE,"image":IMAGE,"ssh_keys":[9],"tags":[TAG],"user_data":USER_DATA}));
         assert_eq!(api.ip("42").await.unwrap(), "203.0.113.9");
         let log = seen2.lock().unwrap();
         let post = log.iter().find(|r| r.method == "POST").unwrap();
@@ -470,6 +585,7 @@ mod tests {
         assert!(api.verify().await.unwrap_err().contains("refused the credentials"));
         assert!(connect(" ", &Value::Null).is_err());
         assert!(connect("tok", &json!({"region": "BAD REGION"})).is_err());
+        assert!(connect("tok", &json!({"size": "BIG"})).is_err());
     }
 
     #[test]
@@ -477,6 +593,56 @@ mod tests {
         assert_eq!(valid_name("pc-1").unwrap(), "pc-1");
         assert!(valid_name("Pc-1").is_err() && valid_name("-pc").is_err() && valid_name("pc-").is_err() && valid_name("").is_err());
         assert!(valid_name(&"a".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn create_body_carries_the_chosen_size() {
+        assert_eq!(create_body("job", "fra1", "s-4vcpu-8gb", 9)["size"], "s-4vcpu-8gb");
+        assert_eq!(create_body("job", "nyc1", SIZE, 9)["size"], SIZE);
+    }
+
+    /// The catalog reads the pair set_options saves, so their assertions share one test and
+    /// stay clear of the parallel suite's writes to the same store.
+    #[tokio::test]
+    async fn the_catalog_and_set_options_round_trip() {
+        let mut settings = super::super::settings();
+        settings.providers.remove("digitalocean");
+        super::super::save_settings(&settings).unwrap();
+        let (api, seen) = api();
+        let page = api.catalog().await.unwrap();
+        assert_eq!(page["regions"].as_array().unwrap().iter().map(|r| (r["value"].as_str().unwrap(), r["label"].as_str().unwrap())).collect::<Vec<_>>(), vec![("nyc1", "New York 1 (nyc1)"), ("fra1", "Frankfurt 1 (fra1)")]);
+        assert_eq!(page["sizes"].as_array().unwrap().iter().map(|s| s["label"].as_str().unwrap()).collect::<Vec<_>>(), vec!["2 vCPU · 4 GB · $24/mo (s-2vcpu-4gb)", "2 vCPU · 3 GB · $15.75/mo (c-2)", "1 vCPU · 1 GB · $6/mo (s-1vcpu-1gb)"]);
+        assert_eq!(page["sizes"][0]["regions"], json!(["nyc1", "fra1", "ams3"]));
+        assert_eq!(page["sizes"][1]["regions"], json!([]));
+        assert_eq!(page["sizes"][2]["regions"], json!([]), "a size without regions still lists");
+        assert_eq!((page["region"].as_str(), page["size"].as_str()), (Some(""), Some("")));
+        assert!(seen.lock().unwrap().iter().any(|r| r.path == "/regions?per_page=200") && seen.lock().unwrap().iter().any(|r| r.path == "/sizes?per_page=200"));
+        assert!(seen.lock().unwrap().iter().filter(|r| r.path.starts_with("/regions") || r.path.starts_with("/sizes")).all(|r| r.authorization.as_deref() == Some("Bearer tok-1")));
+
+        super::super::set_secret("digitalocean_key", "tok-1").unwrap();
+        set_options(Some(" fra1 ".into()), Some("c-2".into())).unwrap();
+        let saved = super::super::settings().providers["digitalocean"].clone();
+        assert_eq!((saved.get("region").map(String::as_str), saved.get("size").map(String::as_str)), (Some("fra1"), Some("c-2")));
+        assert_eq!(saved["detail"], "c-2 · fra1");
+        assert_eq!(DigitalOcean::size(), "c-2");
+        let page = api.catalog().await.unwrap();
+        assert_eq!(page["region"].as_str(), Some("fra1"), "the catalog reports the saved pair");
+        assert_eq!(page["size"].as_str(), Some("c-2"));
+        // The lists ride the hour cache: the second read re-requests nothing.
+        assert_eq!(seen.lock().unwrap().iter().filter(|r| r.path.starts_with("/regions") || r.path.starts_with("/sizes")).count(), 2);
+        // Empty restores the create-time defaults; bad slugs are refused in the usual voice.
+        set_options(Some(String::new()), None).unwrap();
+        let saved = super::super::settings().providers["digitalocean"].clone();
+        assert!(!saved.contains_key("region") && !saved.contains_key("size"));
+        assert_eq!(saved["detail"], "API token saved");
+        assert_eq!(DigitalOcean::size(), SIZE);
+        // Storage-optimized slugs carry an underscore (the so1_5 family).
+        set_options(None, Some("so1_5-4vcpu-32gb".into())).unwrap();
+        assert_eq!(DigitalOcean::size(), "so1_5-4vcpu-32gb");
+        assert!(set_options(None, Some("C-2".into())).unwrap_err().contains("That does not look like a DigitalOcean machine size (for example s-2vcpu-4gb or c-2)."));
+        assert!(set_options(Some("NYC 1".into()), None).unwrap_err().contains("That does not look like a DigitalOcean region (for example nyc1 or fra1)."));
+        super::super::remove_secret("digitalocean_key");
+        assert!(set_options(None, None).unwrap_err().contains("Connect DigitalOcean"));
     }
 
     #[test]

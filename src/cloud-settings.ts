@@ -16,7 +16,7 @@ export type CloudSettingsHost = {
 type Field = { name: string; label: string; placeholder: string; secret?: boolean; optional?: boolean; sparse?: boolean };
 /* Sandbox providers that connect with one API key (docs/cloud-agents.md → Provider settings). */
 const KEYED = {
-  digitalocean: { name: 'DigitalOcean', key: 'API token', docs: 'cloud.digitalocean.com/account/api/tokens', fields: [{ name: 'region', label: 'Region', placeholder: 'Optional, e.g. nyc1', optional: true }] },
+  digitalocean: { name: 'DigitalOcean', key: 'API token', docs: 'cloud.digitalocean.com/account/api/tokens', fields: [] },
   vultr: { name: 'Vultr', key: 'API key', docs: 'my.vultr.com/settings → API', fields: [{ name: 'region', label: 'Region', placeholder: 'Optional, e.g. ewr', optional: true }] },
   hetzner: { name: 'Hetzner', key: 'API token', docs: 'console.hetzner.cloud → Security → API tokens', fields: [{ name: 'location', label: 'Location', placeholder: 'Optional, e.g. fsn1', optional: true }] },
   runpod: { name: 'RunPod', key: 'API key', docs: 'runpod.io → Settings → API Keys', fields: [{ name: 'gpu', label: 'GPU type', placeholder: 'Optional, e.g. NVIDIA RTX 3090', optional: true }, { name: 'image', label: 'Image', placeholder: 'Optional, an image with SSH built in', optional: true }] },
@@ -85,6 +85,8 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
 };
 /** `cloud_instabox_images`: what new InstaBox machines can start from, and the saved choice. */
 type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
+/** `cloud_digitalocean_catalog`: the account's droplet regions and sizes, and the saved pair. */
+type DoCatalog = { regions: { value: string; label: string }[]; sizes: { value: string; label: string; regions: string[] }[]; region: string; size: string };
 const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
 const CLAUDE_TOKEN_HELP = 'Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.';
 const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Agents → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
@@ -103,6 +105,14 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <p class="cloud-image-status" role="status" hidden></p>
         <p class="cloud-image-error" role="alert" hidden></p>
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">Try again</button></div>
+      </div>` : ''}${id === 'digitalocean' ? `
+      <div class="cloud-image" data-do-options hidden>
+        <div class="cloud-image-row"><label><span>Region</span><select data-do="region" aria-label="DigitalOcean region" disabled></select></label></div>
+        <div class="cloud-image-row"><label><span>Machine size</span><select data-do="size" aria-label="DigitalOcean machine size" disabled></select></label></div>
+        <div class="cloud-image-row" data-do-custom hidden><label><span data-do-custom-label>Region</span><input data-do="custom" type="text" autocomplete="off" spellcheck="false" aria-label="Custom DigitalOcean region"></label><button type="button" class="secondary-button" data-cloud="do-apply">Apply</button><button type="button" class="secondary-button" data-cloud="do-cancel">Cancel</button></div>
+        <p class="cloud-image-status" role="status" hidden></p>
+        <p class="cloud-image-error" role="alert" hidden></p>
+        <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="do-retry">Try again</button></div>
       </div>` : ''}
       <form class="cloud-form" hidden novalidate aria-label="${escape(`Connect ${provider.name}`)}">
         ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
@@ -176,7 +186,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }
-    if (!disposed) { render(); syncImages(); }
+    if (!disposed) { render(); syncImages(); syncCatalog(); }
   }
 
   /* InstaBox's machine image select, filled from the API once InstaBox is connected. */
@@ -216,6 +226,108 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       imagesError = error instanceof Error ? error.message : String(error);
     } finally { imageSaving = false; if (!disposed) renderImages(); }
   }
+
+  /* DigitalOcean's droplet region and machine size, filled from the account's catalog. */
+  let catalog: DoCatalog | null = null, catalogError = '', catalogLoading = false, optionSaving = false, customFor: 'region' | 'size' | null = null, catalogRun = 0;
+  function renderCatalog(): void {
+    const root = section('digitalocean'), box = root.querySelector<HTMLElement>('[data-do-options]')!;
+    const region = box.querySelector<HTMLSelectElement>('[data-do="region"]')!, size = box.querySelector<HTMLSelectElement>('[data-do="size"]')!;
+    const status = box.querySelector<HTMLElement>('.cloud-image-status')!, error = box.querySelector<HTMLElement>('.cloud-image-error')!;
+    const retry = box.querySelector<HTMLElement>('.cloud-actions')!, custom = box.querySelector<HTMLElement>('[data-do-custom]')!;
+    box.hidden = !connections.find(c => c.provider === 'digitalocean')?.connected;
+    custom.hidden = !customFor;
+    const label = customFor === 'size' ? 'Machine size' : 'Region';
+    custom.querySelector<HTMLElement>('[data-do-custom-label]')!.textContent = label;
+    custom.querySelector<HTMLInputElement>('input')!.setAttribute('aria-label', `Custom DigitalOcean ${label.toLowerCase()}`);
+    error.textContent = catalogError; error.hidden = !catalogError;
+    retry.hidden = Boolean(catalog) || catalogLoading || !catalogError;
+    if (!catalog) {
+      const loading = catalogLoading ? 'Loading…' : 'Not available';
+      region.innerHTML = `<option value="">${loading}</option>`;
+      size.innerHTML = `<option value="">${loading}</option>`;
+      status.hidden = true;
+      return;
+    }
+    /* Two-way availability: a size with known regions narrows the regions, a chosen region narrows
+     * the sizes (a size without a region list works everywhere); the saved pair always stays. */
+    const known = catalog;
+    const regionBefore = region.value, sizeBefore = size.value;
+    const sized = sizeBefore === 'custom' ? undefined : known.sizes.find(item => item.value === sizeBefore);
+    const regionItems = sized?.regions.length ? known.regions.filter(item => sized.regions.includes(item.value) || item.value === known.region) : known.regions;
+    const sizeItems = regionBefore && regionBefore !== 'custom' ? known.sizes.filter(item => !item.regions.length || item.regions.includes(regionBefore) || item.value === known.size) : known.sizes;
+    const options = (items: { value: string; label: string }[], lead: string, saved: string): string =>
+      `<option value="">${lead}</option>${items.map(item => `<option value="${escape(item.value)}">${escape(item.label)}</option>`).join('')}${saved && !items.some(item => item.value === saved) ? `<option value="${escape(saved)}">${escape(saved)}</option>` : ''}<option value="custom">Custom…</option>`;
+    region.innerHTML = options(regionItems, 'Default (nyc1)', known.region);
+    size.innerHTML = options(sizeItems, 'Standard (s-2vcpu-4gb)', known.size);
+    const settle = (select: HTMLSelectElement, saved: string, editing: boolean, before: string): void => {
+      const wanted = editing ? 'custom' : before === 'custom' ? saved : before || saved;
+      select.value = [...select.options].some(option => option.value === wanted) ? wanted : select.options[0]?.value ?? '';
+    };
+    settle(region, known.region, customFor === 'region', regionBefore);
+    settle(size, known.size, customFor === 'size', sizeBefore);
+    region.disabled = optionSaving;
+    size.disabled = optionSaving;
+    if (catalogError) status.hidden = true;
+  }
+  async function loadCatalog(): Promise<void> {
+    const run = ++catalogRun;
+    catalogLoading = true; catalogError = ''; renderCatalog();
+    try {
+      const loaded = await options.call<DoCatalog>('cloud_digitalocean_catalog');
+      // A fetch that outlived a disconnect (or its reconnect) must not revive stale state.
+      if (run !== catalogRun) return;
+      catalog = loaded;
+    } catch (error) {
+      if (run !== catalogRun) return;
+      catalog = null;
+      catalogError = `Could not load regions and sizes: ${error instanceof Error ? error.message : String(error)}`;
+    } finally { catalogLoading = false; if (!disposed && run === catalogRun) renderCatalog(); }
+  }
+  function syncCatalog(): void {
+    if (!connections.find(c => c.provider === 'digitalocean')?.connected) { catalogRun++; catalog = null; catalogError = ''; catalogLoading = false; customFor = null; renderCatalog(); return; }
+    if (!catalog && !catalogLoading) void loadCatalog();
+  }
+  async function saveOptions(): Promise<void> {
+    if (!catalog) return;
+    const box = section('digitalocean').querySelector<HTMLElement>('[data-do-options]')!;
+    const region = box.querySelector<HTMLSelectElement>('[data-do="region"]')!, size = box.querySelector<HTMLSelectElement>('[data-do="size"]')!;
+    const status = box.querySelector<HTMLElement>('.cloud-image-status')!;
+    // An open Custom row contributes its saved value: it is not a choice until applied.
+    const saved = { region: region.value === 'custom' ? catalog.region : region.value, size: size.value === 'custom' ? catalog.size : size.value };
+    optionSaving = true; catalogError = ''; status.hidden = false; status.textContent = 'Saving…'; renderCatalog();
+    try {
+      connections = await options.call<CloudConnection[]>('cloud_digitalocean_set_options', { region: saved.region, size: saved.size });
+      if (disposed) return;
+      catalog.region = saved.region; catalog.size = saved.size; customFor = null;
+      // The selects must show the saved pair before the next render reads them back.
+      region.value = saved.region; size.value = saved.size;
+      status.textContent = 'Saved.';
+    } catch (error) {
+      status.hidden = true;
+      catalogError = error instanceof Error ? error.message : String(error);
+    } finally { optionSaving = false; if (!disposed) { render(); renderCatalog(); } }
+  }
+  async function applyCustom(): Promise<void> {
+    if (!catalog || !customFor) return;
+    const box = section('digitalocean').querySelector<HTMLElement>('[data-do-options]')!;
+    const region = box.querySelector<HTMLSelectElement>('[data-do="region"]')!, size = box.querySelector<HTMLSelectElement>('[data-do="size"]')!;
+    const input = box.querySelector<HTMLInputElement>('[data-do="custom"]')!, status = box.querySelector<HTMLElement>('.cloud-image-status')!;
+    const value = input.value.trim(), field = customFor;
+    if (!value) { catalogError = `Enter the ${field === 'size' ? 'machine size' : 'region'} slug.`; renderCatalog(); return; }
+    const saved = { region: field === 'region' ? value : region.value === 'custom' ? catalog.region : region.value, size: field === 'size' ? value : size.value === 'custom' ? catalog.size : size.value };
+    optionSaving = true; catalogError = ''; status.hidden = false; status.textContent = 'Saving…'; renderCatalog();
+    try {
+      connections = await options.call<CloudConnection[]>('cloud_digitalocean_set_options', { region: saved.region, size: saved.size });
+      if (disposed) return;
+      catalog.region = saved.region; catalog.size = saved.size;
+      customFor = null; input.value = '';
+      region.value = saved.region; size.value = saved.size;
+      status.textContent = 'Saved.';
+    } catch (error) {
+      status.hidden = true;
+      catalogError = error instanceof Error ? error.message : String(error);
+    } finally { optionSaving = false; if (!disposed) { render(); renderCatalog(); } }
+  }
   function say(root: HTMLElement, kind: 'progress' | 'error', text: string): void {
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
     line.textContent = text; line.hidden = !text;
@@ -234,7 +346,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       say(root, 'progress', '');
     } catch (error) {
       if (!disposed) { say(root, 'progress', ''); say(root, 'error', error instanceof Error ? error.message : String(error)); }
-    } finally { busy = ''; if (!disposed) { render(); syncImages(); } }
+    } finally { busy = ''; if (!disposed) { render(); syncImages(); syncCatalog(); } }
   }
   async function setupSandboxes(root: HTMLElement): Promise<void> {
     const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
@@ -254,7 +366,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     busy = id; render();
     try { connections = await options.call<CloudConnection[]>('cloud_disconnect', { provider: id }); }
     catch (error) { say(section(id), 'error', error instanceof Error ? error.message : String(error)); }
-    finally { busy = ''; if (!disposed) { render(); syncImages(); } }
+    finally { busy = ''; if (!disposed) { render(); syncImages(); syncCatalog(); } }
   }
 
   host.addEventListener('click', event => {
@@ -265,6 +377,9 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     if (target.dataset.cloud === 'cancel') { form.hidden = true; say(root, 'error', ''); render(); return; }
     if (target.dataset.cloud === 'sandboxes') { void setupSandboxes(root); return; }
     if (target.dataset.cloud === 'images') { void loadImages(); return; }
+    if (target.dataset.cloud === 'do-retry') { void loadCatalog(); return; }
+    if (target.dataset.cloud === 'do-apply') { void applyCustom(); return; }
+    if (target.dataset.cloud === 'do-cancel') { customFor = null; renderCatalog(); return; }
     if (connections.find(c => c.provider === id)?.connected) { void disconnect(id); return; }
     form.hidden = !form.hidden;
     render();
@@ -299,6 +414,16 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         line.hidden = false; line.classList.add('cloud-error');
         line.textContent = error instanceof Error ? error.message : String(error);
       }).finally(() => { busy = ''; if (!disposed) render(); });
+      return;
+    }
+    if (target instanceof HTMLSelectElement && target.closest('[data-do-options]')) {
+      if (target.value === 'custom') {
+        customFor = target.dataset.do === 'size' ? 'size' : 'region';
+        renderCatalog();
+        section('digitalocean').querySelector<HTMLInputElement>('[data-do="custom"]')!.focus();
+        return;
+      }
+      void saveOptions();
       return;
     }
     if (target instanceof HTMLSelectElement && target.closest('.cloud-image')) void saveImage(target);

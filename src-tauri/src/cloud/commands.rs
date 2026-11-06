@@ -350,6 +350,22 @@ pub async fn cloud_instabox_set_image(image: String) -> Result<super::instabox::
     crate::blocking(move || super::instabox::set_image(&image)).await
 }
 
+/// The regions and sizes new DigitalOcean droplets can use, for Settings → Cloud.
+#[tauri::command]
+pub async fn cloud_digitalocean_catalog() -> Result<Value> {
+    crate::blocking(|| block(super::digitalocean::catalog())).await
+}
+
+/// Save the region and size new DigitalOcean droplets use, from Settings → Cloud.
+#[tauri::command]
+pub async fn cloud_digitalocean_set_options(region: Option<String>, size: Option<String>) -> Result<Vec<Connection>> {
+    crate::blocking(move || {
+        super::digitalocean::set_options(region, size)?;
+        Ok(connections())
+    })
+    .await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Machines {
