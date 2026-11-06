@@ -8,7 +8,7 @@
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
 };
@@ -56,6 +56,12 @@ pub struct Snapshot {
     connections: Vec<Connection>,
     /// Task id → connection id.
     tasks: BTreeMap<String, String>,
+    /// Harnesses whose accounts form a pool (`account_pool.rs`).
+    #[serde(default)]
+    pools: BTreeSet<String>,
+    /// Pool members left out by the user, as `provider/id` (`provider/` is the harness's own setup).
+    #[serde(default)]
+    pool_excluded: BTreeSet<String>,
 }
 
 struct Runtime {
@@ -107,6 +113,133 @@ pub fn for_task(session_id: &str, provider: &str) -> Option<Connection> {
 pub fn get(id: &str) -> Option<Connection> {
     let runtime = CONFIG.get()?.lock().ok()?;
     runtime.data.connections.iter().find(|c| c.id == id).cloned()
+}
+
+/// Whether the harness's accounts form a pool.
+pub fn pooled(provider: &str) -> bool {
+    CONFIG.get().and_then(|r| r.lock().ok()).is_some_and(|r| r.data.pools.contains(provider))
+}
+
+/// The harness's connections, in list order: the pool after its own setup.
+pub fn pool_members(provider: &str) -> Vec<Connection> {
+    CONFIG.get().and_then(|r| r.lock().ok()).map(|r| r.data.connections.iter().filter(|c| c.provider == provider).cloned().collect()).unwrap_or_default()
+}
+
+/// Members of the harness's pool the user left out (`""` is its own setup).
+pub fn pool_excluded(provider: &str) -> BTreeSet<String> {
+    let prefix = format!("{provider}/");
+    CONFIG.get().and_then(|r| r.lock().ok()).map(|r| r.data.pool_excluded.iter().filter_map(|k| k.strip_prefix(&prefix).map(str::to_owned)).collect()).unwrap_or_default()
+}
+
+/// Puts one account in or out of its harness's pool.
+#[tauri::command]
+pub async fn connection_pool_member_set(provider: String, id: String, included: bool) -> Result<Snapshot> {
+    crate::blocking(move || {
+        let mut runtime = runtime()?;
+        if !crate::account_pool::POOLED.contains(&provider.as_str()) || (!id.is_empty() && !runtime.data.connections.iter().any(|c| c.id == id && c.provider == provider)) {
+            return Err("This account is not in the pool.".into());
+        }
+        let mut next = runtime.data.clone();
+        let member = format!("{provider}/{id}");
+        if included { next.pool_excluded.remove(&member); } else { next.pool_excluded.insert(member); }
+        persist(&mut runtime, next)?;
+        Ok(runtime.data.clone())
+    })
+    .await
+}
+
+/// Moves a task to another account of its pool. Unlike `connection_assign` the harness session
+/// is kept: the pool has already carried it into the new account's config folder.
+pub(crate) fn reassign(session_id: &str, connection_id: Option<String>) -> Result<()> {
+    save_assignment(session_id.to_owned(), connection_id).map(|_| ())
+}
+
+/// Turns a harness's account pool on or off.
+#[tauri::command]
+pub async fn connection_pool_set(provider: String, enabled: bool) -> Result<Snapshot> {
+    if !crate::account_pool::POOLED.contains(&provider.as_str()) {
+        return Err("Account pools are available for Claude Code and Codex.".into());
+    }
+    crate::blocking(move || {
+        let mut runtime = runtime()?;
+        let mut next = runtime.data.clone();
+        if enabled { next.pools.insert(provider); } else { next.pools.remove(&provider); }
+        persist(&mut runtime, next)?;
+        Ok(runtime.data.clone())
+    })
+    .await
+}
+
+/// A connection made by "Add account…": a fresh config folder and the line that signs it in.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewAccount {
+    snapshot: Snapshot,
+    id: String,
+    config_dir: String,
+    command: String,
+}
+
+/// Highest folder number tried for a new pool account.
+const MAX_ACCOUNT_DIRS: u32 = 99;
+
+/// Claims the first free `<home>/.<provider>-pandacode-<n>` (n from 2), owner-only on unix.
+fn new_account_dir(home: &Path, provider: &str) -> Result<(PathBuf, u32)> {
+    for n in 2..=MAX_ACCOUNT_DIRS {
+        let dir = home.join(format!(".{provider}-pandacode-{n}"));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        match builder.create(&dir) {
+            Ok(()) => return Ok((dir, n)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("Could not create {}: {error}", dir.display())),
+        }
+    }
+    Err("Every account folder number is taken. Remove an unused one from your home folder.".into())
+}
+
+/// The shell line that signs a harness in with its config folder (PowerShell on Windows, as the terminal prefers).
+fn sign_in_command(provider: &str, dir: &str, windows: bool) -> String {
+    let (var, login) = if provider == "codex" { ("CODEX_HOME", "codex login") } else { ("CLAUDE_CONFIG_DIR", "claude auth login") };
+    if windows {
+        // PowerShell also ends a single-quoted string at typographic single quotes; the variable
+        // is removed afterwards so later runs in that terminal keep the main account.
+        let quoted: String = dir.chars().flat_map(|c| if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') { vec![c, c] } else { vec![c] }).collect();
+        format!("$env:{var}='{quoted}'; {login}; Remove-Item Env:{var}")
+    } else {
+        format!("{var}='{}' {login}", dir.replace('\'', "'\\''"))
+    }
+}
+
+/// Adds a pool account: a new owner-only config folder and a connection that uses it.
+#[tauri::command]
+pub async fn connection_new_account(provider: String) -> Result<NewAccount> {
+    if !crate::account_pool::POOLED.contains(&provider.as_str()) {
+        return Err("Account pools are available for Claude Code and Codex.".into());
+    }
+    crate::blocking(move || {
+        let home = crate::agent_usage_providers::home().ok_or("Could not find your home folder.")?;
+        let mut runtime = runtime()?;
+        if runtime.data.connections.len() >= MAX_CONNECTIONS {
+            return Err(format!("Use up to {MAX_CONNECTIONS} connections."));
+        }
+        let (dir, n) = new_account_dir(&home, &provider)?;
+        let config_dir = dir.to_string_lossy().into_owned();
+        let label = if provider == "codex" { "Codex" } else { "Claude" };
+        let input = Input { id: None, provider: provider.clone(), name: format!("{label} account {n}"), executable: None, args: vec![], env: vec![], config_dir: Some(config_dir.clone()) };
+        let saved = validated(input, None).and_then(|(connection, _)| {
+            let mut next = runtime.data.clone();
+            next.connections.push(connection.clone());
+            persist(&mut runtime, next).map(|()| connection)
+        });
+        let connection = match saved {
+            Ok(connection) => connection,
+            Err(error) => { let _ = std::fs::remove_dir(&dir); return Err(error); }
+        };
+        Ok(NewAccount { snapshot: runtime.data.clone(), id: connection.id, command: sign_in_command(&provider, &config_dir, cfg!(windows)), config_dir })
+    })
+    .await
 }
 
 /// The folder variable each harness reads for its own config and login.
@@ -259,6 +392,9 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
         if value.as_ref().is_some_and(|v| v.len() > MAX_ENV_VALUE || v.contains('\0')) {
             return Err(format!("The value of {} is too long or contains NUL.", var.name));
         }
+        if var.secret && config_dir_var(&input.provider) == Some(var.name.as_str()) {
+            return Err(format!("{} is a folder, not a secret. Set it as the config folder instead.", var.name));
+        }
         if var.secret {
             match value {
                 Some(value) => secrets.push((var.name.clone(), value)),
@@ -318,22 +454,38 @@ pub async fn connection_save(connection: Input) -> Result<Snapshot> {
 }
 
 #[tauri::command]
-pub async fn connection_delete(id: String) -> Result<Snapshot> {
-    crate::blocking(move || {
+pub async fn connection_delete(state: tauri::State<'_, crate::AppState>, id: String) -> Result<Snapshot> {
+    // The running-agent check and the save happen under the agents lock (agents → connections,
+    // the order `connection_assign` uses), so no task can start on this connection in between.
+    let (snapshot, affected, removed) = {
+        let agents = state.agents.lock().map_err(|e| e.to_string())?;
         let mut runtime = runtime()?;
+        let affected: Vec<String> = runtime.data.tasks.iter().filter(|(_, c)| **c == id).map(|(task, _)| task.clone()).collect();
+        if affected.iter().any(|task| agents.contains_key(task)) {
+            return Err("Stop the agents using this connection before deleting it.".into());
+        }
         let Some(removed) = runtime.data.connections.iter().find(|c| c.id == id).cloned() else {
             return Ok(runtime.data.clone());
         };
         let mut next = runtime.data.clone();
         next.connections.retain(|c| c.id != id);
         next.tasks.retain(|_, connection| *connection != id);
+        next.pool_excluded.retain(|member| !member.ends_with(&format!("/{id}")));
         persist(&mut runtime, next)?;
-        for name in &removed.secret_env {
-            crate::secret_store::remove(SERVICE, &secret_account(&removed.id, name));
+        (runtime.data.clone(), affected, removed)
+    };
+    for name in &removed.secret_env {
+        crate::secret_store::remove(SERVICE, &secret_account(&removed.id, name));
+    }
+    // The tasks go back to the harness's own setup, whose copy of their session (if an account
+    // pool left one there) may be stale: start fresh and carry the conversation forward.
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    for task in &affected {
+        if store.session(task).is_ok() {
+            fresh_context(&store, task)?;
         }
-        Ok(runtime.data.clone())
-    })
-    .await
+    }
+    Ok(snapshot)
 }
 
 /// Set (or clear, with `None`) the connection a task launches with.
@@ -407,6 +559,29 @@ fn assign(data: &mut Snapshot, session_id: String, connection_id: Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_account_folders_skip_taken_numbers_and_are_owner_only() {
+        let home = std::env::temp_dir().join(format!("pandacode-new-account-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(home.join(".claude-pandacode-2")).unwrap();
+        let (dir, n) = new_account_dir(&home, "claude").unwrap();
+        assert_eq!((dir.clone(), n), (home.join(".claude-pandacode-3"), 3));
+        assert_eq!(new_account_dir(&home, "codex").unwrap().1, 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn sign_in_commands_quote_the_folder() {
+        assert_eq!(sign_in_command("claude", "/Users/o'neil/.claude-pandacode-2", false), "CLAUDE_CONFIG_DIR='/Users/o'\\''neil/.claude-pandacode-2' claude auth login");
+        assert_eq!(sign_in_command("codex", "/home/a/.codex-pandacode-2", false), "CODEX_HOME='/home/a/.codex-pandacode-2' codex login");
+        assert_eq!(sign_in_command("claude", "C:\\Users\\o'neil\\.claude-pandacode-2", true), "$env:CLAUDE_CONFIG_DIR='C:\\Users\\o''neil\\.claude-pandacode-2'; claude auth login; Remove-Item Env:CLAUDE_CONFIG_DIR");
+        assert_eq!(sign_in_command("codex", "C:\\Users\\O\u{2019}Neil\\.codex-pandacode-2", true), "$env:CODEX_HOME='C:\\Users\\O\u{2019}\u{2019}Neil\\.codex-pandacode-2'; codex login; Remove-Item Env:CODEX_HOME");
+    }
 
     fn input(provider: &str) -> Input {
         Input { id: None, provider: provider.into(), name: "Claude Work".into(), executable: None, args: vec![], env: vec![], config_dir: None }
@@ -567,7 +742,7 @@ mod tests {
 
     #[test]
     fn assignment_requires_a_known_connection_and_clears() {
-        let mut data = Snapshot { connections: vec![Connection { id: "c1".into(), ..Default::default() }], tasks: BTreeMap::new() };
+        let mut data = Snapshot { connections: vec![Connection { id: "c1".into(), ..Default::default() }], tasks: BTreeMap::new(), ..Default::default() };
         assert!(assign(&mut data, "t1".into(), Some("missing".into())).is_err());
         assign(&mut data, "t1".into(), Some("c1".into())).unwrap();
         assert_eq!(data.tasks["t1"], "c1");

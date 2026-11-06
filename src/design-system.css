@@ -174,6 +174,27 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 /* A tone by name, for a leading icon or any small mark: data-state-tone="plan|edit|full|team|saver|remote|worktree". */
 [data-state-tone="plan"]{--state-tone:var(--ds-tone-plan)}[data-state-tone="edit"]{--state-tone:var(--ds-tone-edit)}[data-state-tone="full"]{--state-tone:var(--ds-tone-full)}[data-state-tone="team"]{--state-tone:var(--ds-tone-team)}[data-state-tone="saver"]{--state-tone:var(--ds-tone-saver)}[data-state-tone="remote"]{--state-tone:var(--ds-tone-remote)}[data-state-tone="worktree"]{--state-tone:var(--ds-tone-worktree)}
 [data-state-tone]{color:var(--state-tone)}
+/* Account health (Settings → Connections, account pool): ready, near its limit, out until a reset. */
+[data-state-tone="ready"]{--state-tone:var(--ds-success)}[data-state-tone="near"]{--state-tone:var(--ds-warn)}[data-state-tone="limited"]{--state-tone:var(--ds-danger)}
+.account-pool{margin-top:12px}
+.account-pool-switch{display:flex;align-items:center;gap:8px;font-weight:600}
+.account-pool-hint{margin:6px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
+.account-pool-hint code{overflow-wrap:anywhere}
+.account-pool-add{margin:8px 0 0}
+/* Rows share one column grid (subgrid), so status and actions line up whether or not a row has a switch. */
+.account-pool-members{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px 8px;align-items:center}
+.account-pool-member{display:grid;grid-column:1/-1;grid-template-columns:subgrid;align-items:center}
+.account-pool-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.account-pool-member[data-signed-out]>span:nth-child(2){color:var(--muted)}
+.account-pool-dot{width:8px;height:8px;border-radius:50%;background:var(--state-tone)}
+.account-pool-member small{color:var(--muted)}
+.account-pool-sign-in{grid-column:2/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:var(--ds-text-meta);color:var(--muted)}
+.account-pool-sign-in[role=alert]{color:var(--text)}
+.account-pool-sign-in a{color:var(--accent-ink)}
+.account-pool-code{display:flex;flex-basis:100%;flex-wrap:wrap;align-items:center;gap:8px}
+.account-pool-code input{flex:1;min-width:12ch;height:var(--ds-btn-h);font-size:var(--ds-text-ui);padding:0 12px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);color:var(--text)}
+.account-pool-copy{padding:0;border:0;background:none;font-size:var(--ds-text-meta);color:var(--muted);text-decoration:underline;cursor:pointer}
+.account-pool-copy:hover{color:var(--text)}
 
 /* ---------- Startup ---------- */
 /* Nothing transitions until the first palette has painted: palette.ts sets html[data-ready] two frames

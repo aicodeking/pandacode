@@ -249,7 +249,18 @@ const previewAgentsDockSnapshot = {
   ],
 };
 /** Named connections; secret values are dropped, only their names are kept, as on the native side. */
-let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
+/** Pool accounts whose usage holds were cleared with Try now (`provider/id`). */
+let previewPoolCleared: string[] = [];
+/** Connections made by Add account…, signed out until their preview sign-in finishes. */
+let previewSignedOut: string[] = [];
+/** Sign-ins running in the preview, by connection id, with their pending step. */
+const previewSignIns = new Map<string, number>();
+function previewSignInDone(id: string): void {
+  window.clearTimeout(previewSignIns.get(id)); previewSignIns.delete(id);
+  previewSignedOut = previewSignedOut.filter(other => other !== id);
+  setTimeout(() => emit('account-sign-in', { id, state: 'done' }), 0);
+}
+let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {}, pools: [], poolExcluded: [] };
 function previewSaveConnection(input: { id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
   const name = String(input.name ?? '').trim();
   if (!name || name.length > 60) throw new Error('Give the connection a name of up to 60 characters.');
@@ -1163,7 +1174,60 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'connection_save': result = previewSaveConnection(args.connection); break;
     case 'connection_delete': {
       const tasks = Object.fromEntries(Object.entries(previewConnections.tasks).filter(([, id]) => id !== args.id));
-      previewConnections = { connections: previewConnections.connections.filter(c => c.id !== args.id), tasks }; result = previewConnections; break;
+      previewConnections = { ...previewConnections, connections: previewConnections.connections.filter(c => c.id !== args.id), tasks }; result = previewConnections; break;
+    }
+    case 'connection_pool_set': {
+      if (!['claude', 'codex'].includes(args.provider)) throw new Error('Account pools are available for Claude Code and Codex.');
+      const pools = (previewConnections.pools ?? []).filter(p => p !== args.provider);
+      previewConnections = { ...previewConnections, pools: args.enabled ? [...pools, args.provider] : pools }; result = previewConnections; break;
+    }
+    case 'connection_new_account': {
+      if (!['claude', 'codex'].includes(args.provider)) throw new Error('Account pools are available for Claude Code and Codex.');
+      const [label, variable, login] = args.provider === 'codex' ? ['Codex', 'CODEX_HOME', 'codex login'] : ['Claude', 'CLAUDE_CONFIG_DIR', 'claude auth login'];
+      const taken = new Set(previewConnections.connections.map(c => c.configDir));
+      let n = 2; while (taken.has(`/Users/sample/.${args.provider}-pandacode-${n}`)) n++;
+      const configDir = `/Users/sample/.${args.provider}-pandacode-${n}`;
+      const snapshot = previewSaveConnection({ provider: args.provider, name: `${label} account ${n}`, configDir });
+      previewSignedOut = [...previewSignedOut, snapshot.connections.at(-1)!.id];
+      result = { snapshot, id: snapshot.connections.at(-1)!.id, configDir, command: `${variable}='${configDir}' ${login}` }; break;
+    }
+    case 'connection_pool_member_set': {
+      if (!['claude', 'codex'].includes(args.provider) || (args.id && !previewConnections.connections.some(c => c.id === args.id && c.provider === args.provider))) throw new Error('This account is not in the pool.');
+      const key = `${args.provider}/${args.id}`, excluded = (previewConnections.poolExcluded ?? []).filter(k => k !== key);
+      previewConnections = { ...previewConnections, poolExcluded: args.included ? excluded : [...excluded, key] }; result = previewConnections; break;
+    }
+    case 'account_sign_in_start': {
+      // Claude asks for an optional pasted code; Codex finishes on its own after a moment, as when the browser completes.
+      const connection = previewConnections.connections.find(c => c.id === args.id);
+      if (!connection || !['claude', 'codex'].includes(connection.provider)) throw new Error('One-click sign-in is available for Claude Code and Codex accounts.');
+      if (previewSignIns.has(args.id)) throw new Error('This account is already signing in.');
+      const id = String(args.id), codex = connection.provider === 'codex', url = codex ? 'https://auth.openai.com/oauth/authorize?preview=1' : 'https://claude.com/cai/oauth/authorize?preview=1';
+      previewSignIns.set(id, window.setTimeout(() => {
+        emit('account-sign-in', { id, state: 'waiting', url });
+        if (codex) previewSignIns.set(id, window.setTimeout(() => previewSignInDone(id), 1500));
+        else emit('account-sign-in', { id, state: 'needs-code', url });
+      }, 50));
+      result = undefined; break;
+    }
+    case 'account_sign_in_code': {
+      if (!previewSignIns.has(args.id)) throw new Error("This account isn't signing in.");
+      const code = String(args.code ?? '').trim();
+      if (!code || code.length > 4096 || /[\u0000-\u001f\u007f]/.test(code)) throw new Error('Paste the code the sign-in page shows: one line, up to 4096 characters.');
+      previewSignInDone(args.id); result = undefined; break;
+    }
+    case 'account_sign_in_cancel': {
+      const timer = previewSignIns.get(args.id); if (timer === undefined) throw new Error("This account isn't signing in.");
+      window.clearTimeout(timer); previewSignIns.delete(args.id);
+      setTimeout(() => emit('account-sign-in', { id: args.id, state: 'failed', message: 'Sign-in cancelled.' }), 0); result = undefined; break;
+    }
+    case 'account_pool_clear': previewPoolCleared = [...previewPoolCleared, `${args.provider}/${args.id}`]; result = undefined; break;
+    case 'account_pool_status': {
+      // The default setup is near its limit and running one task, the first connection is out until tomorrow and a
+      // connection sharing the default setup's folder is the same login, so every state shows.
+      const ids = ['', ...previewConnections.connections.filter(c => c.provider === args.provider).map(c => c.id)];
+      const cleared = (id: string) => previewPoolCleared.includes(`${args.provider}/${id}`);
+      const sameAs = (id: string) => id && !previewConnections.connections.find(c => c.id === id)?.configDir ? '' : null;
+      result = ids.map((id, i) => ({ id, signedIn: !previewSignedOut.includes(id), excluded: (previewConnections.poolExcluded ?? []).includes(`${args.provider}/${id}`), sameAs: i > 1 ? sameAs(id) : null, active: i === 0 ? 1 : 0, nearUntil: i === 0 && !cleared(id) ? Date.now() + 1_800_000 : null, limitedUntil: i === 1 && !cleared(id) ? Date.now() + 86_400_000 : null })); break;
     }
     case 'connection_assign': {
       if (args.connectionId && !previewConnections.connections.some(c => c.id === args.connectionId)) throw new Error('This connection no longer exists.');

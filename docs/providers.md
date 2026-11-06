@@ -113,7 +113,100 @@ forward, as a harness switch does. When a run stops at its plan limit and the
 harness has other connections, the usage-limit banner offers **Continue on
 <connection>** for each. It assigns that connection and sends “Continue where
 you left off.” with a note naming the new connection and the one that reached
-its limit, so the transcript shows the move. PandaCode never switches on its own.
+its limit, so the transcript shows the move. PandaCode never switches on its own
+unless the harness's account pool is on (below).
+
+## Account pools
+
+Claude Code and Codex can treat several accounts as one pool. Settings →
+Providers → Connections has an **Account pool** switch for each, and every
+member has its own **In pool** switch. The members are the harness's own setup
+plus its named connections; each is its own account through its config folder
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) or a token (`CLAUDE_CODE_OAUTH_TOKEN` from
+`claude setup-token`, or `CODEX_API_KEY`). A member with the same config folder
+as an earlier one and no token of its own is the same login: it counts as that
+earlier member, so a limit holds the login under every name. Settings lists the
+members and warns about same-login connections even while the pool is off. The
+config folder is a folder, not a secret: a Secret variable with that name is
+rejected. Pool only accounts you own; each must be your own subscription, and
+Settings says so beside the switch.
+
+To add an account, click **Add account…** under Settings → Providers →
+Connections (Claude Code and Codex). One click creates a private folder
+(`~/.claude-pandacode-N` or `~/.codex-pandacode-N`), adds a connection for it
+and starts the harness's own login with that folder (`claude auth login
+--claudeai` or `codex login`, no terminal). The provider's sign-in page opens in
+your default browser, because the sign-in pages need a real browser and the
+credentials stay with the CLI: PandaCode only sees whether the login finished,
+never the token. The row shows **Waiting for you to sign in in your browser…**
+with a link to the page (in case it did not open) and **Cancel**. Claude's
+fallback page may show a code instead; paste it into the code field and press
+Enter. When the login is saved the row is signed in and joins the pool; turn
+on **Account pool** if it is off. A sign-in stops after 10 minutes. An account
+that is still signed out has a **Sign in** button, and a small **Copy sign-in
+command** fallback to run in a terminal (on Windows a PowerShell line that
+clears the variable afterwards, so that terminal keeps the main account).
+
+A connection joins the pool only once it has a saved login: its own
+`CLAUDE_CODE_OAUTH_TOKEN` or `CODEX_API_KEY`, or the login file its harness
+writes on sign-in in its config folder (Claude: `.claude.json` with the
+signed-in account, or `.credentials.json`; Codex: `auth.json`). The harness's
+own setup always counts. Until then Settings shows the member as **Not signed
+in** with **Sign in** and **Copy sign-in command** buttons. Pools are for subscription logins:
+a connection that only sets `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is not a
+member.
+
+To do it by hand instead, sign in each extra account in its own folder and add
+a connection with that config folder:
+
+```sh
+CLAUDE_CONFIG_DIR=~/.claude-work claude auth login
+CODEX_HOME=~/.codex-2 codex login
+```
+
+Choosing an account: accounts out of quota are skipped, accounts near a limit
+come last, and among the rest the one running the fewest tasks wins (ties go in
+pool order after the current one). The choice is claimed under one lock, so
+tasks switching at the same moment take different accounts. An account is
+near a limit on a Claude `rate_limit_event` with `allowed_warning`, a Codex
+window at 90 % or more, or a model-family limit (`seven_day_opus`,
+`seven_day_sonnet`), which never marks the whole account out. Before a turn, a
+task leaves an account that is out or taken out of the pool, or one that is near
+its limit while another has room, so most switches happen between turns. A new
+conversation (nothing to resume yet) with no account picked for it also starts
+on a quieter account when the default runs more tasks; this is how parallel tasks
+and team workers spread over the pool. An account picked in the model picker is
+kept while it has room, and a running conversation stays on its account until it
+nears a limit.
+
+Only a turn that fails at its limit moves; a limit inside a turn that still
+finished (a fallback model, overage) does not. Then PandaCode holds the account
+until its reset (an hour when the reset time is unknown, at most 8 days),
+copies the harness session file into the next account's config folder (Claude:
+`projects/<slug>/<id>.jsonl`; Codex: `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`;
+folders it creates are 0700), moves the task there and resumes the session
+with “Continue where you left off.” inside the same run. A first turn that has
+no session yet is sent again as is. A transcript note names the move and the
+composer shows the new account; there is no banner. Stop pressed before the
+first attempt runs nothing, and Stop during a switch ends the run before the
+next account starts. Other messages sent meanwhile wait for the next account; a
+steer is acknowledged at once as a next-turn message and delivered there. If
+every account is out, or the session cannot be
+carried, the usual usage-limit banner appears.
+
+Holds are saved to `account-holds.json` in the app data folder, so a restart
+does not retry a spent account. **Try now** beside a held member in Settings
+clears its holds (`account_pool_clear`), for when it has room again. Deleting a
+connection is refused while one of its tasks runs; otherwise its tasks start
+fresh on the harness's own setup, with context recovery, because the copy of
+their session there may be stale. The pool sends no network requests of its own. It
+applies to every path that runs a task (desktop, team workers, headless, bots,
+schedules) but not to cloud runs or goal operations. The ignored live tests in
+`src-tauri/src/providers/pool_live_tests.rs` resume a real session from a moved
+transcript (`claude --resume`, verified) and from a rollout Codex must find by
+scanning its sessions folder, which is how it finds one copied into another
+`CODEX_HOME` (run it with `cargo test --lib pool_live -- --ignored`).
+Code: `src-tauri/src/account_pool.rs` and `src-tauri/src/providers/pool.rs`.
 
 ## Environment variables
 

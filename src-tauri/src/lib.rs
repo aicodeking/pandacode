@@ -1,3 +1,5 @@
+mod account_pool;
+mod account_sign_in;
 mod agent_tools;
 mod agents_dock;
 mod agent_usage;
@@ -3863,6 +3865,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
     connections::setup(&dir)?;
+    account_pool::setup(&dir);
     model_routing::setup(&dir);
     model_health::setup(&dir);
     // Optional integration storage must never prevent the workspace from opening.
@@ -4145,6 +4148,14 @@ pub fn run() {
                 connections::connection_save,
                 connections::connection_delete,
                 connections::connection_assign,
+                connections::connection_pool_set,
+                connections::connection_new_account,
+                connections::connection_pool_member_set,
+                account_pool::account_pool_status,
+                account_pool::account_pool_clear,
+                account_sign_in::account_sign_in_start,
+                account_sign_in::account_sign_in_code,
+                account_sign_in::account_sign_in_cancel,
                 agent_usage::agent_usage,
                 tray::tray_seen,
                 usage_ledger::usage_ledger,

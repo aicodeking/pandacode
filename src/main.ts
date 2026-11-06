@@ -1353,6 +1353,12 @@ function taskConnection(s: Session): import('./connections').Connection | undefi
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
 function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; refreshModelLabels(); }
+/** An account pool moved a running task to another account: show that one, never the old. */
+function onAccountPoolSwitch(event: AgentEvent): void {
+  const pool = (event.data as { accountPool?: { connectionId?: string | null } } | null | undefined)?.accountPool; if (!pool) return;
+  const { [event.sessionId]: _old, ...tasks } = namedConnections.tasks;
+  onNamedConnections({ ...namedConnections, tasks: pool.connectionId ? { ...tasks, [event.sessionId]: pool.connectionId } : tasks });
+}
 /** The computer the composer's picker lists: a mirror task's, a new task's chosen one, else undefined (local). */
 function composerDevice(): string | undefined {
   const s = session();
@@ -4360,6 +4366,7 @@ function onAgent(event: AgentEvent): void {
     });
     return;
   }
+  onAccountPoolSwitch(event);
   if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
   if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }

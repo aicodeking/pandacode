@@ -93,6 +93,10 @@ embedded editor engine.
 - **Named connections and environment variables.** Keep profiles such as "Claude Work"
   and "Claude Personal", and set global or per-agent environment variables and a custom
   executable location. See [providers](docs/providers.md#environment-variables).
+- **Account pools.** Pool several Claude Code or Codex accounts; when one hits its usage
+  limit, the task moves to the next account and continues the same conversation. **Add
+  account…** signs a new account in with one click in your browser. See
+  [account pools](docs/providers.md#account-pools).
 - **Token saver.** Per-task response-style packs that cut output tokens.
 - **Agent usage.** Account limits and cost estimates for each installed harness
   ([agent usage](docs/agent-usage.md)), and one-click CLI updates

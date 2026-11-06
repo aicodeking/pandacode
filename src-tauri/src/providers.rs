@@ -30,6 +30,11 @@ pub(crate) mod acp;
 pub(crate) mod acp_catalog;
 #[cfg(test)]
 mod claude_stream_tests;
+mod pool;
+#[cfg(all(test, unix))]
+mod pool_live_tests;
+#[cfg(all(test, unix))]
+mod pool_run_tests;
 #[cfg(test)]
 mod codex_stream_tests;
 #[cfg(all(test, unix))]
@@ -3183,7 +3188,13 @@ pub async fn run_with_tools(
 ) -> Result<(), String> {
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
-    let result = HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await;
+    // A goal operation is acknowledged by its own turn, so it is never continued elsewhere.
+    let pooled = config.goal.is_none() && crate::account_pool::enabled(&config.provider) && !crate::cloud_agents::transport::is_cloud(&config.session_id);
+    let result = if pooled {
+        HARNESS.scope(harness, pool::run(config, sink.clone(), input, host)).await
+    } else {
+        HARNESS.scope(harness, run_inner(config, sink.clone(), input, host)).await
+    };
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
     }
