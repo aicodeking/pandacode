@@ -84,12 +84,18 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
   let unsubscribe: (() => void) | undefined;
   // Disabling a focused switch while saving blurs it, so the change handler remembers it.
   let refocus = '';
+  // The rows last drawn: a preferences load that changes nothing keeps them, so they are never
+  // swapped out from under a reader (or a test measuring them) right after the tab opens.
+  let drawn = '';
   const draw = () => {
     if (disposed) return;
     const active = document.activeElement;
     const focused = refocus || (active instanceof HTMLElement && host.contains(active) ? active.id : '');
     refocus = '';
-    host.innerHTML = `<div class="settings-group">${switchRow('agents-dock-enabled', 'Running agents widget', 'Show every running agent from a button at the top right of the window. Turning this off also closes the pinned window.', preferences.enabled)}${preferences.enabled ? switchRow('agents-dock-keep-on-screen', 'Keep pinned widget on screen', 'Keep the floating widget inside the current display when it expands.', preferences.keepOnScreen) : ''}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div>`;
+    const markup = `<div class="settings-group">${switchRow('agents-dock-enabled', 'Running agents widget', 'Show every running agent from a button at the top right of the window. Turning this off also closes the pinned window.', preferences.enabled)}${preferences.enabled ? switchRow('agents-dock-keep-on-screen', 'Keep pinned widget on screen', 'Keep the floating widget inside the current display when it expands.', preferences.keepOnScreen) : ''}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}</div>`;
+    if (markup === drawn) return;
+    drawn = markup;
+    host.innerHTML = markup;
     if (focused) host.querySelector<HTMLElement>(`#${focused}`)?.focus({ preventScroll: true });
   };
   const change = async (event: Event) => {
@@ -100,6 +106,8 @@ function mountAgentsDockSettings(host: HTMLElement): () => void {
       keepOnScreen: target.id === 'agents-dock-keep-on-screen' ? target.checked : preferences.keepOnScreen,
     };
     refocus = target.id;
+    // The switches are disabled in place while saving, so the next draw must replace them.
+    drawn = '';
     host.querySelectorAll<HTMLInputElement>('.settings-switch').forEach(input => { input.disabled = true; });
     try {
       preferences = { ...preferences, ...await call<AgentsDockPreferences>('agents_dock_save_preferences', next) };

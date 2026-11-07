@@ -212,3 +212,28 @@ test('needs-you amber turns away from an accent near it (classic yellow), and ke
     assert.deepEqual(warnClearOf(hue('#4f8ef7'), mode), {});
   }
 });
+
+test('the light meter warn fill clears 3:1 on its track for every accent, scene and recorded light theme', async () => {
+  const css = readFileSync(new URL('../src/design-system.css', import.meta.url), 'utf8');
+  const lightness = Number(css.match(/--ds-meter-warn:oklch\(from var\(--warning\) calc\(l \* ([\d.]+)\) c h\)/)?.[1]);
+  assert.ok(lightness > 0 && lightness <= 1, 'design-system.css darkens --warning in OKLCH for --ds-meter-warn');
+  const darker = hex => { const { l, c, h } = toOklch(rgb(hex)); return toHex(fromOklch({ l: l * lightness, c, h })); };
+  const { wallpaperAccents } = await import('../src/wallpaper-accents.ts');
+  const accentHues = [...Array.from({ length: 24 }, (_, i) => i * 15), ...Object.values(wallpaperAccents).map(hex => toOklch(rgb(hex)).h)];
+  const bases = [{ name: 'PandaCode light', bg: '#ffffff', text: '#242423' }, ...themes.filter(theme => theme.kind === 'light').map(theme => {
+    const { tokens } = vsixTokens({ id: 'x', name: theme.name, extension: 'x', kind: theme.kind, colors: theme.colors });
+    return { name: theme.name, bg: tokens['--bg'], text: tokens['--text'], accentHue: toOklch(rgb(tokens['--accent'])).h };
+  })];
+  assert.ok(bases.length > 1, 'recorded light themes are covered');
+  for (const base of bases) {
+    // The meter's track is the text at 12 % over the page or a card.
+    for (const surface of [base.bg, toHex(mix(rgb(base.bg), rgb(base.text), 0.055))]) {
+      const track = toHex(mix(rgb(surface), rgb(base.text), 0.12));
+      for (const accentHue of base.accentHue === undefined ? accentHues : [base.accentHue]) {
+        const warning = warnClearOf(accentHue, 'light')['--warning'] ?? WARNING.light;
+        const fill = darker(warning);
+        assert.ok(ratio(fill, track) >= 3, `${base.name} accent ${accentHue.toFixed(0)}: meter warn ${fill} on track ${track}: ${ratio(fill, track).toFixed(2)}`);
+      }
+    }
+  }
+});

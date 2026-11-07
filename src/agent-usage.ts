@@ -1,4 +1,5 @@
 import './agent-usage.css';
+import { accountPlan, accountState, accountWindows, meterTone, resetsAt, type PoolMember } from './account-status';
 import { call, preview } from './bridge';
 import type { ConnectionSnapshot } from './connections';
 import { escape, icon } from './dom';
@@ -33,6 +34,9 @@ const STATUS: Record<AgentUsage['status'], string> = { ready: '', unavailable: '
 const RANGES: [Range, string][] = [['week', 'Week'], ['month', 'Month'], ['year', 'Year']];
 const shortNames: Partial<Record<ProviderId, string>> = { claude: 'Claude', glm: 'GLM', mimo: 'MiMo', kimi: 'Kimi', grok: 'Grok', pi: 'Pi', deepseek: 'DeepSeek', commandcode: 'Command Code', cline: 'Cline', kilo: 'Kilo', omp: 'omp', 'github-copilot': 'Copilot', muse: 'Muse', devin: 'Devin', zcode: 'ZCode', hermes: 'Hermes' };
 type Tab = 'overview' | ProviderId;
+/** Harnesses whose accounts can be pooled; `account_pool_status` reads their login files for the email and plan. */
+const POOLED: ProviderId[] = ['claude', 'codex'];
+interface Account { usage?: AgentUsage; member?: PoolMember; }
 
 function validWindows(result: AgentUsage | undefined): UsageWindow[] {
   return result?.windows.filter(window => Number.isFinite(window.usedPercent)) ?? [];
@@ -40,6 +44,40 @@ function validWindows(result: AgentUsage | undefined): UsageWindow[] {
 function peak(result: AgentUsage | undefined): number | null {
   const windows = validWindows(result);
   return windows.length ? Math.min(100, Math.max(0, ...windows.map(window => window.usedPercent))) : null;
+}
+/** The windows an account shows: for pooled harnesses the same two as Settings → Providers, labelled the same way. */
+function shownWindows(provider: ProviderId, result: AgentUsage | undefined): UsageWindow[] {
+  return POOLED.includes(provider) ? accountWindows(result) : validWindows(result);
+}
+/** '5-hour' or 'weekly' for the summary line. */
+function windowName(label: string): string {
+  return /5.?h|five/i.test(label) ? '5-hour' : /week/i.test(label) ? 'weekly' : label.replace(/\s+window$/i, '').toLowerCase();
+}
+/** One line to compare accounts by: the fullest window, named, with that window's own reset. */
+function summaryLine(provider: ProviderId, result: AgentUsage | undefined): string {
+  const windows = shownWindows(provider, result);
+  if (!windows.length) return '';
+  const top = windows.reduce((a, b) => b.usedPercent > a.usedPercent ? b : a);
+  const at = top.resetsAt ? Date.parse(top.resetsAt) : NaN;
+  const percent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(Math.min(100, Math.max(0, top.usedPercent)));
+  return `Peak ${percent}% · ${windowName(top.label)}${Number.isFinite(at) ? ` ${resetsAt(at)}` : ''}`;
+}
+const SIGNED_OUT = 'Sign in from Settings → Providers.';
+function signedOutResult(provider: ProviderId): AgentUsage {
+  return { provider, status: 'signedOut', windows: [], plan: null, message: SIGNED_OUT, checkedAt: 0, stale: false };
+}
+function renderSignedOut(scope: HTMLElement): void {
+  const body = scope.querySelector<HTMLElement>('.usage-card-body')!;
+  body.removeAttribute('role');
+  body.innerHTML = `<div class="usage-notice usage-signed-out"><p>${escape(SIGNED_OUT)}</p><button type="button" class="secondary-button" data-action="settings-page" data-id="providers">Open Settings</button></div>`;
+}
+function renderSameLogin(scope: HTMLElement, name: string): void {
+  const body = scope.querySelector<HTMLElement>('.usage-card-body')!;
+  body.removeAttribute('role');
+  body.innerHTML = `<p class="usage-same-login">Same login as ${escape(name)}. Its usage is shown there.</p>`;
+}
+function accountHeading(id: string, name: string, titled: boolean): string {
+  return `<div class="usage-account-heading" data-account="${escape(id)}"><div class="usage-account-title"><h4${id ? '' : ' class="usage-connection-default"'}${titled ? '' : ' hidden'}>${escape(name)}</h4><p class="usage-account-who"></p></div><div class="usage-account-meta"><span class="usage-pool-chip"></span><span class="usage-account-summary"></span></div></div>`;
 }
 function pricingNote(ledger: Ledger): string {
   const when = ledger.pricing.fetchedAt ? new Date(ledger.pricing.fetchedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
@@ -62,6 +100,8 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   const nameOf = (id: ProviderId) => providers.find(provider => provider.id === id)?.name ?? id;
   const limits = new Map<ProviderId, AgentUsage>();
   const cards = new Map<ProviderId, HTMLElement>();
+  const accounts = new Map<string, Account>();
+  let pooled: string[] = [];
   let ledger: Ledger | null = null, ledgerError: string | null = null, ledgerPending = false, prompts: PromptActivity | null = null;
   let range: Range = 'month', breakdown: 'model' | 'day' = 'model', tab: Tab = 'overview';
   let summaryCache: { ledger: Ledger; range: Range; summary: Summary } | null = null;
@@ -87,22 +127,52 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   for (const provider of installed) {
     const card = document.createElement('section'); card.className = 'usage-panel usage-card'; card.hidden = true;
     card.id = `usage-panel-${provider.id}`; card.setAttribute('role', 'tabpanel'); card.setAttribute('aria-label', provider.name);
-    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3><span class="usage-plan"></span></header><div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
+    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3>${POOLED.includes(provider.id) ? '' : '<span class="usage-plan"></span>'}<span class="usage-card-checked"></span></header>${POOLED.includes(provider.id) ? accountHeading('', 'Default setup', false) : ''}<div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
     host.insertBefore(card, footer); cards.set(provider.id, card);
   }
   // Named connections (issue #137): each is read through its own config folder and environment.
-  const connectionsReady = call<ConnectionSnapshot>('connections_list').then(snapshot => {
+  const snapshotReady = call<ConnectionSnapshot>('connections_list');
+  const connectionsReady = snapshotReady.then(snapshot => {
     if (disposed) return [];
+    pooled = snapshot.pools ?? [];
     const named = snapshot.connections.filter(c => cards.has(c.provider));
     for (const connection of named) {
       const card = cards.get(connection.provider)!;
-      if (!card.querySelector('.usage-connection-default')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', '<h4 class="usage-connection-default">Default setup</h4>');
+      if (!card.querySelector('.usage-account-heading[data-account=""]')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', accountHeading('', 'Default setup', true));
+      card.querySelector<HTMLElement>('.usage-connection-default')!.hidden = false;
       const section = document.createElement('section'); section.className = 'usage-connection'; section.dataset.connection = connection.id; section.setAttribute('aria-label', connection.name);
-      section.innerHTML = `<header class="usage-card-heading"><h4>${escape(connection.name)}</h4><span class="usage-plan"></span></header><div class="usage-card-body" role="status">Checking limits…</div>`;
+      section.innerHTML = `${accountHeading(connection.id, connection.name, true)}<div class="usage-card-body" role="status">Checking limits…</div>`;
       card.querySelector('.usage-card-cost')!.before(section);
+      renderAccount(connection.provider, '');
     }
+    for (const provider of POOLED) if (cards.has(provider)) renderAccount(provider, '');
     return named;
   }).catch(() => []);
+  // Email, plan, sign-in and pool state per account: read locally, once per view. Signed-out accounts skip agent_usage.
+  const membersReady = new Map(POOLED.filter(provider => cards.has(provider)).map(provider => [provider, call<PoolMember[]>('account_pool_status', { provider }).then(members => Array.isArray(members) ? members : []).catch(() => [] as PoolMember[])]));
+  const memberOf = async (provider: ProviderId, id: string) => (await membersReady.get(provider))?.find(member => member.id === id);
+  const signedOut = async (provider: ProviderId, id: string) => (await memberOf(provider, id))?.signedIn === false;
+  for (const [provider, members] of membersReady) {
+    void Promise.all([connectionsReady, members]).then(([, members]) => {
+      if (disposed) return;
+      for (const member of members) { accounts.set(`${provider}/${member.id}`, { ...accounts.get(`${provider}/${member.id}`), member }); renderAccount(provider, member.id); }
+    }).catch(() => undefined);
+  }
+  function renderAccount(provider: ProviderId, id: string): void {
+    const heading = cards.get(provider)?.querySelector<HTMLElement>(`.usage-account-heading[data-account="${CSS.escape(id)}"]`);
+    if (!heading) return;
+    const { usage, member } = accounts.get(`${provider}/${id}`) ?? {};
+    heading.querySelector('.usage-account-who')!.textContent = [member?.email, accountPlan(member, usage)].filter(Boolean).join(' · ');
+    // The summary only speaks up near a limit: a limited account's chip already gives its reset.
+    const health = member ? accountState(member, usage) : null;
+    heading.querySelector('.usage-account-summary')!.textContent = health?.tone === 'near' ? summaryLine(provider, usage) : '';
+    const state = member && pooled.includes(provider) ? health : null;
+    heading.querySelector('.usage-pool-chip')!.innerHTML = state ? `<span class="usage-pool-dot"${state.tone ? ` data-state-tone="${state.tone}"` : ''} aria-hidden="true"></span>${escape(state.text)}` : '';
+  }
+  function setUsage(provider: ProviderId, id: string, usage: AgentUsage): void {
+    accounts.set(`${provider}/${id}`, { ...accounts.get(`${provider}/${id}`), usage });
+    renderAccount(provider, id);
+  }
   if (!installed.length) agentList.innerHTML = `<div class="usage-empty">${icon('activity')}<p>No installed agents found.</p><button class="secondary-button" data-action="settings">Open Settings</button></div>`;
 
   function costState(): CostState {
@@ -161,6 +231,13 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       while (!disposed && next < installed.length) {
         const provider = installed[next++];
         let result: AgentUsage;
+        if (await signedOut(provider.id, '')) {
+          if (disposed) return;
+          limits.set(provider.id, signedOutResult(provider.id));
+          renderSignedOut(cards.get(provider.id)!); setUsage(provider.id, '', signedOutResult(provider.id)); renderLimits();
+          preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
+          continue;
+        }
         try {
           result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
           if (!result || result.provider !== provider.id || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
@@ -169,17 +246,24 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
         }
         if (disposed) return;
         limits.set(provider.id, result);
-        renderCard(cards.get(provider.id)!, provider, result);
+        renderCard(cards.get(provider.id)!, provider, result, await memberOf(provider.id, ''));
+        if (disposed) return;
+        setUsage(provider.id, '', result);
         renderLimits();
         preserveFocus(agentList, () => renderAgents(agentList, agentLimits(), costState()));
       }
     }
     await Promise.all(Array.from({ length: Math.min(3, installed.length) }, worker));
-    for (const connection of await connectionsReady) {
+    const named = await connectionsReady;
+    for (const connection of named) {
       if (disposed) return;
       const provider = installed.find(item => item.id === connection.provider)!;
       const section = cards.get(provider.id)?.querySelector<HTMLElement>(`.usage-connection[data-connection="${CSS.escape(connection.id)}"]`);
       if (!section) continue;
+      if (await signedOut(provider.id, connection.id)) { if (!disposed) { renderSignedOut(section); setUsage(provider.id, connection.id, signedOutResult(provider.id)); } continue; }
+      // A same-login connection is the other account under another name: its usage is shown there, so it is not read twice.
+      const twin = (await memberOf(provider.id, connection.id))?.sameAs;
+      if (twin != null) { if (!disposed) renderSameLogin(section, twin ? named.find(other => other.id === twin)?.name ?? twin : 'Default setup'); continue; }
       let result: AgentUsage;
       try {
         result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force, connection: connection.id });
@@ -187,7 +271,8 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       } catch (cause) {
         result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: cause instanceof Error && cause.message ? cause.message : 'Could not read limits. Try Refresh.' };
       }
-      if (!disposed) renderCard(section, { ...provider, name: connection.name }, result);
+      const member = await memberOf(provider.id, connection.id);
+      if (!disposed) { renderCard(section, { ...provider, name: connection.name }, result, member); setUsage(provider.id, connection.id, result); }
     }
   }
   async function loadLedger(force: boolean): Promise<void> {
@@ -253,34 +338,36 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   return () => { disposed = true; host.removeEventListener('click', click); host.removeEventListener('keydown', keydown); refresh.removeEventListener('click', reload); cards.clear(); };
 }
 
-function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage): void {
-  const plan = card.querySelector<HTMLElement>('.usage-plan')!;
-  plan.textContent = result.plan ?? ''; plan.title = result.plan ?? '';
-  const windows = validWindows(result);
+function renderCard(card: HTMLElement, provider: Provider, result: AgentUsage, member?: PoolMember): void {
+  const plan = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-plan');
+  if (plan) { plan.textContent = result.plan ?? ''; plan.title = result.plan ?? ''; }
+  const windows = shownWindows(provider.id, result);
   const body = card.querySelector<HTMLElement>('.usage-card-body')!;
+  // One "Checked" time and source per harness, in the card header; account sections leave theirs out.
+  const checked = card.querySelector<HTMLElement>(':scope > .usage-card-heading > .usage-card-checked');
+  if (checked) checked.innerHTML = `${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(new Date(result.checkedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}`;
   body.removeAttribute('role');
   const status = result.stale ? 'Saved snapshot' : STATUS[result.status] ?? 'Unavailable';
   card.classList.toggle('usage-stale', result.stale);
-  body.innerHTML = `${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window)).join('')}</div>` : ''}
+  body.innerHTML = `${windows.length ? `<div class="usage-windows">${windows.map(window => renderWindow(provider, window, member)).join('')}</div>` : ''}
     ${status || result.message || !windows.length ? `<div class="usage-notice">${status ? `<span class="usage-state">${escape(status)}</span>` : ''}${result.message ? `<p>${escape(result.message)}</p>` : !windows.length ? '<p>This account did not report any usage windows.</p>' : ''}</div>` : ''}
-    <div class="usage-card-footer"><span>${result.checkedAt > 0 ? `${result.stale ? 'Last success' : 'Checked'} ${escape(new Date(result.checkedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}</span>${result.source ? infoMark(result.source, `${provider.name} usage source`) : ''}${dashboardLink(result.dashboardUrl)}</div>`;
+    <div class="usage-card-footer">${dashboardLink(result.dashboardUrl)}</div>`;
 }
 
-function renderWindow(provider: Provider, window: UsageWindow): string {
+/** One window: label, percent, meter and reset. Its detail rides on the reset text's title, so a card keeps one ⓘ. */
+function renderWindow(provider: Provider, window: UsageWindow, member?: PoolMember): string {
   const value = Math.min(100, Math.max(0, window.usedPercent));
-  const tone = value >= 95 ? 'exhausted' : value >= 80 ? 'high' : 'normal';
+  const tone = meterTone(value, member, window.label);
   const reset = window.resetsAt ? new Date(window.resetsAt) : null;
   const validReset = reset && Number.isFinite(reset.getTime()) ? reset : null;
   const detail = [window.detail, validReset ? `Resets ${validReset.toLocaleString()}` : ''].filter(Boolean).join('. ');
-  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span>${validReset ? resetLabel(validReset) : 'Reset time not reported'}</span>${detail ? infoMark(detail, `${provider.name} ${window.label} details`) : ''}</div></div>`;
+  return `<div class="usage-window" data-tone="${tone}"><div class="usage-window-heading"><span>${escape(window.label)}</span><strong>${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}% used</strong></div><div class="usage-track" role="progressbar" aria-label="${escape(`${provider.name} · ${window.label}`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${value}" aria-valuetext="${value}% used"><span style="width:${value}%"></span></div><div class="usage-reset"><span${detail ? ` title="${escape(detail)}"` : ''}>${validReset ? resetLabel(validReset) : 'Reset time not reported'}</span>${detail ? `<span class="sr-only">. ${escape(detail)}</span>` : ''}</div></div>`;
 }
 
+/** 'Resets 1:31 PM' or 'Resets Sat 11:24 AM', as Settings and the pool chip say it. */
 function resetLabel(reset: Date): string {
-  const minutes = Math.ceil((reset.getTime() - Date.now()) / 60000);
-  if (minutes <= 0) return 'Reset due · refresh to check';
-  if (minutes < 60) return `Resets in ${minutes}m`;
-  if (minutes < 1440) return `Resets in ${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
-  return `Resets ${reset.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
+  const text = resetsAt(reset.getTime());
+  return text === 'reset due' ? 'Reset due · refresh to check' : `R${text.slice(1)}`;
 }
 
 function dashboardLink(value?: string | null): string {

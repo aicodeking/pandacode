@@ -20,9 +20,11 @@ test('a named connection is added in Settings, chosen for a task in the model pi
   await expect(card.getByLabel('Value')).toHaveAttribute('type', 'password');
   await card.getByRole('button', { name: 'Save connection', exact: true }).click();
   await expect(card.getByRole('status')).toHaveText('Connection saved. Choose it in the model picker.');
-  await expect(card.locator('.named-connection')).toHaveText(/Claude Work\s*Claude Code/);
+  // A Claude Code connection is an account row in the Claude Code accounts card.
+  await expect(card.locator('[data-pool="claude"] [data-pool-member]').filter({ hasText: 'Claude Work' })).toHaveCount(1);
   // Editing shows the secret by name only; its value never comes back.
-  await card.getByRole('button', { name: 'Edit Claude Work', exact: true }).click();
+  await card.getByRole('button', { name: 'More for Claude Work', exact: true }).click();
+  await page.getByRole('menu', { name: 'Actions for Claude Work' }).getByRole('menuitem', { name: 'Edit…' }).click();
   await expect(card.getByLabel('Variable name')).toHaveValue('ANTHROPIC_API_KEY');
   await expect(card.getByLabel('Value')).toHaveValue('');
   await card.getByRole('button', { name: 'Cancel', exact: true }).click();

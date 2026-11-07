@@ -119,8 +119,9 @@ unless the harness's account pool is on (below).
 ## Account pools
 
 Claude Code and Codex can treat several accounts as one pool. Settings →
-Providers → Connections has an **Account pool** switch for each, and every
-member has its own **In pool** switch. The members are the harness's own setup
+Agents → Providers has a **Claude Code accounts** and a **Codex accounts** card,
+each with an **Account pool** switch in its header, and every member row has its
+own **In pool** switch. The members are the harness's own setup
 plus its named connections; each is its own account through its config folder
 (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) or a token (`CLAUDE_CODE_OAUTH_TOKEN` from
 `claude setup-token`, or `CODEX_API_KEY`). A member with the same config folder
@@ -129,10 +130,29 @@ earlier member, so a limit holds the login under every name. Settings lists the
 members and warns about same-login connections even while the pool is off. The
 config folder is a folder, not a secret: a Secret variable with that name is
 rejected. Pool only accounts you own; each must be your own subscription, and
-Settings says so beside the switch.
+Settings says so beside **Add account**.
 
-To add an account, click **Add account…** under Settings → Providers →
-Connections (Claude Code and Codex). One click creates a private folder
+Each row shows the account's email, plan and how many tasks it runs, a status
+chip (**Ready**, **Near limit**, **5-hour limit · until 3:00 PM** or **Weekly
+limit · until Sat 10:32 AM** when the CLI said which limit ran out, **Not signed
+in**, **Same login**, **Left out**) and up to two usage meters (such as the
+5-hour and weekly windows) with when each resets; a meter turns amber at 70 %
+and red at 90 %, and fresh usage at 90 % or more is what makes the chip read
+Near limit. While the pool is off the list is dimmed and only the neutral chips
+show. The email and plan are read locally from the CLI's own login files in the
+account's config folder and are only shown in the app; they are never sent
+anywhere. Usage comes from the same per-account limit check as the Usage view:
+once when the card first shows, then at most every 5 minutes when the window
+regains focus, or when you click the card's refresh button (the minute timer
+only re-reads PandaCode's own pool status). **Usage not available** means the
+harness did not report limits for that login. The **⋯** menu on a row holds
+**Try now** (clears a held limit), **Copy sign-in command**, **Edit…** (opens the
+connection form under the row) and **Delete…**, which asks first; the
+account's sign-in stays in its folder.
+Connections of other harnesses stay in the **Connections** card below.
+
+To add an account, click **Add account** in the Claude Code or Codex accounts
+card. One click creates a private folder
 (`~/.claude-pandacode-N` or `~/.codex-pandacode-N`), adds a connection for it
 and starts the harness's own login with that folder (`claude auth login
 --claudeai` or `codex login`, no terminal). The provider's sign-in page opens in
@@ -143,8 +163,8 @@ with a link to the page (in case it did not open) and **Cancel**. Claude's
 fallback page may show a code instead; paste it into the code field and press
 Enter. When the login is saved the row is signed in and joins the pool; turn
 on **Account pool** if it is off. A sign-in stops after 10 minutes. An account
-that is still signed out has a **Sign in** button, and a small **Copy sign-in
-command** fallback to run in a terminal (on Windows a PowerShell line that
+that is still signed out has a **Sign in** button, and **Copy sign-in
+command** in its **⋯** menu as a fallback to run in a terminal (on Windows a PowerShell line that
 clears the variable afterwards, so that terminal keeps the main account).
 
 A connection joins the pool only once it has a saved login: its own
@@ -152,12 +172,13 @@ A connection joins the pool only once it has a saved login: its own
 writes on sign-in in its config folder (Claude: `.claude.json` with the
 signed-in account, or `.credentials.json`; Codex: `auth.json`). The harness's
 own setup always counts. Until then Settings shows the member as **Not signed
-in** with **Sign in** and **Copy sign-in command** buttons. Pools are for subscription logins:
+in** with a **Sign in** button. Pools are for subscription logins:
 a connection that only sets `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is not a
 member.
 
-To do it by hand instead, sign in each extra account in its own folder and add
-a connection with that config folder:
+To do it by hand instead (**Set up an account by hand** at the bottom of each
+card), sign in each extra account in its own folder and add a connection with
+that config folder:
 
 ```sh
 CLAUDE_CONFIG_DIR=~/.claude-work claude auth login

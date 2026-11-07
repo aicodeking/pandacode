@@ -1,3 +1,4 @@
+mod account_identity;
 mod account_pool;
 mod account_sign_in;
 mod agent_tools;

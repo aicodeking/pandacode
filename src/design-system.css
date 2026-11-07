@@ -106,6 +106,13 @@ html:not([data-theme="dark"]){
   --ds-danger:color-mix(in srgb,var(--danger) 90%,var(--text));
   --ds-info:color-mix(in srgb,var(--info) 75%,var(--text));
   --ds-warn:color-mix(in srgb,var(--warning) 70%,var(--text));
+  /* A meter fill; WebKit without relative colours in `calc()` (older macOS) keeps --ds-warn. */
+  --ds-meter-warn:var(--ds-warn);
+}
+@supports (color: oklch(from red calc(l * .9) c h)){
+  /* The warning amber with its OKLCH lightness ×0.9 (hue and chroma kept, so it never turns olive),
+   * clearing 3:1 on its track in every light palette (tests/palette.test.mjs). */
+  html:not([data-theme="dark"]){--ds-meter-warn:oklch(from var(--warning) calc(l * .9) c h)}
 }
 /* Light text tones (PandaCode's own palette; imported themes set theirs inline): muted and faint
  * text clear 4.5:1 on the page, a card, the frame, a card on the frame and selected rows. */
@@ -176,25 +183,85 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 [data-state-tone]{color:var(--state-tone)}
 /* Account health (Settings → Connections, account pool): ready, near its limit, out until a reset. */
 [data-state-tone="ready"]{--state-tone:var(--ds-success)}[data-state-tone="near"]{--state-tone:var(--ds-warn)}[data-state-tone="limited"]{--state-tone:var(--ds-danger)}
-.account-pool{margin-top:12px}
-.account-pool-switch{display:flex;align-items:center;gap:8px;font-weight:600}
-.account-pool-hint{margin:6px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
-.account-pool-hint code{overflow-wrap:anywhere}
-.account-pool-add{margin:8px 0 0}
-/* Rows share one column grid (subgrid), so status and actions line up whether or not a row has a switch. */
-.account-pool-members{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px 8px;align-items:center}
-.account-pool-member{display:grid;grid-column:1/-1;grid-template-columns:subgrid;align-items:center}
-.account-pool-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px}
-.account-pool-member[data-signed-out]>span:nth-child(2){color:var(--muted)}
-.account-pool-dot{width:8px;height:8px;border-radius:50%;background:var(--state-tone)}
-.account-pool-member small{color:var(--muted)}
-.account-pool-sign-in{grid-column:2/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font-size:var(--ds-text-meta);color:var(--muted)}
+/* Accounts (Settings → Providers): one connection-card per pooled harness, then the Connections card.
+ * Lists sit 2px inside the inner card, as rows do in .ds-card-inner. */
+.named-connections-card{display:grid;gap:12px}
+.named-connections-card>[data-pools]{display:grid;gap:12px}
+.named-connections-card>[data-pools]:empty{display:none}
+.named-connection-feedback{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
+.named-connection-feedback.error{color:var(--ds-danger)}
+.named-connections,.account-pool-members{list-style:none;margin:0 calc(-1 * var(--ds-row-pad-x));padding:0;display:grid;gap:2px}
+.named-connections{margin-bottom:6px}
+.named-connections .ds-row-trail .ds-btn,.account-pool .ds-btn{height:28px;padding:0 10px;font-size:var(--ds-text-meta)}
+:is(.named-connections-list,.account-pool) .ds-btn>.icon{--icon-size:14px}
+.named-connections-list>.ds-btn{align-self:flex-start}
+.connection-card.account-pool{--connection-head:60px}
+.account-pool-title{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.account-pool-title>h3{margin:0}
+.account-pool-hint{font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account-pool-checked{flex:none;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+.account-pool-head>.icon-button{width:28px;height:28px;color:var(--muted)}
+.account-pool-head>.icon-button>.icon{--icon-size:16px}
+.account-pool-member{flex-wrap:wrap;row-gap:6px}
+.account-pool-member:has(.account-usage){padding-bottom:10px}
+.account-pool-member .ds-row-trail{gap:8px}
+.account-pool-member[data-signed-out] .ds-row-title{color:var(--muted)}
+.account-pool-status{gap:6px;color:var(--muted)}
+.account-pool-status>.ds-dot{width:6px;height:6px}
+.account-pool-status>.ds-dot[data-state-tone]{color:var(--state-tone)}
+.account-pool-empty{min-height:var(--ds-row-h)}
+.account-pool-empty .ds-row-sub{flex:none;font-size:var(--ds-text-ui)}
+/* Usage under the account's name: up to two windows side by side, each a label, a percent and a thin meter. */
+.account-usage{order:3;flex:1 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 20px;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+.account-usage:empty{display:none}
+/* A left-out account dims as one row, meters included. */
+.account-pool-member.ds-row-dim .account-usage{opacity:.62}
+.account-usage-none{display:block;color:var(--faint)}
+.account-meter{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:3px 8px;white-space:nowrap}
+.account-meter-label{overflow:hidden;text-overflow:ellipsis}
+.account-meter-reset{color:var(--faint)}
+.account-meter-value{color:var(--text)}
+.account-meter .ds-meter{grid-column:1/-1;min-width:0;height:4px;color:var(--muted)}
+.account-meter[data-level=warn] .ds-meter{color:var(--ds-meter-warn,var(--ds-warn))}
+.account-meter[data-level=danger] .ds-meter{color:var(--ds-danger)}
+/* What opens under a row (sign-in, delete confirmation, edit form) is part of it: same inset, no card of its own. */
+.account-pool-sign-in,.account-pool-confirm{display:flex;flex-direction:column;gap:8px;margin-top:-4px;padding:0 var(--ds-row-pad-x) 10px;font-size:var(--ds-text-meta);color:var(--muted)}
 .account-pool-sign-in[role=alert]{color:var(--text)}
-.account-pool-sign-in a{color:var(--accent-ink)}
-.account-pool-code{display:flex;flex-basis:100%;flex-wrap:wrap;align-items:center;gap:8px}
-.account-pool-code input{flex:1;min-width:12ch;height:var(--ds-btn-h);font-size:var(--ds-text-ui);padding:0 12px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);color:var(--text)}
-.account-pool-copy{padding:0;border:0;background:none;font-size:var(--ds-text-meta);color:var(--muted);text-decoration:underline;cursor:pointer}
-.account-pool-copy:hover{color:var(--text)}
+.account-pool-sign-in-line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
+.account-pool-sign-in-line>[role=status]{flex:1;min-width:0}
+.connection-card .account-pool-sign-in a{display:inline-flex;align-items:center;gap:4px;min-height:0;margin:0;padding:0;color:var(--accent-ink);font-size:inherit;text-decoration:none}
+.connection-card .account-pool-sign-in a:hover{background:none;text-decoration:underline}
+.account-pool-sign-in a>.icon{--icon-size:14px}
+.account-pool-pulse{flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:state-pulse 1.6s ease-in-out infinite}
+.account-pool-code{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.account-pool-code>span{flex-basis:100%}
+.account-pool-code input{flex:1;min-width:12ch;height:28px;font-size:var(--ds-text-ui);padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card-inset);color:var(--text)}
+.account-pool-code input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.account-pool-confirm{flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px 12px;color:var(--text)}
+.account-pool-confirm>span:first-child{flex:1;min-width:20ch;line-height:1.5}
+.account-pool-confirm code{font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
+.account-pool-confirm-actions{display:flex;gap:8px}
+.account-pool .ds-btn.account-pool-danger{color:var(--ds-danger)}
+.account-pool-edit{padding:0 var(--ds-row-pad-x) 10px}
+.account-pool-edit .named-connection-form>label:first-child{margin-top:0}
+.account-pool-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:8px}
+.connection-card p.account-pool-feedback{margin:8px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
+.connection-card p.account-pool-feedback.error{color:var(--ds-danger)}
+.account-pool-terms{flex:1;min-width:16ch;font-size:var(--ds-text-meta);color:var(--faint)}
+.connection-card p.account-pool-terms{margin:8px 0 0}
+.account-pool-manual{margin:6px calc(-1 * var(--ds-row-pad-x)) 0}
+.account-pool-manual>summary{display:flex;align-items:center;gap:6px;min-height:32px;padding:0 var(--ds-row-pad-x);border-radius:var(--ds-radius-control);list-style:none;cursor:pointer;font-size:var(--ds-text-meta);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.account-pool-manual>summary::-webkit-details-marker{display:none}
+.account-pool-manual>summary:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.account-pool-manual>summary:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.account-pool-manual>summary>.icon{--icon-size:14px;transition:rotate var(--ds-ease-out) ease-out}
+.account-pool-manual[open]>summary>.icon{rotate:90deg}
+.connection-card .account-pool-manual>p{margin:4px var(--ds-row-pad-x) 6px}
+.account-pool-command{display:flex;align-items:center;gap:8px;margin:0 2px 2px;padding:4px 4px 4px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card)}
+.account-pool-command code{flex:1;min-width:0;font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
+@media(max-width:640px){.account-usage{grid-template-columns:minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){.account-pool-manual>summary,.account-pool-manual>summary>.icon{transition:none}.account-pool-pulse{animation:none}}
+
 
 /* ---------- Startup ---------- */
 /* Nothing transitions until the first palette has painted: palette.ts sets html[data-ready] two frames

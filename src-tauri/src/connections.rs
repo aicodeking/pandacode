@@ -227,7 +227,10 @@ pub async fn connection_new_account(provider: String) -> Result<NewAccount> {
         let (dir, n) = new_account_dir(&home, &provider)?;
         let config_dir = dir.to_string_lossy().into_owned();
         let label = if provider == "codex" { "Codex" } else { "Claude" };
-        let input = Input { id: None, provider: provider.clone(), name: format!("{label} account {n}"), executable: None, args: vec![], env: vec![], config_dir: Some(config_dir.clone()) };
+        // The folder number names the account unless a connection already has that name.
+        let taken = |name: &str| runtime.data.connections.iter().any(|c| c.name.eq_ignore_ascii_case(name));
+        let name = (n..n + 100).map(|k| format!("{label} account {k}")).find(|name| !taken(name)).unwrap_or_else(|| format!("{label} account {n}"));
+        let input = Input { id: None, provider: provider.clone(), name, executable: None, args: vec![], env: vec![], config_dir: Some(config_dir.clone()) };
         let saved = validated(input, None).and_then(|(connection, _)| {
             let mut next = runtime.data.clone();
             next.connections.push(connection.clone());

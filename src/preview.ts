@@ -251,7 +251,9 @@ const previewAgentsDockSnapshot = {
 /** Named connections; secret values are dropped, only their names are kept, as on the native side. */
 /** Pool accounts whose usage holds were cleared with Try now (`provider/id`). */
 let previewPoolCleared: string[] = [];
-/** Connections made by Add account…, signed out until their preview sign-in finishes. */
+/** When the preview's held account (the first connection) gets its weekly window back: the chip and its meter's reset agree. */
+const previewHoldUntil = Date.now() + 86_400_000;
+/** Connections made by Add account, signed out until their preview sign-in finishes. */
 let previewSignedOut: string[] = [];
 /** Sign-ins running in the preview, by connection id, with their pending step. */
 const previewSignIns = new Map<string, number>();
@@ -1227,7 +1229,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const ids = ['', ...previewConnections.connections.filter(c => c.provider === args.provider).map(c => c.id)];
       const cleared = (id: string) => previewPoolCleared.includes(`${args.provider}/${id}`);
       const sameAs = (id: string) => id && !previewConnections.connections.find(c => c.id === id)?.configDir ? '' : null;
-      result = ids.map((id, i) => ({ id, signedIn: !previewSignedOut.includes(id), excluded: (previewConnections.poolExcluded ?? []).includes(`${args.provider}/${id}`), sameAs: i > 1 ? sameAs(id) : null, active: i === 0 ? 1 : 0, nearUntil: i === 0 && !cleared(id) ? Date.now() + 1_800_000 : null, limitedUntil: i === 1 && !cleared(id) ? Date.now() + 86_400_000 : null })); break;
+      // Identity is read from each account's local login files natively; the preview names sample addresses.
+      const plans = args.provider === 'codex' ? ['Pro', 'Plus'] : ['Max', 'Pro'];
+      // A same-login connection reads the default setup's login files, so it shows that identity.
+      const who = (id: string, i: number) => previewSignedOut.includes(id) ? { email: null, plan: null } : i > 1 && sameAs(id) === '' ? { email: 'you@example.com', plan: plans[0] } : { email: i === 0 ? 'you@example.com' : `${(previewConnections.connections.find(c => c.id === id)?.name ?? id).toLowerCase().replace(/[^a-z0-9]+/g, '.')}@example.com`, plan: plans[i % 2] };
+      result = ids.map((id, i) => ({ id, ...who(id, i), signedIn: !previewSignedOut.includes(id), excluded: (previewConnections.poolExcluded ?? []).includes(`${args.provider}/${id}`), sameAs: i > 1 ? sameAs(id) : null, active: i === 0 ? 1 : 0, nearUntil: i === 0 && !cleared(id) ? Date.now() + 1_800_000 : null, limitedUntil: i === 1 && !cleared(id) ? previewHoldUntil : null, limitedWindow: i === 1 && !cleared(id) ? 'seven_day' : null })); break;
     }
     case 'connection_assign': {
       if (args.connectionId && !previewConnections.connections.some(c => c.id === args.connectionId)) throw new Error('This connection no longer exists.');
@@ -1245,12 +1251,22 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
           message: 'Balance CNY 110.00 (granted 10.00, topped up 100.00).' };
         break;
       }
+      // A named connection gets its own sample: the first has used its whole week (held until previewHoldUntil), the
+      // second is near its 5-hour limit, a third is light and a new one fresh.
+      const ownIndex = args.connection ? previewConnections.connections.filter(item => item.provider === provider).findIndex(item => item.id === args.connection) : -1;
+      // A connection without its own folder is the default setup's login, so it reports the same numbers.
+      const ownLogin = Boolean(previewConnections.connections.find(item => item.id === args.connection)?.configDir);
+      const connectionUsage = args.connection && ownLogin ? ([[81, 100], [93, 58], [12, 9]][ownIndex] ?? [3, 5]) : null;
+      if (args.connection && previewSignedOut.includes(String(args.connection))) {
+        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
+        break;
+      }
       const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
       result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
         plan: provider === 'codex' ? 'Pro' : provider === 'opencode' ? 'Go' : null,
         windows: supported ? [
-          { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: args.connection ? 91 : provider === 'codex' ? 38 : 22, resetsAt: new Date(Date.now() + 7200000).toISOString() },
-          { label: provider === 'opencode' ? 'Go weekly' : 'Weekly', usedPercent: 64, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() },
+          { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: connectionUsage?.[0] ?? (provider === 'codex' ? 38 : 22), resetsAt: new Date(Date.now() + 7200000).toISOString() },
+          { label: provider === 'opencode' ? 'Go weekly' : 'Weekly', usedPercent: connectionUsage?.[1] ?? 64, resetsAt: new Date(ownIndex === 0 ? previewHoldUntil : Date.now() + 3 * 86400000).toISOString() },
         ] : [], source: 'Sample limits for the browser preview. No provider request was made.',
         message: supported ? null : 'This harness does not expose account limits. Check its account dashboard.' };
       break;

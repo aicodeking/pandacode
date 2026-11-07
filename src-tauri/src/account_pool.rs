@@ -36,6 +36,8 @@ type Key = (String, String);
 struct State {
     /// (provider, member) → out until. Saved to `account-holds.json`.
     limited: HashMap<Key, i64>,
+    /// (provider, member) → the window that ran out (`five_hour`, `seven_day`…), when reported.
+    limited_window: HashMap<Key, String>,
     /// (provider, member) → window → near its limit until.
     near: HashMap<Key, HashMap<String, i64>>,
     /// (provider, member) → runs in progress.
@@ -131,7 +133,13 @@ pub(crate) fn note_limit(provider: &str, member: &str, resets_at: Option<i64>, w
         with_state(|state| state.near.entry(key(provider, member)).or_default().insert(window.unwrap_or_default().to_owned(), until));
         return;
     }
-    with_state(|state| state.limited.insert(key(provider, member), until));
+    with_state(|state| {
+        state.limited.insert(key(provider, member), until);
+        match window {
+            Some(window) => state.limited_window.insert(key(provider, member), window.to_owned()),
+            None => state.limited_window.remove(&key(provider, member)),
+        };
+    });
     save_holds();
 }
 
@@ -237,7 +245,12 @@ pub struct MemberStatus {
     same_as: Option<String>,
     /// Whether the account has a saved login; one without is skipped until it does.
     signed_in: bool,
+    /// The signed-in email and plan, read locally from the harness's login files.
+    #[serde(flatten)]
+    identity: crate::account_identity::Identity,
     limited_until: Option<i64>,
+    /// The window that ran out (`five_hour`, `seven_day`…), when the harness said.
+    limited_window: Option<String>,
     near_until: Option<i64>,
     active: usize,
 }
@@ -285,7 +298,7 @@ fn signed_in(provider: &str, id: &str) -> bool {
     // `.claude.json` carries the signed-in account (credentials may be in the Keychain instead
     // of `.credentials.json`); it can be large, so it is scanned in chunks and the scan stops at
     // the key, which is usually near the top.
-    dir.join(".credentials.json").is_file() || std::fs::File::open(dir.join(".claude.json")).is_ok_and(|file| contains(file, b"\"oauthAccount\""))
+    dir.join(".credentials.json").is_file() || claude_json(Some(&connection)).and_then(|file| std::fs::File::open(file).ok()).is_some_and(|file| contains(file, b"\"oauthAccount\""))
 }
 
 /// Whether a stream contains `needle`, read in 64 KiB chunks.
@@ -315,12 +328,12 @@ fn members(provider: &str) -> Vec<String> {
 pub async fn account_pool_status(provider: String) -> crate::Result<Vec<MemberStatus>> {
     crate::blocking(move || {
         let at = now();
-        let list: Vec<_> = candidates(&provider).into_iter().map(|(id, out, same)| { let ok = signed_in(&provider, &id); (id, out, same, ok) }).collect();
+        let list: Vec<_> = candidates(&provider).into_iter().map(|(id, out, same)| { let ok = signed_in(&provider, &id); let who = who(&provider, &id); (id, out, same, ok, who) }).collect();
         Ok(with_state(|state| {
             list.into_iter()
-                .map(|(id, excluded, same_as, signed_in)| {
+                .map(|(id, excluded, same_as, signed_in, identity)| {
                     let k = key(&provider, &id);
-                    MemberStatus { limited_until: limited_until(state, &k, at), near_until: near_until(state, &k, at), active: state.active.get(&k).copied().unwrap_or(0), id, excluded, same_as, signed_in }
+                    MemberStatus { limited_until: limited_until(state, &k, at), limited_window: limited_until(state, &k, at).and(state.limited_window.get(&k).cloned()), near_until: near_until(state, &k, at), active: state.active.get(&k).copied().unwrap_or(0), id, excluded, same_as, signed_in, identity }
                 })
                 .collect()
         }))
@@ -331,6 +344,30 @@ pub async fn account_pool_status(provider: String) -> crate::Result<Vec<MemberSt
 /// Whether another account could take over from `current` now.
 pub(crate) fn has_alternative(provider: &str, current: &str) -> bool {
     enabled(provider) && pick(provider, &members(provider), current, now()).is_some()
+}
+
+/// The email and plan a member is signed in with, if its login files say.
+fn who(provider: &str, id: &str) -> crate::account_identity::Identity {
+    let connection = connections::get(id);
+    if provider == "codex" {
+        return config_dir(provider, connection.as_ref()).map(|dir| crate::account_identity::codex(&dir.join("auth.json"))).unwrap_or_default();
+    }
+    claude_json(connection.as_ref()).map(|file| crate::account_identity::claude(&file)).unwrap_or_default()
+}
+
+/// Where Claude Code keeps `.claude.json`: inside an explicit CLAUDE_CONFIG_DIR (the
+/// connection's folder or variable, the saved provider variable, this process's variable), else
+/// in the home folder rather than in `~/.claude`.
+fn claude_json(connection: Option<&Connection>) -> Option<PathBuf> {
+    let explicit = connection
+        .and_then(|c| c.config_dir.clone().or_else(|| c.env.get("CLAUDE_CONFIG_DIR").cloned()))
+        .or_else(|| crate::provider_settings::environment("claude").into_iter().find(|(k, _)| k == "CLAUDE_CONFIG_DIR").map(|(_, v)| v))
+        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok())
+        .filter(|dir| !dir.trim().is_empty());
+    match explicit {
+        Some(dir) => Some(PathBuf::from(dir).join(".claude.json")),
+        None => crate::agent_usage_providers::home().map(|home| home.join(".claude.json")),
+    }
 }
 
 /// The config folder a member's harness reads: the connection's folder or variable, else the

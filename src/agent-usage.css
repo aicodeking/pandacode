@@ -118,9 +118,9 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 .usage-plan:empty{display:none}
 .usage-card-body{font-size:var(--text-sm);color:var(--muted)}
 .usage-windows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 20px}
-.usage-window{min-width:0;--usage-color:var(--accent)}
-.usage-window[data-tone=exhausted]{--usage-color:var(--danger)}
-.usage-window[data-tone=high]{--usage-color:var(--warning)}
+.usage-window{min-width:0;--usage-color:var(--muted)}
+.usage-window[data-tone=danger]{--usage-color:var(--ds-danger)}
+.usage-window[data-tone=warn]{--usage-color:var(--ds-meter-warn,var(--ds-warn))}
 .usage-window-heading{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:var(--text-sm);margin-bottom:7px}
 .usage-window-heading>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 .usage-window-heading strong{flex-shrink:0;font-size:var(--text-xs);font-weight:500;font-variant-numeric:tabular-nums;color:var(--text)}
@@ -135,6 +135,9 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 .usage-notice p{margin:0;font-size:var(--text-sm)}
 .usage-card-footer{display:flex;align-items:center;gap:4px;margin-top:10px;min-width:0;font-size:var(--text-2xs);color:var(--muted)}
 .usage-card-footer>span{min-width:0}
+.usage-card-footer:empty,.usage-connection .usage-card-footer{display:none}
+.usage-card-checked{display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0;font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+.usage-card-checked:empty{display:none}
 .usage-dashboard{display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0;color:var(--muted);font-size:var(--text-xs);padding:2px 0 2px 6px}
 .usage-dashboard:hover{color:var(--text)}
 .usage-dashboard>.icon{width:var(--icon-xs);height:var(--icon-xs)}
@@ -163,7 +166,21 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 @media(prefers-contrast:more){.usage-hero,.usage-card{border-color:var(--border)}.usage-track,.usage-mini-track{outline:1px solid var(--muted)}.cost-area{opacity:.2}}
 @media(forced-colors:active){.usage-agent-dot,.cost-chart-dot,.cost-chart-value::before{forced-color-adjust:none}}
 /* Named connections (issue #137) under their harness's own limits. */
-.usage-connection{margin-top:18px;padding-top:14px}
-.usage-connection .usage-card-heading{margin-bottom:10px}
-.usage-connection h4,.usage-connection-default{margin:0 0 10px;font-size:var(--text-sm);font-weight:650;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.usage-connection .usage-card-heading h4{margin:0}
+.usage-connection,.usage-connection+.usage-card-cost:not(:empty){margin-top:26px;padding-top:20px;border-top:1px solid var(--ds-border)}
+.usage-connection+.usage-card-cost:not(:empty){padding-top:0}
+/* One heading row per account: name and email · plan on the left, pool chip and summary on the right. */
+.usage-account-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;min-width:0;margin:0 0 14px}
+.usage-card-heading:has(+.usage-account-heading h4[hidden]){margin-bottom:8px}
+.usage-account-title{display:flex;flex-direction:column;gap:2px;min-width:0}
+.usage-account-title h4{margin:0;font-size:var(--text-md);font-weight:650;letter-spacing:-.01em;color:var(--text)}
+.usage-same-login{margin:0;font-size:var(--text-sm);color:var(--muted)}
+.usage-signed-out{align-items:flex-start;gap:10px}
+.usage-signed-out p{color:var(--muted)}
+.usage-account-title>*,.usage-account-meta>*{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage-account-who{margin:0;font-size:var(--text-xs);color:var(--muted)}
+.usage-account-meta{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 1 auto;min-width:0;font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+.usage-account-who:empty,.usage-account-summary:empty,.usage-pool-chip:empty{display:none}
+.usage-pool-chip{display:inline-flex;align-items:center;gap:6px;padding:1px 8px 1px 7px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-chip);background:var(--ds-card-inner);color:var(--text);font-size:var(--text-2xs)}
+.usage-pool-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--state-tone,var(--muted))}
+@media(prefers-contrast:more){.usage-connection,.usage-connection+.usage-card-cost,.usage-pool-chip{border-color:var(--border)}}
+@media(forced-colors:active){.usage-pool-dot{forced-color-adjust:none}}
