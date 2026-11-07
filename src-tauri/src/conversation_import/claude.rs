@@ -33,7 +33,7 @@ fn millis(entry: &Value) -> Option<i64> {
     Some(seconds * 1000 + fraction)
 }
 
-fn bounded(text: &str) -> String {
+pub(crate) fn bounded(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.len() <= MAX_TEXT {
         return trimmed.to_owned();
