@@ -130,6 +130,56 @@ pub fn remove_folder(written: &[Written]) -> Vec<String> {
     kept
 }
 
+#[cfg(unix)]
+fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(windows)]
+fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+/// Write `<dir>/<id>` as a link to `target` (a linked skill's source folder). Refuses a path
+/// PandaCode did not link itself, and replaces only its own link, so the source folder and
+/// foreign folders stay untouched. `hash` is the content hash the link was verified against.
+pub fn write_link(dir: &Path, id: &str, target: &Path, hash: &str, previous: &[Written]) -> Result<Vec<Written>, String> {
+    let link = dir.join(id);
+    if let Ok(meta) = fs::symlink_metadata(&link) {
+        let ours = meta.is_symlink() && fs::read_link(&link).is_ok_and(|at| at == target);
+        let was_ours = previous.iter().any(|w| Path::new(&w.path) == link);
+        if !ours {
+            let what = if was_ours { "was replaced on disk; PandaCode will not overwrite it" } else { "already exists and PandaCode did not create it" };
+            return Err(format!("{} {what}.", link.display()));
+        }
+        fs::remove_file(&link).map_err(|e| format!("Could not replace {}: {e}", link.display()))?;
+    }
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+    }
+    make_link(target, &link).map_err(|e| {
+        #[cfg(windows)]
+        let hint = " Windows needs Developer Mode for links; import a copy instead.";
+        #[cfg(not(windows))]
+        let hint = "";
+        format!("Could not link {} to {}:{hint} {e}", link.display(), target.display())
+    })?;
+    Ok(vec![Written { path: link.to_string_lossy().into_owned(), sha256: hash.to_string() }])
+}
+
+/// Remove the links PandaCode wrote; returns the ones replaced on disk, which stay.
+pub fn remove_link(written: &[Written]) -> Vec<String> {
+    let mut kept = Vec::new();
+    for file in written {
+        let path = Path::new(&file.path);
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_symlink() => { let _ = fs::remove_file(path); }
+            Ok(_) => kept.push(file.path.clone()),
+            Err(_) => {}
+        }
+    }
+    kept
+}
+
 /// Add or update `id`'s block in `file`, leaving everything else in the file alone.
 pub fn write_block(file: &Path, id: &str, body: &str, previous: Option<&Written>) -> Result<Written, String> {
     let text = fs::read_to_string(file).unwrap_or_default();
