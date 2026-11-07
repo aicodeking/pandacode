@@ -104,8 +104,8 @@ function toggleReply(reply: HTMLElement): void {
   if (open) openReplies.add(key); else openReplies.delete(key);
   button.setAttribute('aria-expanded', String(open));
   button.textContent = open ? 'Show less' : 'Read more';
-  // The transcript stops following the bottom on this click (main.ts), so the reply's top stays where it is;
-  // the view moves only to keep a collapsed reply's button in sight.
+  // The reply keeps its place: a collapse gives its height back as blank room under it (main.ts holds the top on
+  // the clamp's timing), and the view moves only to keep a collapsed reply's button in sight.
   const settle = () => { body.style.overflow = ''; if (!open) button.scrollIntoView({ block: 'nearest' }); };
   if (quiet) { settle(); return; }
   body.style.overflow = 'hidden';
