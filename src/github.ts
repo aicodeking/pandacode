@@ -1,6 +1,6 @@
 import './github.css';
 import { escape, icon } from './dom';
-import type { FileEntry, GithubIssue, GithubItem, GithubReference, GithubStatus, Project, Session, TaskLink } from './types';
+import type { FileEntry, GithubAccounts, GithubIssue, GithubItem, GithubReference, GithubStatus, Project, Session, TaskLink } from './types';
 
 /* GitHub through the user's signed-in `gh`. Everything here is optional: when the
  * switch is off or the project has no GitHub remote, nothing runs and nothing shows. */
@@ -88,7 +88,8 @@ export function createGithub(host: GithubHost) {
   }
   function connected(projectId: string): boolean {
     const value = cached(projectId);
-    return githubEnabled() && Boolean(value?.installed && value.authenticated && value.repo);
+    // An unresolvable pin (its account was logged out) keeps every GitHub feature off.
+    return githubEnabled() && Boolean(value?.installed && value.authenticated && value.repo) && !value?.error;
   }
 
   async function mentionSearch(projectId: string, sessionId: string | undefined, query: string): Promise<MentionEntry[]> {
@@ -301,6 +302,17 @@ export function createGithub(host: GithubHost) {
     } catch { /* A failed refresh keeps the last known states. */ }
   }
 
+  /** The project's pinned GitHub account alongside every signed-in one. */
+  async function fetchGithubAccounts(projectId: string): Promise<GithubAccounts> {
+    return host.call<GithubAccounts>('github_accounts', { projectId });
+  }
+  /** Pin the account this project's GitHub calls run as; null goes back to gh's active one. */
+  async function setGithubAccount(projectId: string, login: string | null): Promise<void> {
+    await host.call('github_set_account', { projectId, login });
+    statuses.delete(projectId); // the cached status names the previous account
+    window.dispatchEvent(new Event('pandacode-github-change'));
+  }
+
   /** Settings row: the switch and the connection line for the current project. */
   function mountSettings(target: HTMLElement, projectId: string): () => void {
     target.innerHTML = `<div class="settings-group settings-github"><div class="setting-row"><div><strong>GitHub</strong><small class="github-settings-status">Checking GitHub CLI…</small></div><input type="checkbox" class="settings-switch" id="github-enabled" aria-label="GitHub integration" ${githubEnabled() ? 'checked' : ''}></div></div>`;
@@ -309,6 +321,7 @@ export function createGithub(host: GithubHost) {
     const describe = (value: GithubStatus | null): string => {
       if (!githubEnabled()) return 'Off · no gh commands run';
       if (!value) return projectId ? 'Could not check the GitHub CLI' : 'Open a project to check its connection';
+      if (value.error) return value.error;
       if (!value.installed) return 'Install the GitHub CLI (gh) to connect';
       if (!value.authenticated) return `Run gh auth login to connect${value.version ? ` · gh ${value.version}` : ''}`;
       const who = value.login ? `Connected as ${value.login}` : 'Connected';
@@ -323,5 +336,5 @@ export function createGithub(host: GithubHost) {
     return () => { disposed = true; toggle.removeEventListener('change', onToggle); };
   }
 
-  return { enabled: githubEnabled, setEnabled, status, cached, connected, mentionSearch, contextFor, menuItems, onMenu, showImport, showPullRequest, showLinkPull, submit, refreshLinks, mountSettings };
+  return { enabled: githubEnabled, setEnabled, status, cached, connected, mentionSearch, contextFor, menuItems, onMenu, showImport, showPullRequest, showLinkPull, submit, refreshLinks, fetchGithubAccounts, setGithubAccount, mountSettings };
 }

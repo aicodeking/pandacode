@@ -222,7 +222,13 @@ pub fn start_harness(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
-    let cmd = harness_command(&context)?;
+    let mut cmd = harness_command(&context)?;
+    // A pinned project's console runs gh and git as that account; a stale pin keeps
+    // gh's active account instead of failing the console.
+    if let Some(token) = crate::session_github_token(&app, context.session_id) {
+        cmd.env("GH_TOKEN", &token);
+        cmd.env("GH_ENTERPRISE_TOKEN", &token);
+    }
     start_command(
         app,
         terms,
