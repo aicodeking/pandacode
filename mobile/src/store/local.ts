@@ -1,11 +1,13 @@
 // This phone's own inbox state: snoozes, phone-only pins and the outbox. Kept in SecureStore
 // (the app's only persistent store), separate from the Connect state client.ts owns.
 import { useEffect } from 'react';
+import { Alert } from 'react-native';
 import { create } from 'zustand';
 import { connect } from '../connect/client.ts';
 import { uuid } from '../connect/crypto.ts';
 import { useShallow } from 'zustand/react/shallow';
 import { get, remove, set } from '../connect/secrets.ts';
+import { steerKey } from './draft.ts';
 import { activeSnoozes, type OutboxEntry } from './inbox.ts';
 import { useConnect } from './index.ts';
 import { applyFlush, flush, isUnsent, parseOutbox } from './outbox.ts';
@@ -18,7 +20,7 @@ interface LocalState {
   snoozed: Record<string, number>;
   pins: Record<string, boolean>;
   outbox: OutboxEntry[];
-  /** Prompts this phone steered (trimmed text → when), to label their bubbles. Memory only:
+  /** Prompts this phone steered (steerKey → when), to label their bubbles. Memory only:
    * stored messages don't mark steers. */
   steers: Record<string, number>;
 }
@@ -57,7 +59,8 @@ export const togglePin = (key: string) => patch(s => {
   const { [key]: on, ...rest } = s.pins;
   return { pins: on ? rest : { ...rest, [key]: true } };
 });
-export const markSteered = (text: string) => useLocal.setState(s => ({ steers: { ...s.steers, [text.trim()]: Date.now() } }));
+/** `at`: taken before the steer went out, so the host's copy is created after it. */
+export const markSteered = (taskKey: string, text: string, at: number) => useLocal.setState(s => ({ steers: { ...s.steers, [steerKey(taskKey, text)]: at } }));
 export const removeOutbox = (id: string) => patch(s => ({ outbox: s.outbox.filter(e => e.id !== id) }));
 
 /** Sends a message, then copies it back: the host saves a sent prompt before it answers, but
@@ -118,9 +121,14 @@ export async function flushOutbox() {
   }
 }
 
-/** Clears an entry's error and tries the outbox again. */
+/** Clears an entry's error and tries the outbox again; says so when the computer can't be reached,
+ * since a flush then sends nothing and shows nothing. */
 export function retryOutbox(id: string) {
+  const entry = useLocal.getState().outbox.find(e => e.id === id);
   patch(s => ({ outbox: s.outbox.map(e => (e.id === id ? { ...e, error: undefined } : e)) }));
+  const { connected, devices } = useConnect.getState();
+  const device = devices.find(d => d.id === entry?.deviceId);
+  if (entry && (!connected || !device?.online)) Alert.alert('Still offline', `${device?.name ?? 'The computer'} can't be reached right now. This message sends when it's back.`);
   void flushOutbox();
 }
 

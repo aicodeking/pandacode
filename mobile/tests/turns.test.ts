@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Message } from '../src/connect/types.ts';
-import { attachments, duration, turnRows } from '../src/store/turns.ts';
+import { attachments, changesOf, duration, reuseRows, turnRows } from '../src/store/turns.ts';
+import { modelLabel } from '../src/ui/model-label.ts';
 
 const m = (id: number, role: string, turnDurationMs: number | null = null): Message => ({ id, role, content: `${role}${id}`, createdAt: id, turnDurationMs });
 
@@ -41,4 +42,39 @@ test('a system note shows outside the fold, after the reply it follows', () => {
   const work = rows[1];
   assert.ok(work.kind === 'work');
   assert.deepEqual(work.steps.map(s => s.id), [2]);
+});
+
+test('a refetch keeps the objects of unchanged rows, so memoized rows stay put', () => {
+  const list = [m(1, 'user'), m(2, 'tool'), m(3, 'assistant', 1000)];
+  const before = turnRows(list);
+  const copies = list.map(message => ({ ...message }));
+  assert.equal(reuseRows(before, turnRows(copies)), before, 'the same messages give the same array');
+
+  const grown = reuseRows(before, turnRows([...copies, m(4, 'user')]));
+  assert.deepEqual(grown.map(r => r.id), ['u1', 'w2', 'r3', 'u4']);
+  assert.equal(grown[0], before[0]);
+  assert.equal(grown[1], before[1]);
+  assert.equal(grown[2], before[2]);
+
+  const edited = reuseRows(before, turnRows([copies[0], { ...copies[1], content: 'changed' }, copies[2]]));
+  assert.equal(edited[0], before[0]);
+  assert.notEqual(edited[1], before[1], 'a changed step gives a new work row');
+  assert.equal(edited[2], before[2]);
+});
+
+test('model ids read as names when the host list has none', () => {
+  assert.equal(modelLabel('opus'), 'Opus');
+  assert.equal(modelLabel('gpt-5.1-codex'), 'GPT-5.1 Codex');
+  assert.equal(modelLabel('claude-opus-4-8'), 'Claude Opus 4.8');
+  assert.equal(modelLabel('kimi-k2'), 'Kimi K2');
+});
+
+test('a turn with attributed changes gets a row after its reply; older hosts and empty turns get none', () => {
+  const changed = { ...m(3, 'assistant'), turnChanges: { attributed: true, files: [{}, {}, {}], additions: 6, deletions: 2 } };
+  const rows = turnRows([m(1, 'user'), m(2, 'tool'), changed, m(4, 'user')]);
+  assert.deepEqual(rows.map(r => r.id), ['u1', 'w2', 'r3', 'c3', 'u4']);
+  assert.deepEqual(changesOf(changed), { files: 3, additions: 6, deletions: 2 });
+  assert.equal(changesOf(m(5, 'assistant')), null);
+  assert.equal(changesOf({ ...m(5, 'assistant'), turnChanges: { attributed: false, files: [{}] } }), null);
+  assert.equal(changesOf({ ...m(5, 'assistant'), turnChanges: { attributed: true, files: [] } }), null);
 });

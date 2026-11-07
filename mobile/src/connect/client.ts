@@ -6,7 +6,9 @@ import { startNote } from './start-note.ts';
 import { initialState, taskKey, useConnect, type ConnectState } from '../store/index.ts';
 import { chunks, dueIcons, mergeIcons } from '../store/icon-cache.ts';
 import { clearIcons, loadIcons, resetIcons, saveIcons, useIcons } from '../store/icons.ts';
+import { useDrafts } from '../store/draft.ts';
 import { File, Paths } from 'expo-file-system';
+import { create } from 'zustand';
 import { BUILD_DEMO, DEMO_FILE, demoAtStart } from '../demo.ts';
 import { demoCall, type DemoHost } from '../demo-host.ts';
 import { delivering, settled, unmatched, type Sent } from '../store/sent.ts';
@@ -20,6 +22,7 @@ import type { Variant } from '../store/attachments.ts';
 import { fetchAttachment, type AttachmentDeps, type Source } from './attachments.ts';
 import * as auth from './auth.ts';
 import { deleteAccount as deleteAccountSteps } from './delete-account.ts';
+import { forgetPhoneState, signOutSteps } from './sign-out.ts';
 import { build, NOT_CONFIGURED } from './config.ts';
 import { open, pairKey, seal, uuid } from './crypto.ts';
 import { BackgroundGate, LOST, NOT_CONNECTED, OFFLINE, outdated, Pending, RATE, Replay, request, STALE, START_TIMEOUT_MS, TIMEOUT_MS, UNKNOWN_METHOD, type Method } from './rpc.ts';
@@ -232,12 +235,23 @@ async function enterDemo(): Promise<void> {
   await seedDemo();
 }
 
+/** What this phone keeps for an account: drafts, older-page errors, snoozes, pins and the outbox.
+ * Imported on call: store/local.ts imports this module. */
+const forgetLocal = () => forgetPhoneState({
+  clearDrafts: () => {
+    useDrafts.setState({ text: {}, focus: {} });
+    useOlderFailed.setState({}, true);
+  },
+  clearLocal: () => import('../store/local.ts').then(local => local.clearLocal()),
+});
+
 /** Back to sign-in with nothing of the demo left. */
 async function leaveDemo(): Promise<void> {
   buildDemo = false;
   const f = demoFile();
   if (f.exists) f.delete();
   resetIcons();
+  await forgetLocal();
   useConnect.setState({ ...initialState(), ready: true }, true);
   initialized = false;
   await init();
@@ -247,18 +261,25 @@ const demoHost: DemoHost = { get: () => state(), set: patch, later: (run, ms) =>
 
 async function signOut(): Promise<void> {
   if (state().demo) return leaveDemo();
-  socket.stop();
-  pending.failAll('Signed out.');
-  token = null;
-  keys.clear();
-  watched.clear();
-  glanced.clear();
-  cursors.clear();
-  forgetThreads();
-  presence = false;
-  await secrets.clearSession();
-  const { deviceId, ready } = state();
-  useConnect.setState({ ...initialState(), deviceId, ready }, true);
+  await signOutSteps({
+    stop: () => {
+      socket.stop();
+      pending.failAll('Signed out.');
+      token = null;
+      keys.clear();
+      watched.clear();
+      glanced.clear();
+      cursors.clear();
+      forgetThreads();
+      presence = false;
+    },
+    forgetLocal,
+    clearSession: secrets.clearSession,
+    reset: () => {
+      const { deviceId, ready } = state();
+      useConnect.setState({ ...initialState(), deviceId, ready }, true);
+    },
+  });
 }
 
 /** A refusal signs out only if it refused the token that is still current. */
@@ -749,11 +770,20 @@ function loadMessages(deviceId: string, sessionId: string, pages = MAX_PAGES, ba
   });
 }
 
+/** Threads (by taskKey) whose last older page failed, for the thread screen to show; the next try clears it. */
+export const useOlderFailed = create<Record<string, true>>(() => ({}));
+const setOlderFailed = (key: string, failed: boolean) => useOlderFailed.setState(s => {
+  const { [key]: _, ...rest } = s;
+  return failed ? { ...rest, [key]: true } : rest;
+}, true);
+
 /** The page before the oldest message held, when the user scrolls near it. Hosts without
- * beforeId page forward from the start up to it. A failure leaves it to the next scroll. */
+ * beforeId page forward from the start up to it. A failure sets `useOlderFailed` and leaves the
+ * page to the next scroll or retry. */
 function loadOlder(deviceId: string, sessionId: string): Promise<void> {
   const key = taskKey(deviceId, sessionId);
   if (state().older[key] !== 'more') return Promise.resolve();
+  setOlderFailed(key, false);
   const setOlder = (value?: 'more' | 'loading') => patch(s => {
     const { [key]: _, ...rest } = s.older;
     return { older: value ? { ...rest, [key]: value } : rest };
@@ -766,7 +796,10 @@ function loadOlder(deviceId: string, sessionId: string): Promise<void> {
     const { page, legacy: old } = await newestPage(fetch, deviceId, legacy, { beforeId: first, limit: OLDER, budget: CATCH_UP_BUDGET });
     if (!old && page) return store(deviceId, sessionId, pageMessages(page), 'prepend', page);
     store(deviceId, sessionId, await olderByAfterId(fetch, first, page, MAX_PAGES), 'prepend', { hasOlder: false });
-  }).catch(() => setOlder('more'));
+  }).catch(() => {
+    setOlder('more');
+    setOlderFailed(key, true);
+  });
 }
 
 /** Copies threads ahead in the background, one call at a time, held while a thread is open or a prompt sends. */
@@ -1047,7 +1080,12 @@ async function pullDiff(deviceId: string, sessionId: string, path: string): Prom
 }
 async function mergePull(deviceId: string, sessionId: string, method: MergeMethod): Promise<void> {
   await newer(deviceId, 'task.pullMerge', { sessionId, method }, MERGE_TIMEOUT_MS);
-  await loadPull(deviceId, sessionId, true);
+  // The merge happened: a failed refresh must not read as a failed merge.
+  await loadPull(deviceId, sessionId, true).catch(() => {
+    const key = taskKey(deviceId, sessionId);
+    const held = state().pulls[key];
+    if (held) setPull(key, { ...held, state: 'merged', mergedAt: new Date().toISOString() });
+  });
 }
 
 async function taskChanges(deviceId: string, sessionId: string): Promise<Changes> {
@@ -1108,7 +1146,11 @@ const teamless = new Set<string>();
 /** The task's team (null: not an architect task), stored per task; 'outdated' on hosts without task.team. */
 async function loadTeam(deviceId: string, sessionId: string): Promise<Team | null | 'outdated'> {
   const key = taskKey(deviceId, sessionId);
-  if (teamless.has(deviceId)) return 'outdated';
+  if (teamless.has(deviceId)) {
+    // This task may not have asked yet: without its entry the screen would wait for ever.
+    if (state().teams[key] !== 'outdated') patch(s => ({ teams: { ...s.teams, [key]: 'outdated' } }));
+    return 'outdated';
+  }
   try {
     const team = decodeTeam(await call(deviceId, 'task.team', { sessionId }, TIMEOUT_MS, true));
     patch(s => ({ teams: { ...s.teams, [key]: team } }));

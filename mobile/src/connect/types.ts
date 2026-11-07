@@ -45,7 +45,7 @@ export interface SubscribeReply { tasks: SubscribedTask[]; epoch?: string; more?
 export interface AgentEventsFrame { events: AgentEvent[]; epoch?: string; lagged?: boolean }
 
 /** `attachments`: newer hosts' rows (checked by parseAttachments in src/store/attachments.ts). */
-export interface Message { id: number; role: string; content: string; createdAt: number; turnDurationMs: number | null; attachments?: unknown; /** The host cut this (oversized) message to fit a small page; same id, refetched whole. */ cut?: boolean }
+export interface Message { id: number; role: string; content: string; createdAt: number; turnDurationMs: number | null; attachments?: unknown; /** Newer hosts: what this turn changed; decoded by changesOf in src/store/turns.ts. */ turnChanges?: unknown; /** The host cut this (oversized) message to fit a small page; same id, refetched whole. */ cut?: boolean }
 /** `hasMore`: newer messages follow the page; `hasOlder` (newer hosts, tail/beforeId pages): older ones precede it. */
 export interface MessagePage { messages: Message[]; hasMore: boolean; title: string; hasOlder?: boolean; lastId?: number | null;
   /** task.workerMessages: this host pages backward. */
