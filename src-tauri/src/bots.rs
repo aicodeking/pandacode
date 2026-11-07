@@ -14,6 +14,7 @@ mod secrets;
 #[cfg(test)]
 mod tests;
 pub(crate) mod tools;
+pub(crate) mod webhooks;
 
 use crate::{storage::Store, AppState, Result};
 use rusqlite::{params, OptionalExtension};
@@ -168,6 +169,15 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   CHECK(source_bot_id<>target_bot_id));
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
+CREATE TABLE IF NOT EXISTS bot_webhooks(
+  id TEXT PRIMARY KEY,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+  last_timestamp INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS bot_webhooks_bot ON bot_webhooks(bot_id);
 ";
 
 /// Profile columns added after the bots table first shipped (schema 25). Fresh databases get
@@ -654,6 +664,9 @@ pub(crate) fn delete(store: &Store, id: &str) -> Result<()> {
     for channel in channels {
         secrets::remove_all(&channel);
     }
+    for webhook in webhooks::list(store, id)? {
+        webhooks::delete(store, &webhook.id)?;
+    }
     store.db.execute("DELETE FROM bots WHERE id=?1", [id]).map_err(|e| e.to_string())?;
     shared_channels::settle_posts(store, &open)?;
     Ok(())
@@ -1053,6 +1066,7 @@ pub(crate) fn start(app: &tauri::AppHandle) {
     }
     schedule::start(app.clone());
     channels::start_all(app.clone());
+    webhooks::start(app);
 }
 
 /// Called when any task's run ends; replies for bot conversations go back to their channel.
