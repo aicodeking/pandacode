@@ -7,10 +7,12 @@ export interface ChangesViewDeps {
   loadDiff(path: string, staged: boolean): Promise<string>;
   stage(paths: string[], staged: boolean): Promise<void>;
   commit(message: string): Promise<void>;
+  /** Throws away every change to `paths` once the user confirms; resolves without changes when they cancel. */
+  discard?(paths: string[]): Promise<void>;
   openFile(path: string): void;
   refresh(): void;
   notify(message: string): void;
-  choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean }[], onSelect: (id: string) => void): void;
+  choose(anchor: HTMLElement, title: string, items: { id: string; label: string; icon?: string; danger?: boolean; disabled?: boolean; selected?: boolean; separator?: boolean }[], onSelect: (id: string) => void): void;
   /** When given, the … menu offers to move the work into an isolated worktree. */
   worktree?(): void;
 }
@@ -396,9 +398,11 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       ...(isStaged(file) ? [{ id: 'unstage', label: 'Unstage file', icon: 'minimize' }] : []),
       { id: 'open', label: 'Open file', icon: 'file', disabled: file.working === 'D' || (file.index === 'D' && file.working === ' ') },
       { id: 'copy', label: 'Copy path', icon: 'copy' },
+      ...(deps.discard ? [{ id: 'discard', label: 'Discard changes…', icon: 'trash', danger: true, separator: true }] : []),
     ];
     deps.choose(anchor, path, items, id => {
       if (id === 'stage' || id === 'unstage') void run(deps.stage([path], id === 'stage'), id === 'stage' ? 'Unable to stage file' : 'Unable to unstage file');
+      else if (id === 'discard') void run(deps.discard!([path]), 'Unable to discard changes');
       else if (id === 'open') deps.openFile(path);
       else if (id === 'copy') copy(path);
     });
@@ -431,12 +435,14 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
           { id: 'commit', label: 'Commit…', icon: 'check', disabled: !status?.isRepo },
           { id: 'refresh', label: 'Refresh', icon: 'refresh' },
           ...(deps.worktree ? [{ id: 'worktree', label: 'Create isolated worktree…', icon: 'branch' }] : []),
+          ...(deps.discard ? [{ id: 'discard-all', label: 'Discard all changes…', icon: 'trash', danger: true, separator: true, disabled: !files().length }] : []),
         ], id => {
           if (id === 'stage-all' && unstaged.length) void run(deps.stage(unstaged, true), 'Unable to stage files');
           else if (id === 'unstage-all' && staged.length) void run(deps.stage(staged, false), 'Unable to unstage files');
           else if (id === 'commit') openCommit();
           else if (id === 'refresh') deps.refresh();
           else if (id === 'worktree') deps.worktree?.();
+          else if (id === 'discard-all' && files().length) void run(deps.discard!(files().map(f => f.path)), 'Unable to discard changes');
         });
         break;
       }

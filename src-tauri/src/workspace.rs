@@ -682,6 +682,87 @@ pub fn git_stage(root: &Path, paths: Vec<String>, staged: bool) -> Result<(), St
     Ok(())
 }
 
+/// Throw away the staged and unstaged changes of `paths`: tracked files go back to HEAD,
+/// and files HEAD does not have (untracked or newly added) are removed from the index and disk.
+pub fn git_discard(root: &Path, paths: Vec<String>) -> Result<(), String> {
+    require_repository(root)?;
+    if paths.is_empty() || paths.len() > FILE_COUNT_LIMIT {
+        return Err("Select between 1 and 5,000 files".into());
+    }
+    for path in &paths {
+        if scoped_path(root, path)?.is_dir() {
+            return Err("Select individual files to discard".into());
+        }
+    }
+    // A staged rename lists only its new name; discarding it brings the old one back too.
+    let mut targets = paths.clone();
+    for source in rename_sources(root, &paths)? {
+        if !targets.contains(&source) {
+            scoped_path(root, &source)?;
+            targets.push(source);
+        }
+    }
+    let head = run_git(root, &["rev-parse", "--verify", "HEAD"], 8192, false)?;
+    let mut in_head = Vec::new();
+    if head.status.success() {
+        let mut args = vec!["ls-tree", "-r", "-z", "--name-only", "HEAD", "--"];
+        args.extend(targets.iter().map(String::as_str));
+        let listed = checked(run_git(root, &args, STATUS_LIMIT, false)?)?;
+        in_head = listed
+            .bytes
+            .split(|byte| *byte == 0)
+            .filter(|v| !v.is_empty())
+            .map(|v| String::from_utf8_lossy(v).into_owned())
+            .collect();
+    }
+    let (tracked, added): (Vec<&String>, Vec<&String>) =
+        targets.iter().partition(|path| in_head.contains(*path));
+    if !tracked.is_empty() {
+        let mut args = vec!["checkout", "HEAD", "--"];
+        args.extend(tracked.iter().map(|path| path.as_str()));
+        checked(run_git(root, &args, 16 * 1024, false)?)?;
+    }
+    if !added.is_empty() {
+        let mut args = vec!["rm", "--cached", "--force", "--quiet", "--ignore-unmatch", "--"];
+        args.extend(added.iter().map(|path| path.as_str()));
+        checked(run_git(root, &args, 16 * 1024, false)?)?;
+        for path in added {
+            match fs::remove_file(scoped_path(root, path)?) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("Unable to remove {path}: {error}")),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The original names of renamed entries among `paths`.
+fn rename_sources(root: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    let output = checked(run_git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+        STATUS_LIMIT,
+        false,
+    )?)?;
+    let mut parts = output
+        .bytes
+        .split(|byte| *byte == 0)
+        .filter(|v| !v.is_empty());
+    let mut sources = Vec::new();
+    while let Some(entry) = parts.next() {
+        if entry.len() < 4 || !(matches!(entry[0], b'R' | b'C') || matches!(entry[1], b'R' | b'C')) {
+            continue;
+        }
+        let source = parts.next().ok_or("Incomplete Git rename record")?;
+        let path = String::from_utf8_lossy(&entry[3..]);
+        if (entry[0] == b'R' || entry[1] == b'R') && paths.iter().any(|p| *p == path) {
+            sources.push(String::from_utf8_lossy(source).into_owned());
+        }
+    }
+    Ok(sources)
+}
+
 pub fn git_commit(root: &Path, message: String) -> Result<String, String> {
     if message.trim().is_empty() || message.len() > 16 * 1024 || message.contains('\0') {
         return Err("Commit message must contain 1–16,384 bytes of text".into());
@@ -1760,6 +1841,59 @@ mod tests {
             .files
             .iter()
             .any(|v| v.path == "other.txt" && v.index == "?"));
+    }
+
+    #[test]
+    fn discard_restores_tracked_files_and_removes_new_ones() {
+        let f = Fixture::new(true);
+        for name in ["edited.txt", "both.txt", "gone.txt", "old.txt", "keep.txt", "[k]eep.txt"] {
+            fs::write(f.root.join(name), "original\n").unwrap();
+        }
+        f.git(&["add", "."]);
+        f.git(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"]);
+        fs::write(f.root.join("edited.txt"), "changed\n").unwrap();
+        fs::write(f.root.join("both.txt"), "staged\n").unwrap();
+        f.git(&["add", "both.txt"]);
+        fs::write(f.root.join("both.txt"), "staged and more\n").unwrap();
+        fs::remove_file(f.root.join("gone.txt")).unwrap();
+        f.git(&["mv", "old.txt", "new.txt"]);
+        fs::create_dir(f.root.join("dir")).unwrap();
+        fs::write(f.root.join("dir/untracked.txt"), "new\n").unwrap();
+        fs::write(f.root.join("added.txt"), "added\n").unwrap();
+        f.git(&["add", "added.txt"]);
+        fs::write(f.root.join("added.txt"), "added and edited\n").unwrap();
+        fs::write(f.root.join("keep.txt"), "kept\n").unwrap();
+        assert!(git_discard(&f.root, vec!["dir".into()]).is_err());
+        assert!(git_discard(&f.root, vec!["../escape".into()]).is_err());
+        git_discard(
+            &f.root,
+            ["edited.txt", "both.txt", "gone.txt", "new.txt", "dir/untracked.txt", "added.txt", "[k]eep.txt"]
+                .map(String::from)
+                .to_vec(),
+        )
+        .unwrap();
+        for name in ["edited.txt", "both.txt", "gone.txt", "old.txt"] {
+            assert_eq!(fs::read_to_string(f.root.join(name)).unwrap(), "original\n", "{name}");
+        }
+        assert!(!f.root.join("new.txt").exists());
+        assert!(!f.root.join("dir/untracked.txt").exists());
+        assert!(!f.root.join("added.txt").exists());
+        // Literal pathspecs: `[k]eep.txt` never matches keep.txt.
+        let files = git_status(&f.root).unwrap().files;
+        assert_eq!(files.len(), 1, "{:?}", files.iter().map(|v| &v.path).collect::<Vec<_>>());
+        assert_eq!(files[0].path, "keep.txt");
+    }
+
+    #[test]
+    fn discard_supports_an_unborn_branch() {
+        let f = Fixture::new(false);
+        f.git(&["init", "-b", "main"]);
+        fs::write(f.root.join("first.txt"), "first").unwrap();
+        fs::write(f.root.join("second.txt"), "second").unwrap();
+        git_stage(&f.root, vec!["first.txt".into()], true).unwrap();
+        git_discard(&f.root, vec!["first.txt".into(), "second.txt".into()]).unwrap();
+        assert!(git_status(&f.root).unwrap().files.is_empty());
+        assert!(!f.root.join("first.txt").exists());
     }
 
     #[test]
