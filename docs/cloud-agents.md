@@ -4,7 +4,7 @@ A task can run its agent on a cloud machine instead of this computer. In a New t
 context bar's computer menu ("This computer", other Connect computers) also lists
 **Cloud** targets: every provider connected in Settings → Cloud (Daytona, Docker, DigitalOcean,
 Vultr, Hetzner, RunPod, Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox,
-CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and
+CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, Railway, boat, InstaBox, boxd). Picking one and
 sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
 queue, model picker. It keeps running when the laptop sleeps or PandaCode quits, and
@@ -104,6 +104,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | freestyle | API key | — |
 | boat | API key | `apiUrl` |
 | instabox | API key | — (machines start from the image chosen after connecting, see [InstaBox](#instabox); `exec` output is read back from a file because InstaBox keeps only its first 1 MiB; at most 60 unattended minutes) |
+| boxd | API key | `region` (`fra`, `nyc`, …; empty: the account's home region), see [boxd](#boxd) |
 | vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
 | railway | (existing deploy token) | `workspace` (existing) |
 | gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |
@@ -156,6 +157,41 @@ and hang. `keep_alive` starts a small watcher on the machine (once per boot,
 and closes established outbound connections to ports 443 and 80 with `sudo -n ss -K`,
 so clients reconnect. This needs passwordless sudo, which `agent-browser` and snapshots
 of it have; on an image without it the watcher closes nothing.
+
+## boxd
+
+[boxd](https://boxd.sh?ref=pandacode) machines are Ubuntu 24.04 microVMs with a 100 GB
+disk, created in about a second. Create a key at app.boxd.sh/keys or with
+`boxd auth keys create pandacode` (`--org <name>` puts machines in an organization).
+Connecting checks the key with `Whoami`; a **Region** is looked up in `ListRegions` and its
+API saved as `regionApi` in `Settings.providers["boxd"]`.
+
+**Transport.** boxd's API is gRPC. `cloud/boxd.rs` sends the grpc-web form of it
+(`application/grpc-web+proto`: protobuf messages in 5-byte-prefixed frames, the status in
+a trailer frame) as plain HTTPS POSTs to `https://boxd.sh:9443/boxd.api.v1.BoxdApi/<Method>`
+through the shared `cloud::http` client, with the key as the bearer token. The handful of
+messages it needs are encoded by hand from boxd's public `api.proto`, so no gRPC or
+protobuf crate is added. Client-streaming calls (Exec, FsWrite) are sent whole, then the
+reply streams back: `exec` cannot write to a command's stdin after it starts, which the
+`Sandbox` contract never asks for.
+
+**Machines.** Created with `isolated` set (no in-VM boxd CLI, metadata endpoint, git
+credential helper or account integrations, so an agent on it can't reach the account's
+other machines) and the label `created-by=pandacode`. `list` asks for that label and
+checks it again; `exec`, files, power and `keep_alive` refuse a machine without it.
+Machine names are global host names (`<name>.boxd.sh`), so a taken `pc-…` name gets a
+short random suffix. `exec` runs `sh -c` as the `boxd` user (HOME `/home/boxd`, passwordless
+sudo); files use FsWrite (parents created, mode 0600 when private) and FsRead from an
+offset. At its timeout an `exec` is dropped, and boxd then kills the command's process
+group; `setsid` processes started by `spawn` survive.
+
+**Staying awake.** A boxd machine goes to standby after a stretch with no network traffic
+in or out (memory and processes kept, woken by the next call) and hibernates later
+(memory to disk, no compute billed). `keep_alive(minutes)` sets standby to `minutes` and
+hibernation to `minutes` + 60 (`SetAutoSuspendTimeout`, `SetAutoHibernateTimeout`); new
+machines start at 15. Standby counts as `running`, since any call wakes it in
+milliseconds. **Stop** is a cold stop (`StopVm`, disk kept, processes end); **start**
+picks `StartVm`, `WakeVm` or `ResumeVm` for a stopped, hibernated or standby machine.
 
 ## Privacy
 
