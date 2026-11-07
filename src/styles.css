@@ -605,13 +605,13 @@ button:not(:disabled):active{background-color:var(--accent-dim);transition:none}
 .file-preview-header,.file-preview-title{color:var(--text);font-size:var(--text-xs)}
 .change-row:focus-within .stage-button,.file-row:focus-within .file-attach,.change-group:focus-within .change-group-title button{opacity:1}
 @media (prefers-reduced-transparency: reduce) {
-.workspace-header, .dialog-plate, .toast { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.dialog-plate, .toast { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .workspace-header::before { content: none; }
 .dialog-scrim { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgb(35 35 30 / .3); }
 }
 @media (prefers-contrast: more) {
 :root { --muted: #454540; --faint: #50504a; --border: #85857c; }
-.workspace-header, .dialog-plate, .toast { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.dialog-plate, .toast { background: #fff; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .workspace-header::before { content: none; }
 .workspace-header, .inspector-heading, .composer { border-color: #85857c; }
 .dialog-plate, .toast, dialog input, dialog select, .secondary-button, .commit-form textarea { border: 1px solid #85857c; }
@@ -779,7 +779,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 
 @media(max-width:650px){.sidebar-bottom{flex-direction:column}#theme-toggle{margin-left:0}}
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
-  html[data-theme="dark"] :is(.workspace-header,.dialog-plate,.toast,.floating-menu){background:#272724;backdrop-filter:none;-webkit-backdrop-filter:none}
+  html[data-theme="dark"] :is(.dialog-plate,.toast,.floating-menu){background:#272724;backdrop-filter:none;-webkit-backdrop-filter:none}
   html[data-theme="dark"] .dialog-scrim{background:rgb(0 0 0 / .5);backdrop-filter:none;-webkit-backdrop-filter:none}
   html[data-theme="dark"] .sidebar,
   html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-material="vibrancy"]) .sidebar{--raised:#31312e;--muted:#c4c2b8;--faint:#b3b1a7;border-right-color:var(--border);box-shadow:none}
