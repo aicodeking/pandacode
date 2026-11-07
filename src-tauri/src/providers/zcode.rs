@@ -316,19 +316,32 @@ impl Protocol {
     /// starts out of the user's ZCode history; resume attaches by saved id.
     pub(super) fn zcode_initial(&self) -> Value {
         match &self.config.resume_id {
-            Some(id) => json!({"id": ID_CREATE, "method": "session/resume",
-                "params": {"sessionId": id, "workspace": workspace_of(&self.config.cwd)}}),
+            Some(id) => {
+                let mut params = json!({"sessionId": id, "workspace": workspace_of(&self.config.cwd)});
+                self.zcode_attach_mcp(&mut params);
+                json!({"id": ID_CREATE, "method": "session/resume", "params": params})
+            }
             None => self.zcode_create(),
         }
     }
 
     fn zcode_create(&self) -> Value {
-        json!({"id": ID_CREATE, "method": "session/create", "params": {
+        let mut params = json!({
             "workspace": workspace_of(&self.config.cwd),
             "mode": mode(&self.config.mode),
             "persistence": "deferred",
             "titleGenerationEnabled": false,
-        }})
+        });
+        self.zcode_attach_mcp(&mut params);
+        json!({"id": ID_CREATE, "method": "session/create", "params": params})
+    }
+
+    /// Host tools ride `mcpServers` (http, kimi_config shape) on create and resume.
+    /// Omitted when no server is attached so a normal turn stays a bare session.
+    fn zcode_attach_mcp(&self, params: &mut Value) {
+        if let Some(server) = &self.mcp_server {
+            params["mcpServers"] = json!([server]);
+        }
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -711,6 +724,10 @@ mod tests {
         let request = p.initial();
         assert_eq!(request["method"], "session/create");
         assert_eq!(request["params"]["workspace"]["workspaceKey"], "/tmp");
+        assert!(
+            request["params"].get("mcpServers").is_none(),
+            "host tools attach only when a server exists",
+        );
         let step = p
             .receive(json!({"id": ID_CREATE, "result": snapshot()}))
             .unwrap();
@@ -834,6 +851,10 @@ mod tests {
         let request = p.initial();
         assert_eq!(request["method"], "session/resume");
         assert_eq!(request["params"]["sessionId"], "sess_saved");
+        assert!(
+            request["params"].get("mcpServers").is_none(),
+            "resume omits mcpServers when no host is attached",
+        );
         assert_eq!(p.cancel()["method"], "session/stop");
         // Protocol::new pre-seeds the resume id, so a stop before the snapshot
         // already names the saved session.
@@ -867,6 +888,71 @@ mod tests {
             panic!("a fresh create's error must fail the run");
         };
         assert_eq!(message, "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a");
+    }
+
+    fn architect_mcp() -> Value {
+        json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp",
+               "headers":[{"name":"Authorization","value":"Bearer probe"}]})
+    }
+
+    #[test]
+    fn create_passes_mcp_servers_when_the_host_is_attached() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(architect_mcp());
+        let request = p.initial();
+        assert_eq!(request["method"], "session/create");
+        assert_eq!(request["params"]["mcpServers"], json!([architect_mcp()]));
+        assert_eq!(request["params"]["mcpServers"][0]["type"], "http");
+        assert_eq!(request["params"]["mcpServers"][0]["name"], "pandacode_architect");
+        assert_eq!(
+            request["params"]["mcpServers"][0]["headers"],
+            json!([{"name":"Authorization","value":"Bearer probe"}]),
+        );
+    }
+
+    #[test]
+    fn resume_passes_mcp_servers_when_the_host_is_attached() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_saved".into());
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(architect_mcp());
+        let request = p.initial();
+        assert_eq!(request["method"], "session/resume");
+        assert_eq!(request["params"]["sessionId"], "sess_saved");
+        assert_eq!(request["params"]["mcpServers"], json!([architect_mcp()]));
+    }
+
+    #[test]
+    fn a_dead_resume_keeps_mcp_servers_on_the_fresh_create() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(architect_mcp());
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!([architect_mcp()]));
+    }
+
+    #[test]
+    fn a_create_error_with_mcp_servers_fails_the_run() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(architect_mcp());
+        p.mcp_required = true;
+        let Err(message) = p.receive(json!({"id": ID_CREATE, "error": {
+            "code": -32602, "message": "Invalid mcpServers entry",
+        }})) else {
+            panic!("a refused MCP create must fail the run");
+        };
+        assert_eq!(message, "Invalid mcpServers entry");
     }
 
     #[test]

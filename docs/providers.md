@@ -1030,6 +1030,13 @@ across turns.
 the `session/event` stream; a busy session queues a second message server-side, so
 steering holds for the next turn.
 
+**Host tools and teams.** `session/create` and `session/resume` pass PandaCode's
+loopback MCP host as `mcpServers` (HTTP, same shape as Kimi) when the run has
+tools. Team dispatch, follow-up, title and change tracking, simulator, VM, design
+and preview tools then reach the agent the same way they do on other HTTP-MCP
+harnesses. ZCode is a valid architect lead and worker harness. A create or resume
+that refuses `mcpServers` fails the turn.
+
 **Not yet.** Screenshots are refused (the composer offers documents and folders
 with a note); interactive questions (`interaction/requestUserInput`) decline with a
 note so the turn continues; slash-command discovery and the harness console are not

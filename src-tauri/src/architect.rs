@@ -94,9 +94,7 @@ const AGENTS_STOPPING: &str = "Wait for the current agents to stop before resumi
 const CONTINUE_BODY: &str = "Background commands, monitors and scheduled wakeups do not report back after your turn ends, so nothing is waiting on them. Continue now: dispatch the remaining work to workers, run any check you need in the foreground and wait for it in this turn, or call finish_team with a summary if the objective is done. Do not end this turn waiting on anything.";
 const FAILED_PREFIX: &str = "A worker failed while other workers are still running, for this objective: ";
 const FAILED_BODY: &str = "\n\nRead the failed worker's error and result. Retry it with followup_worker, dispatch a replacement (set replaces to its ID; with profileId \"auto\" Panda Router escalates past the models that failed it, at most 2 retries per assignment, then report the failure to the user; a replacement starts from the old worker's changes in the shared checkout, so revert them or say what to keep), or leave it for the final review. Other workers are still active: do not edit their files, repeat completed assignments, or poll. You may end this turn after you act; settled work will trigger review.\n\n";
-// ZCode stays out until `mcpServers` bridging lands in session/create: an
-// architect needs the host-tools dispatch/followup_worker tools.
-pub(crate) const HARNESSES: [&str; 18] = [
+pub(crate) const HARNESSES: [&str; 19] = [
     "claude",
     "codex",
     "kimi",
@@ -114,6 +112,7 @@ pub(crate) const HARNESSES: [&str; 18] = [
     "github-copilot",
     "muse",
     "devin",
+    "zcode",
     "hermes",
 ];
 

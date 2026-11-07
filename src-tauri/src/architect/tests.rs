@@ -1974,6 +1974,28 @@ fn auto_team_rejects_ambiguous_or_unknown_models() {
     assert!(bad(json!({"profileId":"missing"})).contains("Unknown worker profile"));
 }
 #[test]
+fn zcode_is_a_valid_worker_harness() {
+    assert!(HARNESSES.contains(&"zcode"));
+    let mut c = config();
+    c.workers[0].provider = "zcode".into();
+    c.workers[0].model = "GLM-5.3-Flash".into();
+    assert!(c.validate().is_ok());
+}
+#[test]
+fn auto_team_accepts_a_zcode_worker() {
+    let (state, sid) = auto_state();
+    let result = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[
+        auto_assignment("flash", json!({"provider":"zcode","model":"GLM-5.3-Flash"})),
+    ]})).unwrap();
+    assert_eq!(result["workerIds"].as_array().unwrap().len(), 1);
+    let store = state.store.lock().unwrap();
+    let team = load(&store, &sid).unwrap().unwrap();
+    assert_eq!(team.workers[0].provider, "zcode");
+    assert_eq!(team.workers[0].model, "GLM-5.3-Flash");
+    let worker = store.session(&team.workers[0].session_id).unwrap();
+    assert_eq!((worker.provider.as_str(), worker.model.as_str()), ("zcode", "GLM-5.3-Flash"));
+}
+#[test]
 fn configured_team_still_requires_a_profile() {
     let (state, sid) = state_fixture();
     let error = call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[auto_assignment("x", json!({"provider":"codex","model":"m"}))]})).unwrap_err();
