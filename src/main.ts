@@ -10,6 +10,7 @@ import './smooth.css';
 import './wallpapers.css';
 import './turn-changes.css';
 import './team-progress.css';
+import './council.css';
 import './motion.css';
 import './sidebar-tree.css';
 import './inspector-bar.css';
@@ -108,6 +109,8 @@ import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
 import { createSearchPanel } from './search-panel';
 import { createTokenSaver } from './token-saver-panel';
+import { createCouncil } from './council-panel';
+import { councilNotice } from './council';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
@@ -241,7 +244,9 @@ function onArchitect(team: TeamEvent): void {
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
-  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && !/^Team (paused|stopped)\./.test(team.error) && !LEAD_RETRY.test(team.error)) notify(team.error);
+  // A Council refusal is written for the lead; the user gets its plain notice (and the card), never the refusal itself.
+  // Asking is announced once, by the composer's live region, so it gets no toast as well.
+  if (team.sessionId === state.sessionId && team.error && team.error !== current?.error && team.councilStatus?.state !== 'asking' && !/^Team (paused|stopped)\./.test(team.error) && !LEAD_RETRY.test(team.error)) notify(councilNotice(team) ?? team.error);
   const wasActive = teamActive(current);
   teams.set(team.sessionId, team);
   const task = state.sessions.find(s => s.id === team.sessionId), taskState = `${task?.status}:${task?.taskStage}`;
@@ -483,6 +488,8 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
     onArchitect(saved ?? { sessionId: task.id, removed: true });
     await reloadSessions();
     teamToggles.delete(task.id); configuringSessions.delete(task.id);
+    // "Turn on for new threads": a team starting on a thread with no messages yet starts Council with it.
+    if (on && saved && task.id === state.sessionId && !state.messages.length) void council.enableForNewThread(task.id);
     if (task.id === state.sessionId) { if (render) renderComposer(); else syncTeamButton(); }
     return true;
   } finally {
@@ -593,6 +600,22 @@ const tokenSaver = createTokenSaver({
   },
 });
 void tokenSaver.loadTools();
+/* Council: an automatic team whose reviewers score the work until they reach the user's target. */
+const council = createCouncil({
+  call,
+  team: sessionId => teams.get(sessionId) ?? null,
+  loaded: sessionId => teams.has(sessionId),
+  startTeam: async sessionId => {
+    const task = state.sessions.find(s => s.id === sessionId);
+    // Redraws the composer once the team is on (placeholder, steer bar), like the Team menu does.
+    return Boolean(task) && setTeam(task!, true);
+  },
+  updated: onArchitect,
+  announce: text => announce(text),
+  keepFixing: sessionId => councilKeepFixing(sessionId),
+  classicSetup: () => classicTeamSetup(),
+  openClassicSetup: anchor => run(showArchitectSetup(anchor)),
+});
 const searchPanel = createSearchPanel({
   call,
   context: () => project() ? workspaceContext() : null,
@@ -1207,6 +1230,7 @@ function refreshModelLabels(): void {
     modeTrigger.innerHTML = modeFaceHtml(mode);
     trayStateChanged();
   }
+  council.sync(s.id);
   refreshTeamProgress();
 }
 function formatTime(timestamp: number): string { return new Date(timestamp < 1e12 ? timestamp * 1000 : timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
@@ -2665,7 +2689,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3891,6 +3915,19 @@ function remoteRefusal(s: Session, error: unknown): boolean {
   if (text) showComposerNote(s, text);
   return Boolean(text);
 }
+/** The asking card's Keep fixing: a follow-up to the lead with its own text and no attachments, sent the way a queued
+ *  message is (`deliverQueued`), so the prompt's draft and attachments are never touched. */
+async function councilKeepFixing(sessionId: string): Promise<void> {
+  const task = state.sessions.find(item => item.id === sessionId);
+  if (!task) throw new Error('This task is gone.');
+  if (isRunning(task.id)) throw new Error('The team is already working.');
+  // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
+  const hold = state.queueHolds.get(task.id), at = Date.now();
+  try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
+  catch (error) { if (hold === undefined) state.queueHolds.delete(task.id); else state.queueHolds.set(task.id, hold); throw error; }
+}
+/** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
+const councilFirstSends = new Set<string>();
 async function send(): Promise<void> {
   if (btwFromComposer()) return;
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
@@ -3898,6 +3935,7 @@ async function send(): Promise<void> {
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
   const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
+  if (councilFirstSends.has(s.id)) return;
   if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -3909,6 +3947,14 @@ async function send(): Promise<void> {
   clearRemoteStart(s.id);
   const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
+  // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
+  // Enter meanwhile; a failure is shown, and the message still goes.
+  if (!s.remoteDevice && !state.messages.length && !bot) {
+    councilFirstSends.add(s.id);
+    try { const failed = await council.enableForNewThread(s.id); if (failed) notify(`Council did not turn on: ${failed}`); }
+    finally { councilFirstSends.delete(s.id); }
+    if (state.sessionId !== s.id) return;
+  }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
   noteManualSend(s.id);
@@ -5155,8 +5201,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null, connection: connection ?? null }); return; }
       configuringSessions.add(selected.id);
       try {
-        // A plain model leaves a named agent team, back to a single agent.
-        if (teams.get(selected.id)?.config.rosterOnly) {
+        // A plain model leaves a named team; ZCode only supports single-agent tasks.
+        if (teams.get(selected.id)?.config.rosterOnly || (providerId === 'zcode' && teams.has(selected.id))) {
           await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
           onArchitect({ sessionId: selected.id, removed: true });
         }
@@ -6757,6 +6803,10 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'deploy': await showDeploy(element); break;
     case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
+    case 'council': if (element.getAttribute('aria-disabled') !== 'true') council.open(element, state.sessionId, element.dataset.councilFocus === 'target' || element.dataset.councilFocus === 'maxRounds' ? element.dataset.councilFocus : undefined); break;
+    case 'council-keep-fixing': case 'council-accept': if (element.closest<HTMLElement>('.council-strip')?.dataset.sessionId === state.sessionId) await council.act(state.sessionId, name === 'council-accept' ? 'accept' : 'keep', element); break;
+    case 'council-strip-toggle': council.toggle(state.sessionId); break;
+    case 'council-dismiss': council.dismiss(state.sessionId); break;
     case 'tab-pull': state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector(); break;
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;
@@ -6784,11 +6834,11 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'stage-all': case 'unstage-all': await stage(state.git?.files.map(f => f.path) ?? [], name === 'stage-all'); break;
     case 'toggle-diff-stage': await stage([state.selectedFile], !state.selectedStaged); break;
     case 'open-team-progress': case 'open-team-worker': {
-      const taskId = element.closest<HTMLElement>('.team-progress')?.dataset.sessionId;
+      const taskId = element.closest<HTMLElement>('.team-progress, .council-strip, .council-summary')?.dataset.sessionId;
       if (!taskId || taskId !== state.sessionId) break;
       const view = await ensureArchitectView();
       if (taskId !== state.sessionId) break;
-      if (name === 'open-team-worker' && element.dataset.workerId) await view.openWorker(element.dataset.workerId);
+      if (name === 'open-team-worker' && element.dataset.workerId) await view.openWorker(element.dataset.workerId, undefined, element);
       else view.open();
       break;
     }

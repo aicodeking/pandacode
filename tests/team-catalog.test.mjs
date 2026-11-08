@@ -1,9 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dupModelNames, limitTeamModels, TEAM_LIMIT, toggleTeamModel } from '../src/team-catalog.ts';
+import { dupModelNames, installedCatalog, limitTeamModels, TEAM_LIMIT, toggleTeamModel } from '../src/team-catalog.ts';
 
 const models = n => [{ id: 'default' }, ...Array.from({ length: n }, (_, i) => ({ id: `m${i}` }))];
 const ids = result => result.models.map(m => m.id);
+
+test('installed team catalogs omit harnesses without team tools before discovering models', async () => {
+  const fallback = [{ id: 'default', name: 'Default' }];
+  const providers = [
+    { id: 'codex', name: 'Codex', installed: true, models: fallback },
+    { id: 'zcode', name: 'ZCode', installed: true, models: fallback },
+    { id: 'kimi', name: 'Kimi Code', installed: true, models: fallback },
+    { id: 'claude', name: 'Claude Code', installed: false, models: fallback },
+  ];
+  const discovered = [];
+  const result = await installedCatalog(providers, async id => {
+    discovered.push(id);
+    if (id === 'kimi') throw new Error('Discovery unavailable');
+    return [{ id: 'gpt-6-luna', name: 'GPT-6-Luna' }];
+  });
+  const expected = [['codex', 'gpt-6-luna'], ['kimi', 'default']];
+  assert.deepEqual(result.catalog.map(p => [p.provider, p.model]), expected);
+  assert.deepEqual(result.roster.map(p => [p.provider, p.model]), expected);
+  assert.deepEqual(discovered, ['codex', 'kimi']);
+});
 
 test('a long catalog keeps default and its most recent models in the catalog', () => {
   const recent = ['gone', 'm3', 'm3', ...Array.from({ length: 15 }, (_, i) => `m${14 - i}`)];

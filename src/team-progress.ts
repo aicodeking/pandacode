@@ -3,6 +3,7 @@ import { teamActive, type TeamSnapshot, type TeamWorker } from './architect-type
 import { icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { fallbackModel } from './model-catalog';
+import { councilProgress, seatScore, seatVerdict, type CouncilSeatWorker } from './council';
 
 const pending = (worker: TeamWorker): boolean => !worker.abandoned && ['running', 'waiting', 'queued', 'parked'].includes(worker.status);
 const workerLabels: Record<TeamWorker['status'], string> = {
@@ -14,7 +15,7 @@ const signatures = new WeakMap<TeamSnapshot, string>();
  *  timestamps, so a snapshot that changed nothing visible repaints nothing. */
 export function teamSignature(team: TeamSnapshot): string {
   let signature = signatures.get(team);
-  if (signature === undefined) signatures.set(team, signature = JSON.stringify({ ...team, revision: 0, updatedAt: 0, workers: team.workers.map(worker => ({ ...worker, updatedAt: 0 })) }));
+  if (signature === undefined) signatures.set(team, signature = JSON.stringify({ ...team, revision: 0, updatedAt: 0, workers: team.workers.map(worker => ({ ...worker, updatedAt: 0 })), councilState: councilProgress(team)?.state }));
   return signature;
 }
 
@@ -34,18 +35,19 @@ function setOpen(list: HTMLElement, open: boolean): void {
 /** Inline in the thread, one quiet line per spawned worker, like a tool line. Clicking a
  *  line opens that worker in the Architect & workers panel; the rest stay one click away. */
 export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null | undefined, providers: Provider[], only?: TeamWorker[], needsInput: (sessionId: string) => boolean = () => false): boolean {
+  // Reviewers are worker rows too, their score and verdict the row's status (Council's own summary is in the composer).
   const spawned = only ?? team?.workers ?? [];
-  const visible = spawned.length > 0;
-  host.hidden = !visible;
-  if (!team || !visible) { host.replaceChildren(); return false; }
-  let list = host.querySelector<HTMLElement>('.team-progress');
+  host.hidden = !spawned.length;
+  if (!team || !spawned.length) { host.replaceChildren(); return false; }
+  let list = host.querySelector<HTMLElement>(':scope > .team-progress');
   if (!list || list.dataset.sessionId !== team.sessionId) {
+    list?.remove();
     list = document.createElement('section');
     list.className = 'team-progress'; list.setAttribute('aria-label', 'Team progress');
     list.dataset.sessionId = team.sessionId;
     // The source's Lineage head: a muted label, a running count and a … that opens the team panel.
     list.innerHTML = `<div class="team-progress-head"><button type="button" class="team-progress-toggle" aria-expanded="false">${icon('chevron')}<span class="team-progress-label">Workers</span><span class="team-progress-count"></span></button><button type="button" class="icon-button team-progress-menu" data-action="open-team-progress" aria-label="Open team" title="Open team">${icon('more')}</button></div><button type="button" class="team-progress-more" data-action="open-team-progress" hidden></button>`;
-    host.replaceChildren(list);
+    host.prepend(list);
     const toggle = list.querySelector<HTMLButtonElement>('.team-progress-toggle')!, own = list;
     toggle.addEventListener('click', () => {
       const open = !own.hasAttribute('data-open');
@@ -86,10 +88,18 @@ export function updateTeamProgress(host: HTMLElement, team: TeamSnapshot | null 
       .filter(part => part && part !== harness && part !== worker.name);
     // An approval or question waits only in the worker's live stream, not in its saved status.
     const status = worker.abandoned ? 'Skipped' : !teamActive(team) && pending(worker) ? 'Paused' : worker.status === 'running' && needsInput(worker.sessionId) ? 'Needs attention' : workerLabels[worker.status];
-    text(row, '.team-progress-description strong', worker.name);
-    text(row, '.team-progress-description small', detail.join(' · '));
-    text(row, '.team-progress-status', status);
-    row.dataset.status = status;
+    // A reviewer outside the scorecard (an earlier cycle, or council turned off since) says what it reviewed and scored.
+    const seat = worker.council ? worker as CouncilSeatWorker : null, score = seat && seatScore(seat);
+    text(row, '.team-progress-verb', seat ? 'Reviewed' : 'Spawned');
+    text(row, '.team-progress-description strong', seat ? seat.council.lens.trim() || worker.name : worker.name);
+    // Only a reviewer from before the current cycle is an earlier council's; one shown because council is off is not.
+    const earlier = seat && worker.createdAt < (team.councilSince ?? 0);
+    text(row, '.team-progress-description small', seat ? [`Round ${seat.council.round}`, earlier ? 'earlier council' : '', ...detail].filter(Boolean).join(' · ') : detail.join(' · '));
+    // A score reads against the target in words, and its tone follows that verdict, never "completed" green below it.
+    // The card's vocabulary: only a complete round's lowest seat warns below target.
+    const verdict = seat && score !== null ? seatVerdict(team, seat) : null;
+    text(row, '.team-progress-status', verdict?.text ?? status);
+    row.dataset.status = verdict ? `score-${verdict.tone || 'plain'}` : status;
     row.title = worker.assignment;
     if (row.dataset.provider !== worker.provider) {
       row.querySelector('.team-progress-logo')!.innerHTML = providerLogo(worker.provider);
