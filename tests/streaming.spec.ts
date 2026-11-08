@@ -797,11 +797,24 @@ test.describe('streaming scroll regressions', () => {
     await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
     await prompt(page).fill('Short again');
     await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
+    // The viewport's delayed resize restoration must finish before the reader scrolls.
+    await expect(transcript(page)).not.toHaveAttribute('data-window-resizing');
+    await expect.poll(() => transcript(page).evaluate(node => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThanOrEqual(2);
     await transcript(page).hover();
-    const beforeWheel = await transcript(page).evaluate(node => node.scrollTop);
+    const wheelTarget = await transcript(page).evaluate(node =>
+      Math.max(0, Math.min(node.scrollTop - 350, node.scrollHeight - node.clientHeight)));
     await page.mouse.wheel(0, -350);
     await expect.poll(() => page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
-    await expect.poll(() => transcript(page).evaluate(node => node.scrollTop)).toBeLessThan(beforeWheel);
+    // Wheel delivery releases follow synchronously, but Chrome applies its scroll asynchronously.
+    // Require the whole reachable displacement and three stable frames before saving the baseline.
+    await expect.poll(() => transcript(page).evaluate(async (node, target) => {
+      const tops: number[] = [];
+      for (let frame = 0; frame < 3; frame++) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        tops.push(node.scrollTop);
+      }
+      return tops.every(top => Math.abs(top - target) <= 1 && top === tops[0]);
+    }, wheelTarget)).toBe(true);
     const top = await transcript(page).evaluate(node => node.scrollTop);
     const shrinkReads = await page.evaluate(() => {
       const card = document.querySelector<HTMLElement>('#stream-region .turn-card')!, rect = card.getBoundingClientRect.bind(card);
