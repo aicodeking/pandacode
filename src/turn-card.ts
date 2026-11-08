@@ -37,10 +37,10 @@ export function timeHtml(ms: number | null, live = false): string {
 export const SKELETON_HTML = '<div class="turn-card-skeleton" aria-hidden="true"><i></i><i></i><i></i></div>';
 
 let replyIds = 0;
-/** The inner card. `actions` (copy, fork) sit in its last row beside Read more; a live reply keeps its own. */
+/** The inner card. Its turn key anchors a reader inside a long live reply while more text arrives below. */
 export function replyHtml(content: string, key: string, actions = '', live = false): string {
   const id = `turn-reply-${++replyIds}`, open = live || openReplies.has(key);
-  return `<div class="turn-card-reply ds-card-inner${live ? ' is-live' : ''}"${open ? ' data-open' : ''} data-reply-key="${escape(key)}"><div class="turn-card-reply-body" id="${id}"><div class="turn-card-reply-content">${content}</div></div>${live ? '' : `<div class="turn-card-reply-row"><button type="button" class="turn-card-more" aria-controls="${id}" aria-expanded="${open}" hidden>${open ? 'Show less' : 'Read more'}</button>${actions}</div>`}</div>`;
+  return `<div class="turn-card-reply ds-card-inner${live ? ' is-live' : ''}"${open ? ' data-open' : ''} data-reply-key="${escape(key)}" data-turn-key="reply:${escape(key)}"><div class="turn-card-reply-body" id="${id}"><div class="turn-card-reply-content">${content}</div></div>${live ? '' : `<div class="turn-card-reply-row"><button type="button" class="turn-card-more" aria-controls="${id}" aria-expanded="${open}" hidden>${open ? 'Show less' : 'Read more'}</button>${actions}</div>`}</div>`;
 }
 
 const clampHeight = (body: HTMLElement): number => parseFloat(getComputedStyle(body).fontSize) * LINE_HEIGHT * REPLY_LINES;

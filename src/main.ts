@@ -45,7 +45,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
-import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -840,9 +840,11 @@ transcriptScroller.tabIndex = 0;
 /* Following the latest output is an intent, not a measurement. Growing content and a resizing
  * composer never clear it: only the reader scrolling up or opening a fold does, and reaching
  * the bottom sets it again. The observer re-pins before paint, so nothing jumps for a frame. */
-let stickToBottom = true, lastTranscriptTop = 0;
+let stickToBottom = true, lastTranscriptTop = 0, resumeFollow = true;
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+/** Clear the floating header when a fold brings an off-screen card back into view. */
+const readingLine = (): number => transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
 /** The live card shrinking (a result card or the trace folding) would clamp the scroll and slide everything above it down:
  * the height it gave up becomes blank room under it, which new content grows back into. Only while the card's top is in
  * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
@@ -856,7 +858,7 @@ function keepTopOnShrink(): void {
   // At the end, the scroll has already lost what the card gave up (a clamp or scroll anchoring, in layout, before this runs).
   const end = transcriptScroller.scrollHeight - transcriptScroller.clientHeight, top = transcriptScroller.scrollTop;
   if (top < end - 1) return;
-  const clear = transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
+  const clear = readingLine();
   const aim = Math.min(top + before.height - box.height, top + box.top - clear);
   if (aim <= top) return;
   tailSession = state.sessionId;
@@ -866,8 +868,13 @@ function keepTopOnShrink(): void {
   lastTranscriptTop = transcriptScroller.scrollTop;
 }
 function followTranscript(): void {
+  if (!stickToBottom) {
+    liveCardSeen = undefined;
+    // Room below the window can go without clamping the reader or moving their line.
+    if (tailRoom && !tailBridging && transcriptGap() >= tailRoom) setTailRoom(0);
+    return;
+  }
   keepTopOnShrink();
-  if (!stickToBottom) return;
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
   // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
   if (tailBridging && !tailFollows) return;
@@ -878,14 +885,15 @@ function followTranscript(): void {
   // thread never lurches by the card's per-frame growth; a send (the bubble and the skeleton card) on a slower one
   // (SEND_RESPONSE); text, a switch or the composer still pin at once.
   if (grew && (state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && (followFrame !== 0 || sendFollow || traceUnfolding()) && transcriptGap() < FOLLOW_EASE_LIMIT && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    if (!followFrame) { followVelocity = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
+    if (!followFrame) { followVelocity = 0; followStill = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
     // The spring steps before layout; this runs after it (the observer), so the frame's own growth is held to the cap too.
     const gap = transcriptGap();
-    if (!sendFollow && gap > FOLLOW_MAX_LAG) transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG;
+    if (!sendFollow && gap > FOLLOW_MAX_LAG) { transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG; lastTranscriptTop = transcriptScroller.scrollTop; }
     return;
   }
   cancelAnimationFrame(followFrame); followFrame = 0; sendFollow = false;
   transcriptScroller.scrollTop = transcriptScroller.scrollHeight;
+  lastTranscriptTop = transcriptScroller.scrollTop;
 }
 /** A result card's height animation (trace-motion.ts `expand`) is running in the live trace. */
 const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-region .live-tools')?.getAnimations({ subtree: true })
@@ -893,17 +901,17 @@ const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-re
 /** The follow is a critically damped spring on the distance to the bottom (time-based, FOLLOW_RESPONSE s), so it
  * eases in, tracks a growing card without stepping and lands without overshoot. */
 const FOLLOW_RESPONSE = 0.1, SEND_RESPONSE = 0.26, FOLLOW_EASE_LIMIT = 480, FOLLOW_MAX_LAG = 24;
-let followFrame = 0, followedHeight = 0, followVelocity = 0, followAt = 0, sendFollow = false;
+let followFrame = 0, followedHeight = 0, followVelocity = 0, followAt = 0, sendFollow = false, followStill = 0;
 /** The next follow (a send's new bubble and card) eases on SEND_RESPONSE until it lands. */
 function followSend(): void {
-  sendFollow = true;
+  sendFollow = true; followStill = 0;
   cancelAnimationFrame(followFrame); followFrame = 0;
 }
 function easeFollow(now: number): void {
   followFrame = 0;
   const gap = transcriptGap();
   if (!stickToBottom || gap <= 0.5) { sendFollow = false; return; }
-  if (gap >= FOLLOW_EASE_LIMIT) { sendFollow = false; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; return; }
+  if (gap >= FOLLOW_EASE_LIMIT) { sendFollow = false; stickTranscript(); return; }
   const dt = Math.min(0.05, Math.max(0, (now - followAt) / 1000)), omega = 2 * Math.PI / (sendFollow ? SEND_RESPONSE : FOLLOW_RESPONSE), decay = Math.exp(-omega * dt);
   followAt = now;
   // Position relative to the target is -gap; the closed-form critically damped step. The bottom never runs more than
@@ -911,7 +919,12 @@ function easeFollow(now: number): void {
   // the start and the end.
   const y = -gap, base = followVelocity + omega * y, next = Math.max(sendFollow ? -Infinity : -FOLLOW_MAX_LAG, (y + base * dt) * decay);
   followVelocity = (followVelocity - omega * base * dt) * decay;
-  transcriptScroller.scrollTop += next - y;
+  const before = transcriptScroller.scrollTop;
+  transcriptScroller.scrollTop = before + next - y;
+  lastTranscriptTop = transcriptScroller.scrollTop;
+  // Compare this attempted step, not the previous post-write position: normal motion must not count as a stall.
+  followStill = dt > 0 && lastTranscriptTop === before ? followStill + 1 : 0;
+  if (followStill >= 2 && gap <= 4) { sendFollow = false; stickTranscript(); return; }
   followFrame = requestAnimationFrame(easeFollow);
 }
 /** Blank room under the last card after the handoff (handOffCard, foldInPlace) or a Show less: the card's top stays where it
@@ -927,18 +940,17 @@ function absorbTailRoom(): void {
   const gap = transcriptGap();
   if (gap > 0.5) setTailRoom(tailRoom - gap);
 }
-function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
+function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; lastTranscriptTop = transcriptScroller.scrollTop; }
 const transcriptResize = new ResizeObserver(followTranscript);
 followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTranscriptTool());
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
-const releaseTranscript = (): void => { if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
-// Rebuilding or measuring the composer briefly shrinks it; a layout read then grows the transcript
-// and clamps its scroll up. Re-pin in the mutation's microtask, before that clamp can paint or
-// reach the scroll handler, where any upward scroll means the reader left.
-new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target))) followTranscript(); })
-  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
+const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
+// Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
+const composerArea = $('#composer-area');
+new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target) && !composerArea.contains(record.target))) followTranscript(); })
+  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
@@ -952,19 +964,30 @@ transcriptScroller.addEventListener('scroll', () => {
   }
   // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
   if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
-  if (transcriptGap() <= 2) stickToBottom = true;
+  // Native focus/anchoring scrolls after Read more are not the reader asking to follow again.
+  if (resumeFollow && transcriptGap() <= 2) stickToBottom = true;
   // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
   else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
   else if (top < lastTranscriptTop) stickToBottom = false;
-  lastTranscriptTop = top;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => {
+  const target = event.target as Element;
+  const holdFold = stickToBottom && target.closest('summary');
+  if (target.closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false;
+  if (target.closest('.turn-card-more, .team-progress-toggle')) resumeFollow = false;
+  // A manual fold still gives its lost height back once, without re-arming continuous following.
+  if (holdFold) queueMicrotask(keepTopOnShrink);
+}, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
-transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
+transcriptScroller.addEventListener('wheel', event => { if (event.deltaY > 0) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; } else if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
+transcriptScroller.addEventListener('pointerdown', event => { if (event.pointerType === 'touch' || event.target === transcriptScroller) resumeFollow = true; }, { passive: true });
 transcriptScroller.addEventListener('keydown', event => {
-  if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
+  if (event.target !== transcriptScroller) return;
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) { releaseTranscript(); void loadOlderMessages(); }
+  else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; }
 });
 /* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
  * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
@@ -984,7 +1007,11 @@ addEventListener('resize', () => {
   windowSettle = window.setTimeout(() => {
     windowSettle = 0;
     transcriptScroller.removeAttribute('data-window-resizing');
-    if (windowReaderTask === state.sessionId) restoreWindowReader?.();
+    if (windowReaderTask === state.sessionId) {
+      if (restoreWindowReader && !stickToBottom) restoreWindowReader();
+      else if (resumeFollow) { stickToBottom = true; followTranscript(); }
+      lastTranscriptTop = transcriptScroller.scrollTop;
+    }
     restoreWindowReader = undefined;
   }, WINDOW_SETTLE_MS);
 });
@@ -1812,7 +1839,6 @@ function renderTranscript(preservePosition = false): void {
   const heldRows = transcriptRows; transcriptRows = undefined;
   syncNewTaskPage();
   const transcript = $('#transcript');
-  const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
   const switches = captureAccountSwitches(transcript);
@@ -1887,6 +1913,14 @@ function renderTranscript(preservePosition = false): void {
   const liveCard = liveRegion?.dataset.sessionId === s.id ? liveRegion.querySelector<HTMLElement>('.turn-card.is-live') : null;
   const shownCards = liveCard ? new Set([...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].map(card => card.dataset.turnCard)) : undefined;
   // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
+  // Open the saved reply before layout can clamp the paused reader, and transfer its live reading anchor.
+  const completed = liveCard && !running ? saved.at(-1) : undefined;
+  if (completed?.final) {
+    openReply(completed.key);
+    const reply = liveCard!.querySelector<HTMLElement>('.turn-card-reply');
+    if (reply) reply.dataset.turnKey = `reply:${completed.key}`;
+  }
+  const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   const liveRect = liveCard ? handoffRect ?? liveCard.getBoundingClientRect() : undefined; handoffRect = undefined;
   const focusRole = liveCard ? focusedRole(liveCard) : undefined;
   // A wake's live card already shows the exchange's footer; the saved card's replaces it in place rather than fading in.
@@ -1912,6 +1946,7 @@ function renderTranscript(preservePosition = false): void {
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
+  lastTranscriptTop = transcript.scrollTop;
   // After every restore and the pin, so the saved card is measured where it will stay.
   if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
   restoreAccountSwitches(transcript, switches);
@@ -1961,6 +1996,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const end = Math.max(0, room), start = timing && delta ? Math.max(0, room + delta) : end;
   setTailRoom(start);
   transcriptScroller.scrollTop = target;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   if (timing && start !== end) growTailRoom(start, end, timing, () => {}, true); else followTranscript();
 }
 /** The control in the live card that has focus, as a selector the saved card answers (header, a trace step, Read
@@ -1987,7 +2023,8 @@ function refocusCard(card: HTMLElement, selector: string): void {
 /** Folds the saved card's trace starting from the live card's height, so its bottom never steps: the card closes from
  * there to its folded height on the fold's own timing (`holdCard`). Pinned, its top stays where the live card's was
  * and the height it gives up (and any the composer just let go of) grows as blank room under it on the same timing
- * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it. */
+ * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it.
+ * An off-screen card comes down to the reading line so the fold cannot leave only blank room in view. */
 function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect, pinned: boolean): void {
   const open = card.offsetHeight, total = transcriptScroller.scrollHeight, from = tailRoom;
   trace.open = false;
@@ -1999,10 +2036,12 @@ function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect
   if (!pinned) return;
   tailSession = state.sessionId;
   // The room must let the scroll reach the held top with the card at its starting height.
-  const shown = timing ? live.height : shut, target = transcriptScroller.scrollTop + card.getBoundingClientRect().top - live.top;
+  const shown = timing ? live.height : shut, keepTop = Math.max(live.top, readingLine());
+  const target = Math.max(0, transcriptScroller.scrollTop + card.getBoundingClientRect().top - keepTop);
   const start = Math.max(from, target + transcriptScroller.clientHeight - (total - open - from) - shown), end = Math.max(0, start + shown - shut);
   setTailRoom(Math.max(start, end));
   transcriptScroller.scrollTop = target;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   if (!timing) { setTailRoom(end); return; }
   growTailRoom(start, end, timing);
 }
@@ -2321,7 +2360,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     const switches = captureAccountSwitches(region);
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
     paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
     restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
@@ -2387,7 +2426,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
   // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
-  if (readingTool) transcript.scrollTop = scrollTop;
+  if (readingTool) { transcript.scrollTop = scrollTop; if (main) lastTranscriptTop = transcript.scrollTop; }
 }
 type StreamParts = {
   activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
@@ -3312,7 +3351,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
-  stickToBottom = true; render();
+  stickToBottom = true; resumeFollow = true; lastTranscriptTop = 0; render();
   if (remembered) stickTranscript();
   // A thread switch settles in once, after its real content draws: here for a remembered page,
   // below once the page arrives (never on the loading placeholder).
@@ -7031,9 +7070,12 @@ document.addEventListener('submit', event => {
 function resizePrompt(): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (!prompt) return;
-  prompt.style.height = 'auto'; prompt.style.height = Math.min(prompt.scrollHeight, 180) + 'px';
-  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar.
-  prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? 'auto' : 'hidden';
+  prompt.style.height = 'auto';
+  const natural = prompt.scrollHeight;
+  prompt.style.height = Math.min(natural, 180) + 'px';
+  // Use the same measurement; a pixel of rounding at the cap must not show a scroll bar.
+  const overflow = natural > 181 ? 'auto' : 'hidden';
+  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
 document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
