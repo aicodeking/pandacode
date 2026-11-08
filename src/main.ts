@@ -3362,6 +3362,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
   catch (error) {
     if (generation !== state.generation) return;
+    // A failed thread load still owns the inspector cleared during the switch.
+    run(refreshInspector());
     state.messagesLoading = false;
     if (state.messages !== requestedMessages) return;
     state.messagesError = errorText(error); renderTranscript(); renderComposer(); throw error;
