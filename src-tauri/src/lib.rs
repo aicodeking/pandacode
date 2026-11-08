@@ -2338,9 +2338,16 @@ async fn launch_operation_admitted(
         });
         let host = if let Some(admission) = team.as_ref() {
             architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
+                .map(|host| {
+                    // Workers keep their scoped team tools; only the lead may manage other tasks.
+                    if admission.parent == session_id {
+                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+                    } else {
+                        host
+                    }
+                })
         } else {
-            (config.provider == "codex")
-                .then(|| agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
         };
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
