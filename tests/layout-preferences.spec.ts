@@ -530,10 +530,11 @@ test('layout preferences keep the left sidebar button clear of Mac controls and 
     const button = (await toggle.boundingBox())!;
     const sidebar = (await page.locator('.sidebar').boundingBox())!;
     expect(button.x - sidebar.x).toBeGreaterThanOrEqual(104);
-    // The wordmark is whole or absent, never ellipsized: a sidebar too narrow for it hides it.
-    const name = page.locator('.brand-name');
-    if (width < 280) await expect(name).toBeHidden();
+    // The narrowest sidebar keeps its panda; wider sidebars show the whole wordmark.
+    const name = page.locator('.brand-name .desktop-brand-word');
+    if (width === 190) await expect(name).toBeHidden();
     else {
+      await expect(name).toBeVisible();
       const brand = (await name.boundingBox())!;
       expect(button.x + button.width).toBeLessThanOrEqual(brand.x);
       expect(brand.x + brand.width).toBeLessThanOrEqual(sidebar.x + sidebar.width);
