@@ -45,13 +45,13 @@ html[data-theme] .workspace .conversation-pane .composer-area .composer-pill>.se
 /* The tray: the model (logo + name) and branch keep their text; mode, Team, Saver, computer and checkout are icons with the label in .sr-only and a tooltip. No fills at rest. */
 .conversation-pane .composer-tray{justify-content:flex-start;padding:0 4px;gap:2px}
 .conversation-pane .composer-tray .composer-tools{flex:0 1 auto;gap:6px}
-.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button){height:36px;padding:0 8px;gap:7px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-lead);font-weight:var(--weight-medium);box-shadow:none;
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button){height:36px;padding:0 8px;gap:7px;border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--ds-text-lead);font-weight:var(--weight-medium);box-shadow:none;
   transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
-.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button):not(:disabled):hover,
-.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button)[aria-expanded="true"]{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button):not(:disabled):hover,
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button)[aria-expanded="true"]{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
 /* Open or pressed is neutral, never the accent: the id in :is() outranks the accent rules in styles.css and wallpapers.css, which carry #team-trigger. */
-html[data-theme] .workspace .conversation-pane .composer-tray :is(#model-picker-trigger,.model-picker,.mode-picker,.composer-team-button,.composer-saver-button):is([aria-expanded="true"],:not(:disabled):active){background:var(--ds-row-press);color:var(--text);box-shadow:none}
-.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button) .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg);color:inherit}
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#model-picker-trigger,.model-picker,.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button):is([aria-expanded="true"],:not(:disabled):active){background:var(--ds-row-press);color:var(--text);box-shadow:none}
+.conversation-pane .composer-tray :is(.model-picker,.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button) .icon{--icon-size:var(--ds-icon-tray);--icon-stroke:var(--icon-stroke-lg);color:inherit}
 .conversation-pane .composer-tray :is(.model-picker,.mode-picker)>.icon:last-child,.conversation-pane .composer-tray .composer-team-button>.icon:last-child:not(:first-child){display:none}
 .conversation-pane .composer-tray .model-picker>.provider-small{display:inline-grid;place-items:center}
 /* Locked during a run, the tray still reads as the reference's muted labels; only the pointer and the hover go. */
@@ -69,13 +69,13 @@ html[data-theme] .workspace .conversation-pane .composer-tray :is(.model-picker,
 /* Team and Saver, on: tone and fill. The id in :is() matches the neutral open and press rule above, so an open menu keeps the state. */
 .conversation-pane .composer-tray .composer-team-button{--tray-tone:var(--ds-tone-team);--tray-fill:var(--ds-tone-team-fill)}
 .conversation-pane .composer-tray .composer-saver-button{--tray-tone:var(--ds-tone-saver);--tray-fill:var(--ds-tone-saver-fill)}
-html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button):is([data-on],[aria-pressed=true]){color:var(--tray-tone);background:var(--tray-fill)}
-html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button):is([data-on],[aria-pressed=true]):is(:not(:disabled):hover,:not(:disabled):active,[aria-expanded="true"]){background:color-mix(in srgb,var(--tray-tone) 20%,transparent)}
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button,.composer-council-button):is([data-on],[aria-pressed=true]){color:var(--tray-tone);background:var(--tray-fill)}
+html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,.composer-team-button,.composer-saver-button,.composer-council-button):is([data-on],[aria-pressed=true]):is(:not(:disabled):hover,:not(:disabled):active,[aria-expanded="true"]){background:color-mix(in srgb,var(--tray-tone) 20%,transparent)}
 .conversation-pane .composer-tray .composer-saver-button{gap:4px}
 .conversation-pane .composer-tray .composer-saver-button b{min-width:0;height:auto;padding:0;background:none;color:inherit;font-size:var(--ds-text-meta);font-weight:var(--weight-medium)}
 /* Icon-only items keep their label in the DOM, whatever the ≤650px window rules in styles.css say about spans. */
 .conversation-pane .composer-tray :is(.mode-picker,.composer-team-button)>.sr-only{display:block}
-.conversation-pane .composer-tray :is(.mode-picker,.composer-team-button,.composer-saver-button){position:relative;flex:none;justify-content:center;min-width:36px}
+.conversation-pane .composer-tray :is(.mode-picker,.composer-team-button,.composer-saver-button,.composer-council-button){position:relative;flex:none;justify-content:center;min-width:36px}
 .model-effort-pill{display:inline-flex;align-items:center;gap:7px;margin-left:18px}
 .model-effort-pill[hidden]{display:none}
 .conversation-pane .composer-tray .model-picker .model-effort{color:inherit}
@@ -129,7 +129,7 @@ html[data-theme] .workspace .conversation-pane .composer-tray :is(#team-trigger,
   /* The bubble's fill is erased by system colours; its edge keeps it a bubble. */
   .conversation-pane :is(#transcript,.thread-mirror-rows)>.user-message>.message-content{border:1px solid CanvasText}
   /* System colours erase the tones, so an on state keeps an outline. */
-  .composer-tray :is(.composer-team-button[data-on],.composer-team-button[aria-pressed=true],.composer-saver-button[aria-pressed=true]){outline:1px solid Highlight;outline-offset:-1px}
+  .composer-tray :is(.composer-team-button[data-on],.composer-team-button[aria-pressed=true],.composer-saver-button[aria-pressed=true],.composer-council-button[data-on]){outline:1px solid Highlight;outline-offset:-1px}
 }
 
 /* ---------- Transcript: messages, trace rows and cards on the design-system tones ---------- */

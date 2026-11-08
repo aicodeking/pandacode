@@ -827,3 +827,26 @@ fn case_aliases_are_conservatively_treated_as_shared_file_claims() {
         assert!(got.summary.truncated);
     }
 }
+#[test]
+fn a_turn_remembers_its_last_write_until_its_boundary() {
+    let f = Fixture::new(false);
+    let mut tracker = Tracker::start(f.root.clone(), f.cache.clone());
+    assert_eq!(tracker.last_write(), 0);
+    let before = storage::now();
+    write_tool(&mut tracker, "w1", "running", &["a.txt"]);
+    f.write("a.txt", "a\n");
+    write_tool(&mut tracker, "w1", "completed", &["a.txt"]);
+    assert!(tracker.last_write() >= before);
+    tracker.boundary();
+    assert_eq!(tracker.last_write(), 0, "the next turn starts undated");
+}
+#[test]
+fn only_a_real_write_dates_a_turn() {
+    let f = Fixture::new(false);
+    let mut tracker = Tracker::start(f.root.clone(), f.cache.clone());
+    // A shell command reports no paths: it wrote nothing anyone knows of.
+    write_tool(&mut tracker, "shell", "completed", &[]);
+    assert_eq!(tracker.last_write(), 0);
+    write_tool(&mut tracker, "reported:capture", "running", &[]);
+    assert!(tracker.last_write() > 0, "a track_files capture is a real write");
+}
