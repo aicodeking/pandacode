@@ -1037,6 +1037,10 @@ offered. The protocol is ZCode's private surface and evolves with the CLI — fr
 are parsed defensively (unknown events ignored, unknown reverse requests answered
 `-32601`) and pinned per recorded version.
 
+ZCode cannot lead or join agent teams yet. Automatic teams exclude its models;
+selecting a ZCode model turns off a team with no worker history. Start a new task
+if the team has already run workers.
+
 Verified against the CLI bundled with ZCode.app (user-agent `ZCode/3.16.3`) on
 2026-10-25 by driving `zcode app-server` directly (create, subscribe, two turns,
 a permission round-trip, mode/thought switches, usage and resume). The recorded
