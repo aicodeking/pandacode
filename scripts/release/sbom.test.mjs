@@ -1,6 +1,32 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { coverage, inventoryStatus, markdown, packagedAssets, platformOf, scanStatus } from './sbom.mjs';
+
+const workflow = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8');
+const sbomJob = workflow.split('\n  sbom:\n')[1].split('\n  publish:\n')[0];
+
+test('scanner downloads have bounded transient retries and retain pinned integrity checks', () => {
+  const download = sbomJob.match(/^\s+curl .+$/m)[0];
+  for (const option of ['retry', 'retry-max-time', 'connect-timeout', 'max-time']) {
+    assert.match(download, new RegExp(`--${option} [1-9]\\d*\\b`), option);
+  }
+  for (const tool of ['SYFT', 'GRYPE']) {
+    assert.match(sbomJob, new RegExp(`${tool}_VERSION: '[0-9.]+'`));
+    assert.match(sbomJob, new RegExp(`${tool}_SHA256: [a-f0-9]{64}\\n`));
+  }
+  assert.match(sbomJob, /for tool in syft grype; do[\s\S]*curl -fsSL[\s\S]*echo "\$\{!sum_var\}  \$file" \| sha256sum -c -\n\s+tar -xzf/);
+  assert.doesNotMatch(sbomJob, /--insecure|--retry-all-errors|\|\| true/);
+});
+
+test('missing coverage is summarized as a failure while publishing stays non-blocking', () => {
+  assert.match(sbomJob, /continue-on-error: true/);
+  const summary = sbomJob.split('      - name: Show coverage\n')[1].split('      - uses:')[0];
+  assert.match(summary, /if: always\(\)/);
+  assert.match(summary, /if \[ -s sbom\/SBOM-COVERAGE\.md \]; then\n\s+cat sbom\/SBOM-COVERAGE\.md >> "\$GITHUB_STEP_SUMMARY"/);
+  assert.match(summary, /else\n[\s\S]*coverage[^\n]*unavailable[^\n]*>> "\$GITHUB_STEP_SUMMARY"/i);
+  assert.match(summary, /::error::[^\n]*\n\s+exit 1/);
+});
 
 test('picks installers and updater archives only', () => {
   const names = ['PandaCode-macOS-arm64.dmg', 'PandaCode-macOS-arm64.dmg.sha256', 'latest.json', 'PandaCode-macOS-arm64.app.tar.gz.sig', 'PandaCode-Linux-x86_64.AppImage'];
