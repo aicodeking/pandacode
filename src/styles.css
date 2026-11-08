@@ -149,7 +149,10 @@ html[data-theme="dark"]{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .4),0 8px 24
 .user-avatar{background:var(--surface-3);color:var(--muted);border-color:transparent;font-weight:var(--weight-medium)}
 .message-content{padding-left:31px;font-size:var(--thread-font);line-height:var(--leading-body);color:var(--text);overflow-wrap:anywhere;white-space:pre-wrap}
 .user-message .message-content{color:var(--text);font-size:var(--thread-font);line-height:var(--leading-body)}
+.user-prose,.composer textarea{unicode-bidi:plaintext;text-align:start}
 .markdown{white-space:normal}
+.markdown :is(p,h1,h2,h3,h4,h5,h6,li,summary){text-align:start}
+.markdown :is(pre,code,.katex,.md-math-block){direction:ltr;unicode-bidi:isolate;text-align:left}
 .activity-commentary.markdown{white-space:normal}
 .markdown>:first-child{margin-top:0}
 .markdown>:last-child{margin-bottom:0}
@@ -158,7 +161,10 @@ html[data-theme="dark"]{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .4),0 8px 24
 .markdown h1,.markdown h2,.markdown h3,.markdown h4{font-size:var(--text-md);line-height:var(--leading-tight);color:var(--text);font-weight:var(--weight-strong);margin:20px 0 10px;letter-spacing:0}
 .markdown h1,.markdown h2{font-size:var(--text-lg)}
 .markdown ul,.markdown ol{margin:0 0 16px;padding-left:18px}
+.markdown :is(ul,ol):has(>li:dir(rtl),>li>p:first-of-type:dir(rtl)){padding-right:18px}
 .markdown li{padding:1px 0 4px 2px}
+/* A loose item's paragraphs have their own dir, so dir=auto on the item skips them. */
+.markdown li:has(>p:first-of-type:dir(rtl)){direction:rtl}
 .markdown li::marker{color:var(--muted)}
 .markdown pre{background:var(--surface-sunken);border-radius:var(--radius-md);padding:var(--space-3);overflow:auto;margin:15px 0 18px;line-height:var(--leading-code);color:var(--text);font-size:var(--mono-size)}
 .markdown pre code{font-size:inherit}
@@ -183,12 +189,13 @@ html[data-theme="dark"]{--floating-bar-shadow:0 1px 3px rgb(0 0 0 / .4),0 8px 24
 .turn-activity.is-steps:not([open])+.agent-message.after-trace .markdown>:first-child{margin-top:0}
 .markdown blockquote{padding:8px 14px;border-radius:var(--radius-sm);background:var(--fill-hover);margin-left:0;color:var(--muted)}
 .markdown table{border-collapse:collapse;width:100%;font-size:var(--thread-font);margin:0 0 16px}
-.markdown td,.markdown th{padding:6px 9px;text-align:left}
+.markdown td,.markdown th{padding:6px 9px;text-align:start}
 .markdown th{background:var(--fill-active)}
 .markdown tbody tr:nth-child(even){background:var(--fill-hover)}
 /* Enriched Markdown extras, shared by every surface that renders agent text. */
-:is(.md-align-center){text-align:center!important}
-:is(.md-align-right){text-align:right!important}
+:is(.md-align-left),.markdown :is(th,td)[align="left"]{text-align:left!important}
+:is(.md-align-center),.markdown :is(th,td)[align="center"]{text-align:center!important}
+:is(.md-align-right),.markdown :is(th,td)[align="right"]{text-align:right!important}
 .md-task-list{list-style:none;padding-left:2px!important}
 .md-task{display:flex;align-items:baseline;gap:8px}
 .md-task::marker{content:none}
