@@ -1,6 +1,6 @@
 use rusqlite::params;
 use super::channels::{self, discord, http, slack, telegram, web, whatsapp};
-use super::{brief, gateway, guard, schedule, *};
+use super::{brief, gateway, guard, schedule, webhooks, *};
 use serde_json::json;
 use super::shared_channels::Running;
 
@@ -824,4 +824,191 @@ fn project_tasks_get_their_own_bot_brief_and_skill_union() {
     // A bot's own conversation is never relinked to another bot.
     let (thread, _) = thread_session(&f.store, &writer, DESKTOP, DESKTOP, "x").unwrap();
     assert!(assign_task(&f.store, &thread, Some(&reviewer.id)).is_err());
+}
+
+/// Signs the way a webhook caller must: HMAC-SHA256 of `{timestamp}.{body}` with the
+/// secret's own bytes, as lowercase hex behind `sha256=`. Reimplemented here so the
+/// tests pin the scheme independently of the module under test.
+fn webhook_signature(secret: &str, timestamp: &str, body: &str) -> String {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(format!("{timestamp}.{body}").as_bytes());
+    let hex: String = mac.finalize().into_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256={hex}")
+}
+
+#[test]
+fn webhook_signatures_check_the_mac_freshness_and_header_rules() {
+    let secret = "4f3a9c1e7b2d5f08a6c4e09b1d3f5a7c9e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0f";
+    let now = 1_700_000_000;
+    let body = r#"{"text":"deploy"}"#;
+    let at = |delta: i64| (now + delta).to_string();
+    let signed_at = |delta: i64| webhook_signature(secret, &at(delta), body);
+    assert!(webhooks::verify(secret, &at(-100), body, Some(&signed_at(-100)), now), "a fresh valid signature verifies");
+    assert!(!webhooks::verify(&"f".repeat(64), &at(-100), body, Some(&signed_at(-100)), now), "a signature made with another key is refused");
+    assert!(!webhooks::verify(secret, &at(-100), r#"{"text":"other"}"#, Some(&signed_at(-100)), now), "a signature over another body is refused");
+    assert!(!webhooks::verify(secret, &at(-100), &format!("{body} "), Some(&signed_at(-100)), now), "a tampered body is refused");
+    assert!(!webhooks::verify(secret, &at(-301), body, Some(&signed_at(-301)), now), "a timestamp 301 seconds old is refused");
+    assert!(webhooks::verify(secret, &at(-300), body, Some(&signed_at(-300)), now), "a timestamp exactly 300 seconds old is still accepted");
+    assert!(!webhooks::verify(secret, &at(301), body, Some(&signed_at(301)), now), "a timestamp 301 seconds in the future is refused");
+    assert!(webhooks::verify(secret, &at(300), body, Some(&signed_at(300)), now), "a timestamp exactly 300 seconds in the future is still accepted");
+    assert!(!webhooks::verify(secret, &at(-100), body, None, now), "a missing signature header is refused");
+    assert!(!webhooks::verify(secret, &at(-100), body, Some(&signed_at(-100)[7..]), now), "a header without the sha256= prefix is refused");
+    assert!(!webhooks::verify(secret, &at(-100), body, Some("sha256=not-hex"), now), "a header whose hex is malformed is refused");
+    assert!(!webhooks::verify(secret, &at(-100), body, Some("sha256="), now), "an empty signature is refused");
+    let upper = format!("sha256={}", signed_at(-100)[7..].to_ascii_uppercase());
+    assert!(!webhooks::verify(secret, &at(-100), body, Some(&upper), now), "signatures compare as lowercase hex only");
+    for bad in ["not-a-number", "12x4", "1.5", ""] {
+        assert!(!webhooks::verify(secret, bad, body, Some(&webhook_signature(secret, bad, body)), now), "a timestamp that is not a decimal integer is refused: {bad:?}");
+    }
+}
+
+#[test]
+fn webhook_events_prefer_json_text_and_fall_back_to_the_trimmed_body() {
+    assert_eq!(webhooks::parse_event(r#"{"text":" deploy please "}"#).as_deref(), Some("deploy please"), "json text wins and is trimmed");
+    assert_eq!(webhooks::parse_event("  not json  ").as_deref(), Some("not json"), "invalid json falls back to the trimmed body");
+    assert_eq!(webhooks::parse_event(r#"{"text": 7}"#).as_deref(), Some(r#"{"text": 7}"#), "non-string text falls back to the trimmed body");
+    assert_eq!(webhooks::parse_event(r#"{"other":"x"}"#).as_deref(), Some(r#"{"other":"x"}"#), "json without text falls back to the trimmed body");
+    assert_eq!(webhooks::parse_event(""), None, "an empty body has no event");
+    assert_eq!(webhooks::parse_event("   "), None, "a whitespace body has no event");
+    assert_eq!(webhooks::parse_event(r#"{"text":"  "}"#), None, "whitespace-only text has no event");
+}
+
+#[test]
+fn webhooks_round_trip_create_list_enable_and_delete() {
+    let f = fixture();
+    let scout = bot(&f);
+    let writer = create(&f.store, &input("Writer"), &f.root).unwrap();
+    assert!(webhooks::create(&f.store, "missing", "Hook", "Deploy the site").is_err(), "a webhook needs an existing bot");
+    let first = webhooks::create(&f.store, &scout.id, "Deploy", "Deploy the site").unwrap();
+    assert_eq!((first.bot_id.as_str(), first.title.as_str(), first.prompt.as_str()), (scout.id.as_str(), "Deploy", "Deploy the site"));
+    assert_eq!((first.enabled, first.last_timestamp), (true, 0), "a fresh webhook is enabled with no accepted timestamp yet");
+    assert!(!first.id.is_empty() && !first.created_at.is_empty());
+    let second = webhooks::create(&f.store, &scout.id, "Second", "Summarize the log").unwrap();
+    let third = webhooks::create(&f.store, &scout.id, "Third", "Check the inbox").unwrap();
+    webhooks::create(&f.store, &writer.id, "Elsewhere", "Other bot's hook").unwrap();
+    assert_eq!(webhooks::list(&f.store, &scout.id).unwrap().iter().map(|hook| hook.id.as_str()).collect::<Vec<_>>(), [first.id.as_str(), second.id.as_str(), third.id.as_str()], "list keeps created order");
+    assert_eq!(webhooks::list(&f.store, &writer.id).unwrap().len(), 1, "lists are per bot");
+    assert_eq!(webhooks::get(&f.store, &second.id).unwrap().title, "Second");
+    assert_eq!(webhooks::get(&f.store, "missing"), None);
+    webhooks::set_enabled(&f.store, &first.id, false).unwrap();
+    assert!(!webhooks::get(&f.store, &first.id).unwrap().enabled);
+    webhooks::set_enabled(&f.store, &first.id, true).unwrap();
+    assert!(webhooks::get(&f.store, &first.id).unwrap().enabled);
+    webhooks::delete(&f.store, &third.id).unwrap();
+    assert_eq!(webhooks::list(&f.store, &scout.id).unwrap().len(), 2, "delete removes the row");
+    assert_eq!(webhooks::get(&f.store, &third.id), None);
+}
+
+#[test]
+fn a_bot_can_hold_at_most_50_webhooks_and_the_cap_is_per_bot() {
+    let f = fixture();
+    let scout = bot(&f);
+    for n in 0..50 {
+        webhooks::create(&f.store, &scout.id, &format!("Hook {n}"), "Deploy the site").unwrap();
+    }
+    let refused = webhooks::create(&f.store, &scout.id, "One too many", "Deploy the site").unwrap_err();
+    assert!(refused.contains("50"), "the refusal names the cap: {refused}");
+    let writer = create(&f.store, &input("Writer"), &f.root).unwrap();
+    assert!(webhooks::create(&f.store, &writer.id, "Other bot", "Deploy the site").is_ok(), "the cap is per bot");
+    assert_eq!(webhooks::list(&f.store, &scout.id).unwrap().len(), 50);
+}
+
+#[test]
+fn webhook_secrets_rotate_leave_with_the_row_and_never_enter_rows_or_listings() {
+    let f = fixture();
+    let scout = bot(&f);
+    let hook = webhooks::create(&f.store, &scout.id, "Deploy", "Deploy the site").unwrap();
+    let first = super::secrets::get(&hook.id, "signing_secret").expect("creating a webhook stores a signing secret");
+    assert_eq!(first.len(), 64);
+    assert!(first.chars().all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f')), "the secret is 64 lowercase hex characters");
+    assert_eq!(webhooks::secret_key(&hook.id), format!("{}:signing_secret", hook.id));
+    let rotated = webhooks::rotate_secret(&f.store, &hook.id).unwrap();
+    assert_eq!(rotated.len(), 64);
+    assert!(rotated.chars().all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f')), "rotating returns 64 lowercase hex characters");
+    assert_ne!(rotated, first, "rotating replaces the secret");
+    assert_eq!(super::secrets::get(&hook.id, "signing_secret").as_deref(), Some(rotated.as_str()), "rotate stores the hex it returns");
+    let listed = format!("{:?} {:?}", webhooks::list(&f.store, &scout.id), webhooks::get(&f.store, &hook.id));
+    assert!(!listed.contains(&rotated) && !listed.contains(&first), "secrets never appear in list or get output");
+    let row: String = f.store.db.query_row("SELECT id||bot_id||title||prompt FROM bot_webhooks WHERE id=?1", [&hook.id], |r| r.get(0)).unwrap();
+    assert!(!row.contains(&rotated) && !row.contains(&first), "secrets never enter the database row");
+    webhooks::delete(&f.store, &hook.id).unwrap();
+    assert_eq!(super::secrets::get(&hook.id, "signing_secret"), None, "delete removes the signing secret");
+}
+
+#[test]
+fn webhook_route_classifies_unknown_disabled_unsigned_stale_and_empty_requests() {
+    let f = fixture();
+    let scout = bot(&f);
+    let app = tauri::test::mock_app();
+    let hook = webhooks::create(&f.store, &scout.id, "Deploy hook", "Deploy the site").unwrap();
+    let secret = webhooks::rotate_secret(&f.store, &hook.id).unwrap();
+    let now = 1_700_000_000;
+    let fresh = "1699999900"; // now - 100
+    let body = r#"{"text":"deploy"}"#;
+    let signed_fresh = webhook_signature(&secret, fresh, body);
+    let route = |id: &str, timestamp: Option<&str>, signature: Option<&str>, request_body: &str| {
+        webhooks::route(app.handle(), &f.store, id, timestamp, signature, request_body, now)
+    };
+    let error_of = |response: &http::Response| {
+        assert_eq!(response.content_type, "application/json");
+        let value: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        value["error"].as_str().unwrap_or_default().to_owned()
+    };
+    assert_eq!(route("missing", Some(fresh), Some(&signed_fresh), body).status, 404, "an unknown webhook id is 404");
+    assert!(!error_of(&route("missing", Some(fresh), Some(&signed_fresh), body)).is_empty(), "404 bodies are json with an error");
+    webhooks::set_enabled(&f.store, &hook.id, false).unwrap();
+    assert_eq!(route(&hook.id, Some(fresh), Some(&signed_fresh), body).status, 403, "a disabled webhook is 403 even with a valid signature");
+    assert!(!error_of(&route(&hook.id, Some(fresh), Some(&signed_fresh), body)).is_empty());
+    webhooks::set_enabled(&f.store, &hook.id, true).unwrap();
+    assert_eq!(route(&hook.id, Some(fresh), Some("sha256=deadbeef"), body).status, 401, "a bad signature is 401");
+    assert_eq!(route(&hook.id, Some(fresh), None, body).status, 401, "a missing signature is 401");
+    let old = "1699999600"; // now - 400, validly signed but outside the freshness window
+    assert_eq!(route(&hook.id, Some(old), Some(&webhook_signature(&secret, old, body)), body).status, 401, "a timestamp outside the window is 401");
+    assert_eq!(route(&hook.id, Some("not-a-number"), Some(&webhook_signature(&secret, "not-a-number", body)), body).status, 401, "a malformed timestamp is 401");
+    let empty = route(&hook.id, Some(fresh), Some(&webhook_signature(&secret, fresh, "   ")), "   ");
+    assert_eq!(empty.status, 400, "a body with no text is 400");
+    assert!(!error_of(&empty).is_empty());
+}
+
+#[test]
+fn accepted_webhooks_record_their_timestamp_and_replays_are_refused() {
+    let f = fixture();
+    let scout = bot(&f);
+    let app = tauri::test::mock_app();
+    let hook = webhooks::create(&f.store, &scout.id, "Deploy hook", "Deploy the site").unwrap();
+    let secret = webhooks::rotate_secret(&f.store, &hook.id).unwrap();
+    let now = 1_700_000_000;
+    let body = r#"{"text":"deploy"}"#;
+    let send = |timestamp: &str| webhooks::route(app.handle(), &f.store, &hook.id, Some(timestamp), Some(&webhook_signature(&secret, timestamp, body)), body, now);
+    let first = send("1699999900");
+    assert_eq!(first.status, 202, "a valid signed request is accepted");
+    assert_eq!(first.content_type, "application/json");
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&first.body).unwrap()["ok"], true, "the accepted body is json ok:true");
+    assert_eq!(webhooks::get(&f.store, &hook.id).unwrap().last_timestamp, 1_699_999_900, "last_timestamp becomes the accepted timestamp, not now");
+    assert_eq!(send("1699999900").status, 401, "the same timestamp cannot be replayed, even with a valid signature");
+    assert_eq!(send("1699999800").status, 401, "an older timestamp cannot be replayed");
+    assert_eq!(webhooks::get(&f.store, &hook.id).unwrap().last_timestamp, 1_699_999_900, "refused requests never move last_timestamp");
+    assert_eq!(send("1700000000").status, 202, "a newer fresh timestamp is accepted");
+    assert_eq!(webhooks::get(&f.store, &hook.id).unwrap().last_timestamp, 1_700_000_000);
+}
+
+#[test]
+fn bots_upgrade_creates_the_webhook_table_without_an_app_schema_bump() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch("CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL);").unwrap();
+    upgrade(&db).unwrap();
+    upgrade(&db).unwrap();
+    let count = |sql: &str| db.query_row(sql, [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bot_webhooks'"), 1, "upgrade creates bot_webhooks");
+    assert!(count("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='bot_webhooks'") >= 1, "the bot_id index rides the same schema");
+    let mut columns: Vec<String> = Vec::new();
+    let mut statement = db.prepare("SELECT name FROM pragma_table_info('bot_webhooks')").unwrap();
+    let rows = statement.query_map([], |row| row.get::<_, String>(0)).unwrap();
+    for row in rows {
+        columns.push(row.unwrap());
+    }
+    columns.sort();
+    assert_eq!(columns, vec!["bot_id", "created_at", "enabled", "id", "last_timestamp", "prompt", "title"]);
+    assert_eq!(crate::storage::SCHEMA_VERSION, 36, "bot_webhooks rides bots::SCHEMA and never bumps the app schema");
 }

@@ -28,7 +28,7 @@ pub(crate) struct Inbound {
 }
 
 pub(crate) const NOTHING: &str = "NOTHING_TO_REPORT";
-const MAX_INBOUND: usize = 32 * 1024;
+pub(crate) const MAX_INBOUND: usize = 32 * 1024;
 
 /// Approvals waiting on a reply, per task: (request ID, action) in arrival order.
 type Pending = Mutex<HashMap<String, Vec<(String, String)>>>;
@@ -71,7 +71,7 @@ fn channel_kind(store: &Store, channel_id: &str) -> String {
 }
 
 /// The text a turn receives: the message, plus the brief when the thread has not seen this version.
-fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
+pub(super) fn compose(app: &tauri::AppHandle, store: &Store, bot: &Bot, session_id: &str, kind: &str, sender: &str, text: &str) -> Result<String> {
     let (skills, skipped) = workspace_skills(app, store, bot, session_id);
     let seen = super::brief_version_of(store, session_id)?;
     if seen == bot.memory_version && !handoff_pending(store, session_id)? {
@@ -117,7 +117,7 @@ fn image_attachments(image_ids: &[String]) -> Value {
     json!(image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Attached image"})).collect::<Vec<_>>())
 }
 
-async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
+pub(super) async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, text: String, image_ids: Option<Vec<String>>, sender_id: &str, force_queue: bool) -> Result<()> {
     let state = app.state::<AppState>();
     let image_ids = image_ids.unwrap_or_default();
     if image_ids.len() > 4 {
@@ -303,7 +303,7 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     let settled = held.is_none();
     let text = held.unwrap_or(text);
     let text = if text.is_empty() && !successful { "I couldn't finish that. Check PandaCode for details.".to_owned() } else { text };
-    if thread.channel_id == "schedule" {
+    if thread.channel_id == "schedule" || thread.channel_id.starts_with("webhook-") {
         if text.trim() == NOTHING || text.trim().is_empty() {
             if let Ok(store) = state.store.lock() {
                 let _ = super::log(&store, &bot.id, "scheduled", "Nothing to report", json!({}));
@@ -411,7 +411,7 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
     let message = format!("Approval needed: {}\nReply yes, no, or always (allow this kind of action from now on).", text.chars().take(600).collect::<String>());
     match thread.channel_id.as_str() {
         super::DESKTOP => {}
-        "schedule" => notify(app, &bot, &message).await,
+        channel if channel == "schedule" || channel.starts_with("webhook-") => notify(app, &bot, &message).await,
         channel => reply(app, &bot, channel, &thread.external_id, &message).await,
     }
     let _ = app.emit("bots-changed", ());
