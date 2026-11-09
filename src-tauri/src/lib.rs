@@ -4438,6 +4438,7 @@ pub fn run() {
                 skills::skills_catalog_state,
                 skills::skills_catalog_import,
                 skills::skills_discover,
+                skills::skills_found,
                 set_task_link,
                 import_prompt_image,
                 read_clipboard_image,

@@ -2,8 +2,11 @@
 //! the app data folder: `skills/<id>/SKILL.md` (or `RULE.md`) plus `skills/<id>.json` with their
 //! source, content hash and activations. Activation writes them where each harness reads them
 //! (`skills/adapter.rs`), never over a file PandaCode did not write, and reports drift.
+//! A skill imported with `source.kind == "link"` keeps no copy: the library reads the linked
+//! folder live, and activation links a harness's skills folder to it.
 mod adapter;
 mod catalog;
+mod found;
 mod github;
 mod safety;
 pub(crate) mod scoped;
@@ -19,12 +22,15 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::AppState;
 use adapter::Surface;
+pub use found::FoundSkill;
 pub use safety::Finding;
 
 /// Relative path and bytes of each file in a skill or rule.
 pub type Files = Vec<(String, Vec<u8>)>;
 pub const MAX_FILES: usize = 64;
 pub const MAX_BYTES: usize = 1 << 20;
+/// Folders the found-skills scan reads before it stops.
+pub(crate) const MAX_FOUND: usize = 500;
 // ponytail: one lock for the whole library; per-item locks if imports ever get slow.
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,7 +56,7 @@ pub struct Written {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
-    /// `folder` or `github`.
+    /// `folder`, `github` or `link` (no copy; the library reads `location` live).
     pub kind: String,
     /// The folder path, or `owner/name/path`.
     pub location: String,
@@ -86,6 +92,13 @@ pub struct Meta {
     /// The content hash whose safety findings the user accepted.
     pub acknowledged: Option<String>,
     pub activations: Vec<Activation>,
+}
+
+impl Meta {
+    /// `source.kind` values whose files live outside the app data folder.
+    pub(crate) fn is_linked(&self) -> bool {
+        self.source.kind == "link"
+    }
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,11 +246,14 @@ fn read_local(path: &Path) -> Result<Files, String> {
             if kind.is_dir() {
                 pending.push(entry.path());
             } else if kind.is_file() {
-                let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
-                total += bytes.len();
-                if files.len() >= MAX_FILES || total > MAX_BYTES {
+                // Stat before reading: a folder that crosses a limit is refused without
+                // first reading the crossing file into memory.
+                let len = entry.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                if files.len() >= MAX_FILES || total + len > MAX_BYTES {
                     return Err(format!("That folder holds more than {MAX_FILES} files or 1 MB."));
                 }
+                let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
+                total += bytes.len();
                 let relative = entry.path().strip_prefix(path).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
                 files.push((relative, bytes));
             }
@@ -270,13 +286,26 @@ impl Library {
         let temp = self.dir.join(format!(".{}.json.tmp", meta.id));
         fs::write(&temp, json).and_then(|_| fs::rename(&temp, self.meta_path(&meta.id))).map_err(|e| format!("Could not save the library: {e}"))
     }
-    fn files(&self, id: &str) -> Result<Files, String> {
-        let mut files = read_local(&self.dir.join(id))?;
+    /// Where an item's files live: the library folder, or the linked source folder.
+    fn skill_dir(&self, meta: &Meta) -> PathBuf {
+        if meta.is_linked() {
+            PathBuf::from(&meta.source.location)
+        } else {
+            self.dir.join(&meta.id)
+        }
+    }
+    /// A linked source that is gone or cannot be read (over the file or size limits, no
+    /// permission) reads as empty, so one bad link never fails the whole library list;
+    /// statuses report it missing and activation names it.
+    fn files(&self, meta: &Meta) -> Result<Files, String> {
+        let dir = self.skill_dir(meta);
+        let read = if meta.is_linked() { read_local(&dir).unwrap_or_default() } else { read_local(&dir)? };
+        let mut files = read;
         files.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(files)
     }
     fn item(&self, meta: Meta) -> Result<Item, String> {
-        let files = self.files(&meta.id)?;
+        let files = self.files(&meta)?;
         let findings = files.iter().flat_map(|(path, bytes)| safety::scan(path, &String::from_utf8_lossy(bytes))).collect();
         Ok(Item { files: files.into_iter().map(|(p, _)| p).collect(), findings, meta })
     }
@@ -301,6 +330,9 @@ impl Library {
     /// `import`, refusing (under the library lock, so a concurrent import cannot slip in
     /// between a check and the write) to replace an item that came from another source.
     pub(crate) fn import_as(&self, kind: Kind, files: Files, fallback_name: &str, source: Source, same_source_only: bool) -> Result<Item, String> {
+        if source.kind == "link" && (kind == Kind::Rule || !Path::new(&source.location).is_dir() || !files.iter().any(|(p, _)| p == "SKILL.md")) {
+            return Err("Only skills with a SKILL.md folder can be linked.".into());
+        }
         let files = normalize(kind, files)?;
         let main = files.iter().find(|(p, _)| p == main_file(kind)).map(|(_, b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
         let (name, description, body) = frontmatter(&main);
@@ -321,12 +353,15 @@ impl Library {
         }
         let folder = self.dir.join(&id);
         let _ = fs::remove_dir_all(&folder);
-        for (relative, bytes) in &files {
-            let path = folder.join(relative);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        // A link keeps no copy; everything the library knows is read from `location` live.
+        if source.kind != "link" {
+            for (relative, bytes) in &files {
+                let path = folder.join(relative);
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                fs::write(&path, bytes).map_err(|e| format!("Could not save {relative}: {e}"))?;
             }
-            fs::write(&path, bytes).map_err(|e| format!("Could not save {relative}: {e}"))?;
         }
         let sha256 = content_hash(&files);
         let meta = Meta {
@@ -357,6 +392,17 @@ impl Library {
         let _guard = LOCK.lock().map_err(|e| e.to_string())?;
         let item = self.item(self.load(id)?)?;
         let meta = item.meta;
+        let files = self.files(&meta)?;
+        if meta.is_linked() {
+            if files.is_empty() {
+                return Err(format!("The linked folder {} is missing or cannot be read.", meta.source.location));
+            }
+            // The imported hash is the reviewed content; a changed source waits for a
+            // re-import, which re-runs the safety scan, before any harness reads it.
+            if content_hash(&files) != meta.sha256 {
+                return Err(format!("The linked folder {} changed since it was imported; re-import it to review the new content.", meta.source.location));
+            }
+        }
         let acknowledged = if item.findings.is_empty() || meta.acknowledged.as_deref() == Some(meta.sha256.as_str()) {
             meta.acknowledged.clone()
         } else if acknowledge {
@@ -371,14 +417,45 @@ impl Library {
         let mut excluded = previous.as_ref().map(|a| a.excluded.clone()).unwrap_or_default();
         let moved = previous.as_ref().is_some_and(|a| outside_surface(meta.kind, a));
         let mut kept = Vec::new();
-        let files = self.files(id)?;
         let (surface, written) = match adapter::surface(harness, meta.kind, scope, base) {
             Surface::Folder(dir) => {
                 // After a surface move the new folder must be free, as for a first activation;
                 // the old copy goes only once the new one is written, and an edited file stays.
-                let written = adapter::write_folder(&dir, id, &files, if moved { &[] } else { &old_files })?;
-                if moved {
+                // A copy↔link switch frees the old surface first too, so the new write never
+                // lands over what the other kind left there.
+                let previous_surface = previous.as_ref().map(|a| a.surface.as_str());
+                let to_link = meta.is_linked();
+                let mut fresh: &[Written] = if moved { &[] } else { &old_files };
+                if !moved && previous_surface == Some("folder") && to_link {
+                    let edited = old_files.iter().any(|w| {
+                        let path = Path::new(&w.path);
+                        path.exists() && adapter::file_hash(path).as_deref() != Some(w.sha256.as_str())
+                    });
+                    if edited {
+                        return Err(format!("{} was edited on disk; PandaCode will not replace it with a link.", meta.name));
+                    }
+                    // Anything extra under the old copy folder (a file PandaCode did not
+                    // write) would survive the cleanup and block the link: check first, while
+                    // every tracked file is still in place.
+                    let target = dir.join(id);
+                    if target.is_dir() && !folder_only_holds(&target, &old_files) {
+                        return Err(format!("{} still has files PandaCode did not write; remove them before switching it to a link.", target.display()));
+                    }
                     kept = adapter::remove_folder(&old_files);
+                    excluded.drain(..).for_each(|entry| adapter::unexclude(base, &entry));
+                    fresh = &[];
+                }
+                if !moved && previous_surface == Some("link") && !to_link {
+                    kept = adapter::remove_link(&old_files);
+                    fresh = &[];
+                }
+                let (surface, written) = if to_link {
+                    ("link", adapter::write_link(&dir, id, Path::new(&meta.source.location), &meta.sha256, fresh)?)
+                } else {
+                    ("folder", adapter::write_folder(&dir, id, &files, fresh)?)
+                };
+                if moved {
+                    kept = if previous_surface == Some("link") { adapter::remove_link(&old_files) } else { adapter::remove_folder(&old_files) };
                     if kept.is_empty() {
                         excluded.drain(..).for_each(|entry| adapter::unexclude(base, &entry));
                     }
@@ -390,7 +467,7 @@ impl Library {
                         }
                     }
                 }
-                ("folder", written)
+                (surface, written)
             }
             Surface::Block(file) => {
                 let created = !file.exists();
@@ -426,6 +503,7 @@ impl Library {
         };
         let kept = match activation.surface.as_str() {
             "folder" => adapter::remove_folder(&activation.files),
+            "link" => adapter::remove_link(&activation.files),
             "block" => activation.files.iter().filter(|w| !matches!(adapter::remove_block(w, id), Ok(true))).map(|w| w.path.clone()).collect(),
             _ => Vec::new(),
         };
@@ -458,6 +536,20 @@ impl Library {
         let Some(activation) = activation else { return "off" };
         if outside_surface(meta.kind, activation) {
             return "outdated";
+        }
+        if activation.surface == "link" {
+            let Some(file) = activation.files.first() else { return "missing" };
+            if !fs::symlink_metadata(Path::new(&file.path)).is_ok_and(|m| m.is_symlink()) {
+                return "missing";
+            }
+            // A link needs no version refresh: it is active while the source still matches the
+            // imported (reviewed) content, and drifts when the source changes under it.
+            let live = read_local(Path::new(&meta.source.location)).ok().map(|files| content_hash(&files));
+            return match live.as_deref() {
+                None => "missing",
+                Some(hash) if hash != meta.sha256 => "drifted",
+                Some(_) => "active",
+            };
         }
         let present = |w: &Written| match activation.surface.as_str() {
             "block" => fs::read_to_string(&w.path).ok().map(|text| adapter::block(&text, &meta.id).map(|(body, _)| sha256_hex(body.as_bytes()) == w.sha256)),
@@ -547,6 +639,26 @@ fn outside_surface(kind: Kind, activation: &Activation) -> bool {
     activation.files.iter().any(|file| !Path::new(&file.path).starts_with(&dir))
 }
 
+/// Whether every file under `dir` is one PandaCode wrote (`written`), so replacing the folder
+/// with a link loses nothing the user made.
+fn folder_only_holds(dir: &Path, written: &[Written]) -> bool {
+    let tracked: Vec<&Path> = written.iter().map(|w| Path::new(&w.path)).collect();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&current) else { return false };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else { return false };
+            if kind.is_dir() {
+                stack.push(path);
+            } else if !tracked.contains(&path.as_path()) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 pub(crate) fn library(app: &AppHandle) -> Result<Library, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("skills");
     let home = crate::agent_usage_providers::home().ok_or("Could not find your home folder.")?;
@@ -564,18 +676,27 @@ pub async fn skills_list(app: AppHandle) -> crate::Result<Vec<Item>> {
     crate::blocking(move || library(&app)?.list()).await
 }
 #[tauri::command]
-pub async fn skills_import_folder(app: AppHandle, path: String, kind: Kind) -> crate::Result<Item> {
+pub async fn skills_import_folder(app: AppHandle, path: String, kind: Kind, link: Option<bool>) -> crate::Result<Item> {
     crate::blocking(move || {
         let path = PathBuf::from(path.trim());
         if !path.is_absolute() {
             return Err("Choose a folder or Markdown file.".into());
         }
-        let files = read_local(&path)?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let source = Source { kind: "folder".into(), location: path.to_string_lossy().into_owned(), git_ref: None, commit: None };
-        library(&app)?.import(kind, files, &name, source)
+        let files = read_local(&path)?;
+        let kind_of_source = if link.unwrap_or(false) { "link" } else { "folder" };
+        let source = Source { kind: kind_of_source.into(), location: path.to_string_lossy().into_owned(), git_ref: None, commit: None };
+        if link.unwrap_or(false) {
+            library(&app)?.import_as(kind, files, &name, source, true)
+        } else {
+            library(&app)?.import(kind, files, &name, source)
+        }
     })
     .await
+}
+#[tauri::command]
+pub async fn skills_found(app: AppHandle) -> crate::Result<Vec<FoundSkill>> {
+    crate::blocking(move || Ok(library(&app)?.found())).await
 }
 #[tauri::command]
 pub async fn skills_import_github(app: AppHandle, repo: String, path: String, git_ref: Option<String>, kind: Kind) -> crate::Result<Item> {

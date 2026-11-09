@@ -85,7 +85,17 @@ impl Library {
                 skipped.push(format!("Review the safety findings for {} in Settings → Skills & rules first.", item.meta.name));
                 continue;
             }
-            let folder = self.dir.join(id);
+            let folder = self.skill_dir(&item.meta);
+            // A linked source that changed since import waits for a re-import (and its safety
+            // re-scan) before it reaches a prompt, exactly as activation does.
+            if item.meta.is_linked() && super::read_local(&folder).map(|files| super::content_hash(&files)) != Ok(item.meta.sha256.clone()) {
+                skipped.push(format!("{} changed since it was imported or cannot be read; re-import it in Settings → Skills & rules.", item.meta.name));
+                continue;
+            }
+            if !folder.join("SKILL.md").is_file() {
+                skipped.push(format!("{} is missing from disk.", item.meta.name));
+                continue;
+            }
             let main = std::fs::read_to_string(folder.join("SKILL.md")).unwrap_or_default();
             let (_, _, body) = frontmatter(&main);
             let body: String = body.chars().take(SKILL_CHARS).collect();
