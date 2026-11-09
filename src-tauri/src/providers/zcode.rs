@@ -232,9 +232,25 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
 async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut command = super::provider_command("zcode", path)?;
     command.arg("app-server");
-    let workspace = std::env::temp_dir();
+    let snapshot =
+        create_snapshot(command, &std::env::temp_dir(), DISCOVERY_OUTPUT_LIMIT).await?;
+    parse_models(&snapshot)
+}
+
+/// Spawns a throwaway `app-server` (the caller's command, with `app-server`
+/// already set), creates a deferred plan-mode session, answers reverse
+/// requests with `-32601`, closes the session, and returns the raw
+/// `session/create` result. Callers parse the snapshot themselves.
+/// `workspace` is both the process cwd and the session workspace;
+/// `output_limit` caps total stdout bytes.
+pub(crate) async fn create_snapshot(
+    mut command: Command,
+    workspace: &Path,
+    output_limit: u64,
+) -> Result<Value, String> {
+    let workspace = workspace.to_path_buf();
     command
-        .current_dir(&workspace)
+        .current_dir(super::external_path(&workspace))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -260,7 +276,7 @@ async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
         let mut stdout = tokio::io::BufReader::new(
             child.stdout.take().ok_or("ZCode stdout unavailable")?,
         )
-        .take(DISCOVERY_OUTPUT_LIMIT + 1);
+        .take(output_limit + 1);
         let mut total = 0u64;
         loop {
             let mut line = Vec::new();
@@ -269,7 +285,7 @@ async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
                 .await
                 .map_err(|e| e.to_string())?;
             total += count as u64;
-            if total > DISCOVERY_OUTPUT_LIMIT {
+            if total > output_limit {
                 return Err("ZCode model catalog exceeded its output limit".into());
             }
             if count == 0 {
@@ -300,7 +316,7 @@ async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
                 }}),
             )
             .await;
-            return parse_models(&value["result"]);
+            return Ok(value["result"].clone());
         }
     })
     .await
@@ -548,6 +564,7 @@ impl Protocol {
         }
         step.events
             .push(self.event("session", self.remote_id.clone(), None));
+        self.commands_changed(result, step);
         let settings = &result["settings"];
         let current = &result["session"]["model"];
         self.zcode.context_window = context_window_of(settings, current);
@@ -693,6 +710,10 @@ mod tests {
                 "thoughtLevel": {"enabled": true, "current": "max",
                                  "available": [{"value": "low"}, {"value": "high"}, {"value": "max"}]},
             },
+            "slashCommands": [
+                {"name": "goal", "description": "Set the session goal", "inputHint": "<goal>", "source": "builtin"},
+                {"name": "compact", "description": "Compact the conversation", "source": "builtin"},
+            ],
             "messages": [],
         })
     }
@@ -714,6 +735,11 @@ mod tests {
         let step = p
             .receive(json!({"id": ID_CREATE, "result": snapshot()}))
             .unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert!(
+            step.events.iter().any(|event| event.kind == "commands_changed"),
+            "create snapshot publishes slashCommands",
+        );
         (p, step)
     }
 

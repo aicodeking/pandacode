@@ -718,7 +718,7 @@ async fn fetch_provider(provider: &str, env: &[(String, String)]) -> Usage {
         "github-copilot" => Usage::empty(provider, "unsupported", "GitHub Copilot CLI does not expose usage limits through this agent. Check your GitHub Copilot settings."),
         "muse" => Usage::empty(provider, "unsupported", "Muse Code reports its usage windows only inside a running session. Check them with /usage in Muse Code."),
         "devin" => Usage::empty(provider, "unsupported", "Devin does not expose plan limits through its ACP server. Check usage in your Devin account settings."),
-        "zcode" => Usage::empty(provider, "unsupported", "ZCode does not expose plan usage. Check usage in ZCode itself."),
+        "zcode" => Usage::empty(provider, "unsupported", "ZCode session token usage is shown in the transcript after a turn. Coding Plan quota (Lite, Pro, Max credits) is not on the session protocol; check it in ZCode."),
         "hermes" => Usage::empty(provider, "unsupported", "Hermes Agent does not expose usage limits through its ACP server. Check your LLM provider's dashboard."),
         _ => Usage::empty(provider, "unsupported", "Usage limits are not available for this agent."),
     };
