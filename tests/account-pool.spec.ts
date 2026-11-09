@@ -812,6 +812,56 @@ test('account switch stays compact live before done, survives later ticks and ha
 });
 
 
+for (const initiallyOpen of [true, false]) test(`account switch activates Space exactly once across live-to-saved handoff from ${initiallyOpen ? 'open' : 'closed'}`, async ({ page }) => {
+  const errors = await openApp(page, twoAccounts);
+  const id = await startPoolTurn(page);
+  await page.evaluate(({ id, content }) => {
+    const run = (window as any).__poolRuns[id]; run.note(content); run.push('Final response.');
+  }, { id, content: switchContent });
+  const note = switchNote(page), summary = note.locator('summary');
+  await expect(note).toHaveCount(1);
+  await expect(note).toHaveAttribute('data-account-switch', /:-\d+$/);
+  await summary.focus();
+  if (initiallyOpen) { await page.keyboard.press('Enter'); await expect(note).toHaveAttribute('open'); }
+  else await expect(note).not.toHaveAttribute('open');
+  const original = await note.elementHandle();
+  await note.evaluate(node => {
+    (window as any).__poolSpaceChanges = 0;
+    new MutationObserver(records => { (window as any).__poolSpaceChanges += records.length; }).observe(node, { attributes: true, attributeFilter: ['open'] });
+  });
+  // Hold the real key through the DOM move; waiting until after done() misses WebKit's lost activation.
+  await page.keyboard.down('Space');
+  await page.evaluate(id => (window as any).__poolRuns[id].done(), id);
+  await expect(note).toHaveAttribute('data-account-switch', /:\d+$/);
+  expect(await note.evaluate(node => !!node.closest('#stream-region'))).toBe(false);
+  expect(await note.evaluate((node, original) => node === original, original)).toBe(true);
+  await expect(summary).toBeFocused();
+  await page.keyboard.up('Space');
+  await expect(note).toHaveJSProperty('open', !initiallyOpen);
+  expect(await page.evaluate(() => (window as any).__poolSpaceChanges)).toBe(1);
+  await expect(summary).toBeFocused();
+  // Auto-repeat must neither toggle again nor leave a delayed native keyup activation.
+  await page.keyboard.down('Space'); await page.keyboard.down('Space'); await page.keyboard.up('Space');
+  await expect(note).toHaveJSProperty('open', initiallyOpen);
+  expect(await page.evaluate(() => (window as any).__poolSpaceChanges)).toBe(2);
+  await expect(summary).toBeFocused();
+  const ignored = await summary.evaluate(summary => [
+    { metaKey: true }, { ctrlKey: true }, { altKey: true }, { shiftKey: true }, { isComposing: true }, { keyCode: 229 },
+  ].map(init => {
+    const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true, ...init });
+    summary.dispatchEvent(event); return event.defaultPrevented;
+  }));
+  expect(ignored).toEqual([false, false, false, false, false, false]);
+  await page.keyboard.press('Tab'); await expect(summary).not.toBeFocused();
+  await expect(note).toHaveJSProperty('open', initiallyOpen);
+  expect(await page.evaluate(() => (window as any).__poolSpaceChanges)).toBe(2);
+  await summary.click(); await expect(note).toHaveJSProperty('open', !initiallyOpen);
+  await summary.focus(); await page.keyboard.press('Enter');
+  await expect(note).toHaveJSProperty('open', initiallyOpen);
+  expect(await page.evaluate(() => (window as any).__poolSpaceChanges)).toBe(4);
+  expect(errors).toEqual([]);
+});
+
 test('account switch survives a midrun thread re-entry with an already persisted tail and a fresh mocked saved reload', async ({ page }) => {
   await openApp(page, twoAccounts);
   const id = await startPoolTurn(page);

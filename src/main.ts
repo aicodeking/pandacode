@@ -7078,6 +7078,13 @@ document.addEventListener('keydown', event => {
     }
     return;
   }
+  if (event.key === ' ' && !command && !event.altKey && !event.shiftKey && !isImeKey(event)) {
+    const summary = (event.target as Element).closest<HTMLElement>('details[data-account-switch] > summary');
+    if (summary) {
+      // Moving the retained notice at handoff cancels WebKit's delayed native Space activation.
+      event.preventDefault(); if (!event.repeat) summary.click(); return;
+    }
+  }
   // An Escape that cancels an IME conversion belongs to the IME: it never stops a run or clears a field.
   if (event.key === 'Escape' && isImeKey(event)) return;
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
