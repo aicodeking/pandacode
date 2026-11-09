@@ -1,5 +1,7 @@
 import './moodboards.css';
 import { call, preview } from './bridge';
+import { web } from './web-transport';
+import { webFiles } from './web-files';
 import { escape, icon, isImeKey } from './dom';
 
 export interface Moodboard { id: string; projectId: string; name: string; imageCount: number; updatedAt: number }
@@ -118,8 +120,11 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     await perform(async () => {
       try { for (let i = 0; i < files.length; i++) {
         report(`Adding image ${i + 1} of ${files.length}…`);
-        const dataUrl = await readData(files[i]);
-        const detail = await call<MoodboardDetail>('add_moodboard_image', { projectId: options.projectId, boardId, name: files[i].name || `Screenshot ${new Date().toLocaleTimeString()}`, dataUrl });
+        const file = files[i];
+        const uploaded = webFiles ? await webFiles.upload(file, 'attachment') : null;
+        const detail = uploaded
+          ? await call<MoodboardDetail>('import_moodboard_images', { projectId: options.projectId, boardId, paths: [uploaded.grant], names: [file.name || 'Image'] })
+          : await call<MoodboardDetail>('add_moodboard_image', { projectId: options.projectId, boardId, name: file.name || `Screenshot ${new Date().toLocaleTimeString()}`, dataUrl: await readData(file) });
         if (disposed) return;
         updateBoard(detail);
         if (selected?.id === boardId) selected = detail;
@@ -142,7 +147,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   }
   function showCreate(): void { createForm.hidden = false; nameInput.focus(); }
   async function chooseImages(): Promise<void> {
-    if (preview) { fileInput.click(); return; }
+    if (preview || web) { fileInput.click(); return; }
     const result = await (await import('@tauri-apps/plugin-dialog')).open({ title: 'Add images to moodboard', multiple: true, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (!disposed && result) await addPaths(Array.isArray(result) ? result : [result]);
   }
@@ -232,7 +237,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   }
   host.addEventListener('click', click); host.addEventListener('change', change); host.addEventListener('paste', paste); host.addEventListener('keydown', key);
   createForm.addEventListener('submit', createBoard); canvas.addEventListener('dragover', drag); canvas.addEventListener('dragleave', leave); canvas.addEventListener('drop', drop);
-  if (!preview) void import('@tauri-apps/api/webview').then(module => module.getCurrentWebview().onDragDropEvent(event => {
+  if (!preview && !web) void import('@tauri-apps/api/webview').then(module => module.getCurrentWebview().onDragDropEvent(event => {
     if (disposed || !selected) return;
     if (event.payload.type === 'over') canvas.classList.add('is-dragging');
     else if (event.payload.type === 'leave') canvas.classList.remove('is-dragging');

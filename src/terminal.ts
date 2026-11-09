@@ -1,5 +1,7 @@
 import { paletteTerminal } from './palette';
 import { call, subscribe } from './bridge';
+import { web } from './web-transport';
+import { WebTerminalRecovery, type TerminalFrame } from './web-terminal-recovery';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { currentTheme } from './theme';
@@ -71,11 +73,58 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(surface);
   if (surface.clientWidth && surface.clientHeight) fit.fit();
   let terminalId = '', exited = false, hasOutput = false, disposed = false, inserted = false;
-  // Each pending PTY owns its startup output. A busy existing tab must not
-  // consume another tab's queue before start_terminal returns that tab's ID.
+  let inputBlocked = Boolean(web), writeBlocked = false, recoveringOutput = Boolean(web), outputFailed = false;
+  const inputNotice = document.createElement('div'); inputNotice.hidden = true; inputNotice.setAttribute('role', 'alert');
+  inputNotice.style.cssText = 'display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.78rem';
+  const inputMessage = document.createElement('span');
+  const resumeInput = document.createElement('button'); resumeInput.type = 'button'; resumeInput.className = 'secondary-button'; resumeInput.textContent = 'Resume input';
+  inputNotice.append(inputMessage, resumeInput); frame.prepend(inputNotice);
+  const syncInputState = () => {
+    inputBlocked = writeBlocked || recoveringOutput || outputFailed;
+    if (web) terminal.options.disableStdin = inputBlocked || exited;
+    inputNotice.hidden = !web || !inputBlocked;
+    inputMessage.textContent = outputFailed ? 'Terminal output could not be recovered. Close and reopen the terminal.'
+      : recoveringOutput ? 'Reconnecting terminal output…'
+      : 'Terminal input delivery is uncertain. Check the remote output before resuming; previous input will not be sent again.';
+    resumeInput.hidden = !writeBlocked || recoveringOutput || outputFailed;
+    resumeInput.disabled = recoveringOutput || outputFailed;
+    if (insertButton) insertButton.disabled = inputBlocked || !hasOutput || exited || inserted;
+  };
+  const blockInput = (error: unknown) => {
+    if (disposed) return;
+    reportError(error);
+    if (web) { writeBlocked = true; syncInputState(); }
+  };
+  resumeInput.addEventListener('click', () => {
+    if (!web || disposed || !terminalId || recoveringOutput || outputFailed) return;
+    try { web.resetTerminalInput(terminalId); writeBlocked = false; syncInputState(); terminal.focus(); }
+    catch (error) { reportError(error); }
+  });
+  const showOutput = (data: string, exit: boolean, replace = false) => {
+    if (disposed) return;
+    // Queue RIS before the complete stream so pending xterm writes cannot land
+    // after a synchronous reset and duplicate the recovered terminal contents.
+    terminal.write(replace ? `\x1bc${data}` : data);
+    hasOutput = replace ? data.length > 0 : hasOutput || data.length > 0;
+    if (exit && (!exited || replace)) {
+      const alreadyExited = exited; exited = true;
+      terminal.write('\r\n\x1b[90mProcess exited. Close and reopen the terminal to start again.\x1b[0m\r\n');
+      if (!alreadyExited) window.dispatchEvent(new Event('pandacode:terminal-exit'));
+    }
+    syncInputState();
+  };
+  // Native startup output stays per PTY; web startup comes from its owned snapshot.
   const early = new Map<string, { terminalId: string; data: string; exit: boolean }>();
-  const handle = (event: { terminalId: string; data: string; exit?: boolean }) => {
-    if (!terminalId) {
+  const webRecovery = web ? new WebTerminalRecovery(
+    (data, exit) => showOutput(data, exit, true),
+    (data, exit) => showOutput(data, exit),
+    error => { if (!disposed) { outputFailed = true; recoveringOutput = false; syncInputState(); reportError(error); } },
+    () => { recoveringOutput = false; syncInputState(); },
+    () => { recoveringOutput = true; syncInputState(); },
+  ) : null;
+  syncInputState();
+  const handle = (event: TerminalFrame) => {
+    if (!terminalId && !web) {
       const previous = early.get(event.terminalId);
       early.set(event.terminalId, { terminalId: event.terminalId, data: ((previous?.data ?? '') + event.data).slice(-65536), exit: Boolean(previous?.exit || event.exit) });
       // Bound each native PTY's output independently and retain its exit marker
@@ -83,9 +132,8 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
       return;
     }
     if (event.terminalId !== terminalId || disposed) return;
-    terminal.write(event.data); hasOutput ||= event.data.length > 0;
-    if (event.exit) { exited = true; terminal.write('\r\n\x1b[90mProcess exited. Close and reopen the terminal to start again.\x1b[0m\r\n'); window.dispatchEvent(new Event('pandacode:terminal-exit')); }
-    if (insertButton) insertButton.disabled = !hasOutput || exited || inserted;
+    if (webRecovery?.consume(event)) return;
+    showOutput(event.data, Boolean(event.exit));
   };
   let unlisten: () => void;
   try {
@@ -95,9 +143,10 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     const { harness, runScript, runRequestId, ...workspace } = context;
     terminalId = await call<string>(runScript ? 'start_run_script_terminal' : harness ? 'start_harness_terminal' : 'start_terminal', { ...workspace, ...(runRequestId ? { requestId: runRequestId } : {}), cols: terminal.cols, rows: terminal.rows });
   } catch (error) { unlisten(); terminal.dispose(); frame.remove(); throw error; }
+  if (webRecovery) { webRecovery.begin(terminalId); try { await webRecovery.start(terminalId); } catch { /* visible recovery state requires reopening */ } }
   const pending = early.get(terminalId); early.clear(); if (pending) handle(pending);
   if (insertButton) insertButton.addEventListener('click', () => {
-    if (exited || disposed || !hasOutput || !command) return;
+    if (exited || disposed || inputBlocked || !hasOutput || !command) return;
     const revision = commandRevision, text = command;
     insertButton!.disabled = true; inserted = true;
     // Paste into the visible TUI composer only. Never send Enter automatically:
@@ -106,14 +155,17 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
       if (!disposed && revision === commandRevision) { insertButton!.textContent = 'Inserted · press Enter'; focus(); }
     }).catch(error => {
       if (!disposed && revision === commandRevision) { inserted = false; insertButton!.disabled = exited || !hasOutput; }
-      reportError(error);
+      blockInput(error);
     });
   });
   const refreshTheme = () => { terminal.options.theme = theme(); };
   refreshTheme();
   window.addEventListener('pandacode-theme-change', refreshTheme);
   window.addEventListener('pandacode-palette-change', refreshTheme);
-  const input = terminal.onData(data => { if (!exited && !disposed) void call('write_terminal', { terminalId, data }).catch(reportError); });
+  const runtimeReset = () => webRecovery?.pause();
+  const runtimeRestored = () => { if (webRecovery && terminalId) void webRecovery.start(terminalId).catch(() => {}); };
+  window.addEventListener('pandacode-web-runtime-reset', runtimeReset); window.addEventListener('pandacode-web-runtime-restored', runtimeRestored);
+  const input = terminal.onData(data => { if (!exited && !disposed && !inputBlocked) void call('write_terminal', { terminalId, data }).catch(blockInput); });
   let resizeFrame = 0;
   const resize = () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (disposed || !surface.clientWidth || !surface.clientHeight) return; fit.fit(); if (!exited) void call('resize_terminal', { terminalId, cols: terminal.cols, rows: terminal.rows }).catch(reportError); }); };
   const refreshSize = () => { terminal.options.fontSize = 12 * textScale(); resize(); };
@@ -129,10 +181,10 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     ++commandRevision; command = value; inserted = false; insertButton.hidden = false;
     insertButton.textContent = `Insert ${value.split(/\s/, 1)[0]}`;
     insertButton.setAttribute('aria-label', `Insert ${value} in the harness console`);
-    insertButton.disabled = exited || disposed || !hasOutput;
+    insertButton.disabled = inputBlocked || exited || disposed || !hasOutput;
   }, activity: () => exited || disposed ? Promise.resolve({ running: false, processNames: [], uncertain: false }) : call<TerminalActivity>('get_terminal_activity', { terminalId }), dispose: async () => {
     if (disposed) return; disposed = true;
-    window.removeEventListener('pandacode-theme-change', refreshTheme); window.removeEventListener('pandacode-palette-change', refreshTheme); window.removeEventListener('pandacode-ui-scale-change', refreshSize); observer.disconnect(); cancelAnimationFrame(resizeFrame); input.dispose(); unlisten(); terminal.dispose(); frame.remove(); await call('close_terminal', { terminalId });
+    window.removeEventListener('pandacode-web-runtime-reset', runtimeReset); window.removeEventListener('pandacode-web-runtime-restored', runtimeRestored); webRecovery?.dispose(); window.removeEventListener('pandacode-theme-change', refreshTheme); window.removeEventListener('pandacode-palette-change', refreshTheme); window.removeEventListener('pandacode-ui-scale-change', refreshSize); observer.disconnect(); cancelAnimationFrame(resizeFrame); input.dispose(); unlisten(); terminal.dispose(); frame.remove(); await call('close_terminal', { terminalId });
   } };
 }
 

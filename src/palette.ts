@@ -33,6 +33,11 @@ let wallpaperId: string | undefined;
 export const SKY_SCENE = 'sky';
 const SKY_ACCENT = '#3a80dc';
 let wallpaperColor: string | undefined;
+function restoreHostAccent(): void {
+  if (root.dataset.pandacodeWeb !== 'true') return;
+  const seed = root.dataset.pandacodeWallpaperAccentSeed;
+  wallpaperColor = seed && /^#[0-9a-f]{6}$/i.test(seed) ? seed : undefined;
+}
 const theme = () => (root.dataset.theme === 'light' ? 'light' : 'dark') as 'light' | 'dark';
 
 function persist(): void {
@@ -82,6 +87,7 @@ function apply(): void {
 }
 
 export const palette = {
+  reload(): void { state = read(); restoreHostAccent(); apply(); },
   get accent(): AccentChoice { return state.accent; },
   get vsix(): VsixTheme | null { return state.vsix; },
   get wallpaperColor(): string | undefined { return wallpaperColor; },
@@ -114,6 +120,10 @@ export const palette = {
 /** Re-read the saved palette and apply its cached colors without recomputing; the launcher calls this when the main window changes them. */
 export function restorePalette(): void {
   state = read();
+  restoreHostAccent();
+  // Browser snapshots carry a validated host color, never native derived CSS
+  // caches. Recompute from that seed even if this browser has an older cache.
+  if (root.dataset.pandacodeWeb === 'true') state = { ...state, cache: null };
   // An imported theme's colours come from the saved theme itself, so a derivation that changed reaches a palette saved before it.
   if (state.vsix) state = { ...state, cache: { key: `vsix:${state.vsix.id}`, ...vsixTokens(state.vsix) } };
   // Nothing saved yet, classic yellow or a fixed colour (a cache saved before its tone and status steps) is derived again: it costs nothing.

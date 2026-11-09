@@ -1,3 +1,4 @@
+import { releaseWebConsoles } from './bridge';
 import './simulator.css';
 import { icon } from './dom';
 import { androidOnly, isWindows } from './platform';
@@ -373,9 +374,9 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
 
   return {
     show(): void { if (visible) return; visible = true; watchPose(); device?.setActive(true); void refresh().then(() => device?.setActive(visible)); },
-    hide(): void { visible = false; clearInterval(poll); pumpGeneration++; device?.setActive(false); },
+    hide(): void { releaseWebConsoles('simulator'); visible = false; clearInterval(poll); pumpGeneration++; device?.setActive(false); },
     refresh,
-    dispose(): void {
+    dispose(): void { releaseWebConsoles('simulator');
       disposed = true; visible = false; clearInterval(poll); pumpGeneration++; themeWatch.disconnect();
       clearTimeout(typeTimer); clearTimeout(scrollTimer); device?.dispose(); root.replaceChildren();
     },

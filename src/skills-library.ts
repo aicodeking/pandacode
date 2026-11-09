@@ -5,6 +5,7 @@
 import './skills-library.css';
 import { escape } from './dom';
 import { infoMark } from './tooltip';
+import { webFiles } from './web-files';
 
 export type SkillKind = 'skill' | 'rule';
 export type SkillScope = 'user' | 'project';
@@ -51,6 +52,8 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
   let source: 'folder' | 'github' = 'folder';
   let pending: { id: string; harness: string; scope: SkillScope } | null = null;
   let note = '', error = '', busy = false, disposed = false, clearFields = false;
+  let pickedFolderGrant: string | null = null;
+  let pickedFolderName: string | null = null;
   const projects = () => options.projects?.() ?? [];
   const scopeArgs = (scope: SkillScope) => scope === 'project' ? { projectId } : {};
 
@@ -159,7 +162,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
           ${list.length ? `<select name="project" aria-label="Project for project scope"><option value="">User scope only</option>${list.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select>` : ''}
         </div>
         ${source === 'folder'
-          ? '<input name="path" aria-label="Folder or file path" placeholder="/path/to/skill-folder or rule.md" spellcheck="false" autocomplete="off">'
+          ? `<div class="skills-import-row"><input name="path" aria-label="Folder or file path" placeholder="/path/to/skill-folder or rule.md" spellcheck="false" autocomplete="off">${webFiles ? '<button type="button" class="secondary-button" data-action="pick-skill-folder">Choose folder</button>' : ''}</div>`
           : '<div class="skills-import-row"><input name="repo" aria-label="Repository" placeholder="owner/name" spellcheck="false" autocomplete="off"><input name="repoPath" aria-label="Path in repository" placeholder="skills/pdf" spellcheck="false" autocomplete="off"><input name="ref" aria-label="Branch, tag or commit" placeholder="Default branch" spellcheck="false" autocomplete="off"></div>'}
         <div class="skills-import-row skills-import-actions"><p class="skills-message" role="status">${escape(busy ? 'Working…' : note)}</p><button type="submit" class="secondary-button" ${busy ? 'disabled' : ''}>Import</button></div>
         <p class="skills-error" role="alert" ${error ? '' : 'hidden'}>${escape(error)}</p>
@@ -205,10 +208,17 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     const kind = String(data.get('kind') ?? 'skill') as SkillKind;
     const text = (name: string) => String(data.get(name) ?? '').trim();
     if (source === 'folder' && !text('path')) { error = 'Enter a folder or file path.'; draw(); return; }
+    if (source === 'folder' && webFiles && (!pickedFolderGrant || text('path') !== pickedFolderName)) {
+      error = 'Choose the folder with the picker before importing.'; draw(); return;
+    }
     if (source === 'github' && !text('repo')) { error = 'Enter the repository as owner/name.'; draw(); return; }
     void run(async () => {
+      const localPath = text('path');
+      const selectedGrant = source === 'folder' && webFiles ? pickedFolderGrant : null;
+      pickedFolderGrant = null;
+      pickedFolderName = null;
       const item = source === 'folder'
-        ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
+        ? await options.call<SkillItem>('skills_import_folder', { path: selectedGrant ?? localPath, kind })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
       return `Imported ${item.name}.${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
@@ -248,6 +258,26 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
   const onClick = (event: Event) => {
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
     if (!button) return;
+    if (button.dataset.action === 'pick-skill-folder') {
+      if (!webFiles) return;
+      const pickerSource = source;
+      const pathField = host.querySelector<HTMLInputElement>('input[name="path"]');
+      const valueBeforePick = pathField?.value ?? '';
+      void (async () => {
+        try {
+          const grant = await webFiles.pickFolder('folder');
+          const currentField = host.querySelector<HTMLInputElement>('input[name="path"]');
+          if (!grant || disposed || source !== pickerSource || currentField?.value !== valueBeforePick) return;
+          pickedFolderGrant = grant.grant;
+          pickedFolderName = grant.name;
+          if (currentField) currentField.value = grant.name;
+          note = `Selected ${grant.name}.`;
+          error = '';
+          draw();
+        } catch (failure) { error = message(failure); draw(); }
+      })();
+      return;
+    }
     if (button.dataset.action === 'discover') {
       void run(async () => {
         const found = (await options.call<SkillCatalogs>('skills_discover')).discovery;
@@ -268,8 +298,12 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
       const key = target.dataset.select;
       selected = target.checked ? new Set([...selected, key]) : new Set([...selected].filter(k => k !== key));
     }
-    if (target instanceof HTMLSelectElement && target.name === 'source') { source = target.value as typeof source; draw(); }
+    if (target instanceof HTMLSelectElement && target.name === 'source') { source = target.value as typeof source; pickedFolderGrant = null; pickedFolderName = null; draw(); }
     if (target instanceof HTMLSelectElement && target.name === 'project') { projectId = target.value; pending = null; void refresh(); }
+  };
+  const onInput = (event: Event) => {
+    const target = event.target as HTMLInputElement;
+    if (target.name === 'path') { pickedFolderGrant = null; pickedFolderName = null; }
   };
   const onSubmit = (event: Event) => {
     event.preventDefault();
@@ -278,6 +312,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
   };
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
+  host.addEventListener('input', onInput);
   host.addEventListener('submit', onSubmit);
   draw();
   void refresh();
@@ -285,6 +320,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     disposed = true;
     host.removeEventListener('click', onClick);
     host.removeEventListener('change', onChange);
+    host.removeEventListener('input', onInput);
     host.removeEventListener('submit', onSubmit);
   };
 }

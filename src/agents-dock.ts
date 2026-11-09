@@ -2,6 +2,7 @@ import './agents-dock.css';
 import { call, subscribe } from './bridge';
 import { icon } from './dom';
 import { materializeIn } from './motion';
+import { web } from './web-transport';
 
 export type AgentsDockStatus = 'running' | 'waiting-for-approval' | 'waiting-for-input';
 export interface AgentsDockAgent {
@@ -97,6 +98,8 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
   const list = host.querySelector<HTMLElement>('.agents-dock-list')!;
   const summary = host.querySelector<HTMLElement>('.agents-dock-summary')!;
   const pin = host.querySelector<HTMLButtonElement>('.agents-dock-pin')!;
+  // Pinning creates a native OS window; the in-page dock remains available in web mode.
+  pin.hidden = web !== null;
   let preferences = { ...DEFAULT_PREFERENCES };
   let snapshot: AgentsDockSnapshot = { agents: [] };
   let receivedAt = Date.now();

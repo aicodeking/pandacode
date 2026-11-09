@@ -40,6 +40,8 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+axum = { version = "=0.8.9", features = ["http1", "json", "tokio", "ws"] }
+getrandom = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "0.26"
 des = "0.8"
@@ -77,6 +79,7 @@ keyring = { version = "3", default-features = false, features = ["windows-native
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "2", features = ["v2_40"] }
+gtk = "0.18"
 cairo-rs = { version = "0.18", features = ["png"] }
 gio = "0.18"
 keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }

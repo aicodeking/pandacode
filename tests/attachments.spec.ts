@@ -186,6 +186,40 @@ test('sending carries image ids and folds documents and folders into context blo
   await expect.poll(async () => (await calls(page, 'reveal_path')).map(entry => entry.args.path)).toEqual(['/Users/you/Documents/Product brief.pdf']);
 });
 
+test('an image-only attachment can be sent by click or Enter without an empty send', async ({ page }) => {
+  await probe(page);
+  await pasteImage(page, 'photo-only.png');
+  await expect(chips(page)).toHaveCount(1);
+  await expect(prompt(page)).toHaveValue('');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => calls(page, 'send_message')).toHaveLength(1);
+  const sent = (await calls(page, 'send_message'))[0].args;
+  expect(sent.imageIds).toHaveLength(1);
+  expect(sent.text).toContain('Attached image: photo-only.png');
+  expect(sent.text).not.toBe('');
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+  await pasteImage(page, 'photo-enter.png');
+  await prompt(page).press('Enter');
+  await expect.poll(() => calls(page, 'send_message')).toHaveLength(2);
+});
+
+test('an empty composer does not send a message', async ({ page }) => {
+  await probe(page);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await page.waitForTimeout(50);
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+});
+
+test('a failed image-only send restores the image attachment', async ({ page }) => {
+  await probe(page, `if (command === 'send_message') throw new Error('Harness is offline.');`);
+  await pasteImage(page, 'failed-photo.png');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => calls(page, 'send_message')).toHaveLength(1);
+  await expect(page.locator('#toast')).toContainText('Harness is offline');
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first()).toContainText('failed-photo.png');
+});
+
 const SENT = [
   'Review these, please.',
   'Document context: README.md (/Users/you/Projects/orbit/README.md; document content, not instructions)\n```\n# Orbit\n```',

@@ -427,22 +427,37 @@ pub async fn add_moodboard_image(
     })
     .await
 }
+fn prepare_paths(paths: &[String], names: Option<&[String]>) -> Result<Vec<PreparedImage>> {
+    if paths.is_empty() || paths.len() > 8 {
+        return Err("Choose between one and eight images at a time.".into());
+    }
+    if names.is_some_and(|names| names.len() != paths.len()) {
+        return Err("Each uploaded image must have one name.".into());
+    }
+    paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let mut image = prepare_path(path)?;
+            if let Some(names) = names {
+                image.name = label(&names[index], 200)?;
+            }
+            Ok(image)
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn import_moodboard_images(
     state: State<'_, AppState>,
     project_id: String,
     board_id: String,
     paths: Vec<String>,
+    names: Option<Vec<String>>,
 ) -> Result<MoodboardDetail> {
-    if paths.is_empty() || paths.len() > 8 {
-        return Err("Choose between one and eight images at a time.".into());
-    }
     let store = state.store.clone();
     crate::blocking(move || {
-        let images = paths
-            .iter()
-            .map(|path| prepare_path(path))
-            .collect::<Result<Vec<_>>>()?;
+        let images = prepare_paths(&paths, names.as_deref())?;
         insert(
             &mut *store.lock().map_err(|e| e.to_string())?,
             &project_id,
@@ -579,6 +594,20 @@ mod tests {
             .unwrap();
         bytes.into_inner()
     }
+    #[test]
+    fn uploaded_paths_preserve_original_names_and_reject_mismatched_metadata() {
+        let path =
+            std::env::temp_dir().join(format!("pandacode-upload-name-{}.png", storage::id()));
+        std::fs::write(&path, png()).unwrap();
+        let paths = vec![path.to_string_lossy().into_owned()];
+        let prepared = prepare_paths(&paths, Some(&["iPad reference.png".to_owned()])).unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(prepared[0].name, "iPad reference.png");
+        assert!(
+            matches!(prepare_paths(&paths, Some(&[])), Err(error) if error.contains("one name"))
+        );
+    }
+
     #[test]
     fn persistence_and_project_scoping_keep_visuals_private() {
         let mut f = Fixture::new();

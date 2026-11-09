@@ -1,5 +1,6 @@
 import './agent-updates.css';
 import { call, subscribe } from './bridge';
+import { web } from './web-transport';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
@@ -144,17 +145,18 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       const check = dialogBody!.querySelector<HTMLButtonElement>('.agent-updates-check')!;
       check.disabled = Boolean(checking || pending.size); check.setAttribute('aria-busy', String(Boolean(checking)));
       const status = dialogBody!.querySelector<HTMLElement>('.agent-updates-status')!;
-      status.textContent = checkError || (checking ? 'Checking installed agents…' : 'Checks run every 6 hours. Updates start only when you choose Update.');
+      status.textContent = checkError || (checking ? 'Checking installed agents…' : web ? 'Automatic checks are managed by the host.' : 'Checks run every 6 hours. Updates start only when you choose Update.');
       status.classList.toggle('is-error', Boolean(checkError)); status.setAttribute('role', checkError ? 'alert' : 'status');
     }
     syncPopup();
   }
   function schedule(): void {
+    if (web) return;
     clearTimeout(timer);
     timer = window.setTimeout(backgroundCheck, Math.max(0, (lastCheck ? lastCheck + CHECK_INTERVAL : initialCheckAt) - Date.now()));
   }
   function backgroundCheck(): void {
-    if (disposed || document.hidden) return;
+    if (disposed || web || document.hidden) return;
     const next = lastCheck ? lastCheck + CHECK_INTERVAL : initialCheckAt;
     if (Date.now() < next) { schedule(); syncPopup(); return; }
     if (pending.size) return;

@@ -1,4 +1,5 @@
 import { preview } from './bridge';
+import { web } from './web-transport';
 import { icon } from './dom';
 import { appUpdates, describeUpdate, type UpdateMode } from './app-updates';
 
@@ -18,7 +19,8 @@ export function aboutSettingsHtml(): string {
   return `<div class="settings-group settings-about" aria-labelledby="settings-about-heading">
     <div class="setting-row"><div><strong id="settings-about-heading">About PandaCode</strong><small class="settings-about-version">Version …</small></div></div>
     <div class="setting-row"><div><strong>License</strong><small>Open source (MIT-based). No account, no telemetry.</small></div>${link('PandaCode License', PROJECT_LINKS.license)}</div>
-    <div class="setting-row settings-updates"><div><strong>Updates</strong><small class="settings-update-status" aria-live="polite">Checks GitHub Releases automatically.</small></div><div class="settings-row-actions"><button type="button" class="secondary-button settings-update-action" hidden></button>${link('Releases', PROJECT_LINKS.releases)}</div></div>
+    <div class="setting-row"><div><strong>Attribution</strong><small>This is a fork of PandaCode. The browser UI uses the host installation.</small></div>${link('PandaCode source', PROJECT_LINKS.repository)}</div>
+    <div class="setting-row settings-updates"><div><strong>Updates</strong><small class="settings-update-status" aria-live="polite">${web ? 'Browser updates are managed by the host.' : 'Checks GitHub Releases automatically.'}</small></div><div class="settings-row-actions"><button type="button" class="secondary-button settings-update-action" hidden></button>${link('Releases', PROJECT_LINKS.releases)}</div></div>
     <div class="setting-row settings-updates-auto"><div><strong>Update mode</strong><small>Automatic restarts when no agent is working; Notify me asks first.</small></div><select class="settings-select" data-update-mode aria-label="Update mode"><option value="automatic">Automatic</option><option value="notify">Notify me</option><option value="off">Off</option></select></div>
     <div class="setting-row"><div><strong>Source code</strong><small>Report bugs and follow development.</small></div><div class="settings-row-actions">${link('GitHub repository', PROJECT_LINKS.repository)}${link('Issues', PROJECT_LINKS.issues)}</div></div>
   </div>`;
@@ -27,6 +29,7 @@ export function aboutSettingsHtml(): string {
 /** Reads the bundle version from Tauri; the browser preview has no app bundle. */
 async function appVersion(): Promise<string> {
   if (preview) return 'Preview';
+  if (web) return document.documentElement.dataset.pandacodeVersion ?? 'Host version unavailable';
   return (await import('@tauri-apps/api/app')).getVersion();
 }
 
@@ -49,7 +52,7 @@ function mountUpdates(host: HTMLElement): () => void {
   const action = host.querySelector<HTMLButtonElement>('.settings-update-action')!;
   const modeSelect = host.querySelector<HTMLSelectElement>('[data-update-mode]')!;
   if (!updates?.supported) {
-    status.textContent = describeUpdate({ kind: 'off' }, 'off');
+    status.textContent = web ? 'Browser updates are managed by the host.' : describeUpdate({ kind: 'off' }, 'off');
     host.querySelector<HTMLElement>('.settings-updates-auto')?.remove();
     return () => {};
   }

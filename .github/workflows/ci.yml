@@ -32,6 +32,24 @@ jobs:
       - run: npm run test:release
       - run: npm run site:build
 
+  browser-workspace:
+    name: Browser workspace (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    env:
+      PW_WEB_ENGINE: ${{ matrix.engine }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', cache: npm }
+      - run: npm ci
+      - run: npx playwright install --with-deps "$PW_WEB_ENGINE"
+      - run: npx playwright test -c playwright.web.config.ts
+
   rust:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04

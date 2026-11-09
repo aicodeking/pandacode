@@ -53,6 +53,10 @@ import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
+import { web } from './web-transport';
+import { webFileName } from './web-files';
+import { validWebUiAction, type NativeWebUiAction } from './web-actions';
+window.addEventListener('pandacode-web-error', event => notify(String((event as CustomEvent).detail)));
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
 import { botAvatarHtml } from './bot-avatars';
@@ -115,7 +119,7 @@ import { councilNotice } from './council';
 import { MAX_IMAGES, mountPromptAttachments, type PromptImage } from './attachments';
 import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
-import { isMac, isWindows, shortcut } from './platform';
+import { isMac, isWindows, hostIsMac, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
 import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
@@ -141,7 +145,7 @@ type Stream = { body: TailText; thought: TailText; readonly text: string; readon
 /** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
 type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
-const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || isMac);
+const INSPECTOR_AVAILABLE = INSPECTOR_VIEWS.filter(view => view !== 'vm' || hostIsMac);
 let inspectorTabs = loadTabs(localStorage, INSPECTOR_AVAILABLE);
 /** Open files is the inspector's per-task editor view: shown only while the task has file tabs, never saved in the strip's order. */
 type PanelView = InspectorView | 'file';
@@ -491,7 +495,7 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
     await reloadSessions();
     teamToggles.delete(task.id); configuringSessions.delete(task.id);
     // "Turn on for new threads": a team starting on a thread with no messages yet starts Council with it.
-    if (on && saved && task.id === state.sessionId && !state.messages.length) void council.enableForNewThread(task.id);
+    if (!web && on && saved && task.id === state.sessionId && !state.messages.length) void council.enableForNewThread(task.id);
     if (task.id === state.sessionId) { if (render) renderComposer(); else syncTeamButton(); }
     return true;
   } finally {
@@ -655,6 +659,7 @@ async function openPullRequest(sessionId: string): Promise<void> {
 }
 /** After a turn, link the pull request the agent opened, if there is one. */
 async function detectPullRequest(sessionId: string): Promise<void> {
+  if (web) return; // The native host owns automatic runtime work.
   const task = state.sessions.find(s => s.id === sessionId);
   if (!task || !githubEnabled() || !github.connected(task.projectId)) return;
   try {
@@ -810,7 +815,7 @@ async function instruction(task: Session, text: string): Promise<void> {
   prompt.value = text; state.drafts.set(task.id, text); await send();
 }
 async function exportTask(task: Session, name?: string): Promise<void> {
-  if (!preview) {
+  if (!preview && !web) {
     const path = await (await import('@tauri-apps/plugin-dialog')).save({ title: 'Export task', defaultPath: name || `${task.title.replace(/[^a-z0-9 -]/gi, '').slice(0, 80) || 'task'}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }] });
     if (path) { await call('save_task_export', { sessionId: task.id, path }); notify('Task exported'); }
     return;
@@ -1055,6 +1060,16 @@ wallpapers.subscribe(() => sky.refresh());
 const syncPaletteWallpaper = () => palette.setWallpaper(wallpapers.enabled ? wallpapers.currentId : SKY_SCENE);
 wallpapers.subscribe(syncPaletteWallpaper); syncPaletteWallpaper();
 window.addEventListener('pandacode-theme-change', () => palette.refresh());
+window.addEventListener('pandacode-appearance-reload', () => {
+  setTheme(localStorage.getItem('pandacode.theme') === 'light' ? 'light' : 'dark');
+  palette.reload();
+  const scale = Number(localStorage.getItem('pandacode.uiScale') ?? 1);
+  setUiScale(scale);
+  document.body.classList.toggle('compact', localStorage.getItem('pandacode.compact') === 'true');
+  try { wallpapers.update(JSON.parse(localStorage.getItem('pandacode.wallpaperPreferences') ?? '{}'), false); } catch { /* Invalid preferences were rejected at the boundary. */ }
+});
+wallpapers.subscribe(() => window.dispatchEvent(new Event('pandacode-wallpaper-change')));
+
 const disposeSidebarResizing = initializeSidebarResizing($('.workspace'), $('.sidebar'));
 const disposeInspectorResizing = initializeSidebarResizing($('.workspace'), $('#inspector'), true);
 const disposeUiSizing = initializeUiSizing();
@@ -2793,7 +2808,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${web || s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${web || s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3803,6 +3818,10 @@ onQueueReorder(async (row, ids) => {
 async function queueAction(action: string, element: HTMLElement): Promise<void> {
   const s = actionTask(element); if (!s) return;
   const id = element.closest<HTMLElement>('[data-queue-id]')?.dataset.queueId ?? '';
+  if (web && ['queue-steer', 'queue-send-now', 'queue-resume'].includes(action)) {
+    await web.call('web_ui_action', { action, sessionId: s.id, ...(action === 'queue-resume' ? {} : { id }) });
+    return;
+  }
   if (action === 'queue-steer') return steerQueued(s, id).catch(error => { if (remoteRefusal(s, error)) return; if (!isRunning(s.id)) run(dispatchQueue(s.id)); throw error; });
   if (action === 'queue-send-now') return sendQueuedNow(s, id);
   if (action === 'queue-edit') { state.queueEditing = id; refreshComposer(s); document.querySelector<HTMLTextAreaElement>('.queue-edit')?.focus(); return; }
@@ -3829,6 +3848,7 @@ async function sendQueuedNow(s: Session, id: string): Promise<void> {
 }
 /** Runs the optional turn-end project check (Settings → Agents) for a clean finish, queueing one repair on failure. */
 async function maybeTurnChecks(id: string): Promise<void> {
+  if (web) return; // The native host owns automatic runtime work.
   await ensureBotProjects();
   const current = () => state.sessions.find(item => item.id === id);
   const task = current();
@@ -3846,6 +3866,7 @@ async function maybeTurnChecks(id: string): Promise<void> {
 }
 /** Sends a task's next queued message once it is idle and its queue is not held (Send now skips the hold). */
 async function dispatchQueue(id: string): Promise<void> {
+  if (web) return; // Observing a run must never submit another turn.
   if (!queueOf(id).length) return;
   await ensureBotProjects();
   const task = state.sessions.find(item => item.id === id);
@@ -3898,6 +3919,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
 let limitTimer = 0;
 /** Continues limited tasks set to resume at reset; overdue ones (after a restart) continue at once. */
 function scheduleLimitResumes(): void {
+  if (web) return; // The native host owns automatic runtime work.
   window.clearTimeout(limitTimer);
   const waiting = state.sessions.filter(task => task.resumeAtReset && task.limitedUntil && !task.archived);
   if (!waiting.length) return;
@@ -3909,6 +3931,7 @@ function scheduleLimitResumes(): void {
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
+  if (web) { await web.call('web_ui_action', { action: 'continue-after-limit', sessionId: task.id, text }); return; }
   if (teamHeld(task.id)) return clearLimit(task);
   // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
   const finishing = finishingStreams.get(task.id);
@@ -4040,9 +4063,9 @@ async function send(): Promise<void> {
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
-  const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
+  const hasAttachments = Boolean(state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId));
   if (councilFirstSends.has(s.id)) return;
-  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
+  if ((!text && !hasAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || state.messagesLoading || state.messagesError || configuringSessions.has(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
   const fresh = !s.remoteDevice && newTaskView();
@@ -4055,7 +4078,7 @@ async function send(): Promise<void> {
   if (cloud) return sendCloud(s, cloud, draft, text);
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
   // Enter meanwhile; a failure is shown, and the message still goes.
-  if (!s.remoteDevice && !state.messages.length && !bot) {
+  if (!web && !s.remoteDevice && !state.messages.length && !bot) {
     councilFirstSends.add(s.id);
     try { const failed = await council.enableForNewThread(s.id); if (failed) notify(`Council did not turn on: ${failed}`); }
     finally { councilFirstSends.delete(s.id); }
@@ -4722,7 +4745,7 @@ function syncSimulatorPanel(): void {
 }
 /** The VM panel stays mounted once opened; hiding it stops its frames. */
 function syncVmPanel(): void {
-  const wanted = isMac && state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed;
+  const wanted = hostIsMac && state.inspector && state.inspectorTab === 'vm' && !inspectorSuppressed;
   $('#vm-panel').hidden = !wanted;
   if (wanted) { $('#inspector-content').hidden = true; $('#inspector-refresh').hidden = true; }
   if (!wanted) { vmPanel?.hide(); return; }
@@ -5201,7 +5224,7 @@ async function openSavedDiff(sessionId: string, changes: TurnChanges, path?: str
   }
 }
 function showOpenProject(forTask = false): void {
-  modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="/Users/you/Projects/my-app" autocomplete="off" spellcheck="false" required><p class="field-help">Enter a full path or choose Browse.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
+  modal('Open project', `<form id="open-project-form"><label class="field-label" for="project-folder">Project folder</label><input id="project-folder" name="path" placeholder="${web ? 'Choose a folder on the host' : '/Users/you/Projects/my-app'}" ${web ? 'readonly' : ''} autocomplete="off" spellcheck="false" required><p class="field-help">${web ? 'Choose Browse to select an available host folder.' : 'Enter a full path or choose Browse.'}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="browse-project">${icon('folder')}Browse…</button><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Open project</button></div></form>`);
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
 }
 async function changeTaskProject(projectId: string): Promise<void> {
@@ -6757,6 +6780,7 @@ function renderBotFailover(): void {
 /** A model picked during a bot's turn takes over once the turn ends; if the next turn already
  *  started (a queued message), it stays pending and is tried again at that turn's end. */
 async function applyNextBotModel(sessionId: string): Promise<void> {
+  if (web) return; // The native host owns automatic runtime work.
   const next = botThread.nextModel(sessionId);
   if (!next || isRunning(sessionId)) return;
   try {
@@ -6845,7 +6869,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'browse-project': {
       const input = document.querySelector<HTMLInputElement>('#project-folder'); if (!input) break;
       (element as HTMLButtonElement).disabled = true;
-      try { const path = await chooseFolder(); if (path && input.isConnected) { input.value = path; input.focus(); } }
+      try { const path = await chooseFolder(); if (path && input.isConnected) { if (web) { input.dataset.webFolderGrant = path; input.value = webFileName(path) || 'Selected host folder'; } else input.value = path; input.focus(); } }
       finally { if (element.isConnected) (element as HTMLButtonElement).disabled = false; }
       break;
     }
@@ -7060,7 +7084,7 @@ document.addEventListener('submit', event => {
     try {
       if (form.id === 'board-task-form') { await saveBoardTaskForm(form, data); }
       else if (form.id === 'open-project-form') {
-        const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
+        const path = web ? (form.querySelector<HTMLInputElement>('#project-folder')?.dataset.webFolderGrant || '') : String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
       } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
       else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
@@ -7092,7 +7116,7 @@ document.addEventListener('change', event => {
   if (input.id === 'turn-checks') turnChecksSetEnabled(input.checked);
   // A switch toggles natively (the data-action click path cancels the default), then saves.
   if (input.classList.contains('limit-resume-switch')) run(limitAction('limit-resume-at-reset', input));
-  if (input.id === 'compact-mode') { document.body.classList.toggle('compact', input.checked); localStorage.setItem('pandacode.compact', String(input.checked)); }
+  if (input.id === 'compact-mode') { document.body.classList.toggle('compact', input.checked); localStorage.setItem('pandacode.compact', String(input.checked)); window.dispatchEvent(new Event('pandacode-compact-change')); }
   if (input.id === 'expand-tool-activity') {
     localStorage.setItem('pandacode.activityExpanded', String(input.checked));
     document.querySelectorAll<HTMLDetailsElement>('.turn-activity:not(.live-activity), .tool-group:not(.is-steps .tool-group)').forEach(group => { group.open = input.checked; });
@@ -7100,6 +7124,7 @@ document.addEventListener('change', event => {
 });
 mountTextUndo();
 document.addEventListener('keydown', event => {
+  if (web && document.querySelector('dialog[open]:not(#dialog)')) return;
   if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || isImeKey(event) || event.defaultPrevented || event.code !== 'KeyB' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
   event.preventDefault(); event.stopPropagation(); toggleSidebar();
 }, true);
@@ -7112,7 +7137,7 @@ const threadFind = createThreadFind({
 });
 document.addEventListener('keydown', event => {
   // IME conversions own their keys; letter shortcuts otherwise follow the physical layout.
-  if (event.defaultPrevented || isImeKey(event)) return;
+  if (event.defaultPrevented || isImeKey(event) || (web && document.querySelector('dialog[open]:not(#dialog)'))) return;
   const command = (event.metaKey || event.ctrlKey) && !event.altKey;
   const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
   if (command && event.code === 'KeyK') { event.preventDefault(); showCommands(); return; }
@@ -7286,6 +7311,64 @@ async function boot(): Promise<void> {
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
   if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
 }
+// Only the native main window executes this finite set of UI-owned runtime actions.
+window.addEventListener('pandacode-web-ui-action', event => {
+  if (web || !('__TAURI_INTERNALS__' in window)) return;
+  const detail = (event as CustomEvent<NativeWebUiAction>).detail;
+  if (!detail || !validWebUiAction(detail.args)) { detail?.reject?.(new Error('Invalid browser workspace action')); return; }
+  void (async () => {
+    if (bootPending) await bootPending;
+    const { args } = detail;
+    await reloadSessions();
+    const task = state.sessions.find(task => task.id === args.sessionId);
+    if (!task || task.archived) throw new Error('This task is unavailable. Refresh the workspace.');
+    const queue = await call<QueuedMessage[]>('queue_list');
+    setQueue(task.id, queue.filter(entry => entry.sessionId === task.id));
+    switch (args.action) {
+      case 'queue-resume': state.queueHolds.delete(task.id); refreshComposer(task); await dispatchQueue(task.id); break;
+      case 'queue-send-now': await sendQueuedNow(task, args.id); break;
+      case 'queue-steer': await steerQueued(task, args.id); break;
+      case 'continue-after-limit': await continueAfterLimit(task, args.text); break;
+    }
+    detail.resolve(null);
+  })().catch(detail.reject);
+});
+// A runtime snapshot replaces active UI state atomically before ordered WS replay resumes.
+let webWorkspaceRefresh: Promise<void> | undefined;
+window.addEventListener('pandacode-web-runtime-reset', () => {
+  if (!web) return;
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  if (prompt?.dataset.sessionId) state.drafts.set(prompt.dataset.sessionId, prompt.value);
+  for (const current of state.streams.values()) clearAgentInputs(current);
+  state.streams.clear(); finishingStreams.clear();
+});
+window.addEventListener('pandacode-web-runtime-restored', () => {
+  if (!web || webWorkspaceRefresh) return;
+  webWorkspaceRefresh = (async () => {
+    const selectedId = state.sessionId;
+    [state.projects, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Provider[]>('list_providers')]);
+    await reloadSessions();
+    const queued = await call<QueuedMessage[]>('queue_list');
+    state.queues.clear();
+    for (const entry of queued) state.queues.set(entry.sessionId, [...queueOf(entry.sessionId), entry]);
+    // Refresh the existing thread in place. Re-opening it clears attachments,
+    // resets scroll-follow and restores a stale caret while users keep typing.
+    if (selectedId && state.sessionId === selectedId && state.sessions.some(task => task.id === selectedId)) {
+      const generation = state.generation, requestedMessages = state.messages;
+      const requestedStream = state.streams.get(selectedId), requestedFinishing = finishingStreams.get(selectedId);
+      const [page, details] = await Promise.all([latestMessagePage(selectedId), call<Session>('get_task', { sessionId: selectedId }), loadTeam(selectedId)]);
+      if (generation === state.generation && state.sessionId === selectedId && state.messages === requestedMessages) {
+        const loaded = state.sessions.find(task => task.id === selectedId);
+        if (loaded && state.streams.get(selectedId) === requestedStream && finishingStreams.get(selectedId) === requestedFinishing) {
+          Object.assign(loaded, details, { pinned: loaded.pinned, sidebarOrder: loaded.sidebarOrder });
+          if (state.streams.has(selectedId)) { loaded.taskStage = 'in_progress'; loaded.status = 'running'; }
+        }
+        setMessagePage(page);
+      }
+    }
+    renderNavigation(); renderHeader(); renderTranscript(true); renderComposer(); renderInspector();
+  })().catch(report).finally(() => { webWorkspaceRefresh = undefined; });
+});
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify }));
 const agentUpdates = initializeAgentUpdates({
@@ -7299,4 +7382,4 @@ bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListe
 run(bootPending);
 // The diff engine (module, highlighter workers, themes) starts right after the first paint.
 preloadDiffsAfterPaint();
-if (!preview) initializeNativeAppearance();
+if (!preview && !web) initializeNativeAppearance();

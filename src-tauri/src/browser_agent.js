@@ -2,6 +2,7 @@
       const a = __PANDACODE_ARGS__;
       try {
         if (a.action === 'read') {
+          const clip = (value, limit) => String(value || '').slice(0, limit);
           const visible = el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
           const selector = el => {
             if (el.id) return '#' + CSS.escape(el.id);
@@ -14,7 +15,7 @@
           };
           const elements=[...document.querySelectorAll('a,button,input,textarea,select,[role=button]')].filter(visible).slice(0,100)
             .map(el=>({selector:selector(el),tag:el.localName,label:(el.getAttribute('aria-label')||el.textContent||el.getAttribute('placeholder')||'').slice(0,180),type:el.getAttribute('type'),disabled:!!el.disabled})).filter(el=>el.selector && el.selector.length<=2048);
-          return JSON.stringify({url:location.href,title:document.title,text:(document.body?.innerText||'').slice(0,24000),elements});
+          return JSON.stringify({url:clip(location.href,4096),title:clip(document.title,300),text:(document.body?.innerText||'').slice(0,24000),elements});
         }
         const el=document.querySelector(a.selector);
         if(!el || !el.getClientRects().length || getComputedStyle(el).visibility === 'hidden' || el.disabled) throw new Error('Element is unavailable or disabled. Read the page again.');

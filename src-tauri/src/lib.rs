@@ -73,6 +73,7 @@ mod terminal_preferences;
 mod turn_changes;
 mod usage_keychain;
 mod usage_ledger;
+mod web_gateway;
 mod workspace;
 mod jj;
 mod tray;
@@ -3925,6 +3926,8 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         terminals: Arc::new(Mutex::new(HashMap::new())),
         shutdown: AtomicU8::new(0),
     });
+    // Register the browser event journal before any background service can emit active UI state.
+    web_gateway::setup(app.handle())?;
     cloud_agents::init(app.handle());
     remote::setup(app.handle(), &dir);
     app.manage(browser::BrowserState::default());
@@ -4107,6 +4110,14 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                web_gateway::web_gateway_info,
+                web_gateway::web_gateway_pair,
+                web_gateway::web_gateway_sessions,
+                web_gateway::web_gateway_set_session_limit,
+                web_gateway::web_gateway_revoke_session,
+                web_gateway::web_gateway_ready,
+                web_gateway::web_gateway_resolve,
+                web_gateway::web_gateway_preferences_publish,
                 agents_dock::agents_dock_snapshot,
                 agents_dock::agents_dock_preferences,
                 agents_dock::agents_dock_save_preferences,

@@ -1,5 +1,7 @@
 import './ui-size.css';
 import { preview } from './bridge';
+import { web } from './web-transport';
+const browserSizing = preview || Boolean(web);
 import { commandKey } from './platform';
 
 /* Interface size. In the app it zooms the whole webview, like Safari's ⌘+, so icons, spacing and
@@ -17,10 +19,10 @@ try {
 apply();
 
 function apply(): void {
-  document.documentElement.style.setProperty('--ui-scale', String(preview ? scale : 1));
+  document.documentElement.style.setProperty('--ui-scale', String(browserSizing ? scale : 1));
   // The title-bar row keeps its on-screen height so it stays level with the native window buttons.
   document.documentElement.style.setProperty('--page-zoom', String(pageZoom()));
-  if (preview) return;
+  if (browserSizing) return;
   void import('@tauri-apps/api/webview')
     .then(({ getCurrentWebview }) => getCurrentWebview().setZoom(scale))
     .catch(cause => console.error('Setting the interface size failed', cause));
@@ -28,9 +30,9 @@ function apply(): void {
 
 export function uiScale(): number { return scale; }
 /** CSS pixels → window points: native views placed over the page multiply by this. */
-export function pageZoom(): number { return preview ? 1 : scale; }
+export function pageZoom(): number { return browserSizing ? 1 : scale; }
 /** How much the root font is scaled on top of the page zoom (only in the browser preview). */
-export function textScale(): number { return preview ? scale : 1; }
+export function textScale(): number { return browserSizing ? scale : 1; }
 
 export function setUiScale(value: number): void {
   if (!Number.isFinite(value)) return;
@@ -59,7 +61,7 @@ export function initializeUiSizing(): () => void {
     if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || event.defaultPrevented) return;
     const direction = event.key === '+' || event.key === '=' ? 1 : event.key === '-' ? -1 : 0;
     if (!direction && event.key !== '0') return;
-    if (preview && !navigator.webdriver) return;
+    if (browserSizing && !navigator.webdriver) return;
     event.preventDefault();
     // Capture before terminal/menu handlers so the shortcut never becomes agent input.
     event.stopPropagation();

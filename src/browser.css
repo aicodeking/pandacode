@@ -82,3 +82,16 @@
 @media(prefers-reduced-motion:reduce){.browser-server,.browser-tool,.browser-address{transition:none}}
 @media(prefers-contrast:more){.browser-servers{outline:1px solid var(--border);outline-offset:-1px}.browser-address{box-shadow:inset 0 0 0 1px var(--border)}}
 @media(prefers-reduced-transparency:reduce){html[data-theme] .workspace.browser-open>.inspector:has(.browser-panel){background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+/* Browser clients render the native-owned viewport as an aspect-correct image. */
+.web-browser-panel{display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto;gap:8px;height:100%;min-height:0;min-width:0;padding:10px;box-sizing:border-box;overflow:hidden}
+.web-browser-panel form,.web-browser-controls{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.web-browser-panel input{flex:1;min-width:100px;border:1px solid var(--border);border-radius:var(--ds-radius-control);background:var(--panel);color:var(--text);padding:7px}
+.web-browser-panel button{min-height:36px;border:1px solid var(--border);border-radius:var(--ds-radius-control);background:var(--panel);color:var(--text);padding:6px 9px}
+.web-browser-panel button:disabled{opacity:.45}
+.web-browser-panel [role=status]{margin:0;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.web-browser-frame-wrap{min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;border:1px solid var(--border);background:var(--panel)}
+.web-browser-frame-wrap img{display:block;width:100%;height:auto;touch-action:none;user-select:none}
+.web-browser-frame-wrap img[hidden]{display:none}
+.web-browser-panel nav:empty{display:none}
+.web-browser-panel nav{display:flex;flex-wrap:wrap;gap:6px;max-height:100px;overflow:auto}
+@media(pointer:coarse){.web-browser-panel button{min-height:44px}}

@@ -1,0 +1,5 @@
+{
+  "identifier": "ai.pandacode.webe2e",
+  "productName": "PandaCode WebE2E",
+  "build": { "devUrl": null, "beforeBuildCommand": "npm run build" }
+}

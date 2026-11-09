@@ -1,3 +1,4 @@
+import { releaseWebConsoles } from './bridge';
 import './vm-panel.css';
 import { escape, icon } from './dom';
 import { cloudName, createOptions, machines, type CloudConnection, type CloudMachine, type Machine } from './vm-machines';
@@ -252,8 +253,8 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
 
   return {
     show(): void { if (visible) return; visible = true; void refresh(); },
-    hide(): void { visible = false; pump++; flushTyping(); },
+    hide(): void { releaseWebConsoles('vm'); releaseWebConsoles('cloud'); visible = false; pump++; flushTyping(); },
     refresh,
-    dispose(): void { disposed = true; pump++; root.replaceChildren(); },
+    dispose(): void { releaseWebConsoles('vm'); releaseWebConsoles('cloud'); disposed = true; pump++; root.replaceChildren(); },
   };
 }
