@@ -309,3 +309,69 @@ test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async 
     await expect(picker(page).locator(`.provider-logo[data-provider="${id}"]:not(.provider-logo-tile)`).first()).toBeVisible();
   }
 });
+
+/** Saved/native account assignments are metadata, never extra picker choices. */
+async function accountFixture(page: Page, pooled: boolean) {
+  const connections = ['claude', 'codex', 'kimi'].flatMap(provider => Array.from({ length: 6 }, (_, i) => ({
+    id: `${provider}-${i}`, provider, name: `${provider} account ${i}`, args: [], env: {}, secretEnv: [], configDir: `/tmp/pandacode-fixture/${provider}-${i}`, revision: 1,
+  })));
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const body = source.replace(/switch\s*\(command\)\s*\{/, `(window.__accountCalls ??= []).push({ command, args: structuredClone(args) }); switch (command) {`);
+    await route.fulfill({ response, body: `${body}\npreviewConnections = ${JSON.stringify({ connections, tasks: { 'session-1': 'claude-0' }, pools: pooled ? ['claude', 'codex'] : [], poolExcluded: [] })};\nwindow.__pandacodePreviewUrl = import.meta.url;\nwindow.__accountSnapshot = () => structuredClone(previewConnections);\n` });
+  });
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+}
+const accountCalls = (page: Page, command: string) => page.evaluate(name => (window as any).__accountCalls.filter((c: any) => c.command === name), command);
+
+for (const pooled of [false, true]) test(`accounts never duplicate harness tabs, models or search hits with pooling ${pooled ? 'on' : 'off'}`, async ({ page }) => {
+  await accountFixture(page, pooled);
+  await trigger(page).click();
+  const tabs = picker(page).getByRole('tablist', { name: 'Harnesses' }).getByRole('tab');
+  const labels = await tabs.evaluateAll(nodes => nodes.map(node => node.textContent));
+  expect(labels.filter(label => label?.includes('account'))).toEqual([]);
+  expect(new Set(labels).size).toBe(labels.length);
+  for (const name of ['Claude Code', 'Codex', 'Kimi Code']) await expect(picker(page).getByRole('tab', { name, exact: true })).toHaveCount(1);
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName('Claude Code · Claude Sonnet 5');
+  const options = await picker(page).getByRole('option').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+  expect(new Set(options).size).toBe(options.length);
+  await search(page).fill('sonne');
+  await expect(picker(page).getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true })).toHaveCount(1);
+  const hits = await picker(page).getByRole('option').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label')));
+  expect(new Set(hits).size).toBe(hits.length);
+  expect(hits.some(label => label?.includes('account'))).toBe(false);
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).locator('.model-menu-count')).toHaveText('1');
+  expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
+});
+
+test('changing model within a harness keeps its native account binding and resumable conversation', async ({ page }) => {
+  await accountFixture(page, true);
+  const before = await task(page);
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await expect.poll(async () => (await task(page)).model).toBe('opus');
+  const after = await task(page);
+  expect(after.resumeId).toBe(before.resumeId);
+  expect(await accountCalls(page, 'connection_assign')).toEqual([]);
+  expect(await page.evaluate(() => (window as any).__accountSnapshot().tasks['session-1'])).toBe('claude-0');
+  await trigger(page).click();
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName('Claude Code · Claude Opus 5');
+});
+
+
+test('a true harness switch clears a stale account binding after configuring the new harness', async ({ page }) => {
+  await accountFixture(page, true);
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+  await expect.poll(async () => (await task(page)).provider).toBe('codex');
+  await expect.poll(() => accountCalls(page, 'connection_assign')).toEqual([{ command: 'connection_assign', args: { sessionId: 'session-1', connectionId: null } }]);
+  const calls = await page.evaluate(() => (window as any).__accountCalls.filter((c: any) => ['configure_session', 'connection_assign'].includes(c.command)).map((c: any) => c.command));
+  expect(calls).toEqual(['configure_session', 'connection_assign']);
+  expect(await page.evaluate(() => (window as any).__accountSnapshot().tasks['session-1'])).toBeUndefined();
+  expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
+});

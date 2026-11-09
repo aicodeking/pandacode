@@ -1,5 +1,5 @@
 import './agent-usage.css';
-import { accountPlan, accountState, accountWindows, meterTone, resetsAt, type PoolMember } from './account-status';
+import { accountSignedOut, accountEmail, accountStatusIcon, accountPlan, accountWindows, meterTone, resetsAt, type PoolMember } from './account-status';
 import { call, preview } from './bridge';
 import type { ConnectionSnapshot } from './connections';
 import { escape, icon } from './dom';
@@ -21,6 +21,7 @@ export interface AgentUsage {
   provider: ProviderId;
   status: 'ready' | 'unavailable' | 'signedOut' | 'error' | 'unsupported';
   windows: UsageWindow[];
+  email?: string | null;
   plan?: string | null;
   message?: string | null;
   checkedAt: number;
@@ -49,19 +50,6 @@ function peak(result: AgentUsage | undefined): number | null {
 function shownWindows(provider: ProviderId, result: AgentUsage | undefined): UsageWindow[] {
   return POOLED.includes(provider) ? accountWindows(result) : validWindows(result);
 }
-/** '5-hour' or 'weekly' for the summary line. */
-function windowName(label: string): string {
-  return /5.?h|five/i.test(label) ? '5-hour' : /week/i.test(label) ? 'weekly' : label.replace(/\s+window$/i, '').toLowerCase();
-}
-/** One line to compare accounts by: the fullest window, named, with that window's own reset. */
-function summaryLine(provider: ProviderId, result: AgentUsage | undefined): string {
-  const windows = shownWindows(provider, result);
-  if (!windows.length) return '';
-  const top = windows.reduce((a, b) => b.usedPercent > a.usedPercent ? b : a);
-  const at = top.resetsAt ? Date.parse(top.resetsAt) : NaN;
-  const percent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(Math.min(100, Math.max(0, top.usedPercent)));
-  return `Peak ${percent}% · ${windowName(top.label)}${Number.isFinite(at) ? ` ${resetsAt(at)}` : ''}`;
-}
 const SIGNED_OUT = 'Sign in from Settings → Providers.';
 function signedOutResult(provider: ProviderId): AgentUsage {
   return { provider, status: 'signedOut', windows: [], plan: null, message: SIGNED_OUT, checkedAt: 0, stale: false };
@@ -76,8 +64,8 @@ function renderSameLogin(scope: HTMLElement, name: string): void {
   body.removeAttribute('role');
   body.innerHTML = `<p class="usage-same-login">Same login as ${escape(name)}. Its usage is shown there.</p>`;
 }
-function accountHeading(id: string, name: string, titled: boolean): string {
-  return `<div class="usage-account-heading" data-account="${escape(id)}"><div class="usage-account-title"><h4${id ? '' : ' class="usage-connection-default"'}${titled ? '' : ' hidden'}>${escape(name)}</h4><p class="usage-account-who"></p></div><div class="usage-account-meta"><span class="usage-pool-chip"></span><span class="usage-account-summary"></span></div></div>`;
+function accountHeading(id: string, name: string): string {
+  return `<div class="usage-account-heading" data-account="${escape(id)}"><div class="usage-account-title"><h4${id ? '' : ' class="usage-connection-default"'} data-setup-name="${escape(name)}">${escape(name)}</h4><p class="usage-account-who"></p></div><div class="usage-account-meta"><span class="usage-pool-chip"></span><span class="usage-account-summary"></span></div></div>`;
 }
 function pricingNote(ledger: Ledger): string {
   const when = ledger.pricing.fetchedAt ? new Date(ledger.pricing.fetchedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
@@ -101,7 +89,6 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   const limits = new Map<ProviderId, AgentUsage>();
   const cards = new Map<ProviderId, HTMLElement>();
   const accounts = new Map<string, Account>();
-  let pooled: string[] = [];
   let ledger: Ledger | null = null, ledgerError: string | null = null, ledgerPending = false, prompts: PromptActivity | null = null;
   let range: Range = 'month', breakdown: 'model' | 'day' = 'model', tab: Tab = 'overview';
   let summaryCache: { ledger: Ledger; range: Range; summary: Summary } | null = null;
@@ -127,29 +114,49 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   for (const provider of installed) {
     const card = document.createElement('section'); card.className = 'usage-panel usage-card'; card.hidden = true;
     card.id = `usage-panel-${provider.id}`; card.setAttribute('role', 'tabpanel'); card.setAttribute('aria-label', provider.name);
-    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3>${POOLED.includes(provider.id) ? '' : '<span class="usage-plan"></span>'}<span class="usage-card-checked"></span></header>${POOLED.includes(provider.id) ? accountHeading('', 'Default setup', false) : ''}<div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
+    card.innerHTML = `<header class="usage-card-heading">${providerLogo(provider.id)}<h3>${escape(provider.name)}</h3>${POOLED.includes(provider.id) ? '' : '<span class="usage-plan"></span>'}<span class="usage-card-checked"></span></header>${POOLED.includes(provider.id) ? accountHeading('', 'Default setup') : ''}<div class="usage-card-body" role="status">Checking limits…</div><div class="usage-card-cost"></div><div class="usage-card-calendar"></div>`;
     host.insertBefore(card, footer); cards.set(provider.id, card);
   }
   // Named connections (issue #137): each is read through its own config folder and environment.
   const snapshotReady = call<ConnectionSnapshot>('connections_list');
   const connectionsReady = snapshotReady.then(snapshot => {
     if (disposed) return [];
-    pooled = snapshot.pools ?? [];
     const named = snapshot.connections.filter(c => cards.has(c.provider));
     for (const connection of named) {
       const card = cards.get(connection.provider)!;
-      if (!card.querySelector('.usage-account-heading[data-account=""]')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', accountHeading('', 'Default setup', true));
+      if (!card.querySelector('.usage-account-heading[data-account=""]')) card.querySelector('.usage-card-body')!.insertAdjacentHTML('beforebegin', accountHeading('', 'Default setup'));
       card.querySelector<HTMLElement>('.usage-connection-default')!.hidden = false;
       const section = document.createElement('section'); section.className = 'usage-connection'; section.dataset.connection = connection.id; section.setAttribute('aria-label', connection.name);
-      section.innerHTML = `${accountHeading(connection.id, connection.name, true)}<div class="usage-card-body" role="status">Checking limits…</div>`;
+      section.innerHTML = `${accountHeading(connection.id, connection.name)}<div class="usage-card-body" role="status">Checking limits…</div>`;
       card.querySelector('.usage-card-cost')!.before(section);
       renderAccount(connection.provider, '');
     }
     for (const provider of POOLED) if (cards.has(provider)) renderAccount(provider, '');
     return named;
   }).catch(() => []);
-  // Email, plan, sign-in and pool state per account: read locally, once per view. Signed-out accounts skip agent_usage.
-  const membersReady = new Map(POOLED.filter(provider => cards.has(provider)).map(provider => [provider, call<PoolMember[]>('account_pool_status', { provider }).then(members => Array.isArray(members) ? members : []).catch(() => [] as PoolMember[])]));
+  // Email, plan, sign-in and pool state per account: read locally on mount and Refresh. Signed-out accounts skip agent_usage.
+  const memberGeneration = new Map<ProviderId, number>();
+  const readMembers = (provider: ProviderId): Promise<PoolMember[]> => {
+    const generation = (memberGeneration.get(provider) ?? 0) + 1;
+    memberGeneration.set(provider, generation);
+    return call<PoolMember[]>('account_pool_status', { provider })
+      .then(members => memberGeneration.get(provider) === generation && Array.isArray(members) ? members : [])
+      .catch(() => [] as PoolMember[]);
+  };
+  const membersReady = new Map(POOLED.filter(provider => cards.has(provider)).map(provider => [provider, readMembers(provider)]));
+  async function refreshMembers(): Promise<void> {
+    await Promise.all(POOLED.filter(provider => cards.has(provider)).map(async provider => {
+      const request = readMembers(provider);
+      membersReady.set(provider, request);
+      const members = await request;
+      if (disposed) return;
+      for (const key of [...accounts.keys()]) if (key.startsWith(`${provider}/`)) accounts.delete(key);
+      for (const member of members) {
+        accounts.set(`${provider}/${member.id}`, { member });
+        renderAccount(provider, member.id);
+      }
+    }));
+  }
   const memberOf = async (provider: ProviderId, id: string) => (await membersReady.get(provider))?.find(member => member.id === id);
   const signedOut = async (provider: ProviderId, id: string) => (await memberOf(provider, id))?.signedIn === false;
   for (const [provider, members] of membersReady) {
@@ -162,12 +169,20 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     const heading = cards.get(provider)?.querySelector<HTMLElement>(`.usage-account-heading[data-account="${CSS.escape(id)}"]`);
     if (!heading) return;
     const { usage, member } = accounts.get(`${provider}/${id}`) ?? {};
-    heading.querySelector('.usage-account-who')!.textContent = [member?.email, accountPlan(member, usage)].filter(Boolean).join(' · ');
-    // The summary only speaks up near a limit: a limited account's chip already gives its reset.
-    const health = member ? accountState(member, usage) : null;
-    heading.querySelector('.usage-account-summary')!.textContent = health?.tone === 'near' ? summaryLine(provider, usage) : '';
-    const state = member && pooled.includes(provider) ? health : null;
-    heading.querySelector('.usage-pool-chip')!.innerHTML = state ? `<span class="usage-pool-dot"${state.tone ? ` data-state-tone="${state.tone}"` : ''} aria-hidden="true"></span>${escape(state.text)}` : '';
+    heading.querySelector('.usage-account-who')!.toggleAttribute('data-identity-unknown', !accountEmail(member, usage));
+    heading.querySelector('.usage-account-who')!.textContent = accountEmail(member, usage) || (accountSignedOut(member, usage) ? 'Not signed in' : 'Email not available');
+    const title = heading.querySelector<HTMLElement>('h4')!;
+    title.textContent = [title.dataset.setupName, accountPlan(member, usage)].filter(Boolean).join(' · ');
+    heading.querySelector('.usage-account-summary')!.textContent = '';
+    const status = heading.querySelector<HTMLElement>('.usage-pool-chip')!;
+    if (member) {
+      const template = document.createElement('template');
+      template.innerHTML = accountStatusIcon(member, usage, 'usage-pool-chip');
+      const next = template.content.firstElementChild!;
+      for (const attribute of [...status.attributes]) if (!next.hasAttribute(attribute.name)) status.removeAttribute(attribute.name);
+      for (const attribute of [...next.attributes]) status.setAttribute(attribute.name, attribute.value);
+      status.innerHTML = next.innerHTML;
+    }
   }
   function setUsage(provider: ProviderId, id: string, usage: AgentUsage): void {
     accounts.set(`${provider}/${id}`, { ...accounts.get(`${provider}/${id}`), usage });
@@ -294,12 +309,15 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
   }
   async function load(force: boolean): Promise<void> {
     if (pending || disposed || !installed.length) return;
+    const restoreRefreshFocus = document.activeElement === refresh;
     pending = true; refresh.disabled = true; refresh.setAttribute('aria-busy', 'true');
     footer.textContent = 'Checking account limits…';
     const estimate = loadLedger(force);
+    if (force) await refreshMembers();
     await loadLimits(force);
     if (disposed) return;
     pending = false; refresh.disabled = false; refresh.removeAttribute('aria-busy');
+    if (restoreRefreshFocus && document.activeElement === document.body) refresh.focus({ preventScroll: true });
     footer.textContent = 'Updated on demand';
     await estimate;
   }

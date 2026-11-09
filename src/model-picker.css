@@ -23,8 +23,6 @@ html[data-theme] .model-menu-search input{flex:1;min-width:0;height:100%;padding
 .model-menu-rail-heading{padding:var(--space-2) var(--space-2) var(--space-1);color:var(--muted);font-size:var(--ds-text-chip)}
 .model-menu-tab{position:relative;display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);color:var(--ds-row-ink);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking);text-align:left;white-space:nowrap}
 .model-menu-tab+.model-menu-tab{margin-top:1px}
-.model-menu-tab.is-connection{padding-left:calc(var(--space-2) + var(--icon-md) + var(--space-2))}
-.model-menu-tab.is-connection>.provider-logo{display:none}
 .model-menu-tab>:is(.provider-logo,.icon){width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
 .model-menu-tab>.icon{color:var(--muted)}
 .model-menu-tab-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
@@ -50,7 +48,7 @@ html[data-theme] .model-menu-tab.is-dim:not(:hover,[aria-selected="true"]){color
 .model-menu-option{display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);text-align:left;white-space:nowrap;color:var(--ds-row-ink);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking)}
 .model-menu-option>.provider-logo{width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
 .model-menu-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
-/* The meta (a context size, a harness) stays whole and the name truncates, so the column never shrinks to a stub; the cap only bites a very long connection name. */
+/* The meta (a context size, a harness) stays whole and the name truncates, so the column never shrinks to a stub. */
 .model-menu-meta{flex:none;max-width:45%;min-width:0;margin-left:auto;padding-left:var(--space-2);overflow:hidden;text-overflow:ellipsis;text-align:right;color:var(--muted);font-size:var(--ds-text-chip);letter-spacing:0;font-variant-numeric:tabular-nums}
 .model-menu-option>.model-menu-check{width:var(--icon-sm);height:var(--icon-sm);flex-shrink:0;margin-left:auto;color:var(--text)}
 .model-menu-meta+.model-menu-check{margin-left:0}
@@ -98,8 +96,6 @@ html[data-theme] .model-menu-tab.is-dim:not(:hover,[aria-selected="true"]){color
 @media (max-width:519px){
   .model-menu{--model-rail:36px}
   .model-menu-tab{justify-content:center;padding:0}
-  .model-menu-tab.is-connection{padding:0}
-  .model-menu-tab.is-connection>.provider-logo{display:block;opacity:.6}
   .model-menu-tab :is(.model-menu-tab-label,.model-menu-count),.model-menu-rail-heading{display:none}
   .model-menu-tab.has-current::after{content:"";position:absolute;top:4px;right:4px;width:5px;height:5px;border-radius:50%;background:currentColor}
   .model-menu-effort-row{grid-template-columns:minmax(0,1fr)}

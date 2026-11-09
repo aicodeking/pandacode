@@ -1,4 +1,5 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-note';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
@@ -130,7 +131,8 @@ import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
+type LiveAccountSwitch = Message & { eventSeen?: boolean };
+type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; accountSwitches: LiveAccountSwitch[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
 /** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
 type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
@@ -1110,7 +1112,7 @@ function stream(id: string): Stream {
   if (!s) {
     finishingStreams.delete(id);
     const now = Date.now();
-    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
+    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], accountSwitches: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
     state.streams.set(id, s);
   }
   return s;
@@ -1148,8 +1150,8 @@ function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
   const named = teams.get(s.id)?.config;
   if (named?.rosterOnly && named.name) return named.name;
-  const model = selectedModel(s), connection = taskConnection(s);
-  const name = connection ? `${connection.name} · ${model.name === 'Default' ? 'Default' : model.name}` : model.name === 'Default' ? 'Default model' : model.name;
+  const model = selectedModel(s);
+  const name = model.name === 'Default' ? 'Default model' : model.name;
   const effort = withEffort && effortLabel(s);
   return effort ? `${name} · ${effort}` : name;
 }
@@ -1693,14 +1695,16 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   // Until the fresh page is in, the saved rows stay alone: a wake's exchange joins its live card only once its message is known.
   const live = tilePages.has(id) ? state.streams.get(id) : undefined;
   let messages = page.messages;
-  if (live) { let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; }); messages = messages.slice(0, lastUser + 1); }
+  if (live) messages = liveVisibleMessages(messages, live);
   const key = `${messages.length}:${messages.at(-1)?.id ?? ''}:${live ? 'live' : ''}`;
   if (rows.dataset.key !== key) {
+    const switches = captureAccountSwitches(rows);
     rows.dataset.key = key;
     const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
     const turns = mergeLeadTurns(groupTurns(messages));
     const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
     rows.innerHTML = `${saved.map(turn => turnHtml(turn, id, false, thread)).join('')}${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`;
+    restoreAccountSwitches(rows, switches);
     rows.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
     const byId = new Map(messages.map(message => [String(message.id), message]));
     rows.querySelectorAll<HTMLElement>('[data-markdown]').forEach(node => { const message = byId.get(node.dataset.markdown!); if (message) void markdown(node, message.content, scroller).catch(report); });
@@ -1709,6 +1713,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const slot = rows.querySelector<HTMLElement>('.thread-mirror-live');
   if (!slot) return;
   if (!live) { slot.replaceChildren(); return; }
+  paintAccountSwitches(slot.querySelector<HTMLElement>('.live-account-switches')!, live.accountSwitches);
   const records = liveToolRecords(live);
   slot.querySelector<HTMLElement>('.turn-activity-label')!.innerHTML = records.length ? foldedLabelHtml(records) : 'Thinking';
   slot.querySelector<HTMLElement>('.thread-mirror-time')!.innerHTML = timeHtml(Date.now() - live.startedAt + Number(slot.dataset.earlierMs), true);
@@ -1720,7 +1725,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -1783,6 +1788,7 @@ function renderTranscript(preservePosition = false): void {
   const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
+  const switches = captureAccountSwitches(transcript);
   const liveTurn = transcript.querySelector<HTMLElement>('#stream-region .live-activity[open]:not([data-folded])');
   const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
   const readingTool = readingTranscriptTool();
@@ -1881,6 +1887,7 @@ function renderTranscript(preservePosition = false): void {
   else followTranscript();
   // After every restore and the pin, so the saved card is measured where it will stay.
   if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
+  restoreAccountSwitches(transcript, switches);
   if (bot) {
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
@@ -2116,7 +2123,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
   }
   if (m.role === 'status') return renderToolStatus(m.content);
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
-  if (m.role === 'system') return `<p class="message-note">${escape(m.content)}</p>`;
+  if (m.role === 'system') return accountSwitchHtml(m) ?? `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
   return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
@@ -2199,12 +2206,66 @@ function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
     }
   });
 }
-function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
-  if ((state.streams.has(sessionId) || finishingStreams.has(sessionId)) && !wakeHolds.has(sessionId)) {
-    let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; });
-    return messages.slice(0, lastUser + 1);
+function accountSwitchHtml(message: Message): string | null {
+  const detail = accountSwitchDetail(message.content);
+  return detail === null ? null : `<details class="account-switch-note" data-account-switch="${escape(message.sessionId)}:${message.id}" data-account-switch-session="${escape(message.sessionId)}"><summary>${icon('refresh')}<span>Account switched</span>${icon('chevron')}</summary><p>${escape(detail)}</p></details>`;
+}
+type AccountSwitchView = { node: HTMLDetailsElement; focused: boolean };
+const captureAccountSwitches = (root: ParentNode): AccountSwitchView[] => [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].map(node => ({ node, focused: node.querySelector('summary') === document.activeElement }));
+function takeAccountSwitch(views: AccountSwitchView[], key: string, sessionId: string, detail: string, keys: Set<string>): AccountSwitchView | undefined {
+  let index = views.findIndex(view => view.node.dataset.accountSwitch === key);
+  // A transient event becomes a saved row. Match occurrences, never all equal prose across turns.
+  if (index < 0) for (let i = views.length - 1; i >= 0; i--) {
+    const view = views[i];
+    if (!keys.has(view.node.dataset.accountSwitch!) && view.node.dataset.accountSwitchSession === sessionId && view.node.querySelector('p')?.textContent === detail && (/:-\d+$/.test(view.node.dataset.accountSwitch!) || /:-\d+$/.test(key))) { index = i; break; }
   }
-  return messages.slice();
+  return index < 0 ? undefined : views.splice(index, 1)[0];
+}
+function restoreAccountSwitches(root: ParentNode, views: AccountSwitchView[], departing?: Element): void {
+  const notes = [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].filter(note => !departing?.contains(note)), keys = new Set(notes.map(note => note.dataset.accountSwitch!));
+  for (const fresh of notes.reverse()) {
+    const view = takeAccountSwitch(views, fresh.dataset.accountSwitch!, fresh.dataset.accountSwitchSession!, fresh.querySelector('p')!.textContent!, keys);
+    if (!view || view.node === fresh) continue;
+    view.node.dataset.accountSwitch = fresh.dataset.accountSwitch;
+    fresh.replaceWith(view.node);
+    if (view.focused) view.node.querySelector('summary')!.focus({ preventScroll: true });
+  }
+}
+function paintAccountSwitches(host: HTMLElement, messages: LiveAccountSwitch[]): void {
+  const views = captureAccountSwitches(host), keys = new Set(messages.map(message => `${message.sessionId}:${message.id}`));
+  const notes = [...messages].reverse().map(message => {
+    const key = `${message.sessionId}:${message.id}`, detail = accountSwitchDetail(message.content)!;
+    const view = takeAccountSwitch(views, key, message.sessionId, detail, keys);
+    let node = view?.node;
+    if (!node) { const template = document.createElement('template'); template.innerHTML = accountSwitchHtml(message)!; node = template.content.firstElementChild as HTMLDetailsElement; }
+    node.dataset.accountSwitch = key;
+    return { node, focused: view?.focused };
+  }).reverse();
+  notes.forEach(({ node, focused }, index) => {
+    if (host.children[index] !== node) { host.insertBefore(node, host.children[index] ?? null); if (focused) node.querySelector('summary')!.focus({ preventScroll: true }); }
+  });
+  for (const view of views) view.node.remove();
+}
+/** Keep saved pool notes from the hidden streaming tail, including a run opened midway through. */
+function liveVisibleMessages(messages: Message[], current: Stream): Message[] {
+  let boundary = -1; messages.forEach((message, index) => { if (message.role === 'user' || message.role === 'coordination' || message.role === 'changes') boundary = index; });
+  const pending = [...current.accountSwitches], saved: LiveAccountSwitch[] = [];
+  for (const message of messages.slice(boundary + 1)) {
+    const detail = message.role === 'system' ? accountSwitchDetail(message.content) : null;
+    if (detail === null) continue;
+    const content = ACCOUNT_SWITCH_PREFIX + detail;
+    const index = pending.findIndex(note => note.id === message.id || note.content === content);
+    const previous = index < 0 ? undefined : pending.splice(index, 1)[0];
+    saved.push({ ...message, content, eventSeen: previous?.eventSeen ?? message.createdAt < current.startedAt });
+  }
+  const notes = [...saved, ...pending];
+  if (notes.length !== current.accountSwitches.length || notes.some((note, index) => note.id !== current.accountSwitches[index].id || note.content !== current.accountSwitches[index].content)) current.revision++;
+  current.accountSwitches = notes;
+  return messages.slice(0, boundary + 1);
+}
+function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
+  const current = state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
+  return current && !wakeHolds.has(sessionId) ? liveVisibleMessages(messages, current) : messages.slice();
 }
 function renderStream(): void {
   if (!transcriptVisible() || wakeHolds.has(state.sessionId)) { updateWorkTimer(); return; }
@@ -2231,8 +2292,11 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
+    const switches = captureAccountSwitches(region);
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+    paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
+    restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
@@ -2244,6 +2308,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   paintLiveHeader(activity, current, finishing ? finishing.finishedAt - workStart(current) : undefined, answered);
   scheduleAnswerFolds(answered, main ? 'main' : sessionId, main ? renderStream : () => paintStream(region, sessionId, transcript));
   if (region.dataset.revision !== String(current.revision)) {
+    paintAccountSwitches(parts.accountSwitches, current.accountSwitches);
     paintLiveActivity(region, current, transcript, context);
     const errors = parts.errors;
     const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
@@ -2299,7 +2364,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
 }
 type StreamParts = {
   activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
-  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
+  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; accountSwitches: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
 };
 /** renderStream's elements, kept until the region's markup is rebuilt. */
 const streamParts = new WeakMap<HTMLElement, StreamParts>();
@@ -2312,7 +2377,7 @@ function queryStreamParts(region: HTMLElement): StreamParts {
   return {
     activity: part<HTMLDetailsElement>('.turn-activity'), thinking, thought: thinking.lastElementChild as HTMLElement,
     tools: part('.live-tools'), status: part('.live-status'), message: part('.live-message'), streaming: part('.streaming-label'),
-    output: part('.live-text'), errors: part('.live-errors'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
+    output: part('.live-text'), errors: part('.live-errors'), accountSwitches: part('.live-account-switches'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
   };
 }
 const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
@@ -4025,11 +4090,14 @@ const btwPanel = new BtwPanel({
   visible: (sideId, messages) => visibleMessages(sideId, messages),
   renderRows: (log, region, side, visible, all, follow) => {
     const toolViews = captureTools(log), groupViews = captureToolGroups(log), turnViews = captureTurns(log), changeViews = captureChangeCards(log);
+    const switches = captureAccountSwitches(log);
     const previous = new Map([...log.querySelectorAll<HTMLElement>('[data-markdown]')].map(node => [node.dataset.markdown!, node]));
     for (const row of [...log.children]) if (row !== region) row.remove();
     region.insertAdjacentHTML('beforebegin', turnRowsHtml(side.id, visible, { messages: all, provider: side.provider }));
     paintSavedMarkdown(log, all, previous, workspaceContext(side), follow);
     restoreTurns(log, turnViews); restoreToolGroups(log, groupViews); restoreChangeCards(log, changeViews); restoreTools(log, toolViews);
+    // A finished turn's live notes leave with the stream region; the saved rows inherit them.
+    restoreAccountSwitches(log, switches, state.streams.has(side.id) || finishingStreams.has(side.id) ? undefined : region);
   },
   paintStream: (region, sideId, log) => paintStream(region, sideId, log),
   aboveHtml: side => {
@@ -4094,15 +4162,14 @@ async function btwPanelQueue(side: Session, text: string): Promise<void> {
 /* Model, effort and permissions picked in the panel before a side thread exists: kept per main thread
  * on a stand-in task and applied to the side thread createBtw makes, before its first message. */
 const BTW_DRAFT = 'btw-draft:';
-type BtwDraft = Session & { connection?: string | null };
-const btwDrafts = new Map<string, BtwDraft>();
+const btwDrafts = new Map<string, Session>();
 const isBtwDraft = (task: Session): boolean => task.id.startsWith(BTW_DRAFT);
-function btwDraftTask(): BtwDraft | undefined {
+function btwDraftTask(): Session | undefined {
   const main = session();
   return main && (btwDrafts.get(main.id) ?? { ...main, id: BTW_DRAFT + main.id, status: 'idle', contextUsage: null, title: 'Side thread' });
 }
 /** Records a pick on the stand-in task; the next side thread starts with it. */
-function saveBtwDraft(task: Session, change: Partial<BtwDraft>): void {
+function saveBtwDraft(task: Session, change: Partial<Session>): void {
   const mainId = task.id.slice(BTW_DRAFT.length);
   // createBtw is applying (then clearing) the picks; a late pick from a picker opened before the send would vanish.
   if (btwSending.has(mainId)) throw new Error('The side thread is starting. Change it once it has started.');
@@ -4119,7 +4186,6 @@ async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
   };
   let current = side;
   if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model }));
-  if (draft.connection !== undefined && draft.connection !== (namedConnections.tasks[current.id] ?? null)) namedConnections = await step('connection', () => call<typeof namedConnections>('connection_assign', { sessionId: current.id, connectionId: draft.connection }));
   if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null }));
   if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); current = { ...current, mode: draft.mode }; }
   return current;
@@ -4294,17 +4360,24 @@ function completeTurnChanges(event: AgentEvent): void {
 function materializeTurn(sessionId: string, changes: TurnChanges): void {
   const current = state.streams.get(sessionId);
   if (current) current.pendingChanges = undefined;
-  if (sessionId === state.sessionId && !state.messages.some(message => message.turnChanges?.id === changes.id)) {
-    const messages = visibleMessages();
+  const page = tilePages.get(sessionId) ?? threadPages.get(sessionId);
+  const existing = sessionId === state.sessionId ? state.messages : page?.messages;
+  if (existing && !existing.some(message => message.turnChanges?.id === changes.id)) {
+    const messages = current ? liveVisibleMessages(existing, current) : existing.slice();
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
       for (const entry of current.tools) messages.push({ id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now() });
       if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
+      messages.push(...current.accountSwitches);
     }
     messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
-    state.messages = messages;
+    if (sessionId === state.sessionId) state.messages = messages;
+    else {
+      tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
+      if (threadPages.has(sessionId)) threadPages.set(sessionId, { messages, hasOlder: page!.hasOlder, chars: messages.reduce((total, message) => total + message.content.length, 0) });
+    }
   }
-  if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
+  if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.accountSwitches = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
   if (sessionId === state.sessionId) {
     renderTranscript();
     // A task on another computer has its messages copied when the run ends; its `done` reloads them.
@@ -4326,7 +4399,7 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
   if (sessionId !== state.sessionId || botForThread()) return;
   const generation = state.generation;
   const endHold = (): void => { if (wakeHolds.get(sessionId) === timer) { clearTimeout(timer); wakeHolds.delete(sessionId); } };
-  const timer = window.setTimeout(() => { endHold(); renderStream(); }, WAKE_LOAD_HOLD_MS);
+  const timer = window.setTimeout(() => { endHold(); renderTranscript(); }, WAKE_LOAD_HOLD_MS);
   clearTimeout(wakeHolds.get(sessionId));
   wakeHolds.set(sessionId, timer);
   // Only the newest page: a wake's coordination message is saved just before its run starts, so it is there. A run
@@ -4342,7 +4415,7 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
     const page = newest.hasOlder && known !== undefined && newest.messages[0]?.id > known ? await latestMessagePage(sessionId) : newest;
     if (!fresh()) return;
     endHold(); setMessagePage(page); renderTranscript();
-  }).catch(report).finally(() => { if (wakeHolds.get(sessionId) === timer) { endHold(); renderStream(); } });
+  }).catch(report).finally(() => { if (wakeHolds.get(sessionId) === timer) { endHold(); renderTranscript(); } });
 }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
@@ -4441,6 +4514,19 @@ function onAgent(event: AgentEvent): void {
   if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
   const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
   if (firstEvent) loadWakeExchange(event.sessionId, current);
+  if ((event.kind as string) === 'note') {
+    const pool = (event.data as { accountPool?: { connectionId?: unknown } } | undefined)?.accountPool;
+    const marked = pool && (pool.connectionId === null || typeof pool.connectionId === 'string');
+    const detail = accountSwitchDetail(event.text) ?? (marked && !event.text.startsWith(ACCOUNT_SWITCH_PREFIX) && event.text.trim() ? event.text : null);
+    if (detail !== null) {
+      const content = ACCOUNT_SWITCH_PREFIX + detail;
+      const saved = current.accountSwitches.find(note => !note.eventSeen && note.content === content);
+      if (saved) saved.eventSeen = true;
+      else current.accountSwitches.push({ id: transientId--, sessionId: event.sessionId, role: 'system', content, createdAt: Date.now(), eventSeen: true });
+      current.revision++;
+      if (event.sessionId === state.sessionId) announce('Account switched');
+    }
+  }
   let becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
   if (event.kind === 'text') {
@@ -4499,6 +4585,7 @@ function onAgent(event: AgentEvent): void {
     if (firstEvent && event.sessionId === state.sessionId && !document.hidden) { renderHeader(); if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false) renderComposer(); }
     scheduleNavigation();
   }
+  if (firstEvent && event.sessionId === state.sessionId && !wakeHolds.has(event.sessionId)) renderTranscript();
   if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
@@ -5124,8 +5211,6 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
-    // Connections are this computer's; a task on another computer uses that host's setup.
-    connections: device ? [] : namedConnections.connections, currentConnection: device ? null : isBtwDraft(selected) ? (selected as BtwDraft).connection ?? null : taskConnection(selected)?.id ?? null,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
@@ -5142,14 +5227,14 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         }
       } finally { configuringSessions.delete(selected.id); }
     },
-    onSelect: async (providerId, model, connection) => {
+    onSelect: async (providerId, model) => {
       if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
-      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null, connection: connection ?? null }); return; }
+      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named agent team, back to a single agent.
@@ -5165,7 +5250,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (!device && (connection ?? null) !== (namedConnections.tasks[selected.id] ?? null)) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: connection });
+        // Same-harness model choices keep the account and its resumable conversation.
+        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {
           if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
           localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
@@ -5263,7 +5349,9 @@ async function createChat(from?: Session): Promise<void> {
   try {
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
-    const connection = from && taskConnection(from)?.id;
+    // Fresh pooled conversations choose their own account when the native run starts.
+    const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
+    const connection = from && !pooled && taskConnection(from)?.id;
     if (connection) namedConnections = await call<typeof namedConnections>('connection_assign', { sessionId: created.id, connectionId: connection });
     state.projects = await call<Project[]>('list_projects');
   } finally { creatingTask = false; }

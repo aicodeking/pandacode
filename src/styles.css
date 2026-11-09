@@ -282,6 +282,17 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 @media(prefers-contrast:more){.tool-activity pre{border:1px solid var(--text);background:var(--bg)}.tool-activity-note,.tool-activity-section h4,.tool-activity-hint,.tool-activity-status{color:var(--text)}}
 .tool-extra{font-size:var(--text-2xs);background:var(--raised);padding:0 4px;border-radius:var(--radius-xs)}
 .message-note{margin:0 0 20px;color:var(--muted);font-size:var(--thread-font);font-style:italic}
+.account-switch-note{min-width:0;max-width:100%;margin:16px 0;color:var(--muted);font-size:var(--text-sm);line-height:1.6}
+.account-switch-note>summary{display:flex;align-items:center;justify-content:center;gap:7px;width:fit-content;min-width:0;max-width:100%;margin:0 auto;padding:3px 0;cursor:pointer;list-style:none;border-radius:var(--radius-xs)}
+.account-switch-note>summary::-webkit-details-marker{display:none}
+.account-switch-note>summary>span{min-width:0;overflow-wrap:anywhere}
+.account-switch-note>summary>.icon{width:15px;height:15px;flex:none}
+.account-switch-note[open]>summary>.icon:last-child{rotate:90deg}
+.account-switch-note>summary:hover{color:var(--text)}
+.account-switch-note>summary:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.account-switch-note>p{min-width:0;max-width:70ch;margin:8px auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.work-area[data-tiles]>.conversation-pane .account-switch-note{margin-inline:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}
+@media(min-width:651px){.work-area>.conversation-pane .account-switch-note{margin-inline:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}}
 .message-error{display:flex;gap:9px;padding:12px;margin-bottom:20px;color:var(--danger);background:var(--tone-danger-bg);border-radius:var(--radius-sm);font-size:var(--thread-font)}
 .composer-area{padding:0 30px 17px;margin:0 auto;width:100%;max-width:950px;flex-shrink:0}
 .composer{border:1px solid transparent;border-radius:var(--radius-md);background:var(--bg);box-shadow:0 2px 5px rgb(0 0 0 / .025), 0 8px 24px rgb(0 0 0 / .035);transition:border-color var(--ds-ease-in) ease-out,box-shadow var(--ds-ease-in) ease-out}
