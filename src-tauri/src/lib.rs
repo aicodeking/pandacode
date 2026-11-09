@@ -1071,13 +1071,14 @@ fn persist_turn_changes(
     store: &Mutex<Store>,
     sid: &str,
     capture: turn_changes::Captured,
+    last_write: i64,
 ) {
     let change_id = capture.summary.id.clone();
     match store
         .lock()
         .map_err(|e| e.to_string())
         .and_then(|store| {
-            let message_id = turn_changes::persist(&store, sid, capture)?;
+            let message_id = turn_changes::persist_dated(&store, sid, capture, last_write)?;
             Ok((message_id, turn_changes::summary(&store, sid, &change_id)?))
         })
     {
@@ -2324,10 +2325,13 @@ async fn launch_operation_admitted(
                         tracker
                             .lock()
                             .ok()
-                            .and_then(|mut tracker| tracker.boundary())
+                            .and_then(|mut tracker| {
+                                let last_write = tracker.last_write();
+                                tracker.boundary().map(|capture| (capture, last_write))
+                            })
                     });
-                    if let Some(capture) = capture {
-                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture);
+                    if let Some((capture, last_write)) = capture {
+                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture, last_write);
                     }
                 }
             }
@@ -2402,12 +2406,15 @@ async fn launch_operation_admitted(
             }
         }
         if let Some(tracker) = tracker {
-            if let Ok(Some(capture)) = tauri::async_runtime::spawn_blocking(move || {
-                tracker.lock().ok().and_then(|mut tracker| tracker.finish())
+            if let Ok(Some((capture, last_write))) = tauri::async_runtime::spawn_blocking(move || {
+                tracker.lock().ok().and_then(|mut tracker| {
+                    let last_write = tracker.last_write();
+                    tracker.finish().map(|capture| (capture, last_write))
+                })
             })
             .await
             {
-                persist_turn_changes(&app, &store, &session_id, capture);
+                persist_turn_changes(&app, &store, &session_id, capture, last_write);
             }
         }
         if cloud {
@@ -4281,6 +4288,8 @@ pub fn run() {
                 architect::profiles::architect_delete_profile,
                 architect::architect_get,
                 architect::architect_configure,
+                architect::architect_set_council,
+                architect::architect_council_accept,
                 architect::architect_start,
                 architect::architect_control,
                 architect::architect_worker_messages,

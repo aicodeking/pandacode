@@ -29,7 +29,8 @@
 .team-progress-description small{margin-left:4px;font-size:var(--ds-text-ui);color:var(--muted)}
 .team-progress-status{flex:none;font-size:var(--ds-text-ui);white-space:nowrap;color:var(--muted)}
 .team-progress-worker[data-status=Working] .team-progress-status{color:var(--ds-tone-team)}
-.team-progress-worker[data-status=Completed] .team-progress-status{color:var(--ds-success)}
+.team-progress-worker:is([data-status=Completed],[data-status=score-at]) .team-progress-status{color:var(--ds-success)}
+.team-progress-worker[data-status=score-below] .team-progress-status{color:var(--ds-tone-full)}
 .team-progress-worker[data-status=Failed] .team-progress-status,.team-progress-worker[data-status="Needs attention"] .team-progress-status{color:var(--ds-danger)}
 /* A working worker shows a softly pulsing dot before its status (opacity only). */
 .team-progress-spinner{display:none;flex:none;width:7px;height:7px;margin-right:-6px;border-radius:50%;background:var(--ds-tone-team)}

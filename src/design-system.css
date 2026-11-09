@@ -430,7 +430,7 @@ input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=chec
   .ds-toggle:not(:checked),.ds-chip,.ds-btn{box-shadow:inset 0 0 0 1px var(--text)}
   .ds-row-title,.ds-row-sub,.ds-row-meta,.ds-chip,.ds-section-head{color:var(--text)}
 }
-@media(forced-colors:active){.ds-toggle{border:1px solid CanvasText}.ds-toggle::before{background:CanvasText}.ds-meter>span{background:Highlight}
+@media(forced-colors:active){.ds-btn,.ds-btn-primary{border:1px solid ButtonText}.ds-toggle{border:1px solid CanvasText}.ds-toggle::before{background:CanvasText}.ds-toggle:checked{forced-color-adjust:none;background:Highlight;border-color:CanvasText}.ds-toggle:checked::before{forced-color-adjust:none;background:CanvasText}.ds-meter>span{background:Highlight}
   .ds-dots>span{forced-color-adjust:none;box-sizing:border-box;border:1px solid CanvasText;background:Canvas}.ds-dots>span:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:CanvasText}}
 
 /* ---------- Global base: moves every page toward the look ---------- */

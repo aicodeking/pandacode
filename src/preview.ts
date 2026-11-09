@@ -914,6 +914,14 @@ const architect = createPreviewArchitect({
   agent,
 });
 
+// `?council` seeds a council partway through; `?council=passed|fixing|limit|finished|cycle|asking|accepted` shows that state.
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('council')) {
+  architect.seedCouncil('session-1', new URLSearchParams(location.search).get('council') ?? '');
+  // Tests score or add a seat, as a reviewer finishing would.
+  (window as unknown as { __councilSeat: unknown }).__councilSeat = (seat: Parameters<typeof architect.councilSeat>[1]) => architect.councilSeat('session-1', seat);
+  (window as unknown as { __councilAsk: unknown }).__councilAsk = () => architect.councilAsk('session-1');
+}
+
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
 const machineParents = new Map<string, string>(), machineStopped = new Set<string>(), machineOffline = new Set<string>();
@@ -1319,6 +1327,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'model_routing_route': result = previewRoute(String(args.text), args.pool as any[]); break;
     case 'architect_get': result = architect.get(args.sessionId); break;
     case 'architect_configure': result = architect.configure(args.sessionId, args.config, args.architect, args.profileId); break;
+    case 'architect_set_council': result = architect.setCouncil(args.sessionId, args.council); break;
+    case 'architect_council_accept': result = architect.councilAccept(args.sessionId); break;
     case 'architect_profiles': result = architect.profiles(); break;
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
