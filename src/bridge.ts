@@ -1,7 +1,16 @@
 import type { AgentEvent, BrowserElement, BrowserStatus, TerminalEvent } from './types';
+import { web } from './web-transport';
+import { webFiles } from './web-files';
+import { openWebExternal, openWebSupport } from './web-external';
+import { WebConsoles, isConsoleCommand } from './web-consoles';
+const consoles = web ? new WebConsoles() : null;
+export function releaseWebConsoles(kind: 'simulator' | 'vm' | 'cloud'): void { void consoles?.release(kind); }
 
-export const preview = !('__TAURI_INTERNALS__' in window);
+export const preview = !('__TAURI_INTERNALS__' in window) && !web;
 export async function call<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (webFiles && command === 'reveal_path') return await webFiles.reveal(args.path) as T;
+  if (consoles && isConsoleCommand(command)) return consoles.call<T>(command, args);
+  if (web) { if (command === 'open_external_url') { openWebExternal(args.url); return undefined as T; } if (command === 'open_support') { openWebSupport(); return undefined as T; } return web.call<T>(command, args); }
   if (preview) return (await import('./preview')).invoke<T>(command, args);
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
 }
@@ -35,16 +44,19 @@ export async function subscribe(name: 'terminal-event', callback: (event: Termin
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
+  if (web) return web.subscribe(name, event => callback(event.payload));
   if (preview) return (await import('./preview')).listen(name, callback);
   return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));
 }
 export async function chooseFolder(title = 'Open a project in PandaCode'): Promise<string | null> {
+  if (webFiles) return (await webFiles.pickFolder('project'))?.grant ?? null;
   if (preview) return '/Users/you/Projects/new-project';
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ directory: true, multiple: false, title });
   return typeof result === 'string' ? result : null;
 }
 /** Files to attach to a message. The preview returns a fixed sample selection. */
 export async function chooseAttachments(): Promise<string[]> {
+  if (webFiles) return (await webFiles.pickFiles('', true, 'attachment')).map(item => item.grant);
   if (preview) return (await import('./preview')).samplePick('files');
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ multiple: true, title: 'Attach to your message', filters: [
     { name: 'Images and documents', extensions: ['png', 'jpg', 'jpeg', 'webp', 'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'yaml', 'yml', 'xml', 'html', 'rtf', 'doc', 'docx', 'odt', 'pages', 'key', 'numbers', 'pptx', 'xlsx', 'epub', 'log'] },
@@ -54,11 +66,13 @@ export async function chooseAttachments(): Promise<string[]> {
 }
 /** A VS Code extension package holding color themes. */
 export async function chooseVsix(): Promise<string | null> {
+  if (webFiles) { const picked = await webFiles.pickFiles('.vsix,application/zip', false, 'theme'); return picked[0]?.grant ?? null; }
   if (preview) return '/Users/you/Downloads/tokyo-night.vsix';
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ multiple: false, title: 'Import a VS Code theme', filters: [{ name: 'VS Code extension', extensions: ['vsix'] }] });
   return typeof result === 'string' ? result : null;
 }
 export async function chooseAttachmentFolder(): Promise<string | null> {
+  if (webFiles) return (await webFiles.pickFolder('folder'))?.grant ?? null;
   if (preview) return (await import('./preview')).samplePick('folder')[0] ?? null;
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ directory: true, multiple: false, title: 'Attach a folder to your message' });
   return typeof result === 'string' ? result : null;

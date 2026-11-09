@@ -1,5 +1,7 @@
 import './attachments.css';
 import { call, chooseAttachmentFolder, chooseAttachments, preview } from './bridge';
+import { web } from './web-transport';
+import { webFileName, webFiles } from './web-files';
 import { escape, icon } from './dom';
 import { isMac } from './platform';
 
@@ -37,10 +39,24 @@ const IMAGE_EXTENSIONS = /\.(png|jpe?g|webp)$/i;
 const MAX_INLINE_TEXT = 32768;
 
 function id(): string { return crypto.randomUUID(); }
-function baseName(path: string): string { return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
+function baseName(path: string): string { const name = webFileName(path); if (name) return name; return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
 /** A path the agent can open itself, quoted when it holds spaces. */
 export function quotePath(path: string): string { return /\s/.test(path) ? `"${path.replace(/"/g, '\\"')}"` : path; }
 const alreadyAttached = (error: unknown) => String(error instanceof Error ? error.message : error).includes('is already attached');
+
+export async function uploadWebClipboardImage(
+  read: () => Promise<ClipboardItems>,
+  upload: (file: File) => Promise<{ grant: string; name: string }>,
+): Promise<{ path: string; name: string }> {
+  const items = await read();
+  const item = items.find(candidate => candidate.types.some(type => /^image\/(png|jpeg|webp)$/.test(type)));
+  if (!item) throw new Error('No supported image was found in the clipboard. Use Attach files or paste an image file.');
+  const type = item.types.find(candidate => /^image\/(png|jpeg|webp)$/.test(candidate))!;
+  const blob = await item.getType(type);
+  if (blob.size > 12 * 1024 * 1024) throw new Error('Clipboard image exceeds the 12 MiB limit. Use a smaller image.');
+  const uploaded = await upload(new File([blob], `Pasted image.${type === 'image/jpeg' ? 'jpg' : type.split('/')[1]}`, { type }));
+  return { path: uploaded.grant, name: uploaded.name };
+}
 function formatSize(bytes: number): string { return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`; }
 function documentLabel(document: PromptDocument): string {
   const ext = document.name.split('.').pop()?.toUpperCase();
@@ -84,9 +100,18 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     const unsupported = host.imagesUnsupported?.(taskId);
     if (unsupported) throw new Error(unsupported);
     if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw new Error(`${baseName(source.path)} is already attached.`);
+    if (webFiles && source.dataUrl) {
+      const data = /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(source.dataUrl);
+      if (!data || data[2].length > 16 * 1024 * 1024) throw new Error('This image cannot be uploaded. Use a PNG, JPEG or WebP under 12 MiB.');
+      const binary = atob(data[2]);
+      const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+      const file = new File([bytes], source.name ?? `Image.${data[1] === 'image/jpeg' ? 'jpg' : data[1].split('/')[1]}`, { type: data[1] });
+      const uploaded = await webFiles.upload(file, 'attachment');
+      source = { ...source, path: uploaded.grant, dataUrl: undefined };
+    }
     const imported = await call<{ id: string; name: string; width: number; height: number; thumbnail: string }>('import_prompt_image', { path: source.path, dataUrl: source.dataUrl, name: source.name });
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
-    const image: PromptImage = { kind: 'image', ...imported, source: source.origin, path: source.path, sketchId: source.sketchId };
+    const image: PromptImage = { kind: 'image', ...imported, name: source.name ?? (source.path ? webFileName(source.path) : undefined) ?? imported.name, source: source.origin, path: source.path, sketchId: source.sketchId };
     if (source.replace) {
       const current = list(taskId), index = current.findIndex(a => a.id === source.replace);
       if (index >= 0) { set(taskId, current.map((a, i) => i === index ? image : a)); host.rerender(taskId); return image; }
@@ -98,6 +123,16 @@ export function mountPromptAttachments(host: AttachmentsHost) {
   /** The native clipboard image, for webviews (WebKitGTK) that never expose OS
    * clipboard images as pasted files; unreadable or empty clipboards stay silent. */
   async function attachClipboardImage(taskId: string): Promise<void> {
+    if (webFiles) {
+      const files = webFiles;
+      if (!navigator.clipboard?.read) throw new Error('This browser cannot read image clipboard data. Use Attach files or paste an image file.');
+      let items: ClipboardItems;
+      try { items = await navigator.clipboard.read(); }
+      catch { throw new Error('Clipboard image access was denied. Use Attach files or paste an image file.'); }
+      const uploaded = await uploadWebClipboardImage(() => Promise.resolve(items), file => files.upload(file, 'attachment'));
+      await addImage(taskId, { path: uploaded.path, name: uploaded.name, origin: 'paste' });
+      return;
+    }
     let base64: string | null;
     try {
       base64 = await call<string | null>('read_clipboard_image');
@@ -108,7 +143,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
 
   async function addDocument(taskId: string, path: string): Promise<void> {
     const document = await call<Omit<PromptDocument, 'kind' | 'id'>>('read_document', { path });
-    add(taskId, { kind: 'document', id: id(), ...document });
+    add(taskId, { kind: 'document', id: id(), ...document, name: webFileName(path) ?? document.name });
   }
 
   async function addFolder(taskId: string, path: string): Promise<void> {
@@ -132,7 +167,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     for (const path of paths) {
       try {
         if (hint === 'folder') await addFolder(taskId, path);
-        else if (IMAGE_EXTENSIONS.test(path)) await addImage(taskId, { path, origin: 'file' });
+        else if (IMAGE_EXTENSIONS.test(baseName(path))) await addImage(taskId, { path, name: webFileName(path) ?? baseName(path), origin: 'file' });
         else if (hint === 'files') await addDocument(taskId, path);
         else {
           try { await addFolder(taskId, path); }
@@ -152,7 +187,11 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     const failed: { file: File; error: unknown }[] = [];
     for (const file of files) {
       try {
-        if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.test(file.name)) {
+        if (webFiles) {
+          const uploaded = await webFiles.upload(file, 'attachment');
+          if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.test(file.name)) await addImage(taskId, { path: uploaded.grant, name: file.name, origin });
+          else await addDocument(taskId, uploaded.grant);
+        } else if (file.type.startsWith('image/') || IMAGE_EXTENSIONS.test(file.name)) {
           const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onerror = () => reject(new Error('Could not read the image.')); reader.onload = () => resolve(String(reader.result)); reader.readAsDataURL(file); });
           await addImage(taskId, { dataUrl, name: file.name || (origin === 'paste' ? 'Pasted image.png' : 'Image.png'), origin });
         } else {
@@ -174,7 +213,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
    * (names prove it), otherwise the File objects, which have no path (Photos, Mail, a
    * failed read). */
   async function attachDropped(files: File[]): Promise<void> {
-    const paths = await call<string[]>('dragged_file_paths').catch(() => [] as string[]);
+    const paths = web ? [] : await call<string[]>('dragged_file_paths').catch(() => [] as string[]);
     const names = new Set(paths.map(path => baseName(path).normalize()));
     if (paths.length && files.every(file => names.has(file.name.normalize()))) await attachPaths(paths, 'unknown', true);
     else if (files.length) await attachFiles(files, 'drop');
@@ -266,7 +305,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
       const setActive = (active: boolean) => zone()?.classList.toggle('drop-active', active && accepting());
       // macOS drops are HTML5 events (the native handler is off, `app_context` in lib.rs), so
       // text falls through to the prompt; Windows and Linux stay on Tauri's native events.
-      if (preview || isMac) {
+      if (preview || web || isMac) {
         let depth = 0;
         const types = (event: DragEvent) => event.dataTransfer?.types ?? [];
         // The main window has no navigation guard: a file or link the page does not take

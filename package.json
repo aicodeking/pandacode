@@ -29,7 +29,9 @@
     "release:version": "node scripts/release/set-version.mjs",
     "release:build": "node scripts/release/build.mjs",
     "test:release": "node --test scripts/release/*.test.mjs packages/npx/*.test.mjs",
-    "screenshots": "playwright test -c scripts/screenshots/playwright.config.ts"
+    "screenshots": "playwright test -c scripts/screenshots/playwright.config.ts",
+    "web-e2e:build": "CARGO_TARGET_DIR=src-tauri/target-webe2e tauri build --debug --no-bundle --config scripts/web-e2e/tauri.webe2e.json",
+    "test:web-e2e": "playwright test -c playwright.web-e2e.config.ts"
   },
   "dependencies": {
     "@pierre/diffs": "1.4.2",

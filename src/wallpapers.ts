@@ -1,3 +1,4 @@
+import { validatedHostClockOffset } from './web-preferences.ts';
 export const wallpaperSets = [
   { id: 'mon', label: 'Monday' }, { id: 'tue', label: 'Tuesday' },
   { id: 'wed', label: 'Wednesday' }, { id: 'thu', label: 'Thursday' },
@@ -64,19 +65,21 @@ function readPreferences(): WallpaperPreferences {
 }
 
 /** Calendar days and time bands use the system's local timezone. */
-export function wallpaperAt(date = new Date(), preferences?: Partial<WallpaperPreferences>): string {
+export function wallpaperAt(date = new Date(), preferences?: Partial<WallpaperPreferences>, offsetMinutes?: number): string {
+  const validOffset = typeof offsetMinutes === 'number' && Number.isInteger(offsetMinutes) && offsetMinutes >= -840 && offsetMinutes <= 840 ? offsetMinutes : undefined;
   const choice = normalizeWallpaperPreferences(preferences);
   if (choice.pinned) return choice.pinned;
-  const hour = date.getHours();
+  const shifted = validOffset === undefined ? date : new Date(date.getTime() + validOffset * 60000);
+  const hour = validOffset === undefined ? shifted.getHours() : shifted.getUTCHours();
   const period = hour >= 6 && hour < 12 ? 'morning' : hour >= 12 && hour < 18 ? 'afternoon' : 'night';
-  return `${choice.set === 'automatic' ? days[date.getDay()] : choice.set}-${period}`;
+  return `${choice.set === 'automatic' ? days[validOffset === undefined ? shifted.getDay() : shifted.getUTCDay()] : choice.set}-${period}`;
 }
 
-export function nextWallpaperChange(date = new Date()): Date {
-  const next = new Date(date);
-  const hour = date.getHours();
-  next.setHours(hour < 6 ? 6 : hour < 12 ? 12 : hour < 18 ? 18 : 24, 0, 0, 0);
-  return next;
+export function nextWallpaperChange(date = new Date(), offsetMinutes?: number): Date {
+  const validOffset = typeof offsetMinutes === 'number' && Number.isInteger(offsetMinutes) && offsetMinutes >= -840 && offsetMinutes <= 840 ? offsetMinutes : undefined;
+  if (validOffset === undefined) { const next = new Date(date); const hour = date.getHours(); next.setHours(hour < 6 ? 6 : hour < 12 ? 12 : hour < 18 ? 18 : 24, 0, 0, 0); return next; }
+  const shifted = new Date(date.getTime() + validOffset * 60000); const hour = shifted.getUTCHours(); const nextHour = hour < 6 ? 6 : hour < 12 ? 12 : hour < 18 ? 18 : 24;
+  const next = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(), nextHour, 0, 0, 0)); return new Date(next.getTime() - validOffset * 60000);
 }
 
 /** One shared scene for the thread and board, drawn inside `sceneHost` (the main pane: the thread is the window);
@@ -89,6 +92,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
   const contrast = matchMedia('(prefers-contrast: more)');
   const transparency = matchMedia('(prefers-reduced-transparency: reduce)');
   let preferences = Object.freeze(readPreferences());
+  const browserHostClock = new URLSearchParams(location.search).has('web') || document.documentElement.dataset.pandacodeWeb === 'true';
   const listeners = new Set<() => void>();
   let disposed = false, generation = 0, timer = 0, pendingId = '';
   let current: HTMLImageElement | undefined, pending: HTMLImageElement | undefined;
@@ -164,7 +168,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
     if (disposed) return;
     if (!preferences.enabled || !preferences.visibility || contrast.matches || transparency.matches) { clear(); emit(); return; }
     if (document.hidden) { emit(); return; }
-    const now = new Date(), id = wallpaperAt(now, preferences);
+    const now = new Date(), hostOffset = browserHostClock ? validatedHostClockOffset() : undefined, id = wallpaperAt(now, preferences, hostOffset);
     // Returning to the visible scene must invalidate any different scene still decoding.
     if (host.dataset.wallpaper === id && pendingId && pendingId !== id) {
       ++generation;
@@ -173,7 +177,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
     }
     if (host.dataset.wallpaper !== id && pendingId !== id) void load(id);
     // No frame loop or interval; midnight also changes the weekday's night scene.
-    if (!preferences.pinned) timer = window.setTimeout(refresh, Math.max(1, nextWallpaperChange(now).getTime() - now.getTime()));
+    if (!preferences.pinned) timer = window.setTimeout(refresh, Math.max(1, nextWallpaperChange(now, hostOffset).getTime() - now.getTime()));
     emit();
   }
   function update(patch: Partial<WallpaperPreferences>, save = true): void {

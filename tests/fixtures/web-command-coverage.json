@@ -1,0 +1,3600 @@
+{
+  "version": 3,
+  "source": "src-tauri/src/lib.rs main-window generate_handler",
+  "count": 397,
+  "commands": [
+    {
+      "command": "agents_dock_snapshot",
+      "rustPath": "agents_dock::agents_dock_snapshot",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "authenticated shared agent list and preferences; native window actions stay blocked",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "agents_dock_preferences",
+      "rustPath": "agents_dock::agents_dock_preferences",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "authenticated shared agent list and preferences; native window actions stay blocked",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "agents_dock_save_preferences",
+      "rustPath": "agents_dock::agents_dock_save_preferences",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated typed web dock adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "agents_dock_pin",
+      "rustPath": "agents_dock::agents_dock_pin",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "native dock pinning creates an operating-system window and is unavailable in the web UI",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "open_support",
+      "rustPath": "support::open_support",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "support_details",
+      "rustPath": "support::support_details",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_status",
+      "rustPath": "model_routing::model_routing_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_exclusions",
+      "rustPath": "model_routing::model_routing_exclusions",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_set_exclusions",
+      "rustPath": "model_routing::model_routing_set_exclusions",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_configure",
+      "rustPath": "model_routing::model_routing_configure",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_prepare",
+      "rustPath": "model_routing::model_routing_prepare",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_route",
+      "rustPath": "model_routing::model_routing_route",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_tiers",
+      "rustPath": "model_routing::model_routing_tiers",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_set_tiers",
+      "rustPath": "model_routing::model_routing_set_tiers",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_routing_tier_models",
+      "rustPath": "model_routing::model_routing_tier_models",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_health_list",
+      "rustPath": "model_health::model_health_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "model_health_clear",
+      "rustPath": "model_health::model_health_clear",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "local_sign_app",
+      "rustPath": "local_sign_app",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "app_update_install_supported",
+      "rustPath": "app_updates::app_update_install_supported",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "check_agent_updates",
+      "rustPath": "agent_updates::check_agent_updates",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "update_agent",
+      "rustPath": "agent_updates::update_agent",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_moodboards",
+      "rustPath": "moodboards::list_moodboards",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "create_moodboard",
+      "rustPath": "moodboards::create_moodboard",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "read_moodboard",
+      "rustPath": "moodboards::read_moodboard",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "rename_moodboard",
+      "rustPath": "moodboards::rename_moodboard",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "delete_moodboard",
+      "rustPath": "moodboards::delete_moodboard",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "add_moodboard_image",
+      "rustPath": "moodboards::add_moodboard_image",
+      "classification": "broker",
+      "guard": "inline_or_granted_image",
+      "mutation": true,
+      "reason": "bounded inline image or session attachment grant",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "import_moodboard_images",
+      "rustPath": "moodboards::import_moodboard_images",
+      "classification": "broker",
+      "guard": "granted_paths",
+      "mutation": true,
+      "reason": "bounded uploaded attachment grants materialized for moodboard import",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "update_moodboard_image",
+      "rustPath": "moodboards::update_moodboard_image",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remove_moodboard_image",
+      "rustPath": "moodboards::remove_moodboard_image",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "moodboard_image",
+      "rustPath": "moodboards::moodboard_image",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_preferences",
+      "rustPath": "overlay::overlay_preferences",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_save_preferences",
+      "rustPath": "overlay::overlay_save_preferences",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_recording",
+      "rustPath": "overlay::overlay_recording",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_sync_context",
+      "rustPath": "overlay::overlay_sync_context",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "audited shared launcher context persistence without window control",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_toggle",
+      "rustPath": "overlay::overlay_toggle",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_hide",
+      "rustPath": "overlay::overlay_hide",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_snapshot",
+      "rustPath": "overlay::overlay_snapshot",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_thread",
+      "rustPath": "overlay::overlay_thread",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "read-only task transcript and live assistant snapshot for browser rehydration",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_launch",
+      "rustPath": "overlay::overlay_launch",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_select_model",
+      "rustPath": "overlay::overlay_select_model",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "overlay_open_task",
+      "rustPath": "overlay::overlay_open_task",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_status",
+      "rustPath": "remote::remote_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_sign_in_start",
+      "rustPath": "remote::remote_sign_in_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_sign_in_finish",
+      "rustPath": "remote::remote_sign_in_finish",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_sign_in_cancel",
+      "rustPath": "remote::remote_sign_in_cancel",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_sign_out",
+      "rustPath": "remote::remote_sign_out",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_set_host_enabled",
+      "rustPath": "remote::remote_set_host_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_set_notify_enabled",
+      "rustPath": "remote::remote_set_notify_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_devices",
+      "rustPath": "remote::remote_devices",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_revoke_device",
+      "rustPath": "remote::remote_revoke_device",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_targets",
+      "rustPath": "remote::remote_targets",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_start_task",
+      "rustPath": "remote::mirror::remote_start_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_status",
+      "rustPath": "remote::orchestrate::links::orchestration_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_set_enabled",
+      "rustPath": "remote::orchestrate::links::orchestration_set_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_set_link",
+      "rustPath": "remote::orchestrate::links::orchestration_set_link",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_pending",
+      "rustPath": "remote::orchestrate::links::orchestration_pending",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_link_respond",
+      "rustPath": "remote::orchestrate::links::orchestration_link_respond",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_children",
+      "rustPath": "remote::orchestrate::orchestration_children",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "orchestration_threads",
+      "rustPath": "remote::orchestrate::orchestration_threads",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_team",
+      "rustPath": "remote::mirror::remote_team",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_worker_messages",
+      "rustPath": "remote::mirror::remote_worker_messages",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_cancel_start",
+      "rustPath": "remote::mirror::remote_cancel_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_reconnect",
+      "rustPath": "remote::routes::remote_reconnect",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_device_grants",
+      "rustPath": "remote::grants::remote_device_grants",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_set_device_grant",
+      "rustPath": "remote::grants::remote_set_device_grant",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_pair_code",
+      "rustPath": "remote::grants::remote_pair_code",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_pair_code_cancel",
+      "rustPath": "remote::grants::remote_pair_code_cancel",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_pair_redeem",
+      "rustPath": "remote::grants::remote_pair_redeem",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_diagnostics",
+      "rustPath": "remote::diagnostics::remote_diagnostics",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_diagnostics_export",
+      "rustPath": "remote::diagnostics::remote_diagnostics_export",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_resubscribe",
+      "rustPath": "remote_resubscribe",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_workspace_image",
+      "rustPath": "remote_workspace_image",
+      "classification": "broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_agent_targets",
+      "rustPath": "cloud_agents::tasks::cloud_agent_targets",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_agent_start",
+      "rustPath": "cloud_agents::tasks::cloud_agent_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_agent_action",
+      "rustPath": "cloud_agents::tasks::cloud_agent_action",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_agent_set_claude_token",
+      "rustPath": "cloud_agents::tasks::cloud_agent_set_claude_token",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remote_repo_check",
+      "rustPath": "remote::mirror::remote_repo_check",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_configuration",
+      "rustPath": "provider_settings::provider_configuration",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connections_list",
+      "rustPath": "connections::connections_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_save",
+      "rustPath": "connections::connection_save",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_delete",
+      "rustPath": "connections::connection_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_assign",
+      "rustPath": "connections::connection_assign",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_pool_set",
+      "rustPath": "connections::connection_pool_set",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_new_account",
+      "rustPath": "connections::connection_new_account",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "connection_pool_member_set",
+      "rustPath": "connections::connection_pool_member_set",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "account_pool_status",
+      "rustPath": "account_pool::account_pool_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "account_pool_clear",
+      "rustPath": "account_pool::account_pool_clear",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "account_sign_in_start",
+      "rustPath": "account_sign_in::account_sign_in_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "account_sign_in_code",
+      "rustPath": "account_sign_in::account_sign_in_code",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "account_sign_in_cancel",
+      "rustPath": "account_sign_in::account_sign_in_cancel",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "agent_usage",
+      "rustPath": "agent_usage::agent_usage",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "tray_seen",
+      "rustPath": "tray::tray_seen",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "usage_ledger",
+      "rustPath": "usage_ledger::usage_ledger",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "capabilities_inventory",
+      "rustPath": "capabilities::capabilities_inventory",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cache_alignment",
+      "rustPath": "capabilities::cache_alignment",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "prompt_activity",
+      "rustPath": "prompt_activity",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "set_resume_at_reset",
+      "rustPath": "set_resume_at_reset",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "clear_usage_limit",
+      "rustPath": "clear_usage_limit",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "discard_draft",
+      "rustPath": "discard_draft",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_list",
+      "rustPath": "message_queue::queue_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_add",
+      "rustPath": "message_queue::queue_add",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_update",
+      "rustPath": "message_queue::queue_update",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_remove",
+      "rustPath": "message_queue::queue_remove",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_reorder",
+      "rustPath": "message_queue::queue_reorder",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_take",
+      "rustPath": "message_queue::queue_take",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "queue_restore",
+      "rustPath": "message_queue::queue_restore",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "steer_task",
+      "rustPath": "message_queue::steer_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bots_list",
+      "rustPath": "bots::bots_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_desktop_thread",
+      "rustPath": "bots::bot_desktop_thread",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_detail",
+      "rustPath": "bots::bot_detail",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_create",
+      "rustPath": "bots::bot_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_update",
+      "rustPath": "bots::bot_update",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_set_paused",
+      "rustPath": "bots::bot_set_paused",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_reset",
+      "rustPath": "bots::bot_reset",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_delete",
+      "rustPath": "bots::bot_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_remember",
+      "rustPath": "bots::bot_remember",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_forget",
+      "rustPath": "bots::bot_forget",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_activity",
+      "rustPath": "bots::bot_activity",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_project_ids",
+      "rustPath": "bots::bot_project_ids",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_message",
+      "rustPath": "bots::bot_message",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channels",
+      "rustPath": "bots::shared_channels::bot_shared_channels",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_detail",
+      "rustPath": "bots::shared_channels::bot_shared_channel_detail",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_create",
+      "rustPath": "bots::shared_channels::bot_shared_channel_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_update",
+      "rustPath": "bots::shared_channels::bot_shared_channel_update",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_archive",
+      "rustPath": "bots::shared_channels::bot_shared_channel_archive",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_post",
+      "rustPath": "bots::shared_channels::bot_shared_channel_post",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_stop",
+      "rustPath": "bots::shared_channels::bot_shared_channel_stop",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_continue",
+      "rustPath": "bots::shared_channels::bot_shared_channel_continue",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_shared_channel_reassign",
+      "rustPath": "bots::shared_channels::bot_shared_channel_reassign",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_message_markers",
+      "rustPath": "bots::shared_channels::bot_message_markers",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_failover_decide",
+      "rustPath": "bots::failover::bot_failover_decide",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_failover_pending",
+      "rustPath": "bots::failover::bot_failover_pending",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_model_switches",
+      "rustPath": "bots::failover::bot_model_switches",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_set_capabilities",
+      "rustPath": "bots::bot_set_capabilities",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_assign_task",
+      "rustPath": "bots::bot_assign_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_task_links",
+      "rustPath": "bots::bot_task_links",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_task_brief",
+      "rustPath": "bots::bot_task_brief",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_schedule_create",
+      "rustPath": "bots::schedule::bot_schedule_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_schedule_set_enabled",
+      "rustPath": "bots::schedule::bot_schedule_set_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_schedule_delete",
+      "rustPath": "bots::schedule::bot_schedule_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_run_schedule_now",
+      "rustPath": "bots::schedule::bot_run_schedule_now",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedules_list",
+      "rustPath": "schedules::schedules_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_create",
+      "rustPath": "schedules::schedule_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_update",
+      "rustPath": "schedules::schedule_update",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_set_enabled",
+      "rustPath": "schedules::schedule_set_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_delete",
+      "rustPath": "schedules::schedule_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_run_now",
+      "rustPath": "schedules::schedule_run_now",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_snooze",
+      "rustPath": "schedules::schedule_snooze",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "schedule_runs",
+      "rustPath": "schedules::schedule_runs",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "scheduler_settings",
+      "rustPath": "schedules::scheduler_settings",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "scheduler_set_settings",
+      "rustPath": "schedules::scheduler_set_settings",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_channel_add",
+      "rustPath": "bots::channels::bot_channel_add",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_channel_test",
+      "rustPath": "bots::channels::bot_channel_test",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_channel_configure",
+      "rustPath": "bots::channels::bot_channel_configure",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_channel_set_enabled",
+      "rustPath": "bots::channels::bot_channel_set_enabled",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_channel_remove",
+      "rustPath": "bots::channels::bot_channel_remove",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_pairing_decide",
+      "rustPath": "bots::channels::bot_pairing_decide",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_web_link",
+      "rustPath": "bots::channels::bot_web_link",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_web_new_link",
+      "rustPath": "bots::channels::bot_web_new_link",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_rule_add",
+      "rustPath": "bots::guard::bot_rule_add",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "bot_rule_delete",
+      "rustPath": "bots::guard::bot_rule_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_importable_conversations",
+      "rustPath": "conversation_import::list_importable_conversations",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "import_conversations",
+      "rustPath": "conversation_import::import_conversations",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_claude_connection_mode",
+      "rustPath": "provider_settings::provider_set_claude_connection_mode",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "harness_privacy",
+      "rustPath": "providers::privacy::harness_privacy",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "harness_privacy_set",
+      "rustPath": "providers::privacy::harness_privacy_set",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_claude_status",
+      "rustPath": "providers::claude_auth::provider_claude_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_opencode_models",
+      "rustPath": "provider_settings::list_opencode_models",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "save_opencode_models",
+      "rustPath": "provider_settings::save_opencode_models",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_executable",
+      "rustPath": "provider_settings::provider_set_executable",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved executable grant materialized only for provider configuration",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_environment_variable",
+      "rustPath": "provider_settings::provider_set_environment_variable",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_environment_variable",
+      "rustPath": "provider_settings::provider_remove_environment_variable",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_global_environment_variable",
+      "rustPath": "provider_settings::provider_set_global_environment_variable",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_global_environment_variable",
+      "rustPath": "provider_settings::provider_remove_global_environment_variable",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_use_global_environment",
+      "rustPath": "provider_settings::provider_set_use_global_environment",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_save_glm_key",
+      "rustPath": "provider_settings::provider_save_glm_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_glm_key",
+      "rustPath": "provider_settings::provider_remove_glm_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_save_mimo_key",
+      "rustPath": "provider_settings::provider_save_mimo_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_mimo_key",
+      "rustPath": "provider_settings::provider_remove_mimo_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_save_deepseek_key",
+      "rustPath": "provider_settings::provider_save_deepseek_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_deepseek_key",
+      "rustPath": "provider_settings::provider_remove_deepseek_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_save_commandcode_key",
+      "rustPath": "provider_settings::provider_save_commandcode_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_remove_commandcode_key",
+      "rustPath": "provider_settings::provider_remove_commandcode_key",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_set_mimo_endpoint",
+      "rustPath": "provider_settings::provider_set_mimo_endpoint",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_profiles",
+      "rustPath": "architect::profiles::architect_profiles",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_set_lead_guidance",
+      "rustPath": "architect::profiles::architect_set_lead_guidance",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_save_profile",
+      "rustPath": "architect::profiles::architect_save_profile",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_delete_profile",
+      "rustPath": "architect::profiles::architect_delete_profile",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_get",
+      "rustPath": "architect::architect_get",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_configure",
+      "rustPath": "architect::architect_configure",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_start",
+      "rustPath": "architect::architect_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_control",
+      "rustPath": "architect::architect_control",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_worker_messages",
+      "rustPath": "architect::architect_worker_messages",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_team_messages",
+      "rustPath": "architect::coordination::architect_team_messages",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "task_goal",
+      "rustPath": "task_controls::task_goal",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "codex_command",
+      "rustPath": "task_controls::codex_command",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "codex_jobs",
+      "rustPath": "task_controls::codex_jobs",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "set_task_preference",
+      "rustPath": "task_controls::set_task_preference",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "fork_codex_task",
+      "rustPath": "task_controls::fork_codex_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "fork_session_at_message",
+      "rustPath": "task_controls::fork_session_at_message",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_message_content",
+      "rustPath": "task_controls::get_message_content",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "archive_codex_task",
+      "rustPath": "task_controls::archive_codex_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "export_task",
+      "rustPath": "task_controls::export_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "save_task_export",
+      "rustPath": "task_controls::save_task_export",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": true,
+      "reason": "browser downloads require a dedicated export adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "start_harness_terminal",
+      "rustPath": "task_controls::start_harness_terminal",
+      "classification": "broker",
+      "guard": "terminal_create",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_projects",
+      "rustPath": "list_projects",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "add_project",
+      "rustPath": "add_project",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved folder grant materialized only for project registration",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remove_project",
+      "rustPath": "remove_project",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "relink_project",
+      "rustPath": "relink_project",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved folder grant materialized only for project relinking",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_sessions",
+      "rustPath": "list_sessions",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "pin_session",
+      "rustPath": "pin_session",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "reorder_sessions",
+      "rustPath": "reorder_sessions",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_task",
+      "rustPath": "get_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "configure_window_appearance",
+      "rustPath": "configure_window_appearance",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": true,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "create_session",
+      "rustPath": "create_session",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "create_board_task",
+      "rustPath": "create_board_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "update_task_details",
+      "rustPath": "update_task_details",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "set_task_stage",
+      "rustPath": "set_task_stage",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "start_task",
+      "rustPath": "start_task",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "configure_session",
+      "rustPath": "configure_session",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "set_reasoning_effort",
+      "rustPath": "set_reasoning_effort",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "update_session",
+      "rustPath": "update_session",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "delete_session",
+      "rustPath": "delete_session_with_attachment_cleanup",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "chat_create",
+      "rustPath": "chats::chat_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "chat_cleanup",
+      "rustPath": "chats::chat_cleanup",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_messages",
+      "rustPath": "get_messages",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "turn_change_diff",
+      "rustPath": "turn_changes::turn_change_diff",
+      "classification": "broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "turn_change_summary",
+      "rustPath": "turn_changes::turn_change_summary",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_subagents",
+      "rustPath": "list_subagents",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_subagent",
+      "rustPath": "get_subagent",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "send_message",
+      "rustPath": "send_message",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_slash_commands",
+      "rustPath": "list_slash_commands",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "recipes_list",
+      "rustPath": "recipes_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "recipes_save",
+      "rustPath": "recipes_save",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "recipes_delete",
+      "rustPath": "recipes_delete",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "recipes_dry_run",
+      "rustPath": "recipes_dry_run",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "provider_check_connection",
+      "rustPath": "providers::acp::provider_check_connection",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "resolve_slash_command",
+      "rustPath": "resolve_slash_command",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "stop_session",
+      "rustPath": "stop_session",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "respond_approval",
+      "rustPath": "respond_approval",
+      "classification": "broker",
+      "guard": "decision",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "respond_user_input",
+      "rustPath": "respond_user_input",
+      "classification": "broker",
+      "guard": "decision",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_agent_integrations",
+      "rustPath": "list_agent_integrations",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_app_tools",
+      "rustPath": "list_app_tools",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "open_external_url",
+      "rustPath": "open_external_url",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "agent_ui_request_active",
+      "rustPath": "agent_tools::agent_ui_request_active",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "resolve_agent_ui_action",
+      "rustPath": "agent_tools::resolve_agent_ui_action",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_inspect",
+      "rustPath": "browser::browser_inspect",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_providers",
+      "rustPath": "list_providers",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_provider_models",
+      "rustPath": "list_provider_models",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_status",
+      "rustPath": "git_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_diff",
+      "rustPath": "git_diff",
+      "classification": "broker",
+      "guard": "optional_relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_status",
+      "rustPath": "jj_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_diff",
+      "rustPath": "jj_diff",
+      "classification": "broker",
+      "guard": "optional_relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_describe",
+      "rustPath": "jj_describe",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_new",
+      "rustPath": "jj_new",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_commit",
+      "rustPath": "jj_commit",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jj_log",
+      "rustPath": "jj_log",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_stage",
+      "rustPath": "git_stage",
+      "classification": "broker",
+      "guard": "relative_paths",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_commit",
+      "rustPath": "git_commit",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_branches",
+      "rustPath": "git_branches",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_switch_branch",
+      "rustPath": "git_switch_branch",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "git_push",
+      "rustPath": "git_push",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "create_worktree",
+      "rustPath": "create_worktree",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "attach_worktree",
+      "rustPath": "attach_worktree",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "worktree_status",
+      "rustPath": "worktree_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "remove_worktree",
+      "rustPath": "remove_worktree",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "merge_worktree",
+      "rustPath": "merge_worktree",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "recreate_worktree",
+      "rustPath": "recreate_worktree",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_status",
+      "rustPath": "github_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_repos",
+      "rustPath": "github_repos",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "project_icon",
+      "rustPath": "project_icon",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_repo_pulls",
+      "rustPath": "github_repo_pulls",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_repo_issues",
+      "rustPath": "github_repo_issues",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_repo_runs",
+      "rustPath": "github_repo_runs",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_run_details",
+      "rustPath": "github_run_details",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_project_repos",
+      "rustPath": "github_project_repos",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_clone_repo",
+      "rustPath": "github_clone_repo",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "typed native clone using a one-use approved parent-folder grant",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_search",
+      "rustPath": "github_search",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_issues",
+      "rustPath": "github_issues",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_resolve",
+      "rustPath": "github_resolve",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_refresh_links",
+      "rustPath": "github_refresh_links",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_create_pull_request",
+      "rustPath": "github_create_pull_request",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_pull_request",
+      "rustPath": "github_pull_request",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_pull_request_diff",
+      "rustPath": "github_pull_request_diff",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_merge_pull_request",
+      "rustPath": "github_merge_pull_request",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_detect_pull_request",
+      "rustPath": "github_detect_pull_request",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "github_link_pull_request",
+      "rustPath": "github_link_pull_request",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_status",
+      "rustPath": "simulator::commands::simulator_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "read-only native capability status",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_select",
+      "rustPath": "simulator::commands::simulator_select",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_create_duo",
+      "rustPath": "simulator::commands::simulator_create_duo",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_pose",
+      "rustPath": "simulator::commands::simulator_pose",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_power",
+      "rustPath": "simulator::commands::simulator_power",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_frame",
+      "rustPath": "simulator::commands::simulator_frame",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_input",
+      "rustPath": "simulator::commands::simulator_input",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_appearance",
+      "rustPath": "simulator::commands::simulator_appearance",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "simulator_capture",
+      "rustPath": "simulator::commands::simulator_capture",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated bounded web console capture adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "android_setup",
+      "rustPath": "simulator::android_setup::android_setup",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_status",
+      "rustPath": "vm::commands::vm_status",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "read-only native capability status",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_show",
+      "rustPath": "vm::commands::vm_show",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_create",
+      "rustPath": "vm::commands::vm_create",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_power",
+      "rustPath": "vm::commands::vm_power",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_frame",
+      "rustPath": "vm::commands::vm_frame",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_input",
+      "rustPath": "vm::commands::vm_input",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_desktop",
+      "rustPath": "vm::commands::vm_desktop",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "vm_setup",
+      "rustPath": "vm::setup::vm_setup",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available through the authenticated session-bound web console lifecycle adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_connections",
+      "rustPath": "cloud::commands::cloud_connections",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_connect",
+      "rustPath": "cloud::commands::cloud_connect",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_disconnect",
+      "rustPath": "cloud::commands::cloud_disconnect",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_set_inherit_environment",
+      "rustPath": "cloud::commands::cloud_set_inherit_environment",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_setup_sandboxes",
+      "rustPath": "cloud::commands::cloud_setup_sandboxes",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_instabox_images",
+      "rustPath": "cloud::commands::cloud_instabox_images",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_instabox_set_image",
+      "rustPath": "cloud::commands::cloud_instabox_set_image",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_machines",
+      "rustPath": "cloud::commands::cloud_machines",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_create",
+      "rustPath": "cloud::commands::cloud_create",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_power",
+      "rustPath": "cloud::commands::cloud_power",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_frame",
+      "rustPath": "cloud::commands::cloud_frame",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "cloud_input",
+      "rustPath": "cloud::commands::cloud_input",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "raw command denied; available only through the authenticated session-bound web console lease adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "themes_list",
+      "rustPath": "vsix_themes::themes_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "theme_import",
+      "rustPath": "vsix_themes::theme_import",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "bounded uploaded or approved theme package grant",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "theme_install",
+      "rustPath": "vsix_themes::theme_install",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "validated extension ID download through the typed native theme installer",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "theme_remove",
+      "rustPath": "vsix_themes::theme_remove",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "token_saver_tools",
+      "rustPath": "token_saver::token_saver_tools",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "token_saver_install",
+      "rustPath": "token_saver::token_saver_install",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "task_token_usage",
+      "rustPath": "task_usage::task_token_usage",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_list",
+      "rustPath": "skills::skills_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_import_folder",
+      "rustPath": "skills::skills_import_folder",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved folder grant materialized only for skill import",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_import_github",
+      "rustPath": "skills::skills_import_github",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_activate",
+      "rustPath": "skills::skills_activate",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_deactivate",
+      "rustPath": "skills::skills_deactivate",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_matrix",
+      "rustPath": "skills::skills_matrix",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_scan",
+      "rustPath": "skills::skills_scan",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_remove",
+      "rustPath": "skills::skills_remove",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_catalogs",
+      "rustPath": "skills::skills_catalogs",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_catalog_add",
+      "rustPath": "skills::skills_catalog_add",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_catalog_refresh",
+      "rustPath": "skills::skills_catalog_refresh",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_catalog_state",
+      "rustPath": "skills::skills_catalog_state",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_catalog_import",
+      "rustPath": "skills::skills_catalog_import",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "skills_discover",
+      "rustPath": "skills::skills_discover",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "set_task_link",
+      "rustPath": "set_task_link",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "import_prompt_image",
+      "rustPath": "import_prompt_image",
+      "classification": "broker",
+      "guard": "inline_or_granted_image",
+      "mutation": true,
+      "reason": "bounded inline image or session attachment grant",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "read_clipboard_image",
+      "rustPath": "read_clipboard_image",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "browser clipboard access must stay in the browser permission boundary",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "prompt_image",
+      "rustPath": "prompt_image",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "reveal_path",
+      "rustPath": "reveal_path",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "revealing host paths is desktop-only OS chrome",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "read_document",
+      "rustPath": "read_document",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved attachment grant materialized only for bounded document read",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "dragged_file_paths",
+      "rustPath": "dragged_file_paths",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "browser drag-and-drop must use bounded uploads",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "describe_folder",
+      "rustPath": "describe_folder",
+      "classification": "broker",
+      "guard": "granted_path",
+      "mutation": true,
+      "reason": "approved folder grant materialized only for bounded description",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_files",
+      "rustPath": "list_files",
+      "classification": "broker",
+      "guard": "optional_relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "search_files",
+      "rustPath": "search_files",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "search_text",
+      "rustPath": "search_text",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "read_file",
+      "rustPath": "read_file",
+      "classification": "broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "read_document_file",
+      "rustPath": "read_document_file",
+      "classification": "binary_broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "bounded base64 envelope from native broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "design_list",
+      "rustPath": "design::design_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "design_read",
+      "rustPath": "design::design_read",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "design_comments",
+      "rustPath": "design::design_comments",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "design_save_comments",
+      "rustPath": "design::design_save_comments",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "progress_list",
+      "rustPath": "progress::progress_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "progress_media",
+      "rustPath": "progress::progress_media",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "progress_thumb",
+      "rustPath": "progress::progress_thumb",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "progress_clear",
+      "rustPath": "progress::progress_clear",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "workspace_image",
+      "rustPath": "workspace_image",
+      "classification": "broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "resolve_workspace_files",
+      "rustPath": "resolve_workspace_files",
+      "classification": "broker",
+      "guard": "relative_paths",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "prepare_file_preview",
+      "rustPath": "prepare_file_preview",
+      "classification": "broker",
+      "guard": "relative_path",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_run_script",
+      "rustPath": "get_run_script",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_run_script_preview",
+      "rustPath": "get_run_script_preview",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "run_turn_checks",
+      "rustPath": "run_turn_checks",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "start_run_script_terminal",
+      "rustPath": "start_run_script_terminal",
+      "classification": "broker",
+      "guard": "terminal_create",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "start_terminal",
+      "rustPath": "start_terminal",
+      "classification": "broker",
+      "guard": "terminal_create",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "write_terminal",
+      "rustPath": "write_terminal",
+      "classification": "broker",
+      "guard": "terminal_use",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "resize_terminal",
+      "rustPath": "resize_terminal",
+      "classification": "broker",
+      "guard": "terminal_use",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "close_terminal",
+      "rustPath": "close_terminal",
+      "classification": "broker",
+      "guard": "terminal_close",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_terminal_activity",
+      "rustPath": "get_terminal_activity",
+      "classification": "broker",
+      "guard": "terminal_use",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_terminal_preferences",
+      "rustPath": "get_terminal_preferences",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "get_metrics",
+      "rustPath": "get_metrics",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "list_local_servers",
+      "rustPath": "list_local_servers",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_configuration",
+      "rustPath": "jev::jev_configuration",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_save_configuration",
+      "rustPath": "jev::jev_save_configuration",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_decision_models",
+      "rustPath": "jev::jev_decision_models",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_doctor",
+      "rustPath": "jev::jev_doctor",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_install_runtime",
+      "rustPath": "jev::jev_install_runtime",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_start",
+      "rustPath": "jev::jev_start",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_watch_run",
+      "rustPath": "jev::jev_watch_run",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_cancel",
+      "rustPath": "jev::jev_cancel",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_list_runs",
+      "rustPath": "jev::jev_list_runs",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_read_run",
+      "rustPath": "jev::jev_read_run",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_assist_prepare",
+      "rustPath": "jev_decisions::jev_assist_prepare",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_assist_run",
+      "rustPath": "jev_decisions::jev_assist_run",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_assist_list",
+      "rustPath": "jev_decisions::jev_assist_list",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "jev_assist_save_rules",
+      "rustPath": "jev_decisions::jev_assist_save_rules",
+      "classification": "broker",
+      "guard": "none",
+      "mutation": true,
+      "reason": "typed native command via authenticated main broker",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_open",
+      "rustPath": "browser::browser_open",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_bounds",
+      "rustPath": "browser::browser_bounds",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_action",
+      "rustPath": "browser::browser_action",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_pick",
+      "rustPath": "browser::browser_pick",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_capture",
+      "rustPath": "browser::browser_capture",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "browser_close",
+      "rustPath": "browser::browser_close",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "requires an explicit browser/native-surface adapter",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_set_council",
+      "rustPath": "architect::architect_set_council",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "upstream desktop command pending explicit browser capability review",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "architect_council_accept",
+      "rustPath": "architect::architect_council_accept",
+      "classification": "blocked",
+      "guard": "none",
+      "mutation": false,
+      "reason": "upstream desktop command pending explicit browser capability review",
+      "acceptanceTest": "required"
+    }
+  ],
+  "adapters": [
+    {
+      "command": "web_ui_action",
+      "classification": "broker",
+      "guard": "ui_action",
+      "mutation": true,
+      "reason": "finite host-owned queue and usage-limit actions; no arbitrary function names or evaluation",
+      "acceptanceTest": "required"
+    },
+    {
+      "command": "web_console_lease",
+      "classification": "typed_http_adapter",
+      "guard": "session_bound_console_lease",
+      "mutation": true,
+      "reason": "opaque authenticated leases bind bounded frame and input operations to one validated simulator, VM, or cloud desktop target",
+      "acceptanceTest": "required"
+    }
+  ],
+  "policy": "Only broker and binary_broker entries are reachable. All 349 reachable inventory commands are conservatively replay-protected as mutations; the source-audited observational set is empty. Blocked entries require explicit web adapters and cannot be claimed as parity.",
+  "auditedReadOnlyCommands": []
+}

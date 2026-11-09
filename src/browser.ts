@@ -3,6 +3,8 @@ import { call, preview, subscribe } from './bridge';
 import { escape, icon } from './dom';
 import { mountJevLive, type JevLiveView } from './jev-live';
 import { pageZoom } from './ui-size';
+import { web } from './web-transport';
+import { mountWebBrowser } from './web-browser';
 import type { BrowserAttachment, BrowserBounds, BrowserElement, BrowserScreenshot, BrowserStatus, LocalServer } from './types';
 
 export interface BrowserPanel { close(): Promise<void>; refresh(): void; navigate(url: string): Promise<BrowserStatus>; watchJev(runId: string): Promise<void>; }
@@ -28,6 +30,7 @@ export function normalizeUrl(input: string): string {
 }
 
 export async function mountBrowser(host: HTMLElement, options: Options): Promise<BrowserPanel> {
+  if (web) return mountWebBrowser(host, options);
   let disposed = false, status = emptyStatus(), home = true, busy = false, request = 0, frame = 0;
   let pickTask: string | undefined, servers: LocalServer[] = [], lastBounds = '';
   let watching = false, jevAvailable = false, live: JevLiveView | undefined;

@@ -1,5 +1,7 @@
 # PandaCode
 
+The experimental [browser workspace](docs/web-ui.md) connects a browser to an opt-in PandaCode host.
+
 A small, native desktop workspace for coding agents. PandaCode runs the coding
 CLIs you already use — **Claude Code, Codex, Kimi Code, OpenCode, GLM Coding
 Plan and Xiaomi MiMo** (through Claude Code), **GitHub Copilot CLI, Antigravity,

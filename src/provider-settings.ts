@@ -1,5 +1,7 @@
 import './provider-settings.css';
 import { call, preview } from './bridge';
+import { web } from './web-transport';
+import { webFiles } from './web-files';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
@@ -271,6 +273,7 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
       const provider = form.dataset.provider!;
       const input = form.querySelector<HTMLInputElement>('input')!;
       const path = input.value.trim();
+      if (web && path) { message('Choose the executable with the host file picker. Clear the field to restore automatic discovery.'); return; }
       void perform(() => call('provider_set_executable', { provider, path }), path ? 'Executable saved.' : 'Automatic discovery restored.', input);
     }
   };
@@ -293,6 +296,14 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (target.dataset.chooseExecutable) {
       event.preventDefault();
       if (preview) { message('Choose executable is available in the desktop app.'); return; }
+      if (web) {
+        try {
+          const grant = await webFiles?.pickHostFile('executable'); if (!grant) return;
+          const provider = target.dataset.chooseExecutable;
+          void perform(() => call<Configuration>('provider_set_executable', { provider, path: grant.grant }), `Executable configured: ${grant.name}.`);
+        } catch (error) { if (!disposed) message(error instanceof Error ? error.message : String(error), true); }
+        return;
+      }
       try {
         const path = await (await import('@tauri-apps/plugin-dialog')).open({ directory: false, multiple: false, title: 'Choose agent executable' });
         if (!disposed && typeof path === 'string') {

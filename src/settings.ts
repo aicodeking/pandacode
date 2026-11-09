@@ -7,6 +7,7 @@ import { uiSizeControls } from './ui-size';
 import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountSupportDetails } from './support-settings';
+import { mountBrowserWorkspaceSettings } from './web-gateway-settings';
 import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
 import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings';
 import { mountModelRouting } from './model-routing';
@@ -168,6 +169,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
+    case 'browser-workspace': return '<div id="browser-workspace-settings" class="settings-group"></div>';
     case 'remote': return '<div id="remote-settings"></div>';
     case 'github': return '<div id="github-settings"></div>';
     case 'about': return `${aboutSettingsHtml()}${resourceUsageHtml()}
@@ -318,6 +320,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     }
     if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
+    if (id === 'browser-workspace') cleanups.push(mountBrowserWorkspaceSettings(panel.querySelector<HTMLElement>('#browser-workspace-settings')!));
     if (id === 'about') {
       cleanups.push(mountSupportDetails(panel.querySelector<HTMLDetailsElement>('.support-details')!));
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));

@@ -589,6 +589,8 @@ fn diff_repository(root: &Path, path: Option<String>, staged: bool) -> Result<St
     let mut args = vec![
         "diff",
         "--no-ext-diff",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
         "--no-textconv",
         "--no-color",
         "--submodule=short",
@@ -633,6 +635,8 @@ fn diff_repository(root: &Path, path: Option<String>, staged: bool) -> Result<St
                     "diff",
                     "--no-index",
                     "--no-ext-diff",
+                    "--src-prefix=a/",
+                    "--dst-prefix=b/",
                     "--no-textconv",
                     "--no-color",
                     "--",
@@ -1430,7 +1434,7 @@ pub fn read_file(root: &Path, path: String) -> Result<String, String> {
 }
 
 /// Largest PDF, Word, spreadsheet or image file the viewer will open.
-const DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) const DOCUMENT_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// The bytes of a PDF, Word, spreadsheet or image file for the viewer, which renders it in the window.
 /// Only those types, only inside the project, and bounded in size.
@@ -1815,6 +1819,28 @@ mod tests {
         let all = git_diff(&f.root, None, false).unwrap();
         assert!(all.contains("+new") && all.contains("+fresh"));
         assert!(!all.contains("+staged") && !all.contains("hidden"));
+    }
+
+    #[test]
+    fn diffs_use_canonical_prefixes_despite_repository_configuration() {
+        for setting in ["diff.mnemonicPrefix", "diff.noprefix"] {
+            let f = Fixture::new(true);
+            fs::write(f.root.join("tracked.txt"), "old\n").unwrap();
+            f.git(&["add", "."]);
+            f.git(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "Base"]);
+            f.git(&["config", setting, "true"]);
+            fs::write(f.root.join("tracked.txt"), "new\n").unwrap();
+            fs::write(f.root.join("fresh.txt"), "fresh\n").unwrap();
+            let tracked = git_diff(&f.root, Some("tracked.txt".into()), false).unwrap();
+            assert!(tracked.contains("diff --git a/tracked.txt b/tracked.txt"), "{setting}: {tracked}");
+            assert!(tracked.contains("--- a/tracked.txt\n+++ b/tracked.txt"));
+            let untracked = git_diff(&f.root, Some("fresh.txt".into()), false).unwrap();
+            assert!(untracked.contains("diff --git a/fresh.txt b/fresh.txt"), "{setting}: {untracked}");
+            assert!(untracked.contains("--- /dev/null\n+++ b/fresh.txt"));
+            f.git(&["add", "tracked.txt"]);
+            let staged = git_diff(&f.root, Some("tracked.txt".into()), true).unwrap();
+            assert!(staged.contains("--- a/tracked.txt\n+++ b/tracked.txt"));
+        }
     }
 
     #[test]

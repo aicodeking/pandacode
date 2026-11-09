@@ -133,6 +133,7 @@ test('issue 252: moving a new task to No project moves its text and connection a
   await picker.getByRole('option', { name: 'Claude Work · Claude Sonnet 5', exact: true }).click();
   const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
   await prompt.fill('Typed before moving');
+  await expect.poll(async () => (await callsNamed(page, 'connection_assign')).length).toBeGreaterThan(0);
   const [{ args: { sessionId: draft } }] = await callsNamed(page, 'connection_assign');
   await page.locator('#welcome-project').click();
   await page.getByRole('option', { name: /No project/ }).click();

@@ -3,6 +3,7 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -12,10 +13,27 @@ use std::{
 use tauri::{Emitter, Manager, Webview};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod platform;
+#[cfg(target_os = "linux")]
+use gtk::prelude::*;
 
 const LABEL: &str = "browser-guest";
 const MAX_PNG: usize = 5 * 1024 * 1024;
+const MAX_BROWSER_RESULT: usize = 128 * 1024;
 type Result<T> = std::result::Result<T, String>;
+
+fn parse_browser_result(raw: &str) -> Result<serde_json::Value> {
+    if raw.len() > MAX_BROWSER_RESULT {
+        return Err("Browser result is too large.".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| "Could not read the remote browser.".to_string())?;
+    match value.as_str() {
+        Some(inner) => {
+            serde_json::from_str(inner).map_err(|_| "Invalid browser result.".to_owned())
+        }
+        None => Ok(value),
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct BrowserBounds {
@@ -44,6 +62,24 @@ pub struct BrowserState {
     load_generation: AtomicU64,
     generation: AtomicU64,
     pick_key: Mutex<Option<String>>,
+    remote: Mutex<HashMap<String, RemoteBrowserState>>,
+    remote_lifecycle: tokio::sync::Mutex<()>,
+}
+
+#[derive(Clone, Default)]
+struct RemoteBrowserState {
+    status: BrowserStatus,
+    sequence: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemoteFrame {
+    #[serde(skip)]
+    pub bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub sequence: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,7 +115,7 @@ fn guard(caller: &Webview) -> Result<()> {
     }
 }
 
-fn normalize_url(input: &str) -> Result<tauri::Url> {
+pub(crate) fn normalize_url(input: &str) -> Result<tauri::Url> {
     if input.chars().any(char::is_control) {
         return Err("Enter an HTTP or HTTPS URL.".into());
     }
@@ -110,6 +146,155 @@ fn normalize_url(input: &str) -> Result<tauri::Url> {
         return Err("Only HTTP and HTTPS URLs without embedded credentials can be opened.".into());
     }
     Ok(url)
+}
+
+fn remote_update(app: &tauri::AppHandle, label: &str, f: impl FnOnce(&mut BrowserStatus)) {
+    if let Ok(mut remote) = app.state::<BrowserState>().remote.lock() {
+        if let Some(state) = remote.get_mut(label) {
+            f(&mut state.status);
+        }
+    }
+}
+
+fn remote_view(app: &tauri::AppHandle, label: &str) -> Result<Webview> {
+    if !label.starts_with("web-browser-") || label.len() > 80 {
+        return Err("Invalid remote browser surface.".into());
+    }
+    app.get_webview(label)
+        .ok_or_else(|| "Remote browser is closed.".into())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_remote_renderer_available(
+    display: Option<&std::ffi::OsStr>,
+    wayland_display: Option<&std::ffi::OsStr>,
+    session_type: Option<&std::ffi::OsStr>,
+) -> bool {
+    let present = |value: Option<&std::ffi::OsStr>| {
+        value.is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+    };
+    present(display)
+        && !present(wayland_display)
+        && !session_type
+            .is_some_and(|value| value.to_string_lossy().eq_ignore_ascii_case("wayland"))
+}
+
+#[cfg(target_os = "linux")]
+fn rectangles_overlap(left: (i32, i32, u32, u32), right: (i32, i32, u32, u32)) -> bool {
+    let (left_x, left_y, left_width, left_height) = left;
+    let (right_x, right_y, right_width, right_height) = right;
+    let (left_x, left_y, right_x, right_y) = (
+        i64::from(left_x),
+        i64::from(left_y),
+        i64::from(right_x),
+        i64::from(right_y),
+    );
+    left_x < right_x + i64::from(right_width)
+        && left_x + i64::from(left_width) > right_x
+        && left_y < right_y + i64::from(right_height)
+        && left_y + i64::from(left_height) > right_y
+}
+
+#[cfg(target_os = "linux")]
+async fn map_linux_remote_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Result<()> {
+    if !linux_remote_renderer_available(
+        std::env::var_os("DISPLAY").as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("XDG_SESSION_TYPE").as_deref(),
+    ) {
+        return Err(
+            "Remote browser frames require PandaCode to run on an isolated X11 display.".into(),
+        );
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let renderer = window.clone();
+    app.run_on_main_thread(move || {
+        let result = renderer
+            .gtk_window()
+            .map_err(|_| "Could not access the remote browser renderer.".to_string())
+            .and_then(|gtk_window| {
+                gtk_window.realize();
+                let gdk_window = gtk_window
+                    .window()
+                    .ok_or_else(|| "Could not realize the remote browser renderer.".to_string())?;
+                gdk_window.set_override_redirect(true);
+                gdk_window.move_(-30_000, -30_000);
+                Ok(())
+            });
+        let _ = tx.send(result);
+    })
+    .map_err(|_| "Could not schedule the remote browser renderer.".to_string())?;
+    tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "Timed out configuring the remote browser renderer.".to_string())?
+        .map_err(|_| "Could not configure the remote browser renderer.".to_string())??;
+    window
+        .show()
+        .map_err(|_| "Could not map the remote browser renderer.".to_string())?;
+    // Give X11 and a possible window manager one bounded turn to apply the requested position.
+    // Do not call Tao's Linux cursor-ignore API here: it unconditionally unwraps the GDK window
+    // and can crash the process while GTK is still realizing this newly mapped surface. The
+    // nonfocusable, taskbar-skipped renderer is accepted only when its actual rectangle is fully
+    // outside every monitor below, which leaves no physical pointer path to it.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let position = window
+        .outer_position()
+        .map_err(|_| "Could not verify the remote browser position.".to_string())?;
+    let size = window
+        .outer_size()
+        .map_err(|_| "Could not verify the remote browser size.".to_string())?;
+    let monitors = window
+        .available_monitors()
+        .map_err(|_| "Could not verify the remote browser display.".to_string())?;
+    if monitors.is_empty()
+        || monitors.iter().any(|monitor| {
+            let monitor_position = monitor.position();
+            let monitor_size = monitor.size();
+            rectangles_overlap(
+                (position.x, position.y, size.width, size.height),
+                (
+                    monitor_position.x,
+                    monitor_position.y,
+                    monitor_size.width,
+                    monitor_size.height,
+                ),
+            )
+        })
+    {
+        return Err("The remote browser renderer could not be kept off screen.".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn remote_linux_status(view: &Webview) -> Result<BrowserStatus> {
+    use webkit2gtk::WebViewExt;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    view.with_webview(move |platform| {
+        let native = platform.inner();
+        let _ = tx.send(BrowserStatus {
+            url: native
+                .uri()
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            title: native
+                .title()
+                .map(|value| clip(&value, 300))
+                .unwrap_or_default(),
+            loading: native.is_loading(),
+            can_go_back: native.can_go_back(),
+            can_go_forward: native.can_go_forward(),
+            picking: false,
+        });
+    })
+    .map_err(|error| error.to_string())?;
+    tokio::time::timeout(Duration::from_secs(3), rx)
+        .await
+        .map_err(|_| "Browser status timed out.".to_string())?
+        .map_err(|_| "Remote browser closed while reading its status.".to_string())
 }
 
 fn allowed_url(url: &tauri::Url) -> bool {
@@ -237,7 +422,8 @@ pub async fn browser_open(
     bounds: BrowserBounds,
 ) -> Result<BrowserStatus> {
     guard(&caller)?;
-    let url = app.state::<crate::file_preview::FilePreviews>()
+    let url = app
+        .state::<crate::file_preview::FilePreviews>()
         .navigation_url(&normalize_url(&url)?)?;
     let window = caller.window();
     let bounds = bounded(bounds, &window)?;
@@ -766,9 +952,336 @@ pub async fn browser_close(caller: Webview, app: tauri::AppHandle) -> Result<()>
     Ok(())
 }
 
+/// Creates a browser surface that is independent of the desktop panel. The external page remains
+/// an incognito, IPC-free webview; only the finite gateway adapter can address its opaque label.
+pub(crate) async fn remote_open(
+    app: tauri::AppHandle,
+    label: String,
+    input: String,
+) -> Result<BrowserStatus> {
+    let browser_state = app.state::<BrowserState>();
+    let _lifecycle = browser_state.remote_lifecycle.lock().await;
+    if app.get_webview(&label).is_some() {
+        return Err("Remote browser already exists.".into());
+    }
+    #[cfg(target_os = "linux")]
+    if !linux_remote_renderer_available(
+        std::env::var_os("DISPLAY").as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("XDG_SESSION_TYPE").as_deref(),
+    ) {
+        return Err(
+            "Remote browser frames require PandaCode to run on an isolated X11 display.".into(),
+        );
+    }
+    let url = app
+        .state::<crate::file_preview::FilePreviews>()
+        .navigation_url(&normalize_url(&input)?)?;
+    let initial = BrowserStatus {
+        url: url.to_string(),
+        title: url.host_str().unwrap_or_default().into(),
+        loading: true,
+        ..Default::default()
+    };
+    app.state::<BrowserState>()
+        .remote
+        .lock()
+        .map_err(|e| e.to_string())?
+        .insert(
+            label.clone(),
+            RemoteBrowserState {
+                status: initial.clone(),
+                sequence: 0,
+            },
+        );
+    let nav_app = app.clone();
+    let nav_label = label.clone();
+    let title_app = app.clone();
+    let title_label = label.clone();
+    let load_app = app.clone();
+    let load_label = label.clone();
+    let builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
+        .inner_size(1280.0, 800.0)
+        .visible(false)
+        .focusable(false)
+        .skip_taskbar(true)
+        .decorations(false)
+        .incognito(true)
+        .devtools(false)
+        .on_navigation(move |url| {
+            if !allowed_url(url) {
+                return false;
+            }
+            remote_update(&nav_app, &nav_label, |status| {
+                status.url = url.to_string();
+                status.loading = true;
+            });
+            true
+        })
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+        .on_download(|_, _| false)
+        .on_document_title_changed(move |_, title| {
+            remote_update(&title_app, &title_label, |status| {
+                status.title = clip(&title, 300)
+            });
+        })
+        .on_page_load(move |_, payload| {
+            remote_update(&load_app, &load_label, |status| {
+                status.url = payload.url().to_string();
+                status.loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
+            });
+        });
+    #[cfg(target_os = "linux")]
+    let builder = builder.position(-30_000.0, -30_000.0);
+    let built = builder.build();
+    let window = match built {
+        Ok(window) => window,
+        Err(error) => {
+            app.state::<BrowserState>()
+                .remote
+                .lock()
+                .map_err(|e| e.to_string())?
+                .remove(&label);
+            return Err(format!("Could not open remote browser: {error}"));
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    drop(window);
+    #[cfg(target_os = "linux")]
+    if let Err(error) = map_linux_remote_window(&app, &window).await {
+        // If the window manager clamped the renderer onto a monitor, hide it before trying to
+        // destroy it. Keep its state registered when close fails so the gateway's bounded cleanup
+        // can find the same opaque label and retry instead of leaving an untracked renderer.
+        let _ = window.hide();
+        if window.close().is_ok() {
+            app.state::<BrowserState>()
+                .remote
+                .lock()
+                .map_err(|e| e.to_string())?
+                .remove(&label);
+            return Err(error);
+        }
+        return Err(format!(
+            "{error} The failed renderer was hidden but could not be closed."
+        ));
+    }
+    Ok(initial)
+}
+
+pub(crate) async fn remote_status(app: tauri::AppHandle, label: String) -> Result<BrowserStatus> {
+    let view = remote_view(&app, &label)?;
+    #[cfg(target_os = "linux")]
+    {
+        let observed = remote_linux_status(&view).await?;
+        remote_update(&app, &label, |status| {
+            if tauri::Url::parse(&observed.url)
+                .ok()
+                .as_ref()
+                .is_some_and(allowed_url)
+            {
+                status.url = observed.url;
+                status.title = observed.title;
+            }
+            status.loading = observed.loading;
+            status.can_go_back = observed.can_go_back;
+            status.can_go_forward = observed.can_go_forward;
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    if let Ok(value) = remote_agent(&view, serde_json::json!({"kind":"status"})).await {
+        remote_update(&app, &label, |status| {
+            if let Some(url) = value.get("url").and_then(serde_json::Value::as_str) {
+                status.url = clip(url, 4096);
+            }
+            if let Some(title) = value.get("title").and_then(serde_json::Value::as_str) {
+                status.title = clip(title, 300);
+            }
+            if let Some(loading) = value.get("loading").and_then(serde_json::Value::as_bool) {
+                status.loading = loading;
+            }
+            if let Some(back) = value.get("canGoBack").and_then(serde_json::Value::as_bool) {
+                status.can_go_back = back;
+            }
+            if let Some(forward) = value
+                .get("canGoForward")
+                .and_then(serde_json::Value::as_bool)
+            {
+                status.can_go_forward = forward;
+            }
+        });
+    }
+    app.state::<BrowserState>()
+        .remote
+        .lock()
+        .map_err(|e| e.to_string())?
+        .get(&label)
+        .map(|state| state.status.clone())
+        .ok_or_else(|| "Remote browser is closed.".into())
+}
+
+pub(crate) async fn remote_action(
+    app: tauri::AppHandle,
+    label: String,
+    action: String,
+    url: Option<String>,
+) -> Result<BrowserStatus> {
+    let view = remote_view(&app, &label)?;
+    if action == "navigate" {
+        let target = app
+            .state::<crate::file_preview::FilePreviews>()
+            .navigation_url(&normalize_url(url.as_deref().unwrap_or_default())?)?;
+        view.navigate(target.clone()).map_err(|e| e.to_string())?;
+        remote_update(&app, &label, |status| {
+            status.url = target.to_string();
+            status.title = target.host_str().unwrap_or_default().to_owned();
+            status.loading = true;
+        });
+        return app
+            .state::<BrowserState>()
+            .remote
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get(&label)
+            .map(|state| state.status.clone())
+            .ok_or_else(|| "Remote browser is closed.".into());
+    } else {
+        if !matches!(action.as_str(), "back" | "forward" | "reload" | "stop") {
+            return Err("Unknown browser action.".into());
+        }
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        platform::action(&view, &action)?;
+        #[cfg(target_os = "macos")]
+        view.eval(match action.as_str() {
+            "back" => "history.back()",
+            "forward" => "history.forward()",
+            "reload" => "location.reload()",
+            _ => "window.stop()",
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    remote_status(app, label).await
+}
+
+async fn remote_agent(view: &Webview, args: serde_json::Value) -> Result<serde_json::Value> {
+    let script =
+        include_str!("browser/remote_agent.js").replace("__PANDACODE_ARGS__", &args.to_string());
+    let raw = evaluate(view, script).await?;
+    let value = parse_browser_result(&raw)?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_owned());
+    }
+    Ok(value)
+}
+
+pub(crate) async fn remote_input(
+    app: tauri::AppHandle,
+    label: String,
+    input: serde_json::Value,
+) -> Result<BrowserStatus> {
+    let view = remote_view(&app, &label)?;
+    remote_agent(&view, input).await?;
+    remote_status(app, label).await
+}
+
+pub(crate) async fn remote_inspect(
+    app: tauri::AppHandle,
+    label: String,
+    action: String,
+    selector: Option<String>,
+    text: Option<String>,
+) -> Result<serde_json::Value> {
+    let view = remote_view(&app, &label)?;
+    if !matches!(action.as_str(), "read" | "click" | "type") {
+        return Err("Unknown browser operation.".into());
+    }
+    let selector = selector.unwrap_or_default();
+    let text = text.unwrap_or_default();
+    if selector.len() > 2048 || text.len() > 8192 || (action != "read" && selector.is_empty()) {
+        return Err("Invalid browser inspection input.".into());
+    }
+    let args = serde_json::json!({"action":action,"selector":selector,"text":text});
+    let script = include_str!("browser_agent.js").replace("__PANDACODE_ARGS__", &args.to_string());
+    let raw = evaluate(&view, script).await?;
+    let value = parse_browser_result(&raw)?;
+    if let Some(error) = value.get("error").and_then(serde_json::Value::as_str) {
+        return Err(error.to_owned());
+    }
+    Ok(value)
+}
+
+pub(crate) async fn remote_pick(
+    app: tauri::AppHandle,
+    label: String,
+    x: f64,
+    y: f64,
+) -> Result<serde_json::Value> {
+    remote_agent(
+        &remote_view(&app, &label)?,
+        serde_json::json!({"kind":"pick","x":x,"y":y}),
+    )
+    .await
+}
+
+pub(crate) async fn remote_frame(app: tauri::AppHandle, label: String) -> Result<RemoteFrame> {
+    let view = remote_view(&app, &label)?;
+    let before = view.url().map_err(|e| e.to_string())?;
+    let (bytes, width, height) = capture(&view).await?;
+    if bytes.len() > MAX_PNG || view.url().map_err(|e| e.to_string())? != before {
+        return Err("The page changed or its frame exceeded 5 MB.".into());
+    }
+    let sequence = {
+        let browser_state = app.state::<BrowserState>();
+        let mut remote = browser_state.remote.lock().map_err(|e| e.to_string())?;
+        let state = remote.get_mut(&label).ok_or("Remote browser is closed.")?;
+        state.sequence = state.sequence.wrapping_add(1).max(1);
+        state.sequence
+    };
+    Ok(RemoteFrame {
+        bytes,
+        width,
+        height,
+        sequence,
+    })
+}
+
+pub(crate) async fn remote_close(app: tauri::AppHandle, label: String) -> Result<()> {
+    let browser_state = app.state::<BrowserState>();
+    let _lifecycle = browser_state.remote_lifecycle.lock().await;
+    #[cfg(target_os = "linux")]
+    if let Some(window) = app.get_webview_window(&label) {
+        // A failed close must at least retire the mapped X11 surface before callers retry.
+        let _ = window.hide();
+    }
+    if let Some(view) = app.get_webview(&label) {
+        view.close().map_err(|e| e.to_string())?;
+    }
+    browser_state
+        .remote
+        .lock()
+        .map_err(|e| e.to_string())?
+        .remove(&label);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_result_parser_bounds_raw_bytes_before_parsing() {
+        let valid = format!(
+            r#"{{"text":"{}"}}"#,
+            "é".repeat((MAX_BROWSER_RESULT - 32) / 2)
+        );
+        assert!(valid.len() <= MAX_BROWSER_RESULT);
+        assert!(parse_browser_result(&valid).is_ok());
+        let oversized = format!(r#"{{"text":"{}"}}"#, "x".repeat(MAX_BROWSER_RESULT));
+        assert_eq!(
+            parse_browser_result(&oversized),
+            Err("Browser result is too large.".into())
+        );
+        assert!(parse_browser_result("not json").is_err());
+    }
     #[tokio::test]
     async fn capture_cleanup_keeps_recent_and_unmanaged_files() {
         let dir = std::env::temp_dir().join(format!("pandacode-captures-{}", uuid::Uuid::new_v4()));
@@ -817,6 +1330,31 @@ mod tests {
         ] {
             assert!(normalize_url(input).is_err(), "{input}");
         }
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remote_renderer_requires_plain_x11_and_an_offscreen_rectangle() {
+        use std::ffi::OsStr;
+        assert!(linux_remote_renderer_available(
+            Some(OsStr::new(":23")),
+            None,
+            Some(OsStr::new("x11")),
+        ));
+        assert!(!linux_remote_renderer_available(
+            Some(OsStr::new(":0")),
+            Some(OsStr::new("wayland-1")),
+            Some(OsStr::new("wayland")),
+        ));
+        assert!(!linux_remote_renderer_available(
+            None,
+            None,
+            Some(OsStr::new("x11")),
+        ));
+        assert!(rectangles_overlap((-10, -10, 20, 20), (0, 0, 1280, 800)));
+        assert!(!rectangles_overlap(
+            (-30_000, -30_000, 1280, 800),
+            (0, 0, 1280, 800)
+        ));
     }
     #[test]
     fn element_metadata_is_bounded_and_non_web_origins_are_rejected() {

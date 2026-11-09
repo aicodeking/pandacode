@@ -1,4 +1,5 @@
 import type { AgentEvent, Message, Provider, ProviderId, ProviderModel, Session, SubagentActivity } from './types';
+import { web } from './web-transport';
 /** The launcher has its own tiny bridge and never imports the workspace preview. */
 export interface LaunchContext { projectId: string | null; provider: string; model: string; mode: string; reasoningEffort?: string | null }
 export interface OverlayPreferences { enabled: boolean; shortcut: string; context: LaunchContext; error: string | null; modelSelection?: {provider:string;model:string;reasoningEffort?:string|null} | null }
@@ -56,12 +57,14 @@ function previewThread(sessionId: string, subagentId?: string): OverlayThread {
 }
 /** Subscribe without pulling the full workspace or its preview into the launcher. */
 export async function overlayEvents(callback: (event: AgentEvent) => void): Promise<() => void> {
+  if (web) return web.subscribe('agent-event', event => callback(event.payload as AgentEvent));
   if (nativeOverlay) return (await import('@tauri-apps/api/event')).listen<AgentEvent>('agent-event', event => callback(event.payload));
   const receive = (event: Event) => callback((event as CustomEvent<AgentEvent>).detail);
   window.addEventListener('pandacode-overlay-agent-event', receive);
   return () => window.removeEventListener('pandacode-overlay-agent-event', receive);
 }
 export async function overlayCall<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  if (web) return web.call<T>(command, args);
   if (nativeOverlay) return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
   const save = () => { try { localStorage.setItem('pandacode.overlay-preview', JSON.stringify(previewPreferences)); } catch { /* Preview only. */ } };
   if (command === 'overlay_preferences') return structuredClone(previewPreferences) as T;

@@ -21,3 +21,5 @@ website/.astro/
 
 # Visual progress screenshots (PandaCode)
 .pandacode/progress-shots/
+src-tauri/target-*/
+.web-e2e/

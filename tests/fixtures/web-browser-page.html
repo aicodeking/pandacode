@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>PandaCode browser acceptance fixture</title>
+<style>body{font:20px sans-serif;padding:24px;min-height:2200px}input,textarea,button{font:inherit;margin:8px;display:block}#nested{height:160px;overflow:auto;border:1px solid}#nested div{height:800px}</style>
+<h1>Isolated browser fixture</h1>
+<label>Name<input id="name" autocomplete="off"></label>
+<output id="echo">Value:</output>
+<label>Email<input id="email" type="email" autocomplete="off"></label>
+<label>Notes<textarea id="notes"></textarea></label>
+<button id="increment" type="button">Increment</button><output id="count">0</output>
+<div id="nested" tabindex="0"><div>Nested scrolling fixture</div><p>Nested bottom</p></div>
+<p id="bottom" style="margin-top:1200px">Page bottom</p>
+<script>document.querySelector('#name').oninput=()=>document.querySelector('#echo').textContent='Value: '+document.querySelector('#name').value;document.querySelector('#increment').onclick=()=>document.querySelector('#count').textContent=String(Number(document.querySelector('#count').textContent)+1);</script>
+<output id="ipc">IPC:pending</output>
+<script>(async()=>{let exposed=false;try{if(window.__TAURI_INTERNALS__?.invoke){await window.__TAURI_INTERNALS__.invoke('list_projects');exposed=true;}}catch{}document.querySelector('#ipc').textContent=exposed?'IPC:EXPOSED':'IPC:blocked';})();</script>
+</html>

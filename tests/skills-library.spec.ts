@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 /* Settings → Skills & rules, mounted on its own page over the preview library
  * (src/preview-skills.ts), so it runs whether or not Settings has wired the section yet. */
 async function open(page: Page): Promise<void> {
-  await page.route('**/skills-library-harness.html', route => route.fulfill({
+  await page.route('**/skills-library-harness.html**', route => route.fulfill({
     contentType: 'text/html',
     body: `<!doctype html><html><head><link rel="stylesheet" href="/src/styles.css"></head><body><main id="host" class="settings-page-root"></main>
       <script type="module">
@@ -11,7 +11,15 @@ async function open(page: Page): Promise<void> {
         import { createPreviewSkills } from '/src/preview-skills.ts';
         const skills = createPreviewSkills();
         window.__skills = skills;
-        const call = async (command, args = {}) => skills.call(command, args);
+        window.__skillCalls = [];
+        const call = async (command, args = {}) => {
+          window.__skillCalls.push({ command, args });
+          if (command === 'skills_import_folder' && String(args.path).startsWith('opaque-')) {
+            if (window.__failPicked) { window.__failPicked = false; throw new Error('simulated backend rejection after grant consumption'); }
+            return { id: 'picked-skill', name: 'picked-skill', kind: args.kind || 'skill', description: 'Picked folder', sha256: 'picked', importedAt: Date.now(), source: { kind: 'folder', location: String(args.path), gitRef: null, commit: null }, acknowledged: null, activations: [], files: ['SKILL.md'], findings: [] };
+          }
+          return skills.call(command, args);
+        };
         mountSkillsLibrary(document.getElementById('host'), { call, projects: () => [{ id: 'orbit', name: 'Orbit' }] });
       </script></body></html>`,
   }));
@@ -58,6 +66,68 @@ for (const theme of ['light', 'dark']) {
     await expect(form.getByRole('combobox', { name: 'Project for project scope' })).toHaveValue('orbit');
   });
 }
+
+test('web local import uses an opaque folder grant, supports cancel, and returns to typed paths after editing', async ({ page }) => {
+  await page.route('**/api/pandacode/files/roots', route => route.fulfill({ json: [{ id: 'home', label: 'Home' }] }));
+  await page.route('**/api/pandacode/files/list**', route => route.fulfill({ json: { root: 'home', path: '', entries: [{ name: 'chosen-skill', path: 'chosen-skill', directory: true }] } }));
+  await page.route('**/api/pandacode/files/select', route => route.fulfill({ json: { grant: 'opaque-folder-grant', name: 'chosen-skill', directory: true } }));
+  await open(page);
+  await page.goto('/skills-library-harness.html?web');
+  await expect(page.getByRole('list', { name: 'Library' })).toBeVisible();
+  const form = page.getByRole('form', { name: 'Import a skill or rule' });
+  const pickerButton = form.getByRole('button', { name: 'Choose folder' });
+  await pickerButton.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await expect(page.locator('body')).not.toContainText('Selected chosen-skill.');
+
+  await pickerButton.click();
+  await page.getByRole('button', { name: 'Select folder' }).click();
+  await expect(form.getByRole('textbox', { name: 'Folder or file path' })).toHaveValue('chosen-skill');
+  await form.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByRole('status')).toContainText('Imported');
+  await page.waitForTimeout(1000);
+  let calls = await page.evaluate(() => (window as any).__skillCalls.filter((entry: any) => entry.command === 'skills_import_folder'));
+  expect(calls.at(-1).args.path).toBe('opaque-folder-grant');
+
+  await page.goto('/skills-library-harness.html');
+  await expect(page.getByRole('list', { name: 'Library' })).toBeVisible();
+  const typedForm = page.getByRole('form', { name: 'Import a skill or rule' });
+  const path = typedForm.getByRole('textbox', { name: 'Folder or file path' });
+  await path.fill('/typed/skill');
+  await expect(path).toHaveValue('/typed/skill');
+  await typedForm.getByRole('button', { name: 'Import' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__skillCalls.filter((entry: any) => entry.command === 'skills_import_folder').length)).toBe(1);
+  calls = await page.evaluate(() => (window as any).__skillCalls.filter((entry: any) => entry.command === 'skills_import_folder'));
+  expect(calls.at(-1).args.path).toBe('/typed/skill');
+  await expect(page.getByRole('status')).toContainText('Imported');
+});
+
+test('a failed web folder import consumes its grant and requires a fresh pick', async ({ page }) => {
+  let grantNumber = 0;
+  await page.route('**/api/pandacode/files/roots', route => route.fulfill({ json: [{ id: 'home', label: 'Home' }] }));
+  await page.route('**/api/pandacode/files/list**', route => route.fulfill({ json: { root: 'home', path: '', entries: [{ name: 'chosen-skill', path: 'chosen-skill', directory: true }] } }));
+  await page.route('**/api/pandacode/files/select', route => route.fulfill({ json: { grant: `opaque-folder-grant-${++grantNumber}`, name: 'chosen-skill', directory: true } }));
+  await open(page);
+  await page.goto('/skills-library-harness.html?web');
+  const form = page.getByRole('form', { name: 'Import a skill or rule' });
+  await form.getByRole('button', { name: 'Choose folder' }).click();
+  await page.getByRole('button', { name: 'Select folder' }).click();
+  await page.waitForTimeout(300);
+  await page.evaluate(() => { (window as any).__failPicked = true; });
+  await form.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByRole('alert')).toContainText('simulated backend rejection');
+  await form.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByRole('alert')).toContainText('Choose the folder with the picker');
+  await form.getByRole('button', { name: 'Choose folder' }).click();
+  await page.getByRole('button', { name: 'Select folder' }).click();
+  await page.waitForTimeout(300);
+  await form.getByRole('button', { name: 'Import' }).click();
+  await expect(page.getByRole('status')).toContainText('Imported');
+  const calls = await page.evaluate(() => (window as any).__skillCalls.filter((entry: any) => entry.command === 'skills_import_folder'));
+  expect(calls.map((entry: any) => entry.args.path)).toEqual(['opaque-folder-grant-1', 'opaque-folder-grant-2']);
+});
 
 test('activating a skill for Claude Code and Codex shows in the matrix, and drift is reported', async ({ page }) => {
   await open(page);

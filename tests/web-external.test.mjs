@@ -1,0 +1,6 @@
+import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs/promises'; import ts from 'typescript';
+const source=await fs.readFile(new URL('../src/web-external.ts',import.meta.url),'utf8'); const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+globalThis.window={open:()=>({}),}; Object.defineProperty(globalThis,'navigator',{value:{userActivation:{isActive:true}},configurable:true}); globalThis.document={};
+const {validateExternalUrl,openWebExternal}=await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+test('actual module validates bounded credential-free HTTP(S)',()=>{assert.equal(validateExternalUrl('https://example.test/a').hostname,'example.test');for(const value of ['javascript:alert(1)','https://u:p@example.test','https://example.test/\n','x'.repeat(8193)])assert.throws(()=>validateExternalUrl(value));});
+test('actual module uses a user gesture without confirmation',()=>{let opened;window.open=(...args)=>{opened=args;return null};openWebExternal('https://example.test/help');assert.deepEqual(opened,['https://example.test/help','_blank','noopener,noreferrer']);});
