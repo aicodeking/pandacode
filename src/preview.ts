@@ -1266,11 +1266,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const ownLogin = Boolean(previewConnections.connections.find(item => item.id === args.connection)?.configDir);
       const connectionUsage = args.connection && ownLogin ? ([[81, 100], [93, 58], [12, 9]][ownIndex] ?? [3, 5]) : null;
       if (args.connection && previewSignedOut.includes(String(args.connection))) {
-        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
+        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, email: null, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
         break;
       }
       const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
       result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
+        // Only Codex account/read supplies a usage identity; these are sample addresses, never real credentials.
+        email: provider === 'codex' ? (args.connection && ownLogin ? `${(previewConnections.connections.find(item => item.id === args.connection)?.name ?? args.connection).toLowerCase().replace(/[^a-z0-9]+/g, '.')}@example.com` : 'you@example.com') : null,
         plan: provider === 'codex' ? 'Pro' : provider === 'opencode' ? 'Go' : null,
         windows: supported ? [
           { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: connectionUsage?.[0] ?? (provider === 'codex' ? 38 : 22), resetsAt: new Date(Date.now() + 7200000).toISOString() },

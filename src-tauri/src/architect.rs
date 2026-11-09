@@ -34,7 +34,8 @@ use tauri::{Emitter, Manager, State};
 /// 9: no stated limits; read_worker and sub_workers read page the whole response and checkpoint;
 /// mailbox offsets name their message; note lists page by key.
 /// 10: dispatch_workers takes councilLens (Council reviewers); a few descriptions are shorter.
-const TOOL_CATALOG_VERSION: u32 = 10;
+/// 11: team leads also receive the app task tools.
+const TOOL_CATALOG_VERSION: u32 = 11;
 /// Auto teams carry a roster of installed models the lead may choose from.
 const AUTO_ROSTER_MAX: usize = 24;
 /// Team tools only change this team's own state, and every call is checked against the

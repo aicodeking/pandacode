@@ -336,7 +336,7 @@ test('each named connection shows its own limits under its harness', async ({ pa
   await openUsage(page);
   await tab(page, 'Claude').click();
   const claude = card(page, 'Claude Code');
-  await expect(claude.locator('.usage-connection-default')).toHaveText('Default setup');
+  await expect(claude.locator('.usage-connection-default')).toContainText('Default setup');
   const personal = claude.getByRole('region', { name: 'Claude Personal', exact: true });
   await expect(personal.getByRole('progressbar', { name: 'Claude Personal · 5-hour' })).toHaveAttribute('aria-valuenow', '97');
   await expect(claude.getByRole('region', { name: 'Claude Work', exact: true })).toContainText('API key');
@@ -344,7 +344,7 @@ test('each named connection shows its own limits under its harness', async ({ pa
   await expect.poll(async () => (await calls(page)).filter(call => call.provider === 'claude').map(call => (call as any).connection ?? null)).toEqual([null, 'personal', 'work']);
 });
 
-test('Claude Code and Codex accounts show their email, plan, pool state in Settings words and a paired summary', async ({ page }) => {
+test('Claude Code and Codex accounts show email, plan and accessible pool state', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   const connection = (id: string, name: string) => ({ id, provider: 'claude', name, args: [], env: {}, secretEnv: [], configDir: `/Users/sample/.claude-${id}`, revision: 1 });
@@ -377,26 +377,26 @@ test('Claude Code and Codex accounts show their email, plan, pool state in Setti
   const claude = card(page, 'Claude Code');
   const heading = (id: string) => claude.locator(`.usage-account-heading[data-account="${id}"]`);
   const chip = (id: string) => heading(id).locator('.usage-pool-chip');
-  const dot = (id: string) => heading(id).locator('.usage-pool-dot');
+  const dot = (id: string) => heading(id).locator('[data-status]');
   const weekday = (at: number) => page.evaluate(at => new Date(at).toLocaleDateString([], { weekday: 'short' }), at);
   // Default setup: email · the login's own plan (agent_usage's only when the login has none, as in Settings); the same
   // two windows as Settings; fresh usage wins over the stale warning.
-  await expect(heading('').getByRole('heading', { name: 'Default setup' })).toBeVisible();
-  await expect(heading('').locator('.usage-account-who')).toHaveText('me@example.com · Pro');
+  await expect(heading('').getByRole('heading', { name: 'Default setup · Pro', exact: true })).toBeVisible();
+  await expect(heading('').locator('.usage-account-who')).toHaveText('me@example.com');
   await expect(claude.locator(':scope > .usage-card-body').getByRole('progressbar')).toHaveCount(2);
   await expect(claude.getByRole('progressbar', { name: 'Claude Code · Weekly', exact: true })).toHaveAttribute('aria-valuenow', '64');
-  await expect(chip('')).toHaveText('Ready');
-  await expect(dot('')).toHaveAttribute('data-state-tone', 'ready');
+  await expect(chip('')).toHaveAttribute('aria-label', 'Ready');
+  await expect(dot('')).toHaveAttribute('data-account-state', 'ready');
   // Ready accounts have no summary line: it would only repeat the meters.
   await expect(heading('').locator('.usage-account-summary')).toHaveText('');
   // Limits name their window; emails are text, never markup.
-  await expect(heading('personal').locator('.usage-account-who')).toHaveText('<b>personal</b>@example.com · Max');
-  await expect(chip('personal')).toHaveText(new RegExp(`^Weekly limit · until ${await weekday(tomorrow)} \\d`));
-  await expect(dot('personal')).toHaveAttribute('data-state-tone', 'limited');
+  await expect(heading('personal').locator('.usage-account-who')).toHaveText('<b>personal</b>@example.com');
+  await expect(chip('personal')).toHaveAttribute('aria-label', new RegExp(`^Weekly limit · until ${await weekday(tomorrow)} \\d`));
+  await expect(dot('personal')).toHaveAttribute('data-account-state', 'limited');
   await expect(heading('personal').locator('.usage-account-summary')).toHaveText('');
-  await expect(chip('capped')).toHaveText(/^Limit · until /);
-  await expect(chip('spare')).toHaveText('Near limit');
-  await expect(dot('spare')).toHaveAttribute('data-state-tone', 'near');
+  await expect(chip('capped')).toHaveAttribute('aria-label', /^Limit · until /);
+  await expect(chip('spare')).toHaveAttribute('aria-label', 'Near limit');
+  await expect(dot('spare')).toHaveAttribute('data-account-state', 'near');
   // 92 % is amber like its Near limit chip; only a full window, or the one holding the account, is red.
   await expect(claude.locator('.usage-connection[data-connection="spare"] .usage-window')).toHaveAttribute('data-tone', 'warn');
   const capped = claude.locator('.usage-connection[data-connection="capped"] .usage-window');
@@ -410,7 +410,7 @@ test('Claude Code and Codex accounts show their email, plan, pool state in Setti
   await expect(spareReset.locator('span[title]')).toHaveAttribute('title', 'Shared with claude.ai');
   // Keyboard and screen-reader users get the detail too, as visually hidden text.
   await expect(spareReset.locator('.sr-only')).toHaveText('. Shared with claude.ai');
-  await expect(heading('spare').locator('.usage-account-summary')).toHaveText('Peak 92% · 5-hour');
+  await expect(heading('spare').locator('.usage-account-summary')).toHaveText('');
   // A same-login connection is not read again; one line points to the account it shares.
   const shared = claude.locator('.usage-connection[data-connection="shared"]');
   await expect(shared.locator('.usage-same-login')).toHaveText('Same login as Default setup. Its usage is shown there.');
@@ -419,26 +419,26 @@ test('Claude Code and Codex accounts show their email, plan, pool state in Setti
   await expect(claude.locator(':scope > .usage-card-heading .info-mark')).toHaveCount(1);
   // Neutral states carry no tone: amber only means close to a limit.
   for (const [id, text] of [['work', 'Not signed in'], ['shared', 'Same login'], ['off', 'Left out']]) {
-    await expect(chip(id)).toHaveText(text);
-    await expect(dot(id)).not.toHaveAttribute('data-state-tone', /./);
+    await expect(chip(id)).toHaveAttribute('aria-label', text);
+    await expect(dot(id)).toHaveAttribute('data-account-state', 'neutral');
   }
   // A signed-out account is never checked; it points to Settings → Providers, with no plan.
   const work = claude.locator('.usage-connection[data-connection="work"]');
   await expect(work.locator('.usage-signed-out')).toHaveText(/^\s*Sign in from Settings → Providers\.\s*Open Settings\s*$/);
-  await expect(heading('work').locator('.usage-account-who')).toHaveText('work@example.com');
+  await expect(heading('work').locator('.usage-account-who')).toHaveText('Not signed in');
   await expect(work.getByRole('progressbar')).toHaveCount(0);
   await expect.poll(async () => (await calls(page)).filter(call => call.provider === 'claude').map(call => (call as any).connection ?? null)).toEqual([null, 'personal', 'spare', 'off', 'capped']);
   // One "Checked" time per harness card, in its header.
   await expect(claude.getByText(/^Checked \d/)).toHaveCount(1);
   await expect(claude.locator(':scope > .usage-card-heading')).toContainText(/Checked \d/);
   await expect(claude.locator('b')).toHaveCount(0);
-  // Codex has no named accounts and its pool is off: the email sits under the card title, with no chip.
+  // Codex has no named accounts and pooling is off: identity and accessible status still show.
   await tab(page, 'Codex').click();
   const codex = card(page, 'Codex');
-  await expect(codex.getByRole('heading', { name: 'Default setup' })).toBeHidden();
-  await expect(codex.locator('.usage-account-who')).toHaveText('codex@example.com · Plus');
+  await expect(codex.getByRole('heading', { name: 'Default setup · Plus', exact: true })).toBeVisible();
+  await expect(codex.locator('.usage-account-who')).toHaveText('codex@example.com');
   await expect(codex.locator('.usage-account-summary')).toHaveText('');
-  await expect(codex.locator('.usage-pool-chip')).toBeHidden();
+  await expect(codex.locator('.usage-pool-chip')).toHaveAttribute('aria-label', 'Ready');
   // Other harnesses keep their plan pill and no account rows.
   await tab(page, 'Kimi').click();
   await expect(card(page, 'Kimi').locator('.usage-account-heading')).toHaveCount(0);
@@ -448,4 +448,59 @@ test('Claude Code and Codex accounts show their email, plan, pool state in Setti
   await expect(dialog(page)).toBeHidden();
   await expect(page.locator('#settings-panel-providers')).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('Agent usage populated narrow accounts keep full identity and status accessible through refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 460, height: 740 });
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.4'));
+  const email = `${'a'.repeat(104)}@example.invalid`;
+  const name = 'Research subscription account '.repeat(4);
+  const member = (id: string, extra: object = {}) => ({ id, email: null, plan: null, signedIn: true, excluded: false, sameAs: null, limitedUntil: null, nearUntil: null, active: 0, ...extra });
+  await openApp(page, [], [], { connections: [{ id: 'long', provider: 'codex', name, configDir: '/tmp/codex-example', env: {}, secretEnv: [], args: [], revision: 1 }], pools: ['codex'], tasks: {} }, {
+    claude: [member('', { email: 'local@example.invalid' })],
+    codex: [member('', { email: 'default@example.invalid' }), member('long')],
+  });
+  await page.evaluate(email => { const f = (window as any).__usageFixture; f.byConnection = { long: { ...f.responses.codex, email, windows: [{ label: 'Weekly', usedPercent: 93, resetsAt: null }] } }; }, email);
+  await openUsage(page); await tab(page, 'Codex').click();
+  const heading = dialog(page).locator('.usage-account-heading[data-account="long"]');
+  await expect(heading.locator('.usage-account-who')).toHaveText(email);
+  await expect(heading.locator('.usage-pool-chip')).toHaveAttribute('aria-label', 'Near limit');
+  await heading.scrollIntoViewIfNeeded();
+  const geometry = await heading.evaluate(node => {
+    const r = node.getBoundingClientRect(), status = node.querySelector('.usage-pool-chip')!.getBoundingClientRect();
+    return { left: r.left, right: r.right, statusRight: status.right, overflow: node.scrollWidth - node.clientWidth };
+  });
+  expect(geometry.left).toBeGreaterThanOrEqual(0); expect(geometry.right).toBeLessThanOrEqual(461);
+  expect(geometry.statusRight).toBeLessThanOrEqual(geometry.right + 1); expect(geometry.overflow).toBeLessThanOrEqual(1);
+  if (process.env.POOL_SHOTS) await page.screenshot({ path: '.pandacode/progress-shots/pooling-usage-narrow.png', animations: 'disabled' });
+  for (const [extra, label] of [
+    [{ excluded: true }, 'Left out'],
+    [{ signedIn: false }, 'Not signed in'],
+    [{ sameAs: '' }, 'Same login'],
+    [{ limitedUntil: Date.now() + 3_600_000, limitedWindow: 'seven_day' }, /^Weekly limit/],
+    [{}, 'Ready'],
+  ] as const) {
+    await page.evaluate(({ extra }) => { const f = (window as any).__usageFixture; Object.assign(f.pool.codex[1], { excluded: false, signedIn: true, sameAs: null, limitedUntil: null, email: 'refreshed@example.invalid' }, extra); f.byConnection.long.windows[0].usedPercent = 22; }, { extra });
+    await refresh(page).scrollIntoViewIfNeeded(); await refresh(page).focus(); await page.keyboard.press('Enter');
+    await expect(refresh(page)).toBeEnabled(); await expect(refresh(page)).toBeFocused();
+    await expect(heading.locator('.usage-pool-chip')).toHaveAttribute('aria-label', label);
+  }
+  await expect(heading.locator('.usage-account-who')).toHaveText('refreshed@example.invalid');
+  await page.evaluate(() => { const f = (window as any).__usageFixture; f.pool.codex[1].email = null; Object.assign(f.byConnection.long, { status: 'unavailable', email: 'account.read@example.invalid', windows: [] }); });
+  await refresh(page).click(); await expect(refresh(page)).toBeEnabled();
+  await expect(heading.locator('.usage-account-who')).toHaveText('account.read@example.invalid');
+  // No speculative per-account identity query: each refresh reads that account's existing usage command once.
+  expect((await calls(page)).filter((c: any) => c.provider === 'codex' && c.connection === 'long')).toHaveLength(5);
+});
+
+test('Agent usage fresh sign-out overrides a locally signed-in default identity', async ({ page }) => {
+  await openApp(page, [], [], { connections: [], tasks: {}, pools: [] }, {
+    codex: [{ id: '', email: 'old@example.invalid', plan: 'Plus', signedIn: true, excluded: false, sameAs: null, nearUntil: null, limitedUntil: null, active: 0 }],
+  });
+  await page.evaluate(() => { const f = (window as any).__usageFixture; Object.assign(f.responses.codex, { status: 'signedOut', email: null, windows: [], plan: null }); });
+  await openUsage(page); await tab(page, 'Codex').click();
+  const heading = dialog(page).locator('#usage-panel-codex .usage-account-heading[data-account=""]');
+  await expect(heading.locator('[data-status]')).toHaveAttribute('aria-label', 'Not signed in');
+  await expect(heading.locator('.usage-account-who')).not.toContainText('old@example.invalid');
+  await expect(card(page, 'Codex').getByRole('progressbar')).toHaveCount(0);
 });

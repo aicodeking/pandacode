@@ -1,4 +1,5 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-note';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
@@ -44,7 +45,7 @@ import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
-import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, replyHtml, timeHtml, watchReplies } from './turn-card';
+import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, replyHtml, timeHtml, watchReplies } from './turn-card';
 import { mountWallpapers } from './wallpapers';
 import { mountSky } from './sky-window';
 import { mountThreadTiles } from './thread-tiles';
@@ -139,7 +140,8 @@ import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
  * Interaction: quick drawer reveals, calm dialog entrances, coalesced text updates. */
 type WorkspaceView = 'conversation' | 'board' | 'github';
 type LiveTool = { key: string; content: string | ToolActivity; statusOnly?: boolean; commentary?: boolean };
-type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
+type LiveAccountSwitch = Message & { eventSeen?: boolean };
+type Stream = { body: TailText; thought: TailText; readonly text: string; readonly thinking?: string; retainedMessageKey?: string; tools: LiveTool[]; accountSwitches: LiveAccountSwitch[]; status: string; approvals: Map<string, string>; inputs: Map<string, AgentInput>; revision: number; lastPromptAt?: number; lastResponseAt: number | null; startedAt: number; turnKey: string; omittedActivity: boolean; contextUsage?: ContextUsage; pendingChanges?: TurnChanges; earlier?: LiveEarlier };
 /** The exchange a lead's wake run continues, drawn inside its live card (renderTranscript). */
 type LiveEarlier = { turn: TranscriptTurn; tools: ToolActivity[] };
 /** Views this platform can show; the inspector's open tabs and selection persist across launches. */
@@ -843,9 +845,11 @@ transcriptScroller.tabIndex = 0;
 /* Following the latest output is an intent, not a measurement. Growing content and a resizing
  * composer never clear it: only the reader scrolling up or opening a fold does, and reaching
  * the bottom sets it again. The observer re-pins before paint, so nothing jumps for a frame. */
-let stickToBottom = true, lastTranscriptTop = 0;
+let stickToBottom = true, lastTranscriptTop = 0, resumeFollow = true;
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
+/** Clear the floating header when a fold brings an off-screen card back into view. */
+const readingLine = (): number => transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
 /** The live card shrinking (a result card or the trace folding) would clamp the scroll and slide everything above it down:
  * the height it gave up becomes blank room under it, which new content grows back into. Only while the card's top is in
  * view: a card taller than the window moves down until its top arrives, or the fold would leave the window empty. */
@@ -859,7 +863,7 @@ function keepTopOnShrink(): void {
   // At the end, the scroll has already lost what the card gave up (a clamp or scroll anchoring, in layout, before this runs).
   const end = transcriptScroller.scrollHeight - transcriptScroller.clientHeight, top = transcriptScroller.scrollTop;
   if (top < end - 1) return;
-  const clear = transcriptScroller.getBoundingClientRect().top + (parseFloat(getComputedStyle(transcriptScroller).scrollPaddingTop) || 0);
+  const clear = readingLine();
   const aim = Math.min(top + before.height - box.height, top + box.top - clear);
   if (aim <= top) return;
   tailSession = state.sessionId;
@@ -869,8 +873,13 @@ function keepTopOnShrink(): void {
   lastTranscriptTop = transcriptScroller.scrollTop;
 }
 function followTranscript(): void {
+  if (!stickToBottom) {
+    liveCardSeen = undefined;
+    // Room below the window can go without clamping the reader or moving their line.
+    if (tailRoom && !tailBridging && transcriptGap() >= tailRoom) setTailRoom(0);
+    return;
+  }
   keepTopOnShrink();
-  if (!stickToBottom) return;
   if (readingTranscriptTool()) { if (transcriptGap() > 2) stickToBottom = false; return; }
   // A handoff's room easing (growTailRoom) holds the follow unless it was started to keep following.
   if (tailBridging && !tailFollows) return;
@@ -881,14 +890,15 @@ function followTranscript(): void {
   // thread never lurches by the card's per-frame growth; a send (the bubble and the skeleton card) on a slower one
   // (SEND_RESPONSE); text, a switch or the composer still pin at once.
   if (grew && (state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && (followFrame !== 0 || sendFollow || traceUnfolding()) && transcriptGap() < FOLLOW_EASE_LIMIT && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    if (!followFrame) { followVelocity = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
+    if (!followFrame) { followVelocity = 0; followStill = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
     // The spring steps before layout; this runs after it (the observer), so the frame's own growth is held to the cap too.
     const gap = transcriptGap();
-    if (!sendFollow && gap > FOLLOW_MAX_LAG) transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG;
+    if (!sendFollow && gap > FOLLOW_MAX_LAG) { transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG; lastTranscriptTop = transcriptScroller.scrollTop; }
     return;
   }
   cancelAnimationFrame(followFrame); followFrame = 0; sendFollow = false;
   transcriptScroller.scrollTop = transcriptScroller.scrollHeight;
+  lastTranscriptTop = transcriptScroller.scrollTop;
 }
 /** A result card's height animation (trace-motion.ts `expand`) is running in the live trace. */
 const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-region .live-tools')?.getAnimations({ subtree: true })
@@ -896,17 +906,17 @@ const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-re
 /** The follow is a critically damped spring on the distance to the bottom (time-based, FOLLOW_RESPONSE s), so it
  * eases in, tracks a growing card without stepping and lands without overshoot. */
 const FOLLOW_RESPONSE = 0.1, SEND_RESPONSE = 0.26, FOLLOW_EASE_LIMIT = 480, FOLLOW_MAX_LAG = 24;
-let followFrame = 0, followedHeight = 0, followVelocity = 0, followAt = 0, sendFollow = false;
+let followFrame = 0, followedHeight = 0, followVelocity = 0, followAt = 0, sendFollow = false, followStill = 0;
 /** The next follow (a send's new bubble and card) eases on SEND_RESPONSE until it lands. */
 function followSend(): void {
-  sendFollow = true;
+  sendFollow = true; followStill = 0;
   cancelAnimationFrame(followFrame); followFrame = 0;
 }
 function easeFollow(now: number): void {
   followFrame = 0;
   const gap = transcriptGap();
   if (!stickToBottom || gap <= 0.5) { sendFollow = false; return; }
-  if (gap >= FOLLOW_EASE_LIMIT) { sendFollow = false; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; return; }
+  if (gap >= FOLLOW_EASE_LIMIT) { sendFollow = false; stickTranscript(); return; }
   const dt = Math.min(0.05, Math.max(0, (now - followAt) / 1000)), omega = 2 * Math.PI / (sendFollow ? SEND_RESPONSE : FOLLOW_RESPONSE), decay = Math.exp(-omega * dt);
   followAt = now;
   // Position relative to the target is -gap; the closed-form critically damped step. The bottom never runs more than
@@ -914,7 +924,12 @@ function easeFollow(now: number): void {
   // the start and the end.
   const y = -gap, base = followVelocity + omega * y, next = Math.max(sendFollow ? -Infinity : -FOLLOW_MAX_LAG, (y + base * dt) * decay);
   followVelocity = (followVelocity - omega * base * dt) * decay;
-  transcriptScroller.scrollTop += next - y;
+  const before = transcriptScroller.scrollTop;
+  transcriptScroller.scrollTop = before + next - y;
+  lastTranscriptTop = transcriptScroller.scrollTop;
+  // Compare this attempted step, not the previous post-write position: normal motion must not count as a stall.
+  followStill = dt > 0 && lastTranscriptTop === before ? followStill + 1 : 0;
+  if (followStill >= 2 && gap <= 4) { sendFollow = false; stickTranscript(); return; }
   followFrame = requestAnimationFrame(easeFollow);
 }
 /** Blank room under the last card after the handoff (handOffCard, foldInPlace) or a Show less: the card's top stays where it
@@ -930,18 +945,17 @@ function absorbTailRoom(): void {
   const gap = transcriptGap();
   if (gap > 0.5) setTailRoom(tailRoom - gap);
 }
-function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; }
+function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; lastTranscriptTop = transcriptScroller.scrollTop; }
 const transcriptResize = new ResizeObserver(followTranscript);
 followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTranscriptTool());
 const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
 new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
 observeTranscript();
-const releaseTranscript = (): void => { if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
-// Rebuilding or measuring the composer briefly shrinks it; a layout read then grows the transcript
-// and clamps its scroll up. Re-pin in the mutation's microtask, before that clamp can paint or
-// reach the scroll handler, where any upward scroll means the reader left.
-new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target))) followTranscript(); })
-  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true });
+const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
+// Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
+const composerArea = $('#composer-area');
+new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target) && !composerArea.contains(record.target))) followTranscript(); })
+  .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
@@ -955,19 +969,30 @@ transcriptScroller.addEventListener('scroll', () => {
   }
   // Following and not moving up (the observer's own pins): nothing can change, so skip measuring.
   if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; void loadOlderMessages(); return; }
-  if (transcriptGap() <= 2) stickToBottom = true;
+  // Native focus/anchoring scrolls after Read more are not the reader asking to follow again.
+  if (resumeFollow && transcriptGap() <= 2) stickToBottom = true;
   // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
   else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
   else if (top < lastTranscriptTop) stickToBottom = false;
-  lastTranscriptTop = top;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   void loadOlderMessages();
 }, { passive: true });
-transcriptScroller.addEventListener('click', event => { if ((event.target as Element).closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false; }, true);
+transcriptScroller.addEventListener('click', event => {
+  const target = event.target as Element;
+  const holdFold = stickToBottom && target.closest('summary');
+  if (target.closest('summary, .turn-card-more, .team-progress-toggle')) stickToBottom = false;
+  if (target.closest('.turn-card-more, .team-progress-toggle')) resumeFollow = false;
+  // A manual fold still gives its lost height back once, without re-arming continuous following.
+  if (holdFold) queueMicrotask(keepTopOnShrink);
+}, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
-transcriptScroller.addEventListener('wheel', event => { if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
+transcriptScroller.addEventListener('wheel', event => { if (event.deltaY > 0) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; } else if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
+transcriptScroller.addEventListener('pointerdown', event => { if (event.pointerType === 'touch' || event.target === transcriptScroller) resumeFollow = true; }, { passive: true });
 transcriptScroller.addEventListener('keydown', event => {
-  if (event.target === transcriptScroller && ['ArrowUp', 'PageUp', 'Home'].includes(event.key)) { releaseTranscript(); void loadOlderMessages(); }
+  if (event.target !== transcriptScroller) return;
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) { releaseTranscript(); void loadOlderMessages(); }
+  else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; }
 });
 /* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
  * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
@@ -987,7 +1012,11 @@ addEventListener('resize', () => {
   windowSettle = window.setTimeout(() => {
     windowSettle = 0;
     transcriptScroller.removeAttribute('data-window-resizing');
-    if (windowReaderTask === state.sessionId) restoreWindowReader?.();
+    if (windowReaderTask === state.sessionId) {
+      if (restoreWindowReader && !stickToBottom) restoreWindowReader();
+      else if (resumeFollow) { stickToBottom = true; followTranscript(); }
+      lastTranscriptTop = transcriptScroller.scrollTop;
+    }
     restoreWindowReader = undefined;
   }, WINDOW_SETTLE_MS);
 });
@@ -1151,7 +1180,7 @@ function stream(id: string): Stream {
   if (!s) {
     finishingStreams.delete(id);
     const now = Date.now();
-    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
+    s = { body: new TailText(), thought: new TailText(), get text() { return this.body.value; }, get thinking() { return this.thought.value || undefined; }, tools: [], accountSwitches: [], status: '', approvals: new Map(), inputs: new Map(), revision: 0, lastResponseAt: null, startedAt: now, turnKey: 'turn:live:' + id, omittedActivity: false };
     state.streams.set(id, s);
   }
   return s;
@@ -1189,8 +1218,8 @@ function modelLabel(s?: Session, withEffort = true): string {
   if (!s) return 'Default model';
   const named = teams.get(s.id)?.config;
   if (named?.rosterOnly && named.name) return named.name;
-  const model = selectedModel(s), connection = taskConnection(s);
-  const name = connection ? `${connection.name} · ${model.name === 'Default' ? 'Default' : model.name}` : model.name === 'Default' ? 'Default model' : model.name;
+  const model = selectedModel(s);
+  const name = model.name === 'Default' ? 'Default model' : model.name;
   const effort = withEffort && effortLabel(s);
   return effort ? `${name} · ${effort}` : name;
 }
@@ -1735,14 +1764,16 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   // Until the fresh page is in, the saved rows stay alone: a wake's exchange joins its live card only once its message is known.
   const live = tilePages.has(id) ? state.streams.get(id) : undefined;
   let messages = page.messages;
-  if (live) { let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; }); messages = messages.slice(0, lastUser + 1); }
+  if (live) messages = liveVisibleMessages(messages, live);
   const key = `${messages.length}:${messages.at(-1)?.id ?? ''}:${live ? 'live' : ''}`;
   if (rows.dataset.key !== key) {
+    const switches = captureAccountSwitches(rows);
     rows.dataset.key = key;
     const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
     const turns = mergeLeadTurns(groupTurns(messages));
     const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
     rows.innerHTML = `${saved.map(turn => turnHtml(turn, id, false, thread)).join('')}${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`;
+    restoreAccountSwitches(rows, switches);
     rows.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
     const byId = new Map(messages.map(message => [String(message.id), message]));
     rows.querySelectorAll<HTMLElement>('[data-markdown]').forEach(node => { const message = byId.get(node.dataset.markdown!); if (message) void markdown(node, message.content, scroller).catch(report); });
@@ -1751,6 +1782,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const slot = rows.querySelector<HTMLElement>('.thread-mirror-live');
   if (!slot) return;
   if (!live) { slot.replaceChildren(); return; }
+  paintAccountSwitches(slot.querySelector<HTMLElement>('.live-account-switches')!, live.accountSwitches);
   const records = liveToolRecords(live);
   slot.querySelector<HTMLElement>('.turn-activity-label')!.innerHTML = records.length ? foldedLabelHtml(records) : 'Thinking';
   slot.querySelector<HTMLElement>('.thread-mirror-time')!.innerHTML = timeHtml(Date.now() - live.startedAt + Number(slot.dataset.earlierMs), true);
@@ -1762,7 +1794,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, thread) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -1822,9 +1854,9 @@ function renderTranscript(preservePosition = false): void {
   const heldRows = transcriptRows; transcriptRows = undefined;
   syncNewTaskPage();
   const transcript = $('#transcript');
-  const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   transcript.removeAttribute('aria-busy');
   const toolViews = captureTools(transcript), groupViews = captureToolGroups(transcript), turnViews = captureTurns(transcript), changeViews = captureChangeCards(transcript), scrollTop = transcript.scrollTop;
+  const switches = captureAccountSwitches(transcript);
   const liveTurn = transcript.querySelector<HTMLElement>('#stream-region .live-activity[open]:not([data-folded])');
   const unfolded = liveTurn && !liveTurnStaysOpen(liveTurn) ? captureTurns(liveTurn.parentElement!, true)[0] : undefined;
   const readingTool = readingTranscriptTool();
@@ -1896,6 +1928,14 @@ function renderTranscript(preservePosition = false): void {
   const liveCard = liveRegion?.dataset.sessionId === s.id ? liveRegion.querySelector<HTMLElement>('.turn-card.is-live') : null;
   const shownCards = liveCard ? new Set([...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].map(card => card.dataset.turnCard)) : undefined;
   // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
+  // Open the saved reply before layout can clamp the paused reader, and transfer its live reading anchor.
+  const completed = liveCard && !running ? saved.at(-1) : undefined;
+  if (completed?.final) {
+    openReply(completed.key);
+    const reply = liveCard!.querySelector<HTMLElement>('.turn-card-reply');
+    if (reply) reply.dataset.turnKey = `reply:${completed.key}`;
+  }
+  const restoreAnchor = preservePosition || !stickToBottom ? captureTranscriptAnchor(transcript) : undefined;
   const liveRect = liveCard ? handoffRect ?? liveCard.getBoundingClientRect() : undefined; handoffRect = undefined;
   const focusRole = liveCard ? focusedRole(liveCard) : undefined;
   // A wake's live card already shows the exchange's footer; the saved card's replaces it in place rather than fading in.
@@ -1921,8 +1961,10 @@ function renderTranscript(preservePosition = false): void {
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
+  lastTranscriptTop = transcript.scrollTop;
   // After every restore and the pin, so the saved card is measured where it will stay.
   if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
+  restoreAccountSwitches(transcript, switches);
   if (bot) {
     botThread.decorateTranscript(transcript, bot, s.id, state.messages, botSwitches.get(s.id) ?? [], botMessages.get(s.id) ?? []);
     if (!botThreadMetaLoaded.has(s.id)) void refreshBotThreadMeta(bot, s.id);
@@ -1969,6 +2011,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const end = Math.max(0, room), start = timing && delta ? Math.max(0, room + delta) : end;
   setTailRoom(start);
   transcriptScroller.scrollTop = target;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   if (timing && start !== end) growTailRoom(start, end, timing, () => {}, true); else followTranscript();
 }
 /** The control in the live card that has focus, as a selector the saved card answers (header, a trace step, Read
@@ -1995,7 +2038,8 @@ function refocusCard(card: HTMLElement, selector: string): void {
 /** Folds the saved card's trace starting from the live card's height, so its bottom never steps: the card closes from
  * there to its folded height on the fold's own timing (`holdCard`). Pinned, its top stays where the live card's was
  * and the height it gives up (and any the composer just let go of) grows as blank room under it on the same timing
- * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it. */
+ * (the room is `#transcript::after`), so nothing above it moves; the room stays until content or the reader takes it.
+ * An off-screen card comes down to the reading line so the fold cannot leave only blank room in view. */
 function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect, pinned: boolean): void {
   const open = card.offsetHeight, total = transcriptScroller.scrollHeight, from = tailRoom;
   trace.open = false;
@@ -2007,10 +2051,12 @@ function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect
   if (!pinned) return;
   tailSession = state.sessionId;
   // The room must let the scroll reach the held top with the card at its starting height.
-  const shown = timing ? live.height : shut, target = transcriptScroller.scrollTop + card.getBoundingClientRect().top - live.top;
+  const shown = timing ? live.height : shut, keepTop = Math.max(live.top, readingLine());
+  const target = Math.max(0, transcriptScroller.scrollTop + card.getBoundingClientRect().top - keepTop);
   const start = Math.max(from, target + transcriptScroller.clientHeight - (total - open - from) - shown), end = Math.max(0, start + shown - shut);
   setTailRoom(Math.max(start, end));
   transcriptScroller.scrollTop = target;
+  lastTranscriptTop = transcriptScroller.scrollTop;
   if (!timing) { setTailRoom(end); return; }
   growTailRoom(start, end, timing);
 }
@@ -2158,7 +2204,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
   }
   if (m.role === 'status') return renderToolStatus(m.content);
   if (m.role === 'error') return `<div class="message-error">${icon('alert')}<span>${escape(m.content)}</span></div>`;
-  if (m.role === 'system') return `<p class="message-note">${escape(m.content)}</p>`;
+  if (m.role === 'system') return accountSwitchHtml(m) ?? `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
   return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
@@ -2178,7 +2224,7 @@ function userContent(content: string, messageId: number): string {
   const items = parseAttachments(blocks);
   for (const item of items) if (item.kind === 'image' && item.imageId) loadSentImage(item.imageId);
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
-  return escape(typed) + attachmentChips(items, messageId, sentImages) + details;
+  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, sentImages) + details;
 }
 // Sent images live in the capture registry for a week; null marks one that is gone.
 const sentImages = new Map<string, string | null>();
@@ -2241,12 +2287,66 @@ function restoreTools(root: ParentNode, views: Map<string, ToolView>): void {
     }
   });
 }
-function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
-  if ((state.streams.has(sessionId) || finishingStreams.has(sessionId)) && !wakeHolds.has(sessionId)) {
-    let lastUser = -1; messages.forEach((m, i) => { if (m.role === 'user' || m.role === 'coordination' || m.role === 'changes') lastUser = i; });
-    return messages.slice(0, lastUser + 1);
+function accountSwitchHtml(message: Message): string | null {
+  const detail = accountSwitchDetail(message.content);
+  return detail === null ? null : `<details class="account-switch-note" data-account-switch="${escape(message.sessionId)}:${message.id}" data-account-switch-session="${escape(message.sessionId)}"><summary>${icon('refresh')}<span>Account switched</span>${icon('chevron')}</summary><p>${escape(detail)}</p></details>`;
+}
+type AccountSwitchView = { node: HTMLDetailsElement; focused: boolean };
+const captureAccountSwitches = (root: ParentNode): AccountSwitchView[] => [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].map(node => ({ node, focused: node.querySelector('summary') === document.activeElement }));
+function takeAccountSwitch(views: AccountSwitchView[], key: string, sessionId: string, detail: string, keys: Set<string>): AccountSwitchView | undefined {
+  let index = views.findIndex(view => view.node.dataset.accountSwitch === key);
+  // A transient event becomes a saved row. Match occurrences, never all equal prose across turns.
+  if (index < 0) for (let i = views.length - 1; i >= 0; i--) {
+    const view = views[i];
+    if (!keys.has(view.node.dataset.accountSwitch!) && view.node.dataset.accountSwitchSession === sessionId && view.node.querySelector('p')?.textContent === detail && (/:-\d+$/.test(view.node.dataset.accountSwitch!) || /:-\d+$/.test(key))) { index = i; break; }
   }
-  return messages.slice();
+  return index < 0 ? undefined : views.splice(index, 1)[0];
+}
+function restoreAccountSwitches(root: ParentNode, views: AccountSwitchView[], departing?: Element): void {
+  const notes = [...root.querySelectorAll<HTMLDetailsElement>('details[data-account-switch]')].filter(note => !departing?.contains(note)), keys = new Set(notes.map(note => note.dataset.accountSwitch!));
+  for (const fresh of notes.reverse()) {
+    const view = takeAccountSwitch(views, fresh.dataset.accountSwitch!, fresh.dataset.accountSwitchSession!, fresh.querySelector('p')!.textContent!, keys);
+    if (!view || view.node === fresh) continue;
+    view.node.dataset.accountSwitch = fresh.dataset.accountSwitch;
+    fresh.replaceWith(view.node);
+    if (view.focused) view.node.querySelector('summary')!.focus({ preventScroll: true });
+  }
+}
+function paintAccountSwitches(host: HTMLElement, messages: LiveAccountSwitch[]): void {
+  const views = captureAccountSwitches(host), keys = new Set(messages.map(message => `${message.sessionId}:${message.id}`));
+  const notes = [...messages].reverse().map(message => {
+    const key = `${message.sessionId}:${message.id}`, detail = accountSwitchDetail(message.content)!;
+    const view = takeAccountSwitch(views, key, message.sessionId, detail, keys);
+    let node = view?.node;
+    if (!node) { const template = document.createElement('template'); template.innerHTML = accountSwitchHtml(message)!; node = template.content.firstElementChild as HTMLDetailsElement; }
+    node.dataset.accountSwitch = key;
+    return { node, focused: view?.focused };
+  }).reverse();
+  notes.forEach(({ node, focused }, index) => {
+    if (host.children[index] !== node) { host.insertBefore(node, host.children[index] ?? null); if (focused) node.querySelector('summary')!.focus({ preventScroll: true }); }
+  });
+  for (const view of views) view.node.remove();
+}
+/** Keep saved pool notes from the hidden streaming tail, including a run opened midway through. */
+function liveVisibleMessages(messages: Message[], current: Stream): Message[] {
+  let boundary = -1; messages.forEach((message, index) => { if (message.role === 'user' || message.role === 'coordination' || message.role === 'changes') boundary = index; });
+  const pending = [...current.accountSwitches], saved: LiveAccountSwitch[] = [];
+  for (const message of messages.slice(boundary + 1)) {
+    const detail = message.role === 'system' ? accountSwitchDetail(message.content) : null;
+    if (detail === null) continue;
+    const content = ACCOUNT_SWITCH_PREFIX + detail;
+    const index = pending.findIndex(note => note.id === message.id || note.content === content);
+    const previous = index < 0 ? undefined : pending.splice(index, 1)[0];
+    saved.push({ ...message, content, eventSeen: previous?.eventSeen ?? message.createdAt < current.startedAt });
+  }
+  const notes = [...saved, ...pending];
+  if (notes.length !== current.accountSwitches.length || notes.some((note, index) => note.id !== current.accountSwitches[index].id || note.content !== current.accountSwitches[index].content)) current.revision++;
+  current.accountSwitches = notes;
+  return messages.slice(0, boundary + 1);
+}
+function visibleMessages(sessionId = state.sessionId, messages = state.messages): Message[] {
+  const current = state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
+  return current && !wakeHolds.has(sessionId) ? liveVisibleMessages(messages, current) : messages.slice();
 }
 function renderStream(): void {
   if (!transcriptVisible() || wakeHolds.has(state.sessionId)) { updateWorkTimer(); return; }
@@ -2273,8 +2373,11 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
+    const switches = captureAccountSwitches(region);
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, 'live', '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, shownThread()) : ''}<div class="live-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+    paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
+    restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
@@ -2286,6 +2389,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   paintLiveHeader(activity, current, finishing ? finishing.finishedAt - workStart(current) : undefined, answered);
   scheduleAnswerFolds(answered, main ? 'main' : sessionId, main ? renderStream : () => paintStream(region, sessionId, transcript));
   if (region.dataset.revision !== String(current.revision)) {
+    paintAccountSwitches(parts.accountSwitches, current.accountSwitches);
     paintLiveActivity(region, current, transcript, context);
     const errors = parts.errors;
     const errorHtml = current.tools.filter(tool => tool.statusOnly).map(tool => `<div class="message-error">${icon('alert')}<span>${escape(tool.content as string)}</span></div>`).join('') + (finishing?.error ? `<div class="message-error" role="alert"><span>Couldn't load the saved response. ${escape(finishing.error)}</span><button class="secondary-button" data-action="retry-response">Retry loading response</button></div>` : '');
@@ -2337,11 +2441,11 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
   // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
-  if (readingTool) transcript.scrollTop = scrollTop;
+  if (readingTool) { transcript.scrollTop = scrollTop; if (main) lastTranscriptTop = transcript.scrollTop; }
 }
 type StreamParts = {
   activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
-  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
+  message: HTMLElement; streaming: HTMLElement; output: HTMLElement; errors: HTMLElement; accountSwitches: HTMLElement; approvals: HTMLElement; inputs: HTMLElement;
 };
 /** renderStream's elements, kept until the region's markup is rebuilt. */
 const streamParts = new WeakMap<HTMLElement, StreamParts>();
@@ -2354,7 +2458,7 @@ function queryStreamParts(region: HTMLElement): StreamParts {
   return {
     activity: part<HTMLDetailsElement>('.turn-activity'), thinking, thought: thinking.lastElementChild as HTMLElement,
     tools: part('.live-tools'), status: part('.live-status'), message: part('.live-message'), streaming: part('.streaming-label'),
-    output: part('.live-text'), errors: part('.live-errors'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
+    output: part('.live-text'), errors: part('.live-errors'), accountSwitches: part('.live-account-switches'), approvals: part('.live-approvals'), inputs: part('.live-inputs'),
   };
 }
 const setHidden = (node: HTMLElement, hidden: boolean): void => { if (node.hidden !== hidden) node.hidden = hidden; };
@@ -2704,7 +2808,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${web || s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${web || s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${web || s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${web || s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -3262,7 +3366,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
-  stickToBottom = true; render();
+  stickToBottom = true; resumeFollow = true; lastTranscriptTop = 0; render();
   if (remembered) stickTranscript();
   // A thread switch settles in once, after its real content draws: here for a remembered page,
   // below once the page arrives (never on the loading placeholder).
@@ -3273,6 +3377,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   try { [page, details] = await Promise.all([latestMessagePage(id), call<Session>('get_task', { sessionId: id }), loadTeam(id)]); }
   catch (error) {
     if (generation !== state.generation) return;
+    // A failed thread load still owns the inspector cleared during the switch.
+    run(refreshInspector());
     state.messagesLoading = false;
     if (state.messages !== requestedMessages) return;
     state.messagesError = errorText(error); renderTranscript(); renderComposer(); throw error;
@@ -4097,11 +4203,14 @@ const btwPanel = new BtwPanel({
   visible: (sideId, messages) => visibleMessages(sideId, messages),
   renderRows: (log, region, side, visible, all, follow) => {
     const toolViews = captureTools(log), groupViews = captureToolGroups(log), turnViews = captureTurns(log), changeViews = captureChangeCards(log);
+    const switches = captureAccountSwitches(log);
     const previous = new Map([...log.querySelectorAll<HTMLElement>('[data-markdown]')].map(node => [node.dataset.markdown!, node]));
     for (const row of [...log.children]) if (row !== region) row.remove();
     region.insertAdjacentHTML('beforebegin', turnRowsHtml(side.id, visible, { messages: all, provider: side.provider }));
     paintSavedMarkdown(log, all, previous, workspaceContext(side), follow);
     restoreTurns(log, turnViews); restoreToolGroups(log, groupViews); restoreChangeCards(log, changeViews); restoreTools(log, toolViews);
+    // A finished turn's live notes leave with the stream region; the saved rows inherit them.
+    restoreAccountSwitches(log, switches, state.streams.has(side.id) || finishingStreams.has(side.id) ? undefined : region);
   },
   paintStream: (region, sideId, log) => paintStream(region, sideId, log),
   aboveHtml: side => {
@@ -4166,15 +4275,14 @@ async function btwPanelQueue(side: Session, text: string): Promise<void> {
 /* Model, effort and permissions picked in the panel before a side thread exists: kept per main thread
  * on a stand-in task and applied to the side thread createBtw makes, before its first message. */
 const BTW_DRAFT = 'btw-draft:';
-type BtwDraft = Session & { connection?: string | null };
-const btwDrafts = new Map<string, BtwDraft>();
+const btwDrafts = new Map<string, Session>();
 const isBtwDraft = (task: Session): boolean => task.id.startsWith(BTW_DRAFT);
-function btwDraftTask(): BtwDraft | undefined {
+function btwDraftTask(): Session | undefined {
   const main = session();
   return main && (btwDrafts.get(main.id) ?? { ...main, id: BTW_DRAFT + main.id, status: 'idle', contextUsage: null, title: 'Side thread' });
 }
 /** Records a pick on the stand-in task; the next side thread starts with it. */
-function saveBtwDraft(task: Session, change: Partial<BtwDraft>): void {
+function saveBtwDraft(task: Session, change: Partial<Session>): void {
   const mainId = task.id.slice(BTW_DRAFT.length);
   // createBtw is applying (then clearing) the picks; a late pick from a picker opened before the send would vanish.
   if (btwSending.has(mainId)) throw new Error('The side thread is starting. Change it once it has started.');
@@ -4191,7 +4299,6 @@ async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
   };
   let current = side;
   if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model }));
-  if (draft.connection !== undefined && draft.connection !== (namedConnections.tasks[current.id] ?? null)) namedConnections = await step('connection', () => call<typeof namedConnections>('connection_assign', { sessionId: current.id, connectionId: draft.connection }));
   if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null }));
   if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); current = { ...current, mode: draft.mode }; }
   return current;
@@ -4366,17 +4473,24 @@ function completeTurnChanges(event: AgentEvent): void {
 function materializeTurn(sessionId: string, changes: TurnChanges): void {
   const current = state.streams.get(sessionId);
   if (current) current.pendingChanges = undefined;
-  if (sessionId === state.sessionId && !state.messages.some(message => message.turnChanges?.id === changes.id)) {
-    const messages = visibleMessages();
+  const page = tilePages.get(sessionId) ?? threadPages.get(sessionId);
+  const existing = sessionId === state.sessionId ? state.messages : page?.messages;
+  if (existing && !existing.some(message => message.turnChanges?.id === changes.id)) {
+    const messages = current ? liveVisibleMessages(existing, current) : existing.slice();
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
       for (const entry of current.tools) messages.push({ id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now() });
       if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
+      messages.push(...current.accountSwitches);
     }
     messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
-    state.messages = messages;
+    if (sessionId === state.sessionId) state.messages = messages;
+    else {
+      tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
+      if (threadPages.has(sessionId)) threadPages.set(sessionId, { messages, hasOlder: page!.hasOlder, chars: messages.reduce((total, message) => total + message.content.length, 0) });
+    }
   }
-  if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
+  if (current) { current.body.set(''); current.thought.set(''); current.retainedMessageKey = undefined; current.tools = []; current.accountSwitches = []; current.omittedActivity = false; current.revision++; current.startedAt = Date.now(); current.turnKey = 'turn:live:' + transientId--; }
   if (sessionId === state.sessionId) {
     renderTranscript();
     // A task on another computer has its messages copied when the run ends; its `done` reloads them.
@@ -4398,7 +4512,7 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
   if (sessionId !== state.sessionId || botForThread()) return;
   const generation = state.generation;
   const endHold = (): void => { if (wakeHolds.get(sessionId) === timer) { clearTimeout(timer); wakeHolds.delete(sessionId); } };
-  const timer = window.setTimeout(() => { endHold(); renderStream(); }, WAKE_LOAD_HOLD_MS);
+  const timer = window.setTimeout(() => { endHold(); renderTranscript(); }, WAKE_LOAD_HOLD_MS);
   clearTimeout(wakeHolds.get(sessionId));
   wakeHolds.set(sessionId, timer);
   // Only the newest page: a wake's coordination message is saved just before its run starts, so it is there. A run
@@ -4414,7 +4528,7 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
     const page = newest.hasOlder && known !== undefined && newest.messages[0]?.id > known ? await latestMessagePage(sessionId) : newest;
     if (!fresh()) return;
     endHold(); setMessagePage(page); renderTranscript();
-  }).catch(report).finally(() => { if (wakeHolds.get(sessionId) === timer) { endHold(); renderStream(); } });
+  }).catch(report).finally(() => { if (wakeHolds.get(sessionId) === timer) { endHold(); renderTranscript(); } });
 }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
@@ -4513,6 +4627,19 @@ function onAgent(event: AgentEvent): void {
   if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
   const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
   if (firstEvent) loadWakeExchange(event.sessionId, current);
+  if ((event.kind as string) === 'note') {
+    const pool = (event.data as { accountPool?: { connectionId?: unknown } } | undefined)?.accountPool;
+    const marked = pool && (pool.connectionId === null || typeof pool.connectionId === 'string');
+    const detail = accountSwitchDetail(event.text) ?? (marked && !event.text.startsWith(ACCOUNT_SWITCH_PREFIX) && event.text.trim() ? event.text : null);
+    if (detail !== null) {
+      const content = ACCOUNT_SWITCH_PREFIX + detail;
+      const saved = current.accountSwitches.find(note => !note.eventSeen && note.content === content);
+      if (saved) saved.eventSeen = true;
+      else current.accountSwitches.push({ id: transientId--, sessionId: event.sessionId, role: 'system', content, createdAt: Date.now(), eventSeen: true });
+      current.revision++;
+      if (event.sessionId === state.sessionId) announce('Account switched');
+    }
+  }
   let becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
   if (event.kind === 'text') {
@@ -4571,6 +4698,7 @@ function onAgent(event: AgentEvent): void {
     if (firstEvent && event.sessionId === state.sessionId && !document.hidden) { renderHeader(); if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false) renderComposer(); }
     scheduleNavigation();
   }
+  if (firstEvent && event.sessionId === state.sessionId && !wakeHolds.has(event.sessionId)) renderTranscript();
   if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
@@ -5196,8 +5324,6 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
-    // Connections are this computer's; a task on another computer uses that host's setup.
-    connections: device ? [] : namedConnections.connections, currentConnection: device ? null : isBtwDraft(selected) ? (selected as BtwDraft).connection ?? null : taskConnection(selected)?.id ?? null,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
@@ -5214,14 +5340,14 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         }
       } finally { configuringSessions.delete(selected.id); }
     },
-    onSelect: async (providerId, model, connection) => {
+    onSelect: async (providerId, model) => {
       if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
-      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null, connection: connection ?? null }); return; }
+      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team; ZCode only supports single-agent tasks.
@@ -5237,7 +5363,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-        if (!device && (connection ?? null) !== (namedConnections.tasks[selected.id] ?? null)) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: connection });
+        // Same-harness model choices keep the account and its resumable conversation.
+        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {
           if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
           localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
@@ -5335,7 +5462,9 @@ async function createChat(from?: Session): Promise<void> {
   try {
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
-    const connection = from && taskConnection(from)?.id;
+    // Fresh pooled conversations choose their own account when the native run starts.
+    const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
+    const connection = from && !pooled && taskConnection(from)?.id;
     if (connection) namedConnections = await call<typeof namedConnections>('connection_assign', { sessionId: created.id, connectionId: connection });
     state.projects = await call<Project[]>('list_projects');
   } finally { creatingTask = false; }
@@ -5607,7 +5736,7 @@ function sidebarShortcut(event: KeyboardEvent): boolean {
   if (event.key === '/' && !command && !event.altKey && !control && filter.getClientRects().length) {
     event.preventDefault(); filter.focus(); return true;
   }
-  if (command && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z' && toastUndo) {
+  if (command && !event.shiftKey && !event.altKey && event.code === 'KeyZ' && toastUndo) {
     event.preventDefault(); const undo = toastUndo; toastUndo = undefined; void hideToast($('#toast')); undo(); return true;
   }
   return false;
@@ -6967,9 +7096,12 @@ document.addEventListener('submit', event => {
 function resizePrompt(): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (!prompt) return;
-  prompt.style.height = 'auto'; prompt.style.height = Math.min(prompt.scrollHeight, 180) + 'px';
-  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar.
-  prompt.style.overflowY = prompt.scrollHeight > prompt.clientHeight + 1 ? 'auto' : 'hidden';
+  prompt.style.height = 'auto';
+  const natural = prompt.scrollHeight;
+  prompt.style.height = Math.min(natural, 180) + 'px';
+  // Use the same measurement; a pixel of rounding at the cap must not show a scroll bar.
+  const overflow = natural > 181 ? 'auto' : 'hidden';
+  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
 }
 window.addEventListener('pandacode-ui-scale-change', resizePrompt);
 document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
@@ -6993,7 +7125,7 @@ document.addEventListener('change', event => {
 mountTextUndo();
 document.addEventListener('keydown', event => {
   if (web && document.querySelector('dialog[open]:not(#dialog)')) return;
-  if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.isComposing || event.defaultPrevented || event.key.toLowerCase() !== 'b' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
+  if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || isImeKey(event) || event.defaultPrevented || event.code !== 'KeyB' || state.view !== 'conversation' || document.querySelector<HTMLDialogElement>('#dialog')!.open) return;
   event.preventDefault(); event.stopPropagation(); toggleSidebar();
 }, true);
 const threadFind = createThreadFind({
@@ -7004,10 +7136,11 @@ const threadFind = createThreadFind({
   restoreFocus: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
 });
 document.addEventListener('keydown', event => {
-  if (event.defaultPrevented || (web && document.querySelector('dialog[open]:not(#dialog)'))) return;
-  const command = event.metaKey || event.ctrlKey;
+  // IME conversions own their keys; letter shortcuts otherwise follow the physical layout.
+  if (event.defaultPrevented || isImeKey(event) || (web && document.querySelector('dialog[open]:not(#dialog)'))) return;
+  const command = (event.metaKey || event.ctrlKey) && !event.altKey;
   const dialog = document.querySelector<HTMLDialogElement>('#dialog')!;
-  if (command && event.key.toLowerCase() === 'k') { event.preventDefault(); showCommands(); return; }
+  if (command && event.code === 'KeyK') { event.preventDefault(); showCommands(); return; }
   if (dialog.open) {
     if (dialog.classList.contains('command-dialog') && ['ArrowUp', 'ArrowDown', 'Enter'].includes(event.key) && !isImeKey(event)) {
       event.preventDefault(); const buttons = [...dialog.querySelectorAll<HTMLButtonElement>('#command-results button')]; const current = buttons.findIndex(b => b.classList.contains('command-selected'));
@@ -7015,16 +7148,21 @@ document.addEventListener('keydown', event => {
     }
     return;
   }
-  // An Escape that cancels an IME conversion belongs to the IME: it never stops a run or clears a field.
-  if (event.key === 'Escape' && isImeKey(event)) return;
+  if (event.key === ' ' && !command && !event.altKey && !event.shiftKey && !isImeKey(event)) {
+    const summary = (event.target as Element).closest<HTMLElement>('details[data-account-switch] > summary');
+    if (summary) {
+      // Moving the retained notice at handoff cancels WebKit's delayed native Space activation.
+      event.preventDefault(); if (!event.repeat) summary.click(); return;
+    }
+  }
   // ⌘F finds in the open thread; ⌘G and ⇧⌘G step through its matches.
-  if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
-  if (command && !event.altKey && event.key.toLowerCase() === 'g' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
+  if (command && !event.shiftKey && event.code === 'KeyF') { if (session() && transcriptVisible()) { event.preventDefault(); threadFind.open(); } return; }
+  if (command && event.code === 'KeyG' && threadFind.isOpen()) { event.preventDefault(); threadFind.step(event.shiftKey ? -1 : 1); return; }
   if (sidebarShortcut(event)) return;
-  if (command && event.key.toLowerCase() === 'n') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
-  else if (command && event.key.toLowerCase() === 'j') { event.preventDefault(); run(toggleTerminal()); }
-  else if (command && event.key === ',') { event.preventDefault(); run(showSettings()); }
-  else if (command && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
+  if (command && event.code === 'KeyN') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
+  else if (command && event.code === 'KeyJ') { event.preventDefault(); run(toggleTerminal()); }
+  else if (command && event.code === 'Comma') { event.preventDefault(); run(showSettings()); }
+  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.

@@ -25,7 +25,7 @@ uncommitted work.
 Each asset has a `NAME.sha256` file beside it (`sha256sum` format). Asset names
 do not contain the version, so
 `https://github.com/aicodeking/pandacode/releases/latest/download/<asset>`
-always serves the newest build. There is no Windows ARM release target. The Intel Mac build runs natively on
+always serves the newest build. The Intel Mac build runs natively on
 `macos-15-intel` because `build.mjs` refuses to cross-build.
 
 ## Automatic updates
@@ -77,10 +77,17 @@ incomplete, which is why the lockfile SBOMs are published beside them. The WebVi
 other operating-system libraries are supplied by the host, not bundled, and not scanned.
 The same summary appears on the workflow run page. Findings are reported, not gating;
 record any reviewed exception (scope, reason, owner, expiry) in the release notes.
+If the report is missing or empty, the job summary explicitly says coverage is
+unavailable and the step fails; publishing remains non-blocking. A missing report
+is never evidence of a clean scan.
 
 syft and grype are pinned by version and SHA-256 in the job's `env`. To upgrade, take the
 new Linux amd64 tarball's checksum from the tool's `*_checksums.txt` release asset and
-change the version and checksum together. Actions in the workflow are pinned by full
+change the version and checksum together. Downloads retry transient failures up to
+three times, with a 15-second connection timeout, a 120-second limit per attempt and
+a 300-second retry window. An attempt already started can finish beyond that window;
+exhausted downloads and checksum mismatches still fail before extraction.
+Actions in the workflow are pinned by full
 commit SHA; keep it that way. Run the helper's tests with `npm run test:release`.
 
 ## `npx pandacode`
@@ -118,8 +125,8 @@ records today's date in `website/src/data/release-dates.json` (the website's
 are rejected.
 
 Write `releases/X.Y.Z.md` with the user-facing changes and known limitations.
-The release workflow appends an "Installing" section with the unsigned-build
-instructions, so do not repeat those.
+The release workflow appends an "Installing" section based on whether macOS signing
+is configured, so do not repeat those instructions.
 
 ## 2. Check
 
@@ -198,9 +205,13 @@ raw `tauri build` output.
 
 ## Optional signing
 
-Builds are unsigned by default: macOS gets an ad-hoc signature, Windows and
-Linux are not signed. Users see first-launch warnings, which the release notes
-explain.
+Signing is optional for local and fork builds: without Apple credentials, macOS
+gets an ad-hoc signature. The official
+[v0.3.103 macOS release builds](https://github.com/aicodeking/pandacode/actions/runs/42462913784)
+passed Apple notarization and Gatekeeper assessment as `Notarized Developer ID` on
+both Apple silicon and Intel. Notarization does not suppress macOS's normal
+confirmation when opening an app downloaded from the internet. Windows and Linux
+builds are not code-signed.
 
 An ad-hoc macOS build is not notarized, and Gatekeeper refuses to open it.
 **Open Anyway** in System Settings → Privacy & Security does not always clear

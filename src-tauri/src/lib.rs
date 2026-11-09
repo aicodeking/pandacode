@@ -1,3 +1,4 @@
+mod account_config;
 mod account_identity;
 mod account_pool;
 mod account_sign_in;
@@ -338,6 +339,32 @@ mod task_agent_tests {
         assert_eq!(listed(r#"{"status":"waiting"}"#), "waiting");
         assert_eq!(listed(r#"{"status":"paused"}"#), "idle");
         assert_eq!(listed("not json"), "idle");
+    }
+
+    #[test]
+    fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let assistant = Mutex::new("Checking the project.".to_string());
+        let body = "Account switched\nThe default Claude account reached its usage limit, so this task continues on “Backup”.";
+        let mut switch = event(&task.id, "note", body);
+        switch.data = Some(serde_json::json!({"accountPool": {"connectionId": "b"}}));
+        save_agent_activity(&store, &assistant, &mut switch, None).unwrap();
+        let mut ordinary = event(&task.id, "note", "Waiting for a background task.");
+        save_agent_activity(&store, &assistant, &mut ordinary, None).unwrap();
+        let page = store.message_page(&task.id, None).unwrap();
+        let rows: Vec<_> = page.messages.iter().map(|message| (message.role.as_str(), message.content.as_str())).collect();
+        assert_eq!(rows, [
+            ("assistant", "Checking the project."),
+            ("system", body),
+            ("system", "Waiting for a background task."),
+        ]);
+        assert!(!page.has_older);
+        assert!(assistant.lock().unwrap().is_empty());
+        assert_eq!(switch.kind, "note");
+        assert_eq!(switch.text, body);
+        assert_eq!(switch.data.unwrap()["accountPool"]["connectionId"], "b");
     }
 
     #[test]
@@ -2312,9 +2339,16 @@ async fn launch_operation_admitted(
         });
         let host = if let Some(admission) = team.as_ref() {
             architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
+                .map(|host| {
+                    // Workers keep their scoped team tools; only the lead may manage other tasks.
+                    if admission.parent == session_id {
+                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+                    } else {
+                        host
+                    }
+                })
         } else {
-            (config.provider == "codex")
-                .then(|| agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
         };
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());

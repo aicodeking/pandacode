@@ -1,7 +1,5 @@
 #!/bin/sh
-# Runs the PandaCode desktop browser preview in the foreground; Ctrl-C stops it.
-# pandacode-preview: http://127.0.0.1:1447
+# pandacode-preview: http://127.0.0.1:15388
 set -eu
-
 cd "$(dirname "$0")"
-exec ./node_modules/.bin/vite --port 1447 --strictPort --host 127.0.0.1
+exec ./node_modules/.bin/vite --host 127.0.0.1 --port 15388 --strictPort

@@ -1,6 +1,6 @@
 # Agent tools and integrations
 
-PandaCode launches the installed Codex CLI through its app-server. Codex supplies
+PandaCode launches installed coding-agent harnesses. Each harness supplies
 shell commands, file editing, image inspection, search, subagents, skills and
 configured MCP integrations according to its version, configuration and policy.
 PandaCode does not replace those tools with simulated implementations or enable
@@ -8,18 +8,23 @@ features the user's configuration has disabled.
 
 ## App tools
 
-New Codex tasks register `pandacode_*` dynamic functions: project/task discovery,
+Standalone tasks and team leads receive `pandacode_*` app tools: project/task
+discovery,
 task history and subagent activity, creating/starting/following up/renaming/
 archiving tasks, board stages, worktrees, showing tasks/files/terminals, local
 ports, browser navigation/reading/clicking/typing/screenshots, and project
 moodboard discovery/metadata/image reading. See [Moodboards](moodboards.md).
+Team workers retain their scoped coordination tools rather than gaining tools
+to create or start separate tasks outside their assignments. Codex registers the
+app tools as dynamic functions; other supported local harnesses use the
+authenticated, run-local MCP bridge.
 
 Task operations remain within the current project. File previews use the task's
 checkout and existing native path validation. Creating a worktree creates a task
 under its original project. Starting another agent uses the same admission and
 concurrency limits as the UI. Starting/following up on the current running task
-is rejected. Use Codex's shell tool for command execution and its image tool to
-inspect the local PNG returned by `pandacode_capture_browser`.
+is rejected. Use the harness's shell tool for command execution and its image
+tool to inspect the local PNG returned by `pandacode_capture_browser`.
 
 A string argument is held to its field's `maxLength` (8 KiB with none), counted in
 characters: messages and task descriptions take up to the 16 MiB message limit.
@@ -39,8 +44,8 @@ home directory). Results are untrusted data. When codedb is absent the tool says
 and agents keep their harness's own search tools. The tool runs without an
 approval prompt, like the other read-only app tools.
 
-Host callbacks are outside Codex's shell sandbox, so PandaCode enforces its own
-approval boundary: mutations and browser/UI access request approval in Standard
+Host callbacks are outside the harness's shell sandbox, so PandaCode enforces its
+own approval boundary: mutations and browser/UI access request approval in Standard
 and Auto modes, are unavailable in Plan mode, and run without a prompt only when
 the user selected Full access. Browser access requires the calling task to be
 visible; background tasks cannot hijack another task's browser. The browser
@@ -51,10 +56,13 @@ no application IPC access.
 The installed app-server persists dynamic tools with newly created threads.
 Its `thread/resume` API cannot add them to a conversation created without them.
 Older tasks retain their original coding/MCP tools; start a new Codex task to use
-newly added PandaCode app tools. Claude, GLM, Kimi, OpenCode, and Antigravity receive
-these host tools through the authenticated, run-local MCP bridge where the
-provider supports HTTP MCP. Codex uses its dynamic tool interface. Provider-owned
-tools and integrations continue through their own protocols and configuration.
+newly added PandaCode app tools. Existing Codex team leads receive the expanded
+catalog through the team's normal context handoff, preserving bounded text history.
+Claude, GLM, Kimi, OpenCode, and other supported local harnesses receive these
+host tools on each run. ACP harnesses must advertise HTTP MCP support. ZCode
+does not yet bridge host tools, and cloud runs do not receive local host tools.
+Provider-owned tools and integrations continue through their own protocols and
+configuration.
 
 ## Integrations and questions
 
