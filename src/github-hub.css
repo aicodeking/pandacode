@@ -62,6 +62,9 @@
 .gh-clone:hover{background:var(--ds-primary-hover);transition-duration:var(--ds-ease-in),var(--spring-fast-duration)}
 .gh-clone:active{scale:var(--ds-press)}
 .gh-clone .icon{width:var(--icon-sm);height:var(--icon-sm)}
+.gh-account{display:inline-flex;align-items:center;gap:4px;min-height:24px;margin-left:auto;padding:0 8px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-chip);background:var(--ds-fill);font-size:var(--ds-text-meta);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.gh-account:hover{background:var(--gh-hover);color:var(--text)}
+.gh-account .icon{width:var(--icon-xs);height:var(--icon-xs);opacity:.7}
 .gh-bar{display:flex;align-items:center;gap:12px;padding:0 28px 12px}
 /* The tabs are the design system's segmented control (.ds-seg's look, sized for a toolbar). */
 .gh-tabs{position:relative;isolation:isolate;display:inline-flex;gap:2px;padding:3px;border:1px solid var(--ds-border);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-track)}

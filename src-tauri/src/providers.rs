@@ -155,6 +155,9 @@ pub struct RunConfig {
     pub goal: Option<crate::goal_state::GoalRequest>,
     /// Validated per-task settings applied before any new Codex turn.
     pub codex_settings: Option<Value>,
+    /// The project's GitHub account pin (`login@host`): the harness runs gh and git as
+    /// that account. None keeps gh's active account.
+    pub github_pin: Option<String>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
 }
@@ -3380,6 +3383,14 @@ async fn run_inner(
     } else {
         None
     };
+    // A pinned project's agent runs gh and git as that account; a stale pin keeps gh's
+    // active account (the status card names it) instead of failing the turn.
+    if let Some(pin) = &config.github_pin {
+        if let Ok(Some(token)) = crate::github_accounts::token_for(Some(pin)) {
+            command.env("GH_TOKEN", &token);
+            command.env("GH_ENTERPRISE_TOKEN", &token);
+        }
+    }
     run_process_with_tools(
         config,
         sink,
@@ -3975,6 +3986,7 @@ mod tests {
             skill: None,
             goal: None,
             codex_settings: None,
+            github_pin: None,
             images: Vec::new(),
         }
     }
@@ -5609,6 +5621,7 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
                 skill: None,
                 goal: None,
                 codex_settings: None,
+                github_pin: None,
                 images: Vec::new(),
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));

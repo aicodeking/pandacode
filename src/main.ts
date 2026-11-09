@@ -2953,6 +2953,8 @@ function syncGithubHub(shown: boolean): void {
       openTask: id => run(openHubTask(id)),
       startTask: input => startHubTask(input),
       showChoices: (anchor, options) => showChoices(anchor, options),
+      fetchAccounts: id => github.fetchGithubAccounts(id),
+      setAccount: (id, login) => github.setGithubAccount(id, login),
       chooseFolder, notify,
       projectsChanged: async () => { state.projects = await call<Project[]>('list_projects'); renderNavigation(); },
     });
