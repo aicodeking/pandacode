@@ -3,8 +3,19 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { coverage, inventoryStatus, markdown, packagedAssets, platformOf, scanStatus } from './sbom.mjs';
 
-const workflow = await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8');
-const sbomJob = workflow.split('\n  sbom:\n')[1].split('\n  publish:\n')[0];
+// Windows checkouts may convert the workflow to CRLF; compare against LF only.
+const workflow = (await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+
+function section(text, start, end, label) {
+  const from = text.indexOf(start);
+  assert.notEqual(from, -1, `${label}: start marker ${JSON.stringify(start)} not found`);
+  const body = text.slice(from + start.length);
+  const to = body.indexOf(end);
+  assert.notEqual(to, -1, `${label}: end marker ${JSON.stringify(end)} not found`);
+  return body.slice(0, to);
+}
+
+const sbomJob = section(workflow, '\n  sbom:\n', '\n  publish:\n', 'release.yml sbom job');
 
 test('scanner downloads have bounded transient retries and retain pinned integrity checks', () => {
   const download = sbomJob.match(/^\s+curl .+$/m)[0];
@@ -21,7 +32,7 @@ test('scanner downloads have bounded transient retries and retain pinned integri
 
 test('missing coverage is summarized as a failure while publishing stays non-blocking', () => {
   assert.match(sbomJob, /continue-on-error: true/);
-  const summary = sbomJob.split('      - name: Show coverage\n')[1].split('      - uses:')[0];
+  const summary = section(sbomJob, '      - name: Show coverage\n', '      - uses:', 'sbom job coverage step');
   assert.match(summary, /if: always\(\)/);
   assert.match(summary, /if \[ -s sbom\/SBOM-COVERAGE\.md \]; then\n\s+cat sbom\/SBOM-COVERAGE\.md >> "\$GITHUB_STEP_SUMMARY"/);
   assert.match(summary, /else\n[\s\S]*coverage[^\n]*unavailable[^\n]*>> "\$GITHUB_STEP_SUMMARY"/i);
