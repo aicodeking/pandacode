@@ -3,7 +3,7 @@
 // nothing touches the network. Pure apart from the injected timer (tested in node).
 import { OFFLINE, type Method } from './connect/rpc.ts';
 import type { Bot, ConfigureParams, Message, StartParams, TaskSummary } from './connect/types.ts';
-import { DEMO_CHANGES, demoDiff, demoPull, demoPullPatch } from './demo-pull.ts';
+import { demoChanges, demoDiff, demoPull, demoPullPatch } from './demo-pull.ts';
 import { DEMO_TEAM_TASK, demoTeam, demoWorkerMessages } from './demo-team.ts';
 import type { ConnectState } from './store/index.ts';
 import { idleLive, lastId } from './store/reduce.ts';
@@ -137,8 +137,8 @@ export async function demoCall(host: DemoHost, deviceId: string, method: Method,
       host.set(next => ({ pulls: { ...next.pulls, [k]: { ...(next.pulls[k] ?? demoPull()), state: 'merged', mergedAt: new Date(host.now()).toISOString() } } }));
       return {};
     }
-    case 'task.changes': return DEMO_CHANGES;
-    case 'task.diff': return { diff: demoDiff(params.path), truncated: false };
+    case 'task.changes': return demoChanges(params.sessionId, s.tasks[deviceId]?.tasks.find(t => t.sessionId === params.sessionId)?.branch);
+    case 'task.diff': return { diff: demoDiff(params.sessionId, params.path), truncated: false };
     case 'task.teamResume': return {};
     case 'task.team': return { team: params?.sessionId === DEMO_TEAM_TASK ? demoTeam(host.now()) : null };
     case 'task.workerMessages': {

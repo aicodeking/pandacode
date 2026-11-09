@@ -1,6 +1,7 @@
 // Settings → Appearance: System, Light or Dark for this app only. `Appearance.setColorScheme`
 // overrides the window's interface style, so native parts (headers, tabs, sheets, glass, blur,
-// keyboard, status bar) and PlatformColors follow, as does `useColorScheme()`.
+// keyboard, status bar) and PlatformColors follow, as does `useColorScheme()`. A change runs under
+// ThemeFade, which covers the one-frame flip.
 import { Appearance } from 'react-native';
 import { create } from 'zustand';
 import { get, set } from '../connect/secrets.ts';
@@ -13,9 +14,17 @@ export const useAppearance = create<{ choice: AppearanceChoice }>(() => ({ choic
 
 const apply = (choice: AppearanceChoice) => Appearance.setColorScheme(choice === 'system' ? 'unspecified' : choice);
 
+type ThemeFader = (swap: () => void) => void;
+let fader: ThemeFader | null = null;
+/** ThemeFade registers itself here while mounted. */
+export const setThemeFader = (next: ThemeFader | null) => { fader = next; };
+
 export function setAppearance(choice: AppearanceChoice) {
   useAppearance.setState({ choice });
-  apply(choice);
+  const swap = () => apply(useAppearance.getState().choice);
+  // ponytail: the system's own scheme can't be read under an override, so going back to System always fades.
+  if (fader && Appearance.getColorScheme() !== choice) fader(swap);
+  else swap();
   set(KEY, choice).catch(() => undefined);
 }
 

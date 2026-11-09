@@ -1,105 +1,175 @@
 // One task: transcript (stored messages + live run + unsent messages), the native header
 // (TaskHeader), pending requests and the composer.
-import { useLocalSearchParams } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useHeaderHeight } from 'expo-router/react-navigation';
-import { memo, useEffect, useRef, useState } from 'react';
-import { Dimensions, FlatList, Keyboard, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react';
+import { AccessibilityInfo, Alert, FlatList, ScrollView, StyleSheet, useColorScheme, useWindowDimensions, View } from 'react-native';
+import { GlassView } from 'expo-glass-effect';
+import { useKeyboardHandler, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
+import Animated, { FadeInDown, ReduceMotion, useAnimatedStyle } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { connect } from '../../../connect/client.ts';
 import { markOpen } from '../../../connect/perf.ts';
 import type { PendingRequest } from '../../../connect/types.ts';
-import { botOf, rowTeam } from '../../../store/inbox.ts';
-import { teamBusy } from '../../../store/team.ts';
+import { botOf, elapsedLabel, glanceOf, rowTeam, runClockStart, stalledFor } from '../../../store/inbox.ts';
+import { teamBusy, type Team } from '../../../store/team.ts';
 import { taskKey, useConnect } from '../../../store/index.ts';
-import { duration, type TurnRow } from '../../../store/turns.ts';
-import { Composer } from '../../../ui/Composer.tsx';
+import { sendOrQueue } from '../../../store/local.ts';
+import type { TurnRow } from '../../../store/turns.ts';
+import { Composer, SpringIn } from '../../../ui/Composer.tsx';
+import { Banner, CrossFadeText, crossFadeIn, crossFadeOut, geometry, haptic, PressScale, springs, StatusDot, type as textStyle, type Tone, useMotion } from '../../../ui/ds/index.ts';
 import { Glass, hasGlass } from '../../../ui/Glass.tsx';
 import { ApprovalCard, InputCard } from '../../../ui/requests.tsx';
 import { isActive } from '../../../ui/status.tsx';
 import { Icon } from '../../../ui/Icon.tsx';
-import { HeaderBlur, TaskHeader } from '../../../ui/TaskHeader.tsx';
+import { DockFade, HeaderBlur, TaskHeader } from '../../../ui/TaskHeader.tsx';
 import { useColors } from '../../../ui/theme.ts';
-import { useBackdrop } from '../../../ui/Backdrop.tsx';
-import { scrollToNewest, Transcript } from '../../../ui/transcript.tsx';
+import { NO_EDGE_EFFECTS, scrollToNewest, Transcript } from '../../../ui/transcript.tsx';
+import { useNow } from '../../../ui/Trace.tsx';
 import { WorkerNamesContext } from '../../../ui/ToolCards.tsx';
 import { useNames, useTeam } from '../../../ui/useTeam.ts';
 
 const NONE: PendingRequest[] = [];
+/** The composer's usual height until it has laid out. */
+const COMPOSER_ESTIMATE = 120;
+/** The Working pill's row above the requests. */
+const FLOATER_ROW = 44;
+/** Enough for a heading and its buttons on the smallest window. */
+const MIN_REQUESTS = 140;
+/** Between the composer and the keyboard. */
+const KEYBOARD_GAP = 8;
+/** How far the fade under the dock reaches behind the composer. */
+const DOCK_FADE = 36;
 
-/** The keyboard's height over the screen (0 while hidden), animated like the keyboard on iOS. */
-function useKeyboardHeight(): number {
-  const [height, setHeight] = useState(0);
-  useEffect(() => {
-    const ios = Platform.OS === 'ios';
-    let current = 0;
-    const move = (next: number, duration?: number) => {
-      // One dismissal fires several events below; a repeat would leave a LayoutAnimation pending
-      // for the next unrelated layout.
-      if (next === current) return;
-      current = next;
-      if (ios && duration) LayoutAnimation.configureNext({ duration, update: { type: 'keyboard' } });
-      setHeight(next);
-    };
-    const subs = [
-      Keyboard.addListener(ios ? 'keyboardWillShow' : 'keyboardDidShow', e => move(e.endCoordinates.height, e.duration)),
-      Keyboard.addListener(ios ? 'keyboardWillHide' : 'keyboardDidHide', e => move(0, e.duration)),
-      // An interactive dismissal (the transcript's keyboardDismissMode) can drop the hide events on
-      // iOS and leave the inset stuck, so a final frame off the screen also counts as hidden.
-      ...(ios ? [
-        Keyboard.addListener('keyboardWillChangeFrame', e => {
-          const { height: end, screenY } = e.endCoordinates;
-          if (!end || screenY >= Dimensions.get('screen').height) move(0, e.duration);
-        }),
-        Keyboard.addListener('keyboardDidHide', () => move(0)),
-      ] : []),
-    ];
-    return () => subs.forEach(sub => sub.remove());
+/** Follows the keyboard every frame on the UI thread (react-native-keyboard-controller), a finger dragging it
+ * down or back up included: a style lifting the dock and the transcript, and the settled height for what can
+ * wait for React. `dockInset`: the dock's own padding under the composer, which the keyboard replaces. */
+function useKeyboardLift(dockInset: number) {
+  const { height } = useReanimatedKeyboardAnimation();
+  const [settled, setSettled] = useState(0);
+  useKeyboardHandler({
+    onEnd: event => {
+      'worklet';
+      scheduleOnRN(setSettled, event.height);
+    },
   }, []);
-  return height;
+  const lift = useAnimatedStyle(() => ({ transform: [{ translateY: -Math.max(0, -height.get() - dockInset + KEYBOARD_GAP) }] }));
+  return { lift, settled };
 }
 
-/** "Working 42s" since the last prompt; only this text re-renders each second. */
-function Elapsed({ since }: { since: number }) {
-  const colors = useColors();
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-  return <Text style={[styles.pillText, { color: colors.text }]}>Working {duration(Math.max(0, now - since))}</Text>;
+const AnimatedGlass = Animated.createAnimatedComponent(GlassView);
+/** A card arriving from below with a little life; a fade with Reduce Motion. */
+const CARD_IN = FadeInDown.springify().mass(springs.smooth.mass).stiffness(springs.smooth.stiffness).damping(springs.smooth.damping).reduceMotion(ReduceMotion.Never);
+
+/** The pill's surface: glass whose width follows its words with a layout transition. */
+function PillSurface({ children }: { children: ReactNode }) {
+  const { layout } = useMotion();
+  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
+  if (hasGlass) return <AnimatedGlass layout={layout} glassEffectStyle="regular" colorScheme={scheme} style={styles.pill} accessible accessibilityLiveRegion="polite">{children}</AnimatedGlass>;
+  return <Glass style={styles.pill} accessible accessibilityLiveRegion="polite">{children}</Glass>;
 }
 
-/** The floating row above the composer: the Working pill while running, and a jump to the newest message. */
-const Floaters = memo(function Floaters({ deviceId, sessionId, running, away, onLatest }: { deviceId: string; sessionId: string; running: boolean; away: boolean; onLatest: () => void }) {
+/** Why a run isn't running: it failed, was stopped or hit a limit. Stays until the next run starts. */
+function RunNotice({ deviceId, sessionId, status, bot }: { deviceId: string; sessionId: string; status: string; bot: boolean }) {
   const colors = useColors();
-  // The newest prompt, stored or listed (whichever the phone has seen last), marks the run's start.
-  const since = useConnect(s => Math.max(s.messages[taskKey(deviceId, sessionId)]?.findLast(m => m.role === 'user')?.createdAt ?? 0,
-    s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.lastPromptAt ?? 0));
-  const phone = useConnect(s => /^(ios|android)$/.test(s.devices.find(d => d.id === deviceId)?.platform ?? ''));
+  const key = taskKey(deviceId, sessionId);
+  const limited = useConnect(s => s.live[key]?.limited);
+  const now = useNow(!!limited?.resetsAt);
+  const reason = useConnect(s => { const last = s.messages[key]?.at(-1); return last?.role === 'error' ? last.content : ''; });
+  const lastPrompt = useConnect(s => s.messages[key]?.findLast(m => m.role === 'user')?.content ?? '');
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    haptic('light');
+    try {
+      await sendOrQueue(deviceId, sessionId, lastPrompt);
+    } catch (error) {
+      Alert.alert('Could not send', (error as Error).message);
+    } finally {
+      setRetrying(false);
+    }
+  };
+  const action = lastPrompt && !bot ? { label: 'Retry', onPress: () => void retry(), loading: retrying } : undefined;
+  const until = limited?.resetsAt ? `Resets at ${new Date(limited.resetsAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : '';
+  const active = isActive(status);
+  const notice = limited && (!limited.resetsAt || limited.resetsAt > now)
+    ? { title: limited.text, body: until, tone: 'warning', action: undefined }
+    : status === 'failed' && !active ? { title: 'This run failed', body: reason || 'The agent stopped with an error.', tone: 'danger', action }
+    : status === 'stopped' && !active ? { title: 'Stopped', body: 'This run was stopped before it finished.', tone: 'warning', action }
+    : null;
+  return <Banner visible={!!notice} title={notice?.title ?? ''} body={notice?.body} tone={(notice?.tone ?? 'warning') as Tone} action={notice?.action} style={[styles.notice, { backgroundColor: colors.raised }]} />;
+}
+
+/** The run's one status, from the same state as the inbox's badge and clock; only this text ticks. */
+function RunStatus({ deviceId, sessionId, since, waiting, activity }: { deviceId: string; sessionId: string; since: number; waiting: boolean; activity: string }) {
+  const colors = useColors();
+  const now = useNow(!waiting);
+  const live = useConnect.getState().live[taskKey(deviceId, sessionId)];
+  const stalled = waiting ? null : stalledFor(live?.lastEventAt ?? useConnect.getState().tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.lastEventAt, now);
+  const needsLook = waiting || stalled !== null;
+  const label = waiting ? 'Waiting on you' : stalled !== null ? `Stalled ${elapsedLabel(stalled)}` : `Working ${elapsedLabel(now - since)}`;
+  return (
+    <>
+      <StatusDot tone={needsLook ? 'warning' : 'running'} pulse={!needsLook} />
+      <CrossFadeText text={label} style={[textStyle.subheadMedium, styles.pillText, { color: needsLook ? colors.warning : colors.text }]} />
+      {!waiting && !!activity && <View style={styles.pillActivity}><CrossFadeText text={activity} numberOfLines={1} style={[textStyle.footnote, { color: colors.muted }]} /></View>}
+    </>
+  );
+}
+
+/** The floating row above the composer: the run's status while running, and a jump to the newest message. */
+const Floaters = memo(function Floaters({ deviceId, sessionId, running, waiting, team, away, onLatest }: { deviceId: string; sessionId: string; running: boolean; waiting: boolean; team: Team | null | 'outdated' | undefined; away: boolean; onLatest: () => void }) {
+  const colors = useColors();
+  // As the inbox: the run's start (a steer doesn't move it), else the newest prompt on hosts that don't send one.
+  const since = useConnect(s => {
+    const key = taskKey(deviceId, sessionId);
+    return runClockStart(s.live[key], s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)) || s.messages[key]?.findLast(m => m.role === 'user')?.createdAt || 0;
+  });
+  const activity = useConnect(s => {
+    const task = s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId);
+    return glanceOf(s.live[taskKey(deviceId, sessionId)], task, rowTeam(task, team)).activity;
+  });
   if (!running && !away) return null;
   return (
     <View style={styles.floaters} pointerEvents="box-none">
-      {running && !!since && (
-        <Glass style={styles.pill} accessible accessibilityRole="text">
-          <Elapsed since={since} />
-          <View style={[styles.divider, { backgroundColor: colors.separator }]} />
-          <Icon ios={phone ? 'iphone' : 'desktopcomputer'} android={phone ? 'smartphone' : 'computer'} size={14} color={colors.secondary} />
-        </Glass>
+      {running && (!!since || waiting) && (
+        <Animated.View entering={crossFadeIn} exiting={crossFadeOut} style={styles.pillFrame}>
+          <PillSurface>
+            <RunStatus deviceId={deviceId} sessionId={sessionId} since={since} waiting={waiting} activity={activity} />
+          </PillSurface>
+        </Animated.View>
       )}
       {away && (
-        <Glass style={styles.latest} interactive>
-          <Pressable onPress={onLatest} accessibilityRole="button" accessibilityLabel="Scroll to the newest message" hitSlop={6} style={styles.latestInner}>
-            <Icon ios="chevron.down" android="expand_more" size={16} color={colors.text} />
-          </Pressable>
-        </Glass>
+        <SpringIn>
+          <Glass style={styles.latest} interactive>
+            <PressScale onPress={onLatest} accessibilityLabel="Scroll to the newest message" hitSlop={6} style={styles.latestInner}>
+              <Icon ios="chevron.down" android="expand_more" size={16} color={colors.text} />
+            </PressScale>
+          </Glass>
+        </SpringIn>
       )}
     </View>
   );
 });
 
+/** A run ending on this screen: a haptic and a word for VoiceOver. A task that was already idle says nothing. */
+function useRunEnded(running: boolean, status: string) {
+  const was = useRef(running);
+  useEffect(() => {
+    if (was.current === running) return;
+    was.current = running;
+    if (running) return;
+    if (status === 'failed') haptic('error');
+    else if (status !== 'stopped') haptic('success');
+    AccessibilityInfo.announceForAccessibility(status === 'failed' ? 'The run failed' : status === 'stopped' ? 'The run stopped' : 'The run finished');
+  }, [running, status]);
+}
+
 export default function TaskScreen() {
   const { device = '', session = '' } = useLocalSearchParams<{ device: string; session: string }>();
-  const backdrop = useBackdrop();
+  const colors = useColors();
   const insets = useSafeAreaInsets();
   // With Liquid Glass the header is transparent (TaskHeader): the transcript runs under it, inset
   // by its height, with HeaderBlur behind the bar.
@@ -118,8 +188,14 @@ export default function TaskScreen() {
   const names = useNames(team);
   const agents = useConnect(s => !!s.live[key]?.subagents?.length) || (!!team && team !== 'outdated' && team.workers.length > 0);
   const status = liveStatus === 'idle' && task && isActive(task.status) ? task.status : liveStatus;
-  const [bottom, setBottom] = useState(80);
-  const keyboard = useKeyboardHeight();
+  const [dockHeight, setDockHeight] = useState(0);
+  const [contentTop, setContentTop] = useState(0);
+  const [composerHeight, setComposerHeight] = useState(COMPOSER_ESTIMATE);
+  const dockInset = Math.max(insets.bottom, 10);
+  const { lift, settled: keyboard } = useKeyboardLift(dockInset);
+  const { height: windowHeight, fontScale } = useWindowDimensions();
+  const { layout, reduced } = useMotion();
+  const cardIn = reduced ? crossFadeIn : CARD_IN;
   const list = useRef<FlatList<TurnRow>>(null);
   const [away, setAway] = useState(false);
   const [latest] = useState(() => () => scrollToNewest(list.current));
@@ -135,24 +211,54 @@ export default function TaskScreen() {
   const requests = approvals.length + inputs.length > 0;
   // A team still working keeps Stop (which pauses it on the host) and queued sends.
   const running = isActive(status) || teamBusy(rowTeam(task, team));
+  const waiting = requests || status === 'waiting';
+  useRunEnded(running, status);
+  // A gentle tap when a request arrives while the thread is open; one already waiting at open is just there.
+  const requestCount = approvals.length + inputs.length;
+  const seenRequests = useRef(requestCount);
+  useEffect(() => {
+    if (requestCount > seenRequests.current) haptic('light');
+    seenRequests.current = requestCount;
+  }, [requestCount]);
+  const settledStatus = useConnect(s => (liveStatus !== 'idle' ? liveStatus : s.tasks[device]?.tasks.find(t => t.sessionId === session)?.status ?? 'idle'));
+  // What the transcript keeps clear: from the top of the highest thing in the dock to the screen's bottom.
+  const bottom = dockHeight && dockHeight - contentTop;
+  // Request cards scroll in whatever the window leaves between the header and the composer.
+  const requestsMax = Math.max(MIN_REQUESTS, windowHeight - keyboard - header - composerHeight - FLOATER_ROW * Math.max(1, fontScale));
   return (
     <WorkerNamesContext.Provider value={names}>
-    <View style={[styles.screen, { backgroundColor: backdrop.background }]}>
-      <TaskHeader deviceId={device} sessionId={session} running={running} title={task?.title || 'Task'} pull={pull} agents={agents} bot={bot} />
+    <View style={[styles.screen, { backgroundColor: colors.background }]}>
+      {/* Both this and the marker in Transcript: which one reaches the list depends on the screen's first child, and the other side's default would turn the effect back on. */}
+      <Stack.Screen options={{ scrollEdgeEffects: NO_EDGE_EFFECTS }} />
+      <TaskHeader deviceId={device} sessionId={session} title={task?.title || 'Task'} pull={pull} agents={agents} bot={bot} quiet={running || requests} />
       {/* Side insets: the iPhone Duo's rail, or a landscape notch. */}
       <View style={[styles.screen, { paddingLeft: insets.left, paddingRight: insets.right }]}>
-        <Transcript deviceId={device} sessionId={session} top={(hasGlass ? header : 0) + 12} bottom={bottom + keyboard + 12} listRef={list} onAway={setAway} />
+        {/* The list moves with the keyboard as one; only its far end needs the extra room, so that can wait for React. */}
+        <Animated.View style={[styles.screen, lift]}>
+          <Transcript key={key} deviceId={device} sessionId={session} top={(hasGlass ? header : 0) + 12 + keyboard} bottom={bottom + 12} listRef={list} onAway={setAway} />
+        </Animated.View>
         <HeaderBlur height={header} />
-        <View style={[styles.dock, { left: insets.left, right: insets.right, bottom: keyboard, paddingBottom: keyboard ? 8 : Math.max(insets.bottom, 10) }]} onLayout={e => setBottom(e.nativeEvent.layout.height)} pointerEvents="box-none">
-          <Floaters deviceId={device} sessionId={session} running={running} away={away} onLatest={latest} />
+        <DockFade height={dockInset + DOCK_FADE} />
+        {/* Bottom-anchored in a full-height frame, so anything growing below moves what's above with a layout transition. */}
+        <Animated.View style={[styles.dock, { left: insets.left, right: insets.right }, lift]} onLayout={e => setDockHeight(e.nativeEvent.layout.height)} pointerEvents="box-none">
+          <Animated.View layout={layout} onLayout={e => setContentTop(e.nativeEvent.layout.y)} pointerEvents="box-none">
+            <Floaters deviceId={device} sessionId={session} running={running && !requests} waiting={waiting} team={team} away={away} onLatest={latest} />
+          </Animated.View>
+          <Animated.View layout={layout}>
+            <RunNotice deviceId={device} sessionId={session} status={running ? 'running' : settledStatus} bot={!!bot} />
+          </Animated.View>
           {requests && (
-            <ScrollView style={styles.requests} contentContainerStyle={styles.requestList} keyboardShouldPersistTaps="handled">
-              {approvals.map(r => <ApprovalCard key={r.requestId} deviceId={device} sessionId={session} request={r} />)}
-              {inputs.map(r => <InputCard key={r.requestId} deviceId={device} sessionId={session} request={r} />)}
-            </ScrollView>
+            <Animated.View layout={layout} entering={cardIn} exiting={crossFadeOut}>
+              <ScrollView style={[styles.requests, { maxHeight: requestsMax }]} contentContainerStyle={styles.requestList} keyboardShouldPersistTaps="handled">
+                {approvals.map(r => <Animated.View key={r.requestId} layout={layout} entering={cardIn} exiting={crossFadeOut}><ApprovalCard deviceId={device} sessionId={session} request={r} /></Animated.View>)}
+                {inputs.map(r => <Animated.View key={r.requestId} layout={layout} entering={cardIn} exiting={crossFadeOut}><InputCard deviceId={device} sessionId={session} request={r} /></Animated.View>)}
+              </ScrollView>
+            </Animated.View>
           )}
-          <Composer deviceId={device} sessionId={session} running={running} bot={bot} />
-        </View>
+          <Animated.View layout={layout} style={{ paddingBottom: dockInset }} onLayout={e => setComposerHeight(e.nativeEvent.layout.height)}>
+            <Composer key={key} deviceId={device} sessionId={session} running={running} waiting={waiting} bot={bot} />
+          </Animated.View>
+        </Animated.View>
       </View>
     </View>
     </WorkerNamesContext.Provider>
@@ -161,13 +267,16 @@ export default function TaskScreen() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1 },
-  dock: { position: 'absolute', bottom: 0 },
-  requests: { maxHeight: 380, flexGrow: 0 },
+  dock: { position: 'absolute', top: 0, bottom: 0, justifyContent: 'flex-end' },
+  requests: { flexGrow: 0 },
+  notice: { marginHorizontal: geometry.screenMargin, marginBottom: 8 },
   requestList: { gap: 8, paddingBottom: 8 },
-  floaters: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, paddingBottom: 8 },
-  pill: { flexDirection: 'row', alignItems: 'center', gap: 9, height: 36, borderRadius: 18, paddingHorizontal: 14 },
-  pillText: { fontSize: 14, fontWeight: '600', fontVariant: ['tabular-nums'] },
-  divider: { width: StyleSheet.hairlineWidth * 2, height: 14 },
+  floaters: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 8, paddingBottom: 8, paddingHorizontal: geometry.screenMargin },
+  pillFrame: { flexShrink: 1 },
+  // A minimum, not a height: the words grow with Dynamic Type.
+  pill: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 36, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 6, borderCurve: 'continuous' },
+  pillText: { fontVariant: ['tabular-nums'] },
+  pillActivity: { flexShrink: 1 },
   latest: { width: 36, height: 36, borderRadius: 18 },
   latestInner: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

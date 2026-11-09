@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TaskSummary } from '../src/connect/types.ts';
-import { activeSnoozes, botOf, botRows, elapsedLabel, filterBots, filterRows, glanceOf, inboxSections, SETTLED_MS, stalledFor, STALL_MS, tomorrowMorning, type InboxInput } from '../src/store/inbox.ts';
+import { activeSnoozes, approvalSummary, botOf, botRows, elapsedLabel, filterBots, filterRows, glanceOf, inboxSections, pendingApproval, SETTLED_MS, stalledFor, STALL_MS, tomorrowMorning, type InboxInput } from '../src/store/inbox.ts';
 import { idleLive } from '../src/store/reduce.ts';
 
 const NOW = 1_800_000_000_000;
@@ -140,4 +140,20 @@ test('sections come in order: running, needs, recent', () => {
   const inbox = inboxSections(input([task('r', { status: 'running' }), task('n', { status: 'waiting' }), task('d')]));
   assert.deepEqual(Object.keys(inbox).slice(0, 3), ['running', 'needs', 'recent']);
   assert.deepEqual([...inbox.running, ...inbox.needs, ...inbox.recent].map(r => r.task.sessionId), ['r', 'n', 'd']);
+});
+
+test('an approval comes from the live run, else the list; a stub or a question is not one', () => {
+  const live = { kind: 'approval', requestId: 'live', text: 'ok?' };
+  const listed = { kind: 'approval', requestId: 'listed', text: 'ok?' };
+  assert.equal(pendingApproval({ approvals: [live] }, { pending: [listed] })?.requestId, 'live');
+  assert.equal(pendingApproval({ approvals: [] }, { pending: [listed] })?.requestId, 'listed');
+  assert.equal(pendingApproval(undefined, { pending: [{ kind: 'input_request', requestId: 'q', text: '?' }] }), undefined);
+  assert.equal(pendingApproval(undefined, {}), undefined);
+});
+
+test('the approval confirm shows the words and the command, within reason', () => {
+  assert.equal(approvalSummary({ text: 'Run it?', tool: { name: 'Bash', input: 'npm test' } as never }), 'Run it?\n\nBash\nnpm test');
+  assert.equal(approvalSummary({ text: 'Run `npm i` in **web**?' }), 'Run npm i in web?');
+  assert.equal(approvalSummary({ text: '' }), 'The agent asks to continue.');
+  assert.ok(approvalSummary({ text: 'x'.repeat(1000) }).length <= 401);
 });

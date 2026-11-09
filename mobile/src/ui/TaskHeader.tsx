@@ -1,25 +1,23 @@
-// The task screen's native header: the title, a system back button (the sidebar toggle and New
-// task in the Duo's split view) and bar button items for the pull request (when one is linked),
-// Changes, Agents (person.3, when the task has subagents or a team), a More menu (Model & permissions, Task info; folded so the title keeps its room) and
-// Stop while running. A bot's conversation shows the
-// bot's avatar and name and a Pause/Resume item. They are real UIBarButtonItems, so on the iPhone Duo iOS moves them into the
-// side rail with the status bar; Android draws the same buttons in its app bar.
-// With Liquid Glass the header is transparent and the transcript scrolls under it. iOS's own
-// scroll edge effect is hidden: the inverted list is flipped, so UIKit sized it from the wrong
-// edge and blurred most of the transcript. HeaderBlur draws the bar's material instead.
+// The task screen's native header: the title, a system back button (the sidebar toggle and New task in
+// the Duo's split view) and one bar button item so the title keeps its room: a More menu (Changes, Pull
+// request and Agents when the task has them, Pause/Resume for a bot, Model & permissions, Task info). Stop lives in the composer. A bot's conversation shows the bot's avatar and name. They are
+// real UIBarButtonItems, so on the iPhone Duo iOS moves them into the side rail with the status bar;
+// Android draws the same buttons in its app bar.
+// With Liquid Glass the header is transparent and the transcript scrolls under it, over the app's ScrollEdge.
+// iOS's own scroll edge effect is hidden by the transcript itself (see NO_EDGE_EFFECTS in transcript.tsx).
 // `headerStyle: transparent` on a solid header does not work: a non-translucent
 // UINavigationBar always paints an opaque background.
-import * as Haptics from 'expo-haptics';
 import { router, Stack } from 'expo-router';
 import type { ComponentProps } from 'react';
-import { BlurView } from 'expo-blur';
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Material } from './Backdrop.tsx';
+import { Alert, Platform, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { connect } from '../connect/client.ts';
 import type { Bot } from '../connect/types.ts';
 import { BotAvatar } from './BotRow.tsx';
+import { taskKey, useConnect } from '../store/index.ts';
+import { haptic, PressScale, ScrollEdge, type as textStyle } from './ds/index.ts';
 import { hasGlass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
+import { showActions, type MenuItem } from './Menu.tsx';
 import { toggleSidebar, useSidebar, useSplit } from './split.tsx';
 import { useColors } from './theme.ts';
 
@@ -28,16 +26,10 @@ type IconName = Pick<ComponentProps<typeof Icon>, 'ios' | 'android'>;
 function Button({ icon, label, onPress, color }: { icon: IconName; label: string; onPress: () => void; color?: string }) {
   const colors = useColors();
   return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} hitSlop={4} style={({ pressed }) => [styles.icon, pressed && styles.pressed]}>
+    <PressScale onPress={onPress} accessibilityLabel={label} hitSlop={4} style={styles.icon}>
       <Icon {...icon} size={20} color={color ?? colors.text} />
-    </Pressable>
+    </PressScale>
   );
-}
-
-/** "Stopping…" shows at once (the client rolls it back if the host refuses). */
-export function stopTask(deviceId: string, sessionId: string) {
-  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-  connect.stopTask(deviceId, sessionId).catch(error => Alert.alert('Could not stop', (error as Error).message));
 }
 
 /** In the split view New task is the Inbox tab's New thread pane. */
@@ -46,26 +38,22 @@ export function openNewThread() {
   router.navigate('/inbox');
 }
 
-/** Softer blur bands under the material (offset below it, height), so the bar's edge fades instead of cutting off. */
-const BAND = 6;
-const EDGE = [45, 25, 10].map((intensity, i) => ({ intensity, offset: i * BAND }));
-
-/** The bar's blur behind the transparent Liquid Glass header (iOS 26), `height` = header height. */
+/** Behind the transparent Liquid Glass header: the app's scroll edge. `height` = header height. */
 export function HeaderBlur({ height }: { height: number }) {
-  const colors = useColors();
-  if (!hasGlass) return null;
-  return (
-    <View style={[styles.blur, { height: height + EDGE.length * BAND }]} pointerEvents="none" accessible={false}>
-      <Material material="systemChromeMaterial" style={{ height }} />
-      {EDGE.map(band => <BlurView key={band.intensity} tint="systemChromeMaterial" intensity={band.intensity} style={[styles.band, { top: height + band.offset }]} />)}
-      <View style={[styles.hairline, { top: height, backgroundColor: colors.separator }]} />
-    </View>
-  );
+  return <ScrollEdge bar={height} />;
+}
+
+/** How far past the composer's lower edge the dock's fade runs. */
+const DOCK_RAMP = 32;
+
+/** Under the composer: rows scrolling past it fade before the home indicator. `height` includes what's behind the composer's lower edge. */
+export function DockFade({ height }: { height: number }) {
+  return <ScrollEdge edge="bottom" bar={height - DOCK_RAMP} />;
 }
 
 /** Pause/Resume shows at once (the client rolls it back if the host refuses). */
 export function pauseBot(deviceId: string, bot: Bot) {
-  void Haptics.selectionAsync();
+  haptic('selection');
   connect.pauseBot(deviceId, bot.id, !bot.paused).catch(error => Alert.alert(bot.paused ? 'Could not resume' : 'Could not pause', (error as Error).message));
 }
 
@@ -75,13 +63,31 @@ function BotTitle({ bot }: { bot: Bot }) {
   return (
     <View style={styles.botTitle} accessible accessibilityRole="header" accessibilityLabel={`${bot.name}${bot.paused ? ', paused' : ''}`}>
       <BotAvatar bot={bot} size={24} />
-      <Text style={[styles.botName, { color: colors.text }]} numberOfLines={1}>{bot.name}</Text>
+      <Text style={[textStyle.headline, styles.botName, { color: colors.text }]} numberOfLines={1}>{bot.name}</Text>
     </View>
   );
 }
 
-export function TaskHeader({ deviceId, sessionId, title, running, pull, agents, bot }: { deviceId: string; sessionId: string; title: string; running: boolean; pull: boolean; agents: boolean; bot?: Bot }) {
+const STATUS: Record<string, string> = { running: 'Working', waiting: 'Needs you', failed: 'Failed', stopped: 'Stopped', interrupted: 'Interrupted' };
+/** The back button and the More item, with their gaps. */
+const BAR_ITEMS_WIDTH = 150;
+/** A bar title stays bar-sized at any Dynamic Type size, as the system's does. */
+const TITLE_FONT_SCALE = 1.2;
+
+/** The task, then its project and status: a title view, so never in the Duo's rail. */
+function TaskTitle({ title, detail }: { title: string; detail: string }) {
   const colors = useColors();
+  const { width } = useWindowDimensions();
+  return (
+    <View style={[styles.taskTitle, { maxWidth: width - BAR_ITEMS_WIDTH }]} accessible accessibilityRole="header" accessibilityLabel={detail ? `${title}, ${detail}` : title}>
+      <Text numberOfLines={1} maxFontSizeMultiplier={TITLE_FONT_SCALE} style={[textStyle.headline, { color: colors.text }]}>{title}</Text>
+      {!!detail && <Text numberOfLines={1} maxFontSizeMultiplier={TITLE_FONT_SCALE} style={[textStyle.caption, { color: colors.muted }]}>{detail}</Text>}
+    </View>
+  );
+}
+
+/** `quiet`: the screen already says the run's state (the pill, a request card), so the subtitle names only the project. */
+export function TaskHeader({ deviceId, sessionId, title, pull, agents, bot, quiet }: { deviceId: string; sessionId: string; title: string; pull: boolean; agents: boolean; bot?: Bot; quiet?: boolean }) {
   const split = useSplit();
   const collapsed = useSidebar(s => s.collapsed);
   const params = { device: deviceId, session: sessionId };
@@ -90,21 +96,28 @@ export function TaskHeader({ deviceId, sessionId, title, running, pull, agents, 
   const openPull = () => router.push({ pathname: '/pull', params });
   const changes = () => router.push({ pathname: '/changes', params });
   const openAgents = () => router.push({ pathname: '/agents', params });
-  const stop = () => stopTask(deviceId, sessionId);
   const pause = () => bot && pauseBot(deviceId, bot);
+  const detail = useConnect(s => {
+    const task = s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId);
+    const live = s.live[taskKey(deviceId, sessionId)]?.status;
+    const status = live && live !== 'idle' ? live : task?.status;
+    return [task?.chat ? 'Chat' : task?.projectName, !quiet && status && STATUS[status]].filter(Boolean).join(' · ');
+  });
   // A custom title view can't go in the Duo's rail, so the split view keeps the plain title.
-  const headerTitle = bot && !split ? () => <BotTitle bot={bot} /> : undefined;
-  const options = { headerShown: true, headerTransparent: hasGlass, headerShadowVisible: false, title: bot?.name ?? title, headerTitle, headerBackButtonDisplayMode: 'minimal', scrollEdgeEffects: { top: 'hidden', bottom: 'hidden', left: 'hidden', right: 'hidden' } } as const;
+  const headerTitle = split ? undefined : bot ? () => <BotTitle bot={bot} /> : () => <TaskTitle title={title} detail={detail} />;
+  const options = { headerShown: true, headerTransparent: hasGlass, headerShadowVisible: false, title: bot?.name ?? title, headerTitle, headerBackButtonDisplayMode: 'minimal' } as const;
   if (Platform.OS !== 'ios') {
+    const more: MenuItem[] = [
+      ...(bot ? [{ label: bot.paused ? 'Resume bot' : 'Pause bot', android: bot.paused ? 'play_circle' : 'pause_circle', onPress: pause } as const] : []),
+      { label: 'Changes', android: 'difference', onPress: changes },
+      ...(pull ? [{ label: 'Pull request', android: 'merge', onPress: openPull } as const] : []),
+      ...(agents ? [{ label: 'Agents', android: 'groups', onPress: openAgents } as const] : []),
+      { label: 'Model & permissions', android: 'tune', onPress: settings },
+      { label: 'Task info', android: 'info', onPress: info },
+    ];
     return <Stack.Screen options={{ ...options, headerRight: () => (
       <View style={styles.row}>
-        {!!bot && <Button icon={bot.paused ? { ios: 'play.circle', android: 'play_circle' } : { ios: 'pause.circle', android: 'pause_circle' }} label={bot.paused ? 'Resume bot' : 'Pause bot'} onPress={pause} />}
-        {pull && <Button icon={{ ios: 'arrow.triangle.pull', android: 'merge' }} label="Pull request" onPress={openPull} />}
-        {agents && <Button icon={{ ios: 'person.3', android: 'groups' }} label="Agents" onPress={openAgents} />}
-        <Button icon={{ ios: 'plus.forwardslash.minus', android: 'difference' }} label="Changes" onPress={changes} />
-        <Button icon={{ ios: 'slider.horizontal.3', android: 'tune' }} label="Model and permissions" onPress={settings} />
-        <Button icon={{ ios: 'info.circle', android: 'info' }} label="Task info" onPress={info} />
-        {running && <Button icon={{ ios: 'stop.circle.fill', android: 'stop_circle' }} label="Stop" onPress={stop} color={colors.red as string} />}
+        <Button icon={{ ios: 'ellipsis.circle', android: 'more_vert' }} label="More" onPress={() => showActions(undefined, more)} />
       </View>
     ) }} />;
   }
@@ -118,27 +131,23 @@ export function TaskHeader({ deviceId, sessionId, title, running, pull, agents, 
         </Stack.Toolbar>
       )}
       <Stack.Toolbar placement="right">
-        <Stack.Toolbar.Button icon={bot?.paused ? 'play.circle' : 'pause.circle'} accessibilityLabel={bot?.paused ? 'Resume bot' : 'Pause bot'} hidden={!bot} onPress={pause} />
-        <Stack.Toolbar.Button icon="arrow.triangle.pull" accessibilityLabel="Pull request" hidden={!pull} onPress={openPull} />
-        <Stack.Toolbar.Button icon="person.3" accessibilityLabel="Agents" hidden={!agents} onPress={openAgents} />
-        <Stack.Toolbar.Button icon="plus.forwardslash.minus" accessibilityLabel="Changes" onPress={changes} />
         <Stack.Toolbar.Menu icon="ellipsis.circle" accessibilityLabel="More">
+          <Stack.Toolbar.MenuAction icon={bot?.paused ? 'play.circle' : 'pause.circle'} hidden={!bot} onPress={pause}>{bot?.paused ? 'Resume bot' : 'Pause bot'}</Stack.Toolbar.MenuAction>
+          <Stack.Toolbar.MenuAction icon="arrow.triangle.branch" onPress={changes}>Changes</Stack.Toolbar.MenuAction>
+          <Stack.Toolbar.MenuAction icon="arrow.triangle.pull" hidden={!pull} onPress={openPull}>Pull request</Stack.Toolbar.MenuAction>
+          <Stack.Toolbar.MenuAction icon="person.2" hidden={!agents} onPress={openAgents}>Agents</Stack.Toolbar.MenuAction>
           <Stack.Toolbar.MenuAction icon="slider.horizontal.3" onPress={settings}>Model & permissions</Stack.Toolbar.MenuAction>
           <Stack.Toolbar.MenuAction icon="info.circle" onPress={info}>Task info</Stack.Toolbar.MenuAction>
         </Stack.Toolbar.Menu>
-        <Stack.Toolbar.Button icon="stop.circle.fill" accessibilityLabel="Stop" tintColor={colors.red} hidden={!running} onPress={stop} />
       </Stack.Toolbar>
     </>
   );
 }
 
 const styles = StyleSheet.create({
-  blur: { position: 'absolute', top: 0, left: 0, right: 0 },
-  band: { position: 'absolute', left: 0, right: 0, height: BAND },
-  hairline: { position: 'absolute', left: 0, right: 0, height: StyleSheet.hairlineWidth, opacity: 0.5 },
   row: { flexDirection: 'row', alignItems: 'center' },
   icon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
-  pressed: { opacity: 0.6 },
+  taskTitle: { alignItems: 'center' },
   botTitle: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: 220 },
-  botName: { fontSize: 17, fontWeight: '600', flexShrink: 1 },
+  botName: { flexShrink: 1 },
 });

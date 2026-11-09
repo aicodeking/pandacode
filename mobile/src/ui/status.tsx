@@ -10,9 +10,10 @@ export function ago(ms: number): string {
   return `${Math.floor(s / 86400)}d`;
 }
 
+/** One name per mode everywhere: composer, menus and the segmented picker, whose four segments these must fit. */
 export const MODES = [
-  { id: 'ask', label: 'Standard' },
-  { id: 'auto', label: 'Auto-approve edits' },
-  { id: 'plan', label: 'Plan only' },
-  { id: 'full', label: 'Full access' },
+  { id: 'ask', label: 'Standard', hint: 'Asks you when an action needs permission.' },
+  { id: 'auto', label: 'Auto', hint: 'Allows file edits. Other actions may still ask.' },
+  { id: 'plan', label: 'Plan', hint: 'Works out a plan first and leaves your files alone.' },
+  { id: 'full', label: 'Full', hint: 'Runs everything without asking.' },
 ];

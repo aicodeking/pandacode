@@ -5,11 +5,11 @@ import { memo } from 'react';
 import { StyleSheet, useColorScheme, View } from 'react-native';
 
 /** `mono` marks take a tint; `black` ones are dark tiles that sit on a light chip in dark mode. */
-interface Harness { name: string; logo?: number; mono?: boolean; black?: boolean }
+interface Harness { name: string; logo?: number; mono?: boolean; black?: boolean; /** Scale inside the box, for artwork with more margin than its neighbours: marks should read the same size. */ optical?: number }
 
 export const HARNESSES: Record<string, Harness> = {
   claude: { name: 'Claude Code', logo: require('../../assets/providers/claude.svg') },
-  codex: { name: 'Codex', logo: require('../../assets/providers/openai.svg'), mono: true },
+  codex: { name: 'Codex', logo: require('../../assets/providers/openai.svg'), mono: true, optical: 1.35 },
   opencode: { name: 'OpenCode', logo: require('../../assets/providers/opencode.png'), black: true },
   kimi: { name: 'Kimi', logo: require('../../assets/providers/kimi.png'), black: true },
   glm: { name: 'GLM', logo: require('../../assets/providers/glm.svg'), black: true },
@@ -36,12 +36,17 @@ export const HarnessLogo = memo(function HarnessLogo({ id, size = 14, color }: {
   const dark = useColorScheme() === 'dark';
   const harness = HARNESSES[id];
   if (!harness?.logo) return null;
-  const image = <Image source={harness.logo} style={{ width: size, height: size }} contentFit="contain" tintColor={harness.mono ? (color ?? (dark ? '#ffffff' : '#000000')) : undefined} accessible={false} />;
+  // In dark, a black tile's rim comes out of its size, so the tile isn't bigger than its neighbours.
+  const rimmed = harness.black && dark && !color;
+  const drawn = (rimmed ? size - RIM * 2 : size) * (harness.optical ?? 1);
+  const image = <Image source={harness.logo} style={{ width: drawn, height: drawn, margin: ((rimmed ? size - RIM * 2 : size) - drawn) / 2 }} contentFit="contain" tintColor={harness.mono ? (color ?? (dark ? '#ffffff' : '#000000')) : undefined} accessible={false} />;
   // A black tile vanishes on a dark surface; a white rim (the logo's own corner radius) keeps its edge.
-  if (!harness.black || !dark || color) return image;
+  if (!rimmed) return image;
   return <View style={[styles.chip, { borderRadius: size * 0.28 }]}>{image}</View>;
 });
 
+const RIM = 1;
+
 const styles = StyleSheet.create({
-  chip: { padding: 1, backgroundColor: 'rgba(255, 255, 255, 0.85)', overflow: 'hidden' },
+  chip: { padding: RIM, backgroundColor: 'rgba(255, 255, 255, 0.85)', overflow: 'hidden' },
 });

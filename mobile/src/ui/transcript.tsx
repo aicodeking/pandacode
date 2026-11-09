@@ -1,244 +1,36 @@
-// Transcript rows. Stored messages are grouped into turns (src/store/turns.ts) and render once
-// each; the live run is its own component reading useLive, so streamed deltas re-render only it.
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
+// The transcript list. Stored messages are grouped into turns (src/store/turns.ts) and render once
+// each (rows in transcript-rows.tsx); the live run is its own component reading useLive, so streamed
+// deltas re-render only it.
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { markPaint } from '../connect/perf.ts';
-import { ActivityIndicator, FlatList, Platform, Pressable, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
-import type { Message } from '../connect/types.ts';
-import { connect } from '../connect/client.ts';
-import { taskKey, useConnect, useHistory, useLive, useLoaded, useMessages, useOlder, useSent, type LiveItem } from '../store/index.ts';
-import type { Sent } from '../store/sent.ts';
-import { removeOutbox, retryOutbox, useLocal } from '../store/local.ts';
-import { duration, turnRows, type TurnRow } from '../store/turns.ts';
-import { bubbleAttachments } from '../store/attachments.ts';
-import { Chips, ImageGrid, ThreadContext } from './Attachments.tsx';
+import { ActivityIndicator, FlatList, Platform, StyleSheet, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
+import { connect, useOlderFailed } from '../connect/client.ts';
+import { taskKey, useConnect, useHistory, useLoaded, useMessages, useOlder } from '../store/index.ts';
+import { useLocal } from '../store/local.ts';
+import { reuseRows, turnRows, type TurnRow } from '../store/turns.ts';
+import { ThreadContext } from './Attachments.tsx';
+import { useColors } from './theme.ts';
+import { Button, EmptyState, geometry, Skeleton as Bone, type as textStyle } from './ds/index.ts';
 import { ImageViewerHost } from './ImageViewer.tsx';
 import { Icon } from './Icon.tsx';
-import { Markdown } from './Markdown.tsx';
-import { showActions } from './Menu.tsx';
-import { glanceOf } from '../store/inbox.ts';
-import { groupRuns, parseToolMessage } from '../store/trace.ts';
-import { PlanCard, SubagentPanel, ThinkingLine, ToolGroup } from './Trace.tsx';
-import { mono, useColors } from './theme.ts';
+import { FreshContext, IOS_27, LiveRun, Pending, Row, SentBubbles } from './transcript-rows.tsx';
 
-// Same blocks the desktop folds behind a user message (CONTEXT_BOUNDARY in src/main.ts).
-const CONTEXT_BOUNDARY = /\n\n(?=(?:File|Document|Folder|GitHub|Browser element) context[ :(]|Attached (?:browser screenshot|image|mockup)[ :]|Bot brief:\n|Response style \(PandaCode token saver)/;
 /** How far from the newest message (pt) before the jump-to-latest button shows. */
 const AWAY = 240;
-/** Fabric stops painting an inverted list at rest on iOS 27 (facebook/react-native#59731), so there
- * the transcript runs oldest first, with subview clipping off. Remove once RN fixes the inverted path. */
-const IOS_27 = Platform.OS === 'ios' && parseInt(Platform.Version, 10) >= 27;
 
-const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-
-function copy(text: string) {
-  void Clipboard.setStringAsync(text);
-  void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-}
-
-function Meta({ text, at, align }: { text: string; at: number; align: 'left' | 'right' }) {
-  const colors = useColors();
-  const copyButton = (
-    <Pressable onPress={() => copy(text)} hitSlop={10} accessibilityRole="button" accessibilityLabel="Copy">
-      <Icon ios="doc.on.doc" android="content_copy" size={13} color={colors.tertiary} />
-    </Pressable>
-  );
-  const time = <Text style={[styles.time, { color: colors.tertiary }]}>{clock(at)}</Text>;
-  return <View style={[styles.meta, align === 'right' && styles.metaRight]}>{align === 'right' ? <>{time}{copyButton}</> : <>{copyButton}{time}</>}</View>;
-}
-
-function UserBubble({ message }: { message: Message }) {
-  const colors = useColors();
-  const [showContext, setShowContext] = useState(false);
-  const content = message.content;
-  const cut = content.search(CONTEXT_BOUNDARY);
-  const prompt = cut < 0 ? content : content.slice(0, cut);
-  const files = useMemo(() => bubbleAttachments(message.attachments, cut < 0 ? '' : content.slice(cut)), [message.attachments, content, cut]);
-  const steeredAt = useLocal(s => s.steers[prompt.trim()]);
-  return (
-    <View style={styles.userTurn}>
-      <View style={[styles.bubble, { backgroundColor: colors.bubble }]}>
-        <ImageGrid images={files.images} />
-        {!!prompt && <Text selectable style={[styles.userText, { color: colors.text }]}>{prompt}</Text>}
-        <Chips chips={files.chips} />
-        {cut >= 0 && (
-          <Pressable onPress={() => setShowContext(s => !s)} accessibilityRole="button">
-            <Text style={[styles.context, { color: colors.secondary }]}>{showContext ? content.slice(cut + 2) : 'Attached context'}</Text>
-          </Pressable>
-        )}
-      </View>
-      {steeredAt != null && (
-        <View style={[styles.meta, styles.metaRight]}>
-          <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.secondary} />
-          <Text style={[styles.time, { color: colors.secondary }]}>Steer · {clock(steeredAt)}</Text>
-        </View>
-      )}
-      <Meta text={prompt} at={message.createdAt} align="right" />
-    </View>
-  );
-}
-
-function WorkRow({ steps, durationMs }: { steps: Message[]; durationMs: number | null }) {
-  const colors = useColors();
-  const [open, setOpen] = useState(false);
-  const tools = steps.filter(s => s.role === 'tool').length;
-  const label = durationMs != null ? `Worked for ${duration(durationMs)}` : `${tools} step${tools === 1 ? '' : 's'}`;
-  return (
-    <View style={styles.work}>
-      <Pressable onPress={() => setOpen(o => !o)} disabled={!steps.length} style={styles.workHead} accessibilityRole="button" accessibilityState={{ expanded: open }} hitSlop={6}>
-        <Text style={[styles.workText, { color: colors.secondary }]}>{label}</Text>
-        {steps.length > 0 && <Icon ios={open ? 'chevron.down' : 'chevron.right'} android={open ? 'expand_more' : 'chevron_right'} size={11} color={colors.secondary} />}
-      </Pressable>
-      {open && <Steps steps={steps} />}
-    </View>
-  );
-}
-
-/** A stored turn's steps: tool calls grouped as on the desktop, interim notes between them. Parsed once per open. */
-function Steps({ steps }: { steps: Message[] }) {
-  const colors = useColors();
-  const runs = useMemo(() => groupRuns(steps.map(m => (m.role === 'tool' ? { id: m.id, tool: parseToolMessage(m.content) } : { id: m.id, text: m.content })), e => 'tool' in e), [steps]);
-  // One group opens with its turn; several stay folded behind their summaries.
-  const single = runs.filter(r => r.kind === 'tools').length === 1;
-  return (
-    <View style={[styles.steps, { borderColor: colors.separator }]}>
-      {runs.map(run => (run.kind === 'tools'
-        ? <ToolGroup key={run.items[0].id} items={run.items as { tool: ReturnType<typeof parseToolMessage> }[]} initiallyOpen={single} />
-        : <Text key={run.item.id} style={[styles.interim, { color: colors.secondary }]} numberOfLines={6}>{'text' in run.item ? plain(run.item.text) : ''}</Text>))}
-    </View>
-  );
-}
-
-const Row = memo(function Row({ row }: { row: TurnRow }) {
-  const colors = useColors();
-  switch (row.kind) {
-    case 'user': return <UserBubble message={row.message} />;
-    case 'work': return <WorkRow steps={row.steps} durationMs={row.durationMs} />;
-    case 'reply': return (
-      <View style={styles.reply}>
-        <Markdown text={row.message.content} />
-        <Meta text={row.message.content} at={row.message.createdAt} align="left" />
-      </View>
-    );
-    default: return <Text style={[styles.note, { color: row.message.role === 'error' ? colors.red : colors.secondary }]}>{row.message.content}</Text>;
-  }
-});
-
-/** Messages waiting in the outbox for this task. */
-function Pending({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
-  const colors = useColors();
-  const outbox = useLocal(s => s.outbox);
-  const entries = useMemo(() => outbox.filter(e => e.deviceId === deviceId && e.sessionId === sessionId), [outbox, deviceId, sessionId]);
-  if (!entries.length) return null;
-  return (
-    <>
-      {entries.map(entry => {
-        const menu = () => showActions(entry.error ?? 'This message sends when the computer is back.', [
-          { label: 'Send now', ios: 'arrow.up.circle', android: 'send', onPress: () => retryOutbox(entry.id) },
-          { label: 'Copy', ios: 'doc.on.doc', android: 'content_copy', onPress: () => copy(entry.text) },
-          { label: 'Delete', ios: 'trash', android: 'delete', destructive: true, onPress: () => removeOutbox(entry.id) },
-        ]);
-        return (
-          <Pressable key={entry.id} onPress={menu} onLongPress={menu} style={styles.userTurn} accessibilityRole="button" accessibilityHint="Retry or delete">
-            <View style={[styles.bubble, styles.pending, { backgroundColor: colors.bubble, borderColor: entry.error ? colors.red : colors.separator }]}>
-              <Text style={[styles.userText, { color: colors.text }]}>{entry.text}</Text>
-            </View>
-            <View style={[styles.meta, styles.metaRight]}>
-              <Icon ios={entry.error ? 'exclamationmark.circle' : 'clock.arrow.circlepath'} android={entry.error ? 'error' : 'schedule_send'} size={12} color={entry.error ? colors.red : colors.orange} />
-              <Text style={[styles.time, { color: entry.error ? colors.red : colors.orange }]} numberOfLines={1}>{entry.error ? 'Not sent · tap to retry' : 'Sends on reconnect'}</Text>
-            </View>
-          </Pressable>
-        );
-      })}
-    </>
-  );
-}
-
-const SENT_LABEL: Record<Sent['state'], string> = { sending: 'Sending…', steering: 'Steer · Sending…', queued: 'Queued' };
-
-/** Prompts sent from this phone, shown at once until the stored copy replaces them: the ones
- * starting a turn above the live run (`before`), steers and queued ones after it. */
-function SentBubbles({ deviceId, sessionId, before }: { deviceId: string; sessionId: string; before: boolean }) {
-  const colors = useColors();
-  const sent = useSent(deviceId, sessionId);
-  const shown = sent.filter(e => (e.state === 'sending') === before);
-  if (!shown.length) return null;
-  return (
-    <>
-      {shown.map(entry => (
-        <View key={entry.id} style={styles.userTurn} accessible accessibilityLabel={`${entry.text}, ${SENT_LABEL[entry.state]}`}>
-          <View style={[styles.bubble, styles.sending, { backgroundColor: colors.bubble }]}>
-            <Text style={[styles.userText, { color: colors.text }]}>{entry.text}</Text>
-          </View>
-          <View style={[styles.meta, styles.metaRight]}>
-            {entry.state === 'steering' && <Icon ios="arrow.uturn.right" android="alt_route" size={11} color={colors.secondary} />}
-            {entry.state === 'queued' && <Icon ios="clock" android="schedule" size={11} color={colors.secondary} />}
-            <Text style={[styles.time, { color: colors.secondary }]}>{SENT_LABEL[entry.state]}</Text>
-          </View>
-        </View>
-      ))}
-    </>
-  );
-}
-
-/** The in-flight run: the plan, subagent panels, the turn's tools grouped (the newest group open),
- * streamed text, and a compact Working row. Rows are memoized, so an event re-renders only what it changed. */
-const LiveRun = memo(function LiveRun({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
-  const colors = useColors();
-  const live = useLive(deviceId, sessionId);
-  // A copy made mid-run can already hold the segment still streaming here; show it once.
-  const stored = useConnect(s => {
-    const last = s.messages[taskKey(deviceId, sessionId)]?.at(-1);
-    return last?.role === 'assistant' ? last.content : '';
-  });
-  const lastText = live.items.findLastIndex(i => i.kind === 'text');
-  const earlier = useMemo(() => groupRuns(live.items.filter((_, i) => i !== lastText), i => i.kind === 'tool'), [live.items, lastText]);
-  if (live.status !== 'running' && live.status !== 'waiting' && !live.limited) return null;
-  const streamed = lastText >= 0 ? (live.items[lastText] as Extract<LiveItem, { kind: 'text' }>).text : '';
-  const text = streamed.trim() && stored.includes(streamed.trim()) ? '' : streamed;
-  const lastGroup = earlier.findLastIndex(r => r.kind === 'tools');
-  const current = glanceOf(live).activity || live.activity;
-  return (
-    <View>
-      {!!live.todos?.length && <PlanCard todos={live.todos} />}
-      {live.subagents?.map(agent => <SubagentPanel key={agent.id} agent={agent} />)}
-      {earlier.length > 0 && (
-        <View style={[styles.steps, { borderColor: colors.separator }]}>
-          {earlier.map((run, i) => (run.kind === 'tools'
-            ? <ToolGroup key={toolKey(run.items[0], i)} items={run.items as Extract<LiveItem, { kind: 'tool' }>[]} initiallyOpen={i === lastGroup} />
-            : <Text key={i} style={[styles.interim, { color: run.item.kind === 'error' ? colors.red : colors.secondary }]} numberOfLines={6}>{'text' in run.item ? plain(run.item.text) : ''}</Text>))}
-        </View>
-      )}
-      {!!live.thinking && !text && <ThinkingLine text={live.thinking} />}
-      {!!text && <View style={styles.reply}><Markdown text={text} streaming /></View>}
-      {!!live.limited && <Text style={[styles.note, { color: colors.orange }]}>{live.limited.text}</Text>}
-      {live.status === 'running' && (
-        <View style={styles.activity}>
-          <ActivityIndicator size="small" style={styles.small} />
-          <Text style={[styles.workText, { color: colors.secondary }]}>Working…</Text>
-          {!!current && current !== 'Working…' && <Text style={[styles.current, { color: colors.tertiary }]} numberOfLines={1}>{current}</Text>}
-        </View>
-      )}
-    </View>
-  );
-});
-
-/** An interim note on one quiet line: Markdown emphasis and code marks dropped. */
-const plain = (text = '') => text.replace(/\*\*|__|`/g, '');
-
-const toolKey = (item: LiveItem, i: number) => (item.kind === 'tool' && item.tool.id ? item.tool.id : `g${i}`);
-
-/** Grey bubbles in the shape of a transcript, while a thread with nothing cached loads. */
+/** Placeholders in the shape of a transcript, while a thread with nothing cached loads. */
 function Skeleton() {
-  const colors = useColors();
   return (
     <View accessible accessibilityLabel="Loading messages" style={styles.skeleton}>
-      {SKELETON.map((width, i) => <View key={i} style={[styles.bone, i % 2 ? styles.boneReply : styles.boneUser, { width, backgroundColor: colors.fill }]} />)}
+      <Bone width="62%" height={44} radius={geometry.innerRadius} style={styles.boneUser} />
+      <Bone width="88%" height={14} />
+      <Bone width="74%" height={14} />
+      <Bone width="48%" height={44} radius={geometry.innerRadius} style={styles.boneUser} />
+      <Bone width="80%" height={14} />
+      <Bone width="56%" height={14} />
     </View>
   );
 }
-const SKELETON = ['62%', '88%', '48%', '80%'] as const;
 
 /** The message copy: a skeleton until anything (cached or fetched) shows, then nothing while it
  * refreshes; a failure with Retry ("Couldn't refresh" over cached or older messages). */
@@ -246,31 +38,70 @@ function History({ deviceId, sessionId, empty }: { deviceId: string; sessionId: 
   const colors = useColors();
   const history = useHistory(deviceId, sessionId);
   const loaded = useLoaded(deviceId, sessionId);
-  if (typeof history !== 'string') return empty && !loaded ? <Skeleton /> : null;
+  // A thread that really has nothing, and nothing on the way.
+  const outboxed = useLocal(s => s.outbox.some(e => e.deviceId === deviceId && e.sessionId === sessionId));
+  const quiet = useConnect(s => {
+    const key = taskKey(deviceId, sessionId);
+    const liveStatus = s.live[key]?.status;
+    return !s.sent[key]?.length && liveStatus !== 'running' && liveStatus !== 'waiting';
+  }) && !outboxed;
+  if (typeof history !== 'string') {
+    if (!empty) return null;
+    if (!loaded) return <Skeleton />;
+    return quiet ? <EmptyState icon={{ ios: 'bubble.left.and.text.bubble.right', android: 'forum' }} title="No messages yet" body="Send a message and the agent's work shows up here." /> : null;
+  }
   return (
     <View style={styles.failed}>
-      <Icon ios="exclamationmark.circle" android="error" size={14} color={colors.red} />
-      <Text style={[styles.failedText, { color: colors.red }]} numberOfLines={3}>{empty ? `Couldn't load this task: ${history}` : `Couldn't refresh: ${history}`}</Text>
-      <Pressable onPress={() => connect.loadMessages(deviceId, sessionId).catch(() => undefined)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry loading messages">
-        <Text style={[styles.retry, { color: colors.tint }]}>Retry</Text>
-      </Pressable>
+      <Icon ios="exclamationmark.circle" android="error" size={14} color={colors.danger} />
+      <Text style={[textStyle.subhead, styles.failedText, { color: colors.danger }]} numberOfLines={3}>{empty ? `Couldn't load this task: ${history}` : `Couldn't refresh: ${history}`}</Text>
+      <Button label="Retry" size="small" accessibilityLabel="Retry loading messages" onPress={() => connect.loadMessages(deviceId, sessionId).catch(() => undefined)} />
     </View>
   );
 }
 
-/** Above the oldest message: a spinner while an older page loads. */
-function Older({ deviceId, sessionId }: { deviceId: string; sessionId: string }) {
+/** Above the oldest message: a spinner while an older page loads, or the failure with Retry. */
+function Older({ deviceId, sessionId, onRetry }: { deviceId: string; sessionId: string; onRetry: () => void }) {
   const colors = useColors();
-  if (useOlder(deviceId, sessionId) !== 'loading') return null;
+  const older = useOlder(deviceId, sessionId);
+  const failed = useOlderFailed(s => !!s[taskKey(deviceId, sessionId)]);
+  if (failed && older !== 'loading') {
+    return (
+      <View style={styles.failed}>
+        <Icon ios="exclamationmark.circle" android="error" size={14} color={colors.danger} />
+        <Text style={[textStyle.subhead, styles.failedText, { color: colors.danger }]}>Couldn&apos;t load older messages</Text>
+        <Button label="Retry" size="small" accessibilityLabel="Retry loading older messages" onPress={onRetry} />
+      </View>
+    );
+  }
+  if (older !== 'loading') return null;
   return (
     <View style={[styles.activity, styles.older]} accessibilityLabel="Loading older messages">
       <ActivityIndicator size="small" style={styles.small} />
-      <Text style={[styles.workText, { color: colors.secondary }]}>Loading older messages…</Text>
+      <Text style={[textStyle.subhead, { color: colors.muted }]}>Loading older messages…</Text>
     </View>
   );
 }
 
+/** iOS's scroll edge effect, sized from the flipped list, blurs and dims the transcript as soon as it can
+ * scroll (always with the keyboard up, which adds room). Off from both ends: this marker, and the Stack option
+ * in the task screen. Either one's default would turn it back on if the other were the only one set. */
+type Marker = typeof import('react-native-screens/src/components/gamma/scroll-view-marker/ScrollViewMarker').ScrollViewMarker;
+/** A private path in react-native-screens 4.30.0 (pinned), loaded on iOS only. If an upgrade moves it, the
+ * list just goes without the marker (the Stack option in the task screen still covers the usual case). */
+const ScrollViewMarker: Marker | null = (() => {
+  if (Platform.OS !== 'ios') return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return (require('react-native-screens/src/components/gamma/scroll-view-marker/ScrollViewMarker') as { ScrollViewMarker?: Marker }).ScrollViewMarker ?? null;
+  } catch {
+    return null;
+  }
+})();
+export const NO_EDGE_EFFECTS = { top: 'hidden', bottom: 'hidden', left: 'hidden', right: 'hidden' } as const;
+
 const key = (row: TurnRow) => row.id;
+/** Enough of the chronological list drawn at once that following to its end takes few passes. */
+const CHRONOLOGICAL_FIRST_RENDER = 30;
 const ANCHOR = { minIndexForVisible: 0, autoscrollToTopThreshold: AWAY };
 // autoscrollToTopThreshold scrolls to offset 0, the oldest row in the chronological list; following
 // the newest is done by hand there (Transcript). minIndexForVisible skips the Older header by itself.
@@ -297,11 +128,34 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
   const following = useRef(true);
   const held = useRef(false); // A finger or momentum owns the scroll: don't pull it back.
   const wasAway = useRef(false);
-  const data = useMemo(() => IOS_27 ? turnRows(messages) : turnRows(messages).reverse(), [messages]);
+  // iOS 27 only: the list starts at offset 0, its oldest row, on the way to the newest. Until the first
+  // drag that position means nothing: it must not ask for older pages or count as reading away.
+  const dragged = useRef(false);
+  // Unchanged rows keep their objects across refetches, so memo(Row) holds.
+  const [turns, setTurns] = useState<{ messages: typeof messages | null; rows: TurnRow[] }>({ messages: null, rows: [] });
+  let rows = turns.rows;
+  if (turns.messages !== messages) {
+    rows = reuseRows(turns.rows, turnRows(messages));
+    setTurns({ messages, rows });
+  }
+  // The failed banner over the composer carries the last error, so it isn't drawn twice.
+  const failed = useConnect(s => s.tasks[deviceId]?.tasks.find(t => t.sessionId === sessionId)?.status === 'failed' && (s.live[taskKey(deviceId, sessionId)]?.status ?? 'idle') === 'idle');
+  const data = useMemo(() => {
+    const last = rows.at(-1);
+    const shown = failed && last?.kind === 'note' && last.message.role === 'error' ? rows.slice(0, -1) : rows;
+    return IOS_27 ? shown : [...shown].reverse();
+  }, [rows, failed]);
   useEffect(() => { if (data.length) markPaint(taskKey(deviceId, sessionId), data.length); }, [data.length, deviceId, sessionId]);
   // Asks for older history as the user nears the top: the inverted list's end, the other's start.
   const onOlder = useCallback(() => void connect.loadOlder(deviceId, sessionId), [deviceId, sessionId]);
+  const onStartReached = useCallback(() => { if (dragged.current) onOlder(); }, [onOlder]);
+  // New since the thread drew: fixed by the first non-empty page, so older pages and the first draw never animate.
+  const [drawnTo, setDrawnTo] = useState<number | null>(null);
+  if (drawnTo === null && messages.length) setDrawnTo(messages[messages.length - 1].id);
+  const [entered] = useState(() => new Set<string>());
+  const fresh = useMemo(() => (drawnTo === null ? null : { newest: drawnTo, entered }), [drawnTo, entered]);
   const onScroll = useCallback(({ nativeEvent: { contentOffset, contentSize, layoutMeasurement } }: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (IOS_27 && !dragged.current) return;
     const away = IOS_27 ? contentOffset.y < contentSize.height - layoutMeasurement.height - AWAY : contentOffset.y > AWAY;
     following.current = !away;
     if (away === wasAway.current) return;
@@ -309,17 +163,17 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
     onAway?.(away);
   }, [onAway]);
   const thread = useMemo(() => ({ deviceId, sessionId }), [deviceId, sessionId]);
-  const older = <Older deviceId={deviceId} sessionId={sessionId} />;
+  const older = <Older deviceId={deviceId} sessionId={sessionId} onRetry={onOlder} />;
   const newest = <><History deviceId={deviceId} sessionId={sessionId} empty={!messages.length} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before /><LiveRun deviceId={deviceId} sessionId={sessionId} /><SentBubbles deviceId={deviceId} sessionId={sessionId} before={false} /><Pending deviceId={deviceId} sessionId={sessionId} /></>;
   const direction = IOS_27 ? {
     ListHeaderComponent: older,
     ListFooterComponent: newest,
-    onStartReached: onOlder,
+    onStartReached,
     onStartReachedThreshold: 1,
     maintainVisibleContentPosition: CHRONOLOGICAL_ANCHOR,
     contentContainerStyle: [styles.list, { paddingTop: top, paddingBottom: bottom }],
     onContentSizeChange: () => { if (following.current && !held.current) scrollToNewest(list.current, false); },
-    onScrollBeginDrag: () => { held.current = true; },
+    onScrollBeginDrag: () => { held.current = true; dragged.current = true; },
     onScrollEndDrag: () => { held.current = false; },
     onMomentumScrollBegin: () => { held.current = true; },
     onMomentumScrollEnd: () => { held.current = false; },
@@ -334,9 +188,7 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
     maintainVisibleContentPosition: ANCHOR,
     contentContainerStyle: [styles.list, { paddingTop: bottom, paddingBottom: top }],
   };
-  return (
-    <ThreadContext.Provider value={thread}>
-    <ImageViewerHost />
+  const listView = (
     <FlatList
       ref={list}
       data={data}
@@ -347,42 +199,31 @@ export const Transcript = memo(function Transcript({ deviceId, sessionId, top, b
       keyboardShouldPersistTaps="handled"
       onScroll={onScroll}
       scrollEventThrottle={100}
-      initialNumToRender={10}
+      initialNumToRender={IOS_27 ? CHRONOLOGICAL_FIRST_RENDER : 10}
       maxToRenderPerBatch={8}
       windowSize={9}
-      removeClippedSubviews={!IOS_27}
+      // Off on Android, where clipping an inverted list leaves blank rows; off on iOS 27's chronological one too.
+      removeClippedSubviews={Platform.OS === 'ios' && !IOS_27}
     />
+  );
+  return (
+    <ThreadContext.Provider value={thread}>
+    <FreshContext.Provider value={fresh}>
+    <ImageViewerHost />
+    {ScrollViewMarker ? <ScrollViewMarker scrollEdgeEffects={NO_EDGE_EFFECTS} style={styles.fill}>{listView}</ScrollViewMarker> : listView}
+    </FreshContext.Provider>
     </ThreadContext.Provider>
   );
 });
 
 const styles = StyleSheet.create({
-  list: { paddingHorizontal: 18 },
-  userTurn: { alignItems: 'flex-end', marginTop: 18, marginBottom: 6 },
-  bubble: { maxWidth: '85%', borderRadius: 24, paddingHorizontal: 16, paddingVertical: 11, borderCurve: 'continuous' },
-  sending: { opacity: 0.6 },
-  pending: { borderWidth: 1, borderStyle: 'dashed', opacity: 0.85 },
-  userText: { fontSize: 16, lineHeight: 22 },
-  context: { fontSize: 13, marginTop: 4 },
-  meta: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 6, paddingHorizontal: 4 },
-  metaRight: { justifyContent: 'flex-end', gap: 6 },
-  time: { fontSize: 12 },
-  reply: { marginVertical: 4 },
-  work: { marginTop: 8, marginBottom: 4 },
-  workHead: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', paddingVertical: 4 },
-  workText: { fontSize: 14, fontWeight: '500' },
-  steps: { borderLeftWidth: 2, paddingLeft: 12, marginLeft: 2, marginTop: 4, gap: 2 },
-  interim: { fontSize: 13, lineHeight: 18, marginVertical: 3 },
-  note: { fontSize: 14, marginVertical: 6 },
+  fill: { flex: 1 },
+  list: { paddingHorizontal: geometry.screenMargin },
   activity: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 10 },
   failed: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 10 },
-  failedText: { flex: 1, fontSize: 14 },
-  retry: { fontSize: 15, fontWeight: '600' },
-  current: { flex: 1, fontSize: 12, fontFamily: mono },
+  failedText: { flex: 1 },
   small: { transform: [{ scale: 0.8 }] },
   older: { justifyContent: 'center' },
-  skeleton: { gap: 14, marginVertical: 18 },
-  bone: { height: 44, borderRadius: 22, borderCurve: 'continuous' },
-  boneUser: { alignSelf: 'flex-end', maxWidth: '75%' },
-  boneReply: { alignSelf: 'flex-start', height: 72, borderRadius: 16 },
+  skeleton: { gap: 12, marginVertical: 18 },
+  boneUser: { alignSelf: 'flex-end' },
 });

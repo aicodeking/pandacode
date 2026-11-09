@@ -3,12 +3,12 @@
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import { memo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { connect } from '../connect/client.ts';
 import type { Bot } from '../connect/types.ts';
 import type { BotRow as Row } from '../store/inbox.ts';
-import { useBackdrop } from './Backdrop.tsx';
-import { Icon } from './Icon.tsx';
+import { ROW_PRESS_DELAY_MS } from './InboxCard.tsx';
+import { CrossFadeText, PressScale, StatusDot, type } from './ds/index.ts';
 import { ago } from './status.tsx';
 import { projectColor, useColors } from './theme.ts';
 
@@ -18,7 +18,7 @@ export function BotAvatar({ bot, size = 32 }: { bot: Pick<Bot, 'avatar' | 'name'
   if (bot.avatar?.startsWith('data:image/')) return <Image source={{ uri: bot.avatar }} style={[styles.avatar, box]} contentFit="cover" accessible={false} />;
   return (
     <View style={[styles.avatar, box, { backgroundColor: projectColor(bot.name) }]} accessible={false}>
-      <Text style={[styles.initial, { fontSize: size * 0.48 }]}>{bot.name.slice(0, 1).toUpperCase()}</Text>
+      <Text allowFontScaling={false} style={[styles.initial, { fontSize: size * 0.48 }]}>{bot.name.slice(0, 1).toUpperCase()}</Text>
     </View>
   );
 }
@@ -31,11 +31,14 @@ export async function openBot(deviceId: string, bot: Bot, replace?: boolean) {
   else router.push(href);
 }
 
-export const BotRow = memo(function BotRow({ row, last, sidebar, selected, replace }: { row: Row; last: boolean; minute: number; sidebar?: boolean; selected?: boolean; replace?: boolean }) {
+/** Matches InboxRow: accessibility sizes wrap instead of truncating. */
+const LARGE_TEXT = 1.35;
+
+export const BotRow = memo(function BotRow({ row, showComputer, sidebar, selected, replace }: { row: Row; showComputer: boolean; minute: number; sidebar?: boolean; selected?: boolean; replace?: boolean }) {
   const colors = useColors();
-  const backdrop = useBackdrop();
   const { bot } = row;
   const [opening, setOpening] = useState(false);
+  const [pressed, setPressed] = useState(false);
   const open = async () => {
     setOpening(true);
     try {
@@ -46,39 +49,34 @@ export const BotRow = memo(function BotRow({ row, last, sidebar, selected, repla
       setOpening(false);
     }
   };
-  const state = bot.paused ? 'Paused' : bot.state === 'working' ? 'Working' : '';
+  const working = bot.state === 'working' && !bot.paused;
+  const state = bot.paused ? 'Paused' : working ? 'Working' : '';
+  const subtitle = [state, showComputer ? row.computer : ''].filter(Boolean).join(' · ');
+  const large = useWindowDimensions().fontScale >= LARGE_TEXT;
   return (
-    <Pressable onPress={open} disabled={opening} accessibilityRole="button" accessibilityHint="Opens the bot's conversation" accessibilityState={{ selected: !!selected, busy: opening }}
-      style={({ pressed }) => [styles.row, sidebar ? [styles.sidebarRow, { backgroundColor: selected ? colors.fill : backdrop.grouped }] : { backgroundColor: backdrop.background }, pressed && { opacity: 0.7 }]}>
-      <BotAvatar bot={bot} size={sidebar ? 30 : 34} />
+    <PressScale scale={1} unstable_pressDelay={ROW_PRESS_DELAY_MS} onPress={open} disabled={opening} onPressIn={() => setPressed(true)} onPressOut={() => setPressed(false)}
+      accessibilityLabel={[bot.name, state, row.computer].filter(Boolean).join(', ')} accessibilityHint="Opens the bot's conversation" accessibilityState={{ selected: !!selected, busy: opening }}
+      style={[styles.row, large && styles.rowLarge, (selected || pressed) && [styles.selected, { backgroundColor: colors.fill }]]}>
+      <BotAvatar bot={bot} size={sidebar ? 24 : 28} />
       <View style={styles.text}>
         <View style={styles.line}>
-          <Text style={[styles.name, { color: colors.text }]} numberOfLines={1}>{bot.name}</Text>
-          {opening ? <ActivityIndicator size="small" />
-            : bot.state === 'working' && !bot.paused ? <ActivityIndicator size="small" color={colors.tint} style={styles.spinner} />
-            : row.at ? <Text style={[styles.time, { color: colors.secondary }]}>{ago(row.at)}</Text> : null}
+          <Text numberOfLines={large ? 3 : 1} style={[type.calloutMedium, styles.grow, { color: colors.text }]}>{bot.name}</Text>
+          {opening ? <ActivityIndicator size="small" /> : working ? <StatusDot tone="running" pulse /> : row.at ? <CrossFadeText text={ago(row.at)} numberOfLines={1} style={[type.footnote, { color: colors.muted }]} /> : null}
         </View>
-        <View style={styles.line}>
-          {bot.paused && <Icon ios="pause.circle.fill" android="pause_circle" size={12} color={colors.orange} />}
-          <Text style={[styles.meta, { color: bot.paused ? colors.orange : colors.secondary }]} numberOfLines={1}>{[state, row.computer].filter(Boolean).join(' · ')}</Text>
-        </View>
+        {!!subtitle && <CrossFadeText text={subtitle} numberOfLines={large ? 3 : 1} style={[type.footnote, { color: bot.paused ? colors.warning : colors.muted }]} />}
       </View>
-      {!last && !sidebar && <View style={[styles.separator, { backgroundColor: colors.separator }]} />}
-    </Pressable>
+    </PressScale>
   );
-}, (a, b) => a.row.bot === b.row.bot && a.row.at === b.row.at && a.row.computer === b.row.computer && a.last === b.last && a.minute === b.minute
+}, (a, b) => a.row.bot === b.row.bot && a.row.at === b.row.at && a.row.computer === b.row.computer && a.showComputer === b.showComputer && a.minute === b.minute
   && a.sidebar === b.sidebar && a.selected === b.selected && a.replace === b.replace);
 
 const styles = StyleSheet.create({
   avatar: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   initial: { color: '#ffffff', fontWeight: '700' },
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingLeft: 20, paddingRight: 18, paddingVertical: 10 },
-  sidebarRow: { marginHorizontal: 8, paddingLeft: 12, paddingRight: 12, borderRadius: 14, borderCurve: 'continuous' },
-  text: { flex: 1, gap: 2 },
-  line: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  name: { flex: 1, fontSize: 16, fontWeight: '600' },
-  time: { fontSize: 14, fontVariant: ['tabular-nums'] },
-  spinner: { transform: [{ scale: 0.75 }] },
-  meta: { flex: 1, fontSize: 13 },
-  separator: { position: 'absolute', left: 66, right: 0, bottom: 0, height: StyleSheet.hairlineWidth },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 12, paddingVertical: 9 },
+  rowLarge: { alignItems: 'flex-start' },
+  selected: { borderRadius: 12, borderCurve: 'continuous' },
+  text: { flex: 1, minWidth: 0, gap: 3 },
+  line: { flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0 },
+  grow: { flex: 1, minWidth: 0 },
 });

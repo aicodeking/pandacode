@@ -76,17 +76,73 @@ export function demoPull(): PullDetail {
 
 export const demoPullPatch = (path: string) => PATCHES[path] ?? '';
 
-export const DEMO_CHANGES: Changes = {
-  branch: 'feat/passkeys', ahead: 2, behind: 0,
-  files: [
-    { path: 'app/account/passkeys.ts', status: '??', staged: false },
-    { path: 'app/account/page.tsx', status: ' M', staged: false },
-    { path: 'package.json', status: ' M', staged: false },
-  ],
+type Checkout = Omit<Changes, 'branch'> & { patches: Record<string, string> };
+
+const untracked = (lines: string[]) => [`@@ -0,0 +1,${lines.length} @@`, ...lines.map(line => `+${line}`)].join('\n');
+
+/** Each demo task's uncommitted work, so its Changes read as that task's branch. */
+const CHECKOUTS: Record<string, Checkout> = {
+  auth: {
+    ahead: 2, behind: 0, patches: PATCHES,
+    files: [
+      { path: 'app/account/passkeys.ts', status: '??', staged: false },
+      { path: 'app/account/page.tsx', status: ' M', staged: false },
+      { path: 'package.json', status: ' M', staged: false },
+    ],
+  },
+  team: {
+    ahead: 4, behind: 1,
+    files: [
+      { path: 'mobile/src/app/agents.tsx', status: '??', staged: false },
+      { path: 'mobile/src/ui/useTeam.ts', status: 'A ', staged: true },
+      { path: 'docs/remote-access.md', status: ' M', staged: false },
+    ],
+    patches: {
+      'mobile/src/app/agents.tsx': untracked(["export default function AgentsScreen() {", "  const team = useTeam(device, session);", "  return <WorkerList team={team} />;", '}']),
+      'mobile/src/ui/useTeam.ts': untracked(['export const POLL_MS = 5000;']),
+      'docs/remote-access.md': ['@@ -40,3 +40,4 @@', ' ## Methods', ' - `task.messages`', '+- `task.team` and `task.workerMessages`', ' - `task.diff`'].join('\n'),
+    },
+  },
+  flaky: {
+    ahead: 1, behind: 0,
+    files: [
+      { path: 'relay/src/upload.ts', status: ' M', staged: false },
+      { path: 'relay/tests/upload.test.ts', status: ' M', staged: false },
+    ],
+    patches: {
+      'relay/src/upload.ts': ['@@ -21,4 +21,6 @@ export async function upload(part: Part) {', '-  await put(part);', '+  await retry(() => put(part), { attempts: 3, backoffMs: 200 });', '   return part.etag;', ' }'].join('\n'),
+      'relay/tests/upload.test.ts': ['@@ -8,3 +8,3 @@', "-test.skip('retries a dropped part', async () => {", "+test('retries a dropped part', async () => {", '   const server = flakyServer({ failures: 2 });'].join('\n'),
+    },
+  },
+  docs: {
+    ahead: 0, behind: 0,
+    files: [{ path: 'docs/relay-protocol.md', status: '??', staged: false }, { path: 'README.md', status: ' M', staged: false }],
+    patches: {
+      'docs/relay-protocol.md': untracked(['# The Connect relay protocol', '', 'Every frame is sealed to one device; the relay only forwards.']),
+      'README.md': ['@@ -12,2 +12,3 @@', ' ## Docs', ' - [Getting started](docs/start.md)', '+- [The relay protocol](docs/relay-protocol.md)'].join('\n'),
+    },
+  },
 };
 
+/** Any other task: a small edit on its own branch, so every demo task still shows Changes. */
+const OTHER: Checkout = {
+  ahead: 1, behind: 0,
+  files: [{ path: 'src/index.ts', status: ' M', staged: false }, { path: 'CHANGELOG.md', status: ' M', staged: false }],
+  patches: {
+    'src/index.ts': ['@@ -3,3 +3,3 @@', ' export function main() {', "-  run('old');", "+  run('new');", ' }'].join('\n'),
+    'CHANGELOG.md': ['@@ -1,2 +1,3 @@', ' # Changelog', '+- This task\u2019s change.', ' - Earlier changes.'].join('\n'),
+  },
+};
+
+const checkout = (sessionId: string) => CHECKOUTS[sessionId] ?? OTHER;
+
+export function demoChanges(sessionId: string, branch: string | undefined): Changes {
+  const { ahead, behind, files } = checkout(sessionId);
+  return { branch: branch || 'main', ahead, behind, files };
+}
+
 /** The checkout's diff (one file with `path`), with Git's file headers like `task.diff`. */
-export function demoDiff(path?: string): string {
-  return Object.entries(PATCHES).filter(([file]) => !path || file === path)
+export function demoDiff(sessionId: string, path?: string): string {
+  return Object.entries(checkout(sessionId).patches).filter(([file]) => !path || file === path)
     .map(([file, patch]) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n${patch}`).join('\n');
 }

@@ -122,7 +122,7 @@ export function describeTool(tool: Pick<ToolActivity, 'name' | 'status' | 'input
     }
     case 'read': case 'write': {
       const content = field(fields, 'content', 'contents');
-      return { ...base, chip: basename(filePath(tool.input, fields)), object: kind === 'write' && content ? `${lines(content).length} lines` : '' };
+      return { ...base, chip: basename(filePath(tool.input, fields)), object: kind === 'write' && content ? `${lines(content).length} line${lines(content).length === 1 ? '' : 's'}` : '' };
     }
     case 'edit': {
       const diff = diffLines(fields);

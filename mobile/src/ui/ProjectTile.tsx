@@ -11,7 +11,7 @@ export function ProjectTile({ deviceId, projectId, name, size = 18 }: { deviceId
   if (url) return <Image source={{ uri: url }} style={[styles.tile, box]} contentFit="cover" accessible={false} />;
   return (
     <View style={[styles.tile, box, { backgroundColor: projectColor(name) }]} accessible={false}>
-      <Text style={[styles.text, { fontSize: size * 0.6 }]}>{name.slice(0, 1).toUpperCase()}</Text>
+      <Text allowFontScaling={false} style={[styles.text, { fontSize: size * 0.6 }]}>{name.slice(0, 1).toUpperCase()}</Text>
     </View>
   );
 }

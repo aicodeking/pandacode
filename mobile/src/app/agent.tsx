@@ -2,49 +2,61 @@
 // own transcript (task.workerMessages, refreshed while it runs, plus its live tools). A subagent:
 // its prompt, tools and reply from the task's live subagent state.
 import { Stack, useLocalSearchParams } from 'expo-router';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import { useShallow } from 'zustand/react/shallow';
 import { connect } from '../connect/client.ts';
 import type { Message, ToolActivity } from '../connect/types.ts';
 import { elapsedLabel } from '../store/inbox.ts';
+import { taskKey, useConnect, useModels, type LiveItem } from '../store/index.ts';
 import { mergeMessages, prependMessages } from '../store/reduce.ts';
-import { taskKey, useConnect } from '../store/index.ts';
-import { parseToolMessage, subagentActive, subagentName } from '../store/trace.ts';
 import { workerClockEnd, workerLabel, workerRunning, type Team, type TeamWorker } from '../store/team.ts';
-import { useBackdrop } from '../ui/Backdrop.tsx';
-import { harnessName } from '../ui/harness.tsx';
+import { parseToolMessage, subagentActive, subagentName, type Subagent } from '../store/trace.ts';
+import { useColors } from '../ui/theme.ts';
+import { Button, Card, CardSection, Chip, EmptyState, geometry, InnerCard, Skeleton, type as text } from '../ui/ds/index.ts';
+import { HarnessLogo, harnessName } from '../ui/harness.tsx';
 import { Markdown } from '../ui/Markdown.tsx';
-import { ModelBadge, WorkerNamesContext } from '../ui/ToolCards.tsx';
-import { StatusMark, ToolRow, useNow } from '../ui/Trace.tsx';
-import { mono, useColors } from '../ui/theme.ts';
-import { useNames, useTeam } from '../ui/useTeam.ts';
-import { WorkerMark } from './agents.tsx';
+import { WorkerNamesContext } from '../ui/ToolCards.tsx';
+import { ToolRow, useNow } from '../ui/Trace.tsx';
+import { PUSHED_HEADER, PushedScroll, usePushedScroll } from '../ui/PushedScroll.tsx';
+import { modelLabel } from '../ui/models.ts';
+import { useNames, useTeamLoad } from '../ui/useTeam.ts';
+import { StateMark, WorkerMark } from './agents.tsx';
 
 const REFRESH_MS = 5000;
+const SHOWN_ROLES = new Set(['user', 'assistant', 'tool', 'system']);
+const NO_TOOLS: readonly ToolItem[] = [];
+const GONE_ICON = { ios: 'person.crop.circle.badge.questionmark', android: 'person_off' } as const;
+const ERROR_ICON = { ios: 'exclamationmark.triangle', android: 'warning' } as const;
 
-function Card({ title, children, tone }: { title: string; children: React.ReactNode; tone?: string }) {
+type ToolItem = Extract<LiveItem, { kind: 'tool' }>;
+/** The tool items alone, so a streamed text delta doesn't change the selection. */
+const toolItems = (items: readonly LiveItem[] | undefined): readonly ToolItem[] => items?.filter((i): i is ToolItem => i.kind === 'tool') ?? NO_TOOLS;
+
+function Plain({ value, tone }: { value: string; tone?: 'muted' | 'warning' }) {
   const colors = useColors();
-  const backdrop = useBackdrop();
-  return (
-    <View style={[styles.card, { backgroundColor: backdrop.card }]}>
-      <Text style={[styles.cardTitle, { color: tone ?? colors.secondary }]}>{title}</Text>
-      {children}
-    </View>
-  );
+  return <Text selectable style={[text.subhead, { color: tone ? colors[tone] : colors.text }]}>{value}</Text>;
 }
 
-function Plain({ text, color }: { text: string; color?: string }) {
-  const colors = useColors();
-  return <Text selectable style={[styles.body, { color: color ?? colors.text }]}>{text}</Text>;
+function Section({ title, children }: { title: string; children: ReactNode }) {
+  return <CardSection title={title}><View style={styles.inner}>{children}</View></CardSection>;
 }
+
+/** Parses a tool message only when that message changes. */
+const TranscriptRow = memo(function TranscriptRow({ message }: { message: Message }) {
+  const colors = useColors();
+  const tool = useMemo(() => (message.role === 'tool' ? parseToolMessage(message.content) : null), [message]);
+  if (tool) return <ToolRow tool={tool} />;
+  if (message.role === 'user') return <View style={[styles.prompt, { backgroundColor: colors.fill }]}><Text selectable numberOfLines={12} style={[text.subhead, { color: colors.text }]}>{message.content}</Text></View>;
+  return <Markdown text={message.content} />;
+});
 
 /** The worker's transcript: stored messages, then live tools the store doesn't hold yet. */
-function Transcript({ deviceId, sessionId, worker, team }: { deviceId: string; sessionId: string; worker: TeamWorker; team: Team }) {
-  const colors = useColors();
+const Transcript = memo(function Transcript({ deviceId, sessionId, worker, team }: { deviceId: string; sessionId: string; worker: TeamWorker; team: Team }) {
   const [messages, setMessages] = useState<Message[] | null>(null);
   const [error, setError] = useState('');
   const running = workerRunning(worker, team);
-  const live = useConnect(s => (worker.sessionId ? s.live[taskKey(deviceId, worker.sessionId)] : undefined));
+  const live = useConnect(useShallow(s => toolItems(worker.sessionId ? s.live[taskKey(deviceId, worker.sessionId)]?.items : undefined)));
   const [hasOlder, setHasOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -78,26 +90,42 @@ function Transcript({ deviceId, sessionId, worker, team }: { deviceId: string; s
       setError('');
     }, (e: Error) => setError(e.message)).finally(() => setLoadingOlder(false));
   };
-  const rows = useMemo(() => (messages ?? []).filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool' || m.role === 'system'), [messages]);
+  // The status card already says why it failed, so the transcript's closing line doesn't repeat it.
+  const failure = worker.status === 'failed' ? worker.error?.trim() : undefined;
+  const rows = useMemo(() => {
+    const shown = (messages ?? []).filter(m => SHOWN_ROLES.has(m.role));
+    return failure && shown.at(-1)?.content.trim() === failure ? shown.slice(0, -1) : shown;
+  }, [messages, failure]);
   const stored = useMemo(() => new Set(rows.filter(m => m.role === 'tool').map(m => parseToolMessage(m.content).id).filter(Boolean)), [rows]);
-  const liveTools = (live?.items ?? []).flatMap(i => (i.kind === 'tool' && !stored.has(i.tool.id) ? [i] : []));
-  if (error && !messages) return <Plain text={error} color={colors.secondary as string} />;
-  if (!messages) return <ActivityIndicator style={styles.spinner} />;
-  if (!rows.length && !liveTools.length) return <Plain text="No messages yet." color={colors.secondary as string} />;
+  const liveTools = useMemo(() => live.filter(i => !stored.has(i.tool.id)), [live, stored]);
+  if (error && !messages) return <Plain value={error} tone="muted" />;
+  if (!messages) return <View style={styles.inner}><Skeleton width="80%" /><Skeleton width="60%" /></View>;
+  if (!rows.length && !liveTools.length) return <Plain value="No messages yet." tone="muted" />;
   return (
-    <View style={styles.transcript}>
-      {hasOlder && (
-        <Pressable onPress={loadOlder} disabled={loadingOlder} accessibilityRole="button" style={styles.older}>
-          {loadingOlder ? <ActivityIndicator /> : <Text style={[styles.body, { color: colors.tint }]}>Load older messages</Text>}
-        </Pressable>
-      )}
-      {!!error && <Plain text={error} color={colors.secondary as string} />}
-      {rows.map(m => m.role === 'tool' ? <ToolRow key={m.id} tool={parseToolMessage(m.content)} />
-        : m.role === 'user' ? <View key={m.id} style={[styles.prompt, { backgroundColor: colors.fill }]}><Text selectable style={[styles.body, { color: colors.text }]} numberOfLines={12}>{m.content}</Text></View>
-        : <Markdown key={m.id} text={m.content} />)}
+    <>
+      {hasOlder && <Button variant="plain" size="small" label="Load older messages" loading={loadingOlder} onPress={loadOlder} />}
+      {!!error && <Plain value={error} tone="muted" />}
+      {rows.map(m => <TranscriptRow key={m.id} message={m} />)}
       {liveTools.map(i => <ToolRow key={i.tool.id} tool={i.tool} startedAt={i.startedAt} endedAt={i.endedAt} />)}
-      {hasMore && <Plain text="Newer messages were left out. Open this task on the computer to see them." color={colors.secondary as string} />}
-    </View>
+      {hasMore && <Plain value="Newer messages were left out. Open this task on the computer to see them." tone="muted" />}
+    </>
+  );
+});
+
+/** The agent's state in one card: its status line and, when it failed, why. */
+function StatusCard({ leading, label, failed, model, error }: { leading: ReactNode; label: string; failed: boolean; model?: string; error?: string }) {
+  const colors = useColors();
+  return (
+    <Card>
+      <InnerCard>
+        <View style={styles.status}>
+          {leading}
+          <Text numberOfLines={1} style={[text.subhead, styles.statusText, { color: failed ? colors.danger : colors.muted }]}>{label}</Text>
+          {!!model && <Chip label={model} style={styles.model} />}
+        </View>
+        {!!error && <View style={styles.statusError}><Plain value={error} /></View>}
+      </InnerCard>
+    </Card>
   );
 }
 
@@ -107,78 +135,80 @@ function WorkerDetail({ deviceId, sessionId, worker, team }: { deviceId: string;
   const elapsed = worker.createdAt ? elapsedLabel(workerClockEnd(worker, team, now) - worker.createdAt) : '';
   const names = useNames(team);
   const deps = worker.dependsOn.map(id => names[id] || id);
+  const checkpoint = worker.checkpoint;
+  const models = useModels(deviceId, worker.provider);
   return (
     <>
       <Stack.Screen options={{ title: worker.name }} />
-      <View style={styles.status}>
-        <WorkerMark worker={worker} team={team} />
-        <Text style={[styles.statusText, { color: worker.status === 'failed' ? colors.red : colors.secondary }]}>{[workerLabel(worker, team), elapsed, worker.attempt > 1 && `attempt ${worker.attempt}`].filter(Boolean).join(' · ')}</Text>
-        <ModelBadge provider={worker.provider} model={worker.model || harnessName(worker.provider)} />
-      </View>
-      {!!worker.error && <Card title="Error" tone={colors.red as string}><Plain text={worker.error} /></Card>}
-      {!!worker.checkpoint && (
-        <Card title="Checkpoint">
-          {!!worker.checkpoint.summary && <Plain text={worker.checkpoint.summary} />}
-          {!!worker.checkpoint.nextSteps && <><Text style={[styles.sub, { color: colors.secondary }]}>Next</Text><Plain text={worker.checkpoint.nextSteps} /></>}
-          {!!worker.checkpoint.blocker && <><Text style={[styles.sub, { color: colors.orange }]}>Blocker</Text><Plain text={worker.checkpoint.blocker} /></>}
-        </Card>
+      <StatusCard failed={worker.status === 'failed'} model={worker.model ? modelLabel(worker.model, models) : harnessName(worker.provider)}
+        label={[workerLabel(worker, team), elapsed, worker.attempt > 1 && `attempt ${worker.attempt}`].filter(Boolean).join(' · ')}
+        leading={<><HarnessLogo id={worker.provider} size={20} /><WorkerMark worker={worker} team={team} /></>} error={worker.error ?? undefined} />
+      {!!checkpoint && (
+        <Section title="Checkpoint">
+          {!!checkpoint.summary && <Plain value={checkpoint.summary} />}
+          {!!checkpoint.nextSteps && <><Text style={[text.footnoteMedium, { color: colors.muted }]}>Next</Text><Plain value={checkpoint.nextSteps} /></>}
+          {!!checkpoint.blocker && <><Text style={[text.footnoteMedium, { color: colors.warning }]}>Blocker</Text><Plain value={checkpoint.blocker} /></>}
+        </Section>
       )}
-      {!!worker.summary && <Card title="Summary"><Markdown text={worker.summary} /></Card>}
+      {!!worker.summary && <Section title="Summary"><Markdown text={worker.summary} /></Section>}
       {(worker.files.length > 0 || worker.readOnly || deps.length > 0) && (
-        <Card title={worker.readOnly ? 'Files · read-only' : 'Files'}>
-          <Text selectable style={[styles.files, { color: colors.text }]}>{worker.files.length ? worker.files.join('\n') : 'Whole checkout'}</Text>
-          {deps.length > 0 && <Text style={[styles.sub, { color: colors.secondary }]}>{`After ${deps.join(', ')}`}</Text>}
-        </Card>
+        <Section title={worker.readOnly ? 'Files · read-only' : 'Files'}>
+          <Text selectable style={[text.code, { color: colors.text }]}>{worker.files.length ? worker.files.join('\n') : 'Whole checkout'}</Text>
+          {deps.length > 0 && <Text style={[text.footnote, { color: colors.muted }]}>{`After ${deps.join(', ')}`}</Text>}
+        </Section>
       )}
-      <Text style={[styles.heading, { color: colors.secondary }]}>Transcript</Text>
-      <WorkerNamesContext.Provider value={names}>
-        <Transcript key={worker.id} deviceId={deviceId} sessionId={sessionId} worker={worker} team={team} />
-      </WorkerNamesContext.Provider>
+      <Section title="Transcript">
+        <WorkerNamesContext.Provider value={names}>
+          <Transcript key={worker.id} deviceId={deviceId} sessionId={sessionId} worker={worker} team={team} />
+        </WorkerNamesContext.Provider>
+      </Section>
+    </>
+  );
+}
+
+function SubagentDetail({ agent }: { agent: Subagent }) {
+  const active = subagentActive(agent);
+  const now = useNow(active);
+  const elapsed = agent.startedAt ? elapsedLabel((active ? now : agent.updatedAt || now) - agent.startedAt) : '';
+  return (
+    <>
+      <Stack.Screen options={{ title: subagentName(agent) }} />
+      <StatusCard failed={agent.status === 'failed'} label={[agent.status, elapsed].filter(Boolean).join(' · ')}
+        leading={<StateMark status={agent.status} active={active} />} />
+      {!!agent.prompt && <Section title="Prompt"><Plain value={agent.prompt} /></Section>}
+      {agent.tools.length > 0 && <Section title="Tools">{agent.tools.map((t: ToolActivity) => <ToolRow key={t.id} tool={t} />)}</Section>}
+      {!!agent.response.trim() && <Section title="Reply"><Markdown text={agent.response} /></Section>}
     </>
   );
 }
 
 export default function AgentScreen() {
   const { device = '', session = '', kind = 'worker', id = '' } = useLocalSearchParams<{ device: string; session: string; kind: string; id: string }>();
-  const colors = useColors();
-  const backdrop = useBackdrop();
-  const team = useTeam(device, session, kind === 'worker');
+  const scroll = usePushedScroll();
+  const { team, error, retry } = useTeamLoad(device, session, kind === 'worker');
   const worker = team && team !== 'outdated' ? team.workers.find(w => w.id === id) : undefined;
   const agent = useConnect(s => (kind === 'subagent' ? s.live[taskKey(device, session)]?.subagents?.find(a => a.id === id) : undefined));
-  const now = useNow(!!agent && subagentActive(agent));
+  const asked = kind === 'worker' && team === undefined;
   return (
-    <ScrollView style={{ backgroundColor: backdrop.background }} contentContainerStyle={styles.page} contentInsetAdjustmentBehavior="automatic">
+    <PushedScroll scroll={scroll}>
+      <Stack.Screen options={PUSHED_HEADER} />
       {worker && team && team !== 'outdated' && <WorkerDetail deviceId={device} sessionId={session} worker={worker} team={team} />}
-      {agent && (
-        <>
-          <Stack.Screen options={{ title: subagentName(agent) }} />
-          <View style={styles.status}>
-            <StatusMark status={agent.status} color={colors.green} />
-            <Text style={[styles.statusText, { color: colors.secondary }]}>{[agent.status, agent.startedAt && elapsedLabel((subagentActive(agent) ? now : agent.updatedAt || now) - agent.startedAt)].filter(Boolean).join(' · ')}</Text>
-          </View>
-          {!!agent.prompt && <Card title="Prompt"><Plain text={agent.prompt} /></Card>}
-          <View style={styles.transcript}>{agent.tools.map((t: ToolActivity) => <ToolRow key={t.id} tool={t} />)}</View>
-          {!!agent.response.trim() && <Card title="Reply"><Markdown text={agent.response} /></Card>}
-        </>
+      {agent && <SubagentDetail agent={agent} />}
+      {!worker && !agent && (
+        asked && error ? <EmptyState icon={ERROR_ICON} title="Couldn’t load this agent" body={error} action={{ label: 'Retry', onPress: retry }} style={styles.empty} />
+        : asked ? <Card><InnerCard style={styles.inner}><Skeleton width="60%" height={16} /><Skeleton width="85%" /></InnerCard></Card>
+        : <EmptyState icon={GONE_ICON} title="This agent is no longer listed." style={styles.empty} />
       )}
-      {!worker && !agent && (kind === 'worker' && team === undefined ? <ActivityIndicator style={styles.spinner} />
-        : <Plain text="This agent is no longer listed." color={colors.secondary as string} />)}
-    </ScrollView>
+    </PushedScroll>
   );
 }
 
 const styles = StyleSheet.create({
-  page: { padding: 16, gap: 12, paddingBottom: 48 },
-  spinner: { marginTop: 40 },
-  status: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 4 },
-  statusText: { flex: 1, fontSize: 14, fontVariant: ['tabular-nums'], textTransform: 'capitalize' },
-  card: { borderRadius: 16, padding: 14, gap: 6, borderCurve: 'continuous' },
-  cardTitle: { fontSize: 12.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3 },
-  sub: { fontSize: 12.5, fontWeight: '600', marginTop: 4 },
-  body: { fontSize: 15, lineHeight: 21 },
-  files: { fontFamily: mono, fontSize: 12.5, lineHeight: 18 },
-  heading: { fontSize: 13, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3, paddingHorizontal: 6, marginTop: 6 },
-  transcript: { gap: 6 },
-  older: { alignItems: 'center', padding: 8 },
-  prompt: { borderRadius: 14, padding: 12, borderCurve: 'continuous' },
+  empty: { marginTop: 48 },
+  inner: { paddingHorizontal: 12, paddingVertical: 10, gap: 8 },
+  status: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: geometry.rowHeight, paddingHorizontal: 12, paddingVertical: 6 },
+  statusError: { paddingHorizontal: 12, paddingBottom: 10 },
+  statusText: { flex: 1, fontVariant: ['tabular-nums'], textTransform: 'capitalize' },
+  model: { alignSelf: 'center', flexShrink: 1, maxWidth: '45%' },
+  prompt: { borderRadius: geometry.innerRadius, borderCurve: 'continuous', padding: 12 },
 });

@@ -1,11 +1,14 @@
 // The new-task form state shared by the New task sheet and the iPhone Duo's New thread pane:
 // computer, project, harness + model, effort, mode and worktree, each following the last task on
 // that computer until the user picks, and `start`, which calls task.start.
-import * as Haptics from 'expo-haptics';
 import { useEffect, useState } from 'react';
 import { connect } from '../connect/client.ts';
 import { useHosts, useProviders, useTasks } from '../store/index.ts';
+import { haptic } from './ds/motion.ts';
 import { useModelOptions } from './models.ts';
+import { pickableProjects } from './new-task-projects.ts';
+
+export { pickableProjects };
 
 type Chosen = { projectId?: string; provider?: string; model?: string; effort?: string | null; mode?: string };
 
@@ -19,7 +22,7 @@ export function useNewTask(initialDevice?: string) {
   const [chosen, setChosen] = useState<Chosen>({});
   const [worktree, setWorktree] = useState(false);
   const [starting, setStarting] = useState(false);
-  const projects = list?.projects ?? [];
+  const projects = pickableProjects(list);
   const projectId = projects.find(p => p.id === chosen.projectId)?.id ?? recent?.projectId ?? projects[0]?.id ?? '';
   // The picked project's icon (the others show only as menu text).
   useEffect(() => { if (deviceId && projectId) void connect.projectIcons(deviceId, [projectId]); }, [deviceId, projectId]);
@@ -32,7 +35,13 @@ export function useNewTask(initialDevice?: string) {
   const mode = chosen.mode ?? recent?.mode ?? 'ask';
   const efforts = options.efforts(model);
 
-  useEffect(() => { if (deviceId && !list) connect.listTasks(deviceId).catch(() => undefined); }, [deviceId, list]);
+  const [listFailure, setListFailure] = useState<{ deviceId: string; message: string } | null>(null);
+  const [listAttempt, setListAttempt] = useState(0);
+  useEffect(() => {
+    if (deviceId && !list) connect.listTasks(deviceId).catch((error: Error) => setListFailure({ deviceId, message: error.message }));
+  }, [deviceId, list, listAttempt]);
+  const problem = (listFailure?.deviceId === deviceId ? listFailure.message : null) ?? options.error;
+  const retry = () => { setListFailure(null); setListAttempt(a => a + 1); options.retry(); };
   const pick = (change: Chosen) => setChosen(c => ({ ...c, ...change }));
   const pickDevice = (id: string) => { setDevicePick(id); setChosen({}); setProviderPick(undefined); };
   const pickProvider = (id: string) => { setProviderPick(id); pick({ model: 'default', effort: null }); };
@@ -42,7 +51,7 @@ export function useNewTask(initialDevice?: string) {
   /** Starts the task and returns its session id and any worktree note; throws (and clears `starting`) on failure. */
   const start = async (prompt: string) => {
     setStarting(true);
-    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    haptic('medium');
     try {
       const session = await connect.startTask(deviceId, { projectId, worktree, prompt: prompt.trim(), provider, model, mode, effort: efforts.some(e => e.value === effort) ? effort! : undefined });
       void connect.listTasks(deviceId).catch(() => undefined);
@@ -55,6 +64,6 @@ export function useNewTask(initialDevice?: string) {
 
   return {
     hosts, deviceId, list, projects, projectId, provider, options, model, effort, efforts, mode, worktree, starting,
-    pick, pickDevice, pickProvider, pickModel, setWorktree, setStarting, canStart, start,
+    pick, pickDevice, pickProvider, pickModel, setWorktree, setStarting, canStart, start, problem, retry,
   };
 }

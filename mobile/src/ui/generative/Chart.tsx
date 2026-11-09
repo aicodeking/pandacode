@@ -1,10 +1,11 @@
 // Charts from plain Views (the app ships no SVG renderer): bars are columns, lines are rotated
 // hairline segments with point dots, area adds faint columns under the line, a pie is a 100 %
-// stacked bar with a percentage legend. Colours match the desktop's palette after the tint.
+// stacked bar with a percentage legend. Colours match the desktop's palette after the first.
 import { useState } from 'react';
 import { StyleSheet, Text, View, type ColorValue, type LayoutChangeEvent } from 'react-native';
 import type { View as Spec } from '../../store/generative.ts';
 import { useColors } from '../theme.ts';
+import { type as textStyle } from '../ds/index.ts';
 
 type ChartSpec = Extract<Spec, { type: 'chart' }>;
 const PALETTE = ['#5ad19a', '#6aa8ff', '#f0679b', '#ff8a3d', '#a86cf0'];
@@ -33,22 +34,22 @@ export function Spark({ values, height = 28 }: { values: number[]; height?: numb
   const colors = useColors();
   const [width, onLayout] = useWidth();
   return <View onLayout={onLayout} style={{ height }} accessible accessibilityLabel={`Trend from ${values[0]} to ${values[values.length - 1]}`}>
-    <Line values={values} width={width} height={height} color={colors.tint} min={Math.min(...values)} max={Math.max(...values)} />
+    <Line values={values} width={width} height={height} color={colors.info} min={Math.min(...values)} max={Math.max(...values)} />
   </View>;
 }
 
 export function Chart({ spec }: { spec: ChartSpec }) {
   const colors = useColors();
   const [width, onLayout] = useWidth();
-  const color = (s: number) => (s === 0 ? colors.tint : PALETTE[(s - 1) % PALETTE.length]);
+  const color = (s: number) => (s === 0 ? colors.info : PALETTE[(s - 1) % PALETTE.length]);
   const { labels, series } = spec;
   const label = spec.title ?? `${spec.chart} chart`;
-  if (spec.chart === 'sparkline') return <View style={styles.box}>{!!spec.title && <Text style={[styles.title, { color: colors.secondary }]}>{spec.title}</Text>}<Spark values={series[0].values} height={48} /></View>;
+  if (spec.chart === 'sparkline') return <View style={styles.box}>{!!spec.title && <Text style={[styles.title, { color: colors.muted }]}>{spec.title}</Text>}<Spark values={series[0].values} height={48} /></View>;
   if (spec.chart === 'pie') {
     const values = series[0].values.map(v => Math.max(0, v)), total = values.reduce((a, b) => a + b, 0) || 1;
     return (
       <View style={styles.box} accessible accessibilityLabel={label}>
-        {!!spec.title && <Text style={[styles.title, { color: colors.secondary }]}>{spec.title}</Text>}
+        {!!spec.title && <Text style={[styles.title, { color: colors.muted }]}>{spec.title}</Text>}
         <View style={styles.stacked}>{values.map((v, i) => <View key={i} style={{ flex: v, backgroundColor: color(i) }} />)}</View>
         <View style={styles.legend}>{values.map((v, i) => <Key key={i} color={color(i)} text={`${labels[i] ?? ''} · ${Math.round((v / total) * 100)}%`} />)}</View>
       </View>
@@ -60,11 +61,11 @@ export function Chart({ spec }: { spec: ChartSpec }) {
   const every = Math.ceil(labels.length / 6);
   return (
     <View style={styles.box} accessible accessibilityLabel={label}>
-      {!!spec.title && <Text style={[styles.title, { color: colors.secondary }]}>{spec.title}</Text>}
+      {!!spec.title && <Text style={[styles.title, { color: colors.muted }]}>{spec.title}</Text>}
       <View style={styles.row}>
         <View style={[styles.axis, { height: HEIGHT }]}>
-          <Text style={[styles.tick, { color: colors.tertiary }]}>{Number(max.toFixed(2)).toLocaleString()}</Text>
-          <Text style={[styles.tick, { color: colors.tertiary }]}>{Number(min.toFixed(2)).toLocaleString()}</Text>
+          <Text style={[styles.tick, { color: colors.faint }]}>{Number(max.toFixed(2)).toLocaleString()}</Text>
+          <Text style={[styles.tick, { color: colors.faint }]}>{Number(min.toFixed(2)).toLocaleString()}</Text>
         </View>
         <View style={styles.flex}>
           <View onLayout={onLayout} style={[styles.plot, { height: HEIGHT, borderColor: colors.separator }]}>
@@ -85,7 +86,7 @@ export function Chart({ spec }: { spec: ChartSpec }) {
               );
             })}
           </View>
-          <View style={styles.labels}>{labels.map((text, i) => <Text key={i} numberOfLines={1} style={[styles.tick, styles.label, { color: colors.tertiary }]}>{i % every ? '' : text}</Text>)}</View>
+          <View style={styles.labels}>{labels.map((text, i) => <Text key={i} numberOfLines={1} style={[styles.tick, styles.label, { color: colors.faint }]}>{i % every ? '' : text}</Text>)}</View>
         </View>
       </View>
       {series.some(entry => entry.name) && <View style={styles.legend}>{series.map((entry, s) => (entry.name ? <Key key={s} color={color(s)} text={entry.name} /> : null))}</View>}
@@ -95,12 +96,12 @@ export function Chart({ spec }: { spec: ChartSpec }) {
 
 function Key({ color, text }: { color: ColorValue; text: string }) {
   const colors = useColors();
-  return <View style={styles.key}><View style={[styles.swatch, { backgroundColor: color }]} /><Text style={[styles.tick, { color: colors.secondary }]}>{text}</Text></View>;
+  return <View style={styles.key}><View style={[styles.swatch, { backgroundColor: color }]} /><Text style={[styles.tick, { color: colors.muted }]}>{text}</Text></View>;
 }
 
 const styles = StyleSheet.create({
   box: { gap: 6 },
-  title: { fontSize: 13, fontWeight: '600' },
+  title: textStyle.footnoteMedium,
   row: { flexDirection: 'row', gap: 6 },
   flex: { flex: 1 },
   axis: { justifyContent: 'space-between' },
@@ -110,7 +111,7 @@ const styles = StyleSheet.create({
   dot: { position: 'absolute', width: 6, height: 6, borderRadius: 3 },
   labels: { flexDirection: 'row', marginTop: 4 },
   label: { flex: 1, textAlign: 'center' },
-  tick: { fontSize: 11 },
+  tick: textStyle.caption,
   stacked: { flexDirection: 'row', height: 18, borderRadius: 9, overflow: 'hidden' },
   legend: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   key: { flexDirection: 'row', alignItems: 'center', gap: 5 },
