@@ -170,9 +170,11 @@ successful (its `prepare` job checks with `gh run list --commit --event push
 --branch main`, using only `actions: read`; pull request and other branch runs
 of the same commit do not count, so the commit must be on `main` and pushed).
 If CI was still running, re-run the Release workflow once it passes; if CI was
-cancelled, re-run CI for that commit (pushing nothing newer to `main` until it
-completes), then re-run the Release workflow; if CI failed, fix it in a new
-commit and release a higher version. Never move a
+cancelled (CI never cancels a run on `main`, so only a manual cancel does
+this), re-run CI for that commit, then re-run the Release workflow. If CI
+failed, the gate reads the run's latest conclusion: when the failure was a
+flaky job, re-running the failed jobs to green is enough; a real failure is
+fixed in a new commit and released as a higher version. Never move a
 published tag; fix problems in a higher version.
 
 To try the build without publishing, run the workflow manually (Actions →
