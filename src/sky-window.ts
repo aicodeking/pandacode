@@ -6,9 +6,12 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
 /** The thread's window: a procedural scene (src/scenes/: the sky, the aurora, …; WebGL fragment shader, CSS gradient
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
- * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does.
- * It also stands still while the reader moves a transcript or types in a composer — the pane's or any tile's — and for
- * HOLD_MS after the last such input: the canvas is the backdrop of the whole transcript, so every frame it paints makes
+ * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does,
+ * and 8 again while a run is churning the transcript (`churning`: it is streaming, or the scroller's content height moved
+ * within GROWTH_MS) — a thread relaying out on every frame cannot also pay a canvas frame every other frame, and the wind
+ * still follows the run there, just a quarter as often, with the pointer's 60 fps burst held back for the same reason. It also stands still while the reader moves a transcript or types
+ * in a composer — the pane's or any tile's — and for HOLD_MS after the last such input: the canvas is the backdrop of the
+ * whole transcript, so every frame it paints makes
  * the compositor redo the region above it. The scene's glass is a plain fill on the surfaces that scroll with the text and
  * on the composer's (and a tile's) glass, where a blur would re-blur its backdrop on every canvas frame and every scroll
  * step; the floating ones keep theirs — the action dock, its label tip and the agents flyout over a dense 90% frame fill
@@ -18,7 +21,9 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * hold only defers the loop, it never stops it, and the resumed frame spans the wait with `dt` clamped at .1 s (`tick`): a
  * hold shorter than that is taken up, a longer one is dropped rather than jumped, so the clock never rewinds. That spanned
  * `dt` is integrated in substeps of at most 1/60 s (`step`), so the springs advance by the elapsed time without ever
- * overshooting.
+ * overshooting. The wind is caught up over the whole span — that is what makes it look continuous — while the pointer is
+ * seeded from the resumed instant and steps at most one frame's worth, so a freeze resumes the parting where it stopped
+ * instead of handing it the whole wait in one 16 ms frame.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
@@ -48,6 +53,11 @@ const IDLE_FPS = 8, WIND_FPS = 30;
  * transcript, a keystroke or text input in a composer): long enough to span the gap between two wheel notches or two
  * keystrokes, short enough to read as an instant resume, and re-armed by the next one. */
 const HOLD_MS = 150;
+/** How long past its last growth a streaming run still counts as churning the transcript (`churning`): long enough to span
+ * the gap between two streamed chunks, short enough that the cap lifts between two turns. It costs no timer of its own —
+ * every paint samples the height and compares it — so it releases on the first paint after this window, at most one idle
+ * interval (125 ms) later. */
+const GROWTH_MS = 150;
 /** The physics substep: a frame's `dt` is integrated in equal steps of at most this, so a resumed frame (`.1` s, six of
  * them at most) can never hand an explicit-Euler spring a step it cannot take — the parting spring's rising branch
  * (k = 280, c = 33) is only stable to about 2/c ≈ 60 ms. */
@@ -148,8 +158,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let forcePaintMs: number | null = null, quietMs = QUIET_MS, gpuMs: number | null = null, gpuCosts: number[] = [];
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
   let idle = 0, idleTimer = 0, inputAt = 0;
-  // The reader-input hold (`hold`): no frame is painted before this time.
-  let holdUntil = 0;
+  // The reader-input hold (`hold`): no frame is painted before this time, and `resumeIn` marks the frame that ends it
+  // (armed by `armResume`, cleared by the frame it fires).
+  let holdUntil = 0, resumeIn = false;
+  // A growing transcript (`churning`): the content height last sampled from its scroller, and when it last moved (a long
+  // time ago, so a page that has not grown yet never reads as growing).
+  let seenHeight = -1, grewAt = -1e9;
   // Wind and pointer are critically damped springs; drift is integrated so a speed change never jumps the clouds.
   let wind = 0, windVelocity = 0, drift = 0, time = 0;
   const pointer = { x: .5, y: .5, tx: .5, ty: .5, sx: 0, sy: 0, amt: 0, amtVelocity: 0, target: 0, vx: 0, vy: 0, movedAt: 0 };
@@ -233,9 +247,36 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // Reduced motion paints one still frame off its own interval, and nothing is queued here to defer.
     if (disposed || reducedMotion.matches) return;
     // Nothing is scheduled at all (the last frame was the idle one): arm the wake that ends the hold.
-    if (!frame && !timer && active()) timer = window.setTimeout(() => tick(performance.now()), HOLD_MS);
+    if (!frame && !timer && active()) armResume();
+  }
+  /** Arms the wake that ends a reader hold, and marks the frame it fires as the resumed one: `resumeIn` is what tells
+   * `step` that this frame's `dt` spans the wait, so its pointer step is the one that has to be clamped. Every path that
+   * arms a wake for the end of a hold goes through here — the hold's own early return below, the idle arm above and
+   * `wake`'s — and that frame is the one that clears it. */
+  function armResume(): void {
+    resumeIn = true;
+    if (!timer) timer = window.setTimeout(() => tick(performance.now()), Math.max(1, holdUntil - performance.now()));
   }
   function holding(): boolean { return performance.now() < holdUntil; }
+  /** The scroller whose content a run grows: the open thread's transcript, or a tile's read-only rows (a tile's `pane`
+   * holds neither: `docs/agent-reference.md`'s `:is(#transcript,.thread-mirror-rows)`). */
+  const scroller = (): HTMLElement | null => transcript() ?? pane.querySelector('.thread-mirror-rows');
+  /** Records the scroller's content height, once per painted frame (`tick`) and nowhere else: `scrollHeight` is the whole
+   * cost of the growth signal — one integer read per paint, which forces a style/layout flush only when the DOM is dirty,
+   * and a frame that is painting a streaming thread has just made it dirty, so the flush it moves forward would have
+   * happened in that same frame anyway (paint() reads no layout, so this is the instance's only read). It is 8 reads a
+   * second under the cap it arms, at most 30 otherwise, and none at all while nothing paints. A `ResizeObserver` would not
+   * do: the transcript is a fixed-height scroller, so a growing thread does not resize its box. */
+  function sampleGrowth(now: number): void {
+    const height = scroller()?.scrollHeight ?? -1;
+    if (height === seenHeight) return;
+    if (seenHeight >= 0) grewAt = now;
+    seenHeight = height;
+  }
+  /** Whether a run is churning the transcript: it is streaming (`#transcript[data-running]`, or a tile's), or the content
+   * height sampled above moved within GROWTH_MS. Costs one attribute read, never a layout: `grewAt` is written by
+   * `sampleGrowth` alone. */
+  const churning = (now: number): boolean => running() || now - grewAt < GROWTH_MS;
   /** The last GPU timer query, once its result is in (a disjoint result is dropped). */
   function readQuery(ext: TimerExt): void {
     if (!query || !ctx || !ext.getQueryObjectEXT(query, ext.QUERY_RESULT_AVAILABLE_EXT)) return;
@@ -259,8 +300,9 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     else if (scale === LOW_SCALE && mean < BUDGET_MS / 2 && now - droppedAt > quietMs) scale = SCALE;
     else if (scale === LOW_SCALE && mean >= BUDGET_MS / 2) droppedAt = now;
   }
-  /** Spring steps for one frame; returns whether anything is still moving fast enough to need full frame rate. */
-  function step(dt: number): boolean {
+  /** Spring steps for one frame; `resumed` marks the frame that ends a reader hold (see `resumeIn`), the one whose `dt`
+   * spans the wait. Returns whether anything is still moving fast enough to need full frame rate. */
+  function step(dt: number, resumed: boolean): boolean {
     const spring = (value: number, velocity: number, target: number, response: number, h: number): [number, number] => {
       const k = (2 * Math.PI / response) ** 2, c = 2 * Math.sqrt(k);
       const v = velocity + (k * (target - value) - c * velocity) * h;
@@ -270,10 +312,9 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // and that is past what explicit Euler can take on the parting spring's rising branch (k = 280, c = 33: stable to
     // about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8 where the scene contract is 0..1,
     // and from mid-ramp it inverts the velocity). So the frame is split into equal substeps of at most 1/60 s — six at
-    // most, since `tick` clamps `dt` at .1 s — which lands the same state six single frames would have, and advances the
-    // scene by exactly `dt` (each substep is `dt / substeps`, so no time is lost and none is counted twice). Everything that
-    // is per frame rather than per step (the `data-wind` write, `drift`/`time`, the settling reset, `stirring`) stays
-    // below the loop and runs once.
+    // most, since `tick` clamps `dt` at .1 s — which advances the scene by exactly `dt` (each substep is `dt / substeps`,
+    // so no time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
+    // write, `drift`/`time`, the settling reset, `stirring`) stays below the loop and runs once.
     const substeps = Math.max(1, Math.ceil(dt / FIXED_DT - 1e-9));
     const h = dt / substeps;
     // Read once per frame, like the flags below: neither can change inside the substeps.
@@ -283,16 +324,26 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     for (let i = 0; i < substeps; i++) {
       [wind, windVelocity] = spring(wind, windVelocity, windTarget, 1, h);
       if (Math.abs(wind - Math.round(wind)) < .002 && Math.abs(windVelocity) < .002) { wind = Math.round(wind); windVelocity = 0; }
+    }
+    // The pointer, in its own substeps. On every ordinary frame that is `h` each, so it advances by exactly the elapsed
+    // time at whatever rate the loop is on — a 33 ms wind frame, a 125 ms churn frame or a 60 fps rAF one — and its
+    // settle back keeps the documented ~0.5 s, with the 350 ms target release landing when it should. The exception is the
+    // frame that ends a reader hold (`resumed`): it is the only frame whose `dt` spans a wait, and stepping the parting
+    // over that .1 s would hand it .58 of the full parting in a single 16 ms paint, which reads as the clouds snapping. So
+    // that one steps once, by one frame's worth at most (`ph`), and the parting resumes where it stopped — while the wind,
+    // which has to look continuous, is what catches up, over every substep above.
+    const pSteps = resumed ? 1 : substeps, ph = resumed ? Math.min(dt, FIXED_DT) : h;
+    for (let i = 0; i < pSteps; i++) {
       // Nearly critically damped, so the clouds settle back softly and quickly (~0.5 s).
       // It answers within ~150 ms as the pointer arrives; the settle back stays as soft as before.
       const rising = pointer.target > pointer.amt, k = rising ? 280 : 90, c = rising ? 33 : 16;
-      pointer.amtVelocity += (k * (pointer.target - pointer.amt) - c * pointer.amtVelocity) * h;
-      pointer.amt = Math.max(0, pointer.amt + pointer.amtVelocity * h);
+      pointer.amtVelocity += (k * (pointer.target - pointer.amt) - c * pointer.amtVelocity) * ph;
+      pointer.amt = Math.max(0, pointer.amt + pointer.amtVelocity * ph);
       // The parting follows the cursor on its own soft spring (damping 0.7), so the clouds trail it and settle with a
       // little overshoot; its velocity (clamped) drags a billow along the motion.
       const pk = 70, pc = 2 * .7 * Math.sqrt(pk);
-      pointer.sx += (pk * (pointer.tx - pointer.x) - pc * pointer.sx) * h; pointer.sy += (pk * (pointer.ty - pointer.y) - pc * pointer.sy) * h;
-      pointer.x += pointer.sx * h; pointer.y += pointer.sy * h;
+      pointer.sx += (pk * (pointer.tx - pointer.x) - pc * pointer.sx) * ph; pointer.sy += (pk * (pointer.ty - pointer.y) - pc * pointer.sy) * ph;
+      pointer.x += pointer.sx * ph; pointer.y += pointer.sy * ph;
       const speed = Math.hypot(pointer.sx, pointer.sy), drag = speed > 4 ? 4 / speed : 1;
       pointer.vx = pointer.sx * .07 * drag; pointer.vy = pointer.sy * .07 * drag;
       settling = pointer.amt > .02 || Math.abs(pointer.amtVelocity) > .02 || pointer.target > 0;
@@ -302,7 +353,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     drift += dt * (.012 + wind * .11);
     time += dt;
     if (!settling) { pointer.amt = 0; pointer.amtVelocity = 0; pointer.sx = 0; pointer.sy = 0; }
-    // 60 fps while the pointer is live and while the parting closes fast; its last slow stretch is fine at the wind's 30.
+    // 60 fps while the pointer is live and while the parting closes fast; its last slow stretch is fine at the wind's 30 —
+    // and none of it while a run churns the transcript, where `tick` keeps the timer at IDLE_FPS instead.
     stirring = settling && (pointer.target > 0 || Math.abs(pointer.amtVelocity) > 1.5);
     return windVelocity !== 0 || wind > 0 || settling;
   }
@@ -315,11 +367,16 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // The reader is moving the transcript or typing: paint nothing, and come back when the hold lifts. `last` stays where
     // it was, so the resumed frame spans the hold the way a slow frame spans its gap: `dt` is clamped at .1 s below, so a
     // hold shorter than that is taken up and a longer one is dropped rather than jumped — the clock never rewinds. That
-    // .1 s is then integrated in 1/60 s substeps (`step`), so the springs cannot overshoot on the resumed frame.
+    // .1 s is then integrated in 1/60 s substeps (`step`), so the springs cannot overshoot on the resumed frame — and the
+    // pointer is seeded from the resumed instant there, one frame's worth, while the wind catches up over the whole span.
     if (now < holdUntil) {
-      timer = window.setTimeout(() => tick(performance.now()), Math.max(1, holdUntil - now));
+      armResume();
       return;
     }
+    // The growth signal, sampled once here and nowhere else (`sampleGrowth`): it decides this frame's interval, and the
+    // release needs no timer of its own, since every paint compares the height again.
+    sampleGrowth(now);
+    const churn = churning(now);
     const interval = now - (last || now);
     const dt = Math.min(.1, interval / 1000);
     last = now;
@@ -328,12 +385,23 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // `schedule()`, the only path that queues a frame across a hold, zeroes `last`.
     if (forcePaintMs !== null) sample(forcePaintMs);
     else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
-    const busy = step(dt);
+    const busy = step(dt, resumeIn);
+    resumeIn = false;
     paint();
     setData('skyState', busy ? 'moving' : 'idle');
-    // Full frame rate only while the pointer stirs the clouds; the wind alone moves slowly enough for 30.
-    if (busy && stirring) frame = requestAnimationFrame(tick);
-    else timer = window.setTimeout(() => tick(performance.now()), 1000 / (busy ? WIND_FPS : IDLE_FPS));
+    // Full frame rate only while the pointer stirs the clouds and the transcript is not churning under it; the wind alone
+    // moves slowly enough for 30, and a streaming thread, relaying out every frame, gets the idle 8 — the wind keeps
+    // following the run there, it just paints a quarter of the frames.
+    //
+    // The pointer's rAF burst is gated by `churn` too, deliberately: while a run streams the thread relays out on every
+    // frame, and 60 canvas frames a second make the compositor redo the pane's region 60 times a second on top of that
+    // relayout — the owner's "pins a core while streaming". Waggling the mouse over the sky through a run must not reopen
+    // it, so a run is a heavy state and the scene answers the pointer at 8 fps there. Nothing is lost but smoothness: the
+    // parting's springs integrate the real elapsed time (`step`), so at 8 fps the parting still arrives in its ~150 ms,
+    // drawn one or two paints, and the moment the churn window closes the burst comes back — the parting is still live
+    // then, so it finishes at 60 fps.
+    if (busy && stirring && !churn) frame = requestAnimationFrame(tick);
+    else timer = window.setTimeout(() => tick(performance.now()), 1000 / (busy && !churn ? WIND_FPS : IDLE_FPS));
   }
   function stop(): void {
     window.clearTimeout(timer); window.clearInterval(timer); timer = 0;
@@ -353,13 +421,25 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     }
     frame = requestAnimationFrame(tick);
   }
-  /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. */
-  function wake(): void {
+  /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. While a run churns the transcript
+   * (`churning`) a pointer move must not queue a frame of its own — the burst is gated by churn on purpose (see `tick`) — so
+   * it is dropped: the loop's own IDLE_FPS timer paints within 125 ms and steps the parting then, by the real elapsed time.
+   * A run flipping still gets its frame (`urgent`, `windChanged`): one rAF, with the clock kept (`last` untouched, unlike
+   * `schedule`) so that frame advances the wind by the time since the last paint. */
+  function wake(urgent = false): void {
     if (frame || !active() || reducedMotion.matches) return;
     // Held by the reader: a rAF burst now would only be skipped, and its frames counted. The hold's own wake starts the
     // burst (and, through `step`, lets the parting settle) the moment the input stops.
     if (holding()) {
-      if (!timer) timer = window.setTimeout(() => tick(performance.now()), Math.max(1, holdUntil - performance.now()));
+      armResume();
+      return;
+    }
+    if (churning(performance.now())) {
+      // Nothing queued at all (the loop was stopped and this is the first nudge back): arm one idle tick, never a burst.
+      if (!urgent) { if (!timer) timer = window.setTimeout(() => tick(performance.now()), 1000 / IDLE_FPS); return; }
+      window.clearTimeout(timer); timer = 0;
+      setData('skyState', 'moving');
+      frame = requestAnimationFrame(tick);
       return;
     }
     setData('skyState', 'moving');
@@ -369,7 +449,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   function windChanged(): void {
     if (reducedMotion.matches) return;
     windVelocity += ((running() ? 1 : 0) - wind) * 1.2;
-    wake();
+    wake(true);
   }
   function refresh(): void {
     if (disposed) return;
