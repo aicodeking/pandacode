@@ -2986,6 +2986,16 @@ async fn git_stage(
     blocking(move || workspace::git_stage(&root, paths, staged)).await
 }
 #[tauri::command]
+async fn git_discard(
+    state: State<'_, AppState>,
+    project_id: String,
+    session_id: Option<String>,
+    paths: Vec<String>,
+) -> Result<()> {
+    let root = state.root(&project_id, session_id.as_deref())?;
+    blocking(move || workspace::git_discard(&root, paths)).await
+}
+#[tauri::command]
 async fn git_commit(
     state: State<'_, AppState>,
     project_id: String,
@@ -4383,6 +4393,7 @@ pub fn run() {
                 jj_commit,
                 jj_log,
                 git_stage,
+                git_discard,
                 git_commit,
                 git_branches,
                 git_switch_branch,

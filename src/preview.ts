@@ -1746,6 +1746,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'git_status': result = checkoutGit(args.sessionId); break;
     case 'git_diff': if (benchDiffs && BENCH_DIFFS[args.path]) { result = BENCH_DIFFS[args.path](); break; } result = `diff --git a/${args.path ?? 'src/components/search.ts'} b/${args.path ?? 'src/components/search.ts'}\nindex 64d221a..0e6c9ef 100644\n--- a/${args.path ?? 'src/components/search.ts'}\n+++ b/${args.path ?? 'src/components/search.ts'}\n@@ -12,5 +12,6 @@ export function mountSearch(items) {\n+  const index = createSearchIndex(items);\n+\n   input.addEventListener("input", () => {\n-    const index = createSearchIndex(items);\n-    renderAll(index.search(input.value));\n+    renderResults(index.search(input.value));\n   });\n }`; break;
     case 'git_stage': checkoutGit(args.sessionId).files.forEach(file => { if (args.paths.includes(file.path)) { file.index = args.staged ? 'M' : ' '; file.working = args.staged ? ' ' : 'M'; } }); break;
+    case 'git_discard': { const checkout = checkoutGit(args.sessionId); checkout.files = checkout.files.filter(file => !args.paths.includes(file.path)); break; }
     case 'git_commit': {
       const checkout = checkoutGit(args.sessionId);
       if (!checkout.files.some(file => file.index !== ' ' && file.index !== '?')) throw new Error('Stage changes before committing.');

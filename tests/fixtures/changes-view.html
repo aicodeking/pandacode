@@ -27,6 +27,7 @@
           },
           async stage(paths, staged) { calls.push(['stage', paths, staged]); },
           async commit(message) { calls.push(['commit', message]); },
+          async discard(paths) { calls.push(['discard', paths]); },
           openFile(path) { calls.push(['openFile', path]); },
           refresh() { calls.push(['refresh']); },
           notify(message) { calls.push(['notify', message]); },
