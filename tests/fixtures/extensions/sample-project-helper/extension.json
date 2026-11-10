@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.project-helper",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute"],
+  "contributes": {
+    "icons": [{ "id": "sample.project-helper/info", "asset": "assets/info.svg" }],
+    "commands": [{
+      "id": "sample.project-helper/hello",
+      "title": "Project helper",
+      "action": { "kind": "showMessage", "message": "Extension installed successfully" }
+    }],
+    "menus": [{
+      "id": "sample.project-helper/header",
+      "location": "panda.workspace.header.actions",
+      "command": "sample.project-helper/hello",
+      "icon": "sample.project-helper/info",
+      "group": "extensions",
+      "order": 100
+    }]
+  }
+}

@@ -112,6 +112,8 @@ fn decode_pair(stored: &str) -> Option<(String, String)> {
 
 fn write_private(file: &Path, bytes: &[u8]) -> Result<()> {
     if std::fs::read(file).is_ok_and(|existing| existing == bytes) {
+        #[cfg(windows)]
+        tighten_private(file).map_err(|_| "Could not protect the SSH key file.".to_string())?;
         // The mode applies only at create, so a looser file from an older build is tightened.
         #[cfg(unix)]
         {
@@ -138,9 +140,71 @@ fn write_private(file: &Path, bytes: &[u8]) -> Result<()> {
 fn open_private(file: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(file)
 }
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn open_private(file: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(file)
+}
+
+/// OpenSSH for Windows rejects a key inherited by other accounts. Build a protected,
+/// current-user-only DACL in memory; all pointed-to buffers live through the callback.
+#[cfg(windows)]
+fn with_private_security<T>(apply: impl FnOnce(&windows::Win32::Security::SECURITY_ATTRIBUTES, windows::Win32::Security::PSECURITY_DESCRIPTOR) -> windows::core::Result<T>) -> std::io::Result<T> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows::Win32::Foundation::{GENERIC_ALL, HANDLE};
+    use windows::Win32::Security::*;
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    let result = (|| unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)?;
+        let token = OwnedHandle::from_raw_handle(token.0);
+        let token_handle = HANDLE(token.as_raw_handle());
+        let mut length = 0;
+        let _ = GetTokenInformation(token_handle, TokenUser, None, 0, &mut length);
+        if length == 0 || length > 65536 { return Err(windows::core::Error::from_thread()); }
+        // usize storage gives TOKEN_USER and ACL their required native alignment.
+        let mut user = vec![0usize; (length as usize).div_ceil(std::mem::size_of::<usize>())];
+        GetTokenInformation(token_handle, TokenUser, Some(user.as_mut_ptr().cast()), length, &mut length)?;
+        let sid = (*(user.as_ptr().cast::<TOKEN_USER>())).User.Sid;
+        let acl_length = std::mem::size_of::<ACL>() + std::mem::size_of::<ACCESS_ALLOWED_ACE>() - std::mem::size_of::<u32>() + GetLengthSid(sid) as usize;
+        let mut acl = vec![0usize; acl_length.div_ceil(std::mem::size_of::<usize>())];
+        let acl_ptr = acl.as_mut_ptr().cast::<ACL>();
+        InitializeAcl(acl_ptr, acl_length as u32, ACL_REVISION)?;
+        AddAccessAllowedAce(acl_ptr, ACL_REVISION, GENERIC_ALL.0, sid)?;
+        let mut descriptor = SECURITY_DESCRIPTOR::default();
+        let descriptor_ptr = PSECURITY_DESCRIPTOR((&mut descriptor as *mut SECURITY_DESCRIPTOR).cast());
+        InitializeSecurityDescriptor(descriptor_ptr, 1 /* SECURITY_DESCRIPTOR_REVISION */)?;
+        SetSecurityDescriptorDacl(descriptor_ptr, true, Some(acl_ptr), false)?;
+        SetSecurityDescriptorControl(descriptor_ptr, SE_DACL_PROTECTED, SE_DACL_PROTECTED)?;
+        let attributes = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: descriptor_ptr.0, bInheritHandle: false.into() };
+        apply(&attributes, descriptor_ptr)
+    })();
+    result.map_err(|error| std::io::Error::other(error.to_string()))
+}
+
+#[cfg(windows)]
+fn tighten_private(file: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Security::{SetFileSecurityW, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION};
+    let name: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+    with_private_security(|_, descriptor| unsafe {
+        SetFileSecurityW(windows::core::PCWSTR(name.as_ptr()), DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, descriptor).ok()
+    })
+}
+
+#[cfg(windows)]
+fn open_private(file: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+    use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows::Win32::Storage::FileSystem::{CreateFileW, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ};
+    let name: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = with_private_security(|attributes, _| unsafe {
+        CreateFileW(windows::core::PCWSTR(name.as_ptr()), GENERIC_READ.0 | GENERIC_WRITE.0, FILE_SHARE_READ, Some(attributes), CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, None)
+    })?;
+    let opened = unsafe { std::fs::File::from_raw_handle(handle.0) };
+    // Creation attributes do not change an existing file's inherited ACL. Tighten before
+    // writing private bytes (and also when reusing an unchanged file in write_private).
+    tighten_private(file)?;
+    Ok(opened)
 }
 
 fn store_dir() -> Result<&'static Path> {
@@ -357,7 +421,7 @@ mod tests {
         assert!(args.contains(&"ConnectTimeout=20".to_string()));
         // The mux socket name is relative so the path stays short; the command runs in the
         // app-data dir.
-        assert!(args.contains(&"ControlPath=ssh-%C".to_string()));
+        assert_eq!(args.contains(&"ControlPath=ssh-%C".to_string()), cfg!(unix));
         assert_eq!(&args[args.len() - 4..], &["root@203.0.113.7".to_string(), "sh".into(), "-c".into(), "'echo hi && ls'".into()]);
     }
 
@@ -516,6 +580,15 @@ mod tests {
         let saved = super::super::secret("vps_key").expect("vps_key is saved");
         assert!(passes_store_validation(&saved), "saved vps_key fails the store's validation");
         derives_public(&file, &public);
+        #[cfg(windows)]
+        {
+            let copy = file.with_file_name("vps-key-test-copy");
+            let private = std::fs::read(&file).unwrap();
+            std::fs::write(&copy, &private).unwrap();
+            write_private(&copy, &private).unwrap();
+            derives_public(&copy, &public);
+            std::fs::remove_file(copy).unwrap();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

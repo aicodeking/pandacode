@@ -1370,19 +1370,21 @@ mod tests {
     #[test]
     fn connection_environment_selects_its_own_config_folder_and_login() {
         let pair = |k: &str, v: &str| (k.to_owned(), v.to_owned());
+        let selected = std::env::temp_dir().join("pandacode-usage-connection-fixture");
+        let selected_text = selected.to_string_lossy();
         let work = [
             pair("CLAUDE_CONFIG_DIR", "/tmp/old"),
-            pair("CLAUDE_CONFIG_DIR", "/Users/me/.claude-work"),
+            pair("CLAUDE_CONFIG_DIR", &selected_text),
         ];
         // The connection's last value wins; anything it doesn't set comes from PandaCode's environment.
         assert_eq!(
             var(&work, "CLAUDE_CONFIG_DIR").as_deref(),
-            Some("/Users/me/.claude-work")
+            Some(selected_text.as_ref())
         );
         assert_eq!(var(&work, "PATH"), std::env::var("PATH").ok());
         assert_eq!(
             claude_config_dir_in(&work),
-            Some(PathBuf::from("/Users/me/.claude-work"))
+            Some(selected.clone())
         );
         assert_eq!(
             claude_config_dir_in(&[pair("CLAUDE_CONFIG_DIR", "relative")]),
@@ -1392,7 +1394,7 @@ mod tests {
         #[cfg(target_os = "macos")]
         assert_eq!(
             claude_service(var(&work, "CLAUDE_CONFIG_DIR").as_deref(), None),
-            claude_service(Some("/Users/me/.claude-work"), None)
+            claude_service(Some(&selected_text), None)
         );
     }
 

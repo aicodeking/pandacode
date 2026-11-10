@@ -182,12 +182,12 @@ mod home_override_tests {
     #[test]
     fn skill_manager_installs_honor_active_and_saved_grok_and_hermes_homes() {
         let mut homes = Homes {
-            grok: Some("/active-grok".into()),
-            hermes: Some("/active-hermes".into()),
+            grok: Some(roots::test_path("/active-grok")),
+            hermes: Some(roots::test_path("/active-hermes")),
             ..Homes::default()
         };
         for harness in ["grok", "hermes"] {
-            homes.add_home(harness, PathBuf::from(format!("/saved-{harness}")));
+            homes.add_home(harness, roots::test_path(&format!("/saved-{harness}")));
         }
         let calls = invocations(
             Path::new("/home"),
@@ -199,14 +199,14 @@ mod home_override_tests {
         )
         .unwrap();
         assert_eq!(calls.len(), 3);
-        assert_eq!(calls[0].1["GROK_HOME"], "/active-grok");
-        assert_eq!(calls[0].1["HERMES_HOME"], "/active-hermes");
+        assert_eq!(Path::new(&calls[0].1["GROK_HOME"]), roots::test_path("/active-grok"));
+        assert_eq!(Path::new(&calls[0].1["HERMES_HOME"]), roots::test_path("/active-hermes"));
         assert!(calls
             .iter()
-            .any(|(_, env)| env["GROK_HOME"] == "/saved-grok"));
+            .any(|(_, env)| Path::new(&env["GROK_HOME"]) == roots::test_path("/saved-grok")));
         assert!(calls
             .iter()
-            .any(|(_, env)| env["HERMES_HOME"] == "/saved-hermes"));
+            .any(|(_, env)| Path::new(&env["HERMES_HOME"]) == roots::test_path("/saved-hermes")));
         assert_eq!(
             invocations(
                 Path::new("/home"),
@@ -276,7 +276,7 @@ mod npx_isolation_tests {
         fs::create_dir_all(project.join("node_modules/skills")).unwrap();
         fs::write(project.join(".npmrc"), "registry=http://evil.invalid/").unwrap();
         let prefs = f.0.join("app/skill-manager.json");
-        let neutral = f.0.join("app/skills-cli");
+        let neutral = prefs.parent().unwrap().join("skills-cli");
         let mut seen = Vec::new();
         for target in [Some(project.as_path()), None] {
             let _ = add_at(

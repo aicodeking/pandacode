@@ -46,6 +46,7 @@ mod goal_state;
 #[cfg(test)]
 mod goal_workflow_tests;
 mod integrations;
+pub mod extensions;
 mod jev;
 mod jev_decisions;
 mod local_servers;

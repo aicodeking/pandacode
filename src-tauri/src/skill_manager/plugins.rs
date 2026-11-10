@@ -229,8 +229,8 @@ mod cache_tests {
         let plugins = roots::codex_plugins(&f.0.join("home"), &homes);
         assert_eq!(plugins.len(), 2);
         assert!(plugins.iter().all(|(path, _, namespace)| path
-            .to_string_lossy()
-            .contains("/local/")
+            .components()
+            .any(|component| component.as_os_str() == "local")
             && namespace == "namespace"));
         assert_ne!(plugins[0].1, plugins[1].1);
         let skills = inventory(&f.0.join("home"), None, None, &Prefs::default(), &homes);

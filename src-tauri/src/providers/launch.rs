@@ -858,7 +858,7 @@ mod tests {
         let binary = f.file("ZCode/ZCode.exe", "");
         let launch = resolve(&script, true).unwrap();
         assert_eq!(launch.program, external_path_for(&binary, true));
-        assert_eq!(launch.args, [script.into_os_string()]);
+        assert_eq!(launch.args, [external_path_for(&script, true).into_os_string()]);
         assert_eq!(launch.env, Some(("ELECTRON_RUN_AS_NODE", "1")));
     }
 

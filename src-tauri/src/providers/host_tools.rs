@@ -532,7 +532,13 @@ mod tests {
             }
         }
         protocol.host = Some(tools);
-        let mut cat = Command::new("/bin/cat").stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).kill_on_drop(true).spawn().unwrap();
+        let mut cat = Command::new(std::env::current_exe().unwrap())
+            .args(["providers::host_tools::tests::host_tools_stdio_sink", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("PANDACODE_HOST_TOOLS_STDIO_SINK", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn().unwrap();
         let mut stdin = cat.stdin.take().unwrap();
         let sink: Sink = Arc::new(|_| {});
         let (mut jobs, mut queued) = (tokio::task::JoinSet::new(), VecDeque::new());
@@ -546,6 +552,19 @@ mod tests {
         })
         .await
         .unwrap();
+        drop(stdin);
+        let _ = cat.kill().await;
+        cat.wait().await.unwrap();
+    }
+
+    /// Child-process fixture, like the speech worker echo child; not an opt-out of coverage.
+    #[test]
+    #[ignore = "stdio fixture entered only by its owning test process"]
+    fn host_tools_stdio_sink() {
+        if std::env::var_os("PANDACODE_HOST_TOOLS_STDIO_SINK").is_some() {
+            std::io::copy(&mut std::io::stdin(), &mut std::io::sink()).unwrap();
+            std::process::exit(0);
+        }
     }
 
     use super::*;

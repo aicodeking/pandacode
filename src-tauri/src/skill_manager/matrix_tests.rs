@@ -327,7 +327,7 @@ fn skill_manager_matrix_fixture_matches_the_native_table() {
     }
     let committed = fs::read_to_string(&fixture).unwrap_or_default();
     assert!(
-        committed == expected,
+        committed.replace("\r\n", "\n") == expected,
         "tests/fixtures/skill-matrix.json is out of date with skill_manager/matrix.rs; regenerate it with UPDATE_SKILL_MATRIX=1 cargo test skill_manager_matrix_fixture"
     );
 }
