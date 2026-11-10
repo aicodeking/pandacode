@@ -135,15 +135,15 @@ test('the governor drops the render scale under long paints and restores it afte
   await open(page);
   const scale = () => page.evaluate(() => (window as any).__sky.scale as number);
   expect(await scale()).toBe(.6);
-  // The wind keeps the loop at 30 fps, so 30 samples arrive in about a second.
+  // A live run churns the transcript, so the loop paints at the idle 8 fps, not the wind's 30: 30 samples take ~3.75 s.
   await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
   await page.evaluate(() => { (window as any).__sky.quietMs = 400; (window as any).__sky.forcePaintMs = 20; });
-  await expect.poll(scale, { timeout: 5000 }).toBe(.45);
+  await expect.poll(scale, { timeout: 15000 }).toBe(.45);
   // Still slow: it stays down.
   await page.waitForTimeout(1500);
   expect(await scale()).toBe(.45);
   await page.evaluate(() => { (window as any).__sky.forcePaintMs = 1; });
-  await expect.poll(scale, { timeout: 5000 }).toBe(.6);
+  await expect.poll(scale, { timeout: 15000 }).toBe(.6);
 });
 
 /* There is deliberately no "a reader hold never feeds the paint cost" test here. The governor samples one path only: with
