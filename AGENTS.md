@@ -4,7 +4,7 @@ Rules an agent needs before writing any code. Detailed subsystem notes are in [d
 
 ## Project and releases
 - PandaCode is open source (the MIT-based PandaCode License in `LICENSE`, which requires forks to credit PandaCode) with no accounts, license checks or telemetry; keep it that way. Never add code that phones home, and never commit secrets or personal paths.
-- Follow [docs/releasing.md](docs/releasing.md) for shipping: `npm run release:version X.Y.Z`, write `releases/X.Y.Z.md`, push tag `vX.Y.Z`. `.github/workflows/release.yml` builds macOS (Apple silicon), Windows x64 and Linux x64 and attaches them to a GitHub Release; signing is optional. Only release when the user asks.
+- Follow [docs/releasing.md](docs/releasing.md) for shipping: `npm run release:version X.Y.Z`, write `releases/X.Y.Z.md`, push `main`, wait for its CI run to go green, then push tag `vX.Y.Z` (the release workflow refuses a commit without a green push CI run on main). `.github/workflows/release.yml` builds macOS (Apple silicon and Intel), Windows (x64 and arm64) and Linux (x64 and arm64) and attaches them to a GitHub Release; signing is optional. Only release when the user asks.
 - Contributor setup and PR process: [CONTRIBUTING.md](CONTRIBUTING.md). CI is `.github/workflows/ci.yml`.
 
 ## Verify

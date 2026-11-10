@@ -259,6 +259,11 @@ fn open(device_name: Option<&str>) -> Result<Opened> {
 
 /// How often a recording reports its input level (10 Hz).
 const METER_EVERY: Duration = Duration::from_millis(100);
+/// Automatic stops keep the audio; the card's button then reads Transcribe recording, not Retry.
+pub(super) const MIC_STOPPED: &str =
+    "Microphone input stopped. Choose Transcribe recording to transcribe it, or discard it.";
+pub(super) const LIMIT_REACHED: &str =
+    "Recording limit reached. Choose Transcribe recording to transcribe it, or discard it.";
 
 /// Receives a test recording's live input level (0..1) while it records.
 pub(super) type Meter = Box<dyn Fn(f32) + Send>;
@@ -418,17 +423,13 @@ pub(super) fn run(worker: Worker) {
             break;
         }
         if failed.load(Ordering::Acquire) {
-            automatic_error = Some(
-                "Microphone input stopped. Retry to transcribe the captured audio, or discard it.",
-            );
+            automatic_error = Some(MIC_STOPPED);
             break;
         }
         if started.elapsed() >= Duration::from_secs(MAX_SECONDS)
             || pcm.lock().map(|p| p.full()).unwrap_or(true)
         {
-            automatic_error = Some(
-                "Recording limit reached. Retry to transcribe the captured audio, or discard it.",
-            );
+            automatic_error = Some(LIMIT_REACHED);
             break;
         }
         if last_meter.elapsed() >= METER_EVERY {

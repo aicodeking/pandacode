@@ -36,10 +36,14 @@ jobs:
         run: |
           # Only push runs on main count: a pull request or branch run of the same commit
           # did not test what main ships.
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
-            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url)
+          lookup_failed="::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+          if ! runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url); then
+            echo "$lookup_failed"
+            exit 1
+          fi
           if [ -z "$runs" ] || ! jq -e 'type == "array"' <<<"$runs" >/dev/null 2>&1; then
-            echo "::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+            echo "$lookup_failed"
             exit 1
           fi
           if [ "$(jq length <<<"$runs")" -eq 0 ]; then
