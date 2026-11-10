@@ -7,6 +7,18 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
  * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does.
+ * It also stands still while the reader moves a transcript or types in a composer — the pane's or any tile's — and for
+ * HOLD_MS after the last such input: the canvas is the backdrop of the whole transcript, so every frame it paints makes
+ * the compositor redo the region above it. The scene's glass is a plain fill on the surfaces that scroll with the text and
+ * on the composer's (and a tile's) glass, where a blur would re-blur its backdrop on every canvas frame and every scroll
+ * step; the floating ones keep theirs — the action dock, its label tip and the agents flyout over a dense 90% frame fill
+ * (`--dock-fill` in action-dock.css, a fill dense enough that the blur only adds depth, and chosen so they read over the
+ * sky and a wallpaper), the agents popover, tip bubbles and progress pills likewise. Reader intent is read off the events
+ * (a wheel, a touch, a press, a key), never off the scroll position, so the app's own scrolling never holds a frame. The
+ * hold only defers the loop, it never stops it, and the resumed frame spans the wait with `dt` clamped at .1 s (`tick`): a
+ * hold shorter than that is taken up, a longer one is dropped rather than jumped, so the clock never rewinds. That spanned
+ * `dt` is integrated in substeps of at most 1/60 s (`step`), so the springs advance by the elapsed time without ever
+ * overshooting.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
@@ -16,7 +28,8 @@ export interface SkyOptions {
   /** A tile's own scene (thread-tiles.ts): pointer moves come from this ancestor, since the real pane may lie over the
    * tile, and it leaves the idle precompile to the main instance. */
   tileRoot?: HTMLElement;
-  /** Preview only: `window.__sky.frames` counts painted frames for specs. */
+  /** Preview only: `window.__sky.frames` counts painted frames for specs, and `ptrAmt`/`ptrVel`/`ptrTarget` are the parting
+   * spring's own state (read-only), so a spec can hold it to its 0..1 contract on every frame across a resumed one. */
   expose?: boolean;
   /** Preview only (`?scene=aurora`): every thread shows this scene. */
   pinnedScene?: string | null;
@@ -31,6 +44,14 @@ const FADE_MS = 300;
 
 const css = (c: Rgb): string => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
 const IDLE_FPS = 8, WIND_FPS = 30;
+/** Reader input holds frames this long past the last piece of it (a wheel, a touch drag, a press or a key on a
+ * transcript, a keystroke or text input in a composer): long enough to span the gap between two wheel notches or two
+ * keystrokes, short enough to read as an instant resume, and re-armed by the next one. */
+const HOLD_MS = 150;
+/** The physics substep: a frame's `dt` is integrated in equal steps of at most this, so a resumed frame (`.1` s, six of
+ * them at most) can never hand an explicit-Euler spring a step it cannot take — the parting spring's rising branch
+ * (k = 280, c = 33) is only stable to about 2/c ≈ 60 ms. */
+const FIXED_DT = 1 / 60;
 /** Render scale (of device pixels) and the governor's budget: paint time averaged over SAMPLE frames above BUDGET_MS drops
  * to LOW_SCALE; it goes back up only after QUIET_MS of averages under half the budget. */
 const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000;
@@ -40,6 +61,15 @@ const GPU_SAMPLE = 10;
 const INPUT_QUIET_MS = 1000, COMPILE_POLL_MS = 100;
 /** Pointer influence stops over the thread's readable surfaces: the clouds answer only where the sky shows. */
 const READABLE = '.message,.turn-activity,.message-error,.empty-conversation,.turn-changes-row,.thinking-block,#composer-area,.new-task-welcome,.workspace-header,#action-dock,.file-tabs';
+/** The reader's input surfaces (`readerMoves`, `readerTypes`): what scrolls a thread, and what takes typing in one. Each
+ * has two spellings — the real one and a tile's read-only replica (`docs/agent-reference.md`: a rule that targets
+ * `#transcript` needs `:is(#transcript,.thread-mirror-rows)`) — and a tile's `pane` holds neither the focused thread's
+ * `#transcript`/`#composer-area` nor another tile's rows, so the listeners that use these are on `document`. The By the
+ * way panel's own log and composer (`.btw-transcript`, `.btw-input`) are the reader's too, though they live in the
+ * inspector: that is its own opaque panel (`--panel-surface`) over the main pane, so no sky shows behind it, and its
+ * scrolls hold the pane's sky all the same. */
+const SCROLLERS = '#transcript,.thread-mirror-rows,.btw-transcript';
+const TYPING = '#transcript,.thread-mirror-rows,#composer-area,.thread-mirror-composer,.btw-transcript,.btw-input';
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const lessTransparency = matchMedia('(prefers-reduced-transparency: reduce), (prefers-contrast: more), (forced-colors: active)');
 type TimerExt = { TIME_ELAPSED_EXT: number; QUERY_RESULT_EXT: number; QUERY_RESULT_AVAILABLE_EXT: number; GPU_DISJOINT_EXT: number;
@@ -118,6 +148,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let forcePaintMs: number | null = null, quietMs = QUIET_MS, gpuMs: number | null = null, gpuCosts: number[] = [];
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
   let idle = 0, idleTimer = 0, inputAt = 0;
+  // The reader-input hold (`hold`): no frame is painted before this time.
+  let holdUntil = 0;
   // Wind and pointer are critically damped springs; drift is integrated so a speed change never jumps the clouds.
   let wind = 0, windVelocity = 0, drift = 0, time = 0;
   const pointer = { x: .5, y: .5, tx: .5, ty: .5, sx: 0, sy: 0, amt: 0, amtVelocity: 0, target: 0, vx: 0, vy: 0, movedAt: 0 };
@@ -191,6 +223,19 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     });
   }
   function input(): void { inputAt = performance.now(); }
+  /** The reader is moving the transcript or typing: keep frames off (and the precompile quiet) for HOLD_MS after each such
+   * event. Additive to the schedule — it never stops the loop, it only makes the next tick wait, and it always releases: the
+   * armed wake fires at `holdUntil` at the latest, so nothing can extend the hold but another reader event. */
+  function hold(): void {
+    const now = performance.now();
+    inputAt = now;
+    holdUntil = Math.max(holdUntil, now + HOLD_MS);
+    // Reduced motion paints one still frame off its own interval, and nothing is queued here to defer.
+    if (disposed || reducedMotion.matches) return;
+    // Nothing is scheduled at all (the last frame was the idle one): arm the wake that ends the hold.
+    if (!frame && !timer && active()) timer = window.setTimeout(() => tick(performance.now()), HOLD_MS);
+  }
+  function holding(): boolean { return performance.now() < holdUntil; }
   /** The last GPU timer query, once its result is in (a disjoint result is dropped). */
   function readQuery(ext: TimerExt): void {
     if (!query || !ctx || !ext.getQueryObjectEXT(query, ext.QUERY_RESULT_AVAILABLE_EXT)) return;
@@ -214,33 +259,48 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     else if (scale === LOW_SCALE && mean < BUDGET_MS / 2 && now - droppedAt > quietMs) scale = SCALE;
     else if (scale === LOW_SCALE && mean >= BUDGET_MS / 2) droppedAt = now;
   }
-  /** Spring steps; returns whether anything is still moving fast enough to need full frame rate. */
+  /** Spring steps for one frame; returns whether anything is still moving fast enough to need full frame rate. */
   function step(dt: number): boolean {
-    const spring = (value: number, velocity: number, target: number, response: number): [number, number] => {
+    const spring = (value: number, velocity: number, target: number, response: number, h: number): [number, number] => {
       const k = (2 * Math.PI / response) ** 2, c = 2 * Math.sqrt(k);
-      const v = velocity + (k * (target - value) - c * velocity) * dt;
-      return [value + v * dt, v];
+      const v = velocity + (k * (target - value) - c * velocity) * h;
+      return [value + v * h, v];
     };
-    [wind, windVelocity] = spring(wind, windVelocity, running() ? 1 : 0, 1);
-    if (Math.abs(wind - Math.round(wind)) < .002 && Math.abs(windVelocity) < .002) { wind = Math.round(wind); windVelocity = 0; }
+    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow frame —
+    // and that is past what explicit Euler can take on the parting spring's rising branch (k = 280, c = 33: stable to
+    // about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8 where the scene contract is 0..1,
+    // and from mid-ramp it inverts the velocity). So the frame is split into equal substeps of at most 1/60 s — six at
+    // most, since `tick` clamps `dt` at .1 s — which lands the same state six single frames would have, and advances the
+    // scene by exactly `dt` (each substep is `dt / substeps`, so no time is lost and none is counted twice). Everything that
+    // is per frame rather than per step (the `data-wind` write, `drift`/`time`, the settling reset, `stirring`) stays
+    // below the loop and runs once.
+    const substeps = Math.max(1, Math.ceil(dt / FIXED_DT - 1e-9));
+    const h = dt / substeps;
+    // Read once per frame, like the flags below: neither can change inside the substeps.
+    const windTarget = running() ? 1 : 0;
+    if (performance.now() - pointer.movedAt > 350) pointer.target = 0;
+    let settling = false;
+    for (let i = 0; i < substeps; i++) {
+      [wind, windVelocity] = spring(wind, windVelocity, windTarget, 1, h);
+      if (Math.abs(wind - Math.round(wind)) < .002 && Math.abs(windVelocity) < .002) { wind = Math.round(wind); windVelocity = 0; }
+      // Nearly critically damped, so the clouds settle back softly and quickly (~0.5 s).
+      // It answers within ~150 ms as the pointer arrives; the settle back stays as soft as before.
+      const rising = pointer.target > pointer.amt, k = rising ? 280 : 90, c = rising ? 33 : 16;
+      pointer.amtVelocity += (k * (pointer.target - pointer.amt) - c * pointer.amtVelocity) * h;
+      pointer.amt = Math.max(0, pointer.amt + pointer.amtVelocity * h);
+      // The parting follows the cursor on its own soft spring (damping 0.7), so the clouds trail it and settle with a
+      // little overshoot; its velocity (clamped) drags a billow along the motion.
+      const pk = 70, pc = 2 * .7 * Math.sqrt(pk);
+      pointer.sx += (pk * (pointer.tx - pointer.x) - pc * pointer.sx) * h; pointer.sy += (pk * (pointer.ty - pointer.y) - pc * pointer.sy) * h;
+      pointer.x += pointer.sx * h; pointer.y += pointer.sy * h;
+      const speed = Math.hypot(pointer.sx, pointer.sy), drag = speed > 4 ? 4 / speed : 1;
+      pointer.vx = pointer.sx * .07 * drag; pointer.vy = pointer.sy * .07 * drag;
+      settling = pointer.amt > .02 || Math.abs(pointer.amtVelocity) > .02 || pointer.target > 0;
+    }
     // Tenths, rounded up (any breeze reads 0.1): a write per frame would cost a style recalc per frame.
     setData('wind', String(Math.ceil(wind * 10) / 10));
     drift += dt * (.012 + wind * .11);
     time += dt;
-    if (performance.now() - pointer.movedAt > 350) pointer.target = 0;
-    // Nearly critically damped, so the clouds settle back softly and quickly (~0.5 s).
-    // It answers within ~150 ms as the pointer arrives; the settle back stays as soft as before.
-    const rising = pointer.target > pointer.amt, k = rising ? 280 : 90, c = rising ? 33 : 16;
-    pointer.amtVelocity += (k * (pointer.target - pointer.amt) - c * pointer.amtVelocity) * dt;
-    pointer.amt = Math.max(0, pointer.amt + pointer.amtVelocity * dt);
-    // The parting follows the cursor on its own soft spring (damping 0.7), so the clouds trail it and settle with a
-    // little overshoot; its velocity (clamped) drags a billow along the motion.
-    const pk = 70, pc = 2 * .7 * Math.sqrt(pk);
-    pointer.sx += (pk * (pointer.tx - pointer.x) - pc * pointer.sx) * dt; pointer.sy += (pk * (pointer.ty - pointer.y) - pc * pointer.sy) * dt;
-    pointer.x += pointer.sx * dt; pointer.y += pointer.sy * dt;
-    const speed = Math.hypot(pointer.sx, pointer.sy), drag = speed > 4 ? 4 / speed : 1;
-    pointer.vx = pointer.sx * .07 * drag; pointer.vy = pointer.sy * .07 * drag;
-    const settling = pointer.amt > .02 || Math.abs(pointer.amtVelocity) > .02 || pointer.target > 0;
     if (!settling) { pointer.amt = 0; pointer.amtVelocity = 0; pointer.sx = 0; pointer.sy = 0; }
     // 60 fps while the pointer is live and while the parting closes fast; its last slow stretch is fine at the wind's 30.
     stirring = settling && (pointer.target > 0 || Math.abs(pointer.amtVelocity) > 1.5);
@@ -252,10 +312,20 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     const onFrame = frame !== 0;
     frame = 0; timer = 0;
     if (!active()) return;
+    // The reader is moving the transcript or typing: paint nothing, and come back when the hold lifts. `last` stays where
+    // it was, so the resumed frame spans the hold the way a slow frame spans its gap: `dt` is clamped at .1 s below, so a
+    // hold shorter than that is taken up and a longer one is dropped rather than jumped — the clock never rewinds. That
+    // .1 s is then integrated in 1/60 s substeps (`step`), so the springs cannot overshoot on the resumed frame.
+    if (now < holdUntil) {
+      timer = window.setTimeout(() => tick(performance.now()), Math.max(1, holdUntil - now));
+      return;
+    }
     const interval = now - (last || now);
     const dt = Math.min(.1, interval / 1000);
     last = now;
-    // Without a GPU timer, a 60 Hz frame that took longer than its slot is the paint cost showing.
+    // Without a GPU timer, a 60 Hz frame that took longer than its slot is the paint cost showing. A held tick returned
+    // above, before `paint()` and this sample; its wait is never sampled: the wake is a timer (`onFrame` false), and
+    // `schedule()`, the only path that queues a frame across a hold, zeroes `last`.
     if (forcePaintMs !== null) sample(forcePaintMs);
     else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
     const busy = step(dt);
@@ -286,6 +356,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   /** Wakes the loop at once (pointer, wind); a frame already queued on rAF is left alone. */
   function wake(): void {
     if (frame || !active() || reducedMotion.matches) return;
+    // Held by the reader: a rAF burst now would only be skipped, and its frames counted. The hold's own wake starts the
+    // burst (and, through `step`, lets the parting settle) the moment the input stops.
+    if (holding()) {
+      if (!timer) timer = window.setTimeout(() => tick(performance.now()), Math.max(1, holdUntil - performance.now()));
+      return;
+    }
     setData('skyState', 'moving');
     schedule();
   }
@@ -355,6 +431,22 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     wake();
   }
   function leave(): void { pointer.target = 0; }
+  /** The reader moving a transcript holds frames: a wheel, a touch drag, or a press on it (its scrollbar included). Reader
+   * intent is read from the event, never from the scroll position, so every scroll the app makes itself — a send's eased
+   * follow, a fold or a handoff keeping its own card still, the browser anchoring an older page — holds nothing, and nothing
+   * here depends on a follow constant in main.ts. One `closest()` on the target, and no layout read: a wheel that lands
+   * anywhere else (the sidebar, an inspector view that is not the side thread, a dialog) costs that call and nothing
+   * more. */
+  function readerMoves(event: Event): void {
+    if (event.target instanceof Element && event.target.closest(SCROLLERS)) hold();
+  }
+  /** Keys in a transcript (the reader scrolling it from the keyboard) and keystrokes or text input in a composer hold
+   * frames; `input` also covers what a keystroke does not fire: paste, IME composition, dictation. A tile's composer is a
+   * button (`.thread-mirror-composer`) that focuses the real `#prompt`, so the keystrokes that follow land in
+   * `#composer-area`; the button itself takes the press. */
+  function readerTypes(event: Event): void {
+    if (event.target instanceof Element && event.target.closest(TYPING)) hold();
+  }
   function onFocus(event: Event): void { focused = event.type === 'focus'; schedule(); }
 
   const observer = new MutationObserver(records => {
@@ -377,6 +469,14 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   resize.observe(layer);
   canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); ctx = null; bound = null; layer.removeAttribute('data-gl'); });
   for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.addEventListener(type, input, { capture: true, passive: true });
+  // The reader's own input holds frames (`hold`); a scroll that arrives without one of these is the app's and holds nothing.
+  // On `document`, never on `pane` or on #transcript/#composer-area: no single instance's pane holds them all — a tile's
+  // `pane` is its own `.thread-tile`, whose scroller is `.thread-mirror-rows`, while the focused thread's `#transcript` and
+  // `#composer-area` are its siblings in `.work-area` — so a pane-scoped listener would leave every tile painting at 30 fps
+  // through a reader's scroll of the real transcript. The filter is the only thing that decides (one `closest()` per
+  // event), so input from the sidebar, an inspector view other than the side thread, or a dialog still holds nothing.
+  for (const type of ['wheel', 'touchmove', 'pointerdown'] as const) document.addEventListener(type, readerMoves, { capture: true, passive: true });
+  for (const type of ['keydown', 'input'] as const) document.addEventListener(type, readerTypes, { capture: true, passive: true });
   pointerRoot.addEventListener('pointermove', move, { passive: true });
   pointerRoot.addEventListener('pointerleave', leave, { passive: true });
   document.addEventListener('visibilitychange', schedule);
@@ -386,6 +486,9 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   lessTransparency.addEventListener('change', refresh);
   if (options.expose) Object.assign(window, { __sky: { get frames() { return frames; }, get scene() { return scene.id; }, get fades() { return fades; }, get scale() { return scale; }, get timing() { return timing; }, get gpuMs() { return gpuMs; },
     get scenes() { return SCENES.map(each => each.id); }, get compiled() { return ctx ? [...ctx.programs.keys()] : []; },
+    // The parting spring: `amt` is the 0..1 presence the scenes take as `ptrAmt`, `vel` its Euler velocity and `target`
+    // whether the pointer holds it (1 over the bare scene, 0 over a readable surface or after ~350 ms of rest).
+    get ptrAmt() { return pointer.amt; }, get ptrVel() { return pointer.amtVelocity; }, get ptrTarget() { return pointer.target; },
     set forcePaintMs(ms: number | null) { forcePaintMs = ms; costs = []; }, set quietMs(ms: number) { quietMs = ms; } } });
   refresh();
 
@@ -398,6 +501,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       if (idle) cancelIdleCallback(idle);
       window.clearTimeout(idleTimer);
       for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.removeEventListener(type, input, { capture: true });
+      for (const type of ['wheel', 'touchmove', 'pointerdown'] as const) document.removeEventListener(type, readerMoves, { capture: true });
+      for (const type of ['keydown', 'input'] as const) document.removeEventListener(type, readerTypes, { capture: true });
       observer.disconnect(); intersection.disconnect(); resize.disconnect();
       pointerRoot.removeEventListener('pointermove', move);
       pointerRoot.removeEventListener('pointerleave', leave);
