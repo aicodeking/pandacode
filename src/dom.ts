@@ -174,7 +174,14 @@ async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise
     fallback ??= import('marked').then(m => {
       const links = new m.Renderer(); const renderLink = links.link;
       links.link = function (token) { return renderLink.call(this, { ...token, href: workspaceHref(token.href) }); };
-      return (text: string) => m.marked.parse(text, { renderer: links });
+      return async (text: string) => {
+        // Match the primary renderer; this inert template is sanitized by the caller.
+        const template = document.createElement('template');
+        template.innerHTML = await m.marked.parse(text, { renderer: links });
+        for (const node of template.content.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,th,td,summary')) node.setAttribute('dir', 'auto');
+        for (const node of template.content.querySelectorAll('pre,code')) node.setAttribute('dir', 'ltr');
+        return template.innerHTML;
+      };
     });
     return (await fallback)(value);
   }

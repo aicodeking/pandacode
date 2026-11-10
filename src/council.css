@@ -1,0 +1,98 @@
+/* Council: the tray's settings button and panel, the strip inside the prompt box, and the Agents flyout's summary.
+   Always loaded with the composer. */
+/* Size, type, radius, hover, open and pressed come from the tray's shared rules (redesign/conversation.css), like Team and
+   Saver; the glyph is the tray's icon size. On is neutral tray ink (a warm wallpaper accent never reads as a warning). */
+.composer-council-button{display:inline-flex;align-items:center;--press:1}
+.conversation-pane .composer-tray .composer-council-button{--tray-tone:var(--text);--tray-fill:color-mix(in srgb,var(--text) 8%,transparent)}
+/* A switch on its way to native: the glyph breathes until the reply. */
+.composer-council-button[aria-busy="true"] .council-glyph{opacity:.6}
+@media(prefers-reduced-motion:no-preference){.composer-council-button[aria-busy="true"] .council-glyph{animation:state-pulse 1.6s ease-in-out infinite}}
+/* The Council balance; a small dot when asking (warning) or once the cycle has settled. */
+.council-glyph{position:relative;display:inline-grid;flex:none}
+.council-glyph>.icon{grid-area:1/1;--icon-size:var(--ds-icon-tray)}
+.council-glyph:is([data-cue="asking"],[data-cue="settled"])::after{content:"";position:absolute;top:-1px;right:-2px;width:6px;height:6px;border-radius:50%;background:var(--muted);box-shadow:0 0 0 1.5px var(--panel-surface,var(--bg))}
+.council-glyph[data-cue="asking"]::after{background:var(--ds-tone-full)}
+
+/* Compact enough to fit above the composer in a 420px-tall window without scrolling. */
+.council-panel{z-index:90;max-height:min(560px,calc(100dvh - 90px));overflow:auto;padding:10px 12px;gap:10px;font-size:var(--ds-text-ui)}
+/* Dense enough that what it opens over never reads through (most of all in WebKit). */
+html[data-theme] .council-panel.floating-menu{background:color-mix(in srgb,var(--bg) 98%,transparent);-webkit-backdrop-filter:blur(28px) saturate(1.2);backdrop-filter:blur(28px) saturate(1.2)}
+@media(prefers-reduced-transparency:reduce){html[data-theme] .council-panel.floating-menu{background:var(--bg)}}
+.council-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.council-panel-head label{font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text);cursor:pointer}
+.council-panel p{margin:0;color:var(--muted);font-size:var(--ds-text-meta);line-height:1.4}
+.council-panel #council-about{margin-top:-6px}
+.council-field{display:grid;gap:5px}
+.council-field>span{color:var(--text);font-weight:var(--weight-medium);font-size:var(--ds-text-meta)}
+.council-lowest{font-size:inherit;color:var(--muted)}
+/* From the strip (Lower target, Raise max rounds): that one row, nothing else. */
+.council-panel[data-compact] :is(.council-switch,#council-about,.council-foot){display:none}
+.council-panel [data-field-row][hidden],.council-panel .ds-seg>button[hidden],.council-panel p:is(.council-error,.council-idle)[hidden]{display:none}
+.council-panel .ds-seg>button{height:28px;padding:0 4px;font-size:var(--ds-text-ui)}
+.council-panel .ds-seg>button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.council-foot{display:flex;align-items:center;padding-top:2px}
+.council-new{display:inline-flex;align-items:center;gap:6px;font-size:var(--ds-text-meta);color:var(--muted);cursor:pointer}
+.council-new input{accent-color:var(--ds-primary-bg);width:13px;height:13px;margin:0}
+.council-panel p.council-error{color:var(--ds-danger)}
+/* The switch while an automatic team starts for it: dimmed, softly pulsing (opacity). */
+.council-switch[aria-busy="true"]{opacity:.6}
+@media(prefers-reduced-motion:no-preference){.council-switch[aria-busy="true"]{animation:state-pulse 1.6s ease-in-out infinite}}
+
+/* The strip, inside the prompt box above the input (like the queue): one line, the reviewers on demand. */
+.council-strip-slot:empty{display:none}
+.council-strip{padding:2px 0 4px;font-size:var(--ds-text-ui)}
+.council-strip-head{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+.council-strip-toggle{display:flex;flex:0 1 auto;align-items:center;gap:8px;min-width:0;min-height:30px;padding:0 6px;border-radius:var(--ds-radius-control);color:var(--muted);text-align:left;transition:background-color var(--ds-ease-out) ease-out}
+.council-strip-toggle:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.council-strip-toggle:focus-visible,.council-row:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.council-strip-toggle>.council-glyph>.icon{--icon-size:var(--icon-sm)}
+.council-strip-state{min-width:0;overflow:hidden;color:var(--text);text-overflow:ellipsis;white-space:nowrap}
+.council-strip-state[data-state-tone]{color:var(--state-tone);font-weight:var(--weight-medium)}
+.council-strip-score{flex:none;color:var(--muted);font-size:var(--ds-text-meta);font-variant-numeric:tabular-nums;white-space:nowrap}
+.council-strip-score small{font-size:inherit}
+.council-strip-toggle>.icon:last-child{flex:none;--icon-size:var(--icon-sm);transition:rotate var(--ds-ease-out) ease-out}
+.council-strip-toggle[aria-expanded="true"]>.icon:last-child{rotate:90deg}
+.council-strip-actions{display:flex;flex-wrap:wrap;gap:6px}
+/* What to do next and the dismiss stay together at the line's end, and wrap together. */
+.council-strip-end{display:flex;align-items:center;gap:6px;margin-left:auto}
+.council-strip :is(.ds-btn,.ds-btn-primary){height:28px;padding:0 10px;font-size:var(--ds-text-ui);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out}
+.council-strip [aria-disabled="true"]{opacity:.55;cursor:default}
+.council-strip [aria-disabled="true"]:active{scale:1}
+.council-strip [aria-expanded="true"]:is(.ds-btn,.ds-btn-primary){background:var(--ds-row-press)}
+.council-strip-hint{color:var(--muted);font-size:var(--ds-text-meta)}
+.council-strip-dismiss{flex:none;width:28px;height:28px}
+.council-strip-error{margin:2px 6px 0;color:var(--ds-danger);font-size:var(--ds-text-meta)}
+
+/* Reviewer rows (the strip expanded, and the Agents flyout): mark, lens, score. */
+.council-rows{display:grid;padding:2px 0 0}
+.council-rows[hidden]{display:none}
+.council-row{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;padding:0 6px;border-radius:calc(var(--ds-radius-inner) - 2px);color:var(--text);text-align:left;transition:background-color var(--ds-ease-out) ease-out}
+.council-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.council-row-mark{flex:none;display:grid;place-items:center;width:16px;height:16px;color:var(--muted)}
+.council-row-mark[data-state-tone]{color:var(--state-tone)}
+.council-row-mark>.icon{width:14px;height:14px}
+.council-row-lens{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.council-row-score{flex:none;color:var(--muted);font-size:var(--ds-text-meta);font-variant-numeric:tabular-nums;white-space:nowrap;transform-origin:100% 50%}
+.council-row-score[data-scored]{color:var(--text);font-weight:var(--weight-medium)}
+.council-first{color:var(--muted);font-weight:var(--weight-regular)}
+.council-pulse{width:7px;height:7px;border-radius:50%;background:currentColor}
+/* A scored reviewer below target that is not its round's lowest: a small muted ring (pending reviewers pulse or show a clock). */
+.council-ring{width:9px;height:9px;border-radius:50%;border:1.5px solid currentColor;opacity:.55}
+@media(prefers-reduced-motion:no-preference){.council-pulse{animation:state-pulse 1.6s ease-in-out infinite}}
+/* The Agents flyout: Council's state line over its rows. */
+.council-slot:empty{display:none}
+.architect-panel .council-slot{margin:0 0 8px}
+.council-summary-state{display:flex;gap:8px;justify-content:space-between;margin:0;padding:2px 6px 4px;color:var(--text);font-size:var(--ds-text-ui)}
+
+/* At target reads in the success tone everywhere: rows, the strip, the Workers list. */
+[data-state-tone="success"]{--state-tone:var(--ds-success)}
+/* The Workers panel's below-target verdict, in the thread rows' tone. */
+.architect-worker-state[data-tone="below"]{color:var(--ds-tone-full)}
+@media(prefers-reduced-motion:reduce){.council-strip-toggle,.council-strip-toggle>.icon:last-child,.council-row,.council-strip :is(.ds-btn,.ds-btn-primary){transition:none}}
+@media(prefers-contrast:more){.council-panel p:not(.council-error),.council-field>span,.council-first,.council-strip-score,.council-row-score,.council-row-mark,.council-strip-toggle{color:var(--text)}}
+@media(forced-colors:active){
+  .council-row-mark,.council-row-mark[data-state-tone],.council-strip-state{color:CanvasText}
+  .council-panel .ds-seg>.segment-thumb{display:none}
+  .council-panel .ds-seg>button[aria-pressed="true"]{color:CanvasText;font-weight:var(--weight-strong);outline:2px solid CanvasText;outline-offset:-2px}
+  .council-pulse,.council-glyph::after{forced-color-adjust:none;background:CanvasText;box-shadow:none}
+}

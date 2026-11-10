@@ -21,7 +21,9 @@ test.beforeEach(async ({ page }) => {
       if (command === 'get_messages' && args.sessionId === window.__slowSide) await new Promise(resolve => setTimeout(resolve, 400));
       switch (command) {`);
     await route.fulfill({ response, body: body + `
-window.__btwEmit = emit; window.__btwSession = session; window.__btwSaveConnection = previewSaveConnection;
+window.__btwNote = (sessionId, text) => { messages[sessionId].push({ id: ++id, sessionId, role: 'system', content: text, createdAt: Date.now() }); emit('agent-event', { sessionId, kind: 'note', text, data: { accountPool: { connectionId: null } } }); };\nwindow.__btwEmit = emit; window.__btwSession = session; window.__btwSaveConnection = previewSaveConnection;
+window.__btwBindMainAccount = sessionId => { previewConnections.tasks[sessionId] = previewConnections.connections[0].id; previewConnections.pools = ['claude']; };
+window.__btwAccountSnapshot = () => structuredClone(previewConnections);
 window.__btwFinish = (sessionId, text) => { const task = session(sessionId); task.status = 'idle'; messages[sessionId].push({ id: ++id, sessionId, role: 'assistant', content: text, createdAt: Date.now() }); emit('agent-event', { sessionId, kind: 'done', text: '' }); };
 window.__btwDelete = id => { sessions.splice(sessions.findIndex(task => task.id === id), 1); emit('sessions-changed', null); };
 ` });
@@ -397,10 +399,11 @@ test('model and permissions picked before the side thread exists apply to it bef
   await prompt(page).press('Enter');
   await expect(page.getByText('No side thread yet')).toBeVisible();
   await expect(sideModel(page)).toContainText('Claude Sonnet 5');
-  await page.evaluate(() => (window as any).__btwSaveConnection({ provider: 'claude', name: 'Claude Work', env: [] }));
+  await page.evaluate(id => { const w = window as any; w.__btwSaveConnection({ provider: 'claude', name: 'Claude Work', env: [] }); w.__btwBindMainAccount(id); }, main);
   await sideModel(page).click();
-  await picker(page).getByRole('tab', { name: 'Claude Work', exact: true }).click();
-  await picker(page).getByRole('option', { name: 'Claude Work · Claude Opus 5', exact: true }).click();
+  await expect(picker(page).getByRole('tab', { name: 'Claude Work', exact: true })).toHaveCount(0);
+  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
   await expect(sideModel(page)).toContainText('Claude Opus 5');
   await sideMode(page).click();
   const choice = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first();
@@ -415,8 +418,12 @@ test('model and permissions picked before the side thread exists apply to it bef
   const sideId = all.filter(call => call.command === 'send_message').at(-1).args.sessionId;
   expect(sideId).not.toBe(main);
   const order = all.filter(call => call.args?.sessionId === sideId && ['configure_session', 'connection_assign', 'update_session', 'send_message'].includes(call.command) && (call.command !== 'update_session' || 'mode' in call.args)).map(call => call.command);
-  expect(order).toEqual(['configure_session', 'connection_assign', 'update_session', 'send_message']);
-  expect(all.find(call => call.command === 'connection_assign').args.connectionId).toBeTruthy();
+  expect(order).toEqual(['configure_session', 'update_session', 'send_message']);
+  expect(await calls(page, 'connection_assign')).toEqual([]);
+  const accounts = await page.evaluate(() => (window as any).__btwAccountSnapshot());
+  expect(accounts.tasks[main]).toBeTruthy();
+  expect(accounts.tasks[sideId]).toBeUndefined();
+  expect(accounts.pools).toEqual(['claude']);
   expect(all.find(call => call.command === 'configure_session').args).toEqual({ sessionId: sideId, provider: 'claude', model: 'opus' });
   await expect(sideModel(page)).toContainText('Claude Opus 5');
   await expect(mainTrigger(page)).toContainText('Claude Sonnet 5');
@@ -427,6 +434,7 @@ test('editing a queued side message focuses its editor and survives streaming', 
   await prompt(page).fill('/btw keep going');
   await prompt(page).press('Enter');
   await expect(panel(page).getByRole('button', { name: 'Stop side thread', exact: true })).toBeVisible();
+  await expect.poll(() => calls(page, 'send_message').then(list => list.length)).toBe(2);
   const sideId = (await calls(page, 'send_message')).at(-1).args.sessionId;
   await side(page).fill('queued text');
   await side(page).press('Enter');
@@ -496,4 +504,33 @@ test('the side thread ignores the Enter that commits an IME composition', async 
   expect(await sends()).toBe(before);
   await side(page).press('Enter');
   await expect.poll(sends).toBe(before + 1);
+});
+
+
+test('account switch in a live side thread stays compact and keeps its open focus in saved rows', async ({ page }) => {
+  await page.evaluate(() => { (window as any).__holdSide = true; });
+  await prompt(page).fill('/btw account switch check'); await prompt(page).press('Enter');
+  await expect(page.getByRole('button', { name: 'Stop side thread', exact: true })).toBeVisible();
+  const taskId = await sideId(page);
+  const prose = 'Using “研发 <b>"Work"</b>” because the default Codex account is near its usage limit.';
+  await page.evaluate(({ taskId, content }) => (window as any).__btwNote(taskId, content), { taskId, content: 'Account switched\n' + prose });
+  const note = log(page).locator('details.account-switch-note[data-account-switch]'), summary = note.locator('summary');
+  await expect(note).toHaveCount(1); await expect(note).not.toHaveAttribute('open');
+  await expect(summary).toHaveAccessibleName('Account switched'); await expect(summary).toHaveText('Account switched');
+  expect(await summary.getAttribute('title')).toBeNull();
+  await expect(note.locator('p')).toBeHidden(); await expect(note.locator('p')).toHaveText(prose);
+  await expect(note.locator('p b')).toHaveCount(0);
+  await summary.focus(); await page.keyboard.press('Space'); await expect(note).toHaveAttribute('open');
+  await page.evaluate(taskId => (window as any).__btwEmit('agent-event', { sessionId: taskId, kind: 'text', text: 'A later side-thread answer.' }), taskId);
+  await expect(note).toHaveCount(1); await expect(note).toHaveAttribute('open'); await expect(summary).toBeFocused();
+  expect(await note.evaluate(node => !!node.closest('.turn-activity, .tool-trace, .live-errors, .message-error'))).toBe(false);
+  await page.evaluate(taskId => (window as any).__btwFinish(taskId, 'A later side-thread answer.'), taskId);
+  await expect(page.getByRole('button', { name: 'Send to side thread', exact: true })).toBeEnabled();
+  await expect(note).toHaveCount(1); await expect(note).toHaveAttribute('open'); await expect(summary).toBeFocused();
+  await page.getByRole('button', { name: 'Open side thread as a full thread', exact: true }).click();
+  const saved = page.locator('#transcript details.account-switch-note[data-account-switch]');
+  await expect(saved).toHaveCount(1); await expect(saved.locator('summary')).toHaveAccessibleName('Account switched');
+  await saved.locator('summary').focus(); await page.keyboard.press('Enter');
+  await expect(saved.locator('p')).toBeVisible(); await expect(saved.locator('p')).toHaveText(prose);
+  await expect(page.locator('#transcript .message-error, #transcript .tool-trace')).toHaveCount(0);
 });

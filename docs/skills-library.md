@@ -1,8 +1,35 @@
 # Skills library and rules registry
 
-Issues #15 (skills) and #45 (rules). This is a small first version. It lets you import a skill or rule once, turn it on for each harness and scope, and see what each installed harness actually has.
+Issues #15 (skills) and #45 (rules). This is a small first version. It is about rules: import a rule once, turn it on for each harness and scope, and see what each installed harness actually has.
 
-The import form keeps the local path field at its full control height. Its Kind, Source and Project menus use the current theme's text and solid panel colors, including unselected options in Windows native menus.
+Skills are added in one place: Settings → Tools → **Skills** → **Add skill** ([skill-manager.md](skill-manager.md)), which takes owner/repo, a GitHub or GitLab URL, a skills.sh link or a local folder. This page has no catalogs and no skill import; everything here that leads to a skill opens that dialog (`requestAddSkill(source)`; Settings follows the button's `data-section="skills"`).
+
+The page, top to bottom: one intro line, **Import a rule**, **Rules** (the library's rules, each with its per-agent boxes), **Bot library** (the library's skills; the heading, its list and the intro's sentence about it appear only when it has any), then **By harness**.
+
+- The intro says exactly that: **Import rules and turn them on per agent. The bot library holds skills for bots only. To add or switch skills, use Skills.** (the middle sentence only with a bot library). Its **Skills** link opens the Skills page; the rule import card has no second pointer.
+- A library item's source (a path or `GitHub · owner/repo`) is monospace and wraps only after its separators, never mid-name; a single part wider than the line ellipsizes, with the whole source in its tooltip.
+- Skills for bots only come in through Add skill's **Install to → Bot library** (`skill_manager_add_library`), which imports them into this library without touching any agent folder; such items have `source.kind` `folder` (a local folder) or `skills` (location: the source). The **Bot library** heading's info mark says so.
+- A bot library skill's **Install for agents…** opens Add skill on the library's own copy (`<app data>/skills/<id>`) as a local-folder source, already finding, to install it for agents. It needs the copy's absolute path as `folder` on the `skills_list` item (`<app data>/skills/<id>`, skills only); without it the button is not shown. The browser preview's library (`src/preview-skills.ts`) reports it under `LIBRARY_DIR`.
+
+Bot library skills are listed read-only: no per-agent boxes. Copies activated by older builds stay where they are; the Skills page lists them as installed skills, and here they read **In use by Claude Code. Switch it in Skills, or turn it off everywhere to remove it.** with **Turn off everywhere…** in place of **Remove** (native refuses to remove an item while anything is active). It asks first, then calls `skills_deactivate_all`, which undoes every activation the item recorded, in each harness, scope and checkout, and leaves files edited since in place (`kept`, named in the status line); **Remove** then appears. Nothing in the library is deleted by this change.
+
+It lives at Settings → Tools → **Rules & library** (page id `rules`); the page id `skills` is the
+[Skill manager](skill-manager.md). A link at the top opens the Skills page. Installed skills are listed only there:
+the **By harness** table (**Rules by harness**) and the **Rules found on disk, not managed by PandaCode** card list
+rules only (native's `skills_matrix` still reports both kinds; the page drops `kind: "skill"` entries), and that card
+uses the design system's `ds-card`. Library skills switched off there
+(read from `skill_manager_list` for the library's project, matched by name or slug id) show an **Off in Skills**
+tag (accessible name says **in Settings → Tools → Skills**; tooltip **Off in all projects in Settings → Tools → Skills:
+blocked or asked, per agent.**, since some agents won't load an off skill and others can only be asked) that opens the Skills page; the tag refreshes when the Skills page dispatches `pandacode:skill-manager-changed`.
+If that list can't be read the tags are simply absent.
+Each item's source line (a path, or **GitHub · owner/repo/skill @ commit**) breaks only after a slash or before `@ commit`, never mid-name; a part still wider than the line ellipsizes, with the whole source in its title.
+
+**Skills** controls what agents may use and adds skills; **Rules & library** turns rules on per harness and scope.
+Skills switches are keyed by name, so same-named skills share one switch, and act only on agents PandaCode runs.
+Enforcement details say **Won’t load when off**, **Asked when off** or **Not enforced when off**; an off skill some
+agent may still load is tagged **May still load** there.
+
+The **Import a rule** form (Source **Local file** — a rule is one Markdown file — or **GitHub repository** with a path) keeps the **File path** field at its full control height. Its **Source** and **Project scope** selects are labelled in visible text beside them and use the current theme's text and solid panel colors, including unselected options in Windows native menus. `skills_import_folder` and `skills_import_github` still accept `kind: "skill"` natively; the page simply no longer offers it.
 
 ## Storage
 
@@ -13,8 +40,6 @@ Everything is files under the app data folder. There is no schema migration.
 <app data>/skills/<id>/RULE.md      rule (one Markdown file)
 <app data>/skills/<id>.json         Meta: source (folder path or owner/name/path, ref, commit),
                                     content SHA-256, acknowledged hash, activations
-<app data>/skills/.catalogs.json    Catalog sources, the last discovery report, and repositories
-                                    discovery found without skills (by pushed_at)
 ```
 
 Each activation records the harness, scope, project checkout, surface, the library hash it wrote, the SHA-256 of every file or block it wrote, and any `.git/info/exclude` lines it added.
@@ -39,20 +64,16 @@ Each activation records the harness, scope, project checkout, surface, the libra
 - The safety scan (`skills/safety.rs`) flags secret-shaped tokens and named secrets, instructions that turn off approvals or the sandbox, and downloads piped into a shell. If an item has findings, activation fails until the user calls it with `acknowledge: true`. That acknowledgement is stored per content hash.
 - GitHub import uses `gh api` through `github::run_gh` (`workspace::run_process`). Limits: 64 files and 1 MB.
 
-## Repository catalogs and discovery (#114, #115)
+## Repository catalogs (removed)
 
-`skills/catalog.rs`. A catalog source is a GitHub repository indexed for skills, kept apart from the library and from activation.
-
-- Scanning reads the commit for the ref, then one recursive Git tree. Every `SKILL.md` (at the root, `skills/<name>/`, or deeper in nested collections) counts only when its frontmatter has both `name` and `description` (YAML `>`/`|` block values work). A repository named "skills" without such a file is never registered. Hidden paths are skipped. A skill's files are its folder minus any nested skill folder.
-- Importing copies the chosen skills (or all of them) at the indexed commit, each with its supporting files and `owner/name/path`, ref and commit as its source. Nothing is activated. The 64-file and 1 MB limits apply per skill, and a skill over them is skipped with a reason. Per-catalog limits: 20,000 tree entries, 300 `SKILL.md` files, and a truncated GitHub tree, each refused with a clear error.
-- Same names: each indexed skill lists other catalog paths and library items with the same id (`conflicts`). An import whose id the library already holds from another source is skipped, never overwritten.
-- Refresh re-reads the index only. A library copy keeps its commit (`imported`), and the UI says when a newer version is upstream. Importing again updates the library, and harnesses then show `outdated`, as before.
-- Discovery (`skills_discover`) uses the same `gh` login as GitHub import, with no new scopes. It lists `user/repos?affiliation=owner` 100 at a time, up to 10 pages; organizations are not scanned. Matching repositories are registered as `discovered` sources. Ignored and disabled sources are left alone, unchanged repositories (same `pushed_at`) are not read again, and empty ones are skipped, so repeating discovery is idempotent. A rate limit or sign-in failure stops discovery with a clear message after saving progress; other per-repository failures are listed in the report.
-- Settings shows the sources with Refresh, Disable/Enable and Ignore (ignored sources are listed with Stop ignoring), each source's skills with checkboxes, and Import selected / Import all.
+Earlier builds indexed GitHub repositories as catalogs (`skills/catalog.rs`, `skills_catalog*`, `skills_discover`).
+That code, its commands and the Catalogs section are gone, and the saved catalog list (a leftover
+`<app data>/skills/.catalogs.json`) is no longer read or used: Add skill on the Skills page reads repositories, so
+there is one place to add skills.
 
 ## Commands
 
-`skills_list()`, `skills_import_folder({ path, kind })`, `skills_import_github({ repo, path, gitRef?, kind })`, `skills_activate({ id, harness, scope, projectId?, sessionId?, acknowledge? })`, `skills_deactivate({ id, harness, scope, projectId?, sessionId? })`, `skills_matrix({ projectId?, sessionId? })`, `skills_scan({ id })`, `skills_remove({ id })`, `skills_catalogs()`, `skills_catalog_add({ repo, gitRef? })`, `skills_catalog_refresh({ repo })`, `skills_catalog_state({ repo, state })` (`enabled`, `disabled` or `ignored`), `skills_catalog_import({ repo, paths? })` (returns `{ items, imported, skipped }`), `skills_discover()`. Here `kind` is `skill` or `rule`, and `scope` is `user` or `project`. Activate and deactivate return `{ items, kept }`.
+`skills_list()`, `skills_import_folder({ path, kind })`, `skills_import_github({ repo, path, gitRef?, kind })`, `skills_activate({ id, harness, scope, projectId?, sessionId?, acknowledge? })`, `skills_deactivate({ id, harness, scope, projectId?, sessionId? })`, `skills_deactivate_all({ id })`, `skills_matrix({ projectId?, sessionId? })`, `skills_scan({ id })`, `skills_remove({ id })`. Here `kind` is `skill` or `rule`, and `scope` is `user` or `project`. Activate, deactivate and deactivate-all return `{ items, kept }`.
 
 ## Not yet
 
@@ -76,32 +97,27 @@ mod skills;
                 skills::skills_import_github,
                 skills::skills_activate,
                 skills::skills_deactivate,
+                skills::skills_deactivate_all,
                 skills::skills_matrix,
                 skills::skills_scan,
                 skills::skills_remove,
-                skills::skills_catalogs,
-                skills::skills_catalog_add,
-                skills::skills_catalog_refresh,
-                skills::skills_catalog_state,
-                skills::skills_catalog_import,
-                skills::skills_discover,
 ```
 
-`src/settings.ts`:
+`src/settings.ts` (the page ids live in `src/settings-sections.ts`: `SettingsPage` includes `'skills' | 'rules'`, and
+the Tools group lists **Add-ons**, **Skills** and **Rules & library**):
 
 ```ts
+import { mountSkillManager } from './skill-manager';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-// SettingsSection union: add 'skills'
-export type SettingsSection = 'general' | 'appearance' | 'agents' | 'providers' | 'teams' | 'tools' | 'skills' | 'cloud' | 'remote' | 'github' | 'about';
 // SettingsOptions:
-  /** Skills library and rules registry. */
+  /** Skills manager and Rules & library. */
   skills?: SkillsLibraryHost;
-// SECTIONS, after 'tools':
-  { id: 'skills', label: 'Skills & rules', icon: 'widget', description: 'Import skills and rules once, turn them on per harness, and check for drift.' },
 // sectionHtml():
-    case 'skills': return '<div id="skills-library"></div>';
+    case 'skills': return '<div id="skill-manager"></div>';
+    case 'rules': return '<div id="skills-library"></div>';
 // mountSection():
-    if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
+    if (id === 'skills' && options.skills) cleanups.push(mountSkillManager(panel.querySelector<HTMLElement>('#skill-manager')!, options.skills));
+    if (id === 'rules' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
 ```
 
 `src/main.ts`, in the `mountSettings` options next to `cloud: { call, … }`:
@@ -117,8 +133,7 @@ import { createPreviewSkills } from './preview-skills';
 const previewSkills = createPreviewSkills();
 // in invoke()'s switch, before `default:`
     case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
-    case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
-    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover':
+    case 'skills_deactivate': case 'skills_deactivate_all': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
       result = previewSkills.call(command, args); break;
 ```
 

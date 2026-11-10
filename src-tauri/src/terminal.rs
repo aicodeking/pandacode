@@ -222,7 +222,7 @@ pub fn start_harness(
     cols: u16,
     rows: u16,
 ) -> Result<String, String> {
-    let cmd = harness_command(&context)?;
+    let cmd = harness_command(&context, root)?;
     start_command(
         app,
         terms,
@@ -234,8 +234,17 @@ pub fn start_harness(
     )
 }
 
-fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, String> {
-    let args = harness_arguments(context)?;
+/// Reads SQLite, skill settings and skill folders: `start_harness` runs only inside
+/// `crate::blocking` (`task_controls::start_harness_terminal`), never on the async runtime.
+fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandBuilder, String> {
+    crate::skill_manager::begin_launch(context.session_id);
+    // Unrecoverable switches never refuse a console: they deny or ask (`launch_disabled`).
+    let disabled = crate::skill_manager::launch_disabled(
+        context.provider,
+        root,
+        crate::skill_manager::disabled_for(context.session_id),
+    );
+    let args = harness_arguments_with_skills(context, &disabled)?;
     let executable = crate::providers::executable(context.provider)
         .ok_or("Install this harness before opening its console.")?;
     if context.provider == "hermes" && executable.file_stem().is_some_and(|s| s == "hermes-acp") {
@@ -243,16 +252,39 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
     }
     let mut cmd = crate::providers::pty_command(&executable)?;
     crate::provider_settings::apply_environment(context.provider, &mut cmd);
-    for name in crate::providers::claude_auth::removed_environment(context.provider) { cmd.env_remove(name); }
+    for name in crate::providers::claude_auth::removed_environment(context.provider) {
+        cmd.env_remove(name);
+    }
     cmd.args(args);
+    let existing = |key: &str| {
+        crate::provider_settings::environment(context.provider)
+            .into_iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value)
+            .or_else(|| std::env::var(key).ok())
+            .unwrap_or_default()
+    };
+    if let Some((key, value)) =
+        crate::skill_manager::console_environment(context.provider, &disabled, || {
+            existing("HERMES_EPHEMERAL_SYSTEM_PROMPT")
+        })
+    {
+        cmd.env(key, value);
+    }
     if matches!(context.provider, "claude" | "glm" | "mimo") {
         cmd.env_remove("CLAUDECODE");
     }
     if matches!(context.provider, "glm" | "mimo") {
         let (arguments, environment) = if context.provider == "glm" {
-            (crate::providers::glm_arguments(), crate::providers::glm_environment()?)
+            (
+                crate::providers::glm_arguments(),
+                crate::providers::glm_environment()?,
+            )
         } else {
-            (crate::providers::mimo_arguments()?, crate::providers::mimo_environment()?)
+            (
+                crate::providers::mimo_arguments()?,
+                crate::providers::mimo_environment()?,
+            )
         };
         cmd.args(arguments);
         for name in [
@@ -276,12 +308,49 @@ fn harness_command(context: &HarnessContext<'_>) -> Result<CommandBuilder, Strin
         cmd.env_remove("ACP_BACKEND");
     }
     if context.provider == "opencode" {
-        cmd.env(
-            "OPENCODE_CONFIG_CONTENT",
-            crate::providers::opencode_configuration(context.mode),
-        );
+        let permission = Some(existing("OPENCODE_PERMISSION")).filter(|text| !text.is_empty());
+        for (key, value) in
+            opencode_console_environment(context.mode, &disabled, root, permission.as_deref())
+        {
+            cmd.env(key, value);
+        }
     }
     Ok(cmd)
+}
+
+/// An OpenCode console's skill denies: merged into the inline configuration, and also through
+/// `OPENCODE_PERMISSION` (merged by OpenCode after every config layer), keeping any rules the
+/// provider environment already set there. An agent the denies can't reach is only logged:
+/// consoles have no reminder channel, and the Skills page reports that folder's OpenCode modes
+/// as asked/none.
+fn opencode_console_environment(
+    mode: &str,
+    disabled: &BTreeSet<String>,
+    root: &Path,
+    permission: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let inline = crate::skill_manager::opencode_configuration_at(
+        &crate::providers::opencode_configuration(mode),
+        disabled,
+        root,
+    );
+    let mut environment = vec![("OPENCODE_CONFIG_CONTENT", inline)];
+    if let Some(permission) = crate::skill_manager::opencode_permission(permission, disabled) {
+        environment.push(("OPENCODE_PERMISSION", permission));
+    }
+    environment
+}
+
+fn harness_arguments_with_skills(
+    context: &HarnessContext<'_>,
+    disabled: &BTreeSet<String>,
+) -> Result<Vec<String>, String> {
+    let mut args = harness_arguments(context)?;
+    args.extend(crate::skill_manager::console_arguments(
+        context.provider,
+        disabled,
+    ));
+    Ok(args)
 }
 
 fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String> {
@@ -945,6 +1014,144 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn skill_manager_console_enforces_claude_family_and_uses_advisory_channels() {
+        let disabled = BTreeSet::from(["writer:edit".into()]);
+        for provider in ["claude", "glm", "mimo"] {
+            let context = HarnessContext {
+                session_id: "fixture",
+                provider,
+                resume_id: Some("existing"),
+                model: None,
+                reasoning_effort: None,
+                mode: "ask",
+            };
+            let args = harness_arguments_with_skills(&context, &disabled).unwrap();
+            assert_eq!(
+                args.iter()
+                    .filter(|a| a.starts_with("--disallowedTools"))
+                    .collect::<Vec<_>>(),
+                ["--disallowedTools=Skill(writer:edit)"]
+            );
+            assert!(args.windows(2).any(|a| a == ["--resume", "existing"]));
+        }
+        for (provider, flag) in [
+            ("pi", "--append-system-prompt"),
+            ("omp", "--append-system-prompt"),
+            ("grok", "--rules"),
+        ] {
+            let args = crate::skill_manager::console_arguments(provider, &disabled);
+            assert_eq!(args[0], flag);
+            assert!(args[1].contains("Do not use these skills in this session: writer:edit."));
+        }
+        assert!(crate::skill_manager::console_arguments("kimi", &disabled).is_empty());
+        assert!(crate::skill_manager::console_arguments("claude", &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn skill_manager_console_overrides_and_missing_channels_are_explicit() {
+        let disabled = BTreeSet::from(["review".into()]);
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "codex",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let args = harness_arguments_with_skills(&context, &disabled).unwrap();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1].starts_with("skills.config=")));
+        for id in [
+            "kimi",
+            "antigravity",
+            "deepseek",
+            "commandcode",
+            "kilo",
+            "zcode",
+        ] {
+            assert!(crate::skill_manager::console_arguments(id, &disabled).is_empty());
+        }
+    }
+
+    #[test]
+    fn skill_manager_unrecoverable_settings_open_every_console_with_denies_or_the_off_reminder() {
+        let all = BTreeSet::from(["*".to_string()]);
+        // Codex: a deny for every skill installed for it, never a refusal.
+        let codex = crate::skill_manager::launch_disabled_with("codex", all.clone(), || {
+            BTreeSet::from(["review".into()])
+        });
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "codex",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        let args = harness_arguments_with_skills(&context, &codex).unwrap();
+        assert!(
+            args.windows(2).any(|pair| pair[0] == "-c"
+                && pair[1].contains("review")
+                && pair[1].contains("enabled=false")),
+            "{args:?}"
+        );
+        // Claude family: the all-skills tool deny.
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "claude",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "ask",
+        };
+        assert!(harness_arguments_with_skills(&context, &all)
+            .unwrap()
+            .iter()
+            .any(|arg| arg == "--disallowedTools=Skill"));
+        // Ask-only consoles carry the reminder that skills are temporarily off.
+        let context = HarnessContext {
+            session_id: "fixture",
+            provider: "pi",
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "full",
+        };
+        let args = harness_arguments_with_skills(&context, &all).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg.starts_with("Skills are temporarily off")),
+            "{args:?}"
+        );
+    }
+
+    #[test]
+    fn skill_manager_consoles_never_start_a_turn_the_user_did_not_type() {
+        let disabled = BTreeSet::from(["review".into(), "Friendly skill".into()]);
+        for provider in ["devin", "github-copilot", "opencode"] {
+            let context = HarnessContext {
+                session_id: "fixture",
+                provider,
+                resume_id: None,
+                model: None,
+                reasoning_effort: None,
+                mode: "ask",
+            };
+            let plain = harness_arguments(&context).unwrap();
+            assert_eq!(
+                harness_arguments_with_skills(&context, &disabled).unwrap(),
+                plain,
+                "{provider}"
+            );
+            assert!(
+                crate::skill_manager::console_arguments(provider, &disabled).is_empty(),
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
     fn harness_console_uses_literal_resume_arguments_and_never_a_prompt() {
         for (provider, flag) in [
             ("codex", "resume"),
@@ -1495,19 +1702,56 @@ mod platform_tests {
         assert!(activity.running && !activity.uncertain);
         assert_eq!(activity.process_names, ["node.exe", "worker app.exe"]);
         assert!(parse_windows_processes("not json").is_err());
-        assert_eq!(process_name("C:\\Program Files\\PowerShell\\pwsh.exe"), "pwsh.exe");
+        assert_eq!(
+            process_name("C:\\Program Files\\PowerShell\\pwsh.exe"),
+            "pwsh.exe"
+        );
         assert_eq!(process_name("-zsh"), "zsh");
-        assert_eq!(serde_json::to_value(activity).unwrap()["processNames"][0], "node.exe");
+        assert_eq!(
+            serde_json::to_value(activity).unwrap()["processNames"][0],
+            "node.exe"
+        );
+    }
+
+    #[test]
+    fn opencode_console_denies_switched_off_skills_through_inline_config_and_permission() {
+        let root = std::env::temp_dir();
+        let disabled = BTreeSet::from(["review".to_string()]);
+        let environment: std::collections::BTreeMap<_, _> =
+            opencode_console_environment("default", &disabled, &root, Some(r#"{"bash":"ask"}"#))
+                .into_iter()
+                .collect();
+        let inline: serde_json::Value =
+            serde_json::from_str(&environment["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(inline["permission"]["skill"]["review"], "deny");
+        assert_eq!(inline["permission"]["skill"]["review *"], "deny");
+        // The provider's own OPENCODE_PERMISSION rules are kept; the denies end the skill map.
+        assert_eq!(
+            environment["OPENCODE_PERMISSION"],
+            r#"{"bash":"ask","skill":{"review":"deny","review *":"deny"},"skill *":{"review":"deny","review *":"deny"}}"#
+        );
+        // Nothing switched off: no OPENCODE_PERMISSION is added.
+        let environment = opencode_console_environment("default", &BTreeSet::new(), &root, None);
+        assert_eq!(environment.len(), 1);
+        assert_eq!(environment[0].0, "OPENCODE_CONFIG_CONTENT");
     }
 
     #[test]
     fn terminals_have_no_global_cap_but_reject_duplicate_harness_sessions() {
-        let sessions = (0..12).map(|index| format!("task-{index}")).collect::<Vec<_>>();
-        let consoles = sessions.iter().map(|session| (Some(session.as_str()), false)).collect::<Vec<_>>();
+        let sessions = (0..12)
+            .map(|index| format!("task-{index}"))
+            .collect::<Vec<_>>();
+        let consoles = sessions
+            .iter()
+            .map(|session| (Some(session.as_str()), false))
+            .collect::<Vec<_>>();
         assert!(super::check_start(consoles.iter().copied(), Some("next-task")).is_ok());
         assert!(super::check_start(consoles.iter().copied(), None).is_ok());
         assert!(super::check_start(consoles.iter().copied(), Some("task-0")).is_err());
-        let full = consoles.iter().copied().chain(std::iter::repeat_n((None, false), 32));
+        let full = consoles
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n((None, false), 32));
         assert!(super::check_start(full.clone(), Some("next-task")).is_ok());
         assert!(super::check_start(full, None).is_ok());
         assert!(super::check_start([(Some("task-0"), true)].into_iter(), Some("task-0")).is_ok());

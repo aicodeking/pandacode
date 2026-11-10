@@ -6,6 +6,7 @@ mod deepseek;
 mod kimi;
 mod muse;
 mod pi;
+mod skill_switches;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -290,6 +291,12 @@ fn apply_terminal_names(catalog: &mut Catalog, terminal_names: &HashSet<String>)
 
 /// No polling or filesystem watchers: refresh only when a picker opens or the harness pushes metadata.
 pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
+    let catalog = unfiltered(provider, cwd, force).await?;
+    skill_switches::for_path(provider, catalog, cwd).await
+}
+
+/// The harness's catalog before switched-off skills are hidden (`skill_switches`).
+async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
     validate_provider(provider)?;
     let key = catalog_key(provider, cwd);
     let started = Instant::now();
@@ -317,17 +324,26 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
 
 /// Local actions and the latest known catalog are available without starting a
 /// harness. A stale snapshot is for completion; command dispatch still validates.
-pub fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
+pub async fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
-    CACHE.lock()
-        .map_err(|_| "Command discovery is unavailable.".into())
-        .map(|mut cache| cache.snapshot(&catalog_key(provider, cwd)))
+    let catalog = CACHE
+        .lock()
+        .map_err(|_| "Command discovery is unavailable.".to_string())?
+        .snapshot(&catalog_key(provider, cwd));
+    skill_switches::for_path(provider, catalog, cwd).await
 }
 
 pub(crate) fn invalidate_provider(provider: &str) {
     if let Ok(mut cache) = CACHE.lock() {
-        let keys: Vec<_> = cache.entries.keys().filter(|key| key.0 == provider).cloned().collect();
-        for key in keys { cache.invalidate(key); }
+        let keys: Vec<_> = cache
+            .entries
+            .keys()
+            .filter(|key| key.0 == provider)
+            .cloned()
+            .collect();
+        for key in keys {
+            cache.invalidate(key);
+        }
     }
 }
 
@@ -655,8 +671,9 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
     if is_local_control(name) {
         return resolve_from_catalog(provider, text, &Catalog::default());
     }
-    let catalog = catalog(provider, cwd, false).await?;
-    resolve_from_catalog(provider, text, &catalog)
+    // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
+    let catalog = unfiltered(provider, cwd, false).await?;
+    skill_switches::resolve_at(provider, text, catalog, cwd).await
 }
 
 /// A command may be removed after the picker cached it. Claude's fresh
@@ -1102,12 +1119,31 @@ mod tests {
         assert_eq!(cache.entries.len(), 1);
     }
 
-    #[test]
-    fn snapshots_expose_local_controls_without_launching_a_harness() {
-        let catalog = snapshot("antigravity", Path::new("/snapshot-only-project")).unwrap();
+    #[tokio::test]
+    async fn snapshots_expose_local_controls_without_launching_a_harness() {
+        let catalog = snapshot("antigravity", Path::new("/snapshot-only-project"))
+            .await
+            .unwrap();
         assert_eq!(command(&catalog, "/model").source, "PandaCode");
         assert_eq!(command(&catalog, "/settings").kind, "action");
-        assert!(snapshot("unknown", Path::new("/snapshot-only-project")).is_err());
+        assert!(snapshot("unknown", Path::new("/snapshot-only-project"))
+            .await
+            .is_err());
+    }
+
+    /// The switch reads (settings, SQLite, SKILL.md) run on a blocking thread, never on the
+    /// async runtime's own thread.
+    #[tokio::test(flavor = "current_thread")]
+    async fn slash_skill_switch_reads_run_on_a_blocking_thread_not_the_async_runtime() {
+        let runtime = std::thread::current().id();
+        let cwd = Path::new("/snapshot-only-project");
+        let shown = snapshot("claude", cwd).await.unwrap();
+        assert!(skill_switches::resolve_at("claude", "/model", shown, cwd)
+            .await
+            .is_ok());
+        let readers = skill_switches::READERS.lock().unwrap().clone();
+        assert!(!readers.is_empty());
+        assert!(!readers.contains(&runtime));
     }
 
     #[test]

@@ -25,10 +25,11 @@ async function installConcurrency(page: Page, count = 12): Promise<void> {
           resumeId: null, lastResponseAt: null, taskStage: 'pending', taskDescription: 'Prompt for task ' + (index + 1), completedAt: null
         }));
         for (const s of sessions) messages[s.id] = [];
-        window.__concurrent = { tasks: {}, calls: [], holdSends: {}, releaseSends: {}, rejectSends: {}, holdReads: {}, releaseReads: {}, holdInspector: {}, releaseInspector: {}, holdHistory: {}, releaseHistory: {}, holdSnapshot: {}, releaseSnapshot: {}, rejectSnapshot: {}, holdApprovals: {}, releaseApprovals: {} };
+        window.__concurrent = { tasks: {}, calls: [], holdSends: {}, releaseSends: {}, rejectSends: {}, holdReads: {}, releaseReads: {}, holdInspector: {}, releaseInspector: {}, rejectInspector: {}, failSelection: {}, holdHistory: {}, releaseHistory: {}, holdSnapshot: {}, releaseSnapshot: {}, rejectSnapshot: {}, holdApprovals: {}, releaseApprovals: {} };
       }
       const fixture = window.__concurrent;
       fixture.calls.push({ command, ...args });
+      if (fixture.failSelection[args.sessionId] === command) throw new Error('Controlled task load failed: ' + command);
       if (command === 'get_messages' && fixture.holdSnapshot[args.sessionId]) {
         const snapshot = { messages: structuredClone(messages[args.sessionId] ?? []), hasOlder: false };
         await new Promise((resolve, reject) => { fixture.releaseSnapshot[args.sessionId] = resolve; fixture.rejectSnapshot[args.sessionId] = () => reject(new Error('An older selection could not load history')); });
@@ -38,8 +39,9 @@ async function installConcurrency(page: Page, count = 12): Promise<void> {
         await new Promise(resolve => { (fixture.releaseHistory[args.sessionId] ??= []).push(resolve); });
       }
       if (command === 'git_status' && fixture.holdInspector[args.sessionId]) {
-        await new Promise(resolve => { fixture.releaseInspector[args.sessionId] = resolve; });
+        await new Promise((resolve, reject) => { fixture.releaseInspector[args.sessionId] = resolve; fixture.rejectInspector[args.sessionId] = () => reject(new Error('Controlled inspector load failed')); });
       }
+      if (command === 'git_status' && fixture.inspectorFiles) return { ...checkoutGit(args.sessionId), files: [{ path: 'inspector-' + args.sessionId + '.ts', index: ' ', working: 'M' }] };
       if (command === 'read_file' && fixture.holdReads[args.sessionId]) {
         await new Promise(resolve => { fixture.releaseReads[args.sessionId] = resolve; });
       }
@@ -463,6 +465,70 @@ test('concurrency ignores a rejected old selection request after the completed r
   await expect(transcript(page).locator('.agent-message .message-content')).toHaveText('A completed answer must remain readable.');
   await expect(transcript(page)).not.toContainText('Unable to load this task');
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden();
+});
+
+for (const command of ['get_messages', 'get_task', 'architect_get']) {
+  test(`concurrency loads the current inspector after ${command} rejects and discards the previous task result`, async ({ page }) => {
+    await installConcurrency(page, 3);
+    const inspector = page.locator('#inspector-content');
+    await expect(inspector.locator('.changes-view')).toBeVisible();
+    await page.evaluate(command => {
+      const fixture = (window as any).__concurrent;
+      fixture.inspectorFiles = true;
+      fixture.holdInspector['session-2'] = true;
+      fixture.failSelection['session-3'] = command;
+    }, command);
+    await selectTask(page, 2, 'conversation');
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__concurrent.releaseInspector['session-2'])).toBe('function');
+    await expect(inspector.getByRole('status')).toHaveText('Loading changes…');
+    await selectTask(page, 3, 'conversation');
+    await expect(transcript(page)).toContainText('Unable to load this task');
+    await page.evaluate(() => (window as any).__concurrent.releaseInspector['session-2']());
+    await expect(inspector).toContainText('inspector-session-3.ts');
+    await expect(inspector).not.toContainText('inspector-session-2.ts');
+    await expect(inspector.getByRole('status')).toHaveCount(0);
+    await page.evaluate(() => { delete (window as any).__concurrent.failSelection['session-3']; });
+    await selectTask(page, 3, 'conversation');
+    await expect(prompt(page)).toBeEnabled();
+    await expect(transcript(page)).not.toContainText('Unable to load this task');
+    await expect(inspector).toContainText('inspector-session-3.ts');
+  });
+}
+
+test('concurrency keeps only the active inspector loading across rapid switches and retries a failed load', async ({ page }) => {
+  await installConcurrency(page, 3);
+  const inspector = page.locator('#inspector-content');
+  await expect(inspector.locator('.changes-view')).toBeVisible();
+  await page.evaluate(() => {
+    const fixture = (window as any).__concurrent;
+    fixture.inspectorFiles = true;
+    fixture.holdInspector['session-2'] = fixture.holdInspector['session-3'] = true;
+    fixture.failSelection['session-3'] = 'get_messages';
+  });
+  await selectTask(page, 2, 'conversation');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__concurrent.releaseInspector['session-2'])).toBe('function');
+  await selectTask(page, 3, 'conversation');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__concurrent.rejectInspector['session-3'])).toBe('function');
+  await page.evaluate(() => (window as any).__concurrent.releaseInspector['session-2']());
+  await settlePaint(page);
+  await expect(inspector.getByRole('status')).toHaveText('Loading changes…');
+  await expect(inspector).not.toContainText('inspector-session-2.ts');
+  await selectTask(page, 1, 'conversation');
+  await expect(inspector).toContainText('inspector-session-1.ts');
+  await page.evaluate(() => (window as any).__concurrent.releaseInspector['session-3']());
+  await settlePaint(page);
+  await expect(inspector).toContainText('inspector-session-1.ts');
+  await expect(inspector).not.toContainText('inspector-session-3.ts');
+  await page.evaluate(() => { delete (window as any).__concurrent.releaseInspector['session-3']; });
+  await selectTask(page, 3, 'conversation');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__concurrent.releaseInspector['session-3'])).toBe('function');
+  await page.evaluate(() => (window as any).__concurrent.rejectInspector['session-3']());
+  await expect(inspector.getByRole('alert')).toContainText('Controlled inspector load failed');
+  await expect(inspector.getByRole('status')).toHaveCount(0);
+  await page.evaluate(() => { (window as any).__concurrent.holdInspector['session-3'] = false; });
+  await inspector.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(inspector).toContainText('inspector-session-3.ts');
+  await expect(inspector.getByRole('alert')).toHaveCount(0);
 });
 
 test('concurrency sidebar timers update for background and pinned tasks and reset on a new run', async ({ page }) => {

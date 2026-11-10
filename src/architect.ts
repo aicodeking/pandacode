@@ -1,7 +1,7 @@
 import './architect.css';
 import { renderTurnChanges, captureChangeCards, restoreChangeCards } from './turn-changes';
 import { call } from './bridge';
-import { escape, icon, markdown } from './dom';
+import { escape, icon, markdown, morph } from './dom';
 import { providerLogo } from './provider-logos';
 import { fallbackModel } from './model-catalog';
 import { openModelPicker } from './model-picker';
@@ -20,6 +20,8 @@ import { workerQueueReason } from './worker-scheduling';
 import { Subagents } from './subagents';
 import { TeamMessages } from './team-messages';
 import { teamSignature } from './team-progress';
+import { councilNotice, councilProgress, councilSeatIds, formatScore, seatVerdict } from './council';
+import { councilSummaryHtml } from './council-panel';
 import { renderCoordination } from './coordination-message';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import type { AgentEvent, Message, MessagePage, Provider, ProviderId, ProviderModel, Session, ToolActivity } from './types';
@@ -145,6 +147,8 @@ export function mountArchitectSetup(host: HTMLElement, options: SetupOptions): S
   // Automatic and named agent teams have no fixed profiles to edit here; start from a fresh setup.
   const source = team?.pendingSetup?.config ?? team?.config ?? library.lastSetup?.config;
   const config: TeamConfig = structuredClone(source && !source.auto ? source : { workers: [{ id: 'worker-1', name: 'Worker 1', provider: workerProvider?.id ?? task.provider, model: '', reasoningEffort: null }], maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072 });
+  // Council belongs to the task (`architect_set_council`): a saved setup must not start new tasks with it on.
+  delete config.council;
   const architect: ModelSelection = team?.pendingSetup ? structuredClone(team.pendingSetup.architect) : !team && library.lastSetup && !task.resumeId ? structuredClone(library.lastSetup.architect) : { provider: task.provider, model: task.model, reasoningEffort: task.reasoningEffort ?? null };
   let disposed = false, pending = false, picker: (() => void) | undefined;
   const canDisable = Boolean(team) && !teamActive(team) && !team?.workers.length && !team?.round;
@@ -262,6 +266,7 @@ export class ArchitectView {
   private team: TeamSnapshot | null = null;
   private panel?: HTMLElement;
   private selected = '';
+  private returnFocus: HTMLElement | undefined;
   private live = new Map<string, WorkerLive>();
   private rows = new Map<string, HTMLButtonElement>();
   private paintedTools = new Map<string, ToolActivity>();
@@ -287,7 +292,7 @@ export class ArchitectView {
     this.host.className = 'architect-host'; this.host.hidden = true;
     this.trigger.className = 'architect-trigger'; this.trigger.type = 'button'; this.trigger.setAttribute('aria-label', 'Open workers'); this.trigger.setAttribute('aria-expanded', 'false');
     this.trigger.addEventListener('click', () => this.panel ? this.close() : this.open()); this.host.append(this.trigger);
-    this.host.addEventListener('keydown', event => { if (event.key === 'Escape' && this.panel) { event.preventDefault(); event.stopPropagation(); this.close(); this.trigger.focus(); } });
+    this.host.addEventListener('keydown', event => { if (event.key === 'Escape' && this.panel) { event.preventDefault(); event.stopPropagation(); this.closeAndReturn(); } });
     bindMessageActions(this.host, {
       // A team on another computer has its workers' messages only as loaded from the host.
       content: (sessionId, key) => key === 'live' ? this.live.get(sessionId)?.text : this.options.remote?.(this.taskId) ? (this.historyWorker === sessionId ? this.historyMessages.get(Number(key))?.content : undefined) : call<string>('get_message_content', {sessionId, messageId: Number(key)}),
@@ -366,7 +371,7 @@ export class ArchitectView {
     if (!this.team || this.panel) return;
     this.childAgents?.setTask('', false);
     const panel = document.createElement('section'); panel.className = 'architect-panel'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-label', 'Workers');
-    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><div class="architect-panel-scroll"><div class="architect-worker-list"></div><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
+    panel.innerHTML = `<div class="architect-panel-heading"><button class="icon-button architect-back" aria-label="Back to workers" hidden>${icon('back')}</button><strong class="architect-panel-summary"></strong><small class="architect-panel-count"></small><span class="architect-panel-controls"><button class="icon-button" data-team-control="pause" aria-label="Pause team" title="Pause team">${icon('pause')}</button><button class="icon-button" data-team-control="resume" aria-label="Resume team" title="Resume team">${icon('play')}</button><button class="icon-button" data-team-control="stop" aria-label="Stop team" title="Stop team">${icon('stop')}</button><button class="icon-button architect-configure" aria-label="View team setup" title="Team setup">${icon('settings')}</button></span><button class="icon-button architect-close" aria-label="Close workers" title="Close">${icon('close')}</button></div><p class="architect-panel-error" role="status" hidden></p><div class="architect-panel-scroll"><div class="council-slot"></div><div class="architect-worker-list"></div><div class="architect-worker-detail" hidden><div class="architect-worker-meta"></div><details class="architect-assignment"><summary>Assignment & file scope</summary><p></p><small></small></details><details class="architect-worker-checkpoint" hidden><summary>Latest checkpoint <time></time></summary><dl><div><dt>Progress</dt><dd data-checkpoint="summary"></dd></div><div><dt>Next</dt><dd data-checkpoint="nextSteps"></dd></div><div class="architect-checkpoint-blocker"><dt>Blocked</dt><dd data-checkpoint="blocker"></dd></div></dl></details><div class="architect-worker-history"></div><div class="architect-worker-live"></div><div class="architect-worker-tools"></div><div class="architect-worker-approvals"></div><div class="architect-worker-inputs"></div><p class="architect-worker-empty" role="status"></p><button class="secondary-button architect-history-retry" hidden>Retry loading worker</button></div></div>`;
     this.panel = panel; this.host.append(panel);
     const assist = document.createElement('button'); assist.type = 'button'; assist.className = 'architect-assist';
     assist.addEventListener('click', () => {
@@ -381,8 +386,14 @@ export class ArchitectView {
       this.teamMessages = new TeamMessages(this.team);
       panel.querySelector('.architect-worker-list')!.after(this.teamMessages.host);
     }
-    panel.querySelector('.architect-close')!.addEventListener('click', () => { this.close(); this.trigger.focus(); });
-    panel.querySelector('.architect-back')!.addEventListener('click', () => { this.selected = ''; this.historyWorker = ''; this.historyLoading = false; this.historyRefreshQueued = false; ++this.request; this.paint(); });
+    panel.querySelector('.architect-close')!.addEventListener('click', () => this.closeAndReturn());
+    panel.querySelector('.architect-back')!.addEventListener('click', () => {
+      const from = this.selected;
+      this.selected = ''; this.historyWorker = ''; this.historyLoading = false; this.historyRefreshQueued = false; ++this.request; this.paint();
+      // Back where it came from: the worker's row, or its reviewer row in the Council summary.
+      const id = CSS.escape(from), list = this.panel?.querySelector<HTMLElement>(`.architect-worker-row[data-worker-id="${id}"], .council-summary .council-row[data-id="${id}"]`);
+      (list?.offsetParent ? list : this.panel?.querySelector<HTMLElement>('.architect-close'))?.focus({ preventScroll: true });
+    });
     panel.querySelector('.architect-configure')!.addEventListener('click', event => this.options.setup(event.currentTarget as HTMLElement));
     panel.querySelectorAll<HTMLButtonElement>('[data-team-control]').forEach(control => control.addEventListener('click', () => { void this.control(control.dataset.teamControl!); }));
     panel.querySelector('.architect-history-retry')!.addEventListener('click', () => { void this.loadMessages(); });
@@ -392,7 +403,14 @@ export class ArchitectView {
     void Promise.allSettled([...new Set(this.team.config.workers.map(worker => worker.provider))].map(this.options.loadModels)).then(() => { if (this.panel === panel) this.paint(); });
     this.trigger.setAttribute('aria-expanded', 'true'); this.paint(); showPopover(panel, this.trigger); if (focus) panel.querySelector<HTMLButtonElement>('.architect-close')!.focus();
   }
-  async openWorker(workerId: string, subagentId?: string): Promise<void> {
+  /** Closes the panel and returns focus where it came from: a reviewer row opened from the thread, else the trigger. */
+  private closeAndReturn(): void {
+    const back = this.returnFocus;
+    this.close(); if (!back?.isConnected) this.trigger.focus({ preventScroll: true });
+  }
+  /** `from`: the row in the thread that opened the worker, for focus to return to when the panel closes. */
+  async openWorker(workerId: string, subagentId?: string, from?: HTMLElement): Promise<void> {
+    this.returnFocus = from && !this.panel?.contains(from) ? from : this.returnFocus;
     const worker = this.team?.workers.find(worker => worker.id === workerId);
     if (!worker) throw new Error('This worker is no longer available.');
     if (subagentId) {
@@ -406,10 +424,19 @@ export class ArchitectView {
       return;
     }
     this.open(); this.selected = workerId; this.paint();
-    this.panel?.querySelector<HTMLButtonElement>('.architect-back')?.focus();
+    // Focus goes into the flyout, as from its own rows. Opened from the thread, its container shows a frame later.
+    const back = () => this.panel?.querySelector<HTMLButtonElement>('.architect-back');
+    back()?.focus();
+    if (document.activeElement !== back()) requestAnimationFrame(() => { if (this.selected === workerId) back()?.focus(); });
     await this.loadMessages();
   }
-  close(): void { this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear(); this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
+  close(): void {
+    // Closed with focus inside (Escape, the close button, or the dock's own Escape, which then focuses its item): a reviewer
+    // opened from the thread gets focus back, after whoever closed us has placed it.
+    const back = this.returnFocus, inside = Boolean(this.panel?.contains(document.activeElement));
+    this.returnFocus = undefined;
+    if (back?.isConnected && inside) queueMicrotask(() => { if (back.isConnected) back.focus({ preventScroll: true }); });
+    this.teamMessages?.destroy(); this.teamMessages = undefined; this.childAgents?.setTask('', false); if (this.panel) hidePopover(this.panel); this.panel = undefined; this.selected = ''; this.rows.clear(); this.paintedTools.clear(); this.paintedWorker = ''; this.historyWorker = ''; this.historyMessages.clear(); this.historyHasOlder = false; this.historyTrimmedNewer = false; this.historyLoading = false; this.historyRefreshQueued = false; this.request++; cancelAnimationFrame(this.frame); this.frame = 0; this.trigger.setAttribute('aria-expanded', 'false'); }
   private async control(action: string): Promise<void> {
     if (this.busy || !this.team) return;
     this.busy = true; this.paint();
@@ -437,7 +464,8 @@ export class ArchitectView {
     const remote = Boolean(this.options.remote?.(this.taskId));
     panel.querySelector<HTMLElement>('.architect-configure')!.hidden = Boolean(team.config.auto) || remote;
     const heldUntil = teamHeldUntil(team);
-    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = heldUntil ? `Usage limit, resumes at ${resetTime(heldUntil)}` : teamActive(team) ? 'Architect is working…' : statusNames[team.status];
+    // Asking, the header says so generically: the Council card below names Council and its state.
+    panel.querySelector<HTMLElement>('.architect-panel-summary')!.textContent = heldUntil ? `Usage limit, resumes at ${resetTime(heldUntil)}` : team.councilStatus?.state === 'asking' ? 'Waiting for you' : teamActive(team) ? 'Architect is working…' : statusNames[team.status];
     const count = panel.querySelector<HTMLElement>('.architect-panel-count')!;
     count.textContent = `${team.workers.length} ${team.workers.length === 1 ? 'task' : 'tasks'}`; count.title = `Round ${team.round}`;
     panel.querySelector<HTMLButtonElement>('[data-team-control=pause]')!.hidden = !teamActive(team) || remote;
@@ -448,12 +476,19 @@ export class ArchitectView {
     // Teams running on another computer are shown read-only, except that a stopped one can be resumed.
     panel.querySelector<HTMLElement>('.architect-panel-controls')!.hidden = remote && !resumable;
     // While held, the summary says when the retry goes; the note would only repeat it.
-    const notes = [heldUntil && team.error && LEAD_RETRY.test(team.error) ? '' : team.error, teamCut(team) && 'Some agent details were left out to fit. Open this task on the other computer to see them.', remote && 'Messages between teammates stay on the other computer.'].filter(Boolean);
+    // A Council refusal is written for the lead: the user reads plain words, as a notice.
+    const notice = councilNotice(team);
+    // The Council card shows its notice; the error line does not repeat it.
+    const notes = [heldUntil && team.error && LEAD_RETRY.test(team.error) ? '' : notice ? (team.config.council ? '' : notice) : team.error, teamCut(team) && 'Some agent details were left out to fit. Open this task on the other computer to see them.', remote && 'Messages between teammates stay on the other computer.'].filter(Boolean);
     const error = panel.querySelector<HTMLElement>('.architect-panel-error')!; error.textContent = notes.join(' '); error.hidden = !notes.length;
     // Pausing or stopping is the user's own choice, and neither a quiet lead nor one retrying is a failure.
-    error.classList.toggle('is-notice', !team.error || (team.status === 'paused' && /^Team (paused|stopped)\./.test(team.error)) || /^The lead is quiet:/.test(team.error) || LEAD_RETRY.test(team.error));
+    error.classList.toggle('is-notice', !team.error || Boolean(notice) || (team.status === 'paused' && /^Team (paused|stopped)\./.test(team.error)) || /^The lead is quiet:/.test(team.error) || LEAD_RETRY.test(team.error));
     panel.querySelector<HTMLElement>('.architect-back')!.hidden = !worker;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
+    const councilSlot = panel.querySelector<HTMLElement>('.council-slot')!;
+    councilSlot.hidden = Boolean(worker);
+    // Council's state line and reviewer rows; its actions live in the composer's strip.
+    if (!worker) morph(councilSlot, councilSummaryHtml(team));
     panel.querySelector<HTMLElement>('.architect-worker-detail')!.hidden = !worker;
     if (this.teamMessages) { this.teamMessages.host.hidden = Boolean(worker); if (!worker) this.teamMessages.update(team); }
     if (worker) {
@@ -480,22 +515,29 @@ export class ArchitectView {
       this.paintLive(); return;
     }
     const list = panel.querySelector<HTMLElement>('.architect-worker-list')!;
+    const seated = councilSeatIds(councilProgress(team));
     if (!team.workers.length) { list.textContent = team.status === 'ready' ? 'Send a task to let the architect delegate the work.' : 'The architect is planning its first assignments.'; return; }
     if (!this.rows.size) list.replaceChildren();
     // Sub-workers sit indented under their parent.
-    const ordered = team.workers.filter(w => !w.parentWorker).flatMap(parent => [parent, ...team.workers.filter(w => w.parentWorker === parent.id)]);
+    const ordered = team.workers.filter(w => !w.parentWorker).flatMap(parent => [parent, ...team.workers.filter(w => w.parentWorker === parent.id)]).filter(w => !seated.has(w.id));
+    // The scorecard above shows these reviewers.
+    for (const id of seated) { this.rows.get(id)?.remove(); this.rows.delete(id); }
     ordered.forEach((worker, index) => {
       let row = this.rows.get(worker.id);
-      if (!row) { row = document.createElement('button'); row.className = 'architect-worker-row'; row.type = 'button'; row.dataset.workerId = worker.id; row.addEventListener('click', () => { this.selected = worker.id; this.paint(); void this.loadMessages(); }); this.rows.set(worker.id, row); if (worker.parentWorker) row.style.paddingInlineStart = '32px'; }
+      if (!row) { row = document.createElement('button'); row.className = 'architect-worker-row'; row.type = 'button'; row.dataset.workerId = worker.id; row.addEventListener('click', () => { this.selected = worker.id; this.paint(); this.panel?.querySelector<HTMLButtonElement>('.architect-back')?.focus(); void this.loadMessages(); }); this.rows.set(worker.id, row); if (worker.parentWorker) row.style.paddingInlineStart = '32px'; }
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       const live = this.live.get(worker.sessionId);
       const needsInput = Boolean(live?.approvals.size || live?.inputs.size);
       const state = workerState(worker, team);
       row.dataset.status = needsInput ? 'waiting' : state;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      const [verb, tone] = worker.abandoned ? ['Resolved', ''] : needsInput ? ['Needs input', 'accent'] : workerVerbs[state] ?? [statusNames[state] ?? state, ''];
-      const glyph = worker.abandoned ? 'idle' : needsInput || ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
-      const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}">${workerGlyphs[glyph]}<span class="architect-worker-logo">${providerLogo(worker.provider)}</span></span><span class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small${queueReason ? ` data-tip="${escape(queueReason)}"` : ''}><span class="architect-worker-state"${tone ? ` data-tone="${tone}"` : ''}>${escape(verb)}</span> ${escape(queueReason ?? modelName(worker, this.providers))}</small></span>${icon('chevron')}`;
+      // A scored reviewer reads its verdict against the target, never "Done" in success green below it.
+      const verdict = worker.council ? seatVerdict(team, worker as TeamWorker & { council: NonNullable<TeamWorker['council']> }) : null;
+      const below = Boolean(verdict?.text.includes('· below'));
+      const [verb, tone] = worker.abandoned ? ['Resolved', ''] : needsInput ? ['Needs input', 'accent'] : verdict ? [verdict.tone === 'at' ? 'At target' : below ? 'Below target' : 'Scored', verdict.tone === 'at' ? 'success' : verdict.tone] : workerVerbs[state] ?? [statusNames[state] ?? state, ''];
+      // A reviewer that finished below target gets no green done check beside its verdict.
+      const glyph = worker.abandoned || below ? 'idle' : needsInput || ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
+      const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}">${workerGlyphs[glyph]}<span class="architect-worker-logo">${providerLogo(worker.provider)}</span></span><span class="architect-worker-copy"><strong>${escape(worker.council ? worker.council.lens.trim() || worker.name : worker.name)}</strong><small${queueReason ? ` data-tip="${escape(queueReason)}"` : ''}><span class="architect-worker-state"${tone ? ` data-tone="${tone}"` : ''}>${escape(verb)}</span> ${escape(queueReason ?? (worker.council ? [`Round ${worker.council.round}`, typeof worker.council.score === 'number' ? `scored ${formatScore(worker.council.score)}` : '', worker.createdAt < (team.councilSince ?? 0) ? 'earlier council' : ''].filter(Boolean).join(' · ') : modelName(worker, this.providers)))}</small></span>${icon('chevron')}`;
       if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
     });
     const scroll = panel.querySelector<HTMLElement>('.architect-panel-scroll')!;

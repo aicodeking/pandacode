@@ -184,3 +184,18 @@ html[data-theme=dark] :is(.usage-tabs,.usage-segmented)>.segment-thumb{backgroun
 .usage-pool-dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--state-tone,var(--muted))}
 @media(prefers-contrast:more){.usage-connection,.usage-connection+.usage-card-cost,.usage-pool-chip{border-color:var(--border)}}
 @media(forced-colors:active){.usage-pool-dot{forced-color-adjust:none}}
+
+/* Email leads; setup and plan stay quiet underneath. The state occupies one stable icon slot. */
+.usage-account-title{flex:1;gap:4px}
+.usage-account-title .usage-account-who{order:-1;font-size:var(--ds-text-ui);font-weight:600;color:var(--text);user-select:text;white-space:normal;overflow-wrap:anywhere;line-height:1.4}
+.usage-account-title h4{font-size:var(--ds-text-meta);font-weight:400;color:var(--muted);white-space:normal;overflow-wrap:anywhere}
+.usage-account-meta{flex:none}
+.usage-pool-chip{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border:0;background:none;border-radius:var(--ds-radius-control);color:var(--muted)}
+.usage-pool-chip>.icon{--icon-size:16px}
+.usage-pool-chip>.icon[data-state-tone]{color:var(--state-tone,var(--muted))}
+.usage-pool-chip>.icon[data-state-tone="limited"] path{display:none}
+.usage-pool-chip:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.usage-account-heading{margin-bottom:18px}
+@media(forced-colors:active){.usage-pool-chip,.usage-pool-chip>.icon[data-state-tone]{color:CanvasText}.usage-pool-chip:focus-visible{outline-color:Highlight}}
+
+.usage-account-title .usage-account-who[data-identity-unknown]{color:var(--muted);font-weight:400}

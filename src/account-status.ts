@@ -1,5 +1,6 @@
 // One vocabulary for an account's health, shared by Settings → Providers (connections.ts) and the Usage panel
 // (agent-usage.ts): the chip's words and tone, the meter's tone and the plan shown beside the email.
+import { escape, icon } from './dom';
 import type { AgentUsage, UsageWindow } from './agent-usage';
 
 /** A member of `account_pool_status` (`account_pool.rs`). */
@@ -36,10 +37,14 @@ function freshWindows(usage: AgentUsage | null | undefined): UsageWindow[] | nul
   const windows = usage && !usage.stale ? accountWindows(usage) : [];
   return windows.length ? windows : null;
 }
+/** A fresh sign-out result supersedes local metadata kept for default-account selection. */
+export function accountSignedOut(member: PoolMember | null | undefined, usage: AgentUsage | null | undefined): boolean {
+  return member?.signedIn === false || (member?.sameAs === null && usage?.stale === false && usage.status === 'signedOut');
+}
 /** The chip: neutral for sign-in and pool states, amber only near a limit; fresh usage decides Near limit. */
 export function accountState(member: PoolMember, usage: AgentUsage | null | undefined): { tone: ChipTone; text: string } {
   if (member.sameAs !== null) return { tone: '', text: 'Same login' };
-  if (!member.signedIn) return { tone: '', text: 'Not signed in' };
+  if (accountSignedOut(member, usage)) return { tone: '', text: 'Not signed in' };
   if (member.excluded) return { tone: '', text: 'Left out' };
   if (member.limitedUntil) return { tone: 'limited', text: `${windowLimitLabel(member.limitedWindow)} · until ${until(member.limitedUntil)}` };
   const windows = freshWindows(usage), near = windows ? windows.some(w => w.usedPercent >= NEAR_PERCENT) : member.nearUntil !== null;
@@ -57,6 +62,21 @@ export function meterTone(percent: number, member?: PoolMember | null, label = '
 }
 /** The plan beside the email: the login's own first, then what the usage check reported. */
 export function accountPlan(member: PoolMember | null | undefined, usage: AgentUsage | null | undefined): string | null {
-  if (member && !member.signedIn) return null;
+  if (accountSignedOut(member, usage)) return null;
   return member?.plan ?? usage?.plan ?? null;
+}
+
+/** Identity must belong to this signed-in canonical account; never borrow a shared login's usage. */
+export function accountEmail(member: PoolMember | undefined, usage: AgentUsage | null | undefined): string | null {
+  if (!member?.signedIn || accountSignedOut(member, usage)) return null;
+  return member.email || (member.sameAs === null && !usage?.stale && usage && usage.status !== 'signedOut' ? usage.email : null) || null;
+}
+/** A fixed-size, keyboard-readable status, using the shared tooltip rather than a growing pill. */
+export function accountStatusIcon(member: PoolMember, usage: AgentUsage | null | undefined, className: string): string {
+  const state = accountState(member, usage);
+  const text = [state.text, (member.active ?? 0) > 0 ? `Running ${member.active}` : ''].filter(Boolean).join(' · ');
+  const glyph = member.sameAs !== null ? 'copy' : accountSignedOut(member, usage) ? 'unlock' : member.excluded ? 'pause' : state.tone === 'ready' ? 'check' : 'info';
+  const tone = state.tone ? ` data-state-tone="${state.tone}"` : '';
+  const glyphMarkup = icon(glyph).replace('<svg ', `<svg${tone} `);
+  return `<span class="${className}" data-status data-account-state="${state.tone || 'neutral'}" role="img" tabindex="0" aria-label="${escape(text)}" data-tip="${escape(text)}">${glyphMarkup}</span>`;
 }

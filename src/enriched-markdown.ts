@@ -116,21 +116,21 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
     const a = node.attributes ?? {};
     const raw = node.children?.every(child => child.type === 'Text' || child.type === 'SoftBreak') ? text(node).trim() : '';
     const open = raw.match(DETAILS_OPEN);
-    if (open) { details++; return `<details${open[1] ? ' open' : ''}>${open[2] === undefined ? '' : `<summary>${escapeText(open[2])}</summary>`}\n`; }
+    if (open) { details++; return `<details${open[1] ? ' open' : ''}>${open[2] === undefined ? '' : `<summary dir="auto">${escapeText(open[2])}</summary>`}\n`; }
     const summary = details ? raw.match(SUMMARY) : null;
-    if (summary) return `<summary>${escapeText(summary[1])}</summary>\n`;
+    if (summary) return `<summary dir="auto">${escapeText(summary[1])}</summary>\n`;
     if (/^<\/details>$/i.test(raw) && details) { details--; return '</details>\n'; }
     const followups: { label: string; prompt: string }[] = [];
     const html = kids(node).replace(FOLLOWUP, (_, label: string, _quote: string, prompt?: string) => {
       followups.push({ label: unescapeText(label), prompt: unescapeText(prompt ?? label) });
       return '';
     });
-    const body = html.trim() ? (a.tight === 'true' ? html : `<p>${html}</p>\n`) : '';
+    const body = html.trim() ? (a.tight === 'true' ? html : `<p dir="auto">${html}</p>\n`) : '';
     return followups.length ? `${body}<pandacode-ui><pre><code class="language-ui">${escapeText(JSON.stringify({ type: 'followups', items: followups.slice(0, 8) }))}</code></pre></pandacode-ui>\n` : body;
   };
   const cell = (tag: string, node: MarkdownNode) => {
     const align = node.attributes?.align ?? '';
-    return `<${tag}${ALIGN.has(align) ? ` class="md-align-${align}"` : ''}>${kids(node)}</${tag}>`;
+    return `<${tag} dir="auto"${ALIGN.has(align) ? ` class="md-align-${align}"` : ''}>${kids(node)}</${tag}>`;
   };
   function render(node: MarkdownNode): string {
     const a = node.attributes ?? {};
@@ -141,7 +141,7 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       case 'Text': return escapeText(node.content ?? '');
       case 'SoftBreak': return '\n';
       case 'LineBreak': return '<br>\n';
-      case 'Heading': { const level = Math.min(6, Math.max(1, Number(a.level) || 1)); return `<h${level}>${kids(node)}</h${level}>\n`; }
+      case 'Heading': { const level = Math.min(6, Math.max(1, Number(a.level) || 1)); return `<h${level} dir="auto">${kids(node)}</h${level}>\n`; }
       case 'Strong': return `<strong>${kids(node)}</strong>`;
       case 'Emphasis': return `<em>${kids(node)}</em>`;
       case 'Strikethrough': return `<del>${kids(node)}</del>`;
@@ -149,7 +149,7 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       case 'Superscript': return `<sup>${kids(node)}</sup>`;
       case 'Subscript': return `<sub>${kids(node)}</sub>`;
       case 'Highlight': return `<mark>${kids(node)}</mark>`;
-      case 'Code': return `<code>${escapeText(text(node))}</code>`;
+      case 'Code': return `<code dir="ltr">${escapeText(text(node))}</code>`;
       case 'Link': {
         // A citation chip only for a real web link whose text is not the URL itself; brandFor alone would chip bare words.
         const url = a.url ?? '';
@@ -172,13 +172,13 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
         return `<${tag}${tasks ? ' class="md-task-list"' : ''}${tag === 'ol' && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ''}>\n${kids(node)}</${tag}>\n`;
       }
       case 'ListItem': {
-        if (a.isTask !== 'true') return `<li>${kids(node)}</li>\n`;
+        if (a.isTask !== 'true') return `<li dir="auto">${kids(node)}</li>\n`;
         const done = a.taskChecked === 'true';
-        return `<li class="md-task${done ? ' md-task-done' : ''}"><span class="md-checkbox" role="img" aria-label="${done ? 'Done' : 'Not done'}"></span>${kids(node)}</li>\n`;
+        return `<li dir="auto" class="md-task${done ? ' md-task-done' : ''}"><span class="md-checkbox" role="img" aria-label="${done ? 'Done' : 'Not done'}"></span>${kids(node)}</li>\n`;
       }
       case 'CodeBlock': {
         const language = (a.language ?? '').trim().split(/\s/)[0];
-        const code = `<pre><code${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeText(text(node))}</code></pre>`;
+        const code = `<pre dir="ltr"><code dir="ltr"${language ? ` class="language-${escapeAttr(language)}"` : ''}>${escapeText(text(node))}</code></pre>`;
         // Generative UI: the source stays in the light DOM; <pandacode-ui> draws it in a shadow root.
         // Other code gets a copy button from <pandacode-code>, which slots the block unchanged.
         return GENERATIVE.has(language.toLowerCase()) ? `<pandacode-ui>${code}</pandacode-ui>\n` : `<pandacode-code>${code}</pandacode-code>\n`;
@@ -210,10 +210,10 @@ export async function typesetMath(html: string): Promise<string> {
   katex ??= import('./math').then(module => module.default as Katex);
   const engine = await katex;
   const typeset = (tex: string, display: boolean) => {
-    try { return engine.renderToString(unescapeText(tex), { displayMode: display, throwOnError: false, trust: false, strict: 'ignore', output: 'htmlAndMathml', maxExpand: 1000, maxSize: 20 }); }
-    catch { return `<code class="md-math-error">${tex}</code>`; }
+    try { return engine.renderToString(unescapeText(tex), { displayMode: display, throwOnError: false, trust: false, strict: 'ignore', output: 'htmlAndMathml', maxExpand: 1000, maxSize: 20 }).replace('<span class="katex', '<span dir="ltr" class="katex'); }
+    catch { return `<code dir="ltr" class="md-math-error">${tex}</code>`; }
   };
   return html
-    .replace(/<pre class="md-math-display"><code class="md-math">([\s\S]*?)<\/code><\/pre>/g, (_, tex: string) => `<div class="md-math-block">${typeset(tex, true)}</div>`)
+    .replace(/<pre class="md-math-display"><code class="md-math">([\s\S]*?)<\/code><\/pre>/g, (_, tex: string) => `<div dir="ltr" class="md-math-block">${typeset(tex, true)}</div>`)
     .replace(/<code class="md-math">([\s\S]*?)<\/code>/g, (_, tex: string) => typeset(tex, false));
 }

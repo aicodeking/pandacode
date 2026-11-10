@@ -7,8 +7,6 @@ import { trackSegment } from './motion';
 
 /** A named agent team from Settings, offered beside the models. `detail` is one line ("lead · N workers"); `roster` its harnesses. */
 export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
-/** A named connection from Settings: its harness's models listed again under its name. */
-export type PickerConnection = { id: string; name: string; provider: ProviderId };
 type ModelPickerOptions = {
   teams?: PickerTeam[];
   onTeamSelect?: (id: string) => Promise<void>;
@@ -16,10 +14,7 @@ type ModelPickerOptions = {
   providers: Provider[];
   current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
-  connections?: PickerConnection[];
-  /** The task's connection; null is the harness's own setup. */
-  currentConnection?: string | null;
-  onSelect: (provider: ProviderId, model: string, connection: string | null) => Promise<void>;
+  onSelect: (provider: ProviderId, model: string) => Promise<void>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
   loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
@@ -45,12 +40,12 @@ function rememberRecent(provider: ProviderId, model: string): void {
   try { localStorage.setItem(recentKey(provider), JSON.stringify([model, ...storedRecent(provider).filter(id => id !== model)].slice(0, RECENT_LIMIT))); } catch { /* Ordering only. */ }
 }
 
-const optionKey = (button: HTMLElement) => `${button.dataset.connection ?? ''}|${button.dataset.provider}:${button.dataset.model}`;
+const optionKey = (button: HTMLElement) => `${button.dataset.provider}:${button.dataset.model}`;
 const includes = (values: string[], query: string) => values.some(value => value.toLowerCase().includes(query));
 let pickerCount = 0;
 
-/** A rail entry: Recent, Teams, or one harness (or named connection of a harness). */
-type Group = { key: string; provider: Provider; connection: PickerConnection | null; name: string; locked: boolean; unavailable: boolean; failure: string };
+/** A harness's catalog and availability. */
+type Group = { key: string; provider: Provider; name: string; locked: boolean; unavailable: boolean; failure: string };
 type Row = { group: Group; model: ProviderModel; custom?: boolean };
 
 /** A transient picker with local state and listeners released on dismissal. */
@@ -58,8 +53,6 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
-  const connections = options.connections ?? [];
-  const currentConnection = options.currentConnection ?? null;
   const teamSelected = teams.some(team => team.selected);
   const catalogErrors = new Map<ProviderId, string>();
   const catalogLoading = new Set<ProviderId>();
@@ -88,7 +81,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   let settingsKey = '';
   let pendingEffort: string | null | undefined;
   let hoveredEffort: string | null | undefined;
-  let view = teamSelected ? 'teams' : currentConnection ? `c:${currentConnection}` : `h:${current.provider}`;
+  let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
   function restoreFocus(): void {
     let target: HTMLElement | null = anchor.isConnected ? anchor : null;
@@ -149,17 +142,17 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
-    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => {
+    return providers.filter(provider => provider.installed || provider.id === current.provider).map(provider => {
       // A harness whose catalog failed is disabled; hovering it shows why.
       const failure = catalogErrors.has(provider.id) ? catalogErrors.get(provider.id) || 'Could not load models.' : '';
-      return [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({
-        key: connection ? `c:${connection.id}` : `h:${provider.id}`, provider, connection, name: connection?.name ?? provider.name,
+      return {
+        key: `h:${provider.id}`, provider, name: provider.name,
         locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed || Boolean(failure), failure,
-      }));
+      };
     });
   }
   const models = (group: Group) => modelChoices(group.provider.id, group.provider.models, group.provider.id === current.provider ? current.model : '');
-  const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default') && (row.group.connection?.id ?? null) === currentConnection;
+  const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default');
 
   /** Default plus the most recent models, padded from the catalog, when the caller asks for a short list. */
   function shortList(provider: ProviderId, all: ProviderModel[]): ProviderModel[] {
@@ -173,9 +166,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** The current pick, then each harness's latest stored picks, newest harness first. */
   function recentRows(all: Group[]): Row[] {
-    const plain = all.filter(group => !group.connection && !group.locked && !group.unavailable);
-    const stored = plain.map(group => ({ group, ids: storedRecent(group.provider.id) }));
-    const picks: [Group | undefined, string][] = [[all.find(group => group.key === (currentConnection ? `c:${currentConnection}` : `h:${current.provider}`)), current.model],
+    const available = all.filter(group => !group.locked && !group.unavailable);
+    const stored = available.map(group => ({ group, ids: storedRecent(group.provider.id) }));
+    const picks: [Group | undefined, string][] = [[all.find(group => group.key === `h:${current.provider}`), current.model],
       ...stored.flatMap(({ group, ids }) => ids.slice(0, 1).map(id => [group, id] as [Group, string])), ...stored.flatMap(({ group, ids }) => ids.slice(1).map(id => [group, id] as [Group, string]))];
     const seen = new Set<string>();
     const rows: Row[] = [];
@@ -216,7 +209,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const title = [model.contextWindow ? `${context} context` : '', model.description || (model.name !== model.id && model.id !== 'default' ? model.id : '')].filter(Boolean).join(' · ');
     const meta = mixed ? group.name : context;
     const name = custom ? `Use “${escape(query)}”` : escape(model.name);
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}"${group.connection ? ` data-connection="${escape(group.connection.id)}"` : ''} data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : group.failure || title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}" data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : group.failure || title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
   }
 
   function heading(logo: string, name: string, status = ''): string {
@@ -234,7 +227,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const all = groups();
     const recent = recentRows(all);
     const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
-    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:') || key.startsWith('c:')) ?? railKeys[0] ?? '';
+    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
     const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
     const hits = new Map<string, Row[]>();
@@ -242,17 +235,17 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const groupMatches = includes([group.provider.id, group.provider.name, group.name], normalized);
       hits.set(group.key, models(group).filter(model => groupMatches || includes([model.id, model.name], normalized)).map(model => ({ group, model })));
     }
-    search.placeholder = `Search ${new Set(all.flatMap(group => models(group).map(model => `${group.provider.id}:${model.id}`))).size} models, ${all.filter(group => !group.connection).length} harnesses…`;
+    search.placeholder = `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
 
     // Rail: a tab per view; while searching it is a hit map.
-    const inUse = (key: string) => !teamSelected && key === (currentConnection ? `c:${currentConnection}` : `h:${current.provider}`);
+    const inUse = (key: string) => !teamSelected && key === `h:${current.provider}`;
     let railHtml = '';
     if (recent.length) railHtml += railItem('recent', icon('undo'), 'Recent', '', query ? ' is-dim' : '', !query && view === 'recent');
     if (teams.length) railHtml += railItem('teams', icon('team'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
     if (all.length) railHtml += '<div class="model-menu-rail-heading" role="presentation">Harnesses</div>';
     railHtml += all.map(group => {
       const count = query ? hits.get(group.key)!.length : 0;
-      const classes = `${group.connection ? ' is-connection' : ''}${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
+      const classes = `${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
       return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
     }).join('');
     if (railHtml !== railMarkup) {
@@ -287,7 +280,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>${group.connection && !inUse(group.key) ? '<span>Choose a model to use it</span>' : ''}`;
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
@@ -451,7 +444,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     try {
       if (button.dataset.team) await options.onTeamSelect?.(button.dataset.team);
       else {
-        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!, button.dataset.connection ?? null);
+        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!);
         rememberRecent(button.dataset.provider as ProviderId, button.dataset.model!);
       }
       close();

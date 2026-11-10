@@ -87,12 +87,13 @@ and variable); the file and the webview only see their names, and an edit that
 leaves a secret empty keeps the saved value. Deleting a connection removes its
 secrets and returns its tasks to the harness's own setup.
 
-The model picker lists each connection as its own group (`Claude Work · Claude
-Sonnet 5`); choosing a row sets the task's connection (`connection_assign`),
-and the composer label shows it. The assignment is kept per task in the same
-file, so no schema change was needed, and a task never changes connection on
-its own. A task without one, or whose harness no longer matches its connection,
-uses the global configuration exactly as before.
+The model picker offers each installed harness once, with one set of models.
+Named accounts are managed in Settings → Agents → Providers; they never add
+account tabs, duplicate model choices or search results, whether pooling is on
+or off. Selecting another model in the same harness keeps the task's account
+and resumable conversation. Existing per-task assignments remain saved in the
+connections file; a task without one, or whose harness no longer matches its
+connection, uses the harness's global setup unless its account pool is enabled.
 
 At launch (`run_inner` in `providers.rs`, and warm Claude agents in
 `providers/warm.rs`) the connection's executable replaces the discovered one,
@@ -133,15 +134,14 @@ rejected. Pool only accounts you own; each must be your own subscription, and
 Settings says so beside **Add account**.
 
 Each row shows the account's email, plan and how many tasks it runs, a status
-chip (**Ready**, **Near limit**, **5-hour limit · until 3:00 PM** or **Weekly
+icon (**Ready**, **Near limit**, **5-hour limit · until 3:00 PM** or **Weekly
 limit · until Sat 10:32 AM** when the CLI said which limit ran out, **Not signed
 in**, **Same login**, **Left out**) and up to two usage meters (such as the
 5-hour and weekly windows) with when each resets; a meter turns amber at 70 %
-and red at 90 %, and fresh usage at 90 % or more is what makes the chip read
-Near limit. While the pool is off the list is dimmed and only the neutral chips
-show. The email and plan are read locally from the CLI's own login files in the
+and red when full or held by a limit; fresh usage at 90 % or more makes the status read
+Near limit. Default accounts remain visible while pooling is off, even without named connections. Status icons expose their full state as an accessible label and tooltip. The email and plan are read locally from the CLI's own login files in the
 account's config folder and are only shown in the app; they are never sent
-anywhere. Usage comes from the same per-account limit check as the Usage view:
+anywhere. A missing local email can fall back to the same Codex account's `account/read` email returned with usage. Refresh re-reads local identity; unavailable limits retain known identity. Config-folder overrides use the same resolved path for identity and usage. External tokens and shared-login aliases never supply a fabricated identity. Usage comes from the same per-account limit check as the Usage view:
 once when the card first shows, then at most every 5 minutes when the window
 regains focus, or when you click the card's refresh button (the minute timer
 only re-reads PandaCode's own pool status). **Usage not available** means the
@@ -194,11 +194,13 @@ window at 90 % or more, or a model-family limit (`seven_day_opus`,
 `seven_day_sonnet`), which never marks the whole account out. Before a turn, a
 task leaves an account that is out or taken out of the pool, or one that is near
 its limit while another has room, so most switches happen between turns. A new
-conversation (nothing to resume yet) with no account picked for it also starts
+conversation (nothing to resume yet) with no saved account binding also starts
 on a quieter account when the default runs more tasks; this is how parallel tasks
-and team workers spread over the pool. An account picked in the model picker is
-kept while it has room, and a running conversation stays on its account until it
-nears a limit.
+and team workers spread over the pool. New pooled tasks do not explicitly inherit
+another task's named account; native routing chooses their account. Existing
+conversations keep their account while it has room, until pool policy needs to
+move them. Choosing a harness or model never changes the Account pool switch;
+pooling is opt-in in Settings and supports only Claude Code and Codex.
 
 Only a turn that fails at its limit moves; a limit inside a turn that still
 finished (a fallback model, overage) does not. Then PandaCode holds the account
@@ -207,8 +209,10 @@ copies the harness session file into the next account's config folder (Claude:
 `projects/<slug>/<id>.jsonl`; Codex: `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`;
 folders it creates are 0700), moves the task there and resumes the session
 with “Continue where you left off.” inside the same run. A first turn that has
-no session yet is sent again as is. A transcript note names the move and the
-composer shows the new account; there is no banner. Stop pressed before the
+no session yet is sent again as is. The transcript shows a compact **Account
+switched** disclosure, closed by default; opening it shows the full explanation
+and account names. It appears during the run and in saved history, including
+side threads. The composer keeps the harness/model label; there is no banner. Stop pressed before the
 first attempt runs nothing, and Stop during a switch ends the run before the
 next account starts. Other messages sent meanwhile wait for the next account; a
 steer is acknowledged at once as a next-turn message and delivered there. If

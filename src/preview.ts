@@ -19,6 +19,7 @@ import { createPreviewDesign } from './preview-design';
 import { previewProgress } from './preview-progress';
 import { BRIEF_ID, GALLERY_ID, briefAnswer, briefMessages, briefTimings, briefTools, galleryMessages } from './preview-traces';
 import { createPreviewSkills } from './preview-skills';
+import { createPreviewSkillManager } from './preview-skill-manager';
 import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
 import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
@@ -495,6 +496,7 @@ const previewGithub = (() => {
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
+const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
 const previewCloud = createPreviewCloud();
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
@@ -918,6 +920,14 @@ const architect = createPreviewArchitect({
   emit: snapshot => { emit('architect-event', snapshot); emit('sessions-changed', {}); },
   agent,
 });
+
+// `?council` seeds a council partway through; `?council=passed|fixing|limit|finished|cycle|asking|accepted` shows that state.
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('council')) {
+  architect.seedCouncil('session-1', new URLSearchParams(location.search).get('council') ?? '');
+  // Tests score or add a seat, as a reviewer finishing would.
+  (window as unknown as { __councilSeat: unknown }).__councilSeat = (seat: Parameters<typeof architect.councilSeat>[1]) => architect.councilSeat('session-1', seat);
+  (window as unknown as { __councilAsk: unknown }).__councilAsk = () => architect.councilAsk('session-1');
+}
 
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
@@ -1698,11 +1708,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       const ownLogin = Boolean(previewConnections.connections.find(item => item.id === args.connection)?.configDir);
       const connectionUsage = args.connection && ownLogin ? ([[81, 100], [93, 58], [12, 9]][ownIndex] ?? [3, 5]) : null;
       if (args.connection && previewSignedOut.includes(String(args.connection))) {
-        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
+        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, email: null, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
         break;
       }
       const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
       result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
+        // Only Codex account/read supplies a usage identity; these are sample addresses, never real credentials.
+        email: provider === 'codex' ? (args.connection && ownLogin ? `${(previewConnections.connections.find(item => item.id === args.connection)?.name ?? args.connection).toLowerCase().replace(/[^a-z0-9]+/g, '.')}@example.com` : 'you@example.com') : null,
         plan: provider === 'codex' ? 'Pro' : provider === 'opencode' ? 'Go' : null,
         windows: supported ? [
           { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: connectionUsage?.[0] ?? (provider === 'codex' ? 38 : 22), resetsAt: new Date(Date.now() + 7200000).toISOString() },
@@ -1757,6 +1769,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'model_routing_route': result = previewRoute(String(args.text), args.pool as any[]); break;
     case 'architect_get': result = architect.get(args.sessionId); break;
     case 'architect_configure': result = architect.configure(args.sessionId, args.config, args.architect, args.profileId); break;
+    case 'architect_set_council': result = architect.setCouncil(args.sessionId, args.council); break;
+    case 'architect_council_accept': result = architect.councilAccept(args.sessionId); break;
     case 'architect_profiles': result = architect.profiles(); break;
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
@@ -2346,9 +2360,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'design_comments': result = previewDesign.comments(); break;
     case 'design_save_comments': result = previewDesign.saveComments(args.comments); break;
     case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
-    case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
-    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover':
+    case 'skills_deactivate': case 'skills_deactivate_all': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
       result = previewSkills.call(command, args); break;
+    case 'skill_manager_list': result = previewSkillManager.list(args); break;
+    case 'skill_manager_set': result = previewSkillManager.set(args as { name: string; enabled: boolean; projectId?: string }); break;
+    case 'skill_manager_preview': result = await previewSkillManager.preview(args as { source: string }); break;
+    case 'skill_manager_add': result = await previewSkillManager.add(args as { source: string; skills: string[]; harnesses: string[]; projectId?: string }); break;
+    case 'skill_manager_add_library': result = await previewSkillManager.addLibrary(args as { source: string; skills: string[] }); break;
+    case 'skill_manager_reset': result = previewSkillManager.reset(args as { projectId?: string }); break;
+    case 'skill_manager_restore': result = previewSkillManager.restore(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_uninstall': result = previewSkillManager.uninstall(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_undo_uninstall': result = previewSkillManager.undoUninstall(args as { id: string; projectId?: string }); break;
     case 'simulator_status': result = previewSimulator.status(); break;
     case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
     case 'simulator_create_duo': result = previewSimulator.createDuo(); break;

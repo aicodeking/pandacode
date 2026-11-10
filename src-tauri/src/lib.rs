@@ -1,3 +1,4 @@
+mod account_config;
 mod account_identity;
 mod account_pool;
 mod account_sign_in;
@@ -39,6 +40,7 @@ mod capabilities;
 mod vsix_themes;
 mod token_saver;
 mod task_usage;
+mod skill_manager;
 mod skills;
 mod goal_state;
 #[cfg(test)]
@@ -339,6 +341,32 @@ mod task_agent_tests {
         assert_eq!(listed(r#"{"status":"waiting"}"#), "waiting");
         assert_eq!(listed(r#"{"status":"paused"}"#), "idle");
         assert_eq!(listed("not json"), "idle");
+    }
+
+    #[test]
+    fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let assistant = Mutex::new("Checking the project.".to_string());
+        let body = "Account switched\nThe default Claude account reached its usage limit, so this task continues on “Backup”.";
+        let mut switch = event(&task.id, "note", body);
+        switch.data = Some(serde_json::json!({"accountPool": {"connectionId": "b"}}));
+        save_agent_activity(&store, &assistant, &mut switch, None).unwrap();
+        let mut ordinary = event(&task.id, "note", "Waiting for a background task.");
+        save_agent_activity(&store, &assistant, &mut ordinary, None).unwrap();
+        let page = store.message_page(&task.id, None).unwrap();
+        let rows: Vec<_> = page.messages.iter().map(|message| (message.role.as_str(), message.content.as_str())).collect();
+        assert_eq!(rows, [
+            ("assistant", "Checking the project."),
+            ("system", body),
+            ("system", "Waiting for a background task."),
+        ]);
+        assert!(!page.has_older);
+        assert!(assistant.lock().unwrap().is_empty());
+        assert_eq!(switch.kind, "note");
+        assert_eq!(switch.text, body);
+        assert_eq!(switch.data.unwrap()["accountPool"]["connectionId"], "b");
     }
 
     #[test]
@@ -661,11 +689,13 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
 }
 #[tauri::command]
 async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project> {
-    state
+    let project = state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .add_project(&PathBuf::from(path))
+        .add_project(&PathBuf::from(path));
+    skill_manager::projects_changed();
+    project
 }
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
@@ -680,13 +710,17 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     if active_team {
         return Err("Stop this project's architect teams first.".into());
     }
-    store.remove_project(&project_id)
+    let removed = store.remove_project(&project_id);
+    skill_manager::projects_changed();
+    removed
 }
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
     let (project, worktrees) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        let project = store.relink_project(&project_id, &PathBuf::from(path))?;
+        let project = store.relink_project(&project_id, &PathBuf::from(path));
+        skill_manager::projects_changed();
+        let project = project?;
         (project, store.project_worktrees(&project_id)?)
     };
     // Task worktrees stay where they are, but their `.git` files still name the old folder:
@@ -1046,13 +1080,14 @@ fn persist_turn_changes(
     store: &Mutex<Store>,
     sid: &str,
     capture: turn_changes::Captured,
+    last_write: i64,
 ) {
     let change_id = capture.summary.id.clone();
     match store
         .lock()
         .map_err(|e| e.to_string())
         .and_then(|store| {
-            let message_id = turn_changes::persist(&store, sid, capture)?;
+            let message_id = turn_changes::persist_dated(&store, sid, capture, last_write)?;
             Ok((message_id, turn_changes::summary(&store, sid, &change_id)?))
         })
     {
@@ -1302,10 +1337,12 @@ async fn list_slash_commands(
         } else {
             store.workspace_root(&task.project_id, Some(&session_id))?
         };
+        let main = store.workspace_root(&task.project_id, None)?;
+        skill_manager::remember_project(&cwd, &task.project_id, &main);
         (task.provider, cwd)
     };
     if cached_only.unwrap_or(false) {
-        return slash_commands::snapshot(&provider, &cwd);
+        return slash_commands::snapshot(&provider, &cwd).await;
     }
     slash_commands::catalog(&provider, &cwd, force.unwrap_or(false)).await
 }
@@ -1327,6 +1364,8 @@ async fn resolve_slash_command(
         } else {
             store.workspace_root(&task.project_id, Some(&session_id))?
         };
+        let main = store.workspace_root(&task.project_id, None)?;
+        skill_manager::remember_project(&cwd, &task.project_id, &main);
         (task.provider, cwd)
     };
     slash_commands::resolve(&provider, &cwd, &text).await
@@ -1378,11 +1417,10 @@ async fn prepare_command(
         if task.provider == "codex" && name == "/compact" && task.resume_id.is_none() {
             return Err(COMPACT_NEEDS_CONVERSATION.into());
         }
-        (
-            task.provider,
-            store.workspace_root(&task.project_id, Some(session_id))?,
-            original,
-        )
+        let cwd = store.workspace_root(&task.project_id, Some(session_id))?;
+        let main = store.workspace_root(&task.project_id, None)?;
+        skill_manager::remember_project(&cwd, &task.project_id, &main);
+        (task.provider, cwd, original)
     };
     let resolution = slash_commands::resolve(&provider, &cwd, &original).await?;
     if resolution.action.is_some() {
@@ -2299,19 +2337,29 @@ async fn launch_operation_admitted(
                         tracker
                             .lock()
                             .ok()
-                            .and_then(|mut tracker| tracker.boundary())
+                            .and_then(|mut tracker| {
+                                let last_write = tracker.last_write();
+                                tracker.boundary().map(|capture| (capture, last_write))
+                            })
                     });
-                    if let Some(capture) = capture {
-                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture);
+                    if let Some((capture, last_write)) = capture {
+                        persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture, last_write);
                     }
                 }
             }
         });
         let host = if let Some(admission) = team.as_ref() {
             architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
+                .map(|host| {
+                    // Workers keep their scoped team tools; only the lead may manage other tasks.
+                    if admission.parent == session_id {
+                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+                    } else {
+                        host
+                    }
+                })
         } else {
-            (config.provider == "codex")
-                .then(|| agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
         };
         let team_tools_missing = team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
@@ -2377,12 +2425,15 @@ async fn launch_operation_admitted(
             }
         }
         if let Some(tracker) = tracker {
-            if let Ok(Some(capture)) = tauri::async_runtime::spawn_blocking(move || {
-                tracker.lock().ok().and_then(|mut tracker| tracker.finish())
+            if let Ok(Some((capture, last_write))) = tauri::async_runtime::spawn_blocking(move || {
+                tracker.lock().ok().and_then(|mut tracker| {
+                    let last_write = tracker.last_write();
+                    tracker.finish().map(|capture| (capture, last_write))
+                })
             })
             .await
             {
-                persist_turn_changes(&app, &store, &session_id, capture);
+                persist_turn_changes(&app, &store, &session_id, capture, last_write);
             }
         }
         if cloud {
@@ -3032,6 +3083,7 @@ fn create_worktree_task_with_defaults(
         )
     })?;
     transaction.commit().map_err(|e| e.to_string())?;
+    skill_manager::projects_changed();
     Ok(created)
 }
 
@@ -3075,9 +3127,11 @@ async fn attach_worktree(
         };
         let worktree = workspace::create_worktree_with(&root, &branch, base.as_deref(), existing.unwrap_or(false))?;
         let store = store.lock().map_err(|e| e.to_string())?;
-        store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
+        let attached = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
             format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display())
-        })
+        });
+        skill_manager::projects_changed();
+        attached
     })
     .await
 }
@@ -3129,7 +3183,9 @@ async fn remove_worktree(
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // A lingering agent's working directory would block the removal on Windows.
     providers::end_lingering_in(&path).await;
-    blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await
+    let removed = blocking(move || workspace::remove_worktree(&main, &path, branch.as_deref(), delete_branch.unwrap_or(false))).await;
+    skill_manager::projects_changed();
+    removed
 }
 
 #[tauri::command]
@@ -3138,6 +3194,7 @@ async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Re
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
         workspace::recreate_worktree(&main, &path, branch.as_deref())?;
+        skill_manager::projects_changed();
         store.lock().map_err(|e| e.to_string())?.session(&session_id)
     })
     .await
@@ -3265,7 +3322,9 @@ async fn github_project_repos(state: State<'_, AppState>) -> Result<Vec<github_h
 #[tauri::command]
 async fn github_clone_repo(state: State<'_, AppState>, repo: String, parent: String) -> Result<Project> {
     let destination = blocking(move || github_hub::clone(&repo, std::path::Path::new(&parent))).await?;
-    state.store.lock().map_err(|e| e.to_string())?.add_project(&destination)
+    let project = state.store.lock().map_err(|e| e.to_string())?.add_project(&destination);
+    skill_manager::projects_changed();
+    project
 }
 
 #[tauri::command]
@@ -4334,6 +4393,8 @@ pub fn run() {
                 architect::profiles::architect_delete_profile,
                 architect::architect_get,
                 architect::architect_configure,
+                architect::architect_set_council,
+                architect::architect_council_accept,
                 architect::architect_start,
                 architect::architect_control,
                 architect::architect_worker_messages,
@@ -4468,20 +4529,24 @@ pub fn run() {
                 token_saver::token_saver_tools,
                 token_saver::token_saver_install,
                 task_usage::task_token_usage,
+                skill_manager::skill_manager_list,
+                skill_manager::skill_manager_set,
+                skill_manager::skill_manager_reset,
+                skill_manager::skill_manager_restore,
+                skill_manager::skill_manager_uninstall,
+                skill_manager::skill_manager_undo_uninstall,
+                skill_manager::skill_manager_preview,
+                skill_manager::skill_manager_add,
+                skill_manager::skill_manager_add_library,
                 skills::skills_list,
                 skills::skills_import_folder,
                 skills::skills_import_github,
                 skills::skills_activate,
                 skills::skills_deactivate,
+                skills::skills_deactivate_all,
                 skills::skills_matrix,
                 skills::skills_scan,
                 skills::skills_remove,
-                skills::skills_catalogs,
-                skills::skills_catalog_add,
-                skills::skills_catalog_refresh,
-                skills::skills_catalog_state,
-                skills::skills_catalog_import,
-                skills::skills_discover,
                 set_task_link,
                 import_prompt_image,
                 read_clipboard_image,

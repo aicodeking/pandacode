@@ -44,11 +44,22 @@ pub(super) fn key(config: &RunConfig, tools: &[Value]) -> String {
 
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
 fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
+    let disabled = crate::skill_manager::disabled_for(&config.session_id);
+    key_with_disabled(config, tools, connection, &disabled)
+}
+
+fn key_with_disabled(
+    config: &RunConfig,
+    tools: &[Value],
+    connection: &str,
+    disabled: &std::collections::BTreeSet<String>,
+) -> String {
     json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
+        "disabledSkills": disabled,
         // The login a process starts with (API key or subscription) is fixed at spawn.
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
@@ -59,6 +70,13 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
         "executable": crate::provider_settings::executable_override(&config.provider),
     })
     .to_string()
+}
+
+/// The spare launches with the instructions a cold launch would use (`run_inner` applies the
+/// skill reminder before keying), so its key and its `--append-system-prompt` both match.
+fn prepared(mut config: RunConfig, disabled: &std::collections::BTreeSet<String>) -> RunConfig {
+    crate::skill_manager::apply_instructions(&mut config, disabled);
+    config
 }
 
 /// The warm agent for this turn, if one exists, is still running and was started for
@@ -128,10 +146,23 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         .or_else(|| executable(&config.provider))
         .ok_or("Claude Code is not installed")?;
     config.cwd = external_path(&config.cwd);
-    let key = key(&config, &tools);
+    // Switches, settings and the reminder's skill scan are read off the runtime.
+    let catalog = tools.clone();
+    let (config, key, disabled) = crate::blocking(move || {
+        let disabled = crate::skill_manager::disabled_for(&config.session_id);
+        let config = prepared(config, &disabled);
+        let key = key_with_disabled(
+            &config,
+            &catalog,
+            &crate::connections::warm_key(&config.session_id, &config.provider),
+            &disabled,
+        );
+        Ok((config, key, disabled))
+    })
+    .await?;
     let mut command = command(&path)?;
     crate::provider_settings::apply_environment(&config.provider, &mut command);
-    configure_command(&mut command, &config);
+    configure_command_with_skills(&mut command, &config, &disabled);
     if let Some(connection) = &connection {
         connection.apply(&mut command);
     }
@@ -192,6 +223,47 @@ pub(super) fn waiting(session_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_manager_disabled_skills_invalidate_a_warm_launch() {
+        let config = crate::providers::tests::config("claude");
+        let none = std::collections::BTreeSet::new();
+        let disabled = std::collections::BTreeSet::from(["alpha".into()]);
+        assert_ne!(
+            key_with_disabled(&config, &[], "", &none),
+            key_with_disabled(&config, &[], "", &disabled)
+        );
+    }
+
+    #[test]
+    fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch() {
+        let disabled = std::collections::BTreeSet::from(["Friendly skill".into()]);
+        let base = crate::providers::tests::config("claude");
+        // Cold path: run_inner applies the reminder, then keys the launch.
+        let mut cold = base.clone();
+        crate::skill_manager::apply_instructions(&mut cold, &disabled);
+        let spare = prepared(base.clone(), &disabled);
+        assert!(spare.instructions.contains("Friendly skill"));
+        assert_eq!(
+            key_with_disabled(&spare, &[], "", &disabled),
+            key_with_disabled(&cold, &[], "", &disabled)
+        );
+        // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
+        assert_eq!(
+            prepared(spare.clone(), &disabled).instructions,
+            spare.instructions
+        );
+        let mut command = Command::new("claude");
+        configure_command_with_skills(&mut command, &spare, &disabled);
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|a| a[0] == "--append-system-prompt" && a[1].contains("Friendly skill")));
+    }
 
     #[test]
     fn a_warm_agent_is_used_only_for_the_exact_launch_it_was_started_for() {
