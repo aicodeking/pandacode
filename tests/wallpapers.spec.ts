@@ -246,3 +246,58 @@ test('wallpapers give rounded board task details the frost material without a di
   await expect(page.locator('#project-board')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(images(page)).toHaveCount(1);
 });
+
+/** The glass split, which is by scene and not by surface: a wallpaper is one decoded `<img>` with no frame loop, so its
+ * frost is paid on a scroll step alone (src/turn-card.css `[data-scene="wallpaper"] .turn-card`, src/thread-tiles.css the
+ * tile bar and the mirror composer); the sky paints its canvas every frame, so the same three surfaces carry no blur at all
+ * there. The three numbers are named here rather than merely "some blur", so an edit that changes one fails in this spec;
+ * colours are deliberately left alone, so a theme change cannot fail a test about frost. */
+const CARD_FROST = 'blur(22px) saturate(1.25)', TILE_BAR_FROST = 'blur(16px) saturate(1.15)', TILE_COMPOSER_FROST = 'blur(22px) saturate(1.25)';
+const backdrop = (page: Page, selector: string) => page.locator(selector).first()
+  .evaluate(node => getComputedStyle(node).backdropFilter);
+/** One value per surface. `-webkit-backdrop-filter` is deliberately not read: Chrome computes the prefixed property as the
+ * standard one (an alias), so a rule that lost either half of the pair would fail here anyway. */
+async function expectBackdrop(page: Page, what: string, selector: string, expected: string): Promise<void> {
+  await expect(page.locator(selector).first(), `${what}: ${selector}`).toBeVisible();
+  await expect.poll(() => backdrop(page, selector), `${what} must compute backdrop-filter: ${expected}`).toBe(expected);
+}
+/** The tiled layout, without the clock (`?cards`, as tests/thread-tiles.spec.ts opens it): ⌘-clicking a sidebar row gives two
+ * tiles — the focused pane's turn card and the mirror's bar and composer, the three surfaces the split covers. */
+async function tileTwoThreads(page: Page): Promise<void> {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?cards');
+  await expect(page.locator('#composer')).toBeVisible();
+  const rows = page.locator('#navigation .task-item[data-id]');
+  await expect(rows.nth(1)).toBeVisible();
+  const ids = await rows.evaluateAll(nodes => nodes.map(node => (node as HTMLElement).dataset.id!));
+  const focused = await page.locator('#navigation .task-item.selected').getAttribute('data-id');
+  const other = ids.find(id => id !== focused)!;
+  await page.locator(`#navigation .task-item[data-id="${other}"]`).click({ modifiers: ['Meta'] });
+  await expect(page.locator('.thread-tile')).toHaveCount(2);
+  await expect(page.locator('.thread-tile-bar')).toHaveCount(2);
+  // Every tile carries a mirror; only the one showing an unfocused thread is on screen.
+  await expect(page.locator('.thread-mirror:not([hidden]) .thread-mirror-composer')).toHaveCount(1);
+}
+
+test('wallpapers keep the documented frost on the turn card, the tile bar and the mirror composer', async ({ page }) => {
+  await tileTwoThreads(page);
+  // Which scene the clock picks is not what this test is about: any wallpaper keeps the frost.
+  await expect(scene(page)).toHaveAttribute('data-wallpaper', /^(mon|tue|wed|thu|fri|sat|sun)-(morning|afternoon|night)$/);
+  await expect(scene(page)).toHaveAttribute('data-scene', 'wallpaper');
+  // The card the reading pane draws, over the static scene: the frost the sky rule has to give up.
+  await expectBackdrop(page, 'turn card', '.conversation-pane .turn-card', CARD_FROST);
+  await expectBackdrop(page, 'tile bar', '.thread-tile-bar', TILE_BAR_FROST);
+  await expectBackdrop(page, 'mirror composer', '.thread-mirror:not([hidden]) .thread-mirror-composer', TILE_COMPOSER_FROST);
+});
+
+test('over the sky the turn card, the tile bar and the mirror composer carry no blur', async ({ page }) => {
+  // The animating canvas re-blurs its backdrop on every frame, so the frost above is wallpaper-only: `none` on all three.
+  await page.addInitScript(() => localStorage.setItem('pandacode.wallpaperPreferences',
+    JSON.stringify({ version: 3, enabled: false, visibility: 20, blur: 0, set: 'automatic', pinned: null })));
+  await tileTwoThreads(page);
+  await expect(scene(page)).not.toHaveAttribute('data-wallpaper');
+  await expect(scene(page)).toHaveAttribute('data-scene', 'sky');
+  await expectBackdrop(page, 'turn card', '.conversation-pane .turn-card', 'none');
+  await expectBackdrop(page, 'tile bar', '.thread-tile-bar', 'none');
+  await expectBackdrop(page, 'mirror composer', '.thread-mirror:not([hidden]) .thread-mirror-composer', 'none');
+});
