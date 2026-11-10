@@ -264,17 +264,17 @@ thread_local! {
     pub(super) static CROSS_VOLUME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Tests: holds `CROSS_VOLUME` on for this thread until dropped.
-#[cfg(test)]
+/// Tests: holds `CROSS_VOLUME` on for this thread until dropped (the cross-volume tests run on unix only).
+#[cfg(all(test, unix))]
 pub(super) struct CrossVolume;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl CrossVolume {
     pub(super) fn on() -> Self {
         CROSS_VOLUME.set(true);
         Self
     }
 }
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for CrossVolume {
     fn drop(&mut self) {
         CROSS_VOLUME.set(false);
