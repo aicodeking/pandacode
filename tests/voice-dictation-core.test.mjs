@@ -317,7 +317,7 @@ test('binding an idle composer does no style or layout reads', async () => {
 
 test('the composer and dictation describe the prompt with one shared function', async () => {
   const { readFile } = await import('node:fs/promises');
-  const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const main = (await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   // Each phrase is written once, in promptDescription, so bot steering and GitHub mentions read the same everywhere.
   for (const phrase of ['Enter to queue for when the agent finishes', 'Shift Enter for a new line', 'steer current work', 'Type @ to mention a project file${']) {
     assert.equal(main.split(phrase).length - 1, 1, phrase);
@@ -330,7 +330,7 @@ test('the composer and dictation describe the prompt with one shared function', 
 });
 
 test('renderComposer binds dictation once on the normal path, after the prompt node is final', () => {
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const start = main.indexOf('function renderComposer(): void {');
   const body = main.slice(start, main.indexOf('\n}\n', start));
   assert.deepEqual(body.match(/voiceDictation\.bind\((?!null\))[^)]*\)/g), ['voiceDictation.bind(prompt)']);

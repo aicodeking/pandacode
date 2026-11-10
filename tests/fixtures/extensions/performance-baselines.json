@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "status": "frozen observed browser baseline; noisy shared-machine population, not native or stable-platform qualification",
+  "fixture": "extensions-baseline-v1",
+  "fixtureSha256": "0104832a115f735ffb00a14c161fa625258426d2e41277b6becca0e759073d27",
+  "revision": "a2c66f5+T02-recovery",
+  "platform": "win32",
+  "platformRelease": "10.0.19045",
+  "build": "vite-production",
+  "samplesPerEngine": 7,
+  "selectionPolicy": "One final sequential Chromium/WebKit pair (15393/15394) after adding diagnostic metadata; no retry-until-green, trimming, warmup omission or outlier exclusion. Every earlier completed measurement cohort remains indexed below with its original raw artifact, including failed gates. Relative budgets are future comparisons, not a claim that these different-load cohorts agree within 5%.",
+  "policy": "Compare only the same machine, engine, build and measurement method. Each median and nearest-rank p95 ceiling is baseline + max(5%, 20 ms). Absolute smoke ceilings remain startup 5000 ms and task switch 1000 ms.",
+  "measurement": {
+    "startup": "Runner monotonic reload to selected synthetic thread and enabled composer; not cold native startup or Vite build time.",
+    "taskSwitch": "In-page UI click to first animation frame with selected synthetic thread and enabled composer; runner round-trip overhead is reported separately.",
+    "memory": "Uncollected Chromium JS heap proxy, not RSS or proof of no leak. WebKit heap and native RSS are unavailable, not zero."
+  },
+  "engines": {
+    "chromium": {
+      "version": "157.0.8103.40",
+      "artifact": "playwright-report/port-15393/extensions-baseline-extens-7172f-tch-and-memory-measurements/measurements.json",
+      "startupMs": { "samples": [776.8187, 679.3852, 686.4538, 599.7884, 630.4091, 576.0971, 666.9576], "median": 666.9576, "p95": 776.8187, "medianCeiling": 700.30548, "p95Ceiling": 815.659635 },
+      "taskSwitchMs": { "samples": [117, 102, 118, 109, 196, 97, 112], "median": 112, "p95": 196, "medianCeiling": 132, "p95Ceiling": 216 },
+      "legacyAutomationSwitchMs": { "samples": [416.3367, 340.9812, 320.1874, 333.2207, 290.6535, 384.655, 312.1305], "median": 333.2207, "p95": 416.3367, "medianCeiling": 353.2207, "p95Ceiling": 437.153535 },
+      "jsHeapBytes": [15758116, 28348964, 37119300, 41958120, 36301200, 38680080, 46190108],
+      "residentMemoryMiB": null,
+      "residentMemoryUnavailableReason": "Native webview and host RSS not measured in browser preview"
+    },
+    "webkit": {
+      "version": "26.6",
+      "artifact": "playwright-report/port-15394/webkit/extensions-baseline-extens-7172f-tch-and-memory-measurements/measurements.json",
+      "startupMs": { "samples": [2180.4511, 2316.1311, 2187.5416, 2448.5158, 2282.8923, 2292.6884, 2196.7438], "median": 2282.8923, "p95": 2448.5158, "medianCeiling": 2397.036915, "p95Ceiling": 2570.94159 },
+      "taskSwitchMs": { "samples": [519, 450, 437, 451, 453, 414, 467], "median": 451, "p95": 519, "medianCeiling": 473.55, "p95Ceiling": 544.95 },
+      "legacyAutomationSwitchMs": { "samples": [677.5571, 692.6884, 714.4197, 767.3995, 740.8938, 734.2738, 789.2322], "median": 734.2738, "p95": 789.2322, "medianCeiling": 770.98749, "p95Ceiling": 828.69381 },
+      "jsHeapBytes": [null, null, null, null, null, null, null],
+      "heapUnavailableReason": "CDP heap metric unavailable in WebKit",
+      "residentMemoryMiB": null,
+      "residentMemoryUnavailableReason": "Native webview and host RSS not measured in browser preview"
+    }
+  },
+  "machine": { "cpu": "13th Gen Intel(R) Core(TM) i7-13620H", "architecture": "x64", "logicalProcessors": 16, "totalMemoryBytes": 34049220608, "node": "v26.1.0", "conditions": "Shared machine; no unrelated workload stopped. Per-cohort free-memory snapshots are in raw artifacts. Not a controlled idle-machine benchmark." },
+  "earlierCohorts": {
+    "artifactPolicy": "All paths below are relative to playwright-report/ and end with extensions-baseline-extens-7172f-tch-and-memory-measurements/measurements.json. Original raw JSON, metadata and failed traces are retained, not overwritten by the final pair.",
+    "originalRunnerMethod": [
+      { "root": "port-15373/", "engine": "chromium", "startupP95Ms": 407.4273, "switchP95Ms": 348.5889, "absoluteSmoke": "pass" },
+      { "root": "port-15376/webkit/", "engine": "webkit", "startupP95Ms": 3131.3265, "switchP95Ms": 1177.492, "absoluteSmoke": "FAIL task switch >1000 ms" }
+    ],
+    "inPageDiagnosticBeforeOriginalGateRestored": [
+      { "root": "port-15380/", "engine": "chromium", "startupP95Ms": 728.9593, "switchP95Ms": 141 },
+      { "root": "port-15382/webkit/", "engine": "webkit", "startupP95Ms": 3784.1481, "switchP95Ms": 682 },
+      { "root": "port-15383/", "engine": "chromium", "startupP95Ms": 430.5812, "switchP95Ms": 109 },
+      { "root": "port-15384/webkit/", "engine": "webkit", "startupP95Ms": 1614.3495, "switchP95Ms": 346 },
+      { "root": "port-15385/", "engine": "chromium", "startupP95Ms": 524.1289, "switchP95Ms": 115 },
+      { "root": "port-15386/webkit/", "engine": "webkit", "startupP95Ms": 1628.9539, "switchP95Ms": 428 }
+    ],
+    "bothMethods": [
+      { "root": "port-15390/", "engine": "chromium", "startupP95Ms": 735.3152, "inPageSwitchP95Ms": 209, "originalSwitchP95Ms": 351.1136, "absoluteSmoke": "pass" },
+      { "root": "port-15391/webkit/", "engine": "webkit", "startupP95Ms": 4103.1305, "inPageSwitchP95Ms": 643, "originalSwitchP95Ms": 1150.8486, "absoluteSmoke": "FAIL original task switch >1000 ms" },
+      { "root": "port-15392/webkit/", "engine": "webkit", "startupP95Ms": 1727.3245, "inPageSwitchP95Ms": 348, "originalSwitchP95Ms": 472.2072, "absoluteSmoke": "pass; diagnostic construction run" }
+    ]
+  },
+  "additionalNativeResidentMemoryCeilingMiB": 15,
+  "legacyAutomationSwitchAbsoluteCeilingMs": 1000,
+  "nativeQualification": "unavailable; browser samples do not qualify native IPC, RSS, menus, updater restart or cross-platform support"
+}

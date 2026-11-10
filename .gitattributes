@@ -1,1 +1,2 @@
 tests/fixtures/*.pdf binary
+src-tauri/src/voice/local/catalog.json text eol=lf

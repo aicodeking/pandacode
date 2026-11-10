@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "fixture": "extensions-baseline-v1",
+  "viewport": { "width": 1440, "height": 940 },
+  "locale": "en-US",
+  "timezone": "UTC",
+  "time": "2026-11-10T12:00:00Z",
+  "samples": 7,
+  "budgets": {
+    "startupIncreasePercent": 5,
+    "taskSwitchIncreasePercent": 5,
+    "noiseFloorMs": 20,
+    "additionalResidentMemoryMiB": 15,
+    "startupAbsoluteMs": 5000,
+    "taskSwitchAbsoluteMs": 1000
+  },
+  "measurementPolicy": {
+    "startup": "Navigation start to selected synthetic thread and enabled composer; production and dev builds are separate populations.",
+    "taskSwitch": "In-page UI click to the first animation frame with selected thread and enabled composer. automationSwitchMs separately retains runner/CDP round-trip overhead; compare only the same method and engine.",
+    "memory": "Chromium Performance.getMetrics JSHeapUsedSize is a heap proxy, not resident memory. Unsupported metrics are null with a reason; native RSS remains unmeasured.",
+    "comparison": "Future median and nearest-rank p95 must not exceed baseline + max(baseline * 0.05, 20 ms). Resident memory delta ceiling is 15 MiB, pending native measurement."
+  }
+}

@@ -146,7 +146,8 @@ test('MCP: input key/values and JSON records as reference rows with +N more', ()
   assert.match(html, /<dt>team<\/dt><dd>ENG<\/dd>/);
   assert.equal(count(html, 'class="tc-row"'), 6);
   assert.match(html, /\+3 more/);
-  assert.match(html, /tc-row-time">Oct 28</);
+  const expectedDate = new Date(records[0].updated_at).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  assert.ok(html.includes(`tc-row-time">${expectedDate}</`), `localized record date: ${expectedDate}`);
   assert.match(html, /Body 0/);
   assert.match(richCard(tool('mcp__x__get', {}, { a: 1, nested: { b: 2 } })), /<dt>nested<\/dt><dd>1 field<\/dd>/);
   // Docs-style results with only a title and a link use the link as the meta.

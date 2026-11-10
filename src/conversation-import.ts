@@ -108,6 +108,7 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
   }
   async function importSelected(): Promise<void> {
     if (!selected.size || importing) return;
+    let failure: string | null = null;
     importing = true; error.hidden = true; render();
     try {
       const result = await options.call<ImportResult>('import_conversations', { provider: source, ids: [...selected], model: options.defaultModel(source) });
@@ -115,15 +116,21 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
       const failed = new Set(result.failed.map(item => item.id));
       for (const id of [...selected]) if (!failed.has(id)) selected.delete(id);
       if (result.failed.length) {
-        error.textContent = result.failed.length === 1 ? result.failed[0].message : `${result.failed.length} conversations could not be imported: ${result.failed[0].message}`;
+        failure = result.failed.length === 1 ? result.failed[0].message : `${result.failed.length} conversations could not be imported: ${result.failed[0].message}`;
+        error.textContent = failure;
         error.hidden = false;
       }
       options.onImported(result);
     } catch (cause) {
       if (disposed) return;
-      error.textContent = cause instanceof Error ? cause.message : String(cause); error.hidden = false;
+      failure = cause instanceof Error ? cause.message : String(cause);
     } finally {
-      if (!disposed) { importing = false; await load(); }
+      if (!disposed) {
+        importing = false; await load();
+        // Refreshing the list clears load errors, not the import failure the user
+        // still needs to understand before retrying the retained selection.
+        if (!disposed && failure) { error.textContent = failure; error.hidden = false; }
+      }
     }
   }
 

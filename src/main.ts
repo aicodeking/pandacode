@@ -1,4 +1,5 @@
 import { decodeHandoff, historicalProvider } from './provider-handoff';
+import { bindComposerHistory } from './composer-history';
 import { ACCOUNT_SWITCH_PREFIX, accountSwitchDetail } from './account-switch-note';
 import { bindThreadReordering, syncRovingFocus, threadGroupRows } from './thread-order';
 import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
@@ -2868,6 +2869,7 @@ function renderComposer(): void {
   // A finished run whose history failed to load waits for Retry before anything else is sent.
   // Writing an unchanged value would still clear the reused field's undo history in some engines.
   if (prompt) { if (prompt.value !== previous) prompt.value = previous; prompt.disabled = state.messagesLoading || Boolean(state.messagesError) || Boolean(finishingStreams.get(s.id)?.error); }
+  if (prompt) bindComposerHistory(prompt);
   if (prompt && typing?.id === s.id && !prompt.disabled) { prompt.focus({ preventScroll: true }); prompt.setSelectionRange(typing.start, typing.end); }
   if (barControl) {
     // Redrawn while the run goes on: the same control keeps focus. Gone or hidden: the prompt takes it.
@@ -5458,11 +5460,17 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items: deployItems(connections), onSelect: async id => {
     closeChoiceMenu();
     const projectId = state.projectId;
-    await createTask(projectId);
-    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (!prompt || state.projectId !== projectId) return;
-    prompt.value = deployBrief(id as import('./deploy').DeployTarget);
-    await send();
+    try {
+      await createTask(projectId);
+      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+      if (!prompt || state.projectId !== projectId) return;
+      prompt.value = deployBrief(id as import('./deploy').DeployTarget);
+      await send();
+    } catch (cause) {
+      // The menu is already closed, so its disposed error UI cannot report a
+      // failed task start. Keep the original draft and report through the host.
+      report(cause);
+    }
   } });
 }
 /** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */

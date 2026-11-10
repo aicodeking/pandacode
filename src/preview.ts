@@ -1464,6 +1464,20 @@ async function previewVoice(command: string, args: Record<string, any>): Promise
 }
 
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  // Opt-in synthetic baseline instrumentation also works in a production preview build.
+  // No live/native session or executable is involved; normal preview behavior is unchanged.
+  if (new URLSearchParams(location.search).has('extensions-baseline')) {
+    const fixture = (window as any).__extensionsBaseline ??= { version: 1, calls: [] };
+    fixture.calls.push({ command, args: structuredClone(args) });
+    if (fixture.failOnce === command) { fixture.failOnce = null; throw new Error(`Baseline rejected ${command}`); }
+    if (command === 'open_support') return undefined as T;
+    if (command === 'get_run_script' && fixture.runScript) {
+      return { path: 'pandacode-run.sh' } as T;
+    }
+    if (command === 'list_sessions' && fixture.regression === 'missing-thread') {
+      return structuredClone(sessions.filter(task => task.id !== 'session-2').map(taskSummary)) as T;
+    }
+  }
   if (command.startsWith('voice_')) return await previewVoice(command, args) as T;
   if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
     sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),

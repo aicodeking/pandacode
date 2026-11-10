@@ -27,7 +27,7 @@ test('composer undo works after typing', async ({ page }) => {
   await expect(field).toHaveValue('hello world');
 });
 
-test('composer undo survives a re-render', async ({ page, browser }) => {
+test('composer undo survives a re-render', async ({ page }) => {
   await page.goto('/');
   const field = prompt(page);
   await expect(field).toBeEnabled();
@@ -37,9 +37,6 @@ test('composer undo survives a re-render', async ({ page, browser }) => {
   await page.evaluate(() => window.dispatchEvent(new Event('pandacode-github-change')));
   await expect(field).toHaveValue('still here');
   expect(await field.evaluate(el => (el as HTMLElement & { kept?: boolean }).kept)).toBe(true);
-  // WebKit (the engine Linux ships, and macOS natively) keeps a textarea's undo history when the field
-  // is detached and reattached; Chromium drops it, so only the node identity is checked there.
-  test.skip(browser.browserType().name() === 'chromium', 'Chromium clears undo history on reattach');
   expect(await settle(field, undoKey)).toBe('');
   await settle(field, redoKey);
   await expect(field).toHaveValue('still here');
