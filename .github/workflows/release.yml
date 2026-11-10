@@ -55,6 +55,7 @@ jobs:
           status=$(jq -r '.[0].status // ""' <<<"$runs")
           conclusion=$(jq -r '.[0].conclusion // "" | if . == "" then "none" else . end' <<<"$runs")
           url=$(jq -r '.[0].url // ""' <<<"$runs")
+          run_id=$(jq -r '.[0].databaseId // ""' <<<"$runs")
           if [ "$status" != completed ]; then
             echo "::error::CI for $GITHUB_SHA is still ${status:-pending} ($url). Wait for it to pass, then re-run this workflow."
             exit 1
@@ -68,7 +69,7 @@ jobs:
               exit 1
               ;;
             *)
-              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). Fix it in a new commit and release a higher version."
+              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). If the failure was flaky or infrastructure (for example a job the runner never picked up), re-run its failed jobs with 'gh run rerun $run_id --failed' and re-run this workflow once that CI run is green; otherwise fix it in a new commit and release a higher version."
               exit 1
               ;;
           esac

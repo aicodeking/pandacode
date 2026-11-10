@@ -8,7 +8,7 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  # A running main push run is never cancelled (the release gate needs it); a queued one can still be replaced by a newer push.
+  # A main push run holding the slot (running, or queued for a runner) is never cancelled (the release gate needs it); a pending one waiting for the slot is replaced by a newer push.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   web:
