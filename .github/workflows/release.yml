@@ -50,6 +50,10 @@ jobs:
             echo "::error::No CI run from a push to main found for $GITHUB_SHA. The commit must be on main and pushed; wait for its CI to pass before tagging (docs/releasing.md step 3)."
             exit 1
           fi
+          if ! jq -e '.[0] | type == "object"' <<<"$runs" >/dev/null 2>&1; then
+            echo "$lookup_failed"
+            exit 1
+          fi
           # gh lists the newest run first; that run decides. Read each field on its own:
           # gh reports a pending conclusion as an empty string.
           status=$(jq -r '.[0].status // ""' <<<"$runs")
@@ -65,7 +69,7 @@ jobs:
               echo "CI passed for $GITHUB_SHA: $url"
               ;;
             cancelled)
-              echo "::error::CI for $GITHUB_SHA was cancelled ($url). Re-run CI for this commit (and push nothing newer to main until it completes), then re-run this workflow."
+              echo "::error::CI for $GITHUB_SHA was cancelled (run $run_id, $url). Re-run CI for this commit with 'gh run rerun $run_id' (and push nothing newer to main until it completes), then re-run this workflow."
               exit 1
               ;;
             *)

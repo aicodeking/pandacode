@@ -173,13 +173,18 @@ If CI was still running, re-run the Release workflow once it passes; if CI was
 cancelled (CI never cancels a `main` run that holds the concurrency slot, even
 one still `queued` for a runner, but a `pending` run waiting for that slot is
 replaced when a newer push to `main` arrives, and a manual cancel also does
-this), re-run CI for that commit, push nothing newer to `main` until it
-finishes, then re-run the Release workflow. If CI failed, the gate reads the
-run's latest conclusion and names the run: if the failure was flaky or
-infrastructure (for example a job cancelled because the runner never picked it
-up), re-run that run's failed jobs with `gh run rerun <id> --failed` and re-run
+this), the gate names the run: re-run it with `gh run rerun <id>`, push
+nothing newer to `main` until it finishes, then re-run the Release workflow. If
+CI failed, the gate reads the run's latest conclusion and names the run: if the
+failure was flaky or infrastructure (for example a job cancelled because the
+runner never picked it up), re-run that run's failed jobs with `gh run rerun <id> --failed` and re-run
 the Release workflow once it is green; otherwise fix it in a new commit and
-release a higher version. Never move a published tag; fix problems in a higher
+release a higher version. Because CI never cancels a `main` run holding the
+concurrency slot, a job stuck waiting for a runner (GitHub keeps a queued job up
+to 24 hours, and `timeout-minutes` does not apply while it is queued) blocks
+every later `main` CI run: cancel that run with `gh run cancel <id>` to unblock
+`main`, and if it is a release commit re-run it with `gh run rerun <id>` once
+runners are available. Never move a published tag; fix problems in a higher
 version.
 
 To try the build without publishing, run the workflow manually (Actions →
