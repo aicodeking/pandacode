@@ -21,3 +21,7 @@ website/.astro/
 
 # Visual progress screenshots (PandaCode)
 .pandacode/progress-shots/
+
+# Local planning artifacts and workspace search index
+/_work/
+/.zvec-grep/
