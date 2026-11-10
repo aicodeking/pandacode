@@ -137,17 +137,24 @@ npm run build          # typecheck + frontend bundle (tests read dist/)
 npm test
 npm run test:release
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 npx playwright test    # or a focused subset; see AGENTS.md
 ```
 
-## 3. Tag and push
+Local checks are not enough. Push the release commit to `main` first and wait
+for CI to pass on it before tagging (step 3): every row, including the per-platform clippy rows, which can flag
+warnings a local toolchain doesn't. The Release workflow doesn't wait for CI.
+
+## 3. Commit, wait for CI, then tag
 
 ```sh
 git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml \
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
+git push origin main
+gh run list --workflow ci.yml --branch main --limit 1   # wait until it passes
 git tag "v$release_version"
-git push origin main "v$release_version"
+git push origin "v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
