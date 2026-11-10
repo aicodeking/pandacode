@@ -63,8 +63,9 @@
 /* The static scene keeps the frost the main pane's cards keep (turn-card.css): `data-scene` is `"wallpaper"` on the one
  * `.workspace` every tile's `mountSky` is handed (src/main.ts), set from `data-wallpaper` by `syncScene` (src/sky-window.ts),
  * and `.thread-sky` is hidden there (sky-window.css), so a blur is paid on a scroll step and never on a canvas frame.
- * `:where()` leaves each rule at its class's own weight, so the reduced-transparency, contrast and forced-colours blocks
- * below still win on source order. */
+ * `:where()` leaves each rule at its class's own weight (0,1,0), and the reduced-transparency, contrast and forced-colours
+ * blocks below name `.workspace` with them (0,2,0), so those win on specificity, never on where a later line sits — a
+ * scene rule added after them, written the same `:where()` way, stays at 0,1,0 and cannot revive the blur. */
 :where(.workspace[data-scene="wallpaper"]) .thread-tile-bar{backdrop-filter:blur(16px) saturate(1.15);-webkit-backdrop-filter:blur(16px) saturate(1.15)}
 :where(.workspace[data-scene="wallpaper"]) .thread-mirror-composer{backdrop-filter:blur(22px) saturate(1.25);-webkit-backdrop-filter:blur(22px) saturate(1.25)}
 
@@ -79,15 +80,15 @@
 }
 
 @media(prefers-reduced-transparency:reduce){
-  .thread-tile-bar,.thread-mirror-composer{background:var(--panel,var(--bg));backdrop-filter:none;-webkit-backdrop-filter:none}
+  .workspace .thread-tile-bar,.workspace .thread-mirror-composer{background:var(--panel,var(--bg));backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media(prefers-contrast:more){
   .thread-tile{outline-color:var(--border);box-shadow:none}
-  .thread-tile-bar,.thread-mirror-composer{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
+  .workspace .thread-tile-bar,.workspace .thread-mirror-composer{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media(forced-colors:active){
   .thread-tile,.thread-tile-ring{outline:1px solid CanvasText}
   .thread-tile-ring{outline:2px solid Highlight;outline-offset:-2px}
-  .thread-tile-bar,.thread-mirror-composer{background:Canvas;border:1px solid CanvasText;backdrop-filter:none;-webkit-backdrop-filter:none}
+  .workspace .thread-tile-bar,.workspace .thread-mirror-composer{background:Canvas;border:1px solid CanvasText;backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media(prefers-reduced-motion:reduce){.thread-tile-title,.thread-tile-mark,.thread-tile-close{transition:none}}
