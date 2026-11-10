@@ -1,4 +1,6 @@
 import './settings.css';
+import { mountSkillManager } from './skill-manager';
+import type { SkillManagerHost } from './skill-manager-model';
 import { mountProviderReadiness } from './provider-readiness';
 import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
@@ -54,7 +56,7 @@ interface SettingsOptions {
   /** Cloud sandbox connections (Daytona, Cloudflare, AWS). */
   cloud?: CloudSettingsHost;
   /** Skills library and rules registry. */
-  skills?: SkillsLibraryHost;
+  skills?: SkillsLibraryHost & Pick<SkillManagerHost, 'activeProject'>;
   /** PandaCode Connect: sign-in, remote control and devices. */
   remote?: RemoteHost;
   embed: { colors: Embed; wallpapers: Embed; providerConnections: Embed; openCodeModels: Embed; harnessPrivacy: Embed };
@@ -166,7 +168,8 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
       </div>
       ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
-    case 'skills': return '<div id="skills-library"></div>';
+    case 'skills': return '<div id="skill-manager"></div>';
+    case 'rules': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
     case 'remote': return '<div id="remote-settings"></div>';
     case 'github': return '<div id="github-settings"></div>';
@@ -316,7 +319,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });
     }
-    if (id === 'skills' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
+    if (id === 'skills' && options.skills) cleanups.push(mountSkillManager(panel.querySelector<HTMLElement>('#skill-manager')!, options.skills));
+    if (id === 'rules' && options.skills) cleanups.push(mountSkillsLibrary(panel.querySelector<HTMLElement>('#skills-library')!, options.skills));
     if (id === 'cloud' && options.cloud) cleanups.push(mountCloudSettings(panel.querySelector<HTMLElement>('#cloud-settings')!, options.cloud));
     if (id === 'about') {
       cleanups.push(mountSupportDetails(panel.querySelector<HTMLDetailsElement>('.support-details')!));

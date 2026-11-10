@@ -16,6 +16,7 @@ import { createPreviewDesign } from './preview-design';
 import { previewProgress } from './preview-progress';
 import { BRIEF_ID, GALLERY_ID, briefAnswer, briefMessages, briefTimings, briefTools, galleryMessages } from './preview-traces';
 import { createPreviewSkills } from './preview-skills';
+import { createPreviewSkillManager } from './preview-skill-manager';
 import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
 import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
@@ -492,6 +493,7 @@ const previewGithub = (() => {
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
+const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
 const previewCloud = createPreviewCloud();
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
@@ -1918,9 +1920,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'design_comments': result = previewDesign.comments(); break;
     case 'design_save_comments': result = previewDesign.saveComments(args.comments); break;
     case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
-    case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
-    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover':
+    case 'skills_deactivate': case 'skills_deactivate_all': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
       result = previewSkills.call(command, args); break;
+    case 'skill_manager_list': result = previewSkillManager.list(args); break;
+    case 'skill_manager_set': result = previewSkillManager.set(args as { name: string; enabled: boolean; projectId?: string }); break;
+    case 'skill_manager_preview': result = await previewSkillManager.preview(args as { source: string }); break;
+    case 'skill_manager_add': result = await previewSkillManager.add(args as { source: string; skills: string[]; harnesses: string[]; projectId?: string }); break;
+    case 'skill_manager_add_library': result = await previewSkillManager.addLibrary(args as { source: string; skills: string[] }); break;
+    case 'skill_manager_reset': result = previewSkillManager.reset(args as { projectId?: string }); break;
+    case 'skill_manager_restore': result = previewSkillManager.restore(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_uninstall': result = previewSkillManager.uninstall(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_undo_uninstall': result = previewSkillManager.undoUninstall(args as { id: string; projectId?: string }); break;
     case 'simulator_status': result = previewSimulator.status(); break;
     case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
     case 'simulator_create_duo': result = previewSimulator.createDuo(); break;

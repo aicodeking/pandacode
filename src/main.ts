@@ -5833,7 +5833,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
       cloud: { call, listen: (name, callback) => subscribe(name, callback) },
-      skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })) },
+      skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })), activeProject: () => project()?.id ?? '' },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
       embed: {

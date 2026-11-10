@@ -1,0 +1,21 @@
+{
+  "claude": {"consoleEnforcement":"blocked","consoleNote":"Typed /commands still run in the console","enforcement":"blocked","installAs":"claude-code"},
+  "codex": {"consoleEnforcement":"blocked","enforcement":"blocked","installAs":"codex"},
+  "kimi": {"consoleEnforcement":"none","enforcement":"asked","installAs":"kimi-code-cli"},
+  "opencode": {"consoleEnforcement":"blocked","enforcement":"blocked","installAs":"opencode"},
+  "glm": {"consoleEnforcement":"blocked","consoleNote":"Typed /commands still run in the console","enforcement":"blocked","installAs":"claude-code"},
+  "antigravity": {"consoleEnforcement":"none","enforcement":"asked","installAs":"antigravity"},
+  "grok": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"grok"},
+  "mimo": {"consoleEnforcement":"blocked","consoleNote":"Typed /commands still run in the console","enforcement":"blocked","installAs":"claude-code"},
+  "pi": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"pi"},
+  "deepseek": {"consoleEnforcement":"none","enforcement":"asked","installAs":"universal"},
+  "commandcode": {"consoleEnforcement":"none","enforcement":"asked","installAs":"command-code"},
+  "cline": {"consoleEnforcement":"none","enforcement":"asked","installAs":"cline"},
+  "kilo": {"consoleEnforcement":"none","enforcement":"asked","installAs":"kilo"},
+  "omp": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"pi"},
+  "github-copilot": {"consoleEnforcement":"none","enforcement":"asked","installAs":"github-copilot"},
+  "muse": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"universal"},
+  "devin": {"consoleEnforcement":"none","enforcement":"asked","installAs":"devin"},
+  "zcode": {"consoleEnforcement":"none","enforcement":"asked","installAs":"zcode"},
+  "hermes": {"consoleEnforcement":"asked","enforcement":"asked","installAs":"hermes-agent"}
+}

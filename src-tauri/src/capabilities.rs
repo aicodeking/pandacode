@@ -88,6 +88,7 @@ pub(crate) async fn capabilities_inventory(
     task_id: Option<String>,
 ) -> Result<Inventory, String> {
     let task_scoped = task_id.is_some();
+    let homes = Homes::resolved();
     let home = crate::agent_usage_providers::home()
         .ok_or("Could not locate the user config directory.")?;
     let cwd = workspace_for(&state, task_id.as_deref(), &home)?;
@@ -111,6 +112,7 @@ pub(crate) async fn capabilities_inventory(
             &harness.id,
             &home,
             task_scoped.then_some(cwd.as_path()),
+            &homes,
         ));
         let id = harness.id.clone();
         let cwd = cwd.clone();
@@ -439,6 +441,7 @@ fn scan_harness_configs(
     harness: &str,
     home: &Path,
     project: Option<&Path>,
+    homes: &Homes,
 ) -> Vec<CapabilityEntry> {
     let mut entries = Vec::new();
     match harness {
@@ -468,8 +471,9 @@ fn scan_harness_configs(
             }
         }
         "codex" => {
-            let config_dir = std::env::var_os("CODEX_HOME")
-                .map(PathBuf::from)
+            let config_dir = homes
+                .codex
+                .clone()
                 .filter(|path| path.is_absolute())
                 .unwrap_or_else(|| home.join(".codex"));
             if let Some(config) = read_text(&config_dir.join("config.toml")) {
@@ -590,71 +594,20 @@ fn scan_harness_configs(
         }
         _ => {}
     }
-    entries.extend(scan_skill_dirs(harness, home, project));
+    entries.extend(scan_skill_dirs(harness, home, project, homes));
     entries
 }
 
-fn skill_roots(harness: &str, home: &Path, project: Option<&Path>) -> Vec<(PathBuf, &'static str)> {
-    let mut roots = Vec::new();
-    match harness {
-        "claude" | "glm" | "mimo" => {
-            roots.push((home.join(".claude/skills"), "~/.claude/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".claude/skills"), ".claude/skills"));
-            }
-        }
-        "codex" => {
-            roots.push((home.join(".codex/skills"), "~/.codex/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".agents/skills"), ".agents/skills"));
-            }
-        }
-        "opencode" => {
-            roots.push((
-                home.join(".config/opencode/skills"),
-                "~/.config/opencode/skills",
-            ));
-            if let Some(project) = project {
-                roots.push((project.join(".opencode/skills"), ".opencode/skills"));
-            }
-        }
-        "kimi" => {
-            roots.push((home.join(".kimi-code/skills"), "~/.kimi-code/skills"));
-            roots.push((home.join(".kimi/skills"), "~/.kimi/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".kimi/skills"), ".kimi/skills"));
-            }
-        }
-        "pi" | "omp" => {
-            roots.push((home.join(".pi/agent/skills"), "~/.pi/agent/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".pi/skills"), ".pi/skills"));
-            }
-        }
-        "cline" => {
-            roots.push((home.join(".cline/skills"), "~/.cline/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".cline/skills"), ".cline/skills"));
-                roots.push((project.join(".clinerules/skills"), ".clinerules/skills"));
-                roots.push((project.join(".claude/skills"), ".claude/skills"));
-            }
-        }
-        "deepseek" => {
-            roots.push((home.join(".dsh/skills"), "~/.dsh/skills"));
-            roots.push((home.join(".agents/skills"), "~/.agents/skills"));
-            if let Some(project) = project {
-                roots.push((project.join(".dsh/skills"), ".dsh/skills"));
-                roots.push((project.join(".agents/skills"), ".agents/skills"));
-            }
-        }
-        _ => {}
-    }
-    roots
-}
+use crate::skill_manager::roots::{skill_roots, Homes};
 
-fn scan_skill_dirs(harness: &str, home: &Path, project: Option<&Path>) -> Vec<CapabilityEntry> {
+fn scan_skill_dirs(
+    harness: &str,
+    home: &Path,
+    project: Option<&Path>,
+    homes: &Homes,
+) -> Vec<CapabilityEntry> {
     let mut entries = Vec::new();
-    for (root, source) in skill_roots(harness, home, project) {
+    for (root, source) in skill_roots(harness, home, project, homes) {
         let Ok(items) = fs::read_dir(root) else {
             continue;
         };
@@ -668,7 +621,7 @@ fn scan_skill_dirs(harness: &str, home: &Path, project: Option<&Path>) -> Vec<Ca
             let Some(name) = item.file_name().to_str().and_then(safe_label) else {
                 continue;
             };
-            if let Some(item) = entry(harness, "skill", &name, source, None) {
+            if let Some(item) = entry(harness, "skill", &name, &source, None) {
                 entries.push(item);
             }
         }
@@ -813,7 +766,7 @@ env = { API_KEY = "secret" }
         )
         .unwrap();
 
-        let entries = scan_harness_configs("claude", &home, Some(&project));
+        let entries = scan_harness_configs("claude", &home, Some(&project), &Homes::default());
         assert!(entries.iter().any(|item| item.name == "user-docs"));
         assert!(entries.iter().any(|item| item.name == "project-docs"));
         assert!(entries.iter().any(|item| item.name == "PreToolUse"));
@@ -858,7 +811,7 @@ env = { API_KEY = "secret" }
             "private prompt",
         )
         .unwrap();
-        let entries = scan_skill_dirs("claude", &home, Some(&project));
+        let entries = scan_skill_dirs("claude", &home, Some(&project), &Homes::default());
         assert!(entries.iter().any(|item| item.name == "review"));
         assert!(entries.iter().any(|item| item.name == "release-check"));
         assert!(!serde_json::to_string(&entries)
@@ -917,7 +870,7 @@ env = { API_KEY = "secret" }
         .unwrap();
         fs::create_dir_all(project.join(".cline/skills/code-review")).unwrap();
         fs::create_dir_all(project.join(".clinerules/skills/doc-gen")).unwrap();
-        let entries = scan_harness_configs("cline", &home, Some(&project));
+        let entries = scan_harness_configs("cline", &home, Some(&project), &Homes::default());
         let local_tools: Vec<_> = entries
             .iter()
             .filter(|item| item.harness == "cline" && item.kind == "mcp server" && item.name == "local-tool")
@@ -957,7 +910,7 @@ env = { API_KEY = "secret" }
 "#,
         )
         .unwrap();
-        let entries = scan_harness_configs("opencode", &home, None);
+        let entries = scan_harness_configs("opencode", &home, None, &Homes::default());
         let server = entries
             .iter()
             .find(|item| item.kind == "mcp server" && item.name == "context7")
@@ -977,7 +930,7 @@ env = { API_KEY = "secret" }
         fs::create_dir_all(home.join(".agents/skills/agents-skill")).unwrap();
         fs::create_dir_all(project.join(".dsh/skills/project-skill")).unwrap();
         fs::create_dir_all(project.join(".agents/skills/project-agents-skill")).unwrap();
-        let entries = scan_harness_configs("deepseek", &home, Some(&project));
+        let entries = scan_harness_configs("deepseek", &home, Some(&project), &Homes::default());
         let mut skills: Vec<_> = entries
             .iter()
             .filter(|item| item.harness == "deepseek" && item.kind == "skill")
@@ -990,5 +943,24 @@ env = { API_KEY = "secret" }
         );
         fs::remove_dir_all(home).unwrap();
         fs::remove_dir_all(project).unwrap();
+    }
+
+    #[test]
+    fn capabilities_configured_account_skill_sources_omit_absolute_paths() {
+        let home = fixture_home("private-home");
+        let account = fixture_home("private-account");
+        fs::create_dir_all(account.join("skills/review")).unwrap();
+        let mut homes = Homes::default();
+        homes
+            .configured
+            .insert("claude".into(), vec![account.clone()]);
+        let entries = scan_skill_dirs("claude", &home, None, &homes);
+        assert_eq!(entries.len(), 1);
+        let json = serde_json::to_string(&entries).unwrap();
+        assert!(!json.contains(home.to_str().unwrap()));
+        assert!(!json.contains(account.to_str().unwrap()));
+        assert!(entries[0].source.contains("account 1"));
+        fs::remove_dir_all(home).unwrap();
+        fs::remove_dir_all(account).unwrap();
     }
 }

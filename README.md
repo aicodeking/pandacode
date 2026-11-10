@@ -102,8 +102,12 @@ embedded editor engine.
 - **Agent usage.** Account limits and cost estimates for each installed harness
   ([agent usage](docs/agent-usage.md)), and one-click CLI updates
   ([agent updates](docs/agent-updates.md)).
-- **Skills, recipes and capabilities.** Import a skill or rule once and turn it on per
-  agent ([skills library](docs/skills-library.md)), save multi-step
+- **Skills, rules, recipes and capabilities.** Settings → Tools → **Skills** lists every
+  skill installed for any agent in one place: switch one off for a project or everywhere
+  in PandaCode (agents PandaCode runs; some can only be asked not to use it), add skills
+  from skills.sh, GitHub, GitLab or a local folder, and uninstall with Undo
+  ([skill manager](docs/skill-manager.md)). Rules are imported once in **Rules & library**
+  and turned on per agent ([rules and library](docs/skills-library.md)). Save multi-step
   [recipes](docs/recipes.md) with a dry run per harness, and compare each agent's
   commands, MCP servers, hooks and skills ([capabilities](docs/capabilities.md)).
 - **Codex goals.** `/goal` sets an objective with an optional token budget. See
@@ -270,6 +274,7 @@ information:
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; nothing before |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
+| Adding skills (optional): `npx` fetches the `skills` CLI from the npm registry set in your `~/.npmrc`, which reads the source you choose: a GitHub or GitLab repository, or a local folder (telemetry off) | `registry.npmjs.org` (or your configured registry), `github.com` or `gitlab.com` | Only when you click Find skills, choose a folder or click Install in Settings → Tools → Skills; listing and switching skills are local |
 
 ## Install
 

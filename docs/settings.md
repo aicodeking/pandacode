@@ -9,7 +9,7 @@ Settings is a full page with eight sections in the left column, opening on Recom
 | Appearance | Appearance |
 | Agents | Harnesses, Providers, Agent teams, Model routing |
 | Schedules | Schedules |
-| Tools | Add-ons, Skills & rules |
+| Tools | Add-ons, Skills, Rules & library |
 | Connections | Cloud sandboxes, Remote access, GitHub |
 | About | About |
 
@@ -36,7 +36,7 @@ organization policies can still affect authentication; see
 
 **Agents → Agent teams** holds named teams and the classic Team setup switch. **Agents → Model routing** holds [Panda Router](model-routing.md) and the models teams may use.
 
-**Schedules** lists every thread's [wake-ups and timed messages](schedules.md). **Tools → Add-ons** holds tools and integrations, Jev, and the [capabilities and cache](capabilities.md) fold. **Tools → Skills & rules** is the [skills library](skills-library.md). **Connections** holds [cloud sandboxes](cloud-agents.md), [remote access](remote-access.md) and GitHub. **About** holds the version, updates, resource usage and support details.
+**Schedules** lists every thread's [wake-ups and timed messages](schedules.md). **Tools → Add-ons** holds tools and integrations, Jev, and the [capabilities and cache](capabilities.md) fold. **Tools → Skills** [manages installed skills](skill-manager.md) across agents and projects. **Tools → Rules & library** is the [skills library](skills-library.md). **Connections** holds [cloud sandboxes](cloud-agents.md), [remote access](remote-access.md) and GitHub. **About** holds the version, updates, resource usage and support details.
 
 Section tabs move with the up and down arrows and page tabs with left and right; both support Home and End. The layout uses rem-based dimensions and stacks controls in narrow windows, including at 140–160% text size. System colors and reduced-motion preferences apply throughout.
 
