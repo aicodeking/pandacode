@@ -90,8 +90,10 @@ impl Pcm {
         let data = wav.get(44..44 + size).ok_or_else(bad)?;
         let mut pcm = Self::new(rate, 1)?;
         pcm.samples = data
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b))
             .take(pcm.max_samples)
             .collect();
         Ok(pcm)

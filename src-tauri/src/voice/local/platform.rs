@@ -14,6 +14,7 @@ pub const UNSUPPORTED_CPU: &str =
 pub enum Cpu {
     #[cfg_attr(not(all(target_os = "windows", target_arch = "aarch64")), allow(dead_code))]
     WindowsArm64 { dotprod: bool, i8mm: bool },
+    #[cfg_attr(all(target_os = "windows", target_arch = "aarch64"), allow(dead_code))]
     Other,
 }
 
