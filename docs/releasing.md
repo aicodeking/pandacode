@@ -136,14 +136,17 @@ Run what CI runs, plus the browser suites for any UI change:
 npm run build          # typecheck + frontend bundle (tests read dist/)
 npm test
 npm run test:release
+npm ci --prefix website && npm run site:build   # the website build CI runs
 cargo test --manifest-path src-tauri/Cargo.toml
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 npx playwright test    # or a focused subset; see AGENTS.md
 ```
 
 Local checks are not enough. Push the release commit to `main` first and wait
-for CI to pass on it before tagging (step 3): every row, including the per-platform clippy rows, which can flag
-warnings a local toolchain doesn't. The Release workflow doesn't wait for CI.
+for CI to pass on it before tagging (step 3): every row, including the per-platform
+clippy rows. CI installs the floating stable Rust toolchain, so a new clippy lint can
+appear on any push, even one that changes no Rust, and fail a row your local toolchain
+passes. The Release workflow refuses a tag whose commit has not passed CI.
 
 ## 3. Commit, wait for CI, then tag
 
@@ -152,19 +155,27 @@ git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Ca
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
 git push origin main
-gh run list --workflow ci.yml --branch main --limit 1   # wait until it passes
+# Wait for CI on this exact commit; exits non-zero if it fails. If gh finds no run
+# yet, give GitHub a few seconds to start it and repeat.
+gh run watch --exit-status "$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" \
+  --limit 1 --json databaseId --jq '.[0].databaseId')"
 git tag "v$release_version"
 git push origin "v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
-`tauri.conf.json`, and a missing or empty `releases/X.Y.Z.md`. Never move a
+`tauri.conf.json`, a missing or empty `releases/X.Y.Z.md`, and a commit whose
+newest `ci.yml` run is missing, still running or not successful (its `prepare`
+job checks with `gh run list --commit`, using only `actions: read`). If CI was
+still running, re-run the Release workflow once it passes; if CI failed, fix it
+and release a higher version. Never move a
 published tag; fix problems in a higher version.
 
 To try the build without publishing, run the workflow manually (Actions →
 Release → Run workflow) and leave **publish** unchecked: the installers are kept
-as workflow artifacts for 14 days. Checking **publish** on a manual run creates
-the release and the `vX.Y.Z` tag at the selected commit.
+as workflow artifacts for 14 days, and the CI check is skipped. Checking
+**publish** on a manual run requires the same green CI run, then creates the
+release and the `vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 

@@ -18,8 +18,15 @@ async fn download_installs_privately_and_never_refetches() {
     assert_eq!(server.requests.lock().unwrap().clone(), vec![format!("/test/model/resolve/{REV}/model.gguf None")]);
     store.fetch(&item, &active()).await.unwrap();
     assert_eq!(server.requests.lock().unwrap().len(), 1, "a verified file is not downloaded again");
-    // A changed file loses its marker match and is no longer installed.
-    std::fs::write(&path, vec![0u8; 4096]).unwrap();
+    // A changed file loses its marker match and is no longer installed. The tamper keeps
+    // the size and inode, so only the mtime can tell; coarse filesystem timestamps can
+    // leave it unchanged after a quick rewrite, so the test moves it explicitly.
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, vec![0u8; body.len()]).unwrap();
+    let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(before + std::time::Duration::from_secs(60)).unwrap();
+    drop(file);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), item.size, "the tamper keeps the size");
     assert!(!store.installed(&item));
     store.delete(&item).unwrap();
     assert!(!path.exists() && !temp.0.join("model.gguf.verified").exists());

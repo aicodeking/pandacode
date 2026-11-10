@@ -21,9 +21,36 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read # read CI runs for the release commit
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Require a green CI run for this commit
+        # Tag pushes and publishing manual runs ship this commit, so its CI must have
+        # passed. A manual run with publish unchecked only builds artifacts and may skip.
+        if: github.ref_type == 'tag' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+            --limit 20 --json databaseId,status,conclusion,event,url)
+          if [ "$(jq length <<<"$runs")" -eq 0 ]; then
+            echo "::error::No CI run found for $GITHUB_SHA. Push the commit to main and wait for CI to pass before tagging (docs/releasing.md step 3)."
+            exit 1
+          fi
+          # gh lists the newest run first; that run decides.
+          read -r status conclusion url < <(jq -r '.[0] | "\(.status) \(.conclusion // "none") \(.url)"' <<<"$runs")
+          if [ "$status" != completed ]; then
+            echo "::error::CI for $GITHUB_SHA is still $status ($url). Wait for it to pass, then re-run this workflow."
+            exit 1
+          fi
+          if [ "$conclusion" != success ]; then
+            echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). Fix it in a new commit and release a higher version."
+            exit 1
+          fi
+          echo "CI passed for $GITHUB_SHA: $url"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Read and check the version
         id: version

@@ -12,7 +12,7 @@ All voice settings live in **Settings → Voice** (its own entry in the Settings
 - **Off**: voice input is turned off. Saved models and services are kept.
 - **A saved speech service** (for example OpenAI, Groq, Mistral or your own server): audio is sent to that service. See [Speech services](#speech-services).
 
-On Windows on Arm, on-device models need both the Armv8.2 dot-product and the int8 matrix-multiply (i8mm) instructions. Processors without either, such as the Snapdragon 8cx Gen 1–3, can't run them: PandaCode says so in Settings → Voice, marks **This device** unavailable and doesn't offer model downloads. Add a [speech service](#speech-services) and choose it under **Send microphone audio to** to dictate on these computers.
+On Windows on Arm, on-device models need both the Armv8.2 dot-product and the int8 matrix-multiply (i8mm) instructions. Processors without either, such as the Snapdragon 8cx Gen 1–3, can't run them: PandaCode says so in Settings → Voice, marks **This device** unavailable and doesn't offer model downloads. Add a [speech service](#speech-services) and choose it under **Send microphone audio to** to dictate on these computers. The i8mm check uses a processor-feature id that older Windows 11 builds don't report, so on those builds even capable processors (such as Snapdragon X) are told they can't run on-device models; updating Windows, or using a speech service, resolves it.
 
 On Linux, the AppImage records through the system ALSA library (`libasound.so.2`), which desktop distributions already include.
 
@@ -73,7 +73,7 @@ Committing a non-empty send or explicitly clearing a draft retires its insertion
 
 Switching threads keeps stopped speech with its origin. Leaving while recording stops and transcribes it. The microphone in another thread names the pending work and offers **Go to thread**; the hint stays while focused or hovered. Returning inserts the speech at its saved place if that text is unchanged; otherwise it waits in review with the cursor put back at that place when it can be found. An unsuccessful microphone attempt with no captured audio or text does not block a new attempt in another thread.
 
-Closing the window depends on what closing does. When it only hides the window (the menu-bar item keeps PandaCode running), a recording dictation stops and is transcribed, ready when you come back. When closing quits PandaCode (Linux, or with no menu-bar item), as does quitting the app, a dictation in progress is cancelled and nothing is uploaded.
+Closing the window depends on what closing does. When it only hides the window (the menu-bar item keeps PandaCode running), a recording dictation stops and is transcribed, ready when you come back. When closing quits PandaCode (Linux, or with no menu-bar item), as does quitting the app, a dictation that is still recording is cancelled and its audio isn't uploaded; audio already sent to a speech service for transcription can't be recalled.
 
 **Cancel**, **Discard** or deleting the origin thread discards speech. Escape on a transcribing status card keeps it; on an error card it keeps the recording for Retry; in review, Escape discards only while focus is inside the card. Settings and menus handle Escape before dictation. Disabling voice input during startup or recording cancels it. Stopped audio and review text survive settings changes, including deleting a profile. **Retry** uses the retained recording and its original provider settings; **Record again** discards it and uses current Settings.
 

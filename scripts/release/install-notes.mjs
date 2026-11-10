@@ -44,7 +44,7 @@ export function installNotes({ signed = false } = {}) {
     '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.',
     '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.',
     '',
-    'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
+    'The installers each have a `.sha256` checksum beside them. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
     '',
   ].join('\n');
 }
