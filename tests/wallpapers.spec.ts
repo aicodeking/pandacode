@@ -253,6 +253,13 @@ test('wallpapers give rounded board task details the frost material without a di
  * there. The three numbers are named here rather than merely "some blur", so an edit that changes one fails in this spec;
  * colours are deliberately left alone, so a theme change cannot fail a test about frost. */
 const CARD_FROST = 'blur(22px) saturate(1.25)', TILE_BAR_FROST = 'blur(16px) saturate(1.15)', TILE_COMPOSER_FROST = 'blur(22px) saturate(1.25)';
+/** The reading column's own blur, and the one left after the split: `--thread-frost` in src/wallpapers.css, which
+ * `.conversation-pane .composer` spends as its `backdrop-filter`. Over a wallpaper that is the only blur the thread pays
+ * and it is paid on a scroll step (the wallpaper is one decoded `<img>`); over the sky the same variable is `none`
+ * (src/sky-window.css), because the canvas paints every frame and a blur over it would re-blur its backdrop on each one.
+ * Named, like the three above, so flipping either half of the variable fails here. */
+const COMPOSER_FROST = 'blur(18px) saturate(1.1)';
+const COMPOSER = '#composer-area .composer';
 const backdrop = (page: Page, selector: string) => page.locator(selector).first()
   .evaluate(node => getComputedStyle(node).backdropFilter);
 /** One value per surface. `-webkit-backdrop-filter` is deliberately not read: Chrome computes the prefixed property as the
@@ -300,4 +307,24 @@ test('over the sky the turn card, the tile bar and the mirror composer carry no 
   await expectBackdrop(page, 'turn card', '.conversation-pane .turn-card', 'none');
   await expectBackdrop(page, 'tile bar', '.thread-tile-bar', 'none');
   await expectBackdrop(page, 'mirror composer', '.thread-mirror:not([hidden]) .thread-mirror-composer', 'none');
+});
+
+test('wallpapers keep the documented frost on the composer', async ({ page }) => {
+  await open(page);
+  await expect(scene(page)).toHaveAttribute('data-scene', 'wallpaper');
+  // A non-`none` value that names the blur, not merely "some blur": this is the composer's whole material over a scene
+  // that never repaints, so a flat composer is the regression, not a cheap one.
+  const frost = await backdrop(page, COMPOSER);
+  expect(frost, 'the composer keeps a blur over a wallpaper').not.toBe('none');
+  expect(frost, 'the composer blur is the documented one').toContain('blur(18px)');
+  await expectBackdrop(page, 'composer', COMPOSER, COMPOSER_FROST);
+});
+
+test('over the sky the composer carries no blur', async ({ page }) => {
+  // Same element, animating backdrop: `--thread-frost` is `none` there, so the prompt box is a plain fill.
+  await page.addInitScript(() => localStorage.setItem('pandacode.wallpaperPreferences',
+    JSON.stringify({ version: 3, enabled: false, visibility: 20, blur: 0, set: 'automatic', pinned: null })));
+  await open(page);
+  await expect(scene(page)).toHaveAttribute('data-scene', 'sky');
+  await expectBackdrop(page, 'composer', COMPOSER, 'none');
 });
