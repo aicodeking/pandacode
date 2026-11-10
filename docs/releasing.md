@@ -137,7 +137,7 @@ npm run build          # typecheck + frontend bundle (tests read dist/)
 npm test
 npm run test:release
 npm ci --prefix website && npm run site:build   # the website build CI runs
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib   # the Rust tests CI runs
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 npx playwright test    # or a focused subset; see AGENTS.md
 ```

@@ -38,6 +38,10 @@ jobs:
           # did not test what main ships.
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
             --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url)
+          if [ -z "$runs" ] || ! jq -e 'type == "array"' <<<"$runs" >/dev/null 2>&1; then
+            echo "::error::The CI lookup for $GITHUB_SHA failed: gh did not return a list of runs. This is usually a transient GitHub API problem; re-run this workflow."
+            exit 1
+          fi
           if [ "$(jq length <<<"$runs")" -eq 0 ]; then
             echo "::error::No CI run from a push to main found for $GITHUB_SHA. The commit must be on main and pushed; wait for its CI to pass before tagging (docs/releasing.md step 3)."
             exit 1
