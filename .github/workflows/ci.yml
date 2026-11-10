@@ -8,7 +8,7 @@ permissions:
   contents: read
 concurrency:
   group: ci-${{ github.ref }}
-  # Never cancel a main push run: the release gate needs each release commit's CI to finish.
+  # A running main push run is never cancelled (the release gate needs it); a queued one can still be replaced by a newer push.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   web:
