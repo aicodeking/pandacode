@@ -34,23 +34,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Only push runs on main count: a pull request or branch run of the same commit
+          # did not test what main ships.
           runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
-            --limit 20 --json databaseId,status,conclusion,event,url)
+            --event push --branch main --limit 20 --json databaseId,status,conclusion,event,url)
           if [ "$(jq length <<<"$runs")" -eq 0 ]; then
-            echo "::error::No CI run found for $GITHUB_SHA. Push the commit to main and wait for CI to pass before tagging (docs/releasing.md step 3)."
+            echo "::error::No CI run from a push to main found for $GITHUB_SHA. The commit must be on main and pushed; wait for its CI to pass before tagging (docs/releasing.md step 3)."
             exit 1
           fi
-          # gh lists the newest run first; that run decides.
-          read -r status conclusion url < <(jq -r '.[0] | "\(.status) \(.conclusion // "none") \(.url)"' <<<"$runs")
+          # gh lists the newest run first; that run decides. Read each field on its own:
+          # gh reports a pending conclusion as an empty string.
+          status=$(jq -r '.[0].status // ""' <<<"$runs")
+          conclusion=$(jq -r '.[0].conclusion // "" | if . == "" then "none" else . end' <<<"$runs")
+          url=$(jq -r '.[0].url // ""' <<<"$runs")
           if [ "$status" != completed ]; then
-            echo "::error::CI for $GITHUB_SHA is still $status ($url). Wait for it to pass, then re-run this workflow."
+            echo "::error::CI for $GITHUB_SHA is still ${status:-pending} ($url). Wait for it to pass, then re-run this workflow."
             exit 1
           fi
-          if [ "$conclusion" != success ]; then
-            echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). Fix it in a new commit and release a higher version."
-            exit 1
-          fi
-          echo "CI passed for $GITHUB_SHA: $url"
+          case "$conclusion" in
+            success)
+              echo "CI passed for $GITHUB_SHA: $url"
+              ;;
+            cancelled)
+              echo "::error::CI for $GITHUB_SHA was cancelled ($url). Re-run CI for this commit (and push nothing newer to main until it completes), then re-run this workflow."
+              exit 1
+              ;;
+            *)
+              echo "::error::CI for $GITHUB_SHA concluded '$conclusion' ($url). Fix it in a new commit and release a higher version."
+              exit 1
+              ;;
+          esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Read and check the version
         id: version

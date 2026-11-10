@@ -158,17 +158,21 @@ git push origin main
 # Wait for CI on this exact commit; exits non-zero if it fails. If gh finds no run
 # yet, give GitHub a few seconds to start it and repeat.
 gh run watch --exit-status "$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" \
-  --limit 1 --json databaseId --jq '.[0].databaseId')"
+  --event push --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
 git tag "v$release_version"
 git push origin "v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
 `tauri.conf.json`, a missing or empty `releases/X.Y.Z.md`, and a commit whose
-newest `ci.yml` run is missing, still running or not successful (its `prepare`
-job checks with `gh run list --commit`, using only `actions: read`). If CI was
-still running, re-run the Release workflow once it passes; if CI failed, fix it
-and release a higher version. Never move a
+newest `ci.yml` run from a push to `main` is missing, still running or not
+successful (its `prepare` job checks with `gh run list --commit --event push
+--branch main`, using only `actions: read`; pull request and other branch runs
+of the same commit do not count, so the commit must be on `main` and pushed).
+If CI was still running, re-run the Release workflow once it passes; if CI was
+cancelled, re-run CI for that commit (pushing nothing newer to `main` until it
+completes), then re-run the Release workflow; if CI failed, fix it in a new
+commit and release a higher version. Never move a
 published tag; fix problems in a higher version.
 
 To try the build without publishing, run the workflow manually (Actions →
