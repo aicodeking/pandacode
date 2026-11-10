@@ -51,8 +51,6 @@ webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# 2.10+ verifies TLS with the OS trust store (reqwest 0.13), so corporate MITM
-# roots work; 2.14 needs Tauri 2.12, which the Windows bindings below already use.
 tauri-plugin-updater = ">=2.14.1, <2.15"
 tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
