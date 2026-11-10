@@ -103,10 +103,19 @@ html .turn-changes.turn-card-foot{display:flex;flex-direction:row;align-items:ce
 .turn-card-foot>.turn-changes-run{flex:none;min-height:32px;margin-right:2px;border-radius:var(--ds-radius-control);background:transparent;color:var(--ds-success)}
 .turn-card-foot>.turn-changes-run:hover{background:var(--ds-row-hover)}
 
-/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ---------- */
+/* ---------- Over a scene (sky or wallpaper): the card itself is a dense glass, not the text behind it ----------
+ * Over the sky the glass is a plain fill, never a backdrop blur: the sky is a canvas painting every frame (and moving under
+ * the card on every scroll step), so a blur here re-blurs its backdrop on each one. 92% `--bg` is dense enough to carry the
+ * card without one, and no rule re-adds a filter to the card's icons (the icon kill switch that used to sit here lost to
+ * the sky's drop-shadow on specificity, so the sky rule is gone
+ * instead). A wallpaper keeps the frost (the rule below): `data-scene` is `"wallpaper"` there (src/sky-window.ts
+ * `syncScene`, from `data-wallpaper`, src/wallpapers.ts), and that scene is one decoded `<img>` with no frame loop, so its
+ * blur costs a re-blur per scroll step at worst and never a canvas frame. */
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:color-mix(in srgb,var(--bg) 92%,transparent);
-  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25);text-shadow:none}
-html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .icon{filter:none}
+  -webkit-backdrop-filter:none;backdrop-filter:none;text-shadow:none}
+/* The static scene keeps the glass it had: no canvas animates behind a wallpaper, so the blur is paid on scroll alone. */
+html[data-theme] .workspace[data-scene="wallpaper"] .conversation-pane .turn-card{
+  -webkit-backdrop-filter:blur(22px) saturate(1.25);backdrop-filter:blur(22px) saturate(1.25)}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card :is(.message,.turn-activity,.turn-activity-summary,.message-content){background:none;-webkit-backdrop-filter:none;backdrop-filter:none;box-shadow:none;text-shadow:none}
 html[data-theme] .workspace[data-scene] .conversation-pane .turn-card .turn-activity-summary:hover{background:var(--ds-row-hover)}
 

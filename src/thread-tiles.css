@@ -19,8 +19,17 @@
   box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 60%,transparent)}
 .thread-tile-ring[hidden]{display:none}
 
+/* The bar and the mirror's composer are a plain fill over the animated scene, never a backdrop blur: each tile draws its
+ * own live sky canvas behind them (src/thread-tiles.ts), so a blur here re-blurs its backdrop on every canvas frame and
+ * every scroll step, the exact cost the main pane dropped (sky-window.css, turn-card.css). A wallpaper is the other case,
+ * and the rule below puts the frost back there: `.thread-sky` is hidden (`sky-window.css`), one image cut to the tiles
+ * sits behind them (`clipWallpaper` in src/thread-tiles.ts) and no frame loop re-blurs anything — the split the main
+ * pane's cards make in turn-card.css. */
 .thread-tile-bar{position:absolute;inset:0 0 auto;z-index:1;display:flex;align-items:center;gap:4px;height:38px;padding:0 6px 0 4px;border-radius:var(--inset-radius,12px) var(--inset-radius,12px) 0 0;
-  background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(16px) saturate(1.15);-webkit-backdrop-filter:blur(16px) saturate(1.15);
+  /* 92%, the main pane's glass, not the 88% this rule carried: over the moving canvas the blur no longer helps the bar's
+   * `--muted` title and its status words, and the denser fill is what keeps them legible. The wallpaper scene re-adds the
+   * blur after the composer's rule; every fill here stays 92%, so only the filter differs between the two scenes. */
+  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:none;-webkit-backdrop-filter:none;
   box-shadow:inset 0 -1px 0 var(--ds-border);cursor:grab}
 .thread-tile-title{flex:1;min-width:0;display:flex;align-items:center;gap:8px;height:30px;padding:0 6px;border:0;border-radius:var(--ds-radius-chip);background:none;
   color:var(--muted);font:inherit;font-size:var(--ds-text-ui);letter-spacing:var(--ds-row-tracking);text-align:left;cursor:inherit;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
@@ -48,8 +57,16 @@
 .thread-mirror-rows:empty::before{content:"No messages yet.";display:block;padding:16px;color:var(--muted);text-align:center}
 /* The focused tile's close stays; the others show theirs on hover, keeping the title where it is. */
 .thread-mirror-composer{flex:none;display:block;width:auto;align-self:stretch;margin:8px;min-height:44px;padding:0 14px;border:0;border-radius:var(--ds-radius-card);text-align:start;justify-content:flex-start;color:var(--muted);font:inherit;font-size:var(--ds-text-ui);cursor:text;
-  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(22px) saturate(1.25);-webkit-backdrop-filter:blur(22px) saturate(1.25);
+  background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:none;-webkit-backdrop-filter:none;
   box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+
+/* The static scene keeps the frost the main pane's cards keep (turn-card.css): `data-scene` is `"wallpaper"` on the one
+ * `.workspace` every tile's `mountSky` is handed (src/main.ts), set from `data-wallpaper` by `syncScene` (src/sky-window.ts),
+ * and `.thread-sky` is hidden there (sky-window.css), so a blur is paid on a scroll step and never on a canvas frame.
+ * `:where()` leaves each rule at its class's own weight, so the reduced-transparency, contrast and forced-colours blocks
+ * below still win on source order. */
+:where(.workspace[data-scene="wallpaper"]) .thread-tile-bar{backdrop-filter:blur(16px) saturate(1.15);-webkit-backdrop-filter:blur(16px) saturate(1.15)}
+:where(.workspace[data-scene="wallpaper"]) .thread-mirror-composer{backdrop-filter:blur(22px) saturate(1.25);-webkit-backdrop-filter:blur(22px) saturate(1.25)}
 
 /* A tile's narrow composer and footer: the model and the file count keep their words, the branch and meter go first. */
 @container composer (max-width:400px){html .composer .branch-chip{flex:none;min-width:0;width:auto}html .composer .branch-chip-name{display:none}}
@@ -71,6 +88,6 @@
 @media(forced-colors:active){
   .thread-tile,.thread-tile-ring{outline:1px solid CanvasText}
   .thread-tile-ring{outline:2px solid Highlight;outline-offset:-2px}
-  .thread-tile-bar,.thread-mirror-composer{background:Canvas;border:1px solid CanvasText}
+  .thread-tile-bar,.thread-mirror-composer{background:Canvas;border:1px solid CanvasText;backdrop-filter:none;-webkit-backdrop-filter:none}
 }
 @media(prefers-reduced-motion:reduce){.thread-tile-title,.thread-tile-mark,.thread-tile-close{transition:none}}
