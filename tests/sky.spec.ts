@@ -554,7 +554,54 @@ test('the reader typing in the side thread holds the sky, which resumes after th
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
 });
 
-test('a run keeps its wind while the app pins the transcript to the bottom', async ({ page }) => {
+/** One measured window of a live run: the frames painted, the paints inside each short window, and the wind and state read
+ * beside them. Both windows a test measures run for the same wall time over the same number of ticks, so their frame counts
+ * are comparable; the only difference is whether output arrives and is pinned. "Standing still" is not hypothetical: it is
+ * every run between two rows of output — the model thinking, a tool running — and the wind is up there too. */
+async function measureRun(page: Page, growing: boolean, ticks = 5, tickMs = 300): Promise<{ painted: number; paints: number[]; wind: string[]; states: string[]; elapsedMs: number }> {
+  const transcript = page.locator('#transcript');
+  const startedAt = Date.now();
+  const start = await frames(page), paints: number[] = [], wind: string[] = [], states: string[] = [];
+  let previous = 0;
+  for (let tick = 0; tick < ticks; tick++) {
+    if (growing) {
+      // The same pin `main.ts` writes for a row of output (`followTranscript`, `stickTranscript`, `settleIn`): append the
+      // row where a run's output lands (`#stream-region`, the transcript's last child), then put the bottom of the
+      // transcript on screen. A scroll position is not reader intent, so it holds nothing.
+      const gap = await transcript.evaluate(node => {
+        const row = document.createElement('div');
+        row.style.height = '40px';
+        (node.querySelector('#stream-region') ?? node).append(row);
+        node.scrollTop = node.scrollHeight;
+        return Math.round(node.scrollHeight - node.scrollTop - node.clientHeight);
+      });
+      expect(gap, 'the pin lands at the bottom').toBe(0);
+    }
+    await page.waitForTimeout(tickMs);
+    const painted = (await frames(page)) - start;
+    paints.push(painted - previous); previous = painted;
+    wind.push((await sky(page).getAttribute('data-wind'))!);
+    states.push((await sky(page).getAttribute('data-sky-state'))!);
+  }
+  return { painted: previous, paints, wind, states, elapsedMs: Date.now() - startedAt };
+}
+
+/* The streaming cadence, stated as the contract rather than as the frame count 30 fps used to give. A live run churns the
+ * transcript — it is streaming, and `main.ts` pins the transcript to the bottom on every row of output — so the canvas
+ * drops to the idle cadence while that lasts: the scene keeps painting, the wind is up, the state never falls back to idle
+ * and no short window is empty, but it paints at roughly a quarter of the wind's rate instead of on every other frame. The
+ * assertion is one-sided and rate-based rather than a ratio against a second window: a live run never reaches the wind
+ * cadence at all (`churning` includes `running()`), so there is no still-run denominator to divide by, and a rate bound
+ * derived from the wall time this box actually took keeps a slow box from failing where a fast one passes. A revert to a
+ * single cadence reads ~30 fps and fails.
+ *
+ * `main.ts` pins the transcript to the bottom on every frame of output, and the sky reads reader intent off the input
+ * events, never off a scroll position: those scrolls are the app's and must hold nothing, or a streaming run — the one
+ * thing that drives the wind — would freeze its own scene. */
+test('a run that is growing keeps its wind while the app pins the transcript, and paints at the idle rate', async ({ page }) => {
+  // Two measured windows of ~1.5 s each, plus the wind's ramp: the default 20 s is a stopwatch on a loaded box, not a
+  // statement about the cadence.
+  test.slow();
   await page.setViewportSize({ width: 1280, height: 860 });
   await open(page);
   await lengthenThread(page);
@@ -562,27 +609,26 @@ test('a run keeps its wind while the app pins the transcript to the bottom', asy
   expect(await transcript.evaluate(node => node.scrollHeight - node.clientHeight), 'the thread scrolls').toBeGreaterThan(200);
   await transcript.evaluate(node => node.setAttribute('data-running', ''));
   await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
-  const start = await frames(page);
-  // `main.ts` pins the transcript to the bottom on every frame of output (`followTranscript`, `stickTranscript`,
-  // `settleIn`), and the sky reads reader intent off the input events, never off a scroll position: those scrolls are the
-  // app's and must hold nothing, or a streaming run — the one thing that drives the wind — would freeze it. Each pin here
-  // follows a row of new output and then writes the same bottom those three write, eight times over ~800 ms.
-  for (let pin = 0; pin < 8; pin++) {
-    const gap = await transcript.evaluate(node => {
-      const row = document.createElement('div');
-      row.style.height = '40px';
-      node.append(row);
-      node.scrollTop = node.scrollHeight;
-      return Math.round(node.scrollHeight - node.scrollTop - node.clientHeight);
-    });
-    expect(gap, 'the pin lands at the bottom').toBe(0);
-    await page.waitForTimeout(100);
-  }
-  // The wind paints straight through the pinned scrolls: ~30-44 frames over the ~800 ms here, against ~6 for a hold that
-  // answers the app's own scrolls, so 12 leaves room for a loaded box and still catches the regression.
-  expect((await frames(page)) - start, 'the pinned run still paints frames').toBeGreaterThan(12);
-  await expect.poll(async () => Number(await sky(page).getAttribute('data-wind')), { timeout: 4000 }).toBeGreaterThan(.9);
-  await expect(sky(page)).toHaveAttribute('data-sky-state', 'moving');
+  await expect.poll(async () => Number(await sky(page).getAttribute('data-wind')), { timeout: 4000 }).toBeGreaterThan(.97);
+  // Five 300 ms windows of a run that appends a row and pins the bottom on every tick.
+  const growing = await measureRun(page, true);
+
+  // The growing run keeps its wind: it still paints, no 300 ms of it is empty (a stall of more than twice the idle
+  // interval, where an empty window at the idle rate is impossible), and the state says "moving" throughout.
+  expect(growing.painted, 'the growing run still paints frames').toBeGreaterThan(0);
+  for (const [index, count] of growing.paints.entries())
+    expect(count, `no zero-frame window: ${count} paints in the ${index + 1}. 300 ms of a growing run`).toBeGreaterThan(0);
+  for (const [index, value] of growing.wind.entries())
+    expect(Number(value), `wind at ${(index + 1) * 300} ms of the growing run is still up`).toBeGreaterThan(0);
+  for (const state of growing.states) expect(state, 'the growing run never falls out of moving').toBe('moving');
+
+  // The rate bound, from the wall time this box actually took: the wind's 30 fps is what a run used to cost, the cap is the
+  // idle 8 fps, and 18 fps sits between them with room for a box that is slow but not reverting (measured on this one:
+  // ~8-10 fps while a run churns, 30 fps on the same tree with the cap removed).
+  const seconds = growing.elapsedMs / 1000;
+  const fps = growing.painted / seconds;
+  expect(growing.painted, `the growing run painted ${growing.painted} frames in ${seconds.toFixed(2)} s (${fps.toFixed(1)} fps)`)
+    .toBeLessThanOrEqual(seconds * 18);
 });
 
 test('over the sky the glass is a plain fill, and only the header keeps its halo', async ({ page }) => {
