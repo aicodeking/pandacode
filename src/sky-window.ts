@@ -9,21 +9,23 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does,
  * and 8 again while a run is churning the transcript (`churning`: it is streaming, or the scroller's content height moved
  * within GROWTH_MS) — a thread relaying out on every frame cannot also pay a canvas frame every other frame, and the wind
- * still follows the run there, just a quarter as often, with the pointer's 60 fps burst held back for the same reason. It also stands still while the reader moves a transcript or types
- * in a composer — the pane's or any tile's — and for HOLD_MS after the last such input: the canvas is the backdrop of the
- * whole transcript, so every frame it paints makes
+ * still follows the run there, just a quarter as often, with the pointer's 60 fps burst held back for the same reason. It
+ * also stands still while the reader moves a transcript or types in a composer — the pane's or any tile's — and for
+ * HOLD_MS after the last such input: the canvas is the backdrop of the whole transcript, so every frame it paints makes
  * the compositor redo the region above it. The scene's glass is a plain fill on the surfaces that scroll with the text and
  * on the composer's (and a tile's) glass, where a blur would re-blur its backdrop on every canvas frame and every scroll
- * step; the floating ones keep theirs — the action dock, its label tip and the agents flyout over a dense 90% frame fill
- * (`--dock-fill` in action-dock.css, a fill dense enough that the blur only adds depth, and chosen so they read over the
- * sky and a wallpaper), the agents popover, tip bubbles and progress pills likewise. Reader intent is read off the events
- * (a wheel, a touch, a press, a key), never off the scroll position, so the app's own scrolling never holds a frame. The
- * hold only defers the loop, it never stops it, and the resumed frame spans the wait with `dt` clamped at .1 s (`tick`): a
- * hold shorter than that is taken up, a longer one is dropped rather than jumped, so the clock never rewinds. That spanned
- * `dt` is integrated in substeps of at most 1/60 s (`step`), so the springs advance by the elapsed time without ever
- * overshooting. The wind is caught up over the whole span — that is what makes it look continuous — while the pointer is
- * seeded from the resumed instant and steps at most one frame's worth, so a freeze resumes the parting where it stopped
- * instead of handing it the whole wait in one 16 ms frame.
+ * step; the floating ones keep theirs, at two real densities: the action dock, its label tip, the agents flyout and the
+ * progress pills blur over a dense 90% `--dock-fill` (action-dock.css, dense enough that the blur only adds depth and
+ * chosen so they read over the sky and a wallpaper). The agents popover and the tip bubbles are the wider glass instead —
+ * `--glass-warm` to `--glass-tint`, .58–.72 — where the blur rather than the fill separates them from the canvas
+ * (pre-existing). Reader intent is read off the events (a wheel, a touch, a press, a key), never off the scroll position,
+ * so the app's own scrolling never holds a frame.
+ * The hold only defers the loop, it never stops it, and the resumed frame spans the wait with `dt` clamped at .1 s
+ * (`tick`): a hold shorter than that is taken up, a longer one is dropped rather than jumped, so the clock never rewinds.
+ * That spanned `dt` is integrated in substeps of at most 1/60 s (`step`), so the springs advance by the elapsed time
+ * without ever overshooting. The wind is caught up over the whole span — that is what makes it look continuous — while the
+ * pointer is seeded from the resumed instant and steps at most one frame's worth, so a freeze resumes the parting where it
+ * stopped instead of handing it the whole wait in one 16 ms frame.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
