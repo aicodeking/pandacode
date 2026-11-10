@@ -53,5 +53,6 @@ Area → key files → detail (read it before touching the area).
 - Connect, headless host: `src-tauri/src/remote*`, `headless.rs`, `relay/`; [docs/remote-access.md](docs/remote-access.md), [docs/headless.md](docs/headless.md) → [ref](docs/agent-reference.md#remote-access-and-headless).
 - Bots, chats: `src-tauri/src/bots*`, `chats.rs`; [docs/bots.md](docs/bots.md), [docs/chats.md](docs/chats.md) → [ref](docs/agent-reference.md#bots-and-chats).
 - Progress, design canvas, skills, jj, capabilities, schedules, recipes, checks: `progress-pip.ts`, `design-canvas.ts`, `skills-library.ts`, `jj.rs`, `schedules.rs`, `recipes.rs`, `checks.rs`; matching `docs/*.md` → [ref](docs/agent-reference.md#smaller-features).
+- Voice input: `src/voice-*`, `src-tauri/src/voice*`, `scripts/speech-catalog.mjs`; [docs/voice-input.md](docs/voice-input.md) → [ref](docs/agent-reference.md#voice-input).
 - Preview mocks for new IPC: `src/preview.ts` → [ref](docs/agent-reference.md#preview-mocks).
 - Mobile app: `mobile/` (`npx tsc --noEmit && npm test && npx expo lint` there) → [ref](docs/agent-reference.md#mobile-app).

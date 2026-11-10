@@ -43,19 +43,34 @@ jobs:
     needs: prepare
     strategy:
       fail-fast: false
+      # transcribe_cmake: TRANSCRIBE_CMAKE_ARGS for transcribe-cpp-sys 0.4.1 (its build.rs passes the
+      # variable to CMake when it builds ggml). Rule: never tune ggml to the runner's CPU.
+      # - x86_64 rows pin the baseline SSE4.2/AVX/F16C floor (no AVX2+, like ort).
+      # - Linux arm64 pins plain ARMv8-A (GGML_NATIVE=OFF + GGML_CPU_ARM_ARCH, ggml's -march).
+      # - Apple silicon: the crate's build.rs already sets GGML_NATIVE=OFF on macOS.
+      # - Windows arm64 is the one exception: ggml refuses GGML_NATIVE=OFF with MSVC on ARM
+      #   ("use clang"), and the clang-cl toolset cannot be chosen here because cmake-rs already
+      #   passes -Thost=x64 and CMake allows one -T. So it stays native: the build probes the
+      #   runner CPU (dotprod/i8mm on windows-11-arm), which sets that row's CPU floor (see
+      #   docs/agent-reference.md#voice-input). The same probe also tests SVE and SME, which
+      #   platform.rs does not check and Snapdragon X lacks, so the row pins their cached probe
+      #   results off (GGML_MACHINE_SUPPORTS_sve/_sme=OFF, read by ggml-cpu/CMakeLists.txt's
+      #   check_arm_feature). Keep ci.yml's Linux x86_64 job and rust-platforms rows in step.
       matrix:
         include:
-          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin }
+          - { os: macos-latest, target: darwin-aarch64, triple: aarch64-apple-darwin, transcribe_cmake: '' }
           # Native Intel runner: build.mjs only builds on the target's own host architecture.
-          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin }
-          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc }
-          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc }
-          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu }
+          - { os: macos-15-intel, target: darwin-x86_64, triple: x86_64-apple-darwin, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: windows-2022, target: windows-x86_64, triple: x86_64-pc-windows-msvc, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: windows-11-arm, target: windows-aarch64, triple: aarch64-pc-windows-msvc, transcribe_cmake: '-DGGML_MACHINE_SUPPORTS_sve=OFF -DGGML_MACHINE_SUPPORTS_sme=OFF' }
+          - { os: ubuntu-22.04, target: linux-x86_64, triple: x86_64-unknown-linux-gnu, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          - { os: ubuntu-24.04-arm, target: linux-aarch64, triple: aarch64-unknown-linux-gnu, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
       RELEASE_TARGET: ${{ matrix.target }}
+      # Empty on Apple silicon: an empty value adds no CMake arguments.
+      TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
       # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
       # an ad-hoc signature instead (see docs/releasing.md).
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -70,7 +85,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf squashfs-tools xvfb dbus-x11 xdg-utils
       - run: npm ci
       - run: npm run test:release
       - name: Configure Apple signing keychain

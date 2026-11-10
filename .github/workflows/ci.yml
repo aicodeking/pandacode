@@ -36,6 +36,9 @@ jobs:
     name: Rust check and tests (Linux)
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    env:
+      # Same x86_64 transcribe-cpp floor as the linux-x86_64 release row (see release.yml).
+      TRANSCRIBE_CMAKE_ARGS: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -49,7 +52,7 @@ jobs:
       - name: Install Linux native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
       - run: npm run build
@@ -92,3 +95,49 @@ jobs:
           EOF
           echo "PANDA_ROUTER_ASSETS=$PWD/.panda-router" >> "$GITHUB_ENV"
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- panda_router model_routing
+
+  rust-platforms:
+    # Builds the Rust library (and transcribe-cpp, the native speech engine) on the release targets the
+    # Linux job does not cover, so a platform-only break shows up in CI instead of first at release time.
+    # Each row copies its release.yml build row: same runner and TRANSCRIBE_CMAKE_ARGS (see the comment
+    # there; an empty value adds no CMake arguments). Clippy covers the same targets as the Linux job;
+    # tests stay on Linux. The Linux arm64 row installs the same native packages as the Linux job.
+    name: Rust clippy (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple silicon: the crate's build.rs already sets GGML_NATIVE=OFF on macOS.
+          - { os: macos-latest, target: darwin-aarch64, transcribe_cmake: '' }
+          # Intel Mac on its native runner, with the x86_64 SSE4.2/AVX/F16C floor.
+          - { os: macos-15-intel, target: darwin-x86_64, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          # Windows x64 on the release runner, with the baseline SSE4.2/AVX/F16C floor.
+          - { os: windows-2022, target: windows-x86_64, transcribe_cmake: '-DTRANSCRIBE_X86_CONSERVATIVE=ON -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_F16C=ON' }
+          # Windows arm64 builds native (ggml refuses GGML_NATIVE=OFF with MSVC on ARM), as in release.yml:
+          # dotprod/i8mm from the runner, SVE and SME pinned off (platform.rs checks neither).
+          - { os: windows-11-arm, target: windows-aarch64, transcribe_cmake: '-DGGML_MACHINE_SUPPORTS_sve=OFF -DGGML_MACHINE_SUPPORTS_sme=OFF' }
+          # Linux arm64 pinned to plain ARMv8-A, never the runner's CPU.
+          - { os: ubuntu-24.04-arm, target: linux-aarch64, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: '22', cache: npm }
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
+      # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
+      - run: npm ci
+      - run: npm run build
+      - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings

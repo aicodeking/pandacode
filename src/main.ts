@@ -4,6 +4,7 @@ import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
+import { createVoiceDictation, voiceButtonHtml } from './voice-dictation';
 import './design-system.css';
 import './model-picker.css';
 import './smooth.css';
@@ -30,6 +31,7 @@ import './redesign/inspector.css';
 import './redesign/settings.css';
 import './redesign/board.css';
 import './redesign/bots.css';
+import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
 import { setDocumentView } from './document-viewer';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
@@ -37,7 +39,7 @@ import { initWakeups, openWakeComposer, scheduledMark, wakeCommand, wakeGlyph, w
 import { TRACE_HEADER } from './schedules-api';
 import { afterRun as turnChecksAfterRun, enabled as turnChecksEnabled, noteManualSend, setEnabled as turnChecksSetEnabled } from './turn-checks';
 import { limitActive, limitBanner, resetLabel } from './usage-limit';
-import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
+import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
 import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
@@ -124,6 +126,7 @@ import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
 import { TailText } from './tail-text';
 import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
+import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
 
 /* Visual thesis: calm surfaces, system typography, yellow selection, and bamboo details.
  * Content: project navigation → conversation → contextual source review.
@@ -665,6 +668,37 @@ const worktrees = createWorktrees({
 });
 window.addEventListener('pandacode-github-change', () => { renderComposer(); renderHeader(); renderInspector(); });
 window.addEventListener('focus', () => void github.refreshLinks(state.projectId));
+/** The prompt's aria-description, shared by the composer render and dictation's restore, so the bot-steering and
+ * GitHub-mention wording is the same everywhere. */
+function promptDescription(): string {
+  const running = isRunning(), task = session(), bot = running ? botForThread() : undefined;
+  let enter = 'Enter to send.';
+  if (running) {
+    const steering = task && !teams.get(task.id) ? ' Command Enter to steer the running turn.' : '';
+    enter = `Enter to queue for when the agent finishes.${steering}`;
+  }
+  if (bot) {
+    const steer = bot.whileWorking === 'steer';
+    enter = `Enter to ${steer ? 'steer current work' : 'queue for after it finishes'}. `
+      + `Command Enter to ${steer ? 'queue for after it finishes' : 'steer now'}.`;
+  }
+  const references = task && github.connected(task.projectId) ? ', issue, or pull request' : '';
+  return `${enter} Shift Enter for a new line. Type @ to mention a project file${references}.`;
+}
+const voiceDictation = createVoiceDictation({
+  call, subscribe: callback => subscribe('voice-event', callback),
+  thread: () => state.sharedChannelId ? null : session()?.id ?? null,
+  threadTitle: id => state.sessions.find(task => task.id === id)?.title || 'New task',
+  showThread: id => run(selectSession(id)),
+  settings: () => run(showVoiceSettings()), isImeKey, announce, describePrompt: promptDescription,
+  enter: element => {
+    if (document.documentElement.hasAttribute('data-ready')) {
+      materializeIn(element, { scale: 1, y: 0, spring: { response: 0.18 } });
+    }
+  },
+  leave: element => materializeOut(element, { scale: 1, y: 0 }),
+});
+
 const attachments = mountPromptAttachments({
   taskId: () => state.sessionId,
   blocked: taskId => {
@@ -778,7 +812,8 @@ async function openHarnessConsole(task: Session, command?: string): Promise<void
 async function instruction(task: Session, text: string): Promise<void> {
   if (task.id !== state.sessionId) return;
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!prompt) return;
+  // A recording owns the locked draft: leave it untouched and say how to send.
+  if (!prompt || !voiceDictation.prepareSubmit()) return;
   prompt.value = text; state.drafts.set(task.id, text); await send();
 }
 async function exportTask(task: Session, name?: string): Promise<void> {
@@ -1080,11 +1115,12 @@ function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.co
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
 /** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
+  if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
   if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const typed = prompt?.dataset.sessionId === draft.id ? prompt.value : state.drafts.get(draft.id) ?? '';
-  if (typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
+  if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
   state.sessions = state.sessions.filter(task => task.id !== draft.id);
   state.drafts.delete(draft.id);
   void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
@@ -2625,6 +2661,10 @@ function renderComposer(): void {
   slashPicker?.dispose(); slashPicker = undefined;
   fileMentionPicker?.dispose(); fileMentionPicker = undefined;
   closeContentMenus();
+  const voiceDetails = document.querySelector<HTMLElement>('#composer-area .voice-details');
+  const voiceDetailsState = voiceDetails ? { focused: document.activeElement === voiceDetails, top: voiceDetails.scrollTop } : null;
+  const voiceFocus = document.activeElement?.closest<HTMLElement>('[data-voice]')?.dataset.voice;
+  const voiceStatusFocus = document.activeElement?.matches('.voice-pill');
   const oldPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   if (oldPrompt?.dataset.sessionId && !deletedSessions.has(oldPrompt.dataset.sessionId)) state.drafts.set(oldPrompt.dataset.sessionId, oldPrompt.value);
   // Re-rendering replaces the textarea; keep typing focus and the caret, since people type while agents work.
@@ -2633,6 +2673,7 @@ function renderComposer(): void {
   const barControl = document.activeElement?.closest<HTMLElement>('#composer-area :is(.composer-steer-bar [data-action],[data-action="stop"])')?.dataset.action;
   const hadSteerBar = oldPrompt?.dataset.sessionId === session()?.id && Boolean(document.querySelector('#composer-area .composer-steer-bar'));
   if (state.sharedChannelId) {
+    voiceDictation.bind(null);
     const channel = state.sharedChannelDetail;
     // Refreshes rewrite the actions; an open Reassign menu for the same message stays open.
     const reassign = document.querySelector<HTMLElement>('#composer-area .bc-reassign-menu:not([hidden]) [data-message]')?.dataset.message;
@@ -2647,9 +2688,9 @@ function renderComposer(): void {
     return;
   }
   const s = session();
-  if (!s) { $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
+  if (!s) { voiceDictation.bind(null); $('#composer-area').innerHTML = ''; browserPanel?.refresh(); return; }
   syncOverlayContext({ projectId: s.projectId, provider: s.provider, model: s.model || 'default', mode: s.mode, reasoningEffort: s.reasoningEffort ?? null });
-  if (taskStage(s) === 'completed') { $('#composer-area').innerHTML = `<div class="board-completed-note">This task is settled.${state.view === 'conversation' ? '<button type="button" class="secondary-button" data-action="board-reopen">Reopen task</button>' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
+  if (taskStage(s) === 'completed') { voiceDictation.bind(null); $('#composer-area').innerHTML = `<div class="board-completed-note">This task is settled.${state.view === 'conversation' ? '<button type="button" class="secondary-button" data-action="board-reopen">Reopen task</button>' : ' Reopen it above to continue.'}</div>`; browserPanel?.refresh(); return; }
   const previous = state.drafts.get(s.id) ?? '';
   const running = isRunning();
   // A bot's next model can be picked mid-turn; it applies from the next turn.
@@ -2662,7 +2703,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${running ? `Enter to queue for when the agent finishes.${team ? '' : ' Command Enter to steer the running turn.'}` : 'Enter to send. Shift Enter for a new line.'}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -2689,7 +2730,6 @@ function renderComposer(): void {
   if (prompt && activeBot) {
     const entersSteer = activeBot.whileWorking === 'steer';
     prompt.placeholder = `Enter ${entersSteer ? 'steers' : 'queues'} for ${activeBot.name} · ⌘↩ ${entersSteer ? 'queues' : 'steers'}`;
-    prompt.setAttribute('aria-description', `Enter to ${entersSteer ? 'steer current work' : 'queue for after it finishes'}. Command Enter to ${entersSteer ? 'queue for after it finishes' : 'steer now'}.`);
     const action = document.querySelector<HTMLButtonElement>('#composer-area .steer-button');
     if (action) { const label = entersSteer ? 'Queue' : 'Steer'; action.setAttribute('aria-label', `${label} while ${activeBot.name} is working`); action.title = `${label} while ${activeBot.name} is working`; action.querySelector('span')!.textContent = label; }
   }
@@ -2704,6 +2744,10 @@ function renderComposer(): void {
     again?.focus({ preventScroll: true });
     if (document.activeElement !== again) prompt?.focus({ preventScroll: true });
   }
+  // Dictation binds once, to the final prompt node (the reused one on a same-thread refresh), before its focus returns.
+  voiceDictation.bind(prompt);
+  if (voiceStatusFocus) document.querySelector<HTMLElement>('#composer-area .voice-pill:not([hidden])')?.focus({ preventScroll: true });
+  if (voiceFocus) document.querySelector<HTMLElement>(`#composer-area [data-voice="${voiceFocus}"]`)?.focus({ preventScroll: true });
   syncSteerAvailability();
   const steerBar = document.querySelector<HTMLElement>('#composer-area .composer-steer-bar');
   if (steerBar && !hadSteerBar && oldPrompt?.dataset.sessionId === s.id) settleUnfolded(steerBar);
@@ -2718,8 +2762,6 @@ function renderComposer(): void {
       load: force => call<{ commands: SlashCommand[]; warnings: string[] }>('list_slash_commands', { sessionId: s.id, force }).then(withWake),
       select: () => state.drafts.set(s.id, prompt.value),
     });
-    const enter = running ? `Enter to queue for when the agent finishes.${!team ? ' Command Enter to steer the running turn.' : ''}` : 'Enter to send.';
-    prompt.setAttribute('aria-description', `${enter} Shift Enter for a new line. Type @ to mention a project file${github.connected(s.projectId) ? ', issue, or pull request' : ''}.`);
     fileMentionPicker = mountFileMentions(prompt, {
       contextKey: () => `${state.sessionId}:${workspacePath()}:${github.connected(s.projectId)}`,
       // Files and GitHub work share one picker; GitHub leads when the query is a number.
@@ -2732,6 +2774,11 @@ function renderComposer(): void {
       },
       select: () => state.drafts.set(s.id, prompt.value),
     });
+  }
+  if (voiceDetailsState) {
+    const details = document.querySelector<HTMLElement>('#composer-area .voice-details');
+    if (voiceDetailsState.focused) details?.focus({ preventScroll: true });
+    if (details) details.scrollTop = voiceDetailsState.top;
   }
   syncRemoteConnection();
   renderedRemoteKey = remoteComposerKey(s);
@@ -2848,7 +2895,7 @@ async function startHubTask({ projectId, prompt, title, link, send: start }: { p
   if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
   renderNavigation(); renderHeader();
   const field = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!field || field.dataset.sessionId !== task.id) return;
+  if (!field || field.dataset.sessionId !== task.id || !voiceDictation.prepareSubmit()) return;
   field.value = prompt;
   field.dispatchEvent(new Event('input', { bubbles: true }));
   field.focus();
@@ -3190,6 +3237,7 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
 function selectSession(id: string, focusComposer = false): Promise<void> {
+  if (id !== state.sessionId) voiceDictation.detach();
   return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
 }
 async function openThread(id: string, focusComposer: boolean): Promise<void> {
@@ -3306,6 +3354,8 @@ async function loadSessions(): Promise<void> {
   renderNavigation(); renderHeader(); refreshModelLabels(); syncCloudStrip();
 }
 function removeDeletedSessions(ids: string[]): void {
+  voiceDictation.discardThreads(ids);
+  committedDrafts.forget(ids);
   terminalPanel.forget(ids);
   const removed = new Set(ids);
   for (const id of removed) {
@@ -3484,13 +3534,19 @@ async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, tex
     || (imageIds.length || moodboardItems.length ? 'Please review the attached material.' : '');
   await call('bot_message', { botId: bot.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id), forceQueue });
 }
+/** Clears a draft whose send already began (`beginSubmit` retired its dictation anchor). */
 function clearComposer(s: Session): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  noteCommittedDraft(s, prompt?.dataset.sessionId === s.id ? prompt.value : state.drafts.get(s.id) ?? '');
   if (prompt) prompt.value = '';
   state.drafts.delete(s.id); attachments.clear(s.id); state.attachments = [];
 }
 /** Queues the composer's message to send when the agent finishes. */
 async function enqueueFromComposer(forceQueue = false): Promise<void> {
+  if (!voiceDictation.prepareSubmit()) return;
+  await enqueueDraft(forceQueue);
+}
+async function enqueueDraft(forceQueue: boolean): Promise<void> {
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -3502,6 +3558,7 @@ async function enqueueFromComposer(forceQueue = false): Promise<void> {
     const browserItems = [...(state.browserAttachments.get(s.id) ?? [])];
     const moodboardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
     if (!text && !paths.length && !browserItems.length && !moodboardItems.length && !promptItems.length) return;
+    const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
     clearComposer(s);
     state.browserAttachments.delete(s.id);
     const sentBoards = new Set(moodboardItems.map(item => item.id));
@@ -3516,13 +3573,14 @@ async function enqueueFromComposer(forceQueue = false): Promise<void> {
       if (browserItems.length) state.browserAttachments.set(s.id, browserItems);
       if (moodboardItems.length) state.moodboardAttachments.set(s.id, [...moodboardItems, ...(state.moodboardAttachments.get(s.id) ?? [])]);
       throw error;
-    } finally { if (s.id === state.sessionId) renderComposer(); }
+    } finally { if (s.id === state.sessionId) renderComposer(); finishSubmit(); }
     return;
   }
   if (!text && !items.length) return;
   clearComposerNote(s);
   // Clear at once so the next message can be typed while this one is saved.
   const promptItems = attachments.list(s.id), paths = [...state.attachments];
+  const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
   clearComposer(s); renderComposer(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   try {
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: items });
@@ -3530,13 +3588,33 @@ async function enqueueFromComposer(forceQueue = false): Promise<void> {
   } catch (error) {
     restoreComposer(s, text, promptItems, paths);
     throw error;
-  } finally { if (s.id === state.sessionId) renderComposer(); }
+  } finally { if (s.id === state.sessionId) renderComposer(); finishSubmit(); }
 }
-/** Puts an unsent message back unless something new was typed meanwhile. */
-function restoreComposer(s: Session, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[]): void {
+/** A committed send owns this draft; later typing belongs to the next message. The field keeps its height until the
+ * send's own render (after followSend) rebuilds it: shrinking it here, before the follow is armed, grows the transcript
+ * early and leaves it unpinned (ui.spec "streaming keeps the transcript at the bottom after sending"). */
+function clearComposerDraft(s: Session): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (prompt?.dataset.sessionId === s.id && !prompt.value.trim()) prompt.value = text;
-  else if (!state.drafts.get(s.id)) state.drafts.set(s.id, text);
+  const shown = prompt?.dataset.sessionId === s.id;
+  noteCommittedDraft(s, shown ? prompt.value : state.drafts.get(s.id) ?? '');
+  if (shown) prompt.value = '';
+  state.drafts.delete(s.id);
+}
+/** Rejected sends come back before newer draft text, in written order (composer-restore.ts). */
+const committedDrafts = createCommittedDrafts();
+function noteCommittedDraft(s: Session, text: string): void { committedDrafts.note(s.id, text); }
+/** Restores a rejected message before newer draft text (after earlier rejected ones) without losing its selection. */
+function restoreComposerDraft(s: Session, text: string): void {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const shown = prompt?.dataset.sessionId === s.id;
+  const current = shown ? prompt.value : state.drafts.get(s.id) ?? '';
+  const restored = committedDrafts.restore(s.id, text, current);
+  state.drafts.set(s.id, restored.text);
+  if (shown) { applyRestoredDraft(prompt, current, restored.text, restored.at); resizePrompt(); }
+}
+/** Restores an unsent message and its attachments alongside any newer draft. */
+function restoreComposer(s: Session, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[]): void {
+  restoreComposerDraft(s, text);
   if (promptItems.length) attachments.restore(s.id, promptItems);
   if (paths.length && s.id === state.sessionId) state.attachments = [...new Set([...paths, ...state.attachments])];
 }
@@ -3599,6 +3677,10 @@ function steerStateHtml(m: Message): string {
 }
 /** Sends the composer's text into the running turn; anything that cannot steer is queued instead. */
 async function steerFromComposer(): Promise<void> {
+  if (!voiceDictation.prepareSubmit()) return;
+  await steerDraft();
+}
+async function steerDraft(): Promise<void> {
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -3614,8 +3696,9 @@ async function steerFromComposer(): Promise<void> {
     notify(items.length ? 'Attachments travel with queued messages, so this one was queued.' : 'A team takes messages between runs, so this one was queued.');
     return enqueueFromComposer();
   }
+  const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
   clearComposerNote(s); clearComposer(s); renderComposer();
-  await steerOrQueue(s, text);
+  try { await steerOrQueue(s, text); } finally { finishSubmit(); }
 }
 /** Steers `text` into the running turn of `s`; whatever cannot steer is queued, or put back in its composer. */
 async function steerOrQueue(s: Session, text: string): Promise<void> {
@@ -3889,6 +3972,10 @@ function remoteRefusal(s: Session, error: unknown): boolean {
   return Boolean(text);
 }
 async function send(): Promise<void> {
+  if (!voiceDictation.prepareSubmit()) return;
+  await sendDraft();
+}
+async function sendDraft(): Promise<void> {
   if (btwFromComposer()) return;
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
@@ -3929,17 +4016,20 @@ async function send(): Promise<void> {
         if (state.sessionId !== s.id) throw new Error('Return to the task to run this command.');
         const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
         if (prompt?.value !== draft) throw new Error('Your message changed while commands were loading. Send it again.');
+        const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
         prompt.value = ''; state.drafts.delete(s.id); resizePrompt();
         try { await performSlashAction(resolved.action, resolved.arguments, s); }
         catch (error) {
-          if (prompt.isConnected && !prompt.value) prompt.value = draft;
-          if (!state.drafts.has(s.id)) state.drafts.set(s.id, draft);
+          restoreComposerDraft(s, draft);
           throw error;
-        }
+        } finally { finishSubmit(); }
         return;
       }
     }
   } catch (error) { configuringSessions.delete(s.id); throw error; }
+  const finishSubmit = voiceDictation.beginSubmit(s.id);
+  if (!finishSubmit) { configuringSessions.delete(s.id); return; }
+  clearComposerDraft(s);
   const sentAt = Date.now();
   const listed = state.sessions.find(task => task.id === s.id) ?? s;
   // The first prompt publishes a New task draft; native storage confirms it when the prompt is saved.
@@ -3964,9 +4054,6 @@ async function send(): Promise<void> {
     state.moodboardAttachments.set(s.id, (state.moodboardAttachments.get(s.id) ?? []).filter(item => !boardIds.has(item.id)));
     moodboardItemsConsumed = true;
     stream(s.id).lastPromptAt = sentAt; stream(s.id).startedAt = Math.min(stream(s.id).startedAt, sentAt); stream(s.id).status = 'Starting agent'; s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null;
-    const currentPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (currentPrompt?.dataset.sessionId === s.id && currentPrompt.value === draft) currentPrompt.value = '';
-    if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
     sent = sentPrompt(s, content, Date.now());
     if (isCurrent()) {
       stickToBottom = true; followSend();
@@ -3985,10 +4072,7 @@ async function send(): Promise<void> {
     state.streams.delete(s.id); s.status = 'idle';
     // A rejected first prompt may not have been saved; follow native storage on whether the task is listed.
     if (wasDraft) void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; renderNavigation(); }).catch(() => undefined);
-    // A rejected start must restore its own draft, even after navigating away.
-    const currentPrompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (currentPrompt?.dataset.sessionId === s.id && !currentPrompt.value) currentPrompt.value = draft;
-    if (!state.drafts.get(s.id)) state.drafts.set(s.id, draft);
+    restoreComposerDraft(s, draft);
     if (promptItemsConsumed) attachments.restore(s.id, promptItems);
     if (moodboardItemsConsumed && moodboardItems.length) {
       const sent = new Set(moodboardItems.map(item => item.id));
@@ -4007,7 +4091,7 @@ async function send(): Promise<void> {
     }
     if (remoteRefusal(s, error)) return;
     throw error;
-  } finally { pendingPromptActivity.delete(s.id); configuringSessions.delete(s.id); }
+  } finally { pendingPromptActivity.delete(s.id); configuringSessions.delete(s.id); finishSubmit(); }
 }
 // /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
 const btwPanel = new BtwPanel({
@@ -4152,14 +4236,14 @@ function btwFromComposer(): boolean {
   if (text && (composerPayload(s).items.length || state.browserAttachments.get(s.id)?.length || state.moodboardAttachments.get(s.id)?.length)) {
     notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
   }
+  const draft = prompt.value;
+  voiceDictation.draftCleared(s.id);
   prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
   if (!text) { btwPanel.focus(); return true; }
-  run(sendBtw(text).catch(error => {
-    const current = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (current?.dataset.sessionId === s.id && !current.value) { current.value = `/btw ${text}`; resizePrompt(); }
-    else if (!state.drafts.get(s.id)) state.drafts.set(s.id, `/btw ${text}`);
+  run(voiceDictation.submit(() => sendBtw(text).catch(error => {
+    restoreComposerDraft(s, draft);
     throw error;
-  }));
+  })));
   return true;
 }
 /** A new side thread in the main thread's project, harness, model and checkout. */
@@ -5682,8 +5766,25 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
   }).finally(() => { settingsOpening = undefined; });
   await settingsOpening;
 }
+/** Dictation's setup opens Settings → Voice on its missing step (where audio goes, or a model to download), not the top of the page. */
+async function showVoiceSettings(): Promise<void> {
+  const opening = showSettings('voice');
+  // Settings hides the workspace (and the mic that was focused) before its module has loaded and drawn: hold focus on
+  // the Settings region meanwhile, so it never falls to the page body on the way to the missing step.
+  const page = $('#settings-page');
+  const held = !page.hidden && !page.contains(document.activeElement);
+  if (held) { page.tabIndex = -1; page.focus({ preventScroll: true }); }
+  try {
+    await opening;
+    // The Voice page is mounted once Settings has opened (voice-settings.ts arrived with it): land on the missing step.
+    const host = document.querySelector<HTMLElement>('#settings-page:not([hidden]) #voice-settings');
+    if (host) (await import('./voice-settings')).focusVoiceSetup(host);
+  } finally { if (held && document.activeElement !== page) page.removeAttribute('tabindex'); }
+}
 function closeSettings(): void {
   settingsView?.dispose(); settingsView = undefined;
+  // Shortcut mode and local models change without a configuration event; dictation re-reads them on the way out.
+  void voiceDictation.refreshPreferences();
   run(refreshCloudTargets());
   const host = $('#settings-page');
   host.hidden = true; host.replaceChildren();
@@ -6141,24 +6242,28 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
   const refusal = harnessRefusal(s.provider, provider(s.provider)?.name ?? s.provider);
   if (refusal) throw new Error(refusal);
   if ((state.browserAttachments.get(s.id) ?? []).length || (state.moodboardAttachments.get(s.id) ?? []).length || attachments.imageIds(promptItems).length) throw new Error(`Images and browser captures can’t be sent to a cloud machine yet. Remove them, or run on this computer.`);
+  const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
+  // A cloud start opens a new task and nothing re-renders while it waits, so the emptied field shrinks now.
+  clearComposerDraft(s); resizePrompt();
+  let accepted = false;
   configuringSessions.add(s.id);
   try {
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
-    const prompt = () => document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (state.sessionId !== s.id || prompt()?.value !== draft) throw new Error('Your task or message changed. Send it again.');
     const started = await call<Session>('cloud_agent_start', {
       // The empty New task draft becomes the cloud task, so no stray draft is left behind.
       sessionId: s.id, projectId: s.projectId, provider: target.provider, prompt: content, harness: s.provider, model: s.model, mode: s.mode, effort: s.reasoningEffort ?? null,
     });
+    accepted = true;
     attachments.consume(s.id, promptItems);
     state.attachments = state.attachments.filter(path => !filePaths.includes(path));
-    const field = prompt(); if (field?.dataset.sessionId === s.id) field.value = '';
-    state.drafts.delete(s.id);
     remoteChoice = LOCAL;
     await reloadSessions();
     state.query = ''; await selectSession(started.id, true);
-  } finally { configuringSessions.delete(s.id); }
+  } catch (error) {
+    if (!accepted) restoreComposerDraft(s, draft);
+    throw error;
+  } finally { configuringSessions.delete(s.id); finishSubmit(); }
 }
 async function initRemote(): Promise<void> {
   let signedIn = false;
@@ -6201,13 +6306,14 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
   // Images and screenshots are copied to the other computer natively (remote/images.rs).
   const imageIds = [...browserItems.filter(a => a.kind === 'screenshot').map(a => a.id), ...attachments.imageIds(promptItems)];
   if (imageIds.length > MAX_IMAGES) throw new Error(`Attach up to ${MAX_IMAGES} images per message, including browser screenshots.`);
+  const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
+  clearComposerDraft(s);
+  let accepted = false;
   configuringSessions.add(s.id); remoteChecks.add(s.id); renderComposer();
   try {
     const check = await call<RemoteRepoCheck>('remote_repo_check', { projectId: s.projectId });
     if (!check.repo) throw new Error(`${project()?.name ?? 'This project'} has no GitHub remote, so it can’t run on another computer.`);
     if (behindText(check) && !await confirmBehind(target.name, check)) return;
-    const prompt = () => document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (state.sessionId !== s.id || prompt()?.value !== draft) throw new Error('Your task or message changed. Send it again.');
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + browserContextText(browserItems) + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
     remoteChecks.delete(s.id);
@@ -6219,8 +6325,6 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     addMirrorPrompt(s.id, sent, 0);
     const live = stream(s.id); live.lastPromptAt = sentAt; live.startedAt = Math.min(live.startedAt, sentAt); live.status = `Connecting to ${target.name}…`;
     s.status = 'running'; s.taskStage = 'in_progress';
-    const sentField = prompt(); if (sentField?.dataset.sessionId === s.id && sentField.value === draft) sentField.value = '';
-    if (state.drafts.get(s.id) === draft) state.drafts.delete(s.id);
     if (state.sessionId === s.id) {
       stickToBottom = true; followSend(); state.messages = [...state.messages, sent]; render();
       const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
@@ -6238,6 +6342,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
       sessionId: s.id, deviceId: target.deviceId, projectId: s.projectId, prompt: content, provider: s.provider, model: s.model, mode: s.mode,
       effort: s.reasoningEffort ?? null, worktree: Boolean(s.worktreePath), branch: s.worktreeBranch || state.git?.branch || check.branch || null, startId, imageIds,
     }), undefined, onStage).catch((error: unknown) => { if (!remoteStartCancels.has(s.id)) console.error(error); return undefined; });
+    accepted = Boolean(started);
     if (!started || started.sessionId !== s.id) {
       // The prompt leaves the transcript: back to the composer on failure, to the mirror's own row otherwise.
       dropMirrorPrompt(s.id, sent);
@@ -6246,8 +6351,6 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
       for (const task of new Set([s, state.sessions.find(task => task.id === s.id)])) if (task) Object.assign(task, before);
       if (state.sessionId === s.id) state.messages = state.messages.filter(message => message !== sent);
       if (!started) {
-        const field = prompt(); if (field?.dataset.sessionId === s.id && !field.value) field.value = draft;
-        if (!state.drafts.get(s.id)) state.drafts.set(s.id, draft);
         if (remoteStartCancels.has(s.id) && runEndings.get(s.id) === 'stopped') runEndings.delete(s.id);
         if (state.sessionId === s.id) render(); else renderNavigation();
         return;
@@ -6274,8 +6377,10 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
       await call('stop_session', { sessionId });
     }
   } finally {
+    if (!accepted) restoreComposerDraft(s, draft);
     configuringSessions.delete(s.id); remoteStartCancels.delete(s.id);
     if (remoteChecks.delete(s.id) && s.id === state.sessionId) renderComposer();
+    finishSubmit();
   }
 }
 /** The sidebar shows tasks or bots; the bar at its bottom switches between them. */
@@ -6436,6 +6541,7 @@ async function refreshSharedChannel(channelId = state.sharedChannelId): Promise<
   } catch (error) { if (channelId === state.sharedChannelId) notify(error instanceof Error ? error.message : String(error)); }
 }
 function activateSharedChannel(channelId: string): void {
+  voiceDictation.detach();
   state.sharedChannelId = channelId;
   state.sharedChannelDetail = null;
   state.sharedChannelScrollTop = 0;
@@ -6445,6 +6551,7 @@ function activateSharedChannel(channelId: string): void {
   void refreshSharedChannel(channelId);
 }
 function closeSharedChannel(): void {
+  voiceDictation.detach();
   state.sharedChannelId = ''; state.sharedChannelDetail = null;
   state.sharedChannelRequest++;
   syncChannelWorkingLabel();
@@ -6796,6 +6903,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'steer-edit': document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); break;
     case 'steer-clear': {
       const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (!prompt) break;
+      voiceDictation.draftCleared(state.sessionId);
       prompt.value = ''; state.drafts.set(state.sessionId, '');
       prompt.dispatchEvent(new Event('input', { bubbles: true }));
       prompt.focus();

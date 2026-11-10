@@ -44,10 +44,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
     "category": "DeveloperTool",
     "shortDescription": "Lightweight coding agent workspace",
     "macOS": {
       "minimumSystemVersion": "12.0",
+      "infoPlist": "Info.plist",
+      "entitlements": "Entitlements.plist",
       "dmg": {
         "windowSize": {
           "width": 660,

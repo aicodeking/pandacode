@@ -6,6 +6,7 @@ import { providerLogo } from './provider-logos';
 import { uiSizeControls } from './ui-size';
 import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
+import { mountVoiceSettings } from './voice-settings';
 import { mountSupportDetails } from './support-settings';
 import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
 import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings';
@@ -138,6 +139,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
   const defaultName = options.providers.find(provider => provider.id === options.defaultProvider)?.name ?? options.defaultProvider;
   switch (id) {
     case 'recommended': return '<div id="recommended-settings"></div>';
+    case 'voice': return '<div id="voice-settings"></div>';
     case 'general': return `<div class="settings-group">${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div>${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
@@ -302,6 +304,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
       cleanups.push(() => recommended?.dispose());
     }
+    if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));

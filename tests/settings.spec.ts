@@ -6,7 +6,7 @@ const dialog = (page: Page) => page.getByRole('region', { name: 'Settings', exac
 const tab = (page: Page, name: string) => dialog(page).getByRole('tab', { name, exact: true });
 const panel = (page: Page, name: string) => dialog(page).getByRole('tabpanel', { name, exact: true });
 const back = (page: Page) => dialog(page).getByRole('button', { name: 'Back to the workspace', exact: true });
-const GROUPS = ['Recommended', 'General', 'Appearance', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
+const GROUPS = ['Recommended', 'General', 'Appearance', 'Voice', 'Agents', 'Schedules', 'Tools', 'Connections', 'About'];
 const FIRST: Record<string,string> = { Agents: 'Harnesses', Tools: 'Add-ons', Connections: 'Cloud sandboxes' };
 const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your coding agent' });
 const providerCalls = (page: Page) => page.evaluate(() => (window as any).__settingsProviders.calls);
@@ -253,11 +253,15 @@ test('settings organization shows General at once and supports keyboard groups d
   await expect(tab(page, 'Appearance')).toBeFocused();
   expect(await providerCalls(page)).toBe(startupCalls);
   await page.keyboard.press('ArrowDown');
+  await expect(tab(page, 'Voice')).toBeFocused();
+  expect(await providerCalls(page)).toBe(startupCalls);
+  await page.keyboard.press('ArrowDown');
   await expect(tab(page, 'Agents')).toBeFocused();
   await expect(tab(page, 'Agents')).toHaveAttribute('aria-selected', 'true');
   await expect(panel(page, 'Harnesses')).toBeVisible();
   await expect.poll(() => providerCalls(page)).toBe(startupCalls + 1);
   await expect(page.getByRole('button', { name: 'Refresh agents', exact: true })).toBeDisabled();
+  await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await expect(tab(page, 'General')).toBeFocused();

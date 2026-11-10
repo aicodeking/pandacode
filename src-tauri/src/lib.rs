@@ -32,6 +32,7 @@ mod project_icon;
 mod simulator;
 mod vm;
 mod secret_store;
+mod voice;
 mod cloud;
 mod cloud_agents;
 mod capabilities;
@@ -81,6 +82,7 @@ mod headless_bots;
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
+pub use voice::local::handle_speech_worker;
 
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -2824,6 +2826,47 @@ async fn open_external_url(url: String) -> Result<()> {
     }
 }
 
+/// Settings → About → Third-party notices: opens the copy bundled with the app (a fixed
+/// resource path, never webview input) as plain text in the system's text viewer.
+#[tauri::command]
+async fn open_third_party_notices(app: tauri::AppHandle) -> Result<()> {
+    let path = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "Could not find the app's bundled files.")?
+        .join("THIRD_PARTY_NOTICES.md");
+    if !path.is_file() {
+        return Err("The third-party notices are missing from this installation.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = tokio::process::Command::new("/usr/bin/open");
+        command.arg("-t");
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = tokio::process::Command::new("notepad.exe");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = {
+        let mut command = tokio::process::Command::new("xdg-open");
+        child_env::sanitize(&mut command);
+        command
+    };
+    command
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = command.spawn().map_err(|_| "Could not open the third-party notices.")?;
+    // Notepad stays open until closed (it is left running), so only an early failure counts.
+    match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+        Err(_) => Ok(()),
+        Ok(Ok(status)) if status.success() => Ok(()),
+        Ok(Ok(_)) => Err("Could not open the third-party notices.".into()),
+        Ok(Err(e)) => Err(e.to_string()),
+    }
+}
+
 /// A sent attachment outside the task's workspace, shown in the file manager. It is only
 /// revealed (selected), never opened, so nothing in it runs.
 #[tauri::command]
@@ -3923,6 +3966,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
         }
+        if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         jev::shutdown();
         app.state::<file_preview::FilePreviews>().shutdown();
         // Cloud runs keep going on their machines; their bridges are killed below.
@@ -3960,6 +4004,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             handle.exit(0);
         });
     } else if matches!(event, tauri::RunEvent::Exit) {
+        if let Some(voice) = app.try_state::<voice::Voice>() { voice.shutdown(); }
         app.state::<file_preview::FilePreviews>().shutdown();
         // VMs PandaCode started release their memory when it quits.
         app.state::<vm::Vms>().shutdown();
@@ -4006,6 +4051,7 @@ pub fn run() {
                 }
             });
             let dir = setup_common(app)?;
+            app.manage(voice::Voice::new(dir.clone()));
             agents_dock::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             overlay::setup(app.handle(), &dir).map_err(std::io::Error::other)?;
             vm::watch_idle(app.handle().clone());
@@ -4016,6 +4062,20 @@ pub fn run() {
                 if let Err(error) = appearance::setup(&window) {
                     eprintln!("Native appearance setup failed: {error}");
                 }
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    // A close that only hides the window (macOS, Windows with a menu bar item)
+                    // stops recording and keeps downloads. A close that quits (tray::hide_on_close)
+                    // cancels everything at once: transcribing would upload audio only for the
+                    // exit to throw the result away.
+                    let Some(voice) = handle.try_state::<voice::Voice>() else { return };
+                    match event {
+                        tauri::WindowEvent::CloseRequested { .. } if tray::main_close_quits(&handle) => voice.shutdown(),
+                        tauri::WindowEvent::CloseRequested { .. } => voice.stop_recording(&handle),
+                        tauri::WindowEvent::Destroyed => voice.shutdown(),
+                        _ => {}
+                    }
+                });
                 tray::hide_on_close(&window);
             }
             Ok(())
@@ -4066,6 +4126,26 @@ pub fn run() {
                 return true;
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                voice::voice_configuration,
+                voice::voice_save_profile,
+                voice::voice_select_profile,
+                voice::voice_delete_profile,
+                voice::voice_start,
+                voice::voice_stop,
+                voice::voice_retry,
+                voice::voice_cancel,
+                voice::local::voice_local_catalog,
+                voice::local::voice_local_download,
+                voice::local::voice_local_cancel_download,
+                voice::local::voice_local_delete,
+                voice::local::voice_local_select,
+                voice::local::test_recordings::voice_local_test_model,
+                voice::local::test_recordings::voice_mic_devices,
+                voice::local::test_recordings::voice_mic_test_start,
+                voice::local::test_recordings::voice_mic_test_stop,
+                voice::local::test_recordings::voice_mic_test_cancel,
+                voice::local::voice_preferences,
+                voice::local::voice_update_preferences,
                 agents_dock::agents_dock_snapshot,
                 agents_dock::agents_dock_preferences,
                 agents_dock::agents_dock_save_preferences,
@@ -4407,6 +4487,7 @@ pub fn run() {
                 read_clipboard_image,
                 prompt_image,
                 reveal_path,
+                open_third_party_notices,
                 read_document,
                 dragged_file_paths,
                 describe_folder,

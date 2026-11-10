@@ -1,12 +1,13 @@
 # Settings
 
-Settings is a full page with eight sections in the left column, opening on Recommended. A section with several pages shows them in a segmented control at the top of the content. Preferences save automatically. Every page can also be opened from the command palette: search its name, such as "providers" or "skills".
+Settings is a full page with nine sections in the left column, opening on Recommended. A section with several pages shows them in a segmented control at the top of the content. Preferences save automatically. Every page can also be opened from the command palette: search its name, such as "providers" or "skills".
 
 | Section | Pages |
 | --- | --- |
 | Recommended | Recommended |
 | General | General |
 | Appearance | Appearance |
+| Voice | Voice |
 | Agents | Harnesses, Providers, Agent teams, Model routing |
 | Schedules | Schedules |
 | Tools | Add-ons, Skills & rules |
@@ -18,6 +19,8 @@ Settings is a full page with eight sections in the left column, opening on Recom
 **General** holds text size, compact conversations, expanded tool activity, the quick launcher, the running agents widget (off until you turn it on) and your projects.
 
 **Appearance** holds the theme, the Wallpapers switch (off by default: the thread shows a live sky), colors and imported VS Code themes, and wallpaper customization: separate live visibility and blur controls, the scene sets, and a fixed favorite.
+
+**Voice** sets up [voice input](voice-input.md) in three cards. **Input** picks the microphone, runs the microphone test and sets how the dictation shortcut records. **Transcription** chooses where audio goes (an on-device model, a speech service or off) and the language, and holds the on-device model browser: filter by language, sort, then download, select, test or delete a model. **Speech services** holds profiles for online or self-hosted transcription services and their keys.
 
 **Agents → Harnesses** contains the default agent and model, agent updates, and compact installation status rows. Expand a harness to see its version and executable path. Refresh checks installations without resetting the selected tab, default agent control, or expanded details. Its Advanced fold holds harness privacy and OpenCode models.
 
@@ -36,7 +39,7 @@ organization policies can still affect authentication; see
 
 **Agents → Agent teams** holds named teams and the classic Team setup switch. **Agents → Model routing** holds [Panda Router](model-routing.md) and the models teams may use.
 
-**Schedules** lists every thread's [wake-ups and timed messages](schedules.md). **Tools → Add-ons** holds tools and integrations, Jev, and the [capabilities and cache](capabilities.md) fold. **Tools → Skills & rules** is the [skills library](skills-library.md). **Connections** holds [cloud sandboxes](cloud-agents.md), [remote access](remote-access.md) and GitHub. **About** holds the version, updates, resource usage and support details.
+**Schedules** lists every thread's [wake-ups and timed messages](schedules.md). **Tools → Add-ons** holds tools and integrations, Jev, and the [capabilities and cache](capabilities.md) fold. **Tools → Skills & rules** is the [skills library](skills-library.md). **Connections** holds [cloud sandboxes](cloud-agents.md), [remote access](remote-access.md) and GitHub. **About** holds the version, updates, resource usage and support details; **Third-party notices** opens the notices file bundled with the app.
 
 Section tabs move with the up and down arrows and page tabs with left and right; both support Home and End. The layout uses rem-based dimensions and stacks controls in narrow windows, including at 140–160% text size. System colors and reduced-motion preferences apply throughout.
 

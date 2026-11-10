@@ -223,13 +223,15 @@ Discord, WhatsApp or a browser too.
   </tr>
 </table>
 
-**Settings in seven sections.** General, Appearance, Agents, Schedules, Tools,
-Connections and About, with colors and imported VS Code themes.
+**Settings in nine sections.** Recommended, General, Appearance, Voice, Agents,
+Schedules, Tools, Connections and About, with colors and imported VS Code themes.
 
-<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the seven sections listed on the left and theme, color and VS Code theme controls" width="100%">
+<img src="docs/screenshots/settings.webp" alt="Settings on the Appearance page, with the nine sections listed on the left and theme, color and VS Code theme controls" width="100%">
 
 <sub>Screenshots come from the browser preview with sample data. Regenerate them with
 `npm run screenshots` (see [`scripts/screenshots`](scripts/screenshots/capture.spec.ts)).</sub>
+
+Voice dictation inserts a draft without sending it. Transcribe on your computer with a speech model you download in Settings → Voice, or send audio to a speech service you configure; see [voice input](docs/voice-input.md).
 
 ## Privacy
 
@@ -269,6 +271,8 @@ information:
 | Model routing profiler (optional): `model.int8.onnx` and `tokenizer.json`, from a pinned commit, verified by SHA-256 | `raw.githubusercontent.com` | Once, the first time you turn on a team (with routing on) or click Download or Route in Settings → Agents → Model routing; never at launch, and never on macOS older than 13.4 or on Intel Mac, x86_64 Linux and x86_64 Windows builds |
 | PandaCode Connect (optional): GitHub sign-in, then the relay that forwards your devices' end-to-end encrypted messages | `github.com`, the PandaCode relay | Only after you sign in under Settings → Connections → Remote access; nothing before |
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
+| Voice input with a speech service (optional): recorded audio, selected model and optional language, authenticated with your speech key | The transcription endpoint you configure (OpenAI, Groq, Mistral or your local/custom server) | Only when you explicitly record and stop, or Retry, with that service chosen; with **This device**, audio never leaves your computer |
+| Local speech models (optional): the model file you pick and, with the first one, the Silero voice-activity model (about 1 MB), from a pinned revision, verified by SHA-256 | `huggingface.co`, `*.huggingface.co` and the download CDN `*.hf.co` | Only when you click Download in Settings → Voice; nothing at launch, while browsing models or while dictating |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
 
 ## Install
@@ -478,3 +482,6 @@ open, and removing a project from the app never deletes its files.
 [PandaCode License](LICENSE) (MIT with an attribution requirement for forks) ©
 2026 PandaCode contributors. Provider names and logos belong to
 their owners and do not imply endorsement ([brand assets](docs/brand-assets.md)).
+Bundled third-party components and their licenses are listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). A copy ships inside the app, and
+Settings → About → Third-party notices opens it.

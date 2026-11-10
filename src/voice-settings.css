@@ -1,0 +1,169 @@
+.voice-settings{container-type:inline-size;min-width:0}
+.voice-profiles:empty{display:none}
+.settings-page-root :is(.voice-profile,.voice-summary)>div:first-child{display:flex;flex-direction:column;align-items:flex-start;gap:4px}
+.voice-settings :is(.voice-profile,.voice-summary) :is(strong,small){max-width:100%;white-space:normal;overflow:visible;overflow-wrap:anywhere}
+/* Speech services rows read like the Input and Transcription rows: the name at the row-title size, status lines at the
+ * description size and tone (the model ID in body ink). */
+.settings-page-root .voice-profile>div>strong{font-size:var(--ds-text-row-lg)}
+.settings-page-root :is(.voice-profile,.voice-summary)>div>small{font-size:var(--ds-text-meta);letter-spacing:normal;line-height:1.5;color:var(--muted)}
+.settings-page-root .voice-profile .voice-profile-model{color:var(--text)}
+.settings-page-root .voice-profile .voice-delete-warning{color:var(--ds-danger)}
+.voice-empty{margin:0;padding:8px var(--ds-row-pad-x);font-size:var(--ds-text-sub);color:var(--muted)}
+.voice-editor-head{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;padding:12px var(--ds-row-pad-x) 8px}
+.voice-editor-head h4{flex:1 1 12ch;margin:0;min-width:0;overflow-wrap:break-word;font-size:var(--ds-text-body);font-weight:var(--weight-medium)}
+.voice-editor{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:4px var(--ds-row-pad-x) 8px}
+.voice-field{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:var(--ds-text-ui)}
+.voice-field-wide{grid-column:1/-1}
+.voice-field input{min-width:0;height:var(--ds-btn-h);font-size:var(--ds-text-ui)}
+.voice-field small,.voice-destination{font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted)}
+.voice-field small{overflow-wrap:anywhere}
+.voice-advanced>summary{margin-top:0;padding-inline:0}
+.voice-advanced-fields{display:grid;gap:12px}
+.voice-settings .voice-picker{display:flex;justify-content:space-between;width:100%;min-width:0;height:auto;min-height:var(--ds-btn-h);--press:1}
+.voice-picker>span{min-width:0;white-space:normal;overflow-wrap:anywhere;text-align:left}
+.voice-picker .icon{flex:none;width:var(--icon-sm);height:var(--icon-sm)}
+.voice-key-controls{display:flex;align-items:center;gap:8px;min-width:0}
+.voice-key-controls input{flex:1}
+.voice-editor .voice-destination{margin:0;overflow-wrap:anywhere}
+.voice-editor-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.voice-settings .voice-status,.voice-settings .voice-error{margin:0;font-size:var(--ds-text-meta);line-height:1.5;overflow-wrap:anywhere}
+.voice-status{color:var(--muted)}
+.voice-error{color:var(--ds-danger)}
+.voice-retry{align-self:flex-start;margin:4px var(--ds-row-pad-x)}
+@container(max-width:520px){.settings-page-root .voice-settings :is(.voice-summary,.voice-profile){display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding-block:12px}.settings-page-root .voice-settings :is(.voice-summary,.voice-profile)>.settings-row-actions{justify-content:flex-start;justify-self:start;margin-left:0}.voice-editor{grid-template-columns:minmax(0,1fr)}.voice-key-controls{flex-wrap:wrap}.voice-key-controls input{flex-basis:100%}.voice-editor-actions{justify-content:flex-start}.voice-settings :is(.voice-editor-actions,.voice-summary-actions)>button{max-width:100%;white-space:normal;height:auto;min-height:var(--ds-btn-h);padding-block:6px}}
+
+/* ---------- Input, Transcription and the local model browser ---------- */
+/* Settings / Voice: a muted section heading above each card, as on the other Settings pages. The section is only a
+ * frame; its inner card carries the hairline, fill and soft shadow. */
+.voice-cards{display:flex;flex-direction:column;gap:18px;min-width:0}
+.voice-card-title{display:flex;align-items:center;min-height:28px;margin:0 0 6px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);color:var(--muted)}
+.voice-settings .voice-card{gap:0;padding:0;border:0;border-radius:0;background:none;box-shadow:none}
+.voice-settings .voice-card>.ds-card-inner{padding:4px;border-color:var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.voice-services-note,.voice-explainer{margin:0;padding:4px var(--ds-row-pad-x) 8px;font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+.voice-card .ds-card-inner{gap:4px}
+.voice-settings .voice-browser-pane{background:var(--ds-card-inner)}
+.voice-setting-row{flex-wrap:wrap;align-items:center;gap:8px 16px;padding-block:10px}
+.voice-setting-row>.ds-row-main{flex:1 1 18rem;gap:3px}
+.voice-setting-row .ds-row-title{white-space:normal}
+.voice-setting-description{font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+.voice-setting-description:empty{display:none}
+.voice-setting-controls{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;min-width:0;max-width:100%;margin-left:auto}
+.voice-settings .voice-select{min-width:0;max-width:min(100%,22rem);height:var(--ds-btn-h);overflow:hidden;text-overflow:ellipsis}
+.voice-settings :is(.ds-btn,.ds-btn-primary){flex:none;max-width:100%}
+/* A line under the microphone select: the fallback hint and the brief Refresh result. The negative margin cancels the
+ * controls' row gap, so the line takes no room while both are empty. */
+.voice-device-notes{display:flex;flex-direction:column;align-items:flex-end;flex-basis:100%;min-width:0;margin-top:-8px;font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted);text-align:end;overflow-wrap:anywhere}
+.voice-device-notes>:not(:empty){padding-top:6px}
+.voice-settings :is(.ds-btn,.ds-btn-primary)>.icon{--icon-size:var(--icon-sm)}
+.voice-card [hidden]{display:none!important}
+.voice-mic-test{padding:0 var(--ds-row-pad-x) 8px}
+.voice-label-swap{display:inline-grid}
+.voice-label-swap>*{grid-area:1/1;text-align:center}
+.voice-label-swap>[aria-hidden="true"]{visibility:hidden}
+.voice-mic-playback{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.voice-mic-test-status{margin:0;font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted)}
+/* Live input level beside the countdown: five stepped bars that light by opacity only. */
+.voice-mic-level{display:inline-flex;align-items:center;gap:6px;margin-left:10px;vertical-align:middle}
+.voice-mic-level-bars{display:inline-flex;align-items:flex-end;gap:2px;height:12px}
+.voice-mic-level-bar{display:block;width:3px;height:12px;border-radius:1px;background:var(--accent-ink);opacity:.22}
+.voice-mic-level-bar:nth-child(1){height:4px}.voice-mic-level-bar:nth-child(2){height:6px}.voice-mic-level-bar:nth-child(3){height:8px}.voice-mic-level-bar:nth-child(4){height:10px}
+.voice-mic-level-bar[data-on]{opacity:1}
+html[data-ready] .voice-mic-level-bar{transition:opacity var(--ds-ease-in) ease-out}
+.voice-card .voice-status,.voice-card .voice-error{padding:0 var(--ds-row-pad-x) 6px}
+
+/* Two panes: languages (multi-select) beside models; one column when narrow. */
+.voice-browser{display:grid;grid-template-columns:minmax(0,15rem) minmax(0,1fr);gap:8px;padding:0 4px 4px}
+.voice-browser-pane{gap:6px;padding:8px;min-height:0}
+.voice-browser-title{margin:0;padding:2px 4px;font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text);overflow-wrap:anywhere}
+.voice-search{display:flex;align-items:center;gap:6px;min-width:0;height:var(--ds-btn-h);padding:0 10px;border-radius:var(--ds-radius-control);background:var(--ds-raised);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted)}
+.voice-search>.icon{flex:none;--icon-size:var(--icon-sm)}
+.voice-search>input{flex:1;min-width:0;height:100%;padding:0;border:0;background:none;box-shadow:none;color:var(--text);font-size:var(--ds-text-ui);outline:none}
+.voice-search:focus-within{box-shadow:inset 0 0 0 1px var(--ds-border),0 0 0 2px var(--focus)}
+/* Both lists are capped: at 26rem in a tall window, and in a short one at a share of the window, so each pane with its
+ * search fits on screen and a model update never happens far below. No scroll containment, so the wheel reaches the
+ * page once a list ends. */
+.voice-browser-list{display:flex;flex-direction:column;gap:2px;overflow:auto;min-width:0}
+@media (min-height:720px){.voice-browser-list{max-height:26rem}}
+@media (max-height:719.98px){.voice-browser-list{max-height:min(26rem,45vh)}}
+.voice-model-list{gap:6px}
+.voice-browser-empty{margin:0;padding:8px 4px;font-size:var(--ds-text-meta);color:var(--muted)}
+.voice-language-row{min-height:32px;padding-block:4px}
+.voice-language-row .ds-row-title{flex:1;font-size:var(--ds-text-ui)}
+.voice-language-row[aria-selected="true"]{background:var(--ds-fill)}
+.voice-language-row{cursor:pointer;outline:none}
+.voice-language-row:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.voice-language-check{flex:none;display:inline-grid;place-items:center;width:16px;height:16px;color:var(--accent-ink)}
+.voice-language-check>.icon{--icon-size:16px}
+
+/* Model cards */
+.voice-model-card{gap:6px;padding:10px 12px}
+.voice-model-card[data-active]{border-color:var(--ds-border-strong)}
+.voice-model-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;min-width:0}
+.voice-model-name{margin:0;min-width:0;font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--text);overflow-wrap:anywhere}
+.voice-model-badges{display:inline-flex;flex-wrap:wrap;gap:4px;margin:0;padding:0;list-style:none}
+.voice-model-badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--muted);font-size:var(--ds-text-chip);white-space:nowrap}
+.voice-model-badge>.icon{--icon-size:12px;width:12px;height:12px}
+.voice-model-badge[data-badge="recommended"]{color:var(--text)}
+.voice-model-badge[data-badge="recommended"]>.icon{color:var(--accent-ink)}
+.voice-model-description{margin:0;font-size:var(--ds-text-ui);line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+/* Each fact leads with its separator (--voice-fact-sep wide); the list starts one separator left of the card's edge
+ * and the wrapper clips there, so no line ever starts with a visible dot. The clip keeps a few pixels on the left for
+ * a focused licence link's ring; the dot glyph sits further out. */
+.voice-model-facts-clip{--voice-fact-sep:18px;min-width:0;clip-path:inset(-6px -6px -6px -5px)}
+.voice-model-facts{display:flex;flex-wrap:wrap;gap:2px 0;margin:0 0 0 calc(-1 * var(--voice-fact-sep));font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted);font-variant-numeric:tabular-nums}
+.voice-model-facts strong{font-weight:var(--weight-medium);color:var(--text)}
+.voice-model-dot{display:inline-block;width:var(--voice-fact-sep);text-align:center;color:var(--faint)}
+/* Each fact is one flex item holding its leading separator; a fact wider than the card (very narrow windows) wraps
+ * inside itself rather than overflowing. */
+.voice-model-fact{min-width:0;max-width:100%;overflow-wrap:anywhere}
+.voice-model-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
+.voice-model-actions>.ds-btn-primary{height:var(--ds-btn-h);padding:0 14px;font-size:var(--ds-text-ui)}
+.voice-model-actions>.ds-btn-icon{margin-left:auto}
+.voice-model-selected[aria-disabled="true"]{opacity:1;color:var(--text);cursor:default;--press:1}
+.voice-settings .ds-btn[data-voice-model-download][aria-disabled="true"]{opacity:.5;cursor:default;--press:1}
+.voice-model-card:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.voice-model-facts .voice-model-license,.voice-explainer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+.voice-model-facts .voice-model-license:hover{color:var(--text)}
+.voice-model-partial{margin:0;font-size:var(--ds-text-meta);line-height:1.5;color:var(--muted)}
+.voice-sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.voice-model-selected>.icon{color:var(--ds-success)}
+.voice-settings .voice-model-danger{color:var(--ds-danger)}
+.voice-model-confirm{flex:1 1 12rem;font-size:var(--ds-text-meta);color:var(--ds-danger)}
+.voice-model-progress{display:flex;flex:1 1 12rem;flex-direction:column;gap:4px;min-width:0}
+.voice-model-progress-track{display:block;height:4px;border-radius:2px;background:var(--ds-track-strong);overflow:hidden}
+.voice-model-progress-fill{display:block;width:100%;height:100%;background:var(--accent);transform-origin:left center;scale:var(--voice-progress,0) 1}
+html[data-ready] .voice-model-progress-fill{transition:scale var(--ds-ease-out) ease-out}
+.voice-model-progress-label{font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+.voice-model-transcript{margin:0;padding:8px 10px;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-ui);line-height:1.5;color:var(--text);overflow-wrap:anywhere}
+.voice-model-error{margin:0;font-size:var(--ds-text-meta);line-height:1.5;color:var(--ds-danger);overflow-wrap:anywhere}
+
+@container(max-width:600px){.voice-browser{grid-template-columns:minmax(0,1fr)}.voice-language-list{max-height:14rem}.voice-model-list{max-height:none;overflow:visible}.voice-setting-controls{justify-content:flex-start;margin-left:0}.voice-device-notes{align-items:flex-start;text-align:start}}
+@media(prefers-reduced-motion:reduce){html[data-ready] :is(.voice-model-progress-fill,.voice-mic-level-bar){transition:none}}
+@media(prefers-contrast:more){
+  .voice-settings .voice-card>.ds-card-inner{border-color:var(--text);box-shadow:none}
+  .voice-card-title{color:var(--text)}
+  .voice-search,.voice-model-badge{box-shadow:inset 0 0 0 1px var(--text)}
+  .voice-model-progress-track{box-shadow:inset 0 0 0 1px var(--text)}
+  :is(.voice-setting-description,.voice-model-description,.voice-model-facts,.voice-model-badge,.voice-explainer,.voice-services-note,.voice-model-progress-label,.voice-model-partial){color:var(--text)}
+  .voice-language-row[aria-selected="true"]{box-shadow:inset 0 0 0 1px var(--text)}
+  .voice-mic-level-bar{opacity:.4}
+  .voice-mic-level-bar[data-on]{opacity:1}
+}
+@media(forced-colors:active){
+  .voice-search,.voice-model-badge,.voice-model-progress-track{border:1px solid CanvasText}
+  .voice-model-progress-fill{background:Highlight;forced-color-adjust:none}
+  .voice-language-row[aria-selected="true"]{outline:2px solid Highlight;outline-offset:-2px}
+  .voice-language-row:focus-visible{outline:2px solid CanvasText;outline-offset:-2px}
+  .voice-language-check,.voice-model-selected>.icon,.voice-model-badge>.icon,.voice-model-badge[data-badge]>.icon{color:CanvasText}
+  /* Buttons and selects lose their fills here; a system border keeps each control visible. */
+  .voice-settings :is(.voice-model-actions .ds-btn,.voice-model-actions .ds-btn-primary,[data-voice-mic-test],[data-voice-device-refresh],[data-voice-delete]){border:1px solid ButtonBorder;color:ButtonText}
+  /* Speech services: saved-profile Edit/Use and New profile match the model actions. */
+  .voice-settings :is([data-voice-edit],[data-voice-use],[data-voice-new]){border:1px solid ButtonBorder;color:ButtonText}
+  .voice-settings :is([data-voice-edit],[data-voice-use],[data-voice-new]):disabled{border-color:GrayText;color:GrayText}
+  html[data-theme] .settings-page-root .voice-settings select.voice-select,.voice-settings select.voice-select{border:1px solid ButtonBorder;color:ButtonText}
+  .voice-model-selected[aria-disabled="true"],.voice-settings .ds-btn[aria-disabled="true"]{border-color:GrayText;color:GrayText}
+  .voice-model-license,.voice-explainer a{color:LinkText}
+  /* The level meter keeps every bar outlined; lit bars fill with the system text colour. */
+  .voice-mic-level-bar{border:1px solid CanvasText;background:transparent;opacity:1;forced-color-adjust:none}
+  .voice-mic-level-bar[data-on]{background:CanvasText}
+}

@@ -1,0 +1,94 @@
+.voice-mic { flex: 0 0 auto; width: 36px; height: 36px; color: var(--muted); }
+.voice-mic .icon { --icon-size: var(--ds-icon-tray); --icon-stroke: var(--icon-stroke-lg); }
+.voice-mic[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent-tint); }
+/* Use the tray's existing slot. Entering dictation never resizes the composer or textarea. */
+#composer { position: relative; }
+#composer .composer-input { position: relative; }
+.composer-area { position: relative; }
+.composer-area[data-voice-surface] { z-index: 9; }
+.voice-wave-canvas { position: absolute; pointer-events: none; opacity: 0; color: var(--accent-ink); }
+#composer[data-voice-recording] .voice-wave-canvas { opacity: 1; pointer-events: auto; }
+#composer[data-voice-recording] #prompt { opacity: 0; }
+html[data-ready] #composer .voice-wave-canvas { transition: opacity var(--ds-ease-out) ease-out; }
+/* Only a composer that has dictated adds the prompt's opacity fade; everyone else keeps the design-system transition. */
+html[data-ready] #composer[data-voice-used] #prompt { transition: opacity var(--ds-ease-out) ease-out, background-color var(--ds-ease-out) ease-out, box-shadow var(--ds-ease-out) ease-out; }
+#composer[data-voice-active] > .composer-tray { visibility: hidden; pointer-events: none; }
+.voice-pill { --panel-surface: var(--panel); position: absolute; inset: calc(100% + 5px) 0 auto; display: flex; align-items: center; gap: 8px; height: 36px; min-width: 0; padding: 2px 4px 2px 12px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--text); box-shadow: var(--ds-shadow-card); font-size: var(--ds-text-meta); }
+.voice-pill[hidden], .voice-pill [hidden] { display: none; }
+/* State at a glance: accent while live, muted while waiting, danger on failure. Pulses use opacity only. */
+.voice-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+/* Accent ink, not the raw accent: a bright accent (classic yellow, cyan) is under 3:1 on the light pill and glass. */
+.voice-pill[data-phase="recording"] .voice-dot { background: var(--accent-ink); animation: state-pulse 1.6s ease-in-out infinite; }
+.voice-pill[data-phase="starting"] .voice-dot, .voice-pill[data-phase="transcribing"] .voice-dot { animation: state-pulse 1.6s ease-in-out infinite; }
+.voice-pill[data-phase="error"] .voice-dot { background: var(--ds-danger); }
+.voice-label { font-weight: var(--weight-medium); }
+.voice-details { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; line-height: 1.2; min-height: 2.4em; }
+.voice-label, .voice-context { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.voice-context { color: var(--muted); font-size: var(--ds-text-chip); }
+.voice-pill[data-phase="error"] .voice-label { color: var(--ds-danger); }
+.voice-clock { flex: 0 0 auto; white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 4ch; color: var(--muted); }
+.voice-pill meter { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.voice-pill meter::-webkit-meter-bar { border: 1px solid var(--ds-border); background: var(--ds-track); box-shadow: none; }
+.voice-pill meter::-webkit-meter-optimum-value { background: var(--accent); transition: none; animation: none; }
+.voice-controls { display: flex; flex-wrap: wrap; flex: 0 0 auto; gap: 4px; }
+.voice-control { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 2px 10px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-raised); color: var(--text); font: inherit; white-space: nowrap; cursor: pointer; }
+.voice-control:hover { background: var(--ds-row-hover); }
+.voice-control .icon { --icon-size: 12px; }
+.voice-control-primary { border-color: transparent; background: var(--ds-primary-bg); color: var(--ds-primary-fg); font-weight: var(--weight-medium); }
+html[data-theme] .voice-control-primary:hover { background: var(--ds-primary-hover); color: var(--ds-primary-fg); }
+.voice-pill:focus, .voice-details:focus, #composer[tabindex]:focus, .voice-control:focus, .voice-mic:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.voice-pill:focus:not(:focus-visible), .voice-details:focus:not(:focus-visible), #composer[tabindex]:focus:not(:focus-visible), .voice-control:focus:not(:focus-visible), .voice-mic:focus:not(:focus-visible) { outline: none; }
+html[data-ready] .voice-dot, html[data-ready] .voice-label { transition: color var(--ds-ease-out) ease-out, background-color var(--ds-ease-out) ease-out; }
+html[data-ready] .voice-control { transition: color var(--ds-ease-out) ease-out, background var(--ds-ease-out) ease-out, scale var(--ds-ease-in) ease-out; }
+.voice-control:active { scale: var(--ds-press); }
+@media (prefers-reduced-motion: reduce) { html[data-ready] :is(.voice-control, .voice-dot, .voice-label), html[data-ready] #composer[data-voice-used] #prompt, html[data-ready] #composer .voice-wave-canvas { transition: none; } .voice-control:active { scale: 1; } .voice-pill meter, .voice-pill meter::-webkit-meter-optimum-value, .voice-pill .voice-dot { transition: none; animation: none; } }
+@media (prefers-contrast: more) { .voice-control { border-color: var(--text); box-shadow: none; } }
+@media (forced-colors: active) { .voice-pill { color: CanvasText; } .voice-control { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; } /* Explicit system pairs avoid Chromium's automatic text backplates. */
+  html[data-theme] .voice-control { forced-color-adjust: none; background: ButtonFace; color: ButtonText; border-color: ButtonText; }
+  html[data-theme] .voice-control-primary,
+  html[data-theme] .voice-control:hover,
+  html[data-theme] .voice-control:active { background: Highlight; color: HighlightText; border-color: Highlight; }
+  html[data-theme] .voice-control-primary:hover,
+  html[data-theme] .voice-control-primary:active { background: Highlight; color: HighlightText; border-color: Highlight; }
+  .voice-pill:focus, .voice-details:focus, #composer[tabindex]:focus, .voice-control:focus, .voice-mic:focus { outline-color: Highlight; }
+  .voice-dot, .voice-pill[data-phase="recording"] .voice-dot { background: CanvasText; forced-color-adjust: none; } .voice-wave-canvas { color: CanvasText; forced-color-adjust: none; } .voice-mic[aria-pressed="true"] { outline: 1px solid Highlight; } }
+
+/* Floating cards are siblings of the frosted composer and share the dialog's glass. */
+.voice-pill[data-floating] { position: absolute; pointer-events: auto; z-index: 5; height: auto; max-height: min(var(--voice-card-cap, min(45vh, 28rem)), var(--voice-available-height, 100vh)); display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; align-items: start; gap: 10px; padding: 12px; border-color: var(--glass-border); border-radius: var(--ds-radius-card); background: var(--glass-warm); box-shadow: 0 18px 40px -16px var(--glass-shadow-deep), 0 4px 12px -6px var(--glass-shadow-near); }
+/* The same light/dark glass filter as `.dialog-plate` in src/motion.css, which has no shared filter token yet: keep the two in step. */
+html[data-theme] body .voice-pill[data-floating] { backdrop-filter: blur(54px) saturate(1.9) brightness(1.04); -webkit-backdrop-filter: blur(54px) saturate(1.9) brightness(1.04); }
+html[data-theme="dark"] body .voice-pill[data-floating] { backdrop-filter: blur(54px) saturate(1.7) brightness(.92); -webkit-backdrop-filter: blur(54px) saturate(1.7) brightness(.92); }
+.voice-pill[data-floating] .voice-dot { grid-column: 1; grid-row: 1; margin-top: 5px; }
+.voice-pill[data-floating] .voice-details { grid-column: 2; grid-row: 1; align-self: stretch; min-height: 0; overflow-y: auto; overscroll-behavior: contain; gap: 6px; line-height: 1.45; }
+.voice-pill[data-floating][data-recovery] .voice-details { grid-column: 2 / -1; }
+.voice-pill[data-floating] :is(.voice-label, .voice-context) { overflow: visible; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.voice-pill[data-floating] .voice-source[data-own-line] { display: block; }
+/* Each part of the source (profile, model, host) wraps as a unit, so `whisper-1` never splits at its hyphen. */
+.voice-pill[data-floating] .voice-source-part { display: inline-block; max-width: 100%; }
+.voice-pill[data-floating] .voice-clock { grid-column: 3; grid-row: 1; align-self: start; font-size: var(--ds-text-chip); }
+.voice-pill[data-floating] .voice-controls { grid-column: 1 / -1; grid-row: 2; justify-content: flex-end; }
+.voice-pill[data-floating]:not([data-recovery]) .voice-control { padding-inline: 7px; }
+.voice-pill[data-floating]:not([data-recovery]) .voice-control .icon { display: none; }
+.voice-transcript { overflow-wrap: anywhere; padding: 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--panel-surface); white-space: pre-wrap; }
+.voice-pill[inert], .voice-pill[data-voice-leaving] { pointer-events: none; }
+#composer[data-voice-active][data-voice-narrow] > .composer-tray { visibility: visible; pointer-events: auto; }
+.voice-pill[data-hint] { grid-template-rows: auto; }
+.voice-pill[data-hint] .voice-details { grid-column: 1 / -1; min-height: 0; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .voice-pill[data-floating] { background: var(--panel); }
+}
+/* Every card, inline or floating, turns solid; :is() matches the floating glass rules' specificity. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  html[data-theme] body .voice-pill:is([data-floating], :not([data-floating])) { background: var(--panel); backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) { .voice-pill:is([data-floating], :not([data-floating])) { border-color: var(--text); box-shadow: none; } }
+@media (forced-colors: active) {
+  html[data-theme] body .voice-pill:is([data-floating], :not([data-floating])) { background: Canvas; border-color: CanvasText; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+
+
+/* Every floating card keeps two lines and its actions visible; only the draft scrolls in very short windows. */
+#composer-area[data-voice-compact] { padding-bottom: 4px; }
+#composer[data-voice-compact] { padding-block: 0; gap: 0; }
+#composer[data-voice-compact] .composer-input { padding-bottom: 0; }
+#composer[data-voice-compact] #prompt { min-height: 36px; max-height: var(--voice-prompt-height); padding-block: 4px; overflow-y: auto !important; }
