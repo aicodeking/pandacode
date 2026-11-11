@@ -2,3 +2,4 @@
 .extension-header-actions[hidden] { display: none; }
 .extension-header-actions button { -webkit-app-region: no-drag; }
 .extension-sidebar-actions { flex-wrap: wrap; padding: 4px 7px; }
+[data-layout-hidden] { display: none !important; }

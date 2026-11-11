@@ -1,5 +1,26 @@
 # UI discovery (experimental, declarative v1)
 
+## User visibility overlays
+
+The explorer's **Visibility and recovery** section hides/shows adopted core actions, contributed
+actions and the sidebar, using stable IDs. Choose **Global** or **Current project**; explicit project
+choices override global choices. Hiding changes presentation/focus participation only. Commands,
+tasks, drafts and terminals stay alive. The Settings shortcut (Ctrl+, on Windows/Linux, Cmd+, on
+macOS) remains available even when Settings and the sidebar are hidden.
+
+**Reset project layout** clears only the current project's overlay. **Reset global layout** clears
+only the global overlay (including its extension-layout preference), not project choices.
+**Disable extension layouts** retains all user visibility choices and prevents future layout
+proposals; proposal activation/ordering is not delivered in this slice. These are host recovery
+controls, outside customizable action slots. Safe mode ignores visibility overrides without erasing them.
+
+Overlays live in separate versioned local-storage records, not core settings or project storage.
+Unknown contribution IDs stay dormant through disable/uninstall/reinstall. Corrupt records fall back
+independently to the last valid in-memory record or built-in defaults; corrupt bytes are retained
+until an explicit edit/reset. A reload cannot reconstruct an unavailable last-valid record.
+No reset clears projects, credentials, tasks, drafts or PTYs. This remains experimental browser-tested
+presentation behavior; installed native-window qualification is separate.
+
 Settings → Extensions → **Surface explorer** lists the same copied JSON DTOs as the
 host's read-only `ui.listSurfaces(query)` and `ui.listItems(query)` adapters. This is
 host-side discovery infrastructure, not an executable SDK, native RPC endpoint or

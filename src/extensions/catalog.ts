@@ -45,7 +45,7 @@ export function createUiCatalog(snapshot: () => ExtensionSnapshot) {
       { id: FOOTER, owner: 'panda.core', type: 'action-slot', location: FOOTER, label: 'Sidebar footer', supportedOperations: ['inspect', 'contribute'], supportedItemTypes: ['button'], windows: ['main'], available: true },
     ];
     const activation = createDeclarativeActivation(state, 0);
-    const items: ItemMetadata[] = [...coreItems, ...activation.entries.map(({ owner, menu, command }): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, type: 'button', location: menu.location, label: command.title, supportedOperations: ['inspect'], available: true }))];
+    const items: ItemMetadata[] = [...coreItems.map(item => ({ ...item, supportedOperations: [...item.supportedOperations, 'hide', 'show'] })), ...activation.entries.map(({ owner, menu, command }): ItemMetadata => ({ id: menu.id, owner: owner.extensionId, version: owner.version, type: 'button', location: menu.location, label: command.title, supportedOperations: ['inspect', 'hide', 'show'], available: true }))];
     activation.dispose();
     const all = { surfaces, items };
     // Compare the full signature internally; only a bounded opaque revision leaves the host.

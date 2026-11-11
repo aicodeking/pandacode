@@ -1,20 +1,21 @@
 {
   "schemaVersion": 1,
   "revision": "979b7d4e3c073e9bebf74f70bf80440a27564237",
-  "phase": "M2 read-only header/sidebar core and contribution catalog; legacy rows still have no hide/order/replace adapter",
+  "phase": "M2 header/sidebar catalog and persistent user visibility overlays; ordering/replacement and other legacy rows remain unimplemented",
   "catalog": {
     "surfaces": ["panda.workspace.header.actions", "panda.sidebar.footer"],
     "coreItems": ["panda.workspace.header.actions/sidebar-toggle", "panda.workspace.header.actions/view-menu", "panda.sidebar.footer/support", "panda.sidebar.footer/usage", "panda.sidebar.footer/settings", "panda.sidebar.footer/star", "panda.sidebar.footer/theme"],
     "publicCommands": ["panda.ui/toggle-sidebar", "panda.ui/open-settings", "panda.ui/toggle-theme"],
     "owner": "panda.core",
     "context": "Main window host UI only; responsive relocation preserves logical IDs; no DOM or IPC metadata",
-    "operations": ["inspect"],
-    "tests": ["tests/extensions-catalog.test.mjs", "tests/extensions-catalog.spec.ts"],
-    "scope": "Read-only discovery and explicitly registered host UI commands only; not legacy hide/order/replace support or package invocation permission"
+    "operations": ["inspect", "hide", "show"],
+    "tests": ["tests/extensions-catalog.test.mjs", "tests/extensions-catalog.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"],
+    "scope": "Read-only discovery, public host UI commands and host user visibility for the seven core items, contributed actions and panda.sidebar; no ordering/replacement or package invocation permission"
   },
   "implementedAdapters": [
-    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons; no built-in customization", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
-    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons adjacent to the unchanged built-in footer; owner-scoped disable/uninstall/recovery", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" }
+    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show"], "scope": "main-window declarative showMessage buttons and user visibility for sidebar-toggle/view-menu; no ordering or replacement", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show"], "scope": "main-window declarative buttons and user visibility for support/usage/settings/star/theme; owner-scoped disable/uninstall/recovery", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.sidebar", "owner": "src/main.ts", "operations": ["hide", "show"], "scope": "global/project presentation visibility only, retaining host draft/task/terminal nodes and services", "tests": ["tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"], "nativeUiQualification": "unverified; browser synthetic PTY continuity is not native PTY qualification" }
   ],
   "format": {
     "members": "[local ID, renderer owner, literal source anchor, contextual objects, optional window override] inherits its family metadata; stable ID is family ID + '.' + local ID",

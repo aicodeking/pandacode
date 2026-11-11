@@ -3,6 +3,7 @@ import { icon as hostIcon } from '../dom';
 import { evaluateCondition, type Json } from './contracts';
 import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './manager';
 import { createDeclarativeActivation } from './activation';
+import { layout, layoutProject } from './layout-host';
 
 /** Append only owned nodes; never remount or delegate legacy controls. Native buttons supply
  * pointer/Enter/Space activation, avoiding duplicate synthetic keyboard click dispatch. */
@@ -19,7 +20,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
   else host.append(slot);
   let registration: ReturnType<typeof createDeclarativeActivation> | undefined;
   let conditions: { button: HTMLButtonElement; visible?: Json; enabled?: Json }[] = [];
-  const fallbackFocus = () => (host.querySelector<HTMLElement>('button:not([disabled])') ?? host.closest('header')?.querySelector<HTMLElement>('button:not([disabled])'))?.focus({ preventScroll: true });
+  const fallbackFocus = () => [...document.querySelectorAll<HTMLElement>('button:not([disabled]), #prompt:not([disabled])')].find(element => !element.inert && element.checkVisibility())?.focus({ preventScroll: true });
   const refreshConditions = () => {
     const captured = { ...context(), schemaVersion: 1, windowId: 'main', surfaceId: location };
     const allows = (condition: Json | undefined) => {
@@ -28,7 +29,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
       return result.ok && result.value === true;
     };
     for (const { button, visible, enabled } of conditions) {
-      button.hidden = !allows(visible); button.disabled = !allows(enabled);
+      button.hidden = !allows(visible) || layout.isHidden(button.dataset.extensionContribution!, layoutProject()); button.disabled = !allows(enabled);
       if (document.activeElement === button && (button.hidden || button.disabled)) fallbackFocus();
     }
     slot.hidden = !conditions.some(({ button }) => !button.hidden);
@@ -69,6 +70,6 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
     refreshConditions();
     if (focused) fallbackFocus();
   };
-  const cleanup = onExtensionsChanged(draw), cleanupContext = onContextChanged?.(refreshConditions); draw();
-  return () => { cleanup(); cleanupContext?.(); registration?.dispose(); conditions = []; slot.remove(); };
+  const cleanup = onExtensionsChanged(draw), cleanupContext = onContextChanged?.(refreshConditions), cleanupLayout = layout.subscribe(refreshConditions); draw();
+  return () => { cleanup(); cleanupContext?.(); cleanupLayout(); registration?.dispose(); conditions = []; slot.remove(); };
 }

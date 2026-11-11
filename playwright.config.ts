@@ -42,5 +42,5 @@ const config = defineConfig({
 });
 
 export default defineConfig(config, {
-  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts'],
+  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts'],
 });

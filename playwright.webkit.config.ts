@@ -11,6 +11,6 @@ const config = defineConfig(base, {
 });
 
 export default defineConfig(config, {
-  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts'],
-  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog`),
+  testMatch: [...config.testMatch as string[], '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts'],
+  grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions baseline|extensions install|extensions catalog|extensions layout`),
 });

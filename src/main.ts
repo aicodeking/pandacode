@@ -530,12 +530,42 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 const extensionContextListeners = new Set<() => void>();
+let extensionSidebarHidden = () => false;
+let applyExtensionVisibility = () => {};
 // Extension failure must never gate built-in startup; native safe mode precedes package loading.
 void import('./extensions/header').then(async ({ mountExtensionHeader, mountExtensionActions }) => {
   const context = () => ({ revision: 0, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) });
   const onContextChanged = (listener: () => void) => { extensionContextListeners.add(listener); return () => { extensionContextListeners.delete(listener); }; };
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
+  const { layout, registerLayoutContext, applyControlVisibility } = await import('./extensions/layout-host');
+  registerLayoutContext(() => state.projectId ?? undefined);
+  // Do not apply saved overlays until native launch recovery policy has been read.
+  let extensionsLayoutSafeMode = true;
+  extensionSidebarHidden = () => !extensionsLayoutSafeMode && layout.isHidden('panda.sidebar', state.projectId ?? undefined);
+  applyExtensionVisibility = () => {
+    if (extensionsLayoutSafeMode) return;
+    applyControlVisibility([
+      ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')],
+      ['panda.workspace.header.actions/view-menu', $('#view-menu')],
+      ['panda.sidebar.footer/support', $('#support-button')],
+      ['panda.sidebar.footer/usage', $('#agent-usage-button')],
+      ['panda.sidebar.footer/settings', document.querySelector('.sidebar-bottom [data-action="settings"]')],
+      ['panda.sidebar.footer/star', document.querySelector('.sidebar-bottom .star-panda')],
+      ['panda.sidebar.footer/theme', $('#theme-toggle')],
+    ], () => [...document.querySelectorAll<HTMLElement>('#sidebar-toggle, #view-menu, #prompt, .header-leading button, .sidebar-bottom button, #settings-page button')].find(element => !element.inert && element.checkVisibility() && !element.hasAttribute('disabled')) ?? null);
+    $('#view-divider').toggleAttribute('data-layout-hidden', $('#view-menu').hasAttribute('data-layout-hidden'));
+  };
+  const refreshLayout = (closeAnchoredMenus = false) => {
+    const sidebarFocused = $('.sidebar').contains(document.activeElement);
+    if (closeAnchoredMenus) closeMenus();
+    renderSidebarVisibility();
+    if (sidebarFocused && $('.sidebar').hidden) (document.querySelector<HTMLElement>('#prompt:not([disabled])') ?? $('#view-menu')).focus({ preventScroll: true });
+    window.dispatchEvent(new Event('resize'));
+  };
+  layout.subscribe(() => refreshLayout(true));
+  extensionContextListeners.add(refreshLayout);
+  refreshLayout();
   // These exact business handlers also serve the existing delegated controls and shortcuts.
   (await import('./extensions/catalog-host')).registerCoreCommands({
     'panda.ui/toggle-sidebar': () => toggleSidebar(),
@@ -543,6 +573,13 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     'panda.ui/toggle-theme': () => toggleTheme(),
   });
   await (await import('./extensions/manager')).loadExtensions();
+  const { extensionsSnapshot, onExtensionsChanged } = await import('./extensions/manager');
+  const syncLayoutSafeMode = () => {
+    extensionsLayoutSafeMode = extensionsSnapshot().safeMode;
+    if (extensionsLayoutSafeMode) document.querySelectorAll<HTMLElement>('[data-layout-hidden]').forEach(element => { element.removeAttribute('data-layout-hidden'); element.inert = false; });
+    refreshLayout();
+  };
+  onExtensionsChanged(syncLayoutSafeMode); syncLayoutSafeMode();
 }).catch(() => undefined);
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.
 if (preview && new URLSearchParams(location.search).has('ds')) void import('./redesign/gallery').then(gallery => gallery.mountGallery());
@@ -3053,7 +3090,7 @@ async function startHubTask({ projectId, prompt, title, link, send: start }: { p
 }
 function renderSidebarVisibility(): void {
   // The board and the GitHub view are full-width; both hide the task sidebar.
-  const board = state.view !== 'conversation', collapsed = state.sidebarCollapsed;
+  const board = state.view !== 'conversation', collapsed = state.sidebarCollapsed || extensionSidebarHidden();
   $('.workspace').classList.toggle('sidebar-collapsed', collapsed);
   const sidebar = $('.sidebar'), toggle = $('#sidebar-toggle');
   const toggleFocused = document.activeElement === toggle;
@@ -3090,6 +3127,7 @@ function renderSidebarVisibility(): void {
       if (focused) utility.focus({ preventScroll: true });
     }
   }
+  applyExtensionVisibility();
 }
 function toggleSidebar(): void {
   if (state.view !== 'conversation') return;
