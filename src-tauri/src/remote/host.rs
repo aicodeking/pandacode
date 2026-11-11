@@ -659,6 +659,20 @@ pub(crate) fn allow_remote_team(store: &crate::storage::Store, session_id: &str,
     if leads_team { Err(TEAM_NEEDS_FULL_ACCESS.into()) } else { Ok(()) }
 }
 
+/// [`allow_remote_team`] for a bot's thread on `channel` (its desktop thread for `bot.message`,
+/// `"schedule"` for `bot.runSchedule`), which the bot prompts; a thread not made yet leads no team.
+pub(crate) fn allow_remote_bot_team(store: &crate::storage::Store, bot_id: &str, channel: &str, full_access: bool) -> Result<()> {
+    if full_access {
+        return Ok(());
+    }
+    let session: Option<String> = store
+        .db
+        .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?2", [bot_id, channel], |row| row.get(0))
+        .optional()
+        .map_err(|e| e.to_string())?;
+    session.map_or(Ok(()), |session| allow_remote_team(store, &session, full_access))
+}
+
 /// `allow_remote_team` off the async runtime.
 pub(crate) async fn allow_remote_team_for(state: &AppState, session_id: &str, full_access: bool) -> Result<()> {
     if full_access {
@@ -1792,8 +1806,12 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
             let store = state.store.clone();
             once_per_send(key, async move {
                 let id = bot_id.clone();
-                tauri::async_runtime::spawn_blocking(move || super::methods::admin::allow_bot_mode(&*store.lock().map_err(|e| e.to_string())?, &id, full_access))
-                    .await
+                tauri::async_runtime::spawn_blocking(move || {
+                    let store = store.lock().map_err(|e| e.to_string())?;
+                    super::methods::admin::allow_bot_mode(&store, &id, full_access)?;
+                    allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)
+                })
+                .await
                     .map_err(|e| e.to_string())??;
                 let session_id = crate::bots::bot_message(app.clone(), bot_id, text, None, None, None).await?;
                 Ok(json!({"sessionId": session_id}))
@@ -5218,6 +5236,23 @@ mod tests {
         assert!(allow_remote_team(&store, &plain.id, false).is_ok(), "a task without a team is unaffected");
     }
 
+    #[test]
+    fn a_bot_thread_that_leads_a_team_takes_no_remote_prompt_without_full_access() {
+        let root = std::env::temp_dir().join(format!("pandacode-bot-team-{}", crate::storage::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let input = crate::bots::BotInput { name: "Scout".into(), role: "r".into(), instructions: "i".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = crate::bots::create(&store, &input, &root).unwrap();
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false).is_ok(), "no thread yet, no team");
+        let (desktop, _) = crate::bots::thread_session(&store, &bot, crate::bots::DESKTOP, crate::bots::DESKTOP, "Scout · You").unwrap();
+        crate::bots::thread_session(&store, &bot, "schedule", "schedule", "Scout · Scheduled work").unwrap();
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&desktop]).unwrap();
+        assert_eq!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, false), Err(TEAM_NEEDS_FULL_ACCESS.into()));
+        assert!(allow_remote_bot_team(&store, &bot.id, crate::bots::DESKTOP, true).is_ok(), "allowed with the switch");
+        assert!(allow_remote_bot_team(&store, &bot.id, "schedule", false).is_ok(), "the schedule thread leads no team");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     /// A phone without the switch may still cancel or decline a lead's question, but not answer it.
     #[test]
     fn only_cancelling_or_declining_a_question_skips_the_team_gate() {
@@ -5277,6 +5312,13 @@ mod tests {
         }
         let git = include_str!("methods/git.rs");
         assert!(after(git, "fn create_task_worktree(", "\n}\n").contains("if !trust.untrusted() {\n            crate::architect::profiles::apply_default("), "worktree.create");
+        let bot = after(host, "Call::BotMessage { bot_id, text, send_id } => {", "\n        Call::");
+        assert!(bot.find("allow_remote_bot_team(&store, &id, crate::bots::DESKTOP, full_access)").unwrap() < bot.find("bot_message(").unwrap(), "bot.message");
+        let admin = include_str!("methods/admin.rs");
+        let schedule = after(admin, "async fn run_schedule(", "\n}\n");
+        assert!(schedule.find("allow_remote_bot_team(store, &bot, \"schedule\", full_access)").unwrap() < schedule.find("bot_run_schedule_now(").unwrap(), "bot.runSchedule");
+        let failover = after(admin, "impl Run for Failover", "\n}\n");
+        assert!(failover.find("allow_remote_team(store, &session, full_access)").unwrap() < failover.find("bot_failover_decide(").unwrap(), "bot.failoverDecide");
     }
 
     #[test]

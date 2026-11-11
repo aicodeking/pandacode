@@ -4384,8 +4384,6 @@ mod tests {
         }
     }
 
-    /// A loop that takes a stop from the run's input must say so (`STOPPING_STATUS`), or a team
-    /// worker's automatic stop reads as "finished first" and its failure is lost.
     #[test]
     fn one_sessions_burst_of_declines_never_evicts_anothers() {
         set_decline_reason("quiet-session", "7", "Declined: team workers cannot run it.");
@@ -4398,6 +4396,8 @@ mod tests {
         forget_decline_reasons("busy-session");
     }
 
+    /// A loop that takes a stop from the run's input must say so (`STOPPING_STATUS`), or a team
+    /// worker's automatic stop reads as "finished first" and its failure is lost.
     #[test]
     fn every_input_loop_that_takes_a_stop_reports_it() {
         let marker = ["Some(RunInput", "::Stop)"].concat();
