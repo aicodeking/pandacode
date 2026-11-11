@@ -8,7 +8,7 @@ static SCHEMA: LazyLock<Value> = LazyLock::new(|| {
         .expect("shipped extension schema")
 });
 type Result<T> = std::result::Result<T, Value>;
-const CONTRIBUTIONS: [&str; 4] = ["commands", "icons", "menus", "views"];
+const CONTRIBUTIONS: [&str; 5] = ["commands", "icons", "menus", "views", "layouts"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -192,16 +192,16 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
         if !matches(text(&manifest["engines"], "pandacodeApi"), "1.0.0", &format!("{path}/engines/pandacodeApi"))? { return Err(fail("IncompatibleApi", &format!("{path}/engines/pandacodeApi"), vec![id])); }
         for key in ["permissions", "requiredCapabilities"] {
             for capability in strings(&manifest[key]) {
-                if capability != "ui.contribute" { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
+                if !["ui.contribute", "ui.customize"].contains(&capability.as_str()) { return Err(fail("UnsupportedCapability", &format!("{path}/{key}"), vec![capability])); }
             }
         }
         let optional = strings(&manifest["optionalCapabilities"]);
         for (i, capability) in optional.iter().enumerate() {
-            if capability != "ui.contribute" {
+            if !["ui.contribute", "ui.customize"].contains(&capability.as_str()) {
                 diagnostics.push(json!({"code":"UnknownOptionalCapability", "path":format!("{path}/optionalCapabilities/{i}")}));
             }
         }
-        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| v == "ui.contribute").collect::<Vec<_>>()); }
+        if manifest.get("optionalCapabilities").is_some() { manifest["optionalCapabilities"] = json!(optional.into_iter().filter(|v| ["ui.contribute", "ui.customize"].contains(&v.as_str())).collect::<Vec<_>>()); }
         for kind in strings(&manifest["requiredContributions"]) {
             if !CONTRIBUTIONS.contains(&kind.as_str()) { return Err(fail("UnsupportedContribution", &format!("{path}/requiredContributions"), vec![kind])); }
         }
@@ -230,6 +230,18 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>) -> Result<Value> {
             reference(contributions, "commands", &menu["command"], &format!("{path}/contributes/menus"))?;
             if menu.get("icon").is_some() { reference(contributions, "icons", &menu["icon"], &format!("{path}/contributes/menus"))?; }
             menus.push(menu.clone());
+        }
+        for layout in items(contributions, "layouts") {
+            if !strings(&manifest["permissions"]).contains(&"ui.customize".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
+            let mut edges = vec![];
+            for rule in items(layout, "rules") {
+                for target in [text(rule, "id"), text(rule, "target")] {
+                    if !target.starts_with(&format!("{}/", text(layout, "location"))) && !items(contributions, "menus").iter().any(|menu| text(menu, "id") == target && menu["location"] == layout["location"]) { return Err(fail("UnknownReference", &format!("{path}/contributes/layouts"), vec![target.to_owned()])); }
+                }
+                let pair = (text(rule, "id").to_owned(), text(rule, "target").to_owned());
+                edges.push(if rule["side"] == "before" { pair } else { (pair.1, pair.0) });
+            }
+            order_graph(edges.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect(), &edges, "OrderingCycle", &format!("{path}/contributes/layouts"), |a, b| a.cmp(b))?;
         }
         if CONTRIBUTIONS.iter().any(|kind| !items(contributions, kind).is_empty()) && !strings(&manifest["permissions"]).contains(&"ui.contribute".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
     }
@@ -313,6 +325,21 @@ pub fn evaluate_condition(expression: &Value, context: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_proposals_require_declaration_reject_cycles_and_incompatible_placements() {
+        let a: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/layout-a/extension.json")).unwrap();
+        let b: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/layout-b/extension.json")).unwrap();
+        assert_eq!(validate_contract("packages", &json!([a, b]))["ok"], true);
+        assert_eq!(validate_contract("packages", &json!([b, a]))["ok"], true);
+        let mut denied = a.clone(); denied["permissions"] = json!(["ui.contribute"]);
+        assert_eq!(validate_contract("packages", &json!([denied]))["error"]["code"], "PermissionDenied");
+        let mut cycle = a.clone();
+        cycle["contributes"]["layouts"][0]["rules"].as_array_mut().unwrap().push(json!({"id":"panda.sidebar.footer/support", "target":"panda.sidebar.footer/theme", "side":"before"}));
+        assert_eq!(validate_contract("packages", &json!([cycle]))["error"]["code"], "OrderingCycle");
+        let mut incompatible = a.clone(); incompatible["contributes"]["layouts"][0]["location"] = json!("panda.inspector.views");
+        assert_eq!(validate_contract("packages", &json!([incompatible]))["error"]["code"], "InvalidShape");
+    }
 
     #[test]
     fn shared_extension_contract_corpus() {

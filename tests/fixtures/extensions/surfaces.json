@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "revision": "979b7d4e3c073e9bebf74f70bf80440a27564237",
-  "phase": "M2 header/sidebar catalog and persistent user visibility overlays; ordering/replacement and other legacy rows remain unimplemented",
+  "phase": "M2 header/sidebar catalog, persistent visibility/order and selected layout proposals; cross-container movement/replacement and other legacy rows remain unimplemented",
   "catalog": {
     "surfaces": ["panda.workspace.header.actions", "panda.sidebar.footer"],
     "coreItems": ["panda.workspace.header.actions/sidebar-toggle", "panda.workspace.header.actions/view-menu", "panda.sidebar.footer/support", "panda.sidebar.footer/usage", "panda.sidebar.footer/settings", "panda.sidebar.footer/star", "panda.sidebar.footer/theme"],
@@ -10,11 +10,11 @@
     "context": "Main window host UI only; responsive relocation preserves logical IDs; no DOM or IPC metadata",
     "operations": ["inspect", "hide", "show"],
     "tests": ["tests/extensions-catalog.test.mjs", "tests/extensions-catalog.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"],
-    "scope": "Read-only discovery, public host UI commands and host user visibility for the seven core items, contributed actions and panda.sidebar; no ordering/replacement or package invocation permission"
+    "scope": "Read-only discovery, public host UI commands, host user visibility/order for seven core items and contributed actions, and selected ui.customize layout proposals; sidebar visibility only; no replacement or package invocation permission"
   },
   "implementedAdapters": [
-    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show"], "scope": "main-window declarative showMessage buttons and user visibility for sidebar-toggle/view-menu; no ordering or replacement", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
-    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show"], "scope": "main-window declarative buttons and user visibility for support/usage/settings/star/theme; owner-scoped disable/uninstall/recovery", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show", "reorder"], "scope": "main-window declarative showMessage buttons, visibility and same-owner sibling ordering; responsive host placement remains protected; no cross-container movement/replacement", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute", "hide", "show", "reorder"], "scope": "main-window declarative buttons, visibility/order and selected layout proposals for support/usage/settings/star/theme; owner-scoped disable/uninstall/recovery; no cross-container movement", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts", "src-tauri/src/extensions/contracts.rs", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
     { "id": "panda.sidebar", "owner": "src/main.ts", "operations": ["hide", "show"], "scope": "global/project presentation visibility only, retaining host draft/task/terminal nodes and services", "tests": ["tests/extensions-layout.test.mjs", "tests/extensions-layout.spec.ts"], "nativeUiQualification": "unverified; browser synthetic PTY continuity is not native PTY qualification" }
   ],
   "format": {

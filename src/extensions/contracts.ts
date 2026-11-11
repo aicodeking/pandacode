@@ -1,5 +1,6 @@
 /** Pure v1 data validation. This module grants no permissions and activates nothing. */
 import schemaDocument from './schema-v1.json' with { type: 'json' };
+import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -9,8 +10,8 @@ export type Diagnostic = { code: 'UnknownOptionalField' | 'UnknownOptionalCapabi
 export type Validation = { ok: true; value: Json; diagnostics: Diagnostic[] } | { ok: false; error: ContractError };
 const definitions = schemaDocument.$defs as Record<string, Schema>;
 export const CONTRACT_LIMITS = Object.freeze({ ...schemaDocument['x-dataLimits'] });
-const knownContributions = ['commands', 'icons', 'menus', 'views'];
-const capabilities = ['ui.contribute'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts'];
+const capabilities = ['ui.contribute', 'ui.customize'];
 const publicShapes = ['command', 'surface', 'contribution', 'context', 'error', 'expression'];
 const object = (v: Json): v is ObjectValue => v !== null && typeof v === 'object' && !Array.isArray(v);
 class ContractFailure {
@@ -183,6 +184,12 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       reference('commands', menu.command, 'menus');
       if (menu.icon) reference('icons', menu.icon, 'menus');
       allMenus.push(menu);
+    }
+    for (const layout of (contributions.layouts ?? []) as ObjectValue[]) {
+      if (!(manifest.permissions as string[]).includes('ui.customize')) error('PermissionDenied', `${path}/permissions`, [id]);
+      const rules = layout.rules as unknown as Placement[];
+      for (const rule of rules) for (const target of [rule.id, rule.target]) if (!(target.startsWith(`${layout.location}/`) || ((contributions.menus ?? []) as ObjectValue[]).some(menu => menu.id === target && menu.location === layout.location))) error('UnknownReference', `${path}/contributes/layouts`, [target]);
+      try { proposalOrder([], rules); } catch (cause) { if (cause instanceof OrderingCycle) error('OrderingCycle', `${path}/contributes/layouts`, cause.ids); else throw cause; }
     }
     if (knownContributions.some(kind => ((contributions[kind] ?? []) as Json[]).length) && !(manifest.permissions as string[]).includes('ui.contribute')) error('PermissionDenied', `${path}/permissions`, [id]);
   }

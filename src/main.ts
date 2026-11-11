@@ -538,12 +538,20 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   const onContextChanged = (listener: () => void) => { extensionContextListeners.add(listener); return () => { extensionContextListeners.delete(listener); }; };
   mountExtensionHeader($('.header-actions'), context, notify, onContextChanged);
   mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify, onContextChanged);
-  const { layout, registerLayoutContext, applyControlVisibility } = await import('./extensions/layout-host');
+  const { layout, registerLayoutContext, applyControlVisibility, applyControlOrder } = await import('./extensions/layout-host');
   registerLayoutContext(() => state.projectId ?? undefined);
   // Do not apply saved overlays until native launch recovery policy has been read.
   let extensionsLayoutSafeMode = true;
   extensionSidebarHidden = () => !extensionsLayoutSafeMode && layout.isHidden('panda.sidebar', state.projectId ?? undefined);
   applyExtensionVisibility = () => {
+    applyControlOrder('panda.workspace.header.actions', [
+      ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')], ['panda.workspace.header.actions/view-menu', $('#view-menu')],
+    ], extensionsLayoutSafeMode);
+    applyControlOrder('panda.sidebar.footer', [
+      ['panda.sidebar.footer/support', $('#support-button')], ['panda.sidebar.footer/usage', $('#agent-usage-button')],
+      ['panda.sidebar.footer/settings', document.querySelector('.sidebar-bottom [data-action="settings"]')],
+      ['panda.sidebar.footer/star', document.querySelector('.sidebar-bottom .star-panda')], ['panda.sidebar.footer/theme', $('#theme-toggle')],
+    ], extensionsLayoutSafeMode);
     if (extensionsLayoutSafeMode) return;
     applyControlVisibility([
       ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')],

@@ -3,7 +3,7 @@ import { icon as hostIcon } from '../dom';
 import { evaluateCondition, type Json } from './contracts';
 import { extensionsSnapshot, onExtensionsChanged, extensionGeneration } from './manager';
 import { createDeclarativeActivation } from './activation';
-import { layout, layoutProject } from './layout-host';
+import { layout, layoutProject, applyControlOrder } from './layout-host';
 
 /** Append only owned nodes; never remount or delegate legacy controls. Native buttons supply
  * pointer/Enter/Space activation, avoiding duplicate synthetic keyboard click dispatch. */
@@ -33,6 +33,7 @@ export function mountExtensionActions(host: HTMLElement, location: 'panda.worksp
       if (document.activeElement === button && (button.hidden || button.disabled)) fallbackFocus();
     }
     slot.hidden = !conditions.some(({ button }) => !button.hidden);
+    applyControlOrder(location, conditions.map(({ button }) => [button.dataset.extensionContribution!, button] as const));
   };
   const draw = () => {
     const focused = slot.contains(document.activeElement);

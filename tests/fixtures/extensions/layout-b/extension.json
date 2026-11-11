@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.layout-b",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "contributes": {
+    "layouts": [{ "id": "sample.layout-b/footer", "title": "Support first", "location": "panda.sidebar.footer", "rules": [
+      { "id": "panda.sidebar.footer/support", "target": "panda.sidebar.footer/theme", "side": "before" }
+    ] }]
+  }
+}

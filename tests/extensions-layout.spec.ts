@@ -1,4 +1,6 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Page, type ElementHandle } from '@playwright/test';
+import layoutA from './fixtures/extensions/layout-a/extension.json' with { type: 'json' };
+import layoutB from './fixtures/extensions/layout-b/extension.json' with { type: 'json' };
 const key = 'pandacode.extensions.layout.v1';
 async function open(page: Page) {
   await page.goto('/?extensions-baseline'); await expect(page.locator('#prompt')).toBeEnabled();
@@ -131,4 +133,78 @@ test('extensions layout: contributed choices stay dormant through disable and sa
   await page.getByRole('button', { name: 'Back to the workspace' }).click();
   await expect(page.locator('#theme-toggle')).toBeVisible();
   expect(await page.evaluate(key => localStorage.getItem(key), key)).toBe(stored);
+});
+
+const footerOrder = (page: Page) => page.locator('.sidebar-bottom > button').evaluateAll(nodes => nodes.map(node => node.id || node.getAttribute('data-action') || node.className));
+test('extensions layout: keyboard and pointer share persisted ordering with trusted native drag events discarded', async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const type of ['dragenter', 'dragover', 'dragleave', 'drop']) window.addEventListener(type, event => { if (event.isTrusted) event.stopImmediatePropagation(); }, true);
+  });
+  await open(page); let region = await explorer(page);
+  const usage = region.locator('[data-order-id="panda.sidebar.footer/usage"]');
+  await usage.focus(); await page.keyboard.press('Alt+ArrowUp');
+  const keyboard = await footerOrder(page);
+  expect(keyboard.slice(0, 2)).toEqual(['agent-usage-button', 'support-button']);
+  const saved = await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).orders, key);
+  await page.reload(); await expect(page.locator('#prompt')).toBeEnabled();
+  // The composer becomes usable before the asynchronous extension/safe-mode snapshot resolves.
+  await expect.poll(() => footerOrder(page)).toEqual(keyboard);
+  region = await explorer(page);
+  await region.getByRole('button', { name: 'Reset global layout', exact: true }).click();
+  await usage.scrollIntoViewIfNeeded();
+  const source = (await usage.boundingBox())!;
+  const target = (await region.locator('[data-order-id="panda.sidebar.footer/support"]').boundingBox())!;
+  await page.mouse.move(source.x + 20, source.y + 10); await page.mouse.down();
+  await page.mouse.move(source.x + 70, source.y + 12, { steps: 5 });
+  await expect(page.locator('.drag-ghost')).toBeVisible();
+  await page.mouse.move(target.x + 20, target.y + 3, { steps: 6 }); await page.mouse.up();
+  await expect(page.locator('.drag-ghost')).toHaveCount(0);
+  expect(await footerOrder(page)).toEqual(keyboard);
+  expect(await page.evaluate(key => JSON.parse(localStorage.getItem(key)!).orders, key)).toEqual(saved);
+  await page.reload(); await expect(page.locator('#prompt')).toBeEnabled();
+  await expect.poll(() => footerOrder(page)).toEqual(keyboard);
+});
+
+for (const reversed of [false, true]) test.describe(`extensions layout: conflicting proposal activation order ${reversed}`, () => {
+  test.describe.configure({ mode: 'serial' });
+  let page: Page, baseline: string[], livePrompt: ElementHandle<HTMLElement | SVGElement> | null;
+  test.beforeAll(async ({ browser }, info) => { page = await browser.newPage({ baseURL: info.project.use.baseURL, viewport: info.project.use.viewport }); });
+  test.afterAll(async () => { await page.close(); });
+  test('explicit selection wins; activation alone grants nothing', async () => {
+  await page.addInitScript(packages => { if (!localStorage.getItem('pandacode.preview.extensions.v1')) localStorage.setItem('pandacode.preview.extensions.v1', JSON.stringify(packages.map(manifest => ({ manifest, enabled: true, icons: {} })))); }, reversed ? [layoutB, layoutA] : [layoutA, layoutB]);
+  await open(page); await page.locator('#prompt').fill('layout proposal continuity');
+  const prompt = await page.locator('#prompt').elementHandle();
+  baseline = await footerOrder(page); const region = await explorer(page);
+  await expect(region.getByRole('list', { name: 'Layout proposals' })).toContainText('Conflict: sample.layout-b');
+  await expect(region.getByRole('list', { name: 'Layout proposals' })).toContainText('Owner: sample.layout-a @ 1.0.0');
+  expect(await footerOrder(page)).toEqual(baseline, 'activation alone grants no customization');
+  await region.getByRole('button', { name: 'Grant UI customization and select Theme first', exact: true }).click();
+  expect(await prompt!.evaluate(node => node === document.querySelector('#prompt'))).toBe(true);
+  const ordered = await footerOrder(page); expect(ordered.indexOf('theme-toggle')).toBeLessThan(ordered.indexOf('support-button'));
+  });
+  test('restart retains selection; disabling the winner never selects a competitor', async () => {
+  await page.reload(); await expect(page.locator('#prompt')).toBeEnabled();
+  livePrompt = await page.locator('#prompt').elementHandle(); await page.locator('#prompt').fill('live recovery draft');
+  await expect.poll(async () => { const ordered = await footerOrder(page); return ordered.indexOf('theme-toggle') < ordered.indexOf('support-button'); }).toBe(true);
+  await explorer(page);
+  await page.getByRole('button', { name: 'Disable sample.layout-a', exact: true }).click();
+  expect(await footerOrder(page)).toEqual(baseline, 'another active proposal cannot take over');
+  await page.getByRole('button', { name: 'Enable sample.layout-a', exact: true }).click();
+  });
+  test('user ordering overrides either proposal and survives disable without remounting', async () => {
+  const restored = page.getByRole('region', { name: 'Surface explorer' });
+  const support = restored.locator('[data-order-id="panda.sidebar.footer/support"]');
+  await support.focus(); await page.keyboard.press('Alt+ArrowUp');
+  const explicit = await footerOrder(page);
+  await restored.getByRole('button', { name: 'Grant UI customization and select Support first', exact: true }).click();
+  expect(await footerOrder(page)).toEqual(explicit);
+  await page.getByRole('button', { name: 'Disable sample.layout-b', exact: true }).click();
+  expect(await footerOrder(page)).toEqual(explicit);
+  await restored.getByRole('button', { name: 'Disable extension layouts', exact: true }).click();
+  expect(await footerOrder(page)).toEqual(explicit);
+  await expect(restored.getByText(/Inspector and general view movement is unsupported/)).toBeVisible();
+  await page.getByRole('button', { name: 'Back to the workspace' }).click();
+  expect(await livePrompt!.evaluate(node => node === document.querySelector('#prompt'))).toBe(true);
+  await expect(page.locator('#prompt')).toHaveValue('live recovery draft');
+  });
 });

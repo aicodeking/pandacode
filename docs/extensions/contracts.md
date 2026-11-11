@@ -49,13 +49,13 @@ Dependency edges precede dependents; ties use ASCII ID order, independent of inp
 with the sorted blocked IDs (including dependents blocked behind a cycle). Errors never partially register a batch.
 Later lifecycle code can use separate validated batches to isolate an affected dependency component.
 
-`permissions` and `requiredCapabilities` contain only currently recognized names: **`ui.contribute`**. Unknown
+`permissions` and `requiredCapabilities` contain only currently recognized names: **`ui.contribute`**, **`ui.customize`**. Unknown
 entries fail with `UnsupportedCapability`. `optionalCapabilities` may contain future names, but unknown names are
 removed with `UnknownOptionalCapability`. Even a recognized optional capability does not substitute for a required
 permission. A nonempty known contribution requires an explicit `ui.contribute` declaration. None of these arrays
 is a user grant; a future native broker must authenticate identity and authorize every sensitive invocation.
 
-`requiredContributions` contains known keys (`commands`, `icons`, `menus`, `views`). An unknown required key fails
+`requiredContributions` contains known keys (`commands`, `icons`, `menus`, `views`, `layouts`). An unknown required key fails
 with `UnsupportedContribution`; unknown optional keys under `contributes` are diagnosed and removed. `entrypoint`,
 `activationEvents` and `scripts` are explicitly rejected with `UnsupportedRuntime` even if empty. Future executable
 packages require separate runtime qualification; adding an unknown metadata field cannot enable execution.
@@ -70,12 +70,31 @@ Manifest `contributes` holds the following bounded definitions:
 | Icon | Owned `id`, `asset`: relative `assets/…` path ending in `.svg`, `.png` or `.webp`; ASCII letters/digits/underscore/dot/slash/hyphen only. No empty, `.` or `..` segments, backslashes, percent encoding, absolute/URL paths. This checks the reference, **not the file contents**. |
 | View | Owned `id`, `title`, static `text`. No HTML, script, DOM handle or renderer promise. |
 | Menu contribution | Owned `id`, one of `panda.workspace.header.actions` / `panda.sidebar.footer`, declared `command`, optional declared `icon`, `group`, `order`, `before`/`after` IDs, `visible`/`enabled` AST. |
+| Layout proposal | Owned `id`, `title`, action-slot `location`, bounded `rules: [{id, target, side: "before" or "after"}]`. Requires both `ui.contribute` and `ui.customize` declarations. Cycles are rejected by both validators. |
 
 Command/icon/view references must exist in the same package. Ordering references may name another package's menu
 in the same submitted batch and location. Missing/cross-location targets fail. Topological order resolves explicit
 constraints first, with location, group (default empty), numeric order (default 0), then ID as deterministic ties.
 Text ties use Unicode scalar order in both implementations. Cycles fail with `OrderingCycle` and sorted blocked
-IDs. User placement overrides these suggestions in a later layout layer; there is no persisted placement here.
+IDs. Validation has no persistence side effects; the host's user overlay takes precedence over suggestions.
+
+### Selecting and reordering layouts (M2, experimental)
+
+Settings → Extensions → Surface explorer lists proposal ownership, version, location, relative rules and competing
+owners. Enabling a package does not apply its layout. **Grant UI customization and select** is explicit consent for
+that proposal; only the selected enabled proposal can suggest order in its location. Activation order never breaks
+a tie. Disable extension layouts suppresses all suggestions without clearing user preferences or package data.
+Disabling the selected package restores built-ins plus the user overlay, not another competing package's proposal.
+Selection remains dormant for re-enable. Global/project user orders override proposals (project wins).
+
+Drag an order row, press Alt+Up/Down, or activate its before/after buttons. These paths share one relative-order
+reducer and persist stable IDs separately from core session storage. Missing saved IDs remain dormant. Ordering
+reuses live sibling nodes and preserves focus/listeners; responsive host rules still determine which physical
+action group a control occupies. Reordering never moves a control between owner groups or between containers.
+Header controls separated by responsive placement retain dormant relative preferences until they share a host.
+Inspector and general view movement is **unsupported** until a host-owned state contract exists, not disguised
+as toolbar reordering. The fixtures `layout-a/extension.json` and `layout-b/extension.json` demonstrate competing
+footer proposals without scripts, commands, assets or network access.
 
 A public registry `command` or `contribution` wraps a manifest `definition` with `schemaVersion` and `owner`:
 `{extensionId, version, activationId}`. Owner IDs are validated and must own the definition. Commands also declare

@@ -1,8 +1,9 @@
 /** Internal host adapter. This bridge is never exposed to packages. */
 import { call, preview } from '../bridge';
 import { validateContract, type Json } from './contracts';
+import type { LayoutProposal } from './ordering';
 
-export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
+export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { layouts?: LayoutProposal[]; icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
