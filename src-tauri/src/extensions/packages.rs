@@ -353,6 +353,8 @@ mod tests {
     }
     #[test]
     fn rejects_symlinks_and_expansion_file_count_and_raw_limits() {
+        let complete = sample();
+        assert!(rejected(&complete[..complete.len() / 2]).contains("Invalid extension ZIP"));
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         writer.add_symlink("assets/info.svg", "../../outside", zip::write::SimpleFileOptions::default()).unwrap();
         assert!(rejected(&writer.finish().unwrap().into_inner()).contains("Unsafe"));

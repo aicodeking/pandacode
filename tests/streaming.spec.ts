@@ -99,7 +99,8 @@ async function startTurn(page: Page, view: View, expandActivity = true): Promise
     await page.locator('#dialog').getByRole('button', { name: 'Add to pending', exact: true }).click();
     await page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Start task', exact: true }).click();
   } else {
-    await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+    const modifier = await page.evaluate(() => /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl');
+    await page.getByRole('button', { name: `New task ${modifier} N`, exact: true }).click();
     await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
     await expect(prompt(page)).toBeEnabled();
     await prompt(page).fill('Controlled streaming response');

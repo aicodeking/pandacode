@@ -1,8 +1,8 @@
 # Local declarative extensions (experimental)
 
 The first adapter adds host-rendered `showMessage` icon buttons beside the existing workspace header
-controls in the main window. Existing buttons, their commands and native drag regions are not replaced.
-Sidebar buttons, custom views, executable JavaScript and install hooks are not supported by this slice.
+controls and sidebar footer in the main window. Existing buttons, their commands and native drag regions
+are not replaced. Custom views, executable JavaScript and install hooks are not supported by this slice.
 The data vocabulary is described in [contracts.md](contracts.md); a schema-valid later capability is not
 necessarily implemented by this adapter.
 
@@ -23,8 +23,10 @@ alone leaves it disabled. Return to the workspace and activate **Project helper*
 or Space. The host displays `Extension installed successfully` once per activation.
 
 **Disable** removes that package's controls and preserves its stored package. Enable preferences survive
-restart. Duplicate installation is rejected; replacing/updating/uninstalling packages is not implemented
-yet. A failed validation does not create an active or partial package. No core database migration occurs.
+restart. **Uninstall** removes only the selected installation; extension data, projects, drafts and history
+are retained. Failed records show a reason and **Retry**, which revalidates the record before enabling it.
+Duplicate installation is rejected; replacing/updating packages is not implemented yet. A failed validation
+does not create an active or partial package. No core database migration occurs.
 
 ## Recovery
 

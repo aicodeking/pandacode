@@ -162,3 +162,26 @@ test('extensions install: corrupt stored package cannot prevent built-in startup
   await back(page); await page.locator('#prompt').fill('Built-ins remain usable');
   await expect(page.locator('#prompt')).toHaveValue('Built-ins remain usable');
 });
+
+test('extensions install: false visibility and enable conditions remove misleading keyboard controls', async ({ page }) => {
+  await open(page); await manager(page);
+  await page.getByRole('button', { name: 'Install local package' }).click();
+  await page.getByRole('button', { name: 'Enable sample.project-helper', exact: true }).click();
+  await page.evaluate(() => {
+    const key = 'pandacode.preview.extensions.v1';
+    const packages = JSON.parse(localStorage.getItem(key)!);
+    packages[0].manifest.contributes.menus[0].visible = { op: 'eq', key: 'sessionId', value: 'session-2' };
+    packages[0].manifest.contributes.menus[1].enabled = { op: 'eq', key: 'sessionId', value: 'session-2' };
+    localStorage.setItem(key, JSON.stringify(packages));
+  });
+  await page.reload();
+  await expect(action(page)).toHaveAttribute('hidden', '');
+  await expect(sidebarAction(page)).toBeDisabled();
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect(action(page)).not.toHaveAttribute('hidden', '');
+  await expect(sidebarAction(page)).toBeEnabled();
+  await sidebarAction(page).focus();
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(action(page)).toHaveAttribute('hidden', '');
+  await expect(sidebarAction(page)).toBeDisabled();
+});
