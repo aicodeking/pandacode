@@ -1,6 +1,11 @@
-/* Browser-preview stand-ins for the native VM commands: Tart setup, a catalog of images,
- * VMs that start and stop, a drawn 1024×768 desktop for frames, and recorded input. */
-import type { Vm, VmImage, VmStatus } from './vm-panel';
+/* Browser-preview stand-ins for the native VM commands: engine setup (Tart, or Lima on a
+ * Linux platform), a catalog of images, VMs that start and stop, a drawn 1024×768 desktop
+ * for frames, and recorded input. `__vmHostIssue` holds a host issue; `__vmOrphan` names a
+ * VM to leave running without PandaCode, as after a crash; `__vmCreating` names a VM an agent
+ * is creating, listed as stopped and creating for a few status checks, then stopped and
+ * starting for a few more (Lima boots it under the same claim) before it runs. */
+import { isLinux } from './platform';
+import type { Vm, VmHostIssue, VmImage, VmStatus } from './vm-panel';
 
 const IMAGES: VmImage[] = [
   { id: 'ubuntu', name: 'Ubuntu 24.04', os: 'linux', source: 'ghcr.io/cirruslabs/ubuntu:latest', downloadGb: 5, memoryMb: 2048, cpus: 2 },
@@ -9,25 +14,50 @@ const IMAGES: VmImage[] = [
   { id: 'macos-tahoe', name: 'macOS Tahoe', os: 'darwin', source: 'ghcr.io/cirruslabs/macos-tahoe-base:latest', downloadGb: 30, memoryMb: 4096, cpus: 4 },
   { id: 'macos-sequoia', name: 'macOS Sequoia', os: 'darwin', source: 'ghcr.io/cirruslabs/macos-sequoia-base:latest', downloadGb: 28, memoryMb: 4096, cpus: 4 },
 ];
+const LIMA_IMAGES: VmImage[] = [
+  { id: 'ubuntu', name: 'Ubuntu 26.04', os: 'linux', source: 'template://ubuntu-lts', downloadGb: 1, memoryMb: 2048, cpus: 2 },
+  { id: 'debian', name: 'Debian 13', os: 'linux', source: 'template://debian', downloadGb: 1, memoryMb: 2048, cpus: 2 },
+  { id: 'fedora', name: 'Fedora 44', os: 'linux', source: 'template://fedora', downloadGb: 1, memoryMb: 2048, cpus: 2 },
+];
 
 export function createPreviewVm() {
+  const images = isLinux ? LIMA_IMAGES : IMAGES;
   let installed = false, shown: string | null = null;
   const vms: Vm[] = [];
   const desktops = new Set<string>();
   /** Like the native install: running for a couple of status checks, then done. */
   let installing: string | null = null, checks = 0;
+  /** A VM still downloading, as when an agent creates one: the status checks left until it is ready. */
+  let creating: string | null = null, downloads = 0;
+  /** The VM booting after that download: the status checks left until it runs. */
+  let booting: string | null = null, boots = 0;
   const inputs: { name: string; input: Record<string, unknown> }[] = [];
   const starts: { name: string; share: string | null }[] = [];
   let mark: { x: number; y: number } | null = null, typed = '';
   const status = (): VmStatus => {
     if (installing && ++checks > 2) { const vm = vms.find(v => v.name === installing); if (vm) vm.desktop = null; desktops.add(installing); installing = null; }
-    return { supported: true, installed, vms: structuredClone(vms), shown, images: structuredClone(IMAGES) };
+    const preview = globalThis as { __vmHostIssue?: VmHostIssue; __vmOrphan?: string; __vmCreating?: string };
+    if (preview.__vmCreating) {
+      const image = images[0];
+      vms.push({ name: preview.__vmCreating, running: false, attached: false, creating: true, os: image.os, memoryMb: image.memoryMb, cpus: image.cpus, sizeGb: image.downloadGb, desktop: null });
+      creating = shown = preview.__vmCreating; downloads = 3; delete preview.__vmCreating;
+    } else if (creating && --downloads <= 0) {
+      const vm = vms.find(v => v.name === creating); creating = null;
+      if (vm) { vm.creating = false; vm.starting = true; booting = vm.name; boots = 2; }
+    } else if (booting && --boots <= 0) {
+      const vm = vms.find(v => v.name === booting); booting = null;
+      if (vm) { vm.starting = false; startVm(vm); }
+    }
+    const orphan = vms.find(vm => vm.name === preview.__vmOrphan);
+    if (orphan) { orphan.attached = false; delete preview.__vmOrphan; }
+    return { supported: true, installed, engine: isLinux ? 'lima' : 'tart', hostIssue: preview.__vmHostIssue ?? null, vms: structuredClone(vms), shown, images: structuredClone(images) };
   };
   const startVm = (vm: Vm) => {
     vm.running = vm.attached = true;
     if (vm.os === 'linux' && !desktops.has(vm.name)) { vm.desktop = 'installing'; installing = vm.name; checks = 0; }
   };
   const find = (name: unknown) => { const vm = vms.find(candidate => candidate.name === name); if (!vm) throw new Error('No VM with that name.'); return vm; };
+  const ready = (name: unknown) => { const vm = find(name); if (vm.creating) throw new Error(`${vm.name} is still being created.`); if (vm.starting) throw new Error(`${vm.name} is already starting.`); return vm; };
 
   async function frame(): Promise<ArrayBuffer> {
     const canvas = new OffscreenCanvas(1024, 768), g = canvas.getContext('2d')!;
@@ -41,10 +71,10 @@ export function createPreviewVm() {
   }
   return {
     inputs, starts, status,
-    setup() { installed = true; return '/Users/you/Applications/tart.app/Contents/MacOS/tart'; },
+    setup() { installed = true; return isLinux ? '/home/you/.local/share/pandacode/lima-2.2.1/bin/limactl' : '/Users/you/Applications/tart.app/Contents/MacOS/tart'; },
     show(name: unknown) { if (name != null && !String(name).includes(':')) find(name); shown = name == null ? null : String(name); return status(); },
     create(image: unknown, name: unknown) {
-      const found = IMAGES.find(candidate => candidate.id === image);
+      const found = images.find(candidate => candidate.id === image);
       if (!found) throw new Error('Unknown VM image.');
       if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) throw new Error('VM names use lowercase letters, digits and dashes.');
       if (vms.some(vm => vm.name === name)) throw new Error(`A VM named ${name} already exists.`);
@@ -53,7 +83,7 @@ export function createPreviewVm() {
       shown = name; return status();
     },
     power(name: unknown, action: unknown, share: unknown) {
-      const vm = find(name);
+      const vm = ready(name);
       if (action === 'start') { startVm(vm); starts.push({ name: vm.name, share: typeof share === 'string' ? share : null }); }
       else if (action === 'stop') { vm.running = vm.attached = false; }
       else if (action === 'suspend') { if (vm.os !== 'darwin') throw new Error('Only macOS VMs can be suspended.'); vm.running = vm.attached = false; }
