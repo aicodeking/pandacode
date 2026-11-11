@@ -160,6 +160,7 @@ embedded editor engine.
   linked, with access you set per computer. Off by default. See
   [machine orchestration](docs/machine-orchestration.md).
 - **Local VMs and cloud sandboxes.** Headless macOS/Linux VMs on Apple silicon (Tart),
+  headless Linux VMs on Linux (Lima on your distribution's QEMU and KVM),
   and Daytona, Docker, DigitalOcean, Vultr, Hetzner, RunPod, Cloudflare and AWS machines
   that agents can drive.
 - **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
@@ -279,6 +280,8 @@ information:
 | Local speech models (optional): the model file you pick and, with the first one, the Silero voice-activity model (about 1 MB), from a pinned revision, verified by SHA-256 | `huggingface.co`, `*.huggingface.co` and the download CDN `*.hf.co` | Only when you click Download in Settings → Voice; nothing at launch, while browsing models or while dictating |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
 | Adding skills (optional): `npx` fetches the `skills` CLI from the npm registry set in your `~/.npmrc`, which reads the source you choose: a GitHub or GitLab repository, or a local folder (telemetry off) | `registry.npmjs.org` (or your configured registry), `github.com` or `gitlab.com` | Only when you click Find skills, choose a folder or click Install in Settings → Tools → Skills; listing and switching skills are local |
+| Local VM engine (optional): Tart on a Mac (latest release, checked for Apple's notarization), Lima on Linux (a pinned release, verified by SHA-256) | `github.com` | Only when you click **Set up VMs** in the VM panel |
+| Local VM images (optional): Cirrus Labs images on a Mac; Ubuntu, Debian or Fedora cloud images on Linux, from the URLs in Lima's templates (digest-pinned entries first, then unpinned HTTPS fallbacks; Fedora's goes through its mirror network) | `ghcr.io`; `cloud-images.ubuntu.com`, `cloud.debian.org`, `download.fedoraproject.org` and Fedora mirrors | Only when you or an agent create a VM from that image; cached afterwards |
 
 ## Install
 
