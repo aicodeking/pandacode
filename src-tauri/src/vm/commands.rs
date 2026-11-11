@@ -4,15 +4,19 @@ use serde_json::Value;
 use std::path::PathBuf;
 use tauri::{ipc::Response, AppHandle, Emitter, Manager};
 
-use super::{backend, screen, Image, VmStatus, Vms};
+use super::{backend, backend::HostIssue, screen, Image, VmStatus, Vms};
 use crate::Result;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// Apple silicon Mac: local VMs are possible here.
+    /// This computer can run local VMs at all.
     pub supported: bool,
     pub installed: bool,
+    /// `tart` or `lima`.
+    pub engine: &'static str,
+    /// Something the user must fix first; nothing starts until they have.
+    pub host_issue: Option<HostIssue>,
     pub vms: Vec<VmStatus>,
     pub shown: Option<String>,
     pub images: Vec<Image>,
@@ -22,13 +26,10 @@ pub fn status(vms: &Vms) -> Result<Status> {
     let backend = backend();
     let supported = backend.supported();
     let installed = supported && backend.installed();
-    Ok(Status { supported, installed, vms: if installed { vms.list()? } else { Vec::new() }, shown: vms.shown(), images: backend.images().to_vec() })
+    Ok(Status { supported, installed, engine: backend.id(), host_issue: if supported { backend.host_issue() } else { None }, vms: if installed { vms.list()? } else { Vec::new() }, shown: vms.shown(), images: backend.images().to_vec() })
 }
 fn name(value: &str) -> Result<String> {
-    // Existing Tart VMs may use any name Tart accepts; reject only what could be an option.
-    if value.is_empty() || value.len() > 128 || value.starts_with('-') || value.chars().any(char::is_control) {
-        return Err("Unknown VM.".into());
-    }
+    super::check_name(value)?;
     Ok(value.to_string())
 }
 
@@ -52,10 +53,8 @@ pub async fn vm_show(app: AppHandle, name: Option<String>) -> Result<Status> {
 pub async fn vm_create(app: AppHandle, image: String, name: String) -> Result<Status> {
     crate::blocking(move || {
         let vms = app.state::<Vms>();
-        vms.create(&image, &name)?;
-        vms.show(Some(name.clone()));
-        // A new VM starts at once; Linux ones then get their desktop.
-        vms.start(&name, None)?;
+        // A new VM starts at once, shown and claimed throughout; Linux ones then get their desktop.
+        vms.create_and_start(&image, &name)?;
         super::desktop::ensure_in_background(app.clone(), name);
         let _ = app.emit("vm-changed", serde_json::json!({}));
         status(&vms)

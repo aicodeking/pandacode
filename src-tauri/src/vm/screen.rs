@@ -227,8 +227,9 @@ mod live {
         let name = std::env::var("PANDACODE_VM").unwrap();
         let mut rfb = Rfb::connect(address, password.as_deref(), Duration::from_secs(5)).unwrap();
         crate::vm::backend().exec(&name, false, "rm -f /tmp/pandacode-cu", Duration::from_secs(20)).unwrap();
-        // Xfce's dock: the terminal launcher.
-        act(&mut rfb, &Action::Click { x: 439.0, y: 743.0, button: 1, count: 1 }).unwrap();
+        // Xfce's dock, centred along the bottom: the terminal launcher.
+        let (width, height) = rfb.size();
+        act(&mut rfb, &Action::Click { x: width as f64 / 2.0 - 72.0, y: height as f64 - 25.0, button: 1, count: 1 }).unwrap();
         thread::sleep(Duration::from_secs(2));
         act(&mut rfb, &Action::Type { text: "echo \"Hi PandaCode: 6*7=$((6*7))!\" > /tmp/pandacode-cu".into() }).unwrap();
         act(&mut rfb, &Action::Key { keys: "Return".into() }).unwrap();

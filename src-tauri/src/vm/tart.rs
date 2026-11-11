@@ -22,6 +22,8 @@ const QUICK: Duration = Duration::from_secs(60);
 const PULL: Duration = Duration::from_secs(3 * 60 * 60);
 const BOOT: Duration = Duration::from_secs(90);
 const EXEC_HINT: &str = "(local VM: admin, passwordless sudo). Files are separate from this Mac. Project shared at start is read-only: Linux /mnt/shared/project after `sudo mkdir -p /mnt/shared && sudo mount -t virtiofs com.apple.virtio-fs.automount /mnt/shared`; macOS /Volumes/My Shared Files/project; copy to change.";
+const LIST_TEXT: &str = "List local VMs (macOS/Linux guests) and cloud sandboxes (IDs like daytona:…): state, OS, screen, images and providers to create from. Other vm tools take name; default: the shown VM, else the only running one.";
+const MANAGE_TEXT: &str = "create (local image: first download ~5 GB Linux, ~30 GB macOS; Linux desktop installs in background, commands work now), start, stop, suspend (local macOS), delete, show in PandaCode, install_desktop (local Linux). Idle local VMs stop after 10 min. Cloud costs money: confirm with the user before create/start.";
 
 /// Cirrus Labs images ship the Tart Guest Agent, so commands work without SSH.
 pub const IMAGES: [Image; 5] = [
@@ -35,8 +37,14 @@ pub const IMAGES: [Image; 5] = [
 pub struct Tart;
 
 impl VmBackend for Tart {
+    fn id(&self) -> &'static str {
+        "tart"
+    }
     fn supported(&self) -> bool {
         cfg!(all(target_os = "macos", target_arch = "aarch64"))
+    }
+    fn install(&self) -> Result<PathBuf, String> {
+        super::setup::install()
     }
     fn installed(&self) -> bool {
         binary().is_some()
@@ -50,6 +58,12 @@ impl VmBackend for Tart {
     }
     fn exec_hint(&self) -> &'static str {
         EXEC_HINT
+    }
+    fn list_text(&self) -> &'static str {
+        LIST_TEXT
+    }
+    fn manage_text(&self) -> &'static str {
+        MANAGE_TEXT
     }
     fn images(&self) -> &'static [Image] {
         &IMAGES
@@ -74,13 +88,19 @@ impl VmBackend for Tart {
         Ok(Started { child: Some(child), password, address, macos })
     }
     fn stop(&self, name: &str) -> Result<(), String> {
-        stop(name)
+        stop(name, QUICK)
+    }
+    fn stop_by(&self, name: &str, deadline: Instant) -> Result<(), String> {
+        stop(name, left(deadline))
     }
     fn can_suspend(&self, macos: bool) -> bool {
         macos
     }
     fn suspend(&self, name: &str) -> Result<(), String> {
-        suspend(name)
+        suspend(name, QUICK)
+    }
+    fn suspend_by(&self, name: &str, deadline: Instant) -> Result<(), String> {
+        suspend(name, left(deadline))
     }
     fn delete(&self, name: &str) -> Result<(), String> {
         delete(name)
@@ -179,16 +199,20 @@ pub fn configure(name: &str, memory_mb: u64, cpus: u64) -> Result<(), String> {
     command.args(["set", name, "--memory", &memory_mb.to_string(), "--cpu", &cpus.to_string()]);
     output(command, QUICK).map(|_| ())
 }
-pub fn stop(name: &str) -> Result<(), String> {
+/// A quit-time call's share of what is left before `deadline`, never more than `QUICK`.
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now()).clamp(Duration::from_secs(1), QUICK)
+}
+pub fn stop(name: &str, timeout: Duration) -> Result<(), String> {
     let mut command = tart()?;
     command.args(["stop", name, "--timeout", "20"]);
-    output(command, QUICK).map(|_| ())
+    output(command, timeout).map(|_| ())
 }
 /// macOS guests only: frees the VM's memory and resumes in seconds.
-pub fn suspend(name: &str) -> Result<(), String> {
+pub fn suspend(name: &str, timeout: Duration) -> Result<(), String> {
     let mut command = tart()?;
     command.args(["suspend", name]);
-    output(command, QUICK).map(|_| ())
+    output(command, timeout).map(|_| ())
 }
 pub fn delete(name: &str) -> Result<(), String> {
     let mut command = tart()?;
@@ -256,7 +280,8 @@ pub fn exec(name: &str, macos: bool, script: &str, timeout: Duration) -> Result<
     if stderr.contains("guest agent") && !out.status.success() {
         return Err("This VM has no Tart Guest Agent, so commands cannot run in it. Use a Cirrus Labs base image.".into());
     }
-    Ok(Exec { code: out.status.code(), stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(), stderr, truncated: out.stdout.truncated || out.stderr.truncated })
+    let code = out.status.code();
+    Ok(Exec { code, timed_out: code.is_none(), stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(), stderr, truncated: out.stdout.truncated || out.stderr.truncated })
 }
 
 #[cfg(test)]

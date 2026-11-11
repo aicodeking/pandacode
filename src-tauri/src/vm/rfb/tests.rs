@@ -386,6 +386,7 @@ fn a_resize_without_pixels_is_asked_for_again_in_full() {
     let grown = rfb.capture().unwrap();
     assert_eq!((grown.width(), grown.height()), (2, 1));
     assert!(grown.pixels().all(|p| p.0 == [0, 0, 255, 255]), "black frame");
+    assert!(!rfb.broken());
 }
 
 #[test]
@@ -411,6 +412,21 @@ fn a_capture_ends_at_its_timeout_however_fast_updates_keep_coming() {
     let frame = rfb.capture().unwrap();
     assert!(started.elapsed() < timeout * 4, "{:?}", started.elapsed());
     assert_ne!(frame.get_pixel(0, 0).0, [255, 0, 0, 255], "the frame read so far");
+    assert!(!rfb.broken());
+}
+
+#[test]
+fn a_failed_capture_marks_the_connection_broken() {
+    // The server answers with a message type RFB does not have.
+    let address = serve_with(|request, _, s| match request {
+        1 => s.write_all(&pixel(RED)).unwrap(),
+        _ => s.write_all(&[9]).unwrap(),
+    });
+    let mut rfb = Rfb::connect(address, None, WAIT).unwrap();
+    rfb.capture().unwrap();
+    assert!(!rfb.broken());
+    assert_eq!(rfb.capture().unwrap_err(), "Unexpected VNC message 9.");
+    assert!(rfb.broken());
 }
 
 #[test]

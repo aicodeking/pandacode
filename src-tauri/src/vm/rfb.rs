@@ -30,6 +30,8 @@ pub struct Rfb {
     pixels: Vec<u8>,
     /// A complete frame has arrived at the current size; later requests are incremental.
     complete: bool,
+    /// A call failed, perhaps partway through a message, so the stream can no longer be trusted.
+    broken: bool,
 }
 
 fn io(error: std::io::Error) -> String {
@@ -42,13 +44,21 @@ impl Rfb {
         stream.set_read_timeout(Some(timeout)).map_err(io)?;
         stream.set_write_timeout(Some(timeout)).map_err(io)?;
         stream.set_nodelay(true).map_err(io)?;
-        let mut rfb = Rfb { stream, timeout, width: 0, height: 0, pixels: Vec::new(), complete: false };
+        let mut rfb = Rfb { stream, timeout, width: 0, height: 0, pixels: Vec::new(), complete: false, broken: false };
         rfb.handshake(password)?;
         Ok(rfb)
     }
 
     pub fn size(&self) -> (u16, u16) {
         (self.width, self.height)
+    }
+    /// Whether a call failed; the caller should connect again.
+    pub fn broken(&self) -> bool {
+        self.broken
+    }
+    fn mark<T>(&mut self, result: Result<T, String>) -> Result<T, String> {
+        self.broken |= result.is_err();
+        result
     }
 
     fn read<const N: usize>(&mut self) -> Result<[u8; N], String> {
@@ -146,7 +156,8 @@ impl Rfb {
     /// a full frame at the new size (its pixels start black). A capture never takes longer than
     /// `timeout`: past it, a server that keeps streaming updates gets the frame read so far.
     pub fn capture(&mut self) -> Result<RgbaImage, String> {
-        self.capture_by(Instant::now() + self.timeout)
+        let result = self.capture_by(Instant::now() + self.timeout);
+        self.mark(result)
     }
     fn capture_by(&mut self, deadline: Instant) -> Result<RgbaImage, String> {
         let left = || deadline.saturating_duration_since(Instant::now());
@@ -244,13 +255,15 @@ impl Rfb {
         let mut event = vec![5, buttons];
         event.extend_from_slice(&x.to_be_bytes());
         event.extend_from_slice(&y.to_be_bytes());
-        self.send(&event)
+        let sent = self.send(&event);
+        self.mark(sent)
     }
 
     pub fn key(&mut self, keysym: u32, down: bool) -> Result<(), String> {
         let mut event = vec![4, u8::from(down), 0, 0];
         event.extend_from_slice(&keysym.to_be_bytes());
-        self.send(&event)
+        let sent = self.send(&event);
+        self.mark(sent)
     }
 }
 
