@@ -302,6 +302,10 @@ With [Homebrew](https://brew.sh): `brew install --cask aicodeking/pandacode/pand
 on macOS, or `brew install aicodeking/pandacode/pandacode` on Linux
 ([details](docs/homebrew.md)).
 
+With [Nix](https://nixos.org) on Linux, built from source:
+`nix run github:aicodeking/pandacode`, or `nix profile install github:aicodeking/pandacode`
+([details](docs/releasing.md#nix-flake)).
+
 The official macOS builds are Developer ID signed and notarized by Apple
 ([verified for v0.3.103](https://github.com/aicodeking/pandacode/actions/runs/42462913784)).
 macOS may still ask you to confirm opening a downloaded app. Signing remains
