@@ -49,7 +49,7 @@ const workerGlyphs: Record<string, string> = {
   alert: icon('alert'),
 };
 /** Each glyph's design-system tone, on the leading icon. Waiting is muted: only a worker that needs the user is `near`. */
-const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'limited', idle: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
+const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'failed', idle: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
 /** Who needs the reader first: asking, then failed, working, waiting or queued, stopped, and done last. */
 const workerRank = (worker: TeamWorker, state: string, asking: boolean): number =>
   worker.abandoned ? 6 : asking ? 0 : ({ failed: 1, running: 2, waiting: 3, parked: 3, queued: 3, paused: 4, stopped: 4, completed: 5 } as Record<string, number>)[state] ?? 4;
@@ -83,8 +83,8 @@ export function workerWord(worker: TeamWorker, state: string, approval: boolean,
   if (approval) return { verb: 'Approve?', full: 'Needs you: approval', tone: 'warn', bucket: 'needs you' };
   if (asking) return { verb: 'Input?', full: 'Needs you: input', tone: 'warn', bucket: 'needs you' };
   const [verb, tone] = workerVerb(state);
-  // Working, Done and Failed need no word: the glyph says it, and the name gets the room (the full status stays for
-  // screen readers and the title).
+  // Working, Done and Failed need no word: the glyph (Failed in the danger tone) says it, and the name gets the room
+  // (the full status stays for screen readers and the title).
   return { verb: ['running', 'completed', 'failed'].includes(state) ? '' : verb, full: workerVerbsFull[state] ?? verb, tone, bucket: verb.toLowerCase() };
 }
 /** A Council reviewer's row (one from an earlier cycle, or not yet in the Council summary): it is named by its lens and
@@ -102,7 +102,7 @@ const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'pau
 /** Buckets that leave the line for its title when the panel is narrow. */
 const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle']);
 /** Each bucket's glyph and tone in the tally: the same marks the rows lead with. */
-const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'limited'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
+const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'failed'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
 /** Then these, last-first, when the line still does not fit. */
 const TALLY_DROP = ['done', 'paused', 'waiting', 'working', 'failed'];
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
@@ -457,7 +457,8 @@ export class WorkerList {
     // The meta line: the model; a queued row's reason instead; a failed row's error (its first line) instead, without
     // the harness logo (nor beside a queue reason), which beside an error would read like its cause. It is cut on one
     // line (whole in the title and details). The effort and attempt labels follow it and are never cut, except on a
-    // failed row, where the reason wins the space: they are hidden there on screen (still in its description and title).
+    // failed row, where the reason wins the space: its attempt (and "adjusted") are hidden there on screen (still in its
+    // description and title); its effort stays as a muted marker.
     // Open, a failed row's full error is right below, so its meta line shows the facts instead: model · effort · attempt.
     const open = this.expanded.has(worker.id);
     const reason = state === 'failed' && worker.error ? worker.error.split('\n')[0].trim() : '';

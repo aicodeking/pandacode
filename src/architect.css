@@ -217,7 +217,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
   .architect-progress { box-shadow: inset 0 0 0 1px var(--text); }
   .architect-worker-item[data-open] { background: none; outline: 1px solid var(--border); }
 }
-@media (forced-colors: active) { .architect-progress-fill { background: Highlight; } .architect-worker-glyph[data-state-tone] { color: CanvasText; } }
+@media (forced-colors: active) { .architect-progress-fill { background: Highlight; } .architect-worker-glyph[data-state-tone], .architect-tally-glyph[data-state-tone] { color: CanvasText; } }
 .architect-worker-state { color: var(--muted); font-weight: 500; }
 /* Pausing or stopping is the user's choice: say so quietly, not in red. */
 .architect-panel-error.is-notice { color: var(--muted); }
@@ -253,15 +253,15 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-more-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .architect-worker-more p.architect-worker-scroll-hint { margin-top: 2px; color: var(--muted); font-size: var(--ds-text-chip); }
 .architect-worker-scroll-hint[hidden] { display: none; }
-/* A failed row's reason wins the space: its effort and attempt labels are hidden on screen but kept for screen readers
-   (the row's description reads the meta line), and shown in its title and details. */
-.architect-worker-item[data-reason] .architect-worker-meta-line .architect-worker-chip { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* A failed row's reason wins the space: its attempt label and "adjusted" mark are hidden on screen but kept for screen
+   readers (the row's description reads the meta line), and shown in its title and details. The effort stays, muted. */
+.architect-worker-item[data-reason] .architect-worker-meta-line :is(.architect-worker-attempt, .architect-worker-adjusted) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* The meta line is one tone (--muted): model or reason, effort, attempt; state tones stay on the leading icon. */
-/* Keyboard users see the row keys while a row has keyboard focus (not for pointer focus). The hint sits under the
-   scrolling list, outside it, in a line whose space is always kept, so showing it never moves anything. */
-.architect-worker-keyhint { flex-shrink: 0; height: 14px; margin: 0; padding: 0 14px; visibility: hidden; color: var(--faint); font-size: var(--ds-text-chip); line-height: 14px; }
-.architect-panel:has(.architect-worker-row:focus-visible) .architect-worker-keyhint { visibility: visible; }
-.architect-panel:has(.architect-worker-list[hidden]) .architect-worker-keyhint, .architect-panel:not(:has(.architect-worker-row)) .architect-worker-keyhint { display: none; }
+/* Keyboard users see the row keys while a row has keyboard focus (not for pointer focus). The hint takes the tally
+   line's place (laid over it, the tally hidden meanwhile), so it costs no space and showing it moves nothing. */
+.architect-worker-keyhint { display: none; position: absolute; inset-block-start: 0; inset-inline-start: 14px; height: 24px; margin: 0; overflow: hidden; color: var(--faint); font-size: var(--ds-text-chip); line-height: 24px; white-space: nowrap; }
+.architect-panel:has(.architect-worker-row:focus-visible) .architect-worker-keyhint { display: block; }
+.architect-panel:has(.architect-worker-row:focus-visible) .architect-panel-tally-text { visibility: hidden; }
 @media (prefers-contrast: more) { .architect-worker-keyhint { color: var(--text); } }
 /* An overflowing assignment or summary fades at its bottom (an alpha mask, no colour) until scrolled to its end. */
 .architect-worker-more-text[data-overflowing]:not([data-at-end]) { -webkit-mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); mask-image: linear-gradient(to bottom, currentColor calc(100% - 1.5em), transparent); }
