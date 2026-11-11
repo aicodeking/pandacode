@@ -109,6 +109,14 @@ const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 't
 /** Then these, first-first, when the line still does not fit: "working" outlasts "done" (the progress bar already
  *  shows completion) and only "failed" outlasts "working". */
 const TALLY_DROP = ['paused', 'waiting', 'done', 'working', 'failed'];
+/** One compact count: the rows' glyph and the number, its word in the title. On the tally line it is hidden from
+ *  screen readers (the readable copy says it); on the unfolded "+N" line it says its word to them. */
+const tallyCount = (key: string, count: number, text: string, spoken: boolean): string => {
+  const [glyph, tone] = TALLY_GLYPHS[key] ?? ['idle', 'worker-idle'];
+  const mark = `<span class="architect-tally-glyph" data-state-tone="${tone}" aria-hidden="true">${workerGlyphs[glyph]}</span>`;
+  return spoken ? `<span class="architect-tally-count" title="${escape(text)}">${mark}<span aria-hidden="true">${count}</span><span class="sr-only">${escape(text)}</span></span>`
+    : `<span class="architect-tally-count" title="${escape(text)}" aria-hidden="true">${mark}${count}</span>`;
+};
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
  *  full line, a short one without the minor buckets, and the share of settled workers. Empty buckets are left out. */
 export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; settled: number; total: number; needsYou: number; failed: number } {
@@ -118,17 +126,15 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
   const parts = [...TALLY_ORDER, ...[...counts.keys()].filter(key => !TALLY_ORDER.includes(key))].filter(key => counts.get(key)).map(key => [key, label(key, counts.get(key)!)] as const);
   const settled = workers.filter(worker => worker.abandoned || ['completed', 'failed', 'stopped'].includes(worker.status)).length;
   // The visible line is hidden from screen readers (a readable copy says it in words), except the "needs you" button,
-  // which keeps its words after a warn-toned icon. Every other bucket is the rows' own glyph, its count and its word.
-  // A line too wide for the panel drops the minor buckets first and ends with a "+N" button that unfolds the hidden
-  // counts on a line of their own (aria-expanded), its title naming them too.
+  // which keeps its words after a warn-toned icon since it acts. Every other bucket is compact: the rows' own glyph and
+  // its count, its word in the title. A line too wide for the panel drops the minor buckets first and ends with a "+N"
+  // button that unfolds the hidden counts on a line of their own (aria-expanded), its title naming them too.
   const html = (list: (readonly [string, string])[], hidden: (readonly [string, string])[]) => {
     const more = hidden.reduce((sum, [key]) => sum + counts.get(key)!, 0), names = hidden.map(([, text]) => text).join(', ');
-    return [...list.map(([key, text]) => {
-      if (key === 'needs you') return `<button type="button" class="architect-tally-asking" title="Show the first worker that needs you"><span class="architect-tally-icon" data-state-tone="near" aria-hidden="true">${icon('alert')}</span>${escape(text)}</button>`;
-      const [glyph, tone] = TALLY_GLYPHS[key] ?? ['idle', 'worker-idle'];
-      // Every count says its word on screen ("1 working"), so marks never have to be learned or hovered.
-      return `<span class="architect-tally-count" title="${escape(text)}" aria-hidden="true"><span class="architect-tally-glyph" data-state-tone="${tone}">${workerGlyphs[glyph]}</span>${escape(text)}</span>`;
-    }), ...more ? [`<button type="button" class="architect-tally-more" aria-expanded="false" aria-controls="architect-tally-hidden" aria-label="${escape(`Show ${more} more: ${names}`)}" title="${escape(names)}">+${more} more</button>`] : []].join('');
+    return [...list.map(([key, text]) => key === 'needs you'
+      ? `<button type="button" class="architect-tally-asking" title="Show the first worker that needs you"><span class="architect-tally-icon" data-state-tone="near" aria-hidden="true">${icon('alert')}</span>${escape(text)}</button>`
+      : tallyCount(key, counts.get(key)!, text, false)),
+    ...more ? [`<button type="button" class="architect-tally-more" aria-expanded="false" aria-controls="architect-tally-hidden" aria-label="${escape(`Show ${more} more: ${names}`)}" title="${escape(names)}" data-label="+${more} more" data-names="${escape(`${more} more: ${names}`)}">+${more} more</button>`] : []].join('');
   };
   // Ever shorter lines for a narrow panel: the minor buckets go first, then TALLY_DROP in order, "failed" last of
   // all; "needs you" always stays. Each drop is counted in "+N more", which is never cut.
@@ -139,16 +145,21 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
     if (!parts.some(([key]) => gone.has(key)) || !parts.some(([key]) => key === order[step - 1])) continue;
     const kept = parts.filter(([key]) => !gone.has(key)), hidden = parts.filter(([key]) => gone.has(key));
     const dropped = hidden.reduce((sum, [key]) => sum + counts.get(key)!, 0);
-    variants.push({ text: [...kept.map(([, text]) => text), `+${dropped} more`].join(' · '), html: html(kept, hidden), hidden: hidden.map(([, text]) => text).join(' · ') });
+    variants.push({ text: [...kept.map(([, text]) => text), `+${dropped} more`].join(' · '), html: html(kept, hidden), hidden: hidden.map(([key, text]) => tallyCount(key, counts.get(key)!, text, true)).join('') });
   }
   // The readable copy leaves out "needs you": its button, just before, already says it.
   const readable = parts.filter(([key]) => key !== 'needs you').map(([, text]) => text).join(' · ');
   return { text: variants[0].text, readable, html: variants[0].html, variants, settled, total: workers.length,
     needsYou: counts.get('needs you') ?? 0, failed: counts.get('failed') ?? 0 };
 }
-/** The effort label. An effort note means the effort was changed from what the lead asked: the label says
- *  "(adjusted)" (muted), the note is its title and screen readers hear "adjusted". */
-const effortChip = (effort: string, note?: string | null): string => `<span class="architect-worker-chip architect-worker-effort"${note ? ' data-adjusted' : ''} title="${escape(note ? `Reasoning effort: ${effort}. ${note}` : `Reasoning effort: ${effort}`)}"><span aria-hidden="true">${escape(effort)}${note ? '<span class="architect-worker-adjusted"> (adjusted)</span>' : ''}</span><span class="sr-only">reasoning effort ${escape(effort)}${note ? ', adjusted' : ''}</span></span>`;
+/** The effort label. An effort note means the effort was changed from what the lead asked: a muted "(adjusted)" follows
+ *  as an item of its own that gives way first on a narrow line (the model name keeps its room), the note is the title
+ *  and screen readers hear "adjusted". */
+const effortChip = (effort: string, note?: string | null): string => {
+  const title = escape(note ? `Reasoning effort: ${effort}. ${note}` : `Reasoning effort: ${effort}`);
+  return `<span class="architect-worker-chip architect-worker-effort"${note ? ' data-adjusted' : ''} title="${title}"><span aria-hidden="true">${escape(effort)}</span><span class="sr-only">reasoning effort ${escape(effort)}${note ? ', adjusted' : ''}</span></span>`
+    + (note ? `<span class="architect-worker-adjusted" title="${title}" aria-hidden="true">(adjusted)</span>` : '');
+};
 /** An attempt count: "×2" on screen, "attempt 2" for screen readers. */
 const attemptHtml = (attempt: number): string => `<span aria-hidden="true">×${attempt}</span><span class="sr-only">attempt ${attempt}</span>`;
 /** Sets an attribute only when it changes, so a repaint queues no mutation. */
@@ -350,11 +361,17 @@ export class WorkerList {
   /** The "+N" disclosure: the counts a narrow tally hides, on a line of their own while it is expanded. */
   private syncHidden(): void {
     const disclosure = this.panel.querySelector<HTMLElement>('.architect-panel-tally-hidden')!;
-    if (disclosure.textContent !== this.hiddenCounts) disclosure.textContent = this.hiddenCounts;
+    if (disclosure.dataset.html !== this.hiddenCounts) { disclosure.innerHTML = this.hiddenCounts; disclosure.dataset.html = this.hiddenCounts; }
     const shown = this.showHidden && Boolean(this.hiddenCounts);
     if (disclosure.hidden === shown) disclosure.hidden = !shown;
-    const toggle = this.tallyHost.querySelector('.architect-tally-more');
-    if (toggle) setAttr(toggle, 'aria-expanded', String(shown));
+    // Open, "+N more" reads "Hide" (shorter, so the fitted line still fits); its name still starts with what it shows.
+    const toggle = this.tallyHost.querySelector<HTMLElement>('.architect-tally-more');
+    if (toggle) {
+      setAttr(toggle, 'aria-expanded', String(shown));
+      const label = shown ? 'Hide' : toggle.dataset.label ?? '';
+      if (toggle.textContent !== label) toggle.textContent = label;
+      setAttr(toggle, 'aria-label', `${shown ? 'Hide' : 'Show'} ${toggle.dataset.names ?? ''}`);
+    }
   }
   /** The tally's "needs you": bring the first worker that needs the user into view and focus its row. */
   private showNeedsYou(): void {
@@ -400,6 +417,8 @@ export class WorkerList {
     const ms = workerElapsedMs(worker, state, now, this.settledAt(worker, state));
     const time = ms === null ? '' : shortDuration(ms), words = ms === null ? '' : `${['running', 'waiting', 'parked'].includes(state) ? 'running' : 'ran'} ${longDuration(ms)}`;
     if (element.textContent !== time) element.textContent = time;
+    // A finished run's time reads "ran 1h" (a faint prefix in CSS), never like "1h ago".
+    element.toggleAttribute('data-ran', Boolean(time) && !['running', 'waiting', 'parked'].includes(state));
     if (element.title !== words) element.title = words;
     setAttr(row, 'aria-label', `${row.dataset.name ?? worker.name}, ${row.dataset.statusLabel ?? ''}${words ? `, ${words}` : ''} — open transcript`);
   }

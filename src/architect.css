@@ -129,7 +129,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* One row per worker (38px, 2px apart): status glyph, then two lines: the name with a right-aligned status word and
    a fixed-width elapsed column, and below it the harness logo · model · effort · attempt. The row opens the
    transcript; a trailing caret unfolds the assignment and summary below it. */
-.architect-worker-item { --elapsed-w: 2.6rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: var(--ds-radius-control); }
+.architect-worker-item { --elapsed-w: 3.9rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: var(--ds-radius-control); }
 .architect-worker-item[data-sub] { margin-inline-start: 22px; }
 .architect-worker-item[data-open], .architect-worker-item[data-open]:hover { background: var(--ds-card-inner); box-shadow: inset 0 0 0 1px var(--ds-border); }
 .architect-worker-item > .architect-worker-row { display: flex; width: 100%; min-width: 0; height: 38px; min-height: 0; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 6px 0 8px; border-radius: var(--ds-radius-control); text-align: left; color: var(--muted); font-size: var(--ds-text-ui); }
@@ -157,10 +157,11 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .architect-worker-row .architect-worker-copy strong { flex: 1 1 0; min-width: 6ch; font-size: var(--ds-text-ui); line-height: 17px; font-weight: var(--weight-medium); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .architect-worker-row .architect-worker-state { flex: none; max-width: 9ch; overflow: hidden; text-overflow: ellipsis; font-size: var(--ds-text-chip); line-height: 17px; white-space: nowrap; }
-/* Wide enough for the longest compact duration ("1.5h", "999d"). The meta line below runs the full width. */
+/* Wide enough for the longest finished duration ("ran 1.5h", "ran 999d"). The meta line below runs the full width. */
 .architect-worker-elapsed { flex: none; width: var(--elapsed-w); color: var(--faint); font-size: var(--ds-text-chip); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 /* No time yet (queued, skipped) and no status word to line up: the name takes the column. */
 .architect-worker-state.sr-only + .architect-worker-elapsed:empty { display: none; }
+.architect-worker-elapsed[data-ran]::before { content: 'ran\00a0'; content: 'ran\00a0' / ''; }
 .architect-worker-meta-line { gap: 4px; }
 .architect-worker-logo { display: flex; flex: none; width: 12px; height: 12px; align-items: center; justify-content: center; overflow: hidden; }
 .architect-worker-logo :is(svg, img, .provider-logo) { width: 12px; height: 12px; min-width: 0; }
@@ -168,6 +169,9 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* Effort and attempt read as part of the meta line: "GPT-6-Astra · high · ×2". */
 .architect-worker-chip { flex: none; font-size: var(--ds-text-chip); line-height: 14px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .architect-worker-chip::before { content: '·'; content: '·' / ''; margin-inline-end: 4px; }
+/* "(adjusted)" gives way first on a narrow line: its shrink factor dwarfs the model name's, so it ellipsizes (and
+   vanishes) before the name loses a letter. The note stays in its title and the row's description. */
+.architect-worker-adjusted { flex: 0 100000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ds-text-chip); line-height: 14px; color: var(--muted); }
 .architect-worker-expand { display: flex; align-items: center; justify-content: center; width: 26px; height: 26px; margin-right: 2px; padding: 0; border-radius: var(--ds-radius-control); color: var(--muted); }
 .architect-worker-expand:hover { color: var(--text); }
 .architect-worker-expand > .icon { width: 14px; height: 14px; transition: rotate var(--ds-ease-out) ease-out; }
@@ -194,7 +198,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-tally-icon { display: flex; color: var(--state-tone); }
 .architect-tally-icon .icon { width: 12px; height: 12px; }
 /* The other buckets: the rows' glyph (static here), a count and its word; "+N" is a button that unfolds what it hides. */
-.architect-tally-count, .architect-tally-more { display: inline-flex; align-items: center; gap: 2px; height: 24px; margin-inline-start: 6px; vertical-align: top; }
+.architect-tally-count, .architect-tally-more { display: inline-flex; align-items: center; gap: 3px; height: 24px; margin-inline-start: 8px; vertical-align: top; }
 .architect-tally-glyph { display: flex; color: var(--state-tone); }
 .architect-tally-glyph > svg { width: 11px; height: 11px; }
 .architect-tally-glyph .architect-glyph-pulse { animation: none; }
@@ -203,6 +207,8 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* "+N" unfolds the hidden counts on their own quiet line under the tally. */
 .architect-panel-tally-hidden { margin: -4px 0 0; padding: 0 14px 8px; color: var(--muted); font-size: var(--ds-text-chip); flex-shrink: 0; }
 .architect-panel-tally-hidden[hidden] { display: none; }
+.architect-panel-tally-hidden > .architect-tally-count { height: auto; }
+.architect-panel-tally-hidden > :first-child { margin-inline-start: 0; }
 .architect-panel-tally-text > :first-child { margin-inline-start: 0; }
 .architect-progress { flex: 0 0 44px; height: 4px; border-radius: 2px; overflow: hidden; background: var(--ds-fill); box-shadow: inset 0 0 0 1px var(--ds-chip-border); }
 .architect-progress-fill { display: block; height: 100%; background: var(--ds-tone-team); transform-origin: left center; scale: var(--progress, 0) 1; transition: scale var(--ds-ease-out) ease-out; }
@@ -259,6 +265,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 /* A failed row's reason wins the space: its effort and attempt labels are hidden on screen but kept for screen
    readers (the row's description reads the meta line), and shown in its title and details. */
 .architect-worker-item[data-reason] .architect-worker-meta-line :is(.architect-worker-attempt, .architect-worker-effort) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.architect-worker-item[data-reason] .architect-worker-meta-line .architect-worker-adjusted { display: none; }
 /* The meta line is one tone (--muted): model or reason, effort, attempt; state tones stay on the leading icon. */
 /* Keyboard users see the row keys while a row has keyboard focus (not for pointer focus): one quiet line in the
    list's trailing space, so the tally keeps every count in view. Hidden, it takes no space; shown, it only adds a line
