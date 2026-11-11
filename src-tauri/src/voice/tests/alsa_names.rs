@@ -138,12 +138,26 @@ fn two_cards_with_one_name_resolve_to_the_lowest_index_like_016() {
 }
 
 #[test]
-fn a_saved_device_that_fails_to_open_falls_back_but_default_and_system_default_do_not() {
+fn only_a_resolved_jack_or_oss_falls_back_and_never_in_the_mic_test() {
     // cpal 0.17 lists `jack` and `oss` without opening them, so a saved one may have no server.
-    for saved in ["jack", "oss", "HDA Intel PCH", "hw:CARD=PCH,DEV=0"] {
-        assert!(alsa_falls_back(Some(saved)), "{saved}");
+    for resolved in ["jack", "oss"] {
+        assert!(alsa_falls_back(Some(resolved), false), "{resolved}");
+        // The mic test opens exactly the chosen device or reports the error.
+        assert!(!alsa_falls_back(Some(resolved), true), "{resolved} in the mic test");
     }
-    // `default` and System default already are the default input: retrying would repeat the failure.
-    assert!(!alsa_falls_back(Some("default")));
-    assert!(!alsa_falls_back(None));
+    // A card's PCM or a raw id that fails (busy, permission) reports it; `default` is the default.
+    for resolved in ["plughw:CARD=0,DEV=0", "hw:CARD=PCH,DEV=0", "default", "pipewire", "pulse"] {
+        assert!(!alsa_falls_back(Some(resolved), false), "{resolved}");
+    }
+    // An unresolved choice or System default already opened the default input.
+    assert!(!alsa_falls_back(None, false));
+}
+
+#[test]
+fn a_card_named_like_a_builtin_resolves_to_its_pcm_so_it_does_not_fall_back() {
+    let cards = parse_asound_cards(" 0 [Jack           ]: USB-Audio - jack\n");
+    let ids: Vec<String> = ["plughw:CARD=0,DEV=0"].map(String::from).to_vec();
+    let id = resolved("jack", &ids, &cards);
+    assert_eq!(id.as_deref(), Some("plughw:CARD=0,DEV=0"));
+    assert!(!alsa_falls_back(id.as_deref(), false));
 }
