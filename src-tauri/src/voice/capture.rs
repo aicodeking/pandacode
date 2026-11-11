@@ -230,17 +230,23 @@ pub(super) fn devices(saved: Option<&str>) -> Vec<MicDevice> {
         .collect()
 }
 
-/// The named input device, or the OS default when it is gone or unnamed.
+/// The named input device, or the OS default when it is gone or unnamed (what `open` opens
+/// first); the real-audio smoke checks it.
+#[cfg(test)]
 pub(super) fn input_device(name: Option<&str>) -> Result<cpal::Device> {
-    let host = cpal::default_host();
-    if let Some(name) = name {
-        let list: Vec<cpal::Device> = host.input_devices().map(Iterator::collect).unwrap_or_default();
-        let ids: Vec<Option<String>> = list.iter().map(saved_name).collect();
-        if let Some(device) = resolve_saved(name, &ids).and_then(|at| list.into_iter().nth(at)) {
-            return Ok(device);
-        }
-    }
-    host.default_input_device()
+    name.and_then(saved_device).map_or_else(default_device, Ok)
+}
+
+/// The connected input device a saved choice names, if any.
+fn saved_device(name: &str) -> Option<cpal::Device> {
+    let list: Vec<cpal::Device> = cpal::default_host().input_devices().map(Iterator::collect).unwrap_or_default();
+    let ids: Vec<Option<String>> = list.iter().map(saved_name).collect();
+    resolve_saved(name, &ids).and_then(|at| list.into_iter().nth(at))
+}
+
+fn default_device() -> Result<cpal::Device> {
+    cpal::default_host()
+        .default_input_device()
         .ok_or_else(|| "No microphone is available. Connect an input device and try again.".into())
 }
 
@@ -369,23 +375,34 @@ pub(super) fn alsa_resolve(saved: &str, ids: &[Option<String>], cards: &[AlsaCar
 
 type Opened = (cpal::Stream, Arc<Mutex<Pcm>>, Arc<AtomicBool>);
 
-/// Whether a saved Linux choice that fails to open falls back to the default input. cpal 0.17
-/// lists `jack` and `oss` (and other hint PCMs) without opening them, so a listed device may have
-/// nothing behind it; listing never opens the microphone, so the failure shows only here.
+/// The ALSA plugin PCMs cpal 0.17 lists from config hints without opening them: alsa-plugins
+/// defines both, so they list with no JACK server or OSS device behind them.
 #[cfg(any(test, target_os = "linux"))]
-pub(super) fn alsa_falls_back(saved: Option<&str>) -> bool {
-    saved.is_some_and(|name| name != "default")
+const ALSA_UNPROBED: [&str; 2] = ["jack", "oss"];
+
+/// Whether a saved Linux choice that fails to open falls back to the default input: only when it
+/// resolved to `jack` or `oss` (`resolved` is the PCM id it resolved to; `None` when it did not
+/// resolve, so the default was opened already), and never in the mic test (`probe`), which must
+/// open exactly the chosen device or report why not. A card name or raw id reports its failure
+/// (a busy `hw` device, a permission problem) rather than recording from another microphone.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_falls_back(resolved: Option<&str>, probe: bool) -> bool {
+    !probe && resolved.is_some_and(|id| ALSA_UNPROBED.contains(&id))
 }
 
-/// Builds (does not start) an input stream on the chosen device; on Linux a saved device that
-/// fails to open falls back to the default input, as one that is gone does.
-fn open(device_name: Option<&str>) -> Result<Opened> {
-    let opened = open_on(input_device(device_name)?);
+/// Builds (does not start) an input stream on the chosen device, or on the default input when
+/// the choice is unset or not connected. On Linux see `alsa_falls_back`.
+fn open(device_name: Option<&str>, probe: bool) -> Result<Opened> {
+    let Some(chosen) = device_name.and_then(saved_device) else {
+        return open_on(default_device()?);
+    };
     #[cfg(target_os = "linux")]
-    if opened.is_err() && alsa_falls_back(device_name) {
-        return open_on(input_device(None)?);
+    if alsa_falls_back(saved_name(&chosen).as_deref(), probe) {
+        return open_on(chosen).or_else(|_| open_on(default_device()?));
     }
-    opened
+    #[cfg(not(target_os = "linux"))]
+    let _ = probe;
+    open_on(chosen)
 }
 
 fn open_on(device: cpal::Device) -> Result<Opened> {
@@ -464,7 +481,7 @@ impl Probe {
         let thread = std::thread::Builder::new()
             .name("voice-probe".into())
             .spawn(move || {
-                let (stream, pcm, failed) = match open(device.as_deref()).and_then(|o| {
+                let (stream, pcm, failed) = match open(device.as_deref(), true).and_then(|o| {
                     o.0.play().map_err(|_| "Could not start the microphone. Check microphone permission in OS settings.".to_owned())?;
                     Ok(o)
                 }) {
@@ -560,7 +577,7 @@ pub(super) fn run(worker: Worker) {
         if *cancel.borrow() {
             return Err(CANCELLED.into());
         }
-        let (stream, pcm, failed) = open(device.as_deref())?;
+        let (stream, pcm, failed) = open(device.as_deref(), false)?;
         // Commit to Recording before play: a cancel that won the race never hears the microphone.
         if *cancel.borrow() || !voice.recording(&id) {
             return Err(CANCELLED.into());

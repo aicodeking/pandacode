@@ -51,6 +51,8 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Install Linux native dependencies
+        # Normally ~30 s; a stalled mirror otherwise holds the job until its own timeout.
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
@@ -102,7 +104,7 @@ jobs:
     # Linux job does not cover, so a platform-only break shows up in CI instead of first at release time.
     # Each row copies its release.yml build row: same runner and TRANSCRIBE_CMAKE_ARGS (see the comment
     # there; an empty value adds no CMake arguments). Clippy covers the same targets as the Linux job;
-    # tests stay on Linux, except a real-audio smoke on macOS. The Linux arm64 row installs the same native packages as the Linux job.
+    # tests stay on Linux, except a release-profile real-audio smoke on macOS, Windows x64 and Linux arm64. The Linux arm64 row installs the same native packages as the Linux job.
     name: Rust clippy (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -120,7 +122,8 @@ jobs:
           # Linux arm64 pinned to plain ARMv8-A, never the runner's CPU.
           - { os: ubuntu-24.04-arm, target: linux-aarch64, transcribe_cmake: '-DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8-a' }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # Clippy plus the up-to-55-minute release smoke on the rows that run it.
+    timeout-minutes: 120
     env:
       TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
     steps:
@@ -135,6 +138,7 @@ jobs:
           workspaces: src-tauri
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
@@ -148,11 +152,14 @@ jobs:
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       # The real audio stack under the shipped release profile: cpal 0.16's undefined behaviour only
       # crashed optimised builds, so debug tests passed while the released app segfaulted.
+      # macOS requires a recording; Windows x64 and Linux arm64 runners may have no usable input, so
+      # there the smoke lists devices, opens the default if one exists, and passes without one.
       - name: Real audio smoke (release profile)
-        if: runner.os == 'macOS'
-        timeout-minutes: 40
+        if: runner.os == 'macOS' || matrix.target == 'windows-x86_64' || matrix.target == 'linux-aarch64'
+        # The release build alone took ~34 min on darwin-x86_64.
+        timeout-minutes: 55
         # macOS runners have virtual inputs (Null Audio Device, Apple Virtual Sound Device), so a
         # runner with no input must fail instead of passing without recording.
         env:
-          PANDACODE_REQUIRE_REAL_MIC: '1'
+          PANDACODE_REQUIRE_REAL_MIC: ${{ runner.os == 'macOS' && '1' || '' }}
         run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib real_audio -- --ignored --nocapture
