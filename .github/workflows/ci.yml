@@ -140,6 +140,10 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libasound2-dev build-essential curl wget file libxdo-dev libssl-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 patchelf xvfb dbus-x11 xdg-utils
       # Tauri embeds the built frontend, so dist/ must exist before cargo runs.
       - run: npm ci
+      # The release startup smoke flaked on windows-11-arm (cold Node starts), so its tests run there too.
+      - name: Release startup smoke tests (Windows arm64)
+        if: matrix.target == 'windows-aarch64'
+        run: node --test scripts/release/ci-startup-smoke.test.mjs
       - run: npm run build
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       # The real audio stack under the shipped release profile: cpal 0.16's undefined behaviour only
