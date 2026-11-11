@@ -1496,6 +1496,12 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   const elapsedRight = await compactItem(page, 'search').locator('.architect-worker-elapsed').evaluate(cell => cell.getBoundingClientRect().right);
   expect(metaRight.pad).toBe('0px');
   expect(Math.abs(metaRight.right - elapsedRight)).toBeLessThanOrEqual(1);
+  // A queued row has no time and no status word: its elapsed column takes no width, and the name runs to the edge.
+  const docsElapsed = compactItem(page, 'docs').locator('.architect-worker-elapsed');
+  await expect(docsElapsed).toHaveText('');
+  await expect(docsElapsed).toHaveCSS('display', 'none');
+  const docsLine = await compactItem(page, 'docs').locator('.architect-worker-copy > .architect-worker-line').first().evaluate(line => ({ right: line.getBoundingClientRect().right, name: line.querySelector('strong')!.getBoundingClientRect().right }));
+  expect(Math.abs(docsLine.right - docsLine.name)).toBeLessThanOrEqual(1);
   await expect(compactItem(page, 'search').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('high');
   await expect(compactItem(page, 'search').locator('.architect-worker-effort .sr-only')).toHaveText('reasoning effort high');
   await expect(compactItem(page, 'styles').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('x-high');
@@ -2216,6 +2222,25 @@ test.describe('compact workers round 22', () => {
 });
 
 test.describe('compact workers round 23', () => {
+  test('a council reviewer that finished below target has its own mark, not the queued ring or the done check', async ({ page }) => {
+    const seat = (id: string, lens: string, score: number, createdAt: number) => ({ ...worker('review', { status: 'completed', council: { round: 1, lens, score } }), id, sessionId: `worker-${id}`, createdAt });
+    await installArchitect(page, { 'session-2': team('session-2', {
+      config: { ...config(), council: { target: 9.5, maxRounds: 3, reviewers: 2 } },
+      // An earlier cycle's reviewers are rows (the current cycle's sit in the Council scorecard).
+      councilSince: 1_800_000_000_010, councilStatus: { state: 'waiting', round: 0, lowest: null, target: 9.5, stale: false },
+      workers: [seat('low', 'Correctness', 8, 1_800_000_000_000), seat('high', 'Security', 9.5, 1_800_000_000_002), worker('build', { status: 'queued' })],
+    }) });
+    await openWorkers(page).click();
+    const glyph = (id: string) => compactItem(page, id).locator('.architect-worker-glyph');
+    await expect(compactItem(page, 'low').locator('.architect-worker-state:not(.sr-only) > [aria-hidden="true"]')).toHaveText('Below');
+    await expect(glyph('low')).toHaveAttribute('data-glyph', 'below');
+    await expect(glyph('low')).toHaveAttribute('data-state-tone', 'worker-idle');
+    await expect(glyph('high')).toHaveAttribute('data-glyph', 'completed');
+    // Unlike the dashed ring of work that has not started, and the green check of a passing reviewer.
+    const markup = (id: string) => glyph(id).innerHTML();
+    expect(await markup('low')).not.toBe(await markup('build'));
+    expect(await markup('low')).not.toBe(await markup('high'));
+  });
   test('a long assignment fades until scrolled to its end, ends on text, and keeps its hint right under it', async ({ page }) => {
     const assignment = Array.from({ length: 30 }, (_, line) => `Step ${line + 1}: check the search index.`).join('\n') + '\n\n\n';
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', assignment })] }) });
@@ -2265,25 +2290,30 @@ test.describe('compact workers round 23', () => {
     })).toBe(true);
     expect(tallySum(await visibleTally(tally))).toBe(6);
   });
-  test('the keyboard hint is outside the list, in view for a lower row, and showing it moves nothing', async ({ page }) => {
+  test('the keyboard hint sits after the rows, in view for a lower row, and never hides the tally', async ({ page }) => {
     await openShowcase(page);
-    const hint = panel(page).locator('.architect-worker-keyhint'), scroll = panel(page).locator('.architect-panel-scroll');
-    expect(await hint.evaluate(element => !element.closest('.architect-panel-scroll'))).toBe(true);
-    // Hidden, it takes no space; shown, it sits over the tally line, which steps aside.
+    const hint = panel(page).locator('.architect-worker-keyhint');
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    // In the list's trailing space, not over the tally line.
+    expect(await hint.evaluate(element => element.closest('.architect-panel-scroll') !== null && Boolean(document.querySelector('.architect-panel .architect-worker-list')!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
+    // Hidden, it takes no space.
     await expect(hint).toHaveCSS('display', 'none');
     const tallyBox = await panel(page).locator('.architect-panel-tally').boundingBox();
-    const before = await scroll.evaluate(element => ({ height: element.clientHeight, scroll: element.scrollHeight }));
+    const listTop = await panel(page).locator('.architect-worker-list').boundingBox();
     await page.keyboard.press('Shift');
     await compactItem(page, 'styles').locator('.architect-worker-row').focus();
     await page.keyboard.press('End');
     await expect(compactItem(page, 'tests').locator('.architect-worker-row')).toBeFocused();
     await expect(hint).toBeVisible();
     await expect(hint).toBeInViewport();
-    await expect(panel(page).locator('.architect-panel-tally-text')).toHaveCSS('visibility', 'hidden');
-    const hintBox = (await hint.boundingBox())!;
-    expect(hintBox.y).toBeGreaterThanOrEqual(tallyBox!.y - 1);
-    expect(hintBox.y + hintBox.height).toBeLessThanOrEqual(tallyBox!.y + tallyBox!.height + 1);
-    expect(await panel(page).locator('.architect-panel-tally').boundingBox()).toEqual(tallyBox);
-    expect(await scroll.evaluate(element => ({ height: element.clientHeight, scroll: element.scrollHeight }))).toEqual(before);
+    // The tally keeps every count (and "needs you") in view, and nothing above the hint moves.
+    await expect(tally).toHaveCSS('visibility', 'visible');
+    await expect(tally.locator('.architect-tally-asking')).toBeVisible();
+    // (Within a pixel: the panel's open spring may still be settling sub-pixel scale.)
+    const tallyNow = (await panel(page).locator('.architect-panel-tally').boundingBox())!;
+    for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(tallyNow[key] - tallyBox![key])).toBeLessThanOrEqual(1);
+    expect(Math.abs((await panel(page).locator('.architect-worker-list').boundingBox())!.y - listTop!.y)).toBeLessThanOrEqual(1);
+    const lastRow = (await compactItem(page, 'tests').boundingBox())!, hintBox = (await hint.boundingBox())!;
+    expect(hintBox.y).toBeGreaterThanOrEqual(lastRow.y + lastRow.height - 1);
   });
 });

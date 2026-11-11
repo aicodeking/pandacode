@@ -43,13 +43,16 @@ const workerGlyphs: Record<string, string> = {
   completed: `<svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="${disc}M7.3 14.9 9.3 13l2.8 2.7 6.4-7 2 1.9-8.4 9.1Z"/></svg>`,
   failed: `<svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="${disc}M12.6 7.4h2.8v8.8h-2.8ZM14 18.3a1.8 1.8 0 1 0 .001 0Z"/></svg>`,
   idle: `<svg viewBox="0 0 28 28" aria-hidden="true">${ring('2.5 4')}</svg>`,
+  // Finished, not passed (a Council reviewer below target): a muted solid disc with a dash cut out, unlike the
+  // dashed ring of work not yet started and the green check of done.
+  below: `<svg viewBox="0 0 28 28" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="${disc}M8 12.6h12v2.8H8Z"/></svg>`,
   // Stopped: a full ring around a small square, unlike the dashed rings of queued, waiting and idle.
   stopped: `<svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><rect x="10" y="10" width="8" height="8" rx="1.5" fill="currentColor"/></svg>`,
   // A worker that needs the user leads with the same alert mark as the tally's "needs you" and its request.
   alert: icon('alert'),
 };
 /** Each glyph's design-system tone, on the leading icon. Waiting is muted: only a worker that needs the user is `near`. */
-const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'failed', idle: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
+const glyphTones: Record<string, string> = { running: 'team', pending: 'worker-idle', completed: 'ready', failed: 'failed', idle: 'worker-idle', below: 'worker-idle', stopped: 'worker-idle', alert: 'near' };
 /** Who needs the reader first: asking, then failed, working, waiting or queued, stopped, and done last. */
 const workerRank = (worker: TeamWorker, state: string, asking: boolean): number =>
   worker.abandoned ? 6 : asking ? 0 : ({ failed: 1, running: 2, waiting: 3, parked: 3, queued: 3, paused: 4, stopped: 4, completed: 5 } as Record<string, number>)[state] ?? 4;
@@ -451,8 +454,8 @@ export class WorkerList {
     const name = reviewer?.name ?? worker.name;
     // A queue reason ("Waiting for a dependency") already says it is queued: no status word beside it.
     const verb = queueReason && !asking ? '' : word;
-    // A reviewer that finished below target gets no green done check beside its verdict.
-    const glyph = worker.abandoned || scored?.below ? 'idle' : asking ? 'alert' : ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
+    // A reviewer that finished below target gets its own finished-not-passed mark, never the green done check.
+    const glyph = worker.abandoned ? 'idle' : scored?.below ? 'below' : asking ? 'alert' : ['queued', 'waiting', 'parked'].includes(state) ? 'pending' : workerGlyphs[state] ? state : 'idle';
     const model = this.host.modelName(worker), effort = worker.reasoningEffort ? effortLabel(worker.reasoningEffort) : '';
     // The meta line: the model; a queued row's reason instead; a failed row's error (its first line) instead, without
     // the harness logo (nor beside a queue reason), which beside an error would read like its cause. It is cut on one
@@ -471,7 +474,7 @@ export class WorkerList {
       + (verb ? `<span class="architect-worker-state${tone === 'warn' ? ' architect-worker-state-attention' : ''}" title="${escape(fullVerb)}"><span aria-hidden="true">${escape(verb)}</span><span class="sr-only">${escape(fullVerb)}</span></span>`
         : `<span class="architect-worker-state sr-only">${escape(fullVerb)}</span>`)
       + `<span class="architect-worker-elapsed" aria-hidden="true"></span></span>`
-      + `<span class="architect-worker-line architect-worker-meta-line" id="${row.dataset.details}-meta">${reason || queueReason ? '' : `<span class="architect-worker-logo">${providerLogo(worker.provider)}</span>`}<small title="${escape(metaTitle)}"${reason && !showFacts ? ' class="architect-worker-reason"' : ''}>${escape(meta)}</small>`
+      + `<span class="architect-worker-line architect-worker-meta-line" id="${row.dataset.details}-meta">${reason || queueReason ? '' : `<span class="architect-worker-logo">${providerLogo(worker.provider)}</span>`}<small title="${escape(metaTitle)}">${escape(meta)}</small>`
       + (effort ? effortChip(effort, worker.note) : '')
       + (worker.attempt > 1 ? `<span class="architect-worker-chip architect-worker-attempt" title="Attempt ${worker.attempt}"><span aria-hidden="true">×${worker.attempt}</span><span class="sr-only">attempt ${worker.attempt}</span></span>` : '')
       + `</span></span>`;
