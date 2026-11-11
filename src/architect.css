@@ -76,6 +76,8 @@
 .architect-worker-meta > div { display: flex; flex-direction: column; gap: 5px; }
 .architect-worker-meta strong { font-size: var(--text-sm); overflow-wrap: anywhere; }
 .architect-worker-meta small { font-size: var(--text-2xs); color: var(--muted); }
+/* An empty live line (no queue reason, no error) stays for screen readers but takes no space or gap. */
+.architect-worker-meta small[role="status"]:empty { position: absolute; }
 .architect-assignment { font-size: var(--text-xs); color: var(--muted); margin-bottom: 18px; }
 .architect-assignment summary { cursor: pointer; }
 .architect-assignment p { white-space: pre-wrap; line-height: 1.55; overflow-wrap: anywhere; }

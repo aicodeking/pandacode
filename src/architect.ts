@@ -525,7 +525,13 @@ export class ArchitectView {
     if (worker) {
       const meta = panel.querySelector<HTMLElement>('.architect-worker-meta')!;
       const queueReason = workerQueueReason(worker, team.workers, team.config.maxParallel);
-      meta.innerHTML = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape([modelName(worker, this.providers), worker.reasoningEffort ? `${effortLabel(worker.reasoningEffort)}${worker.note ? ' (adjusted)' : ''}` : '', workerWord(worker, workerState(worker, team), this.needsApproval(worker.sessionId), this.needsInput(worker.sessionId)).full, worker.readOnly ? 'Read only' : ''].filter(Boolean).join(' · '))}</small>${queueReason ? `<small class="architect-worker-queue" role="status" data-tip="${escape(queueReason)}">${escape(queueReason)}</small>` : ''}${worker.error ? `<small class="architect-worker-error" role="status">${escape(worker.error)}</small>` : ''}</div>`;
+      const facts = [modelName(worker, this.providers), worker.reasoningEffort ? `${effortLabel(worker.reasoningEffort)}${worker.note ? ' (adjusted)' : ''}` : '', workerWord(worker, workerState(worker, team), this.needsApproval(worker.sessionId), this.needsInput(worker.sessionId)).full, worker.readOnly ? 'Read only' : ''].filter(Boolean).join(' · ');
+      const head = `${providerLogo(worker.provider)}<div class="architect-worker-copy"><strong>${escape(worker.name)}</strong><small>${escape(facts)}</small><small class="architect-worker-queue" role="status"></small><small class="architect-worker-error" role="status"></small></div>`;
+      // The queue reason and error are live: their elements stay and only their text changes, so it is announced.
+      if (meta.dataset.head !== head) { meta.innerHTML = head; meta.dataset.head = head; }
+      const queue = meta.querySelector<HTMLElement>('.architect-worker-queue')!, error = meta.querySelector<HTMLElement>('.architect-worker-error')!;
+      if (queue.textContent !== (queueReason ?? '')) { queue.textContent = queueReason ?? ''; queue.dataset.tip = queueReason ?? ''; }
+      if (error.textContent !== (worker.error ?? '')) error.textContent = worker.error ?? '';
       panel.querySelector<HTMLElement>('.architect-assignment p')!.textContent = worker.assignment;
       panel.querySelector<HTMLElement>('.architect-assignment small')!.textContent = worker.readOnly ? 'Read only · no writes' : worker.files.length ? `Write scope: ${worker.files.join(', ')}` : 'Write scope: shared checkout';
       const checkpoint = panel.querySelector<HTMLDetailsElement>('.architect-worker-checkpoint')!;

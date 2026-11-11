@@ -147,8 +147,10 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
     needsYou: counts.get('needs you') ?? 0, failed: counts.get('failed') ?? 0 };
 }
 /** The effort label. An effort note means the effort was changed from what the lead asked: the label says
- *  "· adjusted" (muted), the note is its title and screen readers hear "adjusted". */
-const effortChip = (effort: string, note?: string | null): string => `<span class="architect-worker-chip architect-worker-effort"${note ? ' data-adjusted' : ''} title="${escape(note ? `Reasoning effort: ${effort}. ${note}` : `Reasoning effort: ${effort}`)}"><span aria-hidden="true">${escape(effort)}${note ? '<span class="architect-worker-adjusted"> · adjusted</span>' : ''}</span><span class="sr-only">reasoning effort ${escape(effort)}${note ? ', adjusted' : ''}</span></span>`;
+ *  "(adjusted)" (muted), the note is its title and screen readers hear "adjusted". */
+const effortChip = (effort: string, note?: string | null): string => `<span class="architect-worker-chip architect-worker-effort"${note ? ' data-adjusted' : ''} title="${escape(note ? `Reasoning effort: ${effort}. ${note}` : `Reasoning effort: ${effort}`)}"><span aria-hidden="true">${escape(effort)}${note ? '<span class="architect-worker-adjusted"> (adjusted)</span>' : ''}</span><span class="sr-only">reasoning effort ${escape(effort)}${note ? ', adjusted' : ''}</span></span>`;
+/** An attempt count: "×2" on screen, "attempt 2" for screen readers. */
+const attemptHtml = (attempt: number): string => `<span aria-hidden="true">×${attempt}</span><span class="sr-only">attempt ${attempt}</span>`;
 /** Sets an attribute only when it changes, so a repaint queues no mutation. */
 const setAttr = (element: Element, name: string, value: string): void => { if (element.getAttribute(name) !== value) element.setAttribute(name, value); };
 /** An approval request, shown whole up to twelve lines; longer ones scroll in a labelled region with a hint. */
@@ -333,7 +335,10 @@ export class WorkerList {
     if (measure.dataset.key === key) return;
     let chosen = tally.variants[0];
     if (width) {
-      const fitting = tally.variants.find(variant => { if (measure.dataset.html !== variant.html) { measure.innerHTML = variant.html; measure.dataset.html = variant.html; } return measure.scrollWidth <= width + 1; });
+      // A strict fit on the drawn (subpixel) widths, against the floored line: a variant even a fraction too wide would
+      // be ellipsized, which hides its "+N more" button. Both boxes share any transform, so the comparison holds mid-spring.
+      const room = Math.floor(tallyText.getBoundingClientRect().width);
+      const fitting = tally.variants.find(variant => { if (measure.dataset.html !== variant.html) { measure.innerHTML = variant.html; measure.dataset.html = variant.html; } return measure.getBoundingClientRect().width <= room; });
       chosen = fitting ?? tally.variants[tally.variants.length - 1];
       measure.dataset.key = key;
     }
@@ -467,18 +472,21 @@ export class WorkerList {
     // attempt) and draws no effort or attempt label after them.
     const open = this.expanded.has(worker.id);
     const reason = state === 'failed' && worker.error ? worker.error.split('\n')[0].trim() : '';
-    const facts = [model, effort ? `${effort}${worker.note ? ', adjusted' : ''}` : '', worker.attempt > 1 ? `attempt ${worker.attempt}` : ''].filter(Boolean).join(' · ');
+    // The same words as the labels: "(adjusted)" and "×2" on screen, "attempt 2" for screen readers and in the title.
+    const factsHead = [model, effort ? `${effort}${worker.note ? ' (adjusted)' : ''}` : ''].filter(Boolean).join(' · ');
+    const facts = [factsHead, worker.attempt > 1 ? `attempt ${worker.attempt}` : ''].filter(Boolean).join(' · ');
     const showFacts = Boolean(reason) && open;
     const meta = showFacts ? facts : reason || queueReason || reviewer?.meta || model;
+    const metaHtml = showFacts && worker.attempt > 1 ? `${escape(factsHead)}${factsHead ? ' · ' : ''}${attemptHtml(worker.attempt)}` : escape(meta);
     const metaTitle = showFacts ? (worker.note ? `${facts}. ${worker.note}` : facts) : reason ? worker.error!.trim() : meta;
     const markup = `<span class="architect-worker-glyph" data-glyph="${glyph}" data-state-tone="${glyphTones[glyph]}">${workerGlyphs[glyph]}</span>`
       + `<span class="architect-worker-copy"><span class="architect-worker-line"><strong title="${escape(name)}">${escape(name)}</strong>`
       + (verb ? `<span class="architect-worker-state${tone === 'warn' ? ' architect-worker-state-attention' : ''}" title="${escape(fullVerb)}"><span aria-hidden="true">${escape(verb)}</span><span class="sr-only">${escape(fullVerb)}</span></span>`
         : `<span class="architect-worker-state sr-only">${escape(fullVerb)}</span>`)
       + `<span class="architect-worker-elapsed" aria-hidden="true"></span></span>`
-      + `<span class="architect-worker-line architect-worker-meta-line" id="${row.dataset.details}-meta">${reason || queueReason ? '' : `<span class="architect-worker-logo">${providerLogo(worker.provider)}</span>`}<small title="${escape(metaTitle)}">${escape(meta)}</small>`
+      + `<span class="architect-worker-line architect-worker-meta-line" id="${row.dataset.details}-meta">${reason || queueReason ? '' : `<span class="architect-worker-logo">${providerLogo(worker.provider)}</span>`}<small title="${escape(metaTitle)}">${metaHtml}</small>`
       + (effort && !showFacts ? effortChip(effort, worker.note) : '')
-      + (worker.attempt > 1 && !showFacts ? `<span class="architect-worker-chip architect-worker-attempt" title="Attempt ${worker.attempt}"><span aria-hidden="true">×${worker.attempt}</span><span class="sr-only">attempt ${worker.attempt}</span></span>` : '')
+      + (worker.attempt > 1 && !showFacts ? `<span class="architect-worker-chip architect-worker-attempt" title="Attempt ${worker.attempt}">${attemptHtml(worker.attempt)}</span>` : '')
       + `</span></span>`;
     if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
     item.toggleAttribute('data-reason', Boolean(reason));

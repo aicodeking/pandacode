@@ -1434,6 +1434,13 @@ test.describe('architect teams', () => {
 /** The tally as drawn, in words: the "needs you" button, each glyph count's title and the "+N" label. */
 const visibleTally = (tally: Locator) => tally.evaluate(element => [...element.children].map(child => child.classList.contains('architect-tally-count') ? child.getAttribute('title')
   : child.classList.contains('architect-tally-more') ? child.getAttribute('aria-label')!.replace(/^Show /, '') : child.textContent));
+/** Waits for the panel's open spring to settle: the tally's box holds still across two frames. */
+const panelSettled = (page: Page) => expect.poll(() => panel(page).locator('.architect-panel-tally').evaluate(element => new Promise(resolve => {
+  const before = JSON.stringify(element.getBoundingClientRect());
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve(before === JSON.stringify(element.getBoundingClientRect()))));
+}))).toBe(true);
+/** An element's text as drawn: screen-reader-only text left out. */
+const drawnText = (locator: Locator) => locator.evaluate(element => { const copy = element.cloneNode(true) as HTMLElement; copy.querySelectorAll('.sr-only').forEach(node => node.remove()); return copy.textContent!.trim(); });
 const tallySum = (parts: (string | null)[]) => parts.reduce((sum, part) => sum + Number(/^\d+/.exec(part ?? '')?.[0] ?? 0), 0);
 /** A row's full status, as screen readers hear it (Working and Done have no visible word). */
 const statusOf = (row: Locator) => row.locator('.architect-worker-state.sr-only, .architect-worker-state > .sr-only');
@@ -2056,7 +2063,7 @@ test.describe('compact workers round 14', () => {
     await expect(adjusted.locator('.sr-only')).toHaveText('reasoning effort medium, adjusted');
     // On a failed row the reason wins the space: the effort label is off screen (kept for screen readers) and the
     // title and details say it instead. Rows that did not fail say it in words (round 18).
-    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('medium · adjusted');
+    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('medium (adjusted)');
     expect(await adjusted.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
     const plain = compactItem(page, 'search').locator('.architect-worker-effort');
     await expect(plain).not.toHaveAttribute('data-adjusted');
@@ -2064,6 +2071,8 @@ test.describe('compact workers round 14', () => {
   });
   test('tally buttons are at least 24px tall, and the progress bar is legible', async ({ page }) => {
     await openShowcase(page);
+    // Measured once the panel's open spring has settled (it scales the bar while it runs).
+    await panelSettled(page);
     const tally = panel(page).locator('.architect-panel-tally-text');
     for (const button of [tally.locator('.architect-tally-asking'), tally.locator('.architect-tally-more')]) {
       await expect(button).toBeVisible();
@@ -2104,7 +2113,9 @@ test.describe('compact workers round 17', () => {
     expect(visible).toBeGreaterThanOrEqual(30);
     // Open, the meta line trades the cut reason (now whole in the details) for the model, effort and attempt.
     await compactItem(page, 'index').locator('.architect-worker-expand').click();
-    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line small')).toHaveText(/^Claude Sonnet .* · medium, adjusted · attempt 2$/);
+    // The same words as the closed row's labels: "(adjusted)" and "×2", with "attempt 2" for screen readers.
+    await expect.poll(() => drawnText(compactItem(page, 'index').locator('.architect-worker-meta-line small'))).toMatch(/^Claude Sonnet .* · medium \(adjusted\) · ×2$/);
+    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line small .sr-only')).toHaveText('attempt 2');
     await expect(compactItem(page, 'index').locator('.architect-worker-more .architect-worker-error')).toContainText('The sample build step failed');
     // The facts already say the effort and attempt: no labels repeat them after the meta.
     await expect(compactItem(page, 'index').locator('.architect-worker-meta-line :is(.architect-worker-effort, .architect-worker-attempt)')).toHaveCount(0);
@@ -2146,7 +2157,7 @@ test.describe('compact workers round 18', () => {
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running', note: 'Asked for x-high; this model ran at high.' })] }) });
     await openWorkers(page).click();
     const adjusted = row(page, 'build').locator('.architect-worker-effort');
-    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('high · adjusted');
+    await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('high (adjusted)');
     await expect(row(page, 'build')).toHaveAccessibleDescription(/reasoning effort high, adjusted/);
   });
 });
@@ -2265,12 +2276,10 @@ test.describe('compact workers round 23', () => {
     // not repeated in the details.
     const metaLine = failed.locator('.architect-worker-meta-line small');
     await expect(metaLine).toBeVisible();
-    await expect(metaLine).toHaveText(/^Claude Sonnet .* · medium, adjusted · attempt 2$/);
     // The whole meta line, as drawn: the effort once, the attempt not cut.
-    const wholeMeta = failed.locator('.architect-worker-meta-line');
-    expect(await wholeMeta.evaluate(element => (element as HTMLElement).innerText.trim())).toMatch(/^Claude Sonnet [^·]* · medium, adjusted · attempt 2$/);
+    await expect.poll(() => drawnText(failed.locator('.architect-worker-meta-line'))).toMatch(/^Claude Sonnet [^·]* · medium \(adjusted\) · ×2$/);
     expect(await metaLine.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    await expect(metaLine).toHaveAttribute('title', /^Claude Sonnet .* · medium, adjusted · attempt 2\. Asked for high effort; this model ran at medium\.$/);
+    await expect(metaLine).toHaveAttribute('title', /^Claude Sonnet .* · medium \(adjusted\) · attempt 2\. Asked for high effort; this model ran at medium\.$/);
     await expect(failed.locator('.architect-worker-more .architect-worker-more-model')).toHaveCount(0);
     await expect(failed.locator('.architect-worker-more .architect-worker-error')).toBeVisible();
     // Folded again, the reason returns.
@@ -2285,14 +2294,20 @@ test.describe('compact workers round 23', () => {
   });
   test('a narrow tally never cuts its "+N more" button', async ({ page }) => {
     await openShowcase(page);
+    await panelSettled(page);
+    const tally = panel(page).locator('.architect-panel-tally-text');
+    // Swept across widths (300, 376, 436 and 515px once cut it): whenever the button is there it is whole, and the
+    // line is never ellipsized.
+    for (let width = 250; width <= 520; width += 2) {
+      await page.evaluate(px => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${px}px`; }, width);
+      await expect.poll(() => tally.evaluate(element => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+        const button = element.querySelector('.architect-tally-more')?.getBoundingClientRect(), box = element.getBoundingClientRect();
+        resolve(element.scrollWidth <= element.clientWidth && (!button || (button.width > 0 && button.left >= box.left && button.right <= box.right)));
+      })))), { message: `width ${width}px` }).toBe(true);
+      expect(tallySum(await visibleTally(tally)), `width ${width}px`).toBe(6);
+    }
     await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
-    const tally = panel(page).locator('.architect-panel-tally-text'), more = tally.locator('.architect-tally-more');
-    await expect(more).toBeVisible();
-    await expect.poll(() => tally.evaluate(element => {
-      const button = element.querySelector('.architect-tally-more')!.getBoundingClientRect(), box = element.getBoundingClientRect();
-      return button.right <= box.right + 1 && element.scrollWidth <= element.clientWidth + 1;
-    })).toBe(true);
-    expect(tallySum(await visibleTally(tally))).toBe(6);
+    await expect(tally.locator('.architect-tally-more')).toBeVisible();
   });
   test('the keyboard hint sits after the rows, in view for a lower row, and never hides the tally', async ({ page }) => {
     await openShowcase(page);
@@ -2302,11 +2317,8 @@ test.describe('compact workers round 23', () => {
     expect(await hint.evaluate(element => element.closest('.architect-panel-scroll') !== null && Boolean(document.querySelector('.architect-panel .architect-worker-list')!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     // Hidden, it takes no space.
     await expect(hint).toHaveCSS('display', 'none');
-    // Measure once the panel's open spring has settled: the tally's box holds still across two frames.
-    await expect.poll(() => panel(page).locator('.architect-panel-tally').evaluate(element => new Promise(resolve => {
-      const before = JSON.stringify(element.getBoundingClientRect());
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve(before === JSON.stringify(element.getBoundingClientRect()))));
-    }))).toBe(true);
+    // Measure once the panel's open spring has settled.
+    await panelSettled(page);
     const tallyBox = await panel(page).locator('.architect-panel-tally').boundingBox();
     const listTop = await panel(page).locator('.architect-worker-list').boundingBox();
     await page.keyboard.press('Shift');
