@@ -1529,7 +1529,8 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'failed');
   for (const count of await tally.locator('.architect-tally-count').all()) expect(await count.textContent()).toBe(await count.getAttribute('title'));
   const shown = await visibleTally(tally);
-  expect(shown.slice(0, 3)).toEqual(['1 needs you', '1 failed', '1 working']);
+  // "done" outlasts "working" and the minor buckets.
+  expect(shown.slice(0, 3)).toEqual(['1 needs you', '1 failed', '1 done']);
   expect(tallySum(shown)).toBe(6);
   if (shown.length < 6) expect(shown.at(-1)).toMatch(/^\d+ more: /);
   await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 failed · 1 working · 1 queued · 1 stopped · 1 done');
@@ -2051,11 +2052,10 @@ test.describe('compact workers round 14', () => {
     await expect(adjusted).toHaveAttribute('data-adjusted', '');
     await expect(adjusted).toHaveAttribute('title', 'Reasoning effort: medium. Asked for high effort; this model ran at medium.');
     await expect(adjusted.locator('.sr-only')).toHaveText('reasoning effort medium, adjusted');
-    // On a failed row the reason wins the space: the effort stays as a muted marker, its "adjusted" is off screen
-    // (kept for screen readers) and the details say it instead. Rows that did not fail say it in words (round 18).
+    // On a failed row the reason wins the space: the effort label is off screen (kept for screen readers) and the
+    // title and details say it instead. Rows that did not fail say it in words (round 18).
     await expect(adjusted.locator('[aria-hidden="true"]')).toHaveText('medium · adjusted');
-    expect(await adjusted.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(1);
-    expect(await adjusted.locator('.architect-worker-adjusted').evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
+    expect(await adjusted.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
     const plain = compactItem(page, 'search').locator('.architect-worker-effort');
     await expect(plain).not.toHaveAttribute('data-adjusted');
     await expect(plain.locator('.sr-only')).toHaveText('reasoning effort high');
@@ -2089,13 +2089,8 @@ test.describe('compact workers round 17', () => {
     expect(lines).toBe(1);
     expect(await compactItem(page, 'index').locator('.architect-worker-row').evaluate(row => row.getBoundingClientRect().height)).toBeLessThanOrEqual(38);
     await expect(compactItem(page, 'index').locator('.architect-worker-meta-line .architect-worker-logo')).toHaveCount(0);
-    // The attempt label is off screen; the effort stays as a muted marker (without "adjusted").
-    expect(await compactItem(page, 'index').locator('.architect-worker-meta-line .architect-worker-attempt').evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
-    const effort = compactItem(page, 'index').locator('.architect-worker-meta-line .architect-worker-effort');
-    await expect(effort).toBeVisible();
-    expect(await effort.evaluate(element => element.getBoundingClientRect().width)).toBeGreaterThan(1);
-    expect(await effort.locator('.architect-worker-adjusted').evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
-    expect(await effort.evaluate(element => getComputedStyle(element).color)).toBe(await compactItem(page, 'index').locator('.architect-worker-meta-line small').evaluate(element => getComputedStyle(element).color));
+    // The attempt and effort labels are off screen: a bare effort word after the error would read like a severity.
+    for (const label of ['attempt', 'effort']) expect(await compactItem(page, 'index').locator(`.architect-worker-meta-line .architect-worker-${label}`).evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(1);
     await expect(compactItem(page, 'index').locator('.architect-worker-row')).toHaveAttribute('title', /Effort: medium \(adjusted\) · Attempt 2$/);
     // Meaningful text shows: at least 30 characters are visible.
     const visible = await reason.evaluate(element => {
@@ -2109,7 +2104,8 @@ test.describe('compact workers round 17', () => {
     await compactItem(page, 'index').locator('.architect-worker-expand').click();
     await expect(compactItem(page, 'index').locator('.architect-worker-meta-line small')).toHaveText(/^Claude Sonnet .* · medium, adjusted · attempt 2$/);
     await expect(compactItem(page, 'index').locator('.architect-worker-more .architect-worker-error')).toContainText('The sample build step failed');
-    await expect(compactItem(page, 'index').locator('.architect-worker-effort .sr-only')).toHaveText('reasoning effort medium, adjusted');
+    // The facts already say the effort and attempt: no labels repeat them after the meta.
+    await expect(compactItem(page, 'index').locator('.architect-worker-meta-line :is(.architect-worker-effort, .architect-worker-attempt)')).toHaveCount(0);
     // Rows that did not fail keep the words.
     await expect(compactItem(page, 'styles').locator('.architect-worker-effort [aria-hidden="true"]')).toHaveText('x-high');
   });
@@ -2233,6 +2229,8 @@ test.describe('compact workers round 23', () => {
     await openWorkers(page).click();
     const glyph = (id: string) => compactItem(page, id).locator('.architect-worker-glyph');
     await expect(compactItem(page, 'low').locator('.architect-worker-state:not(.sr-only) > [aria-hidden="true"]')).toHaveText('Below');
+    // A verdict, not a request: muted and regular, unlike the needs-you words.
+    await expect(compactItem(page, 'low').locator('.architect-worker-state:not(.sr-only)')).not.toHaveClass(/architect-worker-state-attention/);
     await expect(glyph('low')).toHaveAttribute('data-glyph', 'below');
     await expect(glyph('low')).toHaveAttribute('data-state-tone', 'worker-idle');
     await expect(glyph('high')).toHaveAttribute('data-glyph', 'completed');
@@ -2266,6 +2264,10 @@ test.describe('compact workers round 23', () => {
     const metaLine = failed.locator('.architect-worker-meta-line small');
     await expect(metaLine).toBeVisible();
     await expect(metaLine).toHaveText(/^Claude Sonnet .* · medium, adjusted · attempt 2$/);
+    // The whole meta line, as drawn: the effort once, the attempt not cut.
+    const wholeMeta = failed.locator('.architect-worker-meta-line');
+    expect(await wholeMeta.evaluate(element => (element as HTMLElement).innerText.trim())).toMatch(/^Claude Sonnet [^·]* · medium, adjusted · attempt 2$/);
+    expect(await metaLine.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await expect(metaLine).toHaveAttribute('title', /^Claude Sonnet .* · medium, adjusted · attempt 2\. Asked for high effort; this model ran at medium\.$/);
     await expect(failed.locator('.architect-worker-more .architect-worker-more-model')).toHaveCount(0);
     await expect(failed.locator('.architect-worker-more .architect-worker-error')).toBeVisible();
@@ -2298,6 +2300,11 @@ test.describe('compact workers round 23', () => {
     expect(await hint.evaluate(element => element.closest('.architect-panel-scroll') !== null && Boolean(document.querySelector('.architect-panel .architect-worker-list')!.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
     // Hidden, it takes no space.
     await expect(hint).toHaveCSS('display', 'none');
+    // Measure once the panel's open spring has settled: the tally's box holds still across two frames.
+    await expect.poll(() => panel(page).locator('.architect-panel-tally').evaluate(element => new Promise(resolve => {
+      const before = JSON.stringify(element.getBoundingClientRect());
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(before === JSON.stringify(element.getBoundingClientRect()))));
+    }))).toBe(true);
     const tallyBox = await panel(page).locator('.architect-panel-tally').boundingBox();
     const listTop = await panel(page).locator('.architect-worker-list').boundingBox();
     await page.keyboard.press('Shift');
@@ -2309,7 +2316,6 @@ test.describe('compact workers round 23', () => {
     // The tally keeps every count (and "needs you") in view, and nothing above the hint moves.
     await expect(tally).toHaveCSS('visibility', 'visible');
     await expect(tally.locator('.architect-tally-asking')).toBeVisible();
-    // (Within a pixel: the panel's open spring may still be settling sub-pixel scale.)
     const tallyNow = (await panel(page).locator('.architect-panel-tally').boundingBox())!;
     for (const key of ['x', 'y', 'width', 'height'] as const) expect(Math.abs(tallyNow[key] - tallyBox![key])).toBeLessThanOrEqual(1);
     expect(Math.abs((await panel(page).locator('.architect-worker-list').boundingBox())!.y - listTop!.y)).toBeLessThanOrEqual(1);

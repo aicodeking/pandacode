@@ -254,9 +254,9 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-more-text:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .architect-worker-more p.architect-worker-scroll-hint { margin-top: 2px; color: var(--muted); font-size: var(--ds-text-chip); }
 .architect-worker-scroll-hint[hidden] { display: none; }
-/* A failed row's reason wins the space: its attempt label and "adjusted" mark are hidden on screen but kept for screen
-   readers (the row's description reads the meta line), and shown in its title and details. The effort stays, muted. */
-.architect-worker-item[data-reason] .architect-worker-meta-line :is(.architect-worker-attempt, .architect-worker-adjusted) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* A failed row's reason wins the space: its effort and attempt labels are hidden on screen but kept for screen
+   readers (the row's description reads the meta line), and shown in its title and details. */
+.architect-worker-item[data-reason] .architect-worker-meta-line :is(.architect-worker-attempt, .architect-worker-effort) { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 /* The meta line is one tone (--muted): model or reason, effort, attempt; state tones stay on the leading icon. */
 /* Keyboard users see the row keys while a row has keyboard focus (not for pointer focus): one quiet line in the
    list's trailing space, so the tally keeps every count in view. Hidden, it takes no space; shown, it only adds a line

@@ -98,7 +98,7 @@ export function reviewerRow(worker: TeamWorker, team: TeamSnapshot): ReviewerRow
   const verdict = seatVerdict(team, worker as TeamWorker & { council: NonNullable<TeamWorker['council']> });
   const below = verdict?.tone === 'below';
   const meta = [`Round ${council.round}`, typeof council.score === 'number' ? `scored ${formatScore(council.score)}` : '', worker.createdAt < (team.councilSince ?? 0) ? 'earlier council' : ''].filter(Boolean).join(' · ');
-  return { name: council.lens.trim() || worker.name, verb: verdict ? verdict.tone === 'at' ? 'At target' : below ? 'Below' : 'Scored' : '', full: verdict?.text ?? '', tone: below ? 'warn' : '', below, meta };
+  return { name: council.lens.trim() || worker.name, verb: verdict ? verdict.tone === 'at' ? 'At target' : below ? 'Below' : 'Scored' : '', full: verdict?.text ?? '', tone: '', below, meta };
 }
 /** The rows' own order: needs you, failed, working, waiting or queued, paused or stopped, done, skipped. */
 const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'paused', 'stopped', 'done', 'skipped', 'idle'];
@@ -106,8 +106,8 @@ const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'pau
 const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle']);
 /** Each bucket's glyph and tone in the tally: the same marks the rows lead with. */
 const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'failed'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
-/** Then these, last-first, when the line still does not fit. */
-const TALLY_DROP = ['done', 'paused', 'waiting', 'working', 'failed'];
+/** Then these, first-first, when the line still does not fit: "done" (reassuring progress) outlasts the rest but "failed". */
+const TALLY_DROP = ['paused', 'waiting', 'working', 'done', 'failed'];
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
  *  full line, a short one without the minor buckets, and the share of settled workers. Empty buckets are left out. */
 export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; settled: number; total: number; needsYou: number; failed: number } {
@@ -129,7 +129,7 @@ export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) =>
       return `<span class="architect-tally-count" title="${escape(text)}" aria-hidden="true"><span class="architect-tally-glyph" data-state-tone="${tone}">${workerGlyphs[glyph]}</span>${escape(text)}</span>`;
     }), ...more ? [`<button type="button" class="architect-tally-more" aria-expanded="false" aria-controls="architect-tally-hidden" aria-label="${escape(`Show ${more} more: ${names}`)}" title="${escape(names)}">+${more} more</button>`] : []].join('');
   };
-  // Ever shorter lines for a narrow panel: the minor buckets go first, then the rest, last-first, "failed" last of
+  // Ever shorter lines for a narrow panel: the minor buckets go first, then TALLY_DROP in order, "failed" last of
   // all; "needs you" always stays. Each drop is counted in "+N more", which is never cut.
   const variants = [{ text: parts.map(([, text]) => text).join(' · '), html: html(parts, []), hidden: '' }];
   const order = [...TALLY_MINOR, ...TALLY_DROP];
@@ -460,9 +460,10 @@ export class WorkerList {
     // The meta line: the model; a queued row's reason instead; a failed row's error (its first line) instead, without
     // the harness logo (nor beside a queue reason), which beside an error would read like its cause. It is cut on one
     // line (whole in the title and details). The effort and attempt labels follow it and are never cut, except on a
-    // failed row, where the reason wins the space: its attempt (and "adjusted") are hidden there on screen (still in its
-    // description and title); its effort stays as a muted marker.
-    // Open, a failed row's full error is right below, so its meta line shows the facts instead: model · effort · attempt.
+    // failed row, where the reason wins the space: its effort and attempt are hidden there on screen (still in its
+    // description and title; a bare effort word after an error would read like a severity).
+    // Open, a failed row's full error is right below, so its meta line shows the facts instead (model · effort ·
+    // attempt) and draws no effort or attempt label after them.
     const open = this.expanded.has(worker.id);
     const reason = state === 'failed' && worker.error ? worker.error.split('\n')[0].trim() : '';
     const facts = [model, effort ? `${effort}${worker.note ? ', adjusted' : ''}` : '', worker.attempt > 1 ? `attempt ${worker.attempt}` : ''].filter(Boolean).join(' · ');
@@ -475,8 +476,8 @@ export class WorkerList {
         : `<span class="architect-worker-state sr-only">${escape(fullVerb)}</span>`)
       + `<span class="architect-worker-elapsed" aria-hidden="true"></span></span>`
       + `<span class="architect-worker-line architect-worker-meta-line" id="${row.dataset.details}-meta">${reason || queueReason ? '' : `<span class="architect-worker-logo">${providerLogo(worker.provider)}</span>`}<small title="${escape(metaTitle)}">${escape(meta)}</small>`
-      + (effort ? effortChip(effort, worker.note) : '')
-      + (worker.attempt > 1 ? `<span class="architect-worker-chip architect-worker-attempt" title="Attempt ${worker.attempt}"><span aria-hidden="true">×${worker.attempt}</span><span class="sr-only">attempt ${worker.attempt}</span></span>` : '')
+      + (effort && !showFacts ? effortChip(effort, worker.note) : '')
+      + (worker.attempt > 1 && !showFacts ? `<span class="architect-worker-chip architect-worker-attempt" title="Attempt ${worker.attempt}"><span aria-hidden="true">×${worker.attempt}</span><span class="sr-only">attempt ${worker.attempt}</span></span>` : '')
       + `</span></span>`;
     if (row.dataset.painted !== markup) { row.innerHTML = markup; row.dataset.painted = markup; }
     item.toggleAttribute('data-reason', Boolean(reason));
