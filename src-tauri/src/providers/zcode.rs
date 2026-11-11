@@ -215,15 +215,37 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
             .as_str()
             .filter(|level| efforts.iter().any(|effort| effort.id.as_str() == *level))
             .map(str::to_owned);
+        let input = &entry["properties"]["inputFormat"];
+        let disabled_reason = entry["disabledReason"]
+            .as_str()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .map(|reason| model_text(Some(reason), "", 200))
+            .filter(|reason| !reason.is_empty());
+        let description = {
+            let provider = model_text(entry["providerLabel"].as_str(), "", 200);
+            let extra = model_text(entry["description"].as_str(), "", 200);
+            match (provider.is_empty(), extra.is_empty()) {
+                (true, true) => String::new(),
+                (false, true) => provider,
+                (true, false) => extra,
+                (false, false) => format!("{provider}: {extra}"),
+            }
+        };
         models.push(ModelInfo {
             name: model_text(entry["label"].as_str(), &label, 160),
-            description: model_text(entry["providerLabel"].as_str(), "", 200),
+            description,
             id: label,
             reasoning_efforts: efforts,
             default_reasoning_effort,
             context_window: entry["contextWindow"]
                 .as_u64()
                 .filter(|n| *n > 0 && *n <= 1_000_000_000),
+            image_input: input["supportsImage"] == true,
+            max_output_tokens: entry["maxOutputTokens"]
+                .as_u64()
+                .filter(|n| *n > 0 && *n <= 1_000_000_000),
+            disabled_reason,
         });
     }
     Ok(models)
@@ -613,14 +635,18 @@ impl Protocol {
     /// Writes the prompt (or a steered next turn) as `session/send`.
     pub(super) fn zcode_prompt(&mut self, text: String, step: &mut Step) {
         self.zcode.next_input += 1;
+        let mut params = json!({
+            "sessionId": self.remote_id,
+            "content": text,
+            "inputId": format!("pandacode-{}", self.zcode.next_input),
+        });
+        if !self.image_blocks.is_empty() {
+            params["attachments"] = json!(std::mem::take(&mut self.image_blocks));
+        }
         step.write.push(json!({
             "id": FIRST_PROMPT_ID - 1 + self.zcode.next_input,
             "method": "session/send",
-            "params": {
-                "sessionId": self.remote_id,
-                "content": text,
-                "inputId": format!("pandacode-{}", self.zcode.next_input),
-            },
+            "params": params,
         }));
         self.phase = 1;
     }
@@ -1114,9 +1140,73 @@ mod tests {
             ["low", "high", "max"]
         );
         assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("max"));
+        assert!(!models[1].image_input);
+        assert_eq!(models[1].max_output_tokens, Some(131072));
         let mut broken = snapshot();
         broken["settings"]["model"] = json!("not-a-catalog");
         assert!(parse_models(&broken).is_err());
+    }
+
+    #[test]
+    fn parse_models_reads_input_capabilities_and_disabled_reason() {
+        let mut catalog = snapshot();
+        catalog["settings"]["model"]["available"] = json!([
+            {
+                "ref": {"providerId": "zai", "modelId": "GLM-5.3-Flash"},
+                "label": "GLM-5.3-Flash", "providerLabel": "Z.AI",
+                "description": "Multimodal Flash",
+                "contextWindow": 200000, "maxOutputTokens": 8192,
+                "reasoning": {"levels": [{"value": "low"}], "defaultLevel": "low"},
+                "properties": {"inputFormat": {
+                    "supportsText": true, "supportsImage": true,
+                    "supportsVideo": false, "supportsAudio": false, "supportsPdf": true
+                }},
+            },
+            {
+                "ref": {"providerId": "zai", "modelId": "GLM-5.3"},
+                "label": "GLM-5.3", "providerLabel": "Z.AI",
+                "contextWindow": 200000, "maxOutputTokens": 131072,
+                "reasoning": {"levels": [{"value": "max"}], "defaultLevel": "max"},
+                "properties": {"inputFormat": {
+                    "supportsText": true, "supportsImage": false,
+                    "supportsVideo": false, "supportsAudio": false, "supportsPdf": false
+                }},
+                "disabledReason": "Plan does not include this model",
+            },
+        ]);
+        let models = parse_models(&catalog).unwrap();
+        let flash = models.iter().find(|model| model.id == "GLM-5.3-Flash").unwrap();
+        assert!(flash.image_input);
+        assert_eq!(flash.max_output_tokens, Some(8192));
+        assert_eq!(flash.description, "Z.AI: Multimodal Flash");
+        assert_eq!(flash.disabled_reason, None);
+        let glm = models.iter().find(|model| model.id == "GLM-5.3").unwrap();
+        assert!(!glm.image_input);
+        assert_eq!(glm.disabled_reason.as_deref(), Some("Plan does not include this model"));
+    }
+
+    #[test]
+    fn session_send_carries_image_attachments() {
+        let (mut p, _) = created();
+        p.image_blocks = vec![json!({
+            "kind": "image", "filename": "capture.png",
+            "mimeType": "image/png", "dataBase64": "AAAA",
+        })];
+        let first = subscribe_acked(&mut p);
+        assert_eq!(first.write[0]["method"], "session/send");
+        assert_eq!(first.write[0]["params"]["attachments"][0]["kind"], "image");
+        assert_eq!(first.write[0]["params"]["attachments"][0]["mimeType"], "image/png");
+        assert_eq!(first.write[0]["params"]["attachments"][0]["dataBase64"], "AAAA");
+        assert!(p.image_blocks.is_empty(), "attachments are consumed with the send");
+        let (tx, _reply) = tokio::sync::oneshot::channel();
+        p.steer("steer-1".into(), "and then".into(), tx);
+        let turn = p
+            .receive(event("turn.completed", json!({"resultType": "success", "inputId": "pandacode-1"})))
+            .unwrap();
+        assert!(
+            turn.write[0]["params"].get("attachments").is_none(),
+            "a later send does not replay the captures",
+        );
     }
 
     #[tokio::test]

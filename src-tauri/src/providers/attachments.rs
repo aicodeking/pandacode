@@ -60,6 +60,16 @@ pub(super) async fn load(provider: &str, paths: &[PathBuf]) -> Result<Vec<Value>
             "kimi" | "opencode" | "kilo" | "antigravity" | "grok" | "pi" | "deepseek" | "commandcode" | "omp" | "github-copilot" | "devin" | "hermes" => {
                 json!({"type":"image","mimeType":"image/png","data":STANDARD.encode(&bytes)})
             }
+            // session/send attachments: array of objects. kind/filename/mimeType/dataBase64
+            // is the image branch of TSr (web-remote replay); the app-server schema is
+            // record<string, unknown>, so this shape is accepted and is what a live
+            // image-capable model understands.
+            "zcode" => json!({
+                "kind": "image",
+                "filename": path.file_name().and_then(|name| name.to_str()).unwrap_or("capture.png"),
+                "mimeType": "image/png",
+                "dataBase64": STANDARD.encode(&bytes),
+            }),
             // MSP TurnInputPart (`muse schema generate-ts`): an inline base64 image part.
             "muse" => json!({"type":"image","mediaType":"image/png","base64Data":STANDARD.encode(&bytes)}),
             _ => return Err("This provider does not support screenshot attachments".into()),
@@ -120,6 +130,14 @@ mod tests {
         assert_eq!(kimi[0]["mimeType"], "image/png");
         assert_eq!(
             STANDARD.decode(kimi[0]["data"].as_str().unwrap()).unwrap(),
+            png
+        );
+        let zcode = load("zcode", &paths).await.unwrap();
+        assert_eq!(zcode[0]["kind"], "image");
+        assert_eq!(zcode[0]["mimeType"], "image/png");
+        assert_eq!(zcode[0]["filename"], file.0.file_name().unwrap().to_str().unwrap());
+        assert_eq!(
+            STANDARD.decode(zcode[0]["dataBase64"].as_str().unwrap()).unwrap(),
             png
         );
     }

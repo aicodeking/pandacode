@@ -126,6 +126,7 @@ fn parse(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
             reasoning_efforts: efforts,
             default_reasoning_effort,
             context_window,
+            ..ModelInfo::default()
         });
     }
     Ok(models)

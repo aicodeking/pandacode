@@ -1034,8 +1034,13 @@ across turns.
 the `session/event` stream; a busy session queues a second message server-side, so
 steering holds for the next turn.
 
-**Not yet.** Screenshots are refused (the composer offers documents and folders
-with a note); interactive questions (`interaction/requestUserInput`) decline with a
+**Images.** Image input is per model (`properties.inputFormat.supportsImage` on
+the catalog entry). GLM-5.3-Flash reports it; GLM-5.3 does not. The composer
+refuses images on a text-only model with a note, and `session/send` carries
+accepted captures as `attachments` (`kind: image`, PNG `dataBase64`). Disabled
+catalog entries stay in the picker, greyed out, with their `disabledReason`.
+
+**Not yet.** Interactive questions (`interaction/requestUserInput`) decline with a
 note so the turn continues; slash-command discovery and the harness console are not
 offered. The protocol is ZCode's private surface and evolves with the CLI — frames
 are parsed defensively (unknown events ignored, unknown reverse requests answered
@@ -1058,8 +1063,9 @@ source; builtins include `/goal` and `/compact`), `todos` and a `projection`
 (live context use against the window, pending permissions, active tool calls).
 Catalog entries carry `description`, `maxOutputTokens`, a `disabledReason` and
 `properties.inputFormat` (`supportsText`/`supportsImage`/`supportsVideo`/
-`supportsAudio`/`supportsPdf`); image support is per model (GLM-5.3-Flash
-reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
+`supportsAudio`/`supportsPdf`); PandaCode reads only `supportsImage` from it
+(`supportsPdf` is not consumed — there is no PDF input). Image support is per
+model (GLM-5.3-Flash reports it, GLM-5.3 does not). The entry schema is strict and has no speed or
 service-tier field: the GLM Coding Plan sells speed per plan, never per model, so there is no
 ZCode equivalent of Codex's per-model speed tiers to select. `session/create`
 also accepts `mcpServers` (stdio or http/sse entries), `additionalDirectories`
