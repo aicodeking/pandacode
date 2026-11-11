@@ -54,6 +54,39 @@ async function atCaret(input: Locator, text: string, caret: number): Promise<voi
   }, caret);
 }
 
+/** Count the one layout read the mention token costs, on the fixture node alone: `token()` asks the draft for its line
+ * boxes (`getClientRects`) before it decides anything. The property is shadowed on that single node, so no other element
+ * and no `fill`/`click` actionability check is counted — the two tests below drive the draft with raw key events and
+ * in-page event dispatches for exactly that reason. */
+async function countMeasurements(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const read = (window as any).__mentions, node = document.querySelector<HTMLTextAreaElement>('#mention-fixture')!;
+    const rects = node.getClientRects.bind(node);
+    read.measurements = 0;
+    node.getClientRects = () => { read.measurements++; return rects(); };
+  });
+}
+const measured = (page: Page): Promise<number> => page.evaluate(() => (window as any).__mentions.measurements as number);
+/** Count what a render writes — the list's busy flag and the draft's active descendant — so "the other events of a
+ * keystroke cost a comparison, not a render" is observable without a hook in the module. */
+async function countRenders(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const read = (window as any).__mentions, observer = new MutationObserver(records => { read.renders += records.length; });
+    read.renders = 0;
+    observer.observe(document.querySelector('#mention-fixture')!, { attributes: true, attributeFilter: ['aria-activedescendant'] });
+    observer.observe(document.querySelector('.file-mention-list')!, { attributes: true, attributeFilter: ['aria-busy'] });
+    read.observer = observer;
+  });
+}
+/** Renders since the last call, including records still queued for the observer's callback. */
+const renders = (page: Page): Promise<number> => page.evaluate(() => {
+  const read = (window as any).__mentions;
+  read.renders += read.observer.takeRecords().length;
+  const total = read.renders;
+  read.renders = 0;
+  return total;
+});
+
 test('file mentions insert inline with Enter and Tab, preserve the suffix, and never submit the draft', async ({ page }) => {
   await setup(page);
   const original = await draft(page).elementHandle();
@@ -115,6 +148,69 @@ test('file mentions ignore emails and composition and keep Escape dismissed unti
   await expect(menu(page).getByRole('option')).toHaveCount(2);
   await draft(page).dispatchEvent('keydown', { key: 'Enter', ctrlKey: true });
   expect((await state(page)).selected).toHaveLength(0);
+});
+
+test('a draft with no @ never opens the picker and never measures its line boxes', async ({ page }) => {
+  await setup(page);
+  await countMeasurements(page);
+  // Raw key events against the focused draft (never a locator action), so the counter holds the product's own measurement
+  // and nothing else. Each keystroke reaches `refresh()` three times — input, keyup and selectionchange — and the `@` gate
+  // in `token()` is ahead of all three, before the draft's line boxes are asked for.
+  const message = 'A plain message about the index and the composer, with not one file reference anywhere in it.';
+  await page.keyboard.type(message, { delay: 4 });
+  await page.keyboard.press('End');
+  await page.evaluate(() => document.dispatchEvent(new Event('selectionchange')));
+  await expect(draft(page)).toHaveValue(message);
+  await expect(menu(page)).toHaveCount(0);
+  await expect(draft(page)).not.toHaveAttribute('role', 'combobox');
+  await expect(draft(page)).not.toHaveAttribute('aria-controls');
+  expect((await state(page)).calls, 'no search without an @').toEqual([]);
+  expect(await measured(page), 'no line-box measurement for a draft with no @').toBe(0);
+  // The same keystrokes behind an @ do both, so the zero above is the gate and not a dead counter.
+  await page.keyboard.type(' @src/ma', { delay: 10 });
+  await expect(menu(page).getByRole('option')).toHaveCount(2);
+  expect(await measured(page), 'the measurement behind the gate is live').toBeGreaterThan(0);
+});
+
+test('one keystroke renders the picker once, and a dismissed mention reopens only when the caret text changes', async ({ page }) => {
+  await setup(page);
+  await draft(page).fill('Read @src/ma');
+  await expect(menu(page).getByRole('option')).toHaveCount(2);
+  await countRenders(page);
+  await page.waitForTimeout(250);   // the 110 ms debounce and its render are done
+  await renders(page);              // and so is whatever the open animation wrote
+  await page.keyboard.type('i', { delay: 0 });
+  await expect(menu(page).getByRole('option')).toHaveCount(2);
+  await page.waitForTimeout(250);
+  expect(await renders(page), 'a keystroke renders the picker').toBeGreaterThan(0);
+  // The same text and caret reached again by the keystroke's other events: a snapshot comparison, no token scan, no render.
+  const before = (await state(page)).calls.length;
+  await page.evaluate(() => {
+    const node = document.querySelector('#mention-fixture')!;
+    node.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    document.dispatchEvent(new Event('selectionchange'));
+    node.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+  });
+  await page.waitForTimeout(150);
+  expect(await renders(page), 'keyup and selectionchange on the same text and caret write nothing').toBe(0);
+  expect((await state(page)).calls, 'and search nothing').toHaveLength(before);
+  await expect(menu(page).getByRole('option')).toHaveCount(2);
+  // Escape dismisses; moving the caret over the same text brings it back nowhere, and renders nothing either.
+  await draft(page).press('Escape');
+  await expect(menu(page)).toHaveCount(0);
+  await page.waitForTimeout(50);
+  await renders(page);
+  await draft(page).press('ArrowLeft');
+  await draft(page).press('ArrowRight');
+  await page.evaluate(() => document.dispatchEvent(new Event('selectionchange')));
+  await page.waitForTimeout(150);
+  await expect(menu(page)).toHaveCount(0);
+  expect(await renders(page), 'a dismissed picker renders nothing while its text stands still').toBe(0);
+  // The caret text changing is what reopens it.
+  await page.keyboard.type('n', { delay: 0 });
+  await expect(menu(page).getByRole('option')).toHaveCount(2);
+  await expect(draft(page)).toHaveValue('Read @src/main');
 });
 
 test('file mentions discard stale query and workspace searches and dispose pending work', async ({ page }) => {

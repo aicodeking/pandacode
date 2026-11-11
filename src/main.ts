@@ -983,8 +983,21 @@ new MutationObserver(observeTranscript).observe(transcriptScroller, { childList:
 observeTranscript();
 const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
 // Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
+// What is skipped is NAMED here rather than inferred: the transcript's own subtree, the composer, and the progress pip with
+// everything inside it. The pip floats over the conversation — #progress-pip is position:absolute in the relatively
+// positioned pane — so no write inside it can move the flow it covers: place() re-sets --pp-top/--pp-bottom/--pp-room from
+// the pane's resize observer, a drag writes translate, and progress-pip.ts writes a frame's width and height and the stage's
+// aspect-ratio while a snapshot animates. A record inside the pip is skipped whatever its type, childList included; a real
+// size change to the transcript is the ResizeObserver's business above.
+// This replaces a getComputedStyle(target).position === 'absolute' | 'fixed' test. That test inferred the skip set from
+// runtime style: every attribute write in the pane paid a style resolution to ask whether its target happened to be out of
+// flow at that moment, so what was skipped could not be read off the source, changed with a class swap on the target, and
+// missed the pip's own descendants because it judged the record's target alone. A named list cannot drift that way.
 const composerArea = $('#composer-area');
-new MutationObserver(records => { if (records.some(record => !transcriptScroller.contains(record.target) && !composerArea.contains(record.target))) followTranscript(); })
+const progressPipHost = $('#progress-pip');
+const rePinsTranscript = (target: Node): boolean =>
+  !transcriptScroller.contains(target) && !composerArea.contains(target) && !progressPipHost.contains(target);
+new MutationObserver(records => { if (records.some(record => rePinsTranscript(record.target))) followTranscript(); })
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
@@ -2783,6 +2796,96 @@ const settleUnfolded = (element: HTMLElement): void => settleIn(element, 4, { re
 /** The reference's steer arrow (↳) and effort gauge; dom.ts has no such glyphs. */
 const STEER_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4v7a3 3 0 0 0 3 3h10m-4-4 4 4-4 4"/></svg>';
 const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 16.5a8.5 8.5 0 1 1 15.6 0"/><path d="m12 13 3.5-4"/></svg>';
+/* The height the text needs is the one thing a keystroke costs a layout read: releasing the box and asking it for its
+ * scrollHeight is the only way to know how many lines the text now wraps to. What the fit memo saves is a second layout,
+ * not that one: the old code wrote the height and then read the box back to decide the overflow switch, so every keystroke
+ * laid the text out twice. It now takes the overflow from the same measurement, and a call whose text is already fitted
+ * (the resizePrompt() that follows a queued message, a redraw between keystrokes) returns without writing and without
+ * laying anything out. A keystroke is not one of those: no focus path calls resizePrompt, and a keystroke's own call always
+ * sees a value the memo has not fitted yet, so typing measures exactly once.
+ * The text is not the fit's only input though: how many lines it wraps to depends on the width it wraps at, and the prompt
+ * is a column of a resizable pane beside a send control that is not one width: 62x36 for Send and Stop
+ * (redesign/conversation.css sizes `.composer-pill>.send-button` 62x36, overriding the 28x28 `--control` square in
+ * styles.css), then content-width for the wider "Checking…" and "Retry connection" secondary buttons, so one draft needs a
+ * taller box in a narrower prompt. The fit is therefore also remembered at a width, and the PROMPT's own ResizeObserver
+ * re-measures it when that width changes — its callbacks run after layout, so the width costs no layout read, and only a
+ * WIDTH counts: the height written below changes the observed box height on every keystroke and must not make the fit stale
+ * (that is the loop guard).
+ * Text and width are not the whole memo key, because a fit can go stale without either changing. `rows` is one input: the
+ * template sets rows="2" and renderComposer() copies the fresh template's rows onto the reused textarea, so a template
+ * that chose a different row count would leave the box at the height fitted for the old one. The box's own height limits
+ * are the other: `min-height` floors a short draft (redesign/conversation.css `.composer-input textarea` sets 60px) and a
+ * `max-height` would cap it, so the limits are keyed too, through a single getComputedStyle(prompt) of just those two
+ * properties. That read sits where the answer can change — in the early-return test, and right after a fit — and costs no
+ * layout: both limits resolve to lengths and keywords the style engine answers from the style it already has, and the
+ * post-fit read runs after scrollHeight forced the layout above it. A font metric is the one input not in the key: the
+ * prompt's font-size is a rem of the root, so the only thing that moves it is the interface scale, whose event re-fits
+ * unconditionally.
+ * The state below sits here rather than beside the listener that also uses it, because renderComposer() — the first caller —
+ * is only a few lines down: a const or let declared below its function's first caller leaves a window where a call (a
+ * redraw, a future top-level one) throws instead of returning. */
+const PROMPT_MAX_HEIGHT = 180;
+/** Everything the fitted height depends on that can change without the text changing: the box's row count and its height
+ *  limits. `rows` is an integer, the limits a serialization of the two computed lengths. */
+type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string };
+let promptFit: PromptFit | undefined;
+let promptBoxWidth = -1;
+let promptObserved: HTMLTextAreaElement | null = null;
+const promptResize = new ResizeObserver(entries => {
+  const width = entries.at(-1)?.contentRect.width ?? 0;
+  // No box to fit (a view without a composer, the prompt hidden or collapsed): forget the width, so the width it comes back
+  // at re-fits even when that is the width it left at. A sub-pixel change wraps nothing.
+  if (!width) { promptBoxWidth = -1; return; }
+  if (Math.abs(width - promptBoxWidth) < .5) return;
+  promptBoxWidth = width;
+  resizePrompt(true);
+});
+// Created once, never per render, and watching the prompt itself: its own inline size is exactly the quantity the fit
+// depends on, so the send pill (62 px for Send and Stop) swapping for the wider, content-sized secondary button re-fits the
+// draft even though the composer row's own box never changes. The node survives a redraw of the same thread
+// (renderComposer() puts the old textarea back), so nothing to re-attach there; a thread switch leaves the template's fresh
+// node in place, so resizePrompt() re-attaches below — one identity compare, no layout read.
+function watchPrompt(prompt: HTMLTextAreaElement | null): void {
+  if (prompt === promptObserved) return;
+  if (promptObserved) promptResize.unobserve(promptObserved);
+  promptObserved = prompt;
+  // A different box is measured from scratch, at whatever width it lands at.
+  promptBoxWidth = -1;
+  if (prompt) promptResize.observe(prompt);
+}
+function resizePrompt(remeasure = false): void {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  watchPrompt(prompt);
+  if (!prompt) { promptFit = undefined; return; }
+  const fit = promptFit?.prompt === prompt ? promptFit : undefined;
+  // The same text, the same rows and the same height limits in a box that is already fitted, at a width promptResize has
+  // accounted for, needs the height it has: this call writes nothing and lays nothing out. `value` and `rows` are a string
+  // and an integer, so a keystroke short-circuits on the value before the only read here is reached, and a redraw that
+  // changed the row count or the limits re-fits instead of trusting the last fit.
+  if (!remeasure && fit && fit.value === prompt.value && prompt.style.height && fit.rows === prompt.rows && fit.limits === promptHeightLimits(prompt)) return;
+  prompt.style.height = 'auto';
+  const natural = prompt.scrollHeight;
+  // A pane that is not laid out reports no content height: forget the fit and the width it was taken at, so the next layout
+  // — the pane shown again, or the prompt's observer seeing it at a real width — measures instead of trusting it.
+  if (!natural) { promptFit = undefined; promptBoxWidth = -1; return; }
+  const height = Math.min(natural, PROMPT_MAX_HEIGHT);
+  prompt.style.height = `${height}px`;
+  // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar. At any height the box scrolls
+  // exactly when the text is taller than it, so this is the same test, one measurement cheaper.
+  const overflow = natural > height + 1 ? 'auto' : 'hidden';
+  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
+  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: promptHeightLimits(prompt) };
+}
+/** The fitted height also depends on the box's own limits, and they can change without the text or the width changing (a
+ *  rule above it in the cascade, a unit change). Read once where the answer is decided or recorded, never per keystroke. */
+function promptHeightLimits(prompt: HTMLTextAreaElement): string {
+  const style = getComputedStyle(prompt);
+  return `${style.minHeight}|${style.maxHeight}`;
+}
+// An interface-size change can leave the prompt's box the same width and still change how the text wraps (the preview scales
+// the root font while the actions keep their px widths), so the observer above stays silent and the fit has to be re-taken
+// from the event.
+window.addEventListener('pandacode-ui-scale-change', () => resizePrompt(true));
 function renderComposer(): void {
   refreshTeamProgress();
   syncProgressPip();
@@ -7177,17 +7280,6 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
-function resizePrompt(): void {
-  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!prompt) return;
-  prompt.style.height = 'auto';
-  const natural = prompt.scrollHeight;
-  prompt.style.height = Math.min(natural, 180) + 'px';
-  // Use the same measurement; a pixel of rounding at the cap must not show a scroll bar.
-  const overflow = natural > 181 ? 'auto' : 'hidden';
-  if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
-}
-window.addEventListener('pandacode-ui-scale-change', resizePrompt);
 document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') resizePrompt(); if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.sharedChannelDrafts.set(state.sharedChannelId, input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
 document.addEventListener('scroll', event => {
   if (!state.sharedChannelId) return;

@@ -15,24 +15,28 @@ html[data-theme="dark"] .thread-sky::after{background:rgb(0 0 0 / .62)}
 /* Over the bare sky text sits on the sky itself, as it did before the sky: no cards behind it. The sky's grade keeps every
  * pixel inside the reading column within reach of the ink (light: Y >= the floor, dark: Y <= the ceiling, src/sky-window.ts),
  * and the ink steps a little further than on a plain page; tests/sky.spec.ts measures the worst pixel behind each item.
- * Only the composer (a card before the sky) and the user's bubble keep a fill. */
+ * Only the composer (a card before the sky) and the user's bubble keep a fill.
+ * The glass here is a plain fill, never a backdrop blur: over the animating sky canvas a blur re-blurs its backdrop on
+ * every canvas frame and every scroll step, so the fill alone carries the frosted look. */
 html[data-theme] .workspace[data-scene="sky"]>.main-pane{
   --sky-glass:color-mix(in srgb,var(--bg) 92%,transparent);
-  --sky-glass-blur:blur(22px) saturate(1.25);
 }
 html[data-theme="dark"] .workspace[data-scene="sky"]>.main-pane{--muted:#c2c2c2;--faint:#c0c0c0;--ds-info:color-mix(in srgb,var(--info) 60%,white);--ds-danger:color-mix(in srgb,var(--danger) 55%,white);--ds-success:color-mix(in srgb,var(--success) 70%,white)}
 html:not([data-theme="dark"]) .workspace[data-scene="sky"]>.main-pane{--muted:#3a3a36;--faint:#3a3a36}
 /* Small meta text (a message's time, the preview note) is 12–13px on the bare sky: in light it steps past --muted toward the
  * text so the worst pixel behind it (late evening) still clears ~5.5:1. */
 html:not([data-theme="dark"]) .workspace[data-scene="sky"]>.main-pane :is(.message-meta,.message-meta time,.preview-status){color:color-mix(in srgb,var(--muted) 40%,var(--text))}
-html[data-theme] .workspace[data-scene="sky"] .conversation-pane{--thread-surface:var(--sky-glass);--thread-frost:var(--sky-glass-blur)}
+/* `--thread-frost` (wallpapers.css) is the composer's backdrop blur: over the sky it is none, so the prompt box is the
+ * same solid glass fill as the cards while the user types. */
+html[data-theme] .workspace[data-scene="sky"] .conversation-pane{--thread-surface:var(--sky-glass);--thread-frost:none}
 html[data-theme] .workspace[data-scene="sky"] .conversation-pane .composer-area .composer{
-  background:var(--sky-glass);backdrop-filter:var(--sky-glass-blur);-webkit-backdrop-filter:var(--sky-glass-blur);
+  background:var(--sky-glass);backdrop-filter:none;-webkit-backdrop-filter:none;
   border-radius:var(--ds-radius-card);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
-/* A soft halo in the page tone under text and icons on the scene: no edge, it only steadies glyphs over cloud texture. */
-html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.new-task-welcome,.workspace-header){text-shadow:0 0 6px color-mix(in srgb,var(--bg) 55%,transparent)}
-html[data-theme] .workspace[data-scene="sky"] .main-pane :is(#transcript,.thread-mirror-rows,#stream-region,.workspace-header) .icon{filter:drop-shadow(0 0 3px color-mix(in srgb,var(--bg) 50%,transparent))}
-html[data-theme] .workspace[data-scene="sky"] .main-pane :is(.composer,.user-message .message-content,pre,code){text-shadow:none}
+/* The header sits outside the scroller, so its text keeps the soft page-tone halo: no edge, it only steadies glyphs over
+ * cloud texture. Nothing inside #transcript/#stream-region carries one: a text-shadow or an icon drop-shadow is a live
+ * filter on every text box and every icon in every message, re-rastered on each canvas frame and each scroll step. Thread
+ * text sits on the bare sky instead, and the grade keeps it legible. */
+html[data-theme] .workspace[data-scene="sky"] .main-pane .workspace-header{text-shadow:0 0 6px color-mix(in srgb,var(--bg) 55%,transparent)}
 
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more),(forced-colors:active){
   .thread-sky{display:none}
