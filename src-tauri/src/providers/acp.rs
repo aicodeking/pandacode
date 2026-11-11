@@ -1968,7 +1968,10 @@ mod tests {
         assert_eq!(text, "Explain this project");
         let step = p.receive(grok_permission("edit", false)).unwrap();
         assert!(step.write.is_empty());
-        assert!(step.events.iter().any(|event| event.kind == "approval"));
+        let approval = step.events.iter().find(|event| event.kind == "approval").unwrap();
+        // Approving takes the one-time choice, never "allow all edits during this session".
+        assert!(approval.data.as_ref().is_none_or(|data| data[crate::providers::LASTING_ONLY].is_null()));
+        assert_eq!(p.approve(approval.request_id.as_ref().unwrap(), true).unwrap()["result"]["outcome"]["optionId"], "allow-once");
         let (mut p, text) = grok_ready("auto");
         assert!(!text.contains("Plan mode"));
         let step = p.receive(grok_permission("edit", false)).unwrap();

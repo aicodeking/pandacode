@@ -274,11 +274,14 @@ like a prompt; `approve: false`, and a response that only cancels or declines, `
 thread does, a `bot.failoverDecide` that runs a held lead's turn, a `schedules.create`/`update`, `runNow` or enable that
 targets one (a schedule last saved from a remote device is checked again each time it fires: if its
 thread has since come to lead a team and the switch is off, the run is recorded as skipped with the
-reason, `schedules::remote_team_gate`; saving it again on the desktop clears the mark; which turns a phone drove is not recorded, so while this computer hosts remote devices an agent's `pandacode_schedule_message` to another thread gets the same mark and gate), an `orchestration.respond` that accepts a lead's link request (`links::allow_remote_accept`; declining stays allowed), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
+reason, `schedules::remote_team_gate`; saving it again on the desktop clears the mark; which turns a phone drove is not recorded, so while this computer hosts remote devices an agent's `pandacode_schedule_message` to another thread gets the same mark and gate, and its `pandacode_queue_message` or `pandacode_steer_task` into a different thread that leads a team is refused as a tool error (`agent_tools::allow_cross_thread_team`)), an `orchestration.respond` that accepts a lead's link request (`links::allow_remote_accept`; declining stays allowed), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
 `github.startTask` make their task without the saved default team, and so does `worktree.create`
 when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
-default team, with or without the switch, as on the desktop. This prevents
+default team, with or without the switch, as on the desktop. Reports from threads a lead
+launched on linked computers ([machine-orchestration.md](machine-orchestration.md)) still wake
+the lead (`orchestrate::wake`) whatever the switch: the lead started those threads itself, so their
+reports are its own work coming back, not a remote prompt. This prevents
 accidents; it is not a boundary against a device that can also answer a plain task's approvals.
 Shells sit beyond any task's mode, so while it is off `terminal.list`, `terminal.open`,
 `terminal.read`, `terminal.write` (a shell's scrollback holds whatever was typed or printed),

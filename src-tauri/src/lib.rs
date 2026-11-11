@@ -2356,7 +2356,8 @@ async fn launch_operation_admitted(
                     let saved = record_request_event(&store_sink, &own_run, team_worker, &goal_agents_sink, &mut e);
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {
-                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text);
+                            let lasting_only = e.data.as_ref().is_some_and(|data| data[providers::LASTING_ONLY] == true);
+                            bots::approval_requested(&app_sink, &e.session_id, request_id, &e.text, lasting_only);
                         }
                         tray::refresh(&app_sink);
                     }

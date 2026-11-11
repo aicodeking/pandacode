@@ -139,10 +139,8 @@ pub(crate) fn resolve_if_worker(
 /// reason; a run the team already stopped just drops the request.
 fn resolve_on(agent: &RunningAgent, context: &Context, event: &AgentEvent, cancelled: &'static str) -> Resolution {
     let run = Run::of(agent);
-    if run.stopped.load(Ordering::SeqCst) {
-        // Paused, stopped or cancelled meanwhile: nothing will answer it, and nothing failed.
-        run.clear(event.request_id.as_deref());
-        return Ok((cancelled, "Dropped: the team worker was already stopped"));
+    if let Some(dropped) = dropped_if_stopped(&run, event, cancelled) {
+        return dropped;
     }
     if event.request_id.is_none() {
         stop_run(&run, event, &format!("a request arrived without an ID ({})", subject(event)))?;
@@ -154,21 +152,29 @@ fn resolve_on(agent: &RunningAgent, context: &Context, event: &AgentEvent, cance
     };
     resolved.or_else(|error| {
         eprintln!("PandaCode: could not resolve a team worker request: {error}");
-        if run.stopped.load(Ordering::SeqCst) {
-            run.clear(event.request_id.as_deref());
-            return Ok((cancelled, "Dropped: the team worker was already stopped"));
+        if let Some(dropped) = dropped_if_stopped(&run, event, cancelled) {
+            return dropped;
         }
         stop_run(&run, event, &format!("a request could not be resolved automatically ({}: {error})", subject(event)))?;
         Ok((cancelled, "Stopped the team worker: the request could not be resolved"))
     })
 }
 
+/// A run already paused, stopped or cancelled: nothing will answer the request, and nothing
+/// failed, so it is cleared and dropped.
+fn dropped_if_stopped(run: &Run, event: &AgentEvent, cancelled: &'static str) -> Option<Resolution> {
+    if !run.stopped.load(Ordering::SeqCst) {
+        return None;
+    }
+    run.clear(event.request_id.as_deref());
+    Some(Ok((cancelled, "Dropped: the team worker was already stopped")))
+}
+
 /// Stops the sink's own run when the registry cannot be used for it. Fails only when the run is
 /// gone (its input is closed); the caller then clears the request instead of surfacing it.
 fn stop_own_run(run: &Run, event: &AgentEvent, cancelled: &'static str, why: &str) -> Resolution {
-    if run.stopped.load(Ordering::SeqCst) {
-        run.clear(event.request_id.as_deref());
-        return Ok((cancelled, "Dropped: the team worker was already stopped"));
+    if let Some(dropped) = dropped_if_stopped(run, event, cancelled) {
+        return dropped;
     }
     stop_run(run, event, &format!("a request could not be resolved automatically ({}: {why})", subject(event)))?;
     Ok((cancelled, "Stopped the team worker: the request could not be resolved"))

@@ -416,8 +416,19 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     let _ = app.emit("bots-changed", ());
     // Send the next queued message natively, so bot threads keep moving without the window.
     // A failed run holds the queue until the next turn ends cleanly, and so does a thread that
-    // came to lead a team on a bot without Full access (`allow_team_turn`).
-    let next = if !successful { None } else { state.store.lock().ok().filter(|store| allow_team_turn(store, &bot, session_id).is_ok()).and_then(|store| message_queue::list(&store, Some(session_id)).ok()).and_then(|queue| queue.into_iter().next()) };
+    // came to lead a team on a bot without Full access (`allow_team_turn`): its sender is told why.
+    let next = if !successful { Ok(None) } else { state.store.lock().map_err(|e| e.to_string()).and_then(|store| next_queued(&store, &bot, session_id)) };
+    if next.as_ref().is_err_and(|error| error == TEAM_NEEDS_FULL_BOT) {
+        if thread.channel_id == "schedule" {
+            notify(app, &bot, TEAM_NEEDS_FULL_BOT).await;
+        } else {
+            reply(app, &bot, &thread.channel_id, &thread.external_id, TEAM_NEEDS_FULL_BOT).await;
+        }
+        if let Ok(store) = state.store.lock() {
+            let _ = super::log(&store, &bot.id, "error", "Queued message held: this thread leads a team and the bot isn't set to Full access", json!({"sessionId": session_id}));
+        }
+    }
+    let next = next.ok().flatten();
     let taken = next.and_then(|entry| state.store.lock().ok().and_then(|store| {
         let entry = message_queue::take(&store, &entry.id).ok()?;
         let delivery = super::shared_channels::promote_taken(&store, session_id, &entry.text);
@@ -449,6 +460,14 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     settled
 }
 
+/// The queued message to send next, if any; `TEAM_NEEDS_FULL_BOT` when one waits but the thread
+/// came to lead a team on a bot without Full access.
+fn next_queued(store: &Store, bot: &Bot, session_id: &str) -> Result<Option<message_queue::QueuedMessage>> {
+    let Some(entry) = message_queue::list(store, Some(session_id))?.into_iter().next() else { return Ok(None) };
+    allow_team_turn(store, bot, session_id)?;
+    Ok(Some(entry))
+}
+
 /// Prompt text and image ids for queued attachments, as the window's composer builds them.
 /// Serve's native queue drain (headless.rs) reuses it for non-bot tasks.
 pub(crate) fn queued_prompt(attachments: &Value) -> (String, Vec<String>) {
@@ -476,12 +495,11 @@ async fn answer(app: &tauri::AppHandle, session_id: &str, request_id: &str, appr
     Ok(())
 }
 
-pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str) {
+pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str, request_id: &str, text: &str, lasting_only: bool) {
     let state = app.state::<AppState>();
     let found = state.store.lock().ok().and_then(|store| owner_of(&store, session_id).ok().flatten());
     let Some((bot, thread)) = found else { return };
-    // Allow rules answer without asking; deny rules refuse.
-    let decision = state.store.lock().ok().and_then(|store| guard::decide(&store, &bot.id, text).ok());
+    let decision = state.store.lock().ok().and_then(|store| guard::decide(&store, &bot.id, text).ok()).map(|decision| rule_decision(decision, lasting_only));
     match decision {
         Some(guard::Decision::Allow) => {
             let _ = answer(app, session_id, request_id, true).await;
@@ -512,6 +530,15 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
         channel => reply(app, &bot, channel, &thread.external_id, &message).await,
     }
     let _ = app.emit("bots-changed", ());
+}
+
+/// Allow rules answer without asking, deny rules refuse; a request whose approval would grant a
+/// lasting permission (the harness offers no one-time choice) is asked, never allowed by a rule.
+fn rule_decision(decision: guard::Decision, lasting_only: bool) -> guard::Decision {
+    match decision {
+        guard::Decision::Allow if lasting_only => guard::Decision::Ask,
+        decision => decision,
+    }
 }
 
 /// Approving a request lets the thread's turn go on, so a thread that came to lead a team
@@ -679,7 +706,25 @@ mod tests {
         assert!(allow_approval(&store, &bot, &session, false).is_ok());
         let answering = &source[source.find("async fn answer_approval(").unwrap()..];
         assert!(answering.find("allow_approval(").unwrap() < answering.find("answer(app").unwrap());
+        // A queued message the gate holds is not sent; its sender is told once, at the turn end.
+        bot.mode = "ask".into();
+        assert!(next_queued(&store, &bot, &session).unwrap().is_none(), "nothing queued: nothing to tell");
+        let queued = message_queue::add(&store, &session, "next step", &json!([])).unwrap();
+        assert_eq!(next_queued(&store, &bot, &session).unwrap_err(), TEAM_NEEDS_FULL_BOT);
+        bot.mode = "full".into();
+        assert_eq!(next_queued(&store, &bot, &session).unwrap().unwrap().id, queued.id);
+        let finished = &source[source.find("pub(crate) async fn run_finished(").unwrap()..];
+        assert!(finished.contains("is_err_and(|error| error == TEAM_NEEDS_FULL_BOT)"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn allow_rules_never_grant_a_lasting_permission() {
+        use guard::Decision::{Allow, Ask, Deny};
+        assert!(matches!(rule_decision(Allow, false), Allow));
+        assert!(matches!(rule_decision(Allow, true), Ask));
+        assert!(matches!(rule_decision(Deny, true), Deny));
+        assert!(matches!(rule_decision(Ask, true), Ask));
     }
 
     #[test]

@@ -65,6 +65,10 @@ authority, so the backend (`src-tauri/src/worker_approvals.rs`) answers a worker
 
 - **Approvals** are granted. A worker's request never flips the task to "waiting" and never
   appears in the request list remote clients read.
+  On ACP harnesses the grant takes the request's one-time choice (`allow_once`); only when the
+  harness offers none does it take a lasting one (`allow_always`), which is acceptable for a worker
+  because workers run with full access anyway. PandaCode's automatic paths for a user's own
+  session never do: a bot's allow rule asks instead ([bots.md](bots.md#safety-model)).
 - **Always-ask tools** (`ALWAYS_ASK` in `src-tauri/src/cloud/deploy.rs`: cloud CLI, scheduled
   messages) are declined; the worker is told to ask its lead. They are recognised by tool name,
   from an `Allow <tool>?` label, a bare (MCP-prefixed) tool-name label as Claude's permission
@@ -123,6 +127,10 @@ chat:
   its queue) unless the bot's own permission mode is Full access, since any paired chat sender,
   schedule or other bot would drive full-access workers; the sender is told to set the bot to
   Full access (`bots::gateway::allow_team_turn`, [bots.md](bots.md#safety-model)).
+- **Cross-thread tools:** an agent's `pandacode_queue_message` or `pandacode_steer_task` into a
+  different thread that leads a team is refused while this computer hosts remote devices with
+  "Full access for remote tasks" off, or when the calling thread is a bot conversation whose bot
+  is not Full access (`agent_tools::allow_cross_thread_team`).
 - A `reasoningEffort` that is not a level (over 32 characters, or anything but letters,
   digits, dashes and underscores) is refused for an explicit provider and ignored with a note
   otherwise.

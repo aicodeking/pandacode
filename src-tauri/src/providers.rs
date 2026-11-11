@@ -1524,6 +1524,15 @@ fn event_metadata(value: &Value) -> Option<Value> {
     }
 }
 
+/// Set on an approval event's data when approving can only grant a lasting permission (an ACP
+/// request offering `allow_always` but no `allow_once`).
+pub(crate) const LASTING_ONLY: &str = "lastingOnly";
+
+fn lasting_only(request: &Value) -> bool {
+    let kinds = || request["params"]["options"].as_array().into_iter().flatten().filter_map(|option| option["kind"].as_str());
+    kinds().any(|kind| kind == "allow_always") && !kinds().any(|kind| kind == "allow_once")
+}
+
 impl Protocol {
     fn emit_text(&mut self, update: Option<text_stream::Update>, step: &mut Step) {
         let Some(update) = update else {
@@ -2066,6 +2075,11 @@ impl Protocol {
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut event = self.event("approval", short(&text), Some(&value));
         event.request_id = Some(request_id.clone());
+        // Approving it grants more than this action (`approve`), so PandaCode never approves
+        // it automatically for a user's own session (a bot's allow rule asks instead).
+        if lasting_only(&value) {
+            event.data.get_or_insert_with(|| json!({}))[LASTING_ONLY] = json!(true);
+        }
         self.pending.insert(request_id, value);
         step.events.push(event);
     }
@@ -2092,6 +2106,10 @@ impl Protocol {
                 json!({"id":request["id"],"result":result})
             }
             "devin" => devin::decision(&request, approved),
+            // ACP: a one-time choice first. With only a lasting one (`allow_always`), approving
+            // takes it: the user's own approval of such a request, and a team worker's automatic
+            // one (workers run with full access anyway). PandaCode's automatic paths for a user's
+            // own session never get here with one (`LASTING_ONLY`).
             "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
@@ -5715,6 +5733,25 @@ mod tests {
             p.approve(id, true).unwrap()["result"]["outcome"]["optionId"],
             "custom-yes"
         );
+    }
+
+    #[test]
+    fn acp_approvals_take_a_one_time_choice_and_flag_lasting_only_requests() {
+        // Recorded option sets: Kimi, Grok and Cline (a one-time choice beside lasting ones; Grok's
+        // full handshake is in acp.rs), and a request offering only a lasting choice.
+        let kimi = json!([{"optionId":"custom-yes","kind":"allow_once"},{"optionId":"custom-no","kind":"reject_once"}]);
+        let grok = json!([{"optionId":"allow-edits-session","name":"Yes, allow all edits during this session","kind":"allow_always"},{"optionId":"allow-once","name":"Yes","kind":"allow_once"},{"optionId":"reject-once","name":"No, and tell Grok what to do differently","kind":"reject_once"}]);
+        let cline = json!([{"optionId":"allow_once","name":"Allow once","kind":"allow_once"},{"optionId":"allow_always","name":"Allow always","kind":"allow_always"},{"optionId":"reject_once","name":"Reject","kind":"reject_once"}]);
+        let lasting = json!([{"optionId":"always","kind":"allow_always"},{"optionId":"reject","kind":"reject_once"}]);
+        // One ACP choice path serves every harness; Kimi's protocol hands each set to it.
+        for (provider, options, chosen, lasting_only) in [("kimi", kimi, "custom-yes", false), ("grok", grok, "allow-once", false), ("cline", cline, "allow_once", false), ("only allow_always", lasting, "always", true)] {
+            let mut p = Protocol::new(config("kimi"));
+            let step = p.receive(json!({"jsonrpc":"2.0","id":"req-1","method":"session/request_permission","params":{"sessionId":"s","toolCall":{"title":"Edit file","kind":"edit"},"options":options}})).unwrap();
+            let event = step.events.iter().find(|event| event.kind == "approval").unwrap_or_else(|| panic!("{provider}: no approval"));
+            assert_eq!(event.data.as_ref().is_some_and(|data| data[LASTING_ONLY] == true), lasting_only, "{provider}");
+            let id = event.request_id.clone().unwrap();
+            assert_eq!(p.approve(&id, true).unwrap()["result"]["outcome"]["optionId"], chosen, "{provider}");
+        }
     }
 
     #[test]
