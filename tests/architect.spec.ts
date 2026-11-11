@@ -1529,8 +1529,8 @@ test('workers are dense rows ordered by status, with effort and attempt chips', 
   await expect(tally.locator('.architect-tally-count').first().locator('.architect-tally-glyph')).toHaveAttribute('data-state-tone', 'failed');
   for (const count of await tally.locator('.architect-tally-count').all()) expect(await count.textContent()).toBe(await count.getAttribute('title'));
   const shown = await visibleTally(tally);
-  // "done" outlasts "working" and the minor buckets.
-  expect(shown.slice(0, 3)).toEqual(['1 needs you', '1 failed', '1 done']);
+  // "working" outlasts "done" and the minor buckets.
+  expect(shown.slice(0, 3)).toEqual(['1 needs you', '1 failed', '1 working']);
   expect(tallySum(shown)).toBe(6);
   if (shown.length < 6) expect(shown.at(-1)).toMatch(/^\d+ more: /);
   await expect(panel(page).locator('.architect-panel-tally-readable')).toHaveText('1 failed · 1 working · 1 queued · 1 stopped · 1 done');
@@ -1568,6 +1568,8 @@ test('a row unfolds its assignment and summary by click and keyboard, and opens 
   await expect(more).toBeVisible();
   await expect(more).toContainText('The sample build step failed');
   await expect(more).toContainText('Rebuild the index on change: sample assignment.');
+  // The adjusted-effort note is in the details too (not only the meta line's title), below the error.
+  await expect(more.locator('.architect-worker-error + .architect-worker-more-quiet')).toHaveText('Asked for high effort; this model ran at medium.');
   // The footer is the write scope only; model and effort are already on the row.
   await expect(more.locator('.architect-worker-more-foot small')).toHaveText('Write scope: src/index.ts');
   await expand.click();

@@ -106,8 +106,9 @@ const TALLY_ORDER = ['needs you', 'failed', 'working', 'waiting', 'queued', 'pau
 const TALLY_MINOR = new Set(['queued', 'stopped', 'skipped', 'idle']);
 /** Each bucket's glyph and tone in the tally: the same marks the rows lead with. */
 const TALLY_GLYPHS: Record<string, [string, string]> = { working: ['running', 'team'], failed: ['failed', 'failed'], done: ['completed', 'ready'], waiting: ['pending', 'worker-idle'], queued: ['pending', 'worker-idle'], paused: ['idle', 'worker-idle'], stopped: ['stopped', 'worker-idle'], skipped: ['idle', 'worker-idle'], idle: ['idle', 'worker-idle'] };
-/** Then these, first-first, when the line still does not fit: "done" (reassuring progress) outlasts the rest but "failed". */
-const TALLY_DROP = ['paused', 'waiting', 'working', 'done', 'failed'];
+/** Then these, first-first, when the line still does not fit: "working" outlasts "done" (the progress bar already
+ *  shows completion) and only "failed" outlasts "working". */
+const TALLY_DROP = ['paused', 'waiting', 'done', 'working', 'failed'];
 /** The header's tally, such as "1 needs you · 2 working · 3 done · 1 failed", counted in the rows' words: the
  *  full line, a short one without the minor buckets, and the share of settled workers. Empty buckets are left out. */
 export function teamTally(workers: TeamWorker[], bucket: (worker: TeamWorker) => string): { text: string; readable: string; html: string; variants: { text: string; html: string; hidden: string }[]; settled: number; total: number; needsYou: number; failed: number } {
@@ -505,8 +506,8 @@ export class WorkerList {
     const parts: [string, string][] = [
       ['error', worker.error ? `<p class="architect-worker-error">${escape(worker.error)}</p>` : ''],
       ['queue', queueReason ? `<p class="architect-worker-more-queue">${escape(queueReason)}</p>` : ''],
-      // On a failed row the effort note rides on the facts line's tooltip ("Effort: medium (adjusted)"), keeping it short.
-      ['note', worker.note && !reason ? `<p class="architect-worker-more-quiet">${escape(worker.note)}</p>` : ''],
+      // Below a failed row's error too, so keyboard and screen-reader users get it (the meta line has it only as a title).
+      ['note', worker.note ? `<p class="architect-worker-more-quiet">${escape(worker.note)}</p>` : ''],
       // Trailing blank lines are trimmed, so a capped box never ends on an empty line.
       ['assignment', `<div><p class="architect-worker-more-label">Assignment</p><p class="architect-worker-more-text" data-scroll-label="Assignment">${escape(worker.assignment.trimEnd())}</p>${scrollHint}</div>`],
       ['summary', worker.summary.trim() ? `<div><p class="architect-worker-more-label">Summary</p><p class="architect-worker-more-text" data-scroll-label="Summary">${escape(worker.summary.trimEnd())}</p>${scrollHint}</div>` : ''],
