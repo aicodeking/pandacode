@@ -4413,7 +4413,8 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
     link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
-    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode });
+    // `team: false`: a side thread never picks up the saved default team.
+    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
