@@ -195,9 +195,11 @@ pub(super) fn friendly_name(description: &cpal::DeviceDescription) -> String {
         .map_or_else(|| description.name().to_owned(), Clone::clone)
 }
 
-/// The string preferences store for a device, unchanged since cpal 0.16 so saved choices match.
-/// `DeviceTrait::id` is a different format on every host and `description().name()` differs on
-/// Windows and ALSA, so outside Windows this stays on the deprecated `name()`.
+/// The string preferences store for a device; the Settings select uses it as both label and value.
+/// macOS keeps the deprecated `name()` (the CoreAudio name, as in cpal 0.16). Windows uses the
+/// FriendlyName. On Linux `name()` is the raw ALSA PCM id since cpal 0.17 ("plughw:CARD=0,DEV=0"),
+/// where 0.16 named a card by its card name: `devices` and `input_device` add that name back
+/// through `alsa_picker_names` and `alsa_resolve`, so choices saved by either version still match.
 #[allow(deprecated)]
 pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
     if cfg!(windows) {
@@ -211,35 +213,152 @@ pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
 pub(super) fn devices() -> Vec<MicDevice> {
     let host = cpal::default_host();
     let default = host.default_input_device().and_then(|d| saved_name(&d));
+    let ids: Vec<String> = host
+        .input_devices()
+        .map(|list| list.filter_map(|d| saved_name(&d)).collect())
+        .unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
-    host.input_devices()
-        .map(|list| {
-            list.filter_map(|d| saved_name(&d))
-                .filter(|name| seen.insert(name.clone()))
-                .map(|name| MicDevice {
-                    id: name.clone(),
-                    is_default: default.as_deref() == Some(name.as_str()),
-                    name,
-                })
-                .collect()
+    listed_names(ids)
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .map(|name| MicDevice {
+            id: name.clone(),
+            is_default: default.as_deref() == Some(name.as_str()),
+            name,
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// The named input device, or the OS default when it is gone or unnamed.
 pub(super) fn input_device(name: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     if let Some(name) = name {
-        if let Some(device) = host
-            .input_devices()
-            .ok()
-            .and_then(|mut list| list.find(|d| saved_name(d).as_deref() == Some(name)))
-        {
+        let list: Vec<cpal::Device> = host.input_devices().map(Iterator::collect).unwrap_or_default();
+        let ids: Vec<Option<String>> = list.iter().map(saved_name).collect();
+        if let Some(device) = resolve_saved(name, &ids).and_then(|at| list.into_iter().nth(at)) {
             return Ok(device);
         }
     }
     host.default_input_device()
         .ok_or_else(|| "No microphone is available. Connect an input device and try again.".into())
+}
+
+#[cfg(target_os = "linux")]
+fn listed_names(ids: Vec<String>) -> Vec<String> {
+    alsa_picker_names(&ids, &alsa_cards())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listed_names(ids: Vec<String>) -> Vec<String> {
+    ids
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_saved(saved: &str, ids: &[Option<String>]) -> Option<usize> {
+    alsa_resolve(saved, ids, &alsa_cards())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resolve_saved(saved: &str, ids: &[Option<String>]) -> Option<usize> {
+    ids.iter().position(|id| id.as_deref() == Some(saved))
+}
+
+/// The sound cards the kernel lists. Without procfs no card names are known, so the raw PCM ids
+/// (what 0.3.109 listed and saved) still list and resolve.
+#[cfg(target_os = "linux")]
+fn alsa_cards() -> Vec<AlsaCard> {
+    std::fs::read_to_string("/proc/asound/cards")
+        .map(|text| parse_asound_cards(&text))
+        .unwrap_or_default()
+}
+
+/// One ALSA sound card: its index, its id (`CARD=` in hint PCM names) and its name, the kernel's
+/// short name, which is what `snd_ctl_card_info_get_name` returns and cpal 0.16 stored.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct AlsaCard {
+    pub index: u32,
+    pub id: String,
+    pub name: String,
+}
+
+/// The cards in `/proc/asound/cards`, whose lines the kernel prints as
+/// `"%2i [%-15s]: %s - %s"` (index, id, driver, short name), each followed by a long-name line.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn parse_asound_cards(text: &str) -> Vec<AlsaCard> {
+    text.lines()
+        .filter_map(|line| {
+            let (index, rest) = line.trim_start().split_once(" [")?;
+            let index = index.trim().parse().ok()?;
+            let (id, rest) = rest.split_once("]: ")?;
+            let (_driver, name) = rest.split_once(" - ")?;
+            let (id, name) = (id.trim(), name.trim());
+            (!id.is_empty() && !name.is_empty())
+                .then(|| AlsaCard { index, id: id.to_owned(), name: name.to_owned() })
+        })
+        .collect()
+}
+
+/// The PCMs cpal 0.16 listed by their own name (it opened each one to check).
+#[cfg(any(test, target_os = "linux"))]
+const ALSA_BUILTINS: [&str; 5] = ["default", "pipewire", "pulse", "jack", "oss"];
+
+/// How well a listed PCM stands in for `card` (lower is better), or `None` when it is not one of
+/// the card's PCMs by index. cpal 0.16 opened `plughw:<index>` (device 0, with the plug layer's
+/// format and rate conversion); 0.17 lists that PCM as `plughw:CARD=<index>,DEV=0`, and lists
+/// these indexed forms only for devices `pcm_info` reports, so as input devices they can capture.
+/// Card-id hint forms (`plughw:CARD=PCH,…`) list as duplex even on playback-only cards (HDMI), so
+/// they never stand in for a card. Order: plughw before hw, then the lowest device.
+#[cfg(any(test, target_os = "linux"))]
+fn alsa_card_rank(card: &AlsaCard, pcm_id: &str) -> Option<(u8, u32)> {
+    let (plugin, args) = pcm_id.split_once(':')?;
+    let plugin_rank = match plugin {
+        "plughw" => 0,
+        "hw" => 1,
+        _ => return None,
+    };
+    let (index, device) = args.strip_prefix("CARD=")?.split_once(",DEV=")?;
+    (index.parse::<u32>().ok()? == card.index).then_some((plugin_rank, device.parse().ok()?))
+}
+
+/// The position in `ids` (cpal 0.17 input PCM names) of the best capture PCM for `card`.
+#[cfg(any(test, target_os = "linux"))]
+fn alsa_card_pcm(card: &AlsaCard, ids: &[Option<String>]) -> Option<usize> {
+    ids.iter()
+        .enumerate()
+        .filter_map(|(at, id)| Some((alsa_card_rank(card, id.as_deref()?)?, at)))
+        .min()
+        .map(|(_, at)| at)
+}
+
+/// The Linux picker: the builtins 0.16 listed, then each card with a capture PCM by its 0.16 card
+/// name, then every raw PCM id 0.3.109 listed, so a choice saved by either version shows as
+/// connected. Duplicates are dropped by the caller.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_picker_names(ids: &[String], cards: &[AlsaCard]) -> Vec<String> {
+    let listed: Vec<Option<String>> = ids.iter().cloned().map(Some).collect();
+    let builtins = ALSA_BUILTINS.iter().filter(|b| ids.iter().any(|id| id == *b)).map(|b| (*b).to_owned());
+    let mut sorted_cards: Vec<&AlsaCard> = cards.iter().collect();
+    sorted_cards.sort_by_key(|card| card.index);
+    let card_names = sorted_cards
+        .into_iter()
+        .filter(|card| alsa_card_pcm(card, &listed).is_some())
+        .map(|card| card.name.clone());
+    let raw = ids.iter().filter(|id| !ALSA_BUILTINS.contains(&id.as_str())).cloned();
+    builtins.chain(card_names).chain(raw).collect()
+}
+
+/// The position in `ids` of the device a saved Linux choice names: an exact PCM id first (the
+/// builtins, ids saved by 0.3.109, user-defined PCMs), else a 0.16 card name, resolved like 0.16's
+/// lookup did to the lowest-index card of that name, on its best capture PCM (`alsa_card_rank`).
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_resolve(saved: &str, ids: &[Option<String>], cards: &[AlsaCard]) -> Option<usize> {
+    if let Some(at) = ids.iter().position(|id| id.as_deref() == Some(saved)) {
+        return Some(at);
+    }
+    let mut named: Vec<&AlsaCard> = cards.iter().filter(|card| card.name == saved).collect();
+    named.sort_by_key(|card| card.index);
+    named.into_iter().find_map(|card| alsa_card_pcm(card, ids))
 }
 
 type Opened = (cpal::Stream, Arc<Mutex<Pcm>>, Arc<AtomicBool>);

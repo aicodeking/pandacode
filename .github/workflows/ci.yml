@@ -147,4 +147,8 @@ jobs:
       - name: Real audio smoke (release profile)
         if: runner.os == 'macOS'
         timeout-minutes: 40
+        # macOS runners have virtual inputs (Null Audio Device, Apple Virtual Sound Device), so a
+        # runner with no input must fail instead of passing without recording.
+        env:
+          PANDACODE_REQUIRE_REAL_MIC: '1'
         run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml --lib real_audio -- --ignored --nocapture
