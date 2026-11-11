@@ -2,7 +2,7 @@
 //! PCH") and opened `plughw:<index>`; 0.17's `name()` is the raw PCM id. Pure, so it runs anywhere.
 
 use super::*;
-use capture::{alsa_picker_names, alsa_resolve, parse_asound_cards, AlsaCard};
+use capture::{alsa_falls_back, alsa_picker_names, alsa_resolve, parse_asound_cards, AlsaCard};
 
 /// `/proc/asound/cards` on a laptop with an Intel HDA card, HDMI audio and a USB microphone.
 const PROC_CARDS: &str = " 0 [PCH            ]: HDA-Intel - HDA Intel PCH
@@ -135,4 +135,15 @@ fn two_cards_with_one_name_resolve_to_the_lowest_index_like_016() {
     assert_eq!(resolved("Blue Snowball", &ids[..1], &twins).as_deref(), Some("plughw:CARD=3,DEV=0"));
     // Both cards list under one name, as in 0.16; the caller drops the duplicate.
     assert_eq!(alsa_picker_names(&ids, &twins, None)[..], ["Blue Snowball", "Blue Snowball"]);
+}
+
+#[test]
+fn a_saved_device_that_fails_to_open_falls_back_but_default_and_system_default_do_not() {
+    // cpal 0.17 lists `jack` and `oss` without opening them, so a saved one may have no server.
+    for saved in ["jack", "oss", "HDA Intel PCH", "hw:CARD=PCH,DEV=0"] {
+        assert!(alsa_falls_back(Some(saved)), "{saved}");
+    }
+    // `default` and System default already are the default input: retrying would repeat the failure.
+    assert!(!alsa_falls_back(Some("default")));
+    assert!(!alsa_falls_back(None));
 }

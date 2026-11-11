@@ -369,9 +369,26 @@ pub(super) fn alsa_resolve(saved: &str, ids: &[Option<String>], cards: &[AlsaCar
 
 type Opened = (cpal::Stream, Arc<Mutex<Pcm>>, Arc<AtomicBool>);
 
-/// Builds (does not start) an input stream on the chosen device.
+/// Whether a saved Linux choice that fails to open falls back to the default input. cpal 0.17
+/// lists `jack` and `oss` (and other hint PCMs) without opening them, so a listed device may have
+/// nothing behind it; listing never opens the microphone, so the failure shows only here.
+#[cfg(any(test, target_os = "linux"))]
+pub(super) fn alsa_falls_back(saved: Option<&str>) -> bool {
+    saved.is_some_and(|name| name != "default")
+}
+
+/// Builds (does not start) an input stream on the chosen device; on Linux a saved device that
+/// fails to open falls back to the default input, as one that is gone does.
 fn open(device_name: Option<&str>) -> Result<Opened> {
-    let device = input_device(device_name)?;
+    let opened = open_on(input_device(device_name)?);
+    #[cfg(target_os = "linux")]
+    if opened.is_err() && alsa_falls_back(device_name) {
+        return open_on(input_device(None)?);
+    }
+    opened
+}
+
+fn open_on(device: cpal::Device) -> Result<Opened> {
     let config = device.default_input_config().map_err(|_| {
         "Could not read the microphone format. Check your OS input device and permission."
     })?;
