@@ -5,7 +5,11 @@ use serde_json::{json, Value};
 const NOW: i64 = 1_767_225_600_000; // 2026-01-01 00:00 UTC, a Thursday.
 
 fn store() -> Store {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    store_at(std::path::Path::new(":memory:"))
+}
+
+fn store_at(path: &std::path::Path) -> Store {
+    let store = Store::open(path).unwrap();
     store.db.execute_batch("INSERT INTO projects(id,name,path) VALUES('p1','One','/tmp/one'),('p2','Two','/tmp/two');").unwrap();
     for (id, project, draft) in [("a", "p1", 0), ("b", "p1", 0), ("c", "p2", 0), ("d", "p1", 1)] {
         store
@@ -25,12 +29,33 @@ fn once(store: &Store) -> TaskSchedule {
 }
 
 #[test]
-fn schema_version_is_28_with_schedule_tables() {
+fn schema_version_is_37_with_schedule_tables() {
     let store = store();
-    assert_eq!(crate::storage::SCHEMA_VERSION, 36);
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 36);
+    assert_eq!(crate::storage::SCHEMA_VERSION, 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
     assert!(list(&store, None).unwrap().is_empty());
     assert_eq!(settings(&store).unwrap(), SchedulerSettings::default());
+}
+
+#[test]
+fn version_37_moves_remotely_saved_ids_into_a_column() {
+    let path = std::env::temp_dir().join(format!("pandacode-schedules-{}.sqlite3", uuid::Uuid::new_v4()));
+    let id = {
+        let store = store_at(&path);
+        let id = once(&store).id;
+        // What version 36 shipped: no column, ids listed in the settings row beside the settings.
+        store.db.execute_batch("ALTER TABLE task_schedules DROP COLUMN saved_remotely; PRAGMA user_version=36;").unwrap();
+        store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1)", [json!({"paused": true, "remoteSaved": [id]}).to_string()]).unwrap();
+        id
+    };
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert!(saved_remotely(&store, &id).unwrap());
+    assert!(settings(&store).unwrap().paused);
+    let content: String = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).unwrap();
+    assert!(!content.contains("remoteSaved"));
+    drop(store);
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

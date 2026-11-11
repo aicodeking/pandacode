@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
   enabled INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL CHECK(created_by IN ('user','agent')),
   created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
-  trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT,
+  trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT, saved_remotely INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS task_schedules_due ON task_schedules(enabled,next_run_at);
 CREATE INDEX IF NOT EXISTS task_schedules_session ON task_schedules(session_id);
@@ -149,47 +149,20 @@ pub(crate) fn set_settings(store: &Store, settings: &SchedulerSettings) -> Resul
     if !(0..=100).contains(&settings.agent_limit_per_task) {
         return Err("The per-thread agent limit must be 0 to 100.".into());
     }
-    let serde_json::Value::Object(fields) = serde_json::to_value(settings).map_err(|e| e.to_string())? else { return Err("Invalid scheduler settings.".into()) };
-    // Keeps what the settings row holds beside the user's settings (`REMOTE_SAVED`).
-    let mut content = settings_row(store)?;
-    content.extend(fields);
-    write_settings_row(store, &content)?;
+    let content = serde_json::to_string(settings).map_err(|e| e.to_string())?;
+    store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content", [content]).map_err(|e| e.to_string())?;
     self::settings(store)
 }
 
-/// Schedules last created or edited from a remote device (PandaConnect), by id, in the settings
-/// row beside the user's settings, so no migration was needed. ponytail: a column on
-/// `task_schedules` at the next schema migration.
-const REMOTE_SAVED: &str = "remoteSaved";
-
-fn settings_row(store: &Store) -> Result<serde_json::Map<String, serde_json::Value>> {
-    let content: Option<String> = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
-    Ok(content.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
-}
-
-fn write_settings_row(store: &Store, content: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
-    let content = serde_json::Value::Object(content.clone()).to_string();
-    store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content", [content]).map_err(|e| e.to_string())?;
+/// Records where schedule `id` was last saved: from a remote device (PandaConnect) or not (the
+/// desktop, an agent).
+pub(crate) fn mark_saved_remotely(store: &Store, id: &str, remote: bool) -> Result<()> {
+    store.db.execute("UPDATE task_schedules SET saved_remotely=?2 WHERE id=?1", params![id, remote]).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Records where schedule `id` was last saved: from a remote device or not (the desktop, an agent).
-pub(crate) fn mark_saved_remotely(store: &Store, id: &str, remote: bool) -> Result<()> {
-    let mut content = settings_row(store)?;
-    let mut saved: Vec<String> = content.get(REMOTE_SAVED).and_then(|value| serde_json::from_value(value.clone()).ok()).unwrap_or_default();
-    if saved.iter().any(|known| known == id) == remote {
-        return Ok(());
-    }
-    saved.retain(|known| known != id);
-    if remote {
-        saved.push(id.to_owned());
-    }
-    content.insert(REMOTE_SAVED.into(), json!(saved));
-    write_settings_row(store, &content)
-}
-
 pub(crate) fn saved_remotely(store: &Store, id: &str) -> Result<bool> {
-    Ok(settings_row(store)?.get(REMOTE_SAVED).and_then(serde_json::Value::as_array).is_some_and(|saved| saved.iter().any(|known| known == id)))
+    Ok(store.db.query_row("SELECT saved_remotely FROM task_schedules WHERE id=?1", [id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.unwrap_or(false))
 }
 
 /// Recorded when a schedule saved from a remote device fires at a thread that now leads a team
@@ -469,7 +442,6 @@ pub(crate) fn set_enabled(store: &Store, id: &str, enabled: bool, now: i64) -> R
 pub(crate) fn delete(store: &Store, id: &str) -> Result<TaskSchedule> {
     let schedule = get(store, id)?;
     store.db.execute("DELETE FROM task_schedules WHERE id=?1", [id]).map_err(|e| e.to_string())?;
-    mark_saved_remotely(store, id, false)?;
     Ok(schedule)
 }
 
