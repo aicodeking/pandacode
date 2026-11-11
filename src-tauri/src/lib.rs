@@ -4580,6 +4580,8 @@ pub fn run() {
                 cloud::commands::cloud_setup_sandboxes,
                 cloud::commands::cloud_instabox_images,
                 cloud::commands::cloud_instabox_set_image,
+                cloud::commands::cloud_digitalocean_catalog,
+                cloud::commands::cloud_digitalocean_set_options,
                 cloud::commands::cloud_machines,
                 cloud::commands::cloud_create,
                 cloud::commands::cloud_power,

@@ -23,7 +23,9 @@
 .cloud-image select{flex:1;min-width:0;height:32px;padding:0 8px;border:0;border-radius:var(--ds-radius-control);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
 .cloud-image select:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .cloud-image select:disabled{opacity:.6}
+.cloud-image input{flex:1;min-width:0;height:32px;padding:0 8px;border:0;border-radius:var(--ds-radius-control);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
+.cloud-image input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .cloud-image-status{margin:0;font-size:var(--ds-text-meta);color:var(--muted)}
 .cloud-image-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
-.cloud-form input,.cloud-image select{background:var(--ds-card-inset)}
+.cloud-form input,.cloud-image select,.cloud-image input{background:var(--ds-card-inset)}
 /* The unconnected keyed long tail sits in a fold. */
