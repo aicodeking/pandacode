@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.108"
+version = "0.3.109"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -50,7 +50,7 @@ tauri-plugin-process = ">=2, <2.4"
 if-addrs = "=0.15.0"
 # Panda Router (src/panda_router): deterministic matcher; the ONNX profiler is target-gated below.
 libm = "0.2"
-cpal = "0.16"
+cpal = "0.17"
 # On-device dictation (src/voice/local): 16 kHz resampling and the free-space check before downloads.
 rubato = "5"
 fs4 = "1.1"

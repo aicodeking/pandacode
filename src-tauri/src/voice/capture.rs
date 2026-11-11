@@ -186,14 +186,35 @@ pub struct MicDevice {
     pub is_default: bool,
 }
 
+/// FriendlyName on Windows: cpal 0.17 names an endpoint by DeviceDesc there ("Microphone", shared
+/// by most inputs) and keeps a differing FriendlyName ("Microphone (USB Audio)") in `extended`.
+pub(super) fn friendly_name(description: &cpal::DeviceDescription) -> String {
+    description
+        .extended()
+        .first()
+        .map_or_else(|| description.name().to_owned(), Clone::clone)
+}
+
+/// The string preferences store for a device, unchanged since cpal 0.16 so saved choices match.
+/// `DeviceTrait::id` is a different format on every host and `description().name()` differs on
+/// Windows and ALSA, so outside Windows this stays on the deprecated `name()`.
+#[allow(deprecated)]
+pub(super) fn saved_name(device: &cpal::Device) -> Option<String> {
+    if cfg!(windows) {
+        device.description().ok().map(|d| friendly_name(&d))
+    } else {
+        device.name().ok()
+    }
+}
+
 /// Input devices by name; the id is the name (what preferences store).
 pub(super) fn devices() -> Vec<MicDevice> {
     let host = cpal::default_host();
-    let default = host.default_input_device().and_then(|d| d.name().ok());
+    let default = host.default_input_device().and_then(|d| saved_name(&d));
     let mut seen = std::collections::HashSet::new();
     host.input_devices()
         .map(|list| {
-            list.filter_map(|d| d.name().ok())
+            list.filter_map(|d| saved_name(&d))
                 .filter(|name| seen.insert(name.clone()))
                 .map(|name| MicDevice {
                     id: name.clone(),
@@ -206,13 +227,13 @@ pub(super) fn devices() -> Vec<MicDevice> {
 }
 
 /// The named input device, or the OS default when it is gone or unnamed.
-fn input_device(name: Option<&str>) -> Result<cpal::Device> {
+pub(super) fn input_device(name: Option<&str>) -> Result<cpal::Device> {
     let host = cpal::default_host();
     if let Some(name) = name {
         if let Some(device) = host
             .input_devices()
             .ok()
-            .and_then(|mut list| list.find(|d| d.name().ok().as_deref() == Some(name)))
+            .and_then(|mut list| list.find(|d| saved_name(d).as_deref() == Some(name)))
         {
             return Ok(device);
         }
@@ -230,7 +251,7 @@ fn open(device_name: Option<&str>) -> Result<Opened> {
         "Could not read the microphone format. Check your OS input device and permission."
     })?;
     let pcm = Arc::new(Mutex::new(Pcm::new(
-        config.sample_rate().0,
+        config.sample_rate(),
         config.channels(),
     )?));
     let failed = Arc::new(AtomicBool::new(false));
@@ -248,6 +269,7 @@ fn open(device_name: Option<&str>) -> Result<Opened> {
         cpal::SampleFormat::I64 => build!(i64),
         cpal::SampleFormat::U8 => build!(u8),
         cpal::SampleFormat::U16 => build!(u16),
+        cpal::SampleFormat::U24 => build!(cpal::U24),
         cpal::SampleFormat::U32 => build!(u32),
         cpal::SampleFormat::U64 => build!(u64),
         cpal::SampleFormat::F32 => build!(f32),

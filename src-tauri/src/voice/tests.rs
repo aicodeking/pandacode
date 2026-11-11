@@ -3,6 +3,7 @@ use super::*;
 mod basics;
 mod close_window;
 mod profiles;
+mod real_audio;
 mod requests;
 mod sessions;
 mod transport_http;

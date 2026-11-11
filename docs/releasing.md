@@ -146,7 +146,10 @@ Local checks are not enough. Push the release commit to `main` first and wait
 for CI to pass on it before tagging (step 3): every row, including the per-platform
 clippy rows. CI installs the floating stable Rust toolchain, so a new clippy lint can
 appear on any push, even one that changes no Rust, and fail a row your local toolchain
-passes. The Release workflow refuses a tag whose commit has not passed CI.
+passes. The Release workflow installs floating stable Rust too, so a release built
+later can use a newer `rustc` than the CI run that passed: if a new stable Rust
+lands between CI passing and tagging, re-run CI on the commit first. The Release
+workflow refuses a tag whose commit has not passed CI.
 
 ## 3. Commit, wait for CI, then tag
 
@@ -155,10 +158,14 @@ git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Ca
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
 git push origin main
-# Wait for CI on this exact commit; exits non-zero if it fails. If gh finds no run
-# yet, give GitHub a few seconds to start it and repeat.
-gh run watch --exit-status "$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" \
-  --event push --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+# Wait for CI on this exact commit (polls up to ~2 min for GitHub to create the
+# run); exits non-zero if it fails or never appears.
+run_id=; for i in $(seq 24); do
+  run_id=$(gh run list --workflow ci.yml --commit "$(git rev-parse HEAD)" --event push \
+    --branch main --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  [ -n "$run_id" ] && break; sleep 5
+done
+[ -n "$run_id" ] && gh run watch --exit-status "$run_id"
 git tag "v$release_version"
 git push origin "v$release_version"
 ```
@@ -170,16 +177,17 @@ successful (its `prepare` job checks with `gh run list --commit --event push
 --branch main`, using only `actions: read`; pull request and other branch runs
 of the same commit do not count, so the commit must be on `main` and pushed).
 If CI was still running, re-run the Release workflow once it passes; if CI was
-cancelled (CI never cancels a `main` run that holds the concurrency slot, even
-one still `queued` for a runner, but a `pending` run waiting for that slot is
-replaced when a newer push to `main` arrives, and a manual cancel also does
-this), the gate names the run: re-run it with `gh run rerun <id>`, push
+cancelled (CI never cancels a `main` push run that holds the concurrency slot,
+even one still `queued` for a runner, but a `pending` run waiting for that slot
+is replaced when a newer push or manual run on `main` arrives, and a manual
+cancel also does this; manual `workflow_dispatch` runs never hold the slot
+against a newer run), the gate names the run: re-run it with `gh run rerun <id>`, push
 nothing newer to `main` until it finishes, then re-run the Release workflow. If
 CI failed, the gate reads the run's latest conclusion and names the run: if the
 failure was flaky or infrastructure (for example a job cancelled because the
 runner never picked it up), re-run that run's failed jobs with `gh run rerun <id> --failed` and re-run
 the Release workflow once it is green; otherwise fix it in a new commit and
-release a higher version. Because CI never cancels a `main` run holding the
+release a higher version. Because CI never cancels a `main` push run holding the
 concurrency slot, a job stuck waiting for a runner (GitHub keeps a queued job up
 to 24 hours, and `timeout-minutes` does not apply while it is queued) blocks
 every later `main` CI run: cancel that run with `gh run cancel <id>` to unblock
