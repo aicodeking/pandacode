@@ -249,6 +249,11 @@ fn remote(app: &tauri::AppHandle) -> tauri::State<'_, Remote> {
     app.state::<Remote>()
 }
 
+/// The host switch "Full access for remote tasks" as it is now (off before remote access is set up).
+pub(crate) fn full_access_for_remote_tasks(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Remote>().is_some_and(|remote| remote.lock().settings.remote_full_access)
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let _ = app.emit("remote://status", remote(app).status());
 }

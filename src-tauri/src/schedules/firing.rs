@@ -28,11 +28,21 @@ pub(super) fn take_due(store: &Store, now: i64, held: &HashSet<String>) -> Resul
 pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, manual: bool) -> Result<ScheduleRun> {
     let state = app.state::<AppState>();
     let now = crate::storage::now();
+    // Read before the store lock: the remote state is never locked while the store is.
+    // (A manual run was checked by whoever ran it.)
+    let remote_full_access = manual || crate::remote::full_access_for_remote_tasks(app);
     let team = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let session = store.session(&schedule.session_id).map_err(|_| String::from("The thread was deleted."))?;
         if session.archived {
             let run = record_run(&store, schedule, now, "skipped", "Thread is archived", manual)?;
+            drop(store);
+            changed(app, Some(&schedule.session_id));
+            return Ok(run);
+        }
+        // Saved from a remote device: its team gate holds when it fires too, not only at save.
+        if let Some(reason) = super::remote_team_gate(&store, schedule, remote_full_access)? {
+            let run = record_run(&store, schedule, now, "skipped", reason, manual)?;
             drop(store);
             changed(app, Some(&schedule.session_id));
             return Ok(run);

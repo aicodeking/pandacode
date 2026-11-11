@@ -2,7 +2,7 @@
 //! authority, so a worker's approvals are granted here and its questions are answered
 //! with "decide yourself" (or a sensible choice), before either reaches bots, the tray or
 //! the window. What cannot be resolved ends the worker's turn with a reason for its lead.
-use crate::{architect::Admission, providers::RunInput, remove_pending_request, storage::Store, AgentEvent, RunningAgent};
+use crate::{architect::Admission, lock_agents, providers::RunInput, remove_pending_request, storage::Store, AgentEvent, RunningAgent};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -86,7 +86,7 @@ pub(crate) fn resolve_if_worker(
     }
     let context = Context { agents: agents.clone(), store: store.clone() };
     let cancelled = if event.kind == "approval" { "approval_cancelled" } else { "input_cancelled" };
-    let outcome = match agents.lock() {
+    let outcome = match lock_agents(agents) {
         // The registered agent is this run: resolve through it.
         Ok(registry) => match registry.get(&event.session_id).filter(|agent| agent.run_id == run.id) {
             Some(agent) => resolve_on(agent, &context, event, cancelled),
@@ -114,7 +114,7 @@ pub(crate) fn resolve_if_worker(
             eprintln!("PandaCode: team worker {} request dropped; its run is gone: {error}", event.session_id);
             run.clear(event.request_id.as_deref());
             // The task's status is this run's only while no newer run owns the task.
-            let newer = agents.lock().map(|registry| registry.get(&event.session_id).is_some_and(|agent| agent.run_id != run.id)).unwrap_or(true);
+            let newer = lock_agents(agents).map(|registry| registry.get(&event.session_id).is_some_and(|agent| agent.run_id != run.id)).unwrap_or(true);
             // A run already stopped is ending: its end sets the status.
             if !newer && !run.stopped.load(Ordering::SeqCst) {
                 let waiting = run.approvals.lock().map(|approvals| !approvals.is_empty()).unwrap_or(false);
@@ -344,13 +344,15 @@ pub(crate) fn stop_taken(run_id: &str) {
 /// The pooled run moved to another account: what the old account left open is settled without a
 /// stop. Any run, a user's too; returns the cancel events that drop the stale cards.
 pub(crate) fn account_switched(run: &Run, session_id: &str) -> Vec<AgentEvent> {
-    with_run(&run.id, |state| state.in_flight.clear());
+    // A worker's question is never in the pending payload list (it is resolved at once), so its
+    // automatic answer in flight is what marks it a question.
+    let answering = with_run(&run.id, |state| std::mem::take(&mut state.in_flight));
     // Lock order approvals -> pending requests.
     let (Ok(mut approvals), Ok(mut requests)) = (run.approvals.lock(), run.requests.lock()) else { return Vec::new() };
     let cancelled = approvals
         .drain()
         .map(|request_id| {
-            let question = requests.get(&request_id).is_some_and(|request| request.kind == "input_request");
+            let question = answering.contains(&request_id) || requests.get(&request_id).is_some_and(|request| request.kind == "input_request");
             AgentEvent {
                 session_id: session_id.to_owned(),
                 kind: if question { "input_cancelled" } else { "approval_cancelled" }.into(),
@@ -701,7 +703,7 @@ impl Pending {
     /// Runs `action` on this launch's run while it is still registered and not stopped,
     /// mirroring `respond_user_input`, so a finished worker is never touched.
     fn with_live<T>(&self, action: impl FnOnce(&RunningAgent) -> crate::Result<T>) -> crate::Result<Option<T>> {
-        let registry = self.context.agents.lock().map_err(|e| e.to_string())?;
+        let registry = lock_agents(&self.context.agents).map_err(|e| e.to_string())?;
         let live = registry
             .get(&self.original.session_id)
             .filter(|agent| agent.run_id == self.run_id && !agent.stopped.load(Ordering::SeqCst));

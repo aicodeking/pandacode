@@ -316,8 +316,9 @@ async fn save(ctx: Ctx<'_>, this: Save) -> Result<Value> {
     .await?;
     let (app, state) = (ctx.app.clone(), ctx.state());
     let schedule = match (this.schedule_id, before) {
-        (Some(id), Some(before)) => desktop::schedule_update(app, state, id, keep_chain(this.input, &this.named, &before)).await?,
-        _ => desktop::schedule_create(app, state, this.input).await?,
+        // Marked as saved remotely, so the gate is checked again when it fires (`remote_team_gate`).
+        (Some(id), Some(before)) => desktop::save_update(&app, &state, &id, &keep_chain(this.input, &this.named, &before), true)?,
+        _ => desktop::save_create(&app, &state, &this.input, true)?,
     };
     Ok(json!({"schedule": with_cadence(&schedule)}))
 }

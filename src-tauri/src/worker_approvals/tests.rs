@@ -713,8 +713,12 @@ fn an_account_switch_settles_what_the_old_account_left_open() {
     assert!(is_in_flight(&request_id));
     let run = Run::of(f.agents.lock().unwrap().get(&f.sid).unwrap());
     run.approvals.lock().unwrap().insert(format!("{}:old", f.run_id));
+    // Hiding the question failed: it is still listed, and must be cancelled as a question.
+    run.approvals.lock().unwrap().insert(request_id.clone());
     // The pool moves to another account; the old account's process never answers.
-    assert!(!account_switched(&run, &f.sid).is_empty());
+    let mut cancelled: Vec<(String, String)> = account_switched(&run, &f.sid).into_iter().map(|e| (e.kind, e.request_id.unwrap())).collect();
+    cancelled.sort();
+    assert_eq!(cancelled, vec![("approval_cancelled".to_string(), format!("{}:old", f.run_id)), ("input_cancelled".to_string(), request_id.clone())]);
     assert!(!is_in_flight(&request_id));
     assert!(run.approvals.lock().unwrap().is_empty());
     // The first answer fails on the new account; no late fallback follows it there, and the

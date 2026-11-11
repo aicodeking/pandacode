@@ -149,9 +149,64 @@ pub(crate) fn set_settings(store: &Store, settings: &SchedulerSettings) -> Resul
     if !(0..=100).contains(&settings.agent_limit_per_task) {
         return Err("The per-thread agent limit must be 0 to 100.".into());
     }
-    let content = serde_json::to_string(settings).map_err(|e| e.to_string())?;
-    store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content", [content]).map_err(|e| e.to_string())?;
+    let serde_json::Value::Object(fields) = serde_json::to_value(settings).map_err(|e| e.to_string())? else { return Err("Invalid scheduler settings.".into()) };
+    // Keeps what the settings row holds beside the user's settings (`REMOTE_SAVED`).
+    let mut content = settings_row(store)?;
+    content.extend(fields);
+    write_settings_row(store, &content)?;
     self::settings(store)
+}
+
+/// Schedules last created or edited from a remote device (PandaConnect), by id, in the settings
+/// row beside the user's settings, so no migration was needed. ponytail: a column on
+/// `task_schedules` at the next schema migration.
+const REMOTE_SAVED: &str = "remoteSaved";
+
+fn settings_row(store: &Store) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let content: Option<String> = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+    Ok(content.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+}
+
+fn write_settings_row(store: &Store, content: &serde_json::Map<String, serde_json::Value>) -> Result<()> {
+    let content = serde_json::Value::Object(content.clone()).to_string();
+    store.db.execute("INSERT INTO scheduler_settings(id,content) VALUES(1,?1) ON CONFLICT(id) DO UPDATE SET content=excluded.content", [content]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Records where schedule `id` was last saved: from a remote device or not (the desktop, an agent).
+pub(crate) fn mark_saved_remotely(store: &Store, id: &str, remote: bool) -> Result<()> {
+    let mut content = settings_row(store)?;
+    let mut saved: Vec<String> = content.get(REMOTE_SAVED).and_then(|value| serde_json::from_value(value.clone()).ok()).unwrap_or_default();
+    if saved.iter().any(|known| known == id) == remote {
+        return Ok(());
+    }
+    saved.retain(|known| known != id);
+    if remote {
+        saved.push(id.to_owned());
+    }
+    content.insert(REMOTE_SAVED.into(), json!(saved));
+    write_settings_row(store, &content)
+}
+
+pub(crate) fn saved_remotely(store: &Store, id: &str) -> Result<bool> {
+    Ok(settings_row(store)?.get(REMOTE_SAVED).and_then(serde_json::Value::as_array).is_some_and(|saved| saved.iter().any(|known| known == id)))
+}
+
+/// Recorded when a schedule saved from a remote device fires at a thread that now leads a team
+/// while "Full access for remote tasks" is off: the team's workers would run in full access.
+pub(crate) const REMOTE_TEAM_SKIP: &str = "Skipped: this schedule was saved from a remote device and its thread now leads a team, whose workers run with full access. Allow full access for remote tasks, or save the schedule on this computer.";
+
+/// Whether a firing schedule may send: one saved from a remote device reaches a thread that
+/// leads a team only while the host allows full access for remote tasks (as at save time).
+pub(crate) fn remote_team_gate(store: &Store, schedule: &TaskSchedule, remote_full_access: bool) -> Result<Option<&'static str>> {
+    if remote_full_access || !saved_remotely(store, &schedule.id)? {
+        return Ok(None);
+    }
+    let leads_team: bool = store
+        .db
+        .query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [&schedule.session_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(leads_team.then_some(REMOTE_TEAM_SKIP))
 }
 
 const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id";
@@ -414,6 +469,7 @@ pub(crate) fn set_enabled(store: &Store, id: &str, enabled: bool, now: i64) -> R
 pub(crate) fn delete(store: &Store, id: &str) -> Result<TaskSchedule> {
     let schedule = get(store, id)?;
     store.db.execute("DELETE FROM task_schedules WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    mark_saved_remotely(store, id, false)?;
     Ok(schedule)
 }
 
@@ -633,20 +689,37 @@ pub async fn schedules_list(state: State<'_, AppState>, session_id: Option<Strin
 
 #[tauri::command]
 pub async fn schedule_create(app: tauri::AppHandle, state: State<'_, AppState>, input: ScheduleInput) -> Result<TaskSchedule> {
-    let schedule = create(&*lock(&state)?, &input, "user", None, crate::storage::now())?;
-    changed(&app, Some(&schedule.session_id));
+    save_create(&app, &state, &input, false)
+}
+
+/// Creates a user's schedule, recording whether a remote device saved it (`remote_team_gate`).
+pub(crate) fn save_create(app: &tauri::AppHandle, state: &State<'_, AppState>, input: &ScheduleInput, remote: bool) -> Result<TaskSchedule> {
+    let schedule = {
+        let store = lock(state)?;
+        let schedule = create(&store, input, "user", None, crate::storage::now())?;
+        mark_saved_remotely(&store, &schedule.id, remote)?;
+        schedule
+    };
+    changed(app, Some(&schedule.session_id));
     Ok(schedule)
 }
 
 #[tauri::command]
 pub async fn schedule_update(app: tauri::AppHandle, state: State<'_, AppState>, schedule_id: String, input: ScheduleInput) -> Result<TaskSchedule> {
+    save_update(&app, &state, &schedule_id, &input, false)
+}
+
+/// Edits a schedule, recording whether a remote device saved it (`remote_team_gate`).
+pub(crate) fn save_update(app: &tauri::AppHandle, state: &State<'_, AppState>, schedule_id: &str, input: &ScheduleInput, remote: bool) -> Result<TaskSchedule> {
     let (before, schedule) = {
-        let store = lock(&state)?;
-        let before = get(&store, &schedule_id)?;
-        (before, update(&store, &schedule_id, &input, crate::storage::now())?)
+        let store = lock(state)?;
+        let before = get(&store, schedule_id)?;
+        let schedule = update(&store, schedule_id, input, crate::storage::now())?;
+        mark_saved_remotely(&store, schedule_id, remote)?;
+        (before, schedule)
     };
     // Moving a schedule to another thread changes both threads' lists.
-    changed(&app, (before.session_id == schedule.session_id).then_some(schedule.session_id.as_str()));
+    changed(app, (before.session_id == schedule.session_id).then_some(schedule.session_id.as_str()));
     Ok(schedule)
 }
 

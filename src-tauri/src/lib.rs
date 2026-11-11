@@ -78,7 +78,7 @@ mod usage_ledger;
 mod workspace;
 mod worker_approvals;
 mod run_requests;
-use run_requests::{record_request_event, run_end, settle_account_switch, show_settled_stop};
+use run_requests::{lock_agents, record_request_event, run_end, settle_account_switch, show_settled_stop};
 mod jj;
 mod tray;
 mod headless;
@@ -743,7 +743,7 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
 }
 #[tauri::command]
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     for session_id in agents.keys() {
         if store.session(session_id)?.project_id == project_id {
@@ -791,7 +791,7 @@ async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
 }
 /// Tasks as the sidebar shows them, with stale running states settled.
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(store
         .sessions()?
@@ -830,7 +830,7 @@ async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, ses
 }
 #[tauri::command]
 async fn get_task(state: State<'_, AppState>, session_id: String) -> Result<Session> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(reconcile_inactive_task(
         &store,
@@ -921,7 +921,7 @@ async fn update_task_details(
     title: String,
     description: String,
 ) -> Result<Session> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before editing its task details.".into());
     }
@@ -939,7 +939,7 @@ async fn set_task_stage(
     stage: String,
 ) -> Result<Session> {
     let task = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         if agents.contains_key(&session_id) {
             return Err("Stop the agent before changing its task stage.".into());
         }
@@ -966,7 +966,7 @@ async fn configure_session(
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
@@ -987,7 +987,7 @@ async fn set_reasoning_effort(
     remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
@@ -1024,7 +1024,7 @@ async fn update_session(
             return task_controls::rename_task(&state, &session_id, title).await;
         }
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
@@ -1072,7 +1072,7 @@ async fn get_subagent(
 }
 
 fn live_subagents(state: &AppState, session_id: &str) -> Result<Option<Arc<Mutex<subagent_state::SubagentState>>>> {
-    Ok(state.agents.lock().map_err(|error| error.to_string())?.get(session_id).map(|agent| agent.subagents.clone()))
+    Ok(lock_agents(&state.agents).map_err(|error| error.to_string())?.get(session_id).map(|agent| agent.subagents.clone()))
 }
 
 /// A task's children as list rows. Live snapshots are read after the store, so stale disk data
@@ -1080,7 +1080,7 @@ fn live_subagents(state: &AppState, session_id: &str) -> Result<Option<Arc<Mutex
 fn task_subagents(state: &AppState, session_id: &str) -> Result<Vec<subagent_state::SubagentRow>> {
     let live = {
         // Held only when no run owns the task, so none can start while its children are settled.
-        let agents = state.agents.lock().map_err(|error| error.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|error| error.to_string())?;
         let live = agents.get(session_id).map(|agent| agent.subagents.clone());
         if live.is_none() {
             let store = state.store.lock().map_err(|error| error.to_string())?;
@@ -1655,7 +1655,7 @@ fn prepare_task_run_in_project(
     stopped: Arc<AtomicBool>,
     admission: RunAdmission<'_>,
 ) -> Result<PreparedRun> {
-    let mut agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let mut agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     agent_updates::ensure_not_installing()?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Err("PandaCode is shutting down.".into());
@@ -2483,7 +2483,7 @@ async fn launch_operation_admitted(
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             // The remote run continues; the next launch re-attaches to it.
-            if let Ok(mut registry) = agents.lock() {
+            if let Ok(mut registry) = lock_agents(&agents) {
                 registry.remove(&session_id);
             }
             // This run's own entries, whichever run the registry held, go with `leftovers`.
@@ -2531,7 +2531,7 @@ async fn launch_operation_admitted(
             }
             let unfinished = store.lock().ok().and_then(|db| cloud_agents::load(&db, &session_id).ok().flatten()).is_some_and(|cloud| cloud.active());
             if unfinished && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
-                if let Ok(mut registry) = agents.lock() {
+                if let Ok(mut registry) = lock_agents(&agents) {
                     registry.remove(&session_id);
                 }
                 return;
@@ -2539,7 +2539,7 @@ async fn launch_operation_admitted(
         }
         // Match the registry -> store lock order used for Start and Stop. Stop
         // cannot arrive between the final stage decision and registry removal.
-        let mut registry = agents.lock().ok();
+        let mut registry = lock_agents(&agents).ok();
         // A team worker stopped for a request it could not resolve fails with that reason, unless
         // its harness finished the turn first. Settled by this run's own ID, registered or not, so
         // nothing kept for it outlives the run.
@@ -2782,7 +2782,7 @@ async fn launch_operation_admitted(
     Ok(())
 }
 fn runs_team_maintenance(state: &AppState, session_id: &str) -> Result<bool> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     Ok(agents.get(session_id).is_some_and(|agent| agent.team_maintenance))
 }
 #[tauri::command]
@@ -2831,7 +2831,7 @@ async fn respond_approval(
     if remote::route(&app, &state, &session_id, "approval.respond", serde_json::json!({"requestId": request_id, "approve": approved})).await?.is_some() {
         return Ok(());
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let tx = agents
         .get(&session_id)
         .ok_or("This agent is no longer running.")?;
@@ -2886,7 +2886,7 @@ async fn respond_user_input(
         return Ok(());
     }
     let reply = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let agent = agents
             .get(&session_id)
             .ok_or("This agent is no longer running.")?;
@@ -2915,7 +2915,7 @@ async fn respond_user_input(
         .map_err(|_| "The agent did not acknowledge the answer. Try again.".to_owned())?
         .map_err(|_| "The agent stopped before accepting the answer.".to_owned())?;
     accepted?;
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if let Some(agent) = agents.get(&session_id) {
         let mut approvals = agent.approvals.lock().map_err(|e| e.to_string())?;
         let mut pending_requests = agent.pending_requests.lock().map_err(|e| e.to_string())?;
@@ -3224,7 +3224,7 @@ async fn attach_worktree(
     base: Option<String>,
     existing: Option<bool>,
 ) -> Result<Session> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before moving this task into a worktree.".into());
     }
     let store = state.store.clone();
@@ -3278,7 +3278,7 @@ pub(crate) async fn task_worktree_status(state: &AppState, session_id: String, t
 
 #[tauri::command]
 async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Wait for the agent to finish before merging its worktree.".into());
     }
     let store = state.store.clone();
@@ -3303,7 +3303,7 @@ async fn remove_worktree(
 
 /// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
 pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err("Stop the agent before removing its worktree.".into());
     }
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
@@ -3909,7 +3909,7 @@ async fn start_run_script_terminal(
     let terms = state.terminals.clone();
     blocking(move || {
         let state = app.state::<AppState>();
-        let _admission = state.agents.lock().map_err(|_| "Agent state is unavailable.")?;
+        let _admission = lock_agents(&state.agents).map_err(|_| "Agent state is unavailable.")?;
         agent_updates::ensure_not_installing()?;
         if request_id.is_some_and(|id| !agent_tools::agent_ui_request_active(app.state(), id)) {
             return Err("Run request was cancelled before the script could start.".into());
@@ -4012,7 +4012,7 @@ struct Metrics {
 }
 #[tauri::command]
 async fn get_metrics(state: State<'_, AppState>) -> Result<Metrics> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?.len();
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?.len();
     let terms = state.terminals.lock().map_err(|e| e.to_string())?.len();
     let db = state.store.lock().map_err(|e| e.to_string())?.path.clone();
     blocking(move || {
@@ -4201,7 +4201,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         app.state::<file_preview::FilePreviews>().shutdown();
         // Cloud runs keep going on their machines; their bridges are killed below.
         let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
-        if let Ok(agents) = state.agents.lock() {
+        if let Ok(agents) = lock_agents(&state.agents) {
             for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
                 let _ = tx.send(RunInput::Stop);
             }
@@ -4214,7 +4214,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         tauri::async_runtime::spawn(async move {
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(12);
             while tokio::time::Instant::now() < deadline {
-                if agents.lock().map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
+                if lock_agents(&agents).map(|a| a.keys().all(|id| cloud.contains(id))).unwrap_or(true) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -4222,7 +4222,7 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             providers::shutdown_all();
             // Let pending pipe EOFs finish persistence after a forced cleanup.
             for _ in 0..20 {
-                if agents.lock().map(|a| a.is_empty()).unwrap_or(true) {
+                if lock_agents(&agents).map(|a| a.is_empty()).unwrap_or(true) {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;

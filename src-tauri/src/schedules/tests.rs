@@ -336,3 +336,27 @@ fn agent_timing_infers_the_kind_and_after_defaults_to_one_run() {
     assert!(call("pandacode_schedule_wakeup", json!({"note": "x", "afterTaskId": "a"})).unwrap_err().contains("its own turn end"));
     assert!(call("pandacode_schedule_message", json!({"taskId": "zz", "text": "x", "inMinutes": 5})).unwrap_err().starts_with("No thread"));
 }
+
+#[test]
+fn a_remotely_saved_schedule_rechecks_the_team_gate_when_it_fires() {
+    let store = store();
+    let schedule = once(&store);
+    assert_eq!(remote_team_gate(&store, &schedule, false).unwrap(), None, "saved on the desktop");
+    mark_saved_remotely(&store, &schedule.id, true).unwrap();
+    assert_eq!(remote_team_gate(&store, &schedule, false).unwrap(), None, "no team yet");
+    // The thread came to lead a team after the phone saved the schedule.
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES('a','{}')", []).unwrap();
+    assert_eq!(remote_team_gate(&store, &schedule, false).unwrap(), Some(REMOTE_TEAM_SKIP));
+    assert_eq!(remote_team_gate(&store, &schedule, true).unwrap(), None, "full access for remote tasks is on");
+    // Saving the user's settings keeps the record.
+    set_settings(&store, &SchedulerSettings { paused: true, ..Default::default() }).unwrap();
+    assert!(saved_remotely(&store, &schedule.id).unwrap());
+    assert!(settings(&store).unwrap().paused);
+    // Saved again on the desktop: it fires.
+    mark_saved_remotely(&store, &schedule.id, false).unwrap();
+    assert_eq!(remote_team_gate(&store, &schedule, false).unwrap(), None);
+    // A deleted schedule leaves no record.
+    mark_saved_remotely(&store, &schedule.id, true).unwrap();
+    delete(&store, &schedule.id).unwrap();
+    assert!(!saved_remotely(&store, &schedule.id).unwrap());
+}

@@ -272,7 +272,9 @@ like a prompt; `approve: false`, and a response that only cancels or declines, `
 | "decline"}` or a questions form with no answers, stay allowed so a phone can still stop it),
 `bot.message` when the bot's desktop thread leads a team, `bot.runSchedule` when its scheduled-work
 thread does, a `bot.failoverDecide` that runs a held lead's turn, a `schedules.create`/`update`, `runNow` or enable that
-targets one, and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
+targets one (a schedule last saved from a remote device is checked again each time it fires: if its
+thread has since come to lead a team and the switch is off, the run is recorded as skipped with the
+reason, `schedules::remote_team_gate`; saving it again on the desktop clears the mark), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
 `github.startTask` make their task without the saved default team, and so does `worktree.create`
 when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved

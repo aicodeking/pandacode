@@ -298,7 +298,12 @@ pub(crate) async fn deliver_with_queue(app: &tauri::AppHandle, inbound: Inbound,
             return Ok(session_id);
         }
         Command::Approve(approved, always) => {
-            answer_approval(app, &bot, &session_id, approved, always).await?;
+            if let Err(error) = answer_approval(app, &bot, &session_id, approved, always).await {
+                if error == TEAM_NEEDS_FULL_BOT {
+                    reply(app, &bot, &inbound.channel_id, &inbound.thread, TEAM_NEEDS_FULL_BOT).await;
+                }
+                return Err(error);
+            }
             return Ok(session_id);
         }
         Command::Message => {}
@@ -509,7 +514,14 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
     let _ = app.emit("bots-changed", ());
 }
 
+/// Approving a request lets the thread's turn go on, so a thread that came to lead a team
+/// mid-turn needs a Full access bot to approve, as a new turn does. A denial only holds it back.
+fn allow_approval(store: &Store, bot: &Bot, session_id: &str, approved: bool) -> Result<()> {
+    if approved { allow_team_turn(store, bot, session_id) } else { Ok(()) }
+}
+
 async fn answer_approval(app: &tauri::AppHandle, bot: &Bot, session_id: &str, approved: bool, always: bool) -> Result<()> {
+    allow_approval(&*app.state::<AppState>().store.lock().map_err(|e| e.to_string())?, bot, session_id, approved)?;
     // Requests answered in the desktop app meanwhile are gone; skip to the oldest live one.
     loop {
         let next = pending().lock().map_err(|e| e.to_string())?.get_mut(session_id).and_then(|list| (!list.is_empty()).then(|| list.remove(0)));
@@ -661,6 +673,12 @@ mod tests {
         let start = &source[source.find("async fn start_or_queue(").unwrap()..];
         let gate = start.find("allow_team_turn(").unwrap();
         assert!(gate < start.find("message_queue::add(").unwrap() && gate < start.find("architect_start_in_project(").unwrap());
+        // A chat reply approving a pending request is gated too; a denial is not.
+        bot.mode = "ask".into();
+        assert_eq!(allow_approval(&store, &bot, &session, true), Err(TEAM_NEEDS_FULL_BOT.into()));
+        assert!(allow_approval(&store, &bot, &session, false).is_ok());
+        let answering = &source[source.find("async fn answer_approval(").unwrap()..];
+        assert!(answering.find("allow_approval(").unwrap() < answering.find("answer(app").unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 
