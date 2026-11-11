@@ -62,7 +62,7 @@ fn message_param(params: &Value) -> Result<i64> {
 
 /// Whether an agent runs on `session_id` on this computer.
 fn running(ctx: &Ctx<'_>, session_id: &str) -> Result<bool> {
-    Ok(ctx.state().agents.lock().map_err(|e| e.to_string())?.contains_key(session_id))
+    Ok(crate::run_requests::lock_agents(&ctx.state().agents).map_err(|e| e.to_string())?.contains_key(session_id))
 }
 
 // ---- rewind.points ----

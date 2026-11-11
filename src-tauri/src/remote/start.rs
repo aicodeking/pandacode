@@ -546,7 +546,7 @@ fn reserve_in_place(project_id: &str, busy: impl FnOnce() -> Result<bool>) -> Re
 
 /// Whether a local agent is running in the project's main checkout.
 fn busy_in_place(state: &AppState, project_id: &str) -> Result<bool> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     Ok(agents.keys().any(|id| store.session(id).is_ok_and(|task| task.project_id == project_id && task.worktree_path.is_none())))
 }

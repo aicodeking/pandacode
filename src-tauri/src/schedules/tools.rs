@@ -90,10 +90,12 @@ pub(crate) fn with_schedules(base: Option<ToolHost>, app: tauri::AppHandle, sess
                 }
                 check_args(&name, &args)?;
                 let state = app.state::<AppState>();
-                let running: HashSet<String> = state.agents.lock().map_err(|e| e.to_string())?.keys().cloned().collect();
+                let running: HashSet<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
+                // Read before the store lock: the remote state is never locked while the store is.
+                let hosting = crate::remote::hosting(&app);
                 let (result, changed) = {
                     let store = state.store.lock().map_err(|e| e.to_string())?;
-                    dispatch(&store, &session_id, &name, &args, &running, crate::storage::now())?
+                    dispatch(&store, &session_id, &name, &args, &running, hosting, crate::storage::now())?
                 };
                 if let Some(changed) = changed {
                     super::changed(&app, Some(&changed));
@@ -209,8 +211,9 @@ fn describe(store: &Store, schedule: &TaskSchedule, with_runs: bool) -> Result<V
 }
 
 /// Runs one schedule tool for `session_id`; returns the result and the thread whose list changed.
-pub(crate) fn dispatch(store: &Store, session_id: &str, name: &str, args: &Value, running: &HashSet<String>, now: i64) -> Result<(Value, Option<String>)> {
-    let (mut result, changed) = run(store, session_id, name, args, running, now)?;
+/// `hosting`: this computer hosts remote devices, so a phone may be driving `session_id`.
+pub(crate) fn dispatch(store: &Store, session_id: &str, name: &str, args: &Value, running: &HashSet<String>, hosting: bool, now: i64) -> Result<(Value, Option<String>)> {
+    let (mut result, changed) = run(store, session_id, name, args, running, hosting, now)?;
     result["nowLocal"] = json!(local(Some(now)));
     Ok((result, changed))
 }
@@ -225,7 +228,7 @@ fn tasks(store: &Store, project_id: &str, running: &HashSet<String>) -> Result<V
     rows.map(|row| row.map(|(id, title)| json!({"id": id, "title": title, "running": running.contains(&id)})).map_err(|e| e.to_string())).collect()
 }
 
-fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &HashSet<String>, now: i64) -> Result<(Value, Option<String>)> {
+fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &HashSet<String>, hosting: bool, now: i64) -> Result<(Value, Option<String>)> {
     let me = store.session(session_id)?;
     let string = |key: &str| args[key].as_str().unwrap_or_default().trim().to_owned();
     let same_project = |id: &str| -> Result<crate::storage::Session> {
@@ -268,6 +271,12 @@ fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &Hash
                 };
             }
             let schedule = create(store, &input, "agent", Some(&me.id), now)?;
+            // Which turns a phone drove is not recorded, so while this computer hosts remote
+            // devices a message to another thread counts as saved remotely: it then reaches a
+            // thread that leads a team only with Full access for remote tasks (`remote_team_gate`).
+            if name == MESSAGE && hosting {
+                super::mark_saved_remotely(store, &schedule.id, true)?;
+            }
             let mut scheduled = describe(store, &schedule, false)?;
             scheduled["stopsAfter"] = json!(stops_after(&schedule));
             Ok((json!({"scheduled": scheduled}), Some(schedule.session_id)))

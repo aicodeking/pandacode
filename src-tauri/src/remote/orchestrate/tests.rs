@@ -1153,3 +1153,17 @@ fn an_idle_tick_needs_no_links_and_no_threads() {
     record_child(&store, &parent, &id).unwrap();
     assert!(!threads::check_none(&store).unwrap());
 }
+
+#[test]
+fn a_phone_without_full_access_cannot_accept_a_team_leads_link_request() {
+    let (store, project, lead) = store();
+    let plain = store.create_session(&project, "codex", "gpt", "ask").unwrap().id;
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')", [&lead]).unwrap();
+    let (lead_request, plain_request) = (links::insert_for_test(&lead), links::insert_for_test(&plain));
+    assert_eq!(links::allow_remote_accept(&store, &lead_request, false), Err(super::super::host::TEAM_NEEDS_FULL_ACCESS.into()));
+    assert!(links::allow_remote_accept(&store, &lead_request, true).is_ok(), "allowed with full access for remote tasks");
+    assert!(links::allow_remote_accept(&store, &plain_request, false).is_ok(), "a task without a team is unaffected");
+    assert!(links::allow_remote_accept(&store, "gone", false).is_ok());
+    links::take_for_test(&lead_request);
+    links::take_for_test(&plain_request);
+}

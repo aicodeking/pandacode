@@ -38,6 +38,24 @@ fn schema_version_is_37_with_schedule_tables() {
 }
 
 #[test]
+fn version_37_survives_malformed_settings_json() {
+    let path = std::env::temp_dir().join(format!("pandacode-schedules-{}.sqlite3", uuid::Uuid::new_v4()));
+    let id = {
+        let store = store_at(&path);
+        let id = once(&store).id;
+        store.db.execute_batch("ALTER TABLE task_schedules DROP COLUMN saved_remotely; PRAGMA user_version=36;").unwrap();
+        // The CHECK keeps this out today; a damaged or hand-edited file can still carry it.
+        store.db.execute_batch("PRAGMA ignore_check_constraints=1; INSERT INTO scheduler_settings(id,content) VALUES(1,'{not json'); PRAGMA ignore_check_constraints=0;").unwrap();
+        id
+    };
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert!(!saved_remotely(&store, &id).unwrap());
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn version_37_moves_remotely_saved_ids_into_a_column() {
     let path = std::env::temp_dir().join(format!("pandacode-schedules-{}.sqlite3", uuid::Uuid::new_v4()));
     let id = {
@@ -76,7 +94,7 @@ fn a_long_message_is_taken_and_a_listing_previews_it() {
     let long = "x".repeat(100_000);
     create(&store, &ScheduleInput { prompt: long.clone(), interval_minutes: Some(30), session_id: "a".into(), ..input("interval") }, "user", Some("a"), NOW).unwrap();
     assert_eq!(list(&store, Some("a")).unwrap()[0].prompt, long, "kept whole");
-    let (listed, _) = tools::dispatch(&store, "a", "pandacode_list_schedules", &json!({"taskId": "a"}), &std::collections::HashSet::new(), NOW).unwrap();
+    let (listed, _) = tools::dispatch(&store, "a", "pandacode_list_schedules", &json!({"taskId": "a"}), &std::collections::HashSet::new(), false, NOW).unwrap();
     assert_eq!(listed["schedules"][0]["schedule"]["prompt"].as_str().unwrap().chars().count(), tools::PROMPT_PREVIEW + 1);
 }
 
@@ -233,7 +251,7 @@ fn failures_turn_a_schedule_off_after_three() {
 fn agent_tools_respect_scope_limits_and_defaults() {
     let store = store();
     let running: std::collections::HashSet<String> = ["b".to_owned()].into();
-    let call = |session: &str, name: &str, args: Value| tools::dispatch(&store, session, name, &args, &running, NOW);
+    let call = |session: &str, name: &str, args: Value| tools::dispatch(&store, session, name, &args, &running, false, NOW);
     let (made, changed) = call("a", "pandacode_schedule_wakeup", json!({"note": "Poll CI", "kind": "interval", "intervalMinutes": 60})).unwrap();
     assert_eq!(changed.as_deref(), Some("a"));
     assert_eq!(made["scheduled"]["schedule"]["maxRuns"], 20);
@@ -267,7 +285,7 @@ fn agent_tools_respect_scope_limits_and_defaults() {
 fn messages_from_another_thread_say_where_they_came_from() {
     let store = store();
     let running = std::collections::HashSet::new();
-    let (made, _) = tools::dispatch(&store, "b", "pandacode_schedule_message", &json!({"taskId": "a", "text": "Rebase now", "inMinutes": 5}), &running, NOW).unwrap();
+    let (made, _) = tools::dispatch(&store, "b", "pandacode_schedule_message", &json!({"taskId": "a", "text": "Rebase now", "inMinutes": 5}), &running, false, NOW).unwrap();
     let schedule = get(&store, made["scheduled"]["id"].as_str().unwrap()).unwrap();
     let text = message(&advance(&store, &schedule, NOW, true).unwrap(), true, NOW);
     let lines: Vec<&str> = text.lines().collect();
@@ -352,7 +370,7 @@ fn agent_timing_infers_the_kind_and_after_defaults_to_one_run() {
 
     let store = store();
     let running = std::collections::HashSet::new();
-    let call = |name: &str, args: Value| tools::dispatch(&store, "a", name, &args, &running, NOW);
+    let call = |name: &str, args: Value| tools::dispatch(&store, "a", name, &args, &running, false, NOW);
     let (made, _) = call("pandacode_schedule_wakeup", json!({"note": "Review b", "afterTaskId": "b"})).unwrap();
     assert_eq!((made["scheduled"]["schedule"]["kind"].as_str(), made["scheduled"]["schedule"]["maxRuns"].as_i64()), (Some("after"), Some(1)));
     assert_eq!(made["scheduled"]["stopsAfter"], "runs once; pass maxRuns for repeats");
@@ -384,4 +402,26 @@ fn a_remotely_saved_schedule_rechecks_the_team_gate_when_it_fires() {
     mark_saved_remotely(&store, &schedule.id, true).unwrap();
     delete(&store, &schedule.id).unwrap();
     assert!(!saved_remotely(&store, &schedule.id).unwrap());
+}
+
+#[test]
+fn an_agents_message_to_another_thread_is_gated_like_a_remote_save_while_hosting() {
+    let store = store();
+    let running = std::collections::HashSet::new();
+    let send = |hosting: bool| {
+        let (made, _) = tools::dispatch(&store, "b", "pandacode_schedule_message", &json!({"taskId": "a", "text": "Go", "inMinutes": 5}), &running, hosting, NOW).unwrap();
+        get(&store, made["scheduled"]["id"].as_str().unwrap()).unwrap()
+    };
+    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES('a','{}')", []).unwrap();
+    // A phone may be driving b, which messages lead a: the fire-time gate holds.
+    let hosted = send(true);
+    assert!(saved_remotely(&store, &hosted.id).unwrap());
+    assert_eq!(remote_team_gate(&store, &hosted, false).unwrap(), Some(REMOTE_TEAM_SKIP));
+    assert_eq!(remote_team_gate(&store, &hosted, true).unwrap(), None);
+    // Not hosting: no phone can drive b.
+    let local = send(false);
+    assert_eq!(remote_team_gate(&store, &local, false).unwrap(), None);
+    // A wakeup for the agent's own thread stays as it was.
+    let (made, _) = tools::dispatch(&store, "a", "pandacode_schedule_wakeup", &json!({"note": "x", "inMinutes": 5}), &running, true, NOW).unwrap();
+    assert!(!saved_remotely(&store, made["scheduled"]["id"].as_str().unwrap()).unwrap());
 }

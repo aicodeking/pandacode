@@ -211,7 +211,7 @@ async fn start_or_queue(app: &tauri::AppHandle, bot: &Bot, session_id: &str, tex
         return Err("Attach up to four images per message.".into());
     }
     allow_team_turn(&*state.store.lock().map_err(|e| e.to_string())?, bot, session_id)?;
-    let busy = state.agents.lock().map_err(|e| e.to_string())?.contains_key(session_id);
+    let busy = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(session_id);
     if busy {
         if !force_queue && steer_while_busy(bot, &image_ids, sender_id)
             && crate::message_queue::steer_task(app.clone(), app.state::<AppState>(), session_id.to_owned(), text.clone()).await.is_ok()
@@ -573,7 +573,7 @@ pub(crate) async fn stop_bot(app: &tauri::AppHandle, bot_id: &str) {
         super::threads(&store, bot_id).map(|threads| threads.into_iter().map(|thread| thread.session_id).collect()).unwrap_or_default()
     };
     for session in sessions {
-        let running = app.state::<AppState>().agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false);
+        let running = crate::run_requests::lock_agents(&app.state::<AppState>().agents).map(|agents| agents.contains_key(&session)).unwrap_or(false);
         if running {
             let _ = crate::stop_session(app.clone(), app.state::<AppState>(), session.clone()).await;
         }

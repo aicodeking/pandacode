@@ -339,7 +339,7 @@ pub async fn steer_task(
     }
     refuse_switched_off_skill(&state, &session_id, &text).await?;
     let reply = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let agent = agents
             .get(&session_id)
             .ok_or("The agent is not running; the message stays queued.")?;

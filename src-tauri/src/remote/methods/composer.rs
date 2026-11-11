@@ -406,7 +406,7 @@ impl BtwAsk {
 
     /// The question with the main thread's news since `seen_id`, and the new seen id.
     fn prompt(&self, state: &AppState) -> Result<(String, i64)> {
-        let running = state.agents.lock().map_err(|e| e.to_string())?.contains_key(&self.session_id);
+        let running = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&self.session_id);
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let main = store.session(&self.session_id)?;
         let page = store.message_page(&self.session_id, None)?;
@@ -450,7 +450,7 @@ impl BtwAsk {
             }
             return Err(error);
         }
-        if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&side.id) {
+        if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&side.id) {
             return Err("The side thread is still answering. Send this when it finishes.".into());
         }
         let title = if created { side_title(&this.text) } else { side.title.clone() };

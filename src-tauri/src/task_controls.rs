@@ -105,7 +105,7 @@ pub(super) async fn task_goal(
         // An agent may have started or the selected harness may have changed
         // while the independent metadata process was reading its snapshot.
         let running = {
-            let agents = state.agents.lock().map_err(|error| error.to_string())?;
+            let agents = crate::run_requests::lock_agents(&state.agents).map_err(|error| error.to_string())?;
             let store = state.store.lock().map_err(|error| error.to_string())?;
             let current = store.session(&session_id)?;
             if current.provider != "codex" || current.resume_id.as_deref() != Some(remote) {
@@ -165,7 +165,7 @@ pub(super) async fn codex_command(
 ) -> Result<Value> {
     let (_, cwd) = context(&state, &session_id)?;
     if matches!(request, command_operations::Request::Logout)
-        && !state.agents.lock().map_err(|e| e.to_string())?.is_empty()
+        && !crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.is_empty()
     {
         return Err("Stop running tasks before signing out.".into());
     }
@@ -338,7 +338,7 @@ struct TaskLease {
 }
 impl TaskLease {
     fn acquire(state: &AppState, sid: &str) -> Result<Self> {
-        let mut agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let mut agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         crate::agent_updates::ensure_not_installing()?;
         if state.shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
@@ -366,7 +366,7 @@ impl TaskLease {
 }
 impl Drop for TaskLease {
     fn drop(&mut self) {
-        if let Ok(mut agents) = self.agents.lock() {
+        if let Ok(mut agents) = crate::run_requests::lock_agents(&self.agents) {
             if agents
                 .get(&self.sid)
                 .is_some_and(|a| a.run_id == self.run_id)
@@ -647,7 +647,7 @@ pub(super) async fn start_harness_terminal(
         }
     }
     blocking(move || {
-        let active = lease.agents.lock().map_err(|error| error.to_string())?;
+        let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
         }

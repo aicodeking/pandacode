@@ -960,7 +960,7 @@ pub(super) fn configure_state(
     if let Some(c) = &config {
         c.validate()?;
     }
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     refuse_mirror(&store, session_id)?;
     if parent_of(&store, session_id)?.is_some() {
@@ -1182,7 +1182,7 @@ pub(crate) fn start_state(
 ) -> Result<(TeamSnapshot, Admission)> {
     // Before any state changes: an objective no run could take leaves the old one untouched.
     text_check(text)?;
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     refuse_mirror(&store, session_id)?;
     if let Some(project) = expected_project {
@@ -1296,7 +1296,7 @@ pub(crate) fn can_resume(status: &str) -> bool {
 }
 pub(crate) fn control_state(state: &AppState, session_id: &str, action: &str) -> Result<TeamSnapshot> {
     let team = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
         refuse_mirror(&store, session_id)?;
         // A maintenance command on the lead: Stop ends that run alone, and the team stays as it is.
@@ -1860,7 +1860,7 @@ fn dispatch_as(
     routes: &routing::AutoRoutes,
 ) -> Result<(Value, Option<TeamSnapshot>)> {
     crate::agent_tools::drop_nulls(&mut args);
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let mut team = load(&store, sid)?.ok_or("Team unavailable.")?;
     if stopped.load(Ordering::SeqCst) || !active(&team.status) || team.generation != generation {
@@ -2572,7 +2572,7 @@ fn next_action_state(
     state: &AppState,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) -> Result<Option<Launch>> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Ok(None);
     }
@@ -2876,7 +2876,7 @@ fn fail_launch_state(
     error: &str,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) {
-    let Ok(agents) = state.agents.lock() else {
+    let Ok(agents) = crate::run_requests::lock_agents(&state.agents) else {
         eprintln!("Team launch failure for {sid} not recorded: agent registry unavailable. {error}");
         return;
     };
@@ -3316,7 +3316,7 @@ pub(crate) fn completed_state(
     stopped: bool,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) {
-    let Ok(agents) = state.agents.lock() else {
+    let Ok(agents) = crate::run_requests::lock_agents(&state.agents) else {
         return;
     };
     completed_with_agents(state, &agents, sid, admission, successful, stopped, None, notify);

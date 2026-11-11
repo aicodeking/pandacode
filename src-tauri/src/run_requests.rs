@@ -13,8 +13,8 @@ use super::*;
 /// function, must never be called on a thread that already holds `agents`, or it deadlocks.
 /// Providers emit events from their own tasks with no registry lock held; keep it that way, and
 /// release any `agents` guard before emitting from code that holds one. Debug builds assert it
-/// for guards taken through `lock_agents` (this module's callers, `lib.rs` and
-/// `worker_approvals.rs`); a plain `agents.lock()` elsewhere is not tracked.
+/// for guards taken through `lock_agents`, which every non-test registry lock uses; a plain
+/// `agents.lock()` is not tracked, so don't add one.
 pub(crate) fn record_request_event(
     store: &Arc<Mutex<Store>>,
     run: &worker_approvals::Run,

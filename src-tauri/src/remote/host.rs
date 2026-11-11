@@ -1380,7 +1380,7 @@ async fn queue_team_settled(app: tauri::AppHandle, session_id: String, team: Tea
     let id = session_id.clone();
     let data = crate::blocking(move || {
         let state = handle.state::<AppState>();
-        if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&id) {
+        if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&id) {
             return Ok(None);
         }
         let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -1854,7 +1854,7 @@ async fn send_prompt(app: &tauri::AppHandle, from: &str, session_id: String, tex
 async fn deliver_prompt(app: &tauri::AppHandle, session_id: String, text: String, image_ids: Vec<String>) -> Result<Value> {
     let state = app.state::<AppState>();
     let _turn = task_send_lock(&session_id).await;
-    let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+    let busy = || crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
     if busy()? {
         let queued: Vec<Value> = image_ids.iter().map(|id| json!({"kind": "image", "id": id, "name": "Image", "width": 0, "height": 0, "thumbnail": "", "source": "file"})).collect();
         let entry = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &session_id, &text, &json!(queued))?;
@@ -2805,7 +2805,7 @@ async fn detect_pull(app: &tauri::AppHandle, state: &AppState, session_id: &str,
 }
 
 fn bots_list(state: &AppState) -> Result<Value> {
-    let active: HashSet<String> = state.agents.lock().map_err(|e| e.to_string())?.keys().cloned().collect();
+    let active: HashSet<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let active_projects: HashSet<String> = store
         .sessions()?
@@ -3246,7 +3246,7 @@ fn live_run(agent: &crate::RunningAgent) -> Result<LiveRun> {
 /// already omits drafts and architect workers; mirrors are filtered and bot workspaces tagged here.
 fn tasks_list(state: &AppState, limit: usize) -> Result<Value> {
     let (last_event_by_session, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut last_event = HashMap::new();
         let mut pending = HashMap::new();
         for (session_id, agent) in agents.iter() {
@@ -3402,7 +3402,7 @@ fn fit_project_icons(icons: impl IntoIterator<Item = (String, Option<String>)>) 
 /// not tasks here (deleted, or never were), so the viewer stops waiting on them.
 fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<(Vec<Value>, Vec<Value>)> {
     let (active_runs, pending_by_session) = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let mut active_runs = HashMap::new();
         let mut pending = HashMap::new();
         for id in ids {

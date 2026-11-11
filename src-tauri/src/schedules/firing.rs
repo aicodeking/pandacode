@@ -15,7 +15,7 @@ fn team_busy(store: &Store, session_id: &str) -> Result<bool> {
 /// An open harness console with no agent run: nothing can send to it, the window's queue
 /// included, so its schedules wait (still due, not advanced) until the console closes.
 pub(super) fn console_only(state: &AppState, session_id: &str) -> bool {
-    let running = state.agents.lock().map(|agents| agents.contains_key(session_id)).unwrap_or(true);
+    let running = crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(session_id)).unwrap_or(true);
     !running && crate::terminal::harness_running(&state.terminals, session_id).unwrap_or(false)
 }
 
@@ -50,7 +50,7 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
         team_busy(&store, &schedule.session_id)?
     };
     let text = message(schedule, manual, now);
-    let busy = team || state.agents.lock().map_err(|e| e.to_string())?.contains_key(&schedule.session_id);
+    let busy = team || crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&schedule.session_id);
     let result = if busy {
         let queued = message_queue::add(&*state.store.lock().map_err(|e| e.to_string())?, &schedule.session_id, &text, &json!([]));
         if queued.is_ok() {

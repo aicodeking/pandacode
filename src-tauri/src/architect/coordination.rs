@@ -561,7 +561,7 @@ fn take_urgent_slot(parent: &str, sender: &str, recipient: &str) -> bool {
 /// worker reads it there. Returns `sent` (handed to the run, which may still refuse it) or `mailbox`
 /// per recipient.
 fn steer(state: &AppState, parent: &str, sender: &str, targets: Vec<SteerTarget>) -> std::collections::BTreeMap<String, String> {
-    let agents = state.agents.lock().ok();
+    let agents = crate::run_requests::lock_agents(&state.agents).ok();
     targets.into_iter().map(|(recipient, session, id, message, whole)| {
         let sent = agents.as_ref().and_then(|agents| agents.get(&session)).is_some_and(|agent| {
             if agent.stopped.load(Ordering::SeqCst) || !take_urgent_slot(parent, sender, &recipient) {

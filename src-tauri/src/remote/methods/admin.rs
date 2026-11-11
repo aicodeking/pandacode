@@ -645,6 +645,10 @@ impl Run for Respond {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             allow_link_access(self.link.as_ref().map(|(_, access)| access.as_str()), ctx.full_access)?;
+            if self.link.is_some() && !ctx.full_access {
+                let (store, id) = (ctx.state().store.clone(), self.request_id.clone());
+                crate::blocking(move || crate::remote::orchestrate::links::allow_remote_accept(&*store.lock().map_err(|e| e.to_string())?, &id, false)).await?;
+            }
             let (device, access) = self.link.map_or((None, None), |(device, access)| (Some(device), Some(access)));
             let status = crate::remote::orchestrate::links::orchestration_link_respond(ctx.app.clone(), self.request_id, device, access).await?;
             Ok(json!({"orchestration": status}))

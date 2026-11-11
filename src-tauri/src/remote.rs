@@ -254,6 +254,11 @@ pub(crate) fn full_access_for_remote_tasks(app: &tauri::AppHandle) -> bool {
     app.try_state::<Remote>().is_some_and(|remote| remote.lock().settings.remote_full_access)
 }
 
+/// Whether this computer hosts remote devices (PandaConnect), so a phone could be driving a task.
+pub(crate) fn hosting(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Remote>().is_some_and(|remote| remote.lock().settings.host_enabled)
+}
+
 fn emit_status(app: &tauri::AppHandle) {
     let _ = app.emit("remote://status", remote(app).status());
 }

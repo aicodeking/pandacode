@@ -525,7 +525,7 @@ fn project_page(state: &AppState) -> Result<Value> {
 }
 
 fn task_page(state: &AppState, project_id: &str, offset: u64, archived: bool) -> Result<Value> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let offset = offset.min(1_000_000) as i64;
     // Filter the project before LIMIT: global recent-task lists cannot paginate a project.
@@ -551,7 +551,7 @@ fn read_task_page(
     sid: &str,
     before_id: Option<i64>,
 ) -> Result<Value> {
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     // Project validation and the complete read share a lock. SQL bounds previews
     // before allocation, including a large latest response and task description.
@@ -688,7 +688,7 @@ fn mutate_task(
 ) -> Result<Value> {
     // Matches prepare_task_run/configure_session: neither Start nor a project
     // change can race between scope checking and the mutation.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     if stopped.load(Ordering::SeqCst) {
         return Err("Task has stopped.".into());

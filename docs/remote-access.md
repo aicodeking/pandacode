@@ -274,7 +274,7 @@ like a prompt; `approve: false`, and a response that only cancels or declines, `
 thread does, a `bot.failoverDecide` that runs a held lead's turn, a `schedules.create`/`update`, `runNow` or enable that
 targets one (a schedule last saved from a remote device is checked again each time it fires: if its
 thread has since come to lead a team and the switch is off, the run is recorded as skipped with the
-reason, `schedules::remote_team_gate`; saving it again on the desktop clears the mark), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
+reason, `schedules::remote_team_gate`; saving it again on the desktop clears the mark; which turns a phone drove is not recorded, so while this computer hosts remote devices an agent's `pandacode_schedule_message` to another thread gets the same mark and gate), an `orchestration.respond` that accepts a lead's link request (`links::allow_remote_accept`; declining stays allowed), and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
 `github.startTask` make their task without the saved default team, and so does `worktree.create`
 when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved

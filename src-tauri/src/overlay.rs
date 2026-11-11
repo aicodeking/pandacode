@@ -740,7 +740,7 @@ pub async fn overlay_snapshot(
         .clone();
     // Registry -> child snapshot -> store, matching stream settlement. Child
     // responses/tools stay in their run's memory and are not cloned for polling.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let live = live_tasks(&agents)?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let (mut context, team_worker_count) = launch_preview(&store, &preferences)?;
@@ -797,7 +797,7 @@ fn thread_snapshot(
     // text from memory to history between our two snapshots. Approval/child
     // locks precede the store; the store precedes the assistant buffer, matching
     // the writer. Never hold the assistant lock while waiting for the store.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let agent = agents.get(session_id);
     let running = agent.is_some_and(|agent| !agent.stopped.load(Ordering::Acquire));
     let waiting = if let Some(agent) = agent.filter(|_| running) {
@@ -1103,7 +1103,7 @@ pub async fn overlay_open_task(
     subagent_id: Option<String>,
 ) -> Result<()> {
     let target = {
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let live_child =
             if let (Some(id), Some(agent)) = (subagent_id.as_deref(), agents.get(&session_id)) {
                 agent

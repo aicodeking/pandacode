@@ -759,7 +759,7 @@ async fn refuse_running_in(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
 /// Whether an agent runs in `root`, literally or canonically (`git.discard` asks too).
 pub(super) async fn running_in(ctx: &Ctx<'_>, root: &Path) -> Result<bool> {
     let state = ctx.state();
-    let running: Vec<String> = state.agents.lock().map_err(|e| e.to_string())?.keys().cloned().collect();
+    let running: Vec<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
     let mut others = Vec::with_capacity(running.len());
     for session_id in running {
         if let Ok(other) = task_root(&state, &session_id).await {

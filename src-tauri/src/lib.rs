@@ -2374,7 +2374,7 @@ async fn launch_operation_admitted(
                         *slot = Some(error);
                     }
                     if matches!(e.kind.as_str(), "goal" | "goal_input") {
-                        if let Ok(registry) = goal_agents_sink.lock() {
+                        if let Ok(registry) = lock_agents(&goal_agents_sink) {
                             if let Some(agent) = registry.get(&e.session_id) {
                                 let _ = agent.send(RunInput::Stop);
                             }

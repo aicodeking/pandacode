@@ -216,7 +216,7 @@ async fn run_recipe(ctx: Ctx<'_>, this: RecipesRun) -> Result<Value> {
     let session_id = this.session_id;
     // Background lane: never check-then-send beside a `task.send` or `schedules.runNow`.
     let _turn = super::task_send_lock(&session_id).await;
-    let busy = || state.agents.lock().map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
+    let busy = || crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).map_err(|e| e.to_string());
     // Like the desktop's Run: one message per step, through the task's queue. A busy
     // task queues each; an idle one gets the first now and the rest after each run.
     let (mut sent, mut queued) = (0, 0);
