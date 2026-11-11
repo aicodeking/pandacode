@@ -5200,6 +5200,27 @@ fn catalog_lookups_wait_for_a_busy_slot_and_cache_failures_briefly() {
     assert_eq!(model_efforts::model_levels("busy-cache-test", "busy-model"), None);
 }
 #[test]
+fn a_sub_workers_followup_takes_a_reasoning_effort() {
+    let (state, sid, _lead, _run, engine) = nested_fixture();
+    let schema = &sub_worker_catalog()[1]["inputSchema"]["properties"];
+    assert!(schema.get("reasoningEffort").is_some(), "{schema}");
+    let child = sub_call(&state, &sid, &engine, "pandacode_dispatch_workers", json!({"assignments":[assignment("lexer","fast","src/lexer")]})).unwrap()["workerIds"][0].as_str().unwrap().to_string();
+    let settle = || {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.workers.iter_mut().find(|w| w.id == child).unwrap().status = "completed".into();
+        save(&store, &mut team).unwrap();
+    };
+    let effort = || load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers.into_iter().find(|w| w.id == child).unwrap().reasoning_effort;
+    settle();
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"followup","workerId":child,"key":"lexer2","prompt":"Also add tests.","reasoningEffort":" High "})).unwrap();
+    assert_eq!(effort().as_deref(), Some("high"));
+    settle();
+    // A flag-like level is ignored, as for pandacode_followup_worker.
+    sub_call(&state, &sid, &engine, "pandacode_sub_workers", json!({"action":"followup","workerId":child,"key":"lexer3","prompt":"More.","reasoningEffort":"--help"})).unwrap();
+    assert_eq!(effort().as_deref(), Some("high"));
+}
+#[test]
 fn followup_can_change_a_workers_effort() {
     model_efforts::seed("codex", &[("followup-test", &["low", "medium", "high"])]);
     let (state, sid) = auto_state();
@@ -5669,7 +5690,7 @@ fn an_effort_that_is_not_a_level_is_refused_or_ignored() {
     assert_eq!(model_efforts::check(Some(" High ".into())), Ok(Some("high".into())));
     assert_eq!(model_efforts::check(Some("  ".into())), Ok(None));
     assert_eq!(model_efforts::check(Some("Extra_High".into())), Ok(Some("extra_high".into())), "catalog IDs with underscores");
-    for bad in ["x".repeat(33), "hi gh".into(), "max!".into(), "élevé".into()] {
+    for bad in ["x".repeat(33), "hi gh".into(), "max!".into(), "élevé".into(), "-x".into(), "--help".into(), "hi\tgh".into()] {
         assert_eq!(model_efforts::check(Some(bad.clone())), Err(model_efforts::NOT_A_LEVEL), "{bad}");
     }
     let (state, sid) = auto_state();

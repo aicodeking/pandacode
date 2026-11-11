@@ -5242,7 +5242,13 @@ mod tests {
             assert!(after(composer, run, "\n}\n").contains(gate), "{run}");
         }
         let threads = include_str!("methods/threads.rs");
-        assert!(after(threads, "impl Run for SetStage", "\n}\n").contains(gate), "thread.setStage");
+        for run in ["impl Run for SetStage", "impl Run for Archive", "impl Run for SetGoal"] {
+            let body = after(threads, run, "\n}\n");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{run}"));
+            assert!(["set_task_stage(", "update_session(", "update_task_details("].iter().all(|change| body.find(change).is_none_or(|c| at < c)), "{run} checks before it changes");
+        }
+        let git = include_str!("methods/git.rs");
+        assert!(after(git, "fn create_task_worktree(", "\n}\n").contains("if !trust.untrusted() {\n            crate::architect::profiles::apply_default("), "worktree.create");
     }
 
     #[test]

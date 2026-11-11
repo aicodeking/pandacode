@@ -42,7 +42,8 @@ use tauri::{Emitter, Manager, State};
 /// 10: dispatch_workers takes councilLens (Council reviewers); a few descriptions are shorter.
 /// 11: team leads also receive the app task tools.
 /// 12: per-assignment and follow-up reasoningEffort; shorter cancel/finish/replace descriptions.
-const TOOL_CATALOG_VERSION: u32 = 12;
+/// 13: sub_workers followup takes reasoningEffort.
+const TOOL_CATALOG_VERSION: u32 = 13;
 /// Auto teams carry a roster of installed models the lead may choose from.
 const AUTO_ROSTER_MAX: usize = 24;
 /// Team tools only change this team's own state, and every call is checked against the
@@ -1422,7 +1423,7 @@ fn dispatch_tool(child: bool) -> Value {
     let s = json!({"type":"string"});
     let mut item = json!({"key":id,"profileId":id,"provider":s,"model":s,"reasoningEffort":s,"name":s,"prompt":s,"dependsOn":{"type":"array","items":id},"files":files_schema(),"readOnly":{"type":"boolean"}});
     let description = if child {
-        "Start sub-workers only for parallel work or another model; otherwise do it yourself. Files inside your scope (read-only if you are); dependsOn only these. You resume with their results.".to_string()
+        "Start sub-workers only for parallel work or another model; otherwise do it yourself. Files inside your scope (read-only if you are); dependsOn only these. Their results resume you.".to_string()
     } else {
         item["replaces"] = json!({"type":"string","description":"Failed worker (or one that failed your check) to replace and abandon. \"auto\" escalates harness or model; max 2 retries, then report. Starts from its changes."});
         item["replaceReason"] = json!({"type":"string","description":"The failed check."});
@@ -1448,7 +1449,7 @@ fn sub_worker_catalog() -> Vec<Value> {
     let id = json!({"type":"string"});
     vec![
         dispatch_tool(true),
-        tool("sub_workers","Your sub-workers: list, read (workerId; offset = nextOffset; checkpoint: true pages it), followup (workerId, key, prompt; files/readOnly inherit), cancel (workerId, reason).",json!({"action":{"type":"string","enum":["list","read","followup","cancel"]},"offset":{"type":"integer"},"checkpoint":{"type":"boolean"},"workerId":id,"key":id,"prompt":{"type":"string"},"files":files_schema(),"readOnly":{"type":"boolean"},"reason":{"type":"string"}}),&["action"]),
+        tool("sub_workers","Sub-workers: list; read (offset = nextOffset; checkpoint: true pages it), followup (key, prompt; rest inherit) or cancel (reason) a workerId.",json!({"action":{"type":"string","enum":["list","read","followup","cancel"]},"offset":{"type":"integer"},"checkpoint":{"type":"boolean"},"workerId":id,"key":id,"prompt":{"type":"string"},"files":files_schema(),"readOnly":{"type":"boolean"},"reasoningEffort":{"type":"string"},"reason":{"type":"string"}}),&["action"]),
     ]
 }
 /// The architect tool a `sub_workers` action stands for, and its arguments without `action`.
@@ -1541,8 +1542,10 @@ pub fn host(
                         } else {
                             routing::AutoRoutes::default()
                         };
-                        if matches!(name.as_str(), "pandacode_dispatch_workers" | "pandacode_followup_worker") {
-                            model_efforts::warm(effort_providers(&app, &sid, &name, &args, &routes)).await;
+                        // A sub-worker's `sub_workers` followup is `pandacode_followup_worker` too.
+                        let effort_tool = if name == "pandacode_sub_workers" && args["action"] == "followup" { "pandacode_followup_worker" } else { name.as_str() };
+                        if matches!(effort_tool, "pandacode_dispatch_workers" | "pandacode_followup_worker") {
+                            model_efforts::warm(effort_providers(&app, &sid, effort_tool, &args, &routes)).await;
                         }
                         let caller = caller.as_ref().map(|(id, attempt)| (id.as_str(), *attempt));
                         dispatch(&app, &sid, generation, caller, &name, args, &stopped, &routes)?

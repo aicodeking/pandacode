@@ -747,7 +747,10 @@ fn create_task_worktree(store: &Arc<StdMutex<crate::storage::Store>>, session_id
         let mut source = source.clone();
         source.mode = crate::storage::DEFAULT_PERMISSION_MODE.into();
         let task = store.create_worktree_session_on(&source, &worktree.path, Some(&worktree.branch))?;
-        crate::architect::profiles::apply_default(&store, &task.id)?;
+        // The default team's workers run in full access: only with the switch, as task.start.
+        if !trust.untrusted() {
+            crate::architect::profiles::apply_default(&store, &task.id)?;
+        }
         store.session(&task.id)
     })()
     .map_err(|error| format!("Worktree created at {}, but the task could not be saved: {error}", worktree.path.display()))?;
@@ -1382,6 +1385,30 @@ mod tests {
 
         let taken = create_task_worktree(&store, &started.id, "started-one", Trust::Desktop).unwrap_err();
         assert!(taken.contains("already exists"), "{taken}");
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn worktree_create_applies_the_default_team_only_with_the_switch() {
+        let root = repo();
+        let store = Arc::new(StdMutex::new(crate::storage::Store::open(Path::new(":memory:")).unwrap()));
+        let (off, on) = {
+            let store = store.lock().unwrap();
+            let project = store.add_project(&root).unwrap();
+            let library = json!({"enabled": true, "lastSetup": {"architect": {"provider": "codex", "model": "default", "reasoningEffort": null}, "config": {"auto": true, "workers": [], "catalog": [{"id": "a", "name": "A", "provider": "codex", "model": "default", "reasoningEffort": null}], "maxParallel": 0, "maxRounds": 8, "maxAssignments": 24, "workspace": "shared", "summaryLimit": 3072}}, "activeProfileId": null, "profiles": []});
+            store.db.execute("INSERT OR REPLACE INTO architect_library(id,content) VALUES(1,?1)", [library.to_string()]).unwrap();
+            let off = store.create_session(&project.id, "codex", "default", "full").unwrap();
+            let on = store.create_session(&project.id, "codex", "default", "full").unwrap();
+            for task in [&off, &on] {
+                store.message(&task.id, "user", "Already talking").unwrap();
+            }
+            (off, on)
+        };
+        let leads_team = |sid: &str| -> bool { store.lock().unwrap().db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
+        let (created, _) = create_task_worktree(&store, &off.id, "switch-off", Trust::phone(false)).unwrap();
+        assert!(!leads_team(&created.id), "no default team without full access for remote tasks");
+        let (created, _) = create_task_worktree(&store, &on.id, "switch-on", Trust::phone(true)).unwrap();
+        assert!(leads_team(&created.id), "the default team with the switch");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 

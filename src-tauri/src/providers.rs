@@ -629,7 +629,9 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
         ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes", Some(value)) => {
+            // grok and cline pass it as an argv value: a leading dash would read as a flag.
             !value.is_empty()
+                && !value.starts_with('-')
                 && value.len() <= 64
                 && value
                     .bytes()
@@ -4690,6 +4692,11 @@ mod tests {
         assert!(validate_reasoning_effort("kimi", Some("high level")).is_err());
         assert!(validate_reasoning_effort("codex", Some("future_effort")).is_ok());
         assert!(validate_reasoning_effort("codex", Some("")).is_err());
+        for provider in ["grok", "cline", "codex"] {
+            assert!(validate_reasoning_effort(provider, Some("-x")).is_err(), "{provider}");
+            assert!(validate_reasoning_effort(provider, Some("--help")).is_err(), "{provider}");
+            assert!(validate_reasoning_effort(provider, Some("extra-high")).is_ok(), "{provider}");
+        }
     }
 
     #[test]

@@ -54,7 +54,8 @@ pub(super) const NOT_A_LEVEL: &str = "reasoningEffort must be a level such as lo
 /// letters, digits, dashes or underscores (catalog IDs such as `extra_high`), so a note or snapshot can never carry an inflated value.
 pub(super) fn check(effort: Option<String>) -> Result<Option<String>, &'static str> {
     let Some(effort) = normalise(effort) else { return Ok(None) };
-    let level = effort.len() <= EFFORT_MAX && effort.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
+    // A leading dash could read as a flag where a harness passes the effort as an argv value.
+    let level = effort.len() <= EFFORT_MAX && !effort.starts_with('-') && effort.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_');
     if level { Ok(Some(effort)) } else { Err(NOT_A_LEVEL) }
 }
 

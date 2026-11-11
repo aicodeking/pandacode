@@ -265,9 +265,11 @@ run with full access; allow full access for remote tasks to drive a team remotel
 always run with full access ([architect-workers.md](architect-workers.md)). The same sentence
 refuses `recipes.run` on a team lead, a `queue.update` of a lead's queued prompt (and a headless
 host's queue drain into one), `usage.clearLimit` and `usage.resumeAtReset {on: true}` on a lead,
-`thread.setStage` on a lead (it can wake the lead), a `schedules.create`/`update`, `runNow` or enable that
+`thread.setStage` and `thread.archive` (either way) on a lead (a stage change can wake the lead),
+`thread.setGoal` on a lead (the lead reads its goal like a prompt), a `schedules.create`/`update`, `runNow` or enable that
 targets one, and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
-`github.startTask` make their task without the saved default team (`start::parse` leaves `team`
+`github.startTask` make their task without the saved default team, and so does `worktree.create`
+when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
 default team, with or without the switch, as on the desktop. This prevents
 accidents; it is not a boundary against a device that can also answer approvals.
@@ -1162,12 +1164,12 @@ paged replies take `offset` and answer `next`.
 | Method | Scope | RO / lane | Params → notes |
 |---|---|---|---|
 | `thread.rename` | control | O | `sessionId, title` |
-| `thread.archive` | control | O | `sessionId, archived` (the phone's Archived section and Undo) |
+| `thread.archive` | control | O | `sessionId, archived` (the phone's Archived section and Undo). On a team lead it needs Full access for remote tasks. |
 | `thread.delete` | full | O | `sessionId` |
 | `thread.pin` | control | O | `sessionId, pinned` |
 | `thread.fork` | control | O | `sessionId, messageId, before?` |
 | `thread.export` | view | RO | `sessionId, offset?, token?` → `{ text, offset, next, total, token, version }`. Offset 0 snapshots the Markdown and answers a `token` (per device and task, 10 min); later pages pass it back and read that snapshot; an unknown or expired token is refused (`This export changed or expired. Export again.`). Without a token (older phones) each page rebuilds and `version` (a hash) shows a change. |
-| `thread.goal` / `thread.setGoal` | view / control | RO / O | `sessionId` / `sessionId, description` |
+| `thread.goal` / `thread.setGoal` | view / control | RO / O | `sessionId` / `sessionId, description`. `thread.setGoal` on a team lead needs Full access for remote tasks. |
 | `thread.setStage` | control | O | `sessionId, stage` (a known task stage). On a team lead it needs Full access for remote tasks. |
 | `slash.list` | view | RO | `sessionId, force?` → `{ commands, warnings, truncated }`; `force` (re-scan the harness) needs control |
 | `slash.resolve` | control | B | `sessionId, text`. Waits in the background lane up to 30 s (Round 20). Refused for a bot's thread. |
@@ -1186,7 +1188,7 @@ paged replies take `offset` and answer `next`.
 | `git.switchBranch` | full | O | `sessionId, branch`. Refused while a background git call holds the checkout, as `git.stage`. |
 | `worktree.merge` | full | B | `sessionId`. Hooks as `git.commit`. |
 | `worktree.remove` | full | B | `sessionId, deleteBranch?` |
-| `worktree.create` | full | B | `sessionId, branch?` (default: from the task's issue or title, under `pandacode/`). Refused while the agent runs or when the task already has one; holds the project's checkout lock. An unstarted task moves into the new worktree (the desktop's `attach_worktree`); a started one gets a new task there with its harness and model (`create_worktree`). `git worktree add` never runs hooks; with the switch off a repository whose config names programs (filters) is refused. Reply `{sessionId, moved, branch}` (no local path since Round 20). |
+| `worktree.create` | full | B | `sessionId, branch?` (default: from the task's issue or title, under `pandacode/`). Refused while the agent runs or when the task already has one; holds the project's checkout lock. An unstarted task moves into the new worktree (the desktop's `attach_worktree`); a started one gets a new task there with its harness and model (`create_worktree`), and the saved default team only with Full access for remote tasks. `git worktree add` never runs hooks; with the switch off a repository whose config names programs (filters) is refused. Reply `{sessionId, moved, branch}` (no local path since Round 20). |
 | `pull.create` | full | B | `sessionId, title, body?, base?, draft?, sendId?`. The push runs hooks as `git.commit`. |
 | `pull.review` | full | B | `sessionId, event: approve\|request_changes\|comment, body?, sendId?` → `{ number }`. `gh pr review` on the task's linked pull request through `run_gh_as` with the phone's trust; the body goes as `--body=` and is required except for approve. A once-method (`sendId`); clears the pull cache. Needs Full, like `github.comment`, because it speaks on GitHub as the user's `gh` account. |
 | `turn.summary` / `turn.diff` | view | RO | `sessionId, messageId` / `+ path`. Below Full, `turn.diff` refuses a secret file (by its path or a rename's old path), as `files.read` does. |
