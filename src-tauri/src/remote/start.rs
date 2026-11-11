@@ -643,6 +643,7 @@ pub(crate) async fn run_cancellable(app: &tauri::AppHandle, from: &str, start: S
 /// main checkout is busy, dirty or elsewhere), and the note saying why it fell back.
 /// An untrusted phone (Full access off) is refused before the first Git call when the
 /// checkout's own config could run a program ([`workspace::refuse_untrusted_programs`]).
+#[allow(clippy::too_many_arguments)]
 fn prepare(state: &AppState, project: &Project, cloned: bool, worktree: bool, wanted: Option<&str>, progress: &Progress, cancel: &Cancel, trust: workspace::Trust) -> Result<Prepared> {
     check(cancel)?;
     progress.report("preparing", None, None);

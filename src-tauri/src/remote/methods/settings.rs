@@ -464,7 +464,7 @@ mod tests {
         // Round 9: once per sendId, so a retry after a lost reply answers the first add.
         let run = &source[source.find("impl Run for MoodboardAdd").unwrap()..];
         assert!(run[..run.find("\n}\n").unwrap()].contains("once_per_action(ctx.from, \"moodboards.add\""));
-        assert!(body.find("images::restore(").is_some(), "a failed add gives the upload back");
+        assert!(body.contains("images::restore("), "a failed add gives the upload back");
         assert!(parse("moodboards.list", json!({"sessionId": "s1"})).is_ok());
         assert!(parse("moodboards.list", json!({"projectId": ""})).is_err());
         assert!(parse("moodboards.image", json!({"projectId": "p", "boardId": "b", "imageId": "i", "offset": 8, "full": true})).is_ok());

@@ -139,6 +139,8 @@ pub(crate) fn auto_config(harnesses: &[Harness], last: Option<&TeamConfig>) -> T
         workspace: "shared".into(),
         summary_limit: last.map_or(3072, |c| c.summary_limit),
         lead_guidance: None,
+        // The phone has no Council controls, so its automatic teams never convene one.
+        council: None,
     }
 }
 

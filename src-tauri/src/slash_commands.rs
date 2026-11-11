@@ -678,14 +678,14 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
 
 /// [`resolve`] against the latest known catalog only: never starts the harness, for callers
 /// (a phone below the task's mode) that may not launch discovery in the project.
-pub fn resolve_known(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
+pub async fn resolve_known(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
     let Some((name, _)) = split_command(text) else {
         return Ok(plain_resolution(text));
     };
     if is_local_control(name) {
         return resolve_from_catalog(provider, text, &Catalog::default());
     }
-    resolve_from_catalog(provider, text, &snapshot(provider, cwd)?)
+    resolve_from_catalog(provider, text, &snapshot(provider, cwd).await?)
 }
 
 /// A command may be removed after the picker cached it. Claude's fresh

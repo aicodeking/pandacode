@@ -126,7 +126,7 @@ async fn listed_catalog(provider: &str, cwd: &std::path::Path, force: bool, cont
     if control {
         slash_commands::catalog(provider, cwd, force).await
     } else {
-        slash_commands::snapshot(provider, cwd)
+        slash_commands::snapshot(provider, cwd).await
     }
 }
 
@@ -211,7 +211,7 @@ impl Run for SlashResolve {
             let resolution = if may_discover(&ctx, &mode) {
                 slash_commands::resolve(&provider, &cwd, &self.text).await?
             } else {
-                slash_commands::resolve_known(&provider, &cwd, &self.text)?
+                slash_commands::resolve_known(&provider, &cwd, &self.text).await?
             };
             Ok(resolution_reply(&self.text, &resolution))
         })
@@ -937,7 +937,7 @@ mod tests {
         let started = std::time::Instant::now();
         let listed = runtime.block_on(listed_catalog("claude", &cwd, false, false)).unwrap();
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "no harness started");
-        let snapshot = slash_commands::snapshot("claude", &cwd).unwrap();
+        let snapshot = runtime.block_on(slash_commands::snapshot("claude", &cwd)).unwrap();
         assert_eq!(serde_json::to_value(&listed).unwrap(), serde_json::to_value(&snapshot).unwrap());
         assert!(runtime.block_on(listed_catalog("nope", &cwd, false, false)).is_err(), "providers still validated");
         let source = include_str!("composer.rs");
@@ -974,12 +974,14 @@ mod tests {
         assert!(resolve.find("may_discover(&ctx, &mode)").unwrap() < resolve.find("slash_commands::resolve(").unwrap());
         assert!(resolve.contains("slash_commands::resolve_known("));
         let cwd = std::env::temp_dir().join(format!("pandacode-slash-known-{}", uuid::Uuid::new_v4().simple()));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let known = |provider: &str, text: &str| runtime.block_on(slash_commands::resolve_known(provider, &cwd, text));
         let started = std::time::Instant::now();
-        let unknown = slash_commands::resolve_known("claude", &cwd, "/definitely-not-a-command now");
+        let unknown = known("claude", "/definitely-not-a-command now");
         assert!(started.elapsed() < std::time::Duration::from_secs(2), "no harness started");
         assert!(unknown.err().unwrap().contains("Unknown command"));
-        assert_eq!(slash_commands::resolve_known("claude", &cwd, "plain text").unwrap().prompt, "plain text");
-        assert!(slash_commands::resolve_known("nope", &cwd, "/review").is_err());
+        assert_eq!(known("claude", "plain text").unwrap().prompt, "plain text");
+        assert!(known("nope", "/review").is_err());
     }
 
     /// Round 12: discovery starts the harness in the project, so no remote method may reach it

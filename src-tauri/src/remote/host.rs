@@ -2021,8 +2021,10 @@ fn send_known(key: &str) -> bool {
 
 /// Prompts with a `sendId` running now, so a concurrent repeat (a retry after a generation
 /// change) waits for the first instead of sending the prompt twice.
-fn sends_in_flight() -> &'static StdMutex<HashMap<String, tokio::sync::watch::Sender<Option<Result<Value>>>>> {
-    static IN_FLIGHT: OnceLock<StdMutex<HashMap<String, tokio::sync::watch::Sender<Option<Result<Value>>>>>> = OnceLock::new();
+type SendWaiters = StdMutex<HashMap<String, tokio::sync::watch::Sender<Option<Result<Value>>>>>;
+
+fn sends_in_flight() -> &'static SendWaiters {
+    static IN_FLIGHT: OnceLock<SendWaiters> = OnceLock::new();
     IN_FLIGHT.get_or_init(Default::default)
 }
 
