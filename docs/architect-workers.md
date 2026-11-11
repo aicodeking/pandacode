@@ -115,16 +115,15 @@ chat:
   right before it starts).
 - **Fork:** Codex `/fork` of a worker session is refused. A transcript fork of a worker (fork
   at a message) starts in its lead's mode, or Ask if the lead is gone, never in full access.
-- **Remote devices** cannot prompt, steer or resume a team's lead unless "Full access for
-  remote tasks" is on, since its workers would run with full access, and a task they start
+- **Remote devices** cannot prompt, steer, resume, approve for or answer a team's lead unless
+  "Full access for remote tasks" is on (declining an approval or cancelling a question still works), since its workers would run with full access, and a task they start
   then gets no saved default team ([remote-access.md](remote-access.md)).
 - A `reasoningEffort` that is not a level (over 32 characters, or anything but letters,
   digits, dashes and underscores) is refused for an explicit provider and ignored with a note
   otherwise.
 
 An assignment or follow-up may set `reasoningEffort` (a worker's own sub-worker follow-ups
-accept it too, but the `sub_workers` schema does not advertise it: the worker tool budget
-has no room) (`low`…`max`; some models also
+accept it too, and the `sub_workers` schema advertises it) (`low`…`max`; some models also
 `off`, `minimal`); it overrides the profile's or the lead's default. It is normalised
 (trimmed, lowercase) and fitted to the chosen model (`architect/model_efforts.rs`):
 - A level is lowered only when the model's harness catalog is known to lack it (the

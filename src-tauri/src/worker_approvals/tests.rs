@@ -635,6 +635,22 @@ fn the_run_registry_is_bounded_oldest_first() {
 }
 
 #[test]
+fn a_lookup_for_an_unknown_run_never_evicts_a_mark_at_the_cap() {
+    let mut registry = Vec::new();
+    for i in 0..RUNS_MAX {
+        run_entry(&mut registry, &format!("owner-{i}")).stopped_by_owner = true;
+    }
+    // A read of an unknown run adds nothing, so the oldest owner's stop mark stays.
+    assert!(!update_run(&mut registry, "unknown", |state| state.stopped_by_owner));
+    assert_eq!(registry.len(), RUNS_MAX);
+    assert_eq!(registry.first().map(|(id, _)| id.as_str()), Some("owner-0"), "nothing was evicted");
+    // An update that keeps something is added (evicting the oldest idle mark).
+    update_run(&mut registry, "kept", |state| state.reasons.push("Stopped: x.".into()));
+    assert!(registry.iter().any(|(id, _)| id == "kept"));
+    assert_eq!(registry.len(), RUNS_MAX);
+}
+
+#[test]
 fn a_run_with_nothing_kept_leaves_no_entry() {
     let run = "empty-run";
     in_flight(&format!("{run}:1"), true);

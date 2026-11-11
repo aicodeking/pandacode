@@ -255,8 +255,21 @@ fn run_entry<'a>(runs: &'a mut Runs, run_id: &str) -> &'a mut RunState {
 
 /// Updates a run's state; a state left empty is removed.
 fn with_run<R>(run_id: &str, update: impl FnOnce(&mut RunState) -> R) -> R {
-    let mut runs = runs();
-    let result = update(run_entry(&mut runs, run_id));
+    update_run(&mut runs(), run_id, update)
+}
+
+/// `with_run` on a given registry. An unknown run is added only when the update leaves it
+/// non-empty, so a lookup never evicts another run's mark at the cap.
+fn update_run<R>(runs: &mut Runs, run_id: &str, update: impl FnOnce(&mut RunState) -> R) -> R {
+    if !runs.iter().any(|(id, _)| id == run_id) {
+        let mut state = RunState::default();
+        let result = update(&mut state);
+        if !state.is_empty() {
+            *run_entry(runs, run_id) = state;
+        }
+        return result;
+    }
+    let result = update(run_entry(runs, run_id));
     runs.retain(|(id, state)| id != run_id || !state.is_empty());
     result
 }

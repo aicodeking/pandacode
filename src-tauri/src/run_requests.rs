@@ -5,7 +5,15 @@ use super::*;
 
 /// Saves an approval or question and, for a team worker, resolves it or stops the run at once,
 /// even when it could not be saved (no request ID, a storage error): a worker never waits on a
-/// person. This locks the agents registry, so the sink must never be invoked while it is held.
+/// person.
+///
+/// # Locking
+/// Resolving a worker's request locks the agents registry (`worker_approvals::resolve_if_worker`)
+/// with a plain `std::sync::Mutex`, which is not reentrant: the run's event sink, and so this
+/// function, must never be called on a thread that already holds `agents`, or it deadlocks.
+/// Providers emit events from their own tasks with no registry lock held; keep it that way, and
+/// release any `agents` guard before emitting from code that holds one. (No runtime check: a
+/// std mutex cannot tell whether the current thread is its holder.)
 pub(crate) fn record_request_event(
     store: &Arc<Mutex<Store>>,
     run: &worker_approvals::Run,

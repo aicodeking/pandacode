@@ -259,9 +259,6 @@ fn save_pending_request(
     )
 }
 
-/// Whether a run is a team worker's: its team admission says so when there is one, otherwise
-/// (a re-attached cloud run) the session's own worker row does. The run's agent and its sink
-/// both use this one answer, so a worker's requests never wait on a person on any launch path.
 /// What a run keeps outside its registry entry: its `worker_approvals` run state, its decline
 /// reasons and (for a team worker) its launch prompt. Dropped before the run settles (an early
 /// return, a cloud run left re-attachable at shutdown, a panic), it forgets all three, so no
@@ -293,6 +290,9 @@ impl Drop for RunLeftovers {
     }
 }
 
+/// Whether a run is a team worker's: its team admission says so when there is one, otherwise
+/// (a re-attached cloud run) the session's own worker row does. The run's agent and its sink
+/// both use this one answer, so a worker's requests never wait on a person on any launch path.
 fn worker_launch(store: &Store, team: Option<&architect::Admission>, session_id: &str) -> Result<bool> {
     match team {
         Some(_) => Ok(worker_approvals::is_worker_launch(team, session_id)),
@@ -2352,6 +2352,7 @@ async fn launch_operation_admitted(
                     e.kind.as_str(),
                     "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
                 ) {
+                    // Locks `agents`: this sink is never called with that lock held (see its doc).
                     let saved = record_request_event(&store_sink, &own_run, team_worker, &goal_agents_sink, &mut e);
                     if saved.is_ok() && e.kind == "approval" {
                         if let Some(request_id) = &e.request_id {

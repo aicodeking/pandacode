@@ -323,8 +323,9 @@ pub(crate) fn create_user_task(
 ) -> Result<Session> {
     create_task_with(store, project_id, provider, model, mode, details, true)
 }
-/// A user task without the saved default team (a remote start on a host without "Full access for
-/// remote tasks": a team's workers always run in full access).
+/// A user task without the saved default team. Callers: a remote `task.start` on a host without
+/// "Full access for remote tasks" (a team's workers always run in full access), the desktop's
+/// /btw side task (`create_session` with `team: false`), the remote `btw.ask`, and chat creation.
 pub(crate) fn create_task_without_team(
     store: &Store,
     project_id: &str,

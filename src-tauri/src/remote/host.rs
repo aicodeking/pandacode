@@ -668,6 +668,13 @@ pub(crate) async fn allow_remote_team_for(state: &AppState, session_id: &str, fu
     crate::blocking(move || allow_remote_team(&*store.lock().map_err(|e| e.to_string())?, &id, full_access)).await
 }
 
+/// Whether an `input.respond` response only cancels or declines the question
+/// (`{action: "cancel" | "decline"}`, or a questions form sent back with no answers).
+fn declines_input(response: &Value) -> bool {
+    matches!(response["action"].as_str(), Some("cancel" | "decline"))
+        || (response.get("action").is_none() && response["answers"].as_object().is_some_and(|answers| answers.is_empty()))
+}
+
 /// The response to one request frame, or None when it has no usable id.
 pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value) -> Option<Value> {
     let id = message["id"].as_str().filter(|id| valid_id(id).is_ok())?;
@@ -1649,12 +1656,20 @@ async fn run_one(app: &tauri::AppHandle, from: &str, call: Call, full_access: bo
         }
         Call::Approve { session_id, request_id, approve } => {
             drivable_task(app, from, &session_id, full_access).await?;
+            // Approving lets a lead go on and dispatch full-access workers; declining only stops it.
+            if approve {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_approval(app.clone(), state, session_id.clone(), request_id.clone(), approve).await?;
             answered(app, session_id, "approval_cancelled", request_id);
             Ok(json!({}))
         }
         Call::Answer { session_id, request_id, response } => {
             drivable_task(app, from, &session_id, full_access).await?;
+            // An answer steers a lead like a prompt; cancelling or declining only stops it.
+            if !declines_input(&response) {
+                allow_remote_team_for(&state, &session_id, full_access).await?;
+            }
             crate::respond_user_input(app.clone(), state, session_id.clone(), request_id.clone(), response).await?;
             answered(app, session_id, "input_cancelled", request_id);
             Ok(json!({}))
@@ -5203,6 +5218,17 @@ mod tests {
         assert!(allow_remote_team(&store, &plain.id, false).is_ok(), "a task without a team is unaffected");
     }
 
+    /// A phone without the switch may still cancel or decline a lead's question, but not answer it.
+    #[test]
+    fn only_cancelling_or_declining_a_question_skips_the_team_gate() {
+        for stop in [json!({"action": "cancel", "content": null}), json!({"action": "decline", "content": null}), json!({"answers": {}})] {
+            assert!(declines_input(&stop), "{stop}");
+        }
+        for answer in [json!({"action": "accept", "content": {"a": 1}}), json!({"action": "accept"}), json!({"answers": {"q": {"answers": ["Ship it"]}}}), json!("free text"), json!(null), json!({"action": "accept", "answers": {}})] {
+            assert!(!declines_input(&answer), "{answer}");
+        }
+    }
+
     /// Every remote way to prompt, steer, resume or start a team checks the team gate.
     #[test]
     fn every_remote_entry_that_drives_a_team_checks_the_team_gate() {
@@ -5214,8 +5240,10 @@ mod tests {
         let host = include_str!("host.rs");
         let gate = "allow_remote_team_for(";
         assert!(after(host, "async fn send_prompt(", "\n}\n").contains(gate), "task.send");
-        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::TeamResume { session_id } => {"] {
-            assert!(after(host, call, "\n        Call::").contains(gate), "{call}");
+        for call in ["Call::Steer { session_id, text, send_id } => {", "Call::TeamResume { session_id } => {", "Call::Approve { session_id, request_id, approve } => {", "Call::Answer { session_id, request_id, response } => {"] {
+            let body = after(host, call, "\n        Call::");
+            let at = body.find(gate).unwrap_or_else(|| panic!("{call}"));
+            assert!(body.find("crate::respond_").is_none_or(|respond| at < respond), "{call} checks before it responds");
         }
         assert!(after(host, "Call::Start(start) => Call::Start(start::Start { mode: Some(", "\n").contains("team: false"), "task.start");
         let tools = include_str!("methods/tools.rs");

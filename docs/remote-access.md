@@ -266,13 +266,16 @@ always run with full access ([architect-workers.md](architect-workers.md)). The 
 refuses `recipes.run` on a team lead, a `queue.update` of a lead's queued prompt (and a headless
 host's queue drain into one), `usage.clearLimit` and `usage.resumeAtReset {on: true}` on a lead,
 `thread.setStage` and `thread.archive` (either way) on a lead (a stage change can wake the lead),
-`thread.setGoal` on a lead (the lead reads its goal like a prompt), a `schedules.create`/`update`, `runNow` or enable that
+`thread.setGoal` on a lead (the lead reads its goal like a prompt), an `approval.respond` with
+`approve: true` or an `input.respond` that answers a lead's question (an answer steers the lead
+like a prompt; `approve: false`, and a response that only cancels or declines, `{action: "cancel"
+| "decline"}` or a questions form with no answers, stay allowed so a phone can still stop it), a `schedules.create`/`update`, `runNow` or enable that
 targets one, and every `team.start` (listed in `fullAccessSwitch`); `chat.start` and
 `github.startTask` make their task without the saved default team, and so does `worktree.create`
 when it makes a new task for a started one (`start::parse` leaves `team`
 off; only a caller that saw the switch turns it on). A `btw.ask` side thread never gets the saved
 default team, with or without the switch, as on the desktop. This prevents
-accidents; it is not a boundary against a device that can also answer approvals.
+accidents; it is not a boundary against a device that can also answer a plain task's approvals.
 Shells sit beyond any task's mode, so while it is off `terminal.list`, `terminal.open`,
 `terminal.read`, `terminal.write` (a shell's scrollback holds whatever was typed or printed),
 `terminal.resize`, `terminal.close`,

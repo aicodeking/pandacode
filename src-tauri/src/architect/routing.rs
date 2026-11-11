@@ -290,10 +290,6 @@ pub(super) fn usable(profile: &WorkerProfile) -> bool {
     model_routing::allowed(&profile.provider, &profile.model) && crate::model_health::is_healthy(&profile.provider, &profile.model)
 }
 
-/// Staffs a `profileId: "auto"` assignment, or the lead's own model when unrouted (a configured or named
-/// team without the lead's usable model uses its first usable entry, else the lead's own model), and says which in one line. A fresh assignment
-/// in Cheap or Balanced mode opens on the ladder's first (cheapest safe) rung and escalates from there;
-/// Best mode and escalations take the policy's pick.
 /// The model a route staffs (`opening_rung`): a Council pin first; Cheap keeps its contract (the
 /// opener must clear the minimum lower bound, else the policy pick); Best mode and escalations take
 /// the policy's pick.
@@ -326,6 +322,10 @@ fn unrouted(config: &TeamConfig, lead: &storage::Session) -> WorkerProfile {
     entries().find(|p| p.provider == lead.provider && p.model == lead.model).or_else(|| entries().next()).cloned().unwrap_or_else(own)
 }
 
+/// Staffs a `profileId: "auto"` assignment, or the lead's own model when unrouted (a configured or named
+/// team without the lead's usable model uses its first usable entry, else the lead's own model), and says which in one line. A fresh assignment
+/// in Cheap or Balanced mode opens on the ladder's first (cheapest safe) rung and escalates from there;
+/// Best mode and escalations take the policy's pick.
 /// Returns the profile, the routing note, and how the effort was fitted to the model.
 pub(super) fn staff(config: &TeamConfig, lead: &storage::Session, assignment: &Assignment, routes: &AutoRoutes) -> Result<(WorkerProfile, String, Option<String>)> {
     if assignment.provider.is_some() || assignment.model.is_some() {
