@@ -512,6 +512,11 @@ export class ArchitectView {
     const approvalPending = team.workers.some(member => this.needsApproval(member.sessionId));
     const hideAccess = !leadMode || leadMode === 'full' || !team.workers.length || Boolean(worker) || approvalPending || accessDismissed(this.taskId);
     if (access.hidden !== hideAccess) access.hidden = hideAccess;
+    // A Plan (read-only) or Standard lead may not edit freely itself, so the note says plainly that its workers can.
+    // Worded without picker labels, which differ by harness (Codex calls Plan "Read only").
+    const accessLine = leadMode === 'plan' || leadMode === 'ask' ? `Workers have full access and can edit files, even though this lead ${leadMode === 'plan' ? 'is read-only' : 'asks first'}.` : 'Workers have full access; approvals are automatic.';
+    const accessText = access.querySelector('.architect-panel-access-text')!.firstChild!;
+    if (accessText.textContent !== accessLine) accessText.textContent = accessLine;
     panel.querySelector<HTMLElement>('.architect-worker-list')!.hidden = Boolean(worker);
     if (worker) { panel.querySelector<HTMLElement>('.architect-panel-tally')!.hidden = true; panel.querySelector<HTMLElement>('.architect-panel-tally-hidden')!.hidden = true; }
     const councilSlot = panel.querySelector<HTMLElement>('.council-slot')!;

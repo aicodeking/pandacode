@@ -132,7 +132,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
 .architect-worker-item { --elapsed-w: 2.6rem; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: var(--ds-radius-control); }
 .architect-worker-item[data-sub] { margin-inline-start: 22px; }
 .architect-worker-item[data-open], .architect-worker-item[data-open]:hover { background: var(--ds-card-inner); box-shadow: inset 0 0 0 1px var(--ds-border); }
-.architect-worker-item > .architect-worker-row { display: flex; width: 100%; min-width: 0; height: 38px; min-height: 0; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 2px 0 8px; border-radius: var(--ds-radius-control); text-align: left; color: var(--muted); font-size: var(--ds-text-ui); }
+.architect-worker-item > .architect-worker-row { display: flex; width: 100%; min-width: 0; height: 38px; min-height: 0; align-items: center; justify-content: flex-start; gap: 8px; padding: 0 6px 0 8px; border-radius: var(--ds-radius-control); text-align: left; color: var(--muted); font-size: var(--ds-text-ui); }
 /* One full-width hover for the whole item (row and caret together); an open item keeps that fill. */
 .architect-worker-item:hover { background: var(--ds-row-hover); }
 /* An open item keeps its single fill under the pointer (no second tint, so an open request card never looks
@@ -221,7 +221,7 @@ html[data-theme="dark"] .architect-assist { color: var(--accent); }
   .architect-progress { box-shadow: inset 0 0 0 1px var(--text); }
   .architect-worker-item[data-open] { background: none; outline: 1px solid var(--border); }
 }
-@media (forced-colors: active) { .architect-progress-fill { background: Highlight; } .architect-worker-glyph[data-state-tone], .architect-tally-glyph[data-state-tone] { color: CanvasText; } .architect-worker-item[data-open] { outline: 1px solid CanvasText; outline-offset: -1px; } }
+@media (forced-colors: active) { .architect-progress { outline: 1px solid CanvasText; } .architect-progress-fill { background: Highlight; } .architect-worker-glyph[data-state-tone], .architect-tally-glyph[data-state-tone] { color: CanvasText; } .architect-worker-item[data-open] { outline: 1px solid CanvasText; outline-offset: -1px; } }
 /* Pausing or stopping is the user's choice: say so quietly, not in red. */
 .architect-panel-error.is-notice { color: var(--muted); }
 .architect-worker-error { display: block; color: var(--danger); white-space: normal; }

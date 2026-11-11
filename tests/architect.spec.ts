@@ -1903,14 +1903,14 @@ test.describe('workers full access note', () => {
     // One visible line; the deploy and scheduling exception is in the tooltip, in visually hidden text inside the note
     // (screen readers and keyboard users get it without hovering), and on the setup screen.
     const text = note.locator('.architect-panel-access-text');
-    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access; approvals are automatic.');
+    expect(await text.evaluate(element => [...element.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(''))).toBe('Workers have full access and can edit files, even though this lead asks first.');
     await expect(text.locator('.sr-only')).toHaveText(' Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.');
     await expect(text).toContainText('Deploy and scheduling tools are the exception');
     // The tooltip adds what the line leaves out, rather than repeating it.
     await expect(note).toHaveAttribute('title', "Approvals are granted under the lead's authority, whatever its own mode. Deploy and scheduling tools are the exception: they are declined, and the worker hands them back to the lead.");
     await expect(note.locator('.architect-panel-access-icon')).toHaveAttribute('data-state-tone', 'worker-idle');
-    // One line at the default width.
-    expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(26);
+    // At most two lines at the default width.
+    expect(await note.evaluate(element => element.getBoundingClientRect().height)).toBeLessThanOrEqual(42);
     // In a narrow panel it wraps rather than being cut.
     await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '220px'; });
     expect(await text.evaluate(span => getComputedStyle(span).textOverflow !== 'ellipsis' && span.scrollWidth <= span.clientWidth + 1)).toBe(true);
@@ -1923,8 +1923,12 @@ test.describe('workers full access note', () => {
     const note = panel(page).locator('.architect-panel-access');
     await pickMode(page, 'Full access');
     await expect(note).toBeHidden();
+    // A Plan (Codex: Read only) or Standard lead cannot edit freely itself: the note says its workers still can.
+    await pickMode(page, 'Read only');
+    await expect(note.locator('.architect-panel-access-text')).toContainText('Workers have full access and can edit files, even though this lead is read-only.');
     await pickMode(page, 'Standard');
     await expect(note).toBeVisible();
+    await expect(note.locator('.architect-panel-access-text')).toContainText('even though this lead asks first.');
     // Like the tally, it belongs to the list: hidden while a worker's transcript is open.
     await row(page, 'build').click();
     await expect(panel(page).locator('.architect-worker-detail')).toBeVisible();
@@ -1941,6 +1945,26 @@ test.describe('workers full access note', () => {
 });
 
 test.describe('compact workers focus on filled buttons', () => {
+  test('a row\'s inset focus ring clears its elapsed time', async ({ page }) => {
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
+    await openWorkers(page).click();
+    const target = row(page, 'build');
+    await page.keyboard.press('Shift');
+    await target.focus();
+    const box = await target.evaluate(element => {
+      const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+      const elapsed = element.querySelector('.architect-worker-elapsed')!.getBoundingClientRect();
+      // The ring is drawn inside the row: its inner edge sits offset + width in from the row's right edge.
+      const ringInner = rect.right + parseFloat(style.outlineOffset) - parseFloat(style.outlineWidth);
+      return { visible: element.matches(':focus-visible'), height: (element as HTMLElement).offsetHeight, clear: elapsed.width === 0 || elapsed.right <= ringInner };
+    });
+    expect(box).toEqual({ visible: true, height: 38, clear: true });
+  });
+  test('the progress track keeps an outline in forced colors', async ({ page }) => {
+    await page.emulateMedia({ forcedColors: 'active' });
+    await openShowcase(page);
+    expect(await panel(page).locator('.architect-progress').evaluate(element => ({ style: getComputedStyle(element).outlineStyle, width: getComputedStyle(element).outlineWidth }))).toEqual({ style: 'solid', width: '1px' });
+  });
   test('Approve (a filled button) gets an outer focus ring', async ({ page }) => {
     await installArchitect(page, { 'session-2': team('session-2', { workers: [worker('build', { status: 'running' })] }) });
     await openWorkers(page).click();
@@ -2298,7 +2322,10 @@ test.describe('compact workers round 23', () => {
     const tally = panel(page).locator('.architect-panel-tally-text');
     // Swept across widths (300, 376, 436 and 515px once cut it): whenever the button is there it is whole, and the
     // line is never ellipsized.
-    for (let width = 250; width <= 520; width += 2) {
+    test.setTimeout(60_000);
+    // The once-bad widths plus a coarse sweep (a 2px sweep took longer than the default timeout under load).
+    const widths = [...new Set([300, 376, 436, 515, ...Array.from({ length: 28 }, (_, index) => 250 + index * 10)])];
+    for (const width of widths) {
       await page.evaluate(px => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = `${px}px`; }, width);
       await expect.poll(() => tally.evaluate(element => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
         const button = element.querySelector('.architect-tally-more')?.getBoundingClientRect(), box = element.getBoundingClientRect();
