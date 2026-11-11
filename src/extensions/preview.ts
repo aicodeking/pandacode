@@ -13,7 +13,7 @@ function read(): ExtensionSnapshot {
     const packages: ExtensionPackage[] = JSON.parse(text);
     if (!Array.isArray(packages) || packages.some(item => typeof item.enabled !== 'boolean') || !validateContract('packages', packages.map(item => item.manifest)).ok) throw new Error('Invalid');
     // Assets always come from the canonical fixture, never untrusted localStorage markup.
-    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg } })), diagnostics: [] };
+    return { safeMode, packages: packages.map(item => ({ ...item, icons: { 'sample.project-helper/info': svg } })), diagnostics: packages.flatMap(item => (item.manifest.contributes.menus ?? []).filter(menu => !menu.icon).map(menu => `${menu.id}: missing icon; using a safe fallback host icon.`)) };
   } catch { return { safeMode, packages: [], diagnostics: ['Corrupt preview extension record; activation bypassed.'] }; }
 }
 export function previewExtensions(command: string, args: Record<string, unknown>): ExtensionSnapshot {
@@ -24,10 +24,13 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_install') {
     if (snapshot.packages.some(item => item.manifest.id === manifest.id)) throw new Error('Duplicate package ownership; already installed.');
     snapshot.packages.push({ manifest, enabled: false, icons: { 'sample.project-helper/info': svg } });
+  } else if (command === 'extensions_uninstall') {
+    snapshot.packages = snapshot.packages.filter(item => item.manifest.id !== args.id);
   } else if (command === 'extensions_enable') {
     const item = snapshot.packages.find(item => item.manifest.id === args.id);
     if (!item) throw new Error('Extension not found.');
     item.enabled = args.enabled === true;
+    item.reason = null;
   } else throw new Error('Unsupported extension preview command.');
   localStorage.setItem(key, JSON.stringify(snapshot.packages)); return snapshot;
 }

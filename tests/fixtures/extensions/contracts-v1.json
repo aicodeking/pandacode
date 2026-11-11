@@ -5,14 +5,14 @@
     "ok": true,
     "value": {
       "activationOrder": ["sample.project-helper"],
-      "menuOrder": ["sample.project-helper/header"],
+      "menuOrder": ["sample.project-helper/sidebar", "sample.project-helper/header"],
       "packages": [{
         "manifestVersion": 1, "id": "sample.project-helper", "version": "1.0.0",
         "engines": { "pandacodeApi": "^1.0.0" }, "extensionKind": "ui", "permissions": ["ui.contribute"],
         "contributes": {
           "icons": [{ "id": "sample.project-helper/info", "asset": "assets/info.svg" }],
           "commands": [{ "id": "sample.project-helper/hello", "title": "Project helper", "action": { "kind": "showMessage", "message": "Extension installed successfully" } }],
-          "menus": [{ "id": "sample.project-helper/header", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "icon": "sample.project-helper/info", "group": "extensions", "order": 100 }]
+          "menus": [{ "id": "sample.project-helper/header", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "icon": "sample.project-helper/info", "group": "extensions", "order": 100 }, { "id": "sample.project-helper/sidebar", "location": "panda.sidebar.footer", "command": "sample.project-helper/hello", "icon": "sample.project-helper/info", "group": "extensions", "order": 100 }]
         }
       }]
     },
@@ -41,7 +41,7 @@
     { "name": "surface version is negotiated", "kind": "surface", "input": { "schemaVersion": 2 }, "expected": { "ok": false, "error": { "schemaVersion": 1, "code": "InvalidShape", "path": "$/id", "ids": [] } } },
     { "name": "JSON numeric version representation is equivalent", "kind": "context", "input": { "schemaVersion": 1.0, "windowId": "main", "surfaceId": "panda.sidebar.footer", "revision": 1.0 }, "expected": { "ok": true, "value": { "schemaVersion": 1, "windowId": "main", "surfaceId": "panda.sidebar.footer", "revision": 1 }, "diagnostics": [] } },
     { "name": "declared view action", "kind": "packages", "sample": true, "edits": [{ "path": "/0/contributes/views", "value": [{ "id": "sample.project-helper/view", "title": "Details", "text": "Static text" }] }, { "path": "/0/contributes/commands/0/action", "value": { "kind": "openView", "view": "sample.project-helper/view" } }], "expected": "sample", "expectedEdits": [{ "path": "/value/packages/0/contributes/views", "value": [{ "id": "sample.project-helper/view", "title": "Details", "text": "Static text" }] }, { "path": "/value/packages/0/contributes/commands/0/action", "value": { "kind": "openView", "view": "sample.project-helper/view" } }] },
-    { "name": "ordering overrides numeric suggestion deterministically", "kind": "packages", "sample": true, "edits": [{ "path": "/0/contributes/menus/-", "value": { "id": "sample.project-helper/second", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "group": "extensions", "order": 0, "after": ["sample.project-helper/header"] } }], "expected": "sample", "expectedEdits": [{ "path": "/value/packages/0/contributes/menus/-", "value": { "id": "sample.project-helper/second", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "group": "extensions", "order": 0, "after": ["sample.project-helper/header"] } }, { "path": "/value/menuOrder", "value": ["sample.project-helper/header", "sample.project-helper/second"] }] },
+    { "name": "ordering overrides numeric suggestion deterministically", "kind": "packages", "sample": true, "edits": [{ "path": "/0/contributes/menus/-", "value": { "id": "sample.project-helper/second", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "group": "extensions", "order": 0, "after": ["sample.project-helper/header"] } }], "expected": "sample", "expectedEdits": [{ "path": "/value/packages/0/contributes/menus/-", "value": { "id": "sample.project-helper/second", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "group": "extensions", "order": 0, "after": ["sample.project-helper/header"] } }, { "path": "/value/menuOrder", "value": ["sample.project-helper/sidebar", "sample.project-helper/header", "sample.project-helper/second"] }] },
     { "name": "two-node ordering cycle", "kind": "packages", "sample": true, "edits": [{ "path": "/0/contributes/menus/0/after", "value": ["sample.project-helper/second"] }, { "path": "/0/contributes/menus/-", "value": { "id": "sample.project-helper/second", "location": "panda.workspace.header.actions", "command": "sample.project-helper/hello", "after": ["sample.project-helper/header"] } }], "expected": { "ok": false, "error": { "schemaVersion": 1, "code": "OrderingCycle", "path": "$/ordering", "ids": ["sample.project-helper/header", "sample.project-helper/second"] } } },
     { "name": "two-node dependency cycle", "kind": "packages", "input": [
       { "manifestVersion": 1, "id": "alpha.tool", "version": "1.0.0", "engines": { "pandacodeApi": "~1.0.0" }, "extensionKind": "ui", "permissions": [], "contributes": {}, "dependencies": { "zed.tool": "1.0.0" } },

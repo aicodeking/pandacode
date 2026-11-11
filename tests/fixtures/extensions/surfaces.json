@@ -1,8 +1,11 @@
 {
   "schemaVersion": 1,
   "revision": "979b7d4e3c073e9bebf74f70bf80440a27564237",
-  "phase": "M1 header contribution adapter; legacy rows still have no hide/order/replace adapter",
-  "implementedAdapters": [{ "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons; no built-in customization", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" }],
+  "phase": "M1 shared header/sidebar contribution adapters and package recovery; legacy rows still have no hide/order/replace adapter",
+  "implementedAdapters": [
+    { "id": "panda.workspace.header.actions", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons; no built-in customization", "tests": ["tests/extensions-install.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" },
+    { "id": "panda.sidebar.footer", "owner": "src/extensions/header.ts", "operations": ["contribute"], "scope": "main-window declarative showMessage buttons adjacent to the unchanged built-in footer; owner-scoped disable/uninstall/recovery", "tests": ["tests/extensions-lifecycle.test.mjs", "tests/extensions-install.spec.ts", "src-tauri/src/extensions/packages.rs"], "nativeUiQualification": "unverified; native package policy tests are distinct from installed-window acceptance" }
+  ],
   "format": {
     "members": "[local ID, renderer owner, literal source anchor, contextual objects, optional window override] inherits its family metadata; stable ID is family ID + '.' + local ID",
     "sourceInventory": "[owner, action IDs, modal call count, menu call count]. Each action expands to panda.inventory.<owner stem>.<action>; transient calls are additionally guarded by counts and named in dialogs/menus below. These are audit identities, not a public registration API.",

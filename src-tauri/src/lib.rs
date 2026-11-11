@@ -4190,6 +4190,7 @@ pub fn run() {
                 extensions::packages::extensions_snapshot,
                 extensions::packages::extensions_install,
                 extensions::packages::extensions_enable,
+                extensions::packages::extensions_uninstall,
                 extensions::packages::extensions_safe_mode,
                 voice::voice_configuration,
                 voice::voice_save_profile,

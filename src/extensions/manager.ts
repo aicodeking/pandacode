@@ -2,7 +2,7 @@
 import { call, preview } from '../bridge';
 import { validateContract, type Json } from './contracts';
 
-export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json }[] } }; icons: Record<string, string>; enabled: boolean };
+export type ExtensionPackage = { manifest: { id: string; version: string; contributes: { icons?: { id: string; asset: string }[]; commands?: { id: string; title: string; action: { kind: string; message?: string } }[]; menus?: { id: string; location: string; command: string; icon?: string; visible?: Json; enabled?: Json }[] } }; icons: Record<string, string>; enabled: boolean; reason?: string | null };
 export type ExtensionSnapshot = { safeMode: boolean; packages: ExtensionPackage[]; diagnostics: string[] };
 let snapshot: ExtensionSnapshot = { safeMode: false, packages: [], diagnostics: [] };
 const listeners = new Set<() => void>();
@@ -16,7 +16,7 @@ function accept(value: ExtensionSnapshot): void {
   const checked = validateContract('packages', active.map(item => item.manifest));
   snapshot = structuredClone(value);
   if (!checked.ok) {
-    snapshot.packages.forEach(item => { item.enabled = false; });
+    snapshot.packages.forEach(item => { if (item.enabled) { item.enabled = false; item.reason = `Activation rejected: ${checked.error.code}`; } });
     snapshot.diagnostics.push(`Activation rejected: ${checked.error.code}`);
   }
   if (snapshot.safeMode) snapshot.packages = [];
@@ -33,6 +33,7 @@ export async function installExtension(): Promise<void> {
   accept(await call<ExtensionSnapshot>('extensions_install', { path }));
 }
 export async function enableExtension(id: string, enabled: boolean): Promise<void> { accept(await call<ExtensionSnapshot>('extensions_enable', { id, enabled })); }
+export async function uninstallExtension(id: string): Promise<void> { accept(await call<ExtensionSnapshot>('extensions_uninstall', { id })); }
 export async function enterExtensionsSafeMode(): Promise<void> {
   // Immediate, protected recovery; package data remains untouched.
   accept({ safeMode: true, packages: [], diagnostics: [] });

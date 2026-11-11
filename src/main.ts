@@ -530,8 +530,10 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
 </div><div id="toast" class="toast" role="status" hidden></div><dialog id="dialog"></dialog>`;
 mountDesktopBrand($('.brand-name'));
 // Extension failure must never gate built-in startup; native safe mode precedes package loading.
-void import('./extensions/header').then(async ({ mountExtensionHeader }) => {
-  mountExtensionHeader($('.header-actions'), () => ({ revision: 0, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) }), notify);
+void import('./extensions/header').then(async ({ mountExtensionHeader, mountExtensionActions }) => {
+  const context = () => ({ revision: 0, ...(state.projectId ? { projectId: state.projectId } : {}), ...(state.sessionId ? { sessionId: state.sessionId } : {}) });
+  mountExtensionHeader($('.header-actions'), context, notify);
+  mountExtensionActions($('.sidebar-bottom'), 'panda.sidebar.footer', context, notify);
   await (await import('./extensions/manager')).loadExtensions();
 }).catch(() => undefined);
 // Design-system gallery (src/redesign/gallery.ts): browser preview only, with `?ds`.

@@ -18,7 +18,7 @@ type Result<T> = std::result::Result<T, String>;
 struct Record { schema: u8, archive: String, checksum: String, enabled: bool }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Package { manifest: Value, icons: BTreeMap<String, String>, enabled: bool }
+pub struct Package { manifest: Value, icons: BTreeMap<String, String>, enabled: bool, reason: Option<String> }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot { safe_mode: bool, packages: Vec<Package>, diagnostics: Vec<String> }
@@ -124,7 +124,7 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         icons.insert(icon["id"].as_str().unwrap().to_owned(), static_svg(content)?); allowed.insert(asset.to_owned());
     }
     if files.values().any(|(name, _)| !allowed.contains(name)) { return Err("Undeclared package file; executable files and install hooks are unsupported.".into()); }
-    Ok(Package { manifest, icons, enabled: false })
+    Ok(Package { manifest, icons, enabled: false, reason: None })
 }
 
 impl Packages {
@@ -153,7 +153,25 @@ impl Packages {
             Ok(entries) => {
                 let paths: Vec<_> = entries.take(MAX_PACKAGES + 1).filter_map(|e| e.ok().map(|e| e.path())).collect();
                 if paths.len() > MAX_PACKAGES { result.diagnostics.push("Installed package limit exceeded; activation bypassed.".into()); return result; }
-                for path in paths { match self.record(&path) { Ok((_, package)) => result.packages.push(package), Err(error) => result.diagnostics.push(error) } }
+                for path in paths { match self.record(&path) {
+                    Ok((_, package)) => {
+                        for menu in package.manifest["contributes"]["menus"].as_array().into_iter().flatten() {
+                            if menu["icon"].as_str().is_none() {
+                                result.diagnostics.push(format!("{}: missing icon; using a safe fallback host icon.", menu["id"].as_str().unwrap_or("Action")));
+                            }
+                        }
+                        result.packages.push(package);
+                    },
+                    Err(error) => {
+                        result.diagnostics.push(error.clone());
+                        // A failed record remains manageable without trusting its contents.
+                        if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                            if let Some(id) = path.file_stem().and_then(|s| s.to_str()).filter(|id| safe_name(id)) {
+                                result.packages.push(Package { manifest: json!({"id": id, "version": "unknown", "contributes": {}}), icons: BTreeMap::new(), enabled: false, reason: Some(error) });
+                            }
+                        }
+                    }
+                } }
             },
             Err(_) => result.diagnostics.push("Cannot enumerate extension storage.".into()),
         }
@@ -194,6 +212,15 @@ impl Packages {
         }
         record.enabled = enabled; self.write(&path, &record)
     }
+    fn uninstall(&self, id: &str) -> Result<()> {
+        if self.safe { return Err("Safe mode: package changes are bypassed.".into()); }
+        if !safe_name(id) || id.contains('/') { return Err("Invalid extension identity.".into()); }
+        self.directory()?;
+        let path = self.root.join(format!("{id}.json"));
+        regular(&path)?;
+        // Only this installation record. Core storage and extension data are separate.
+        std::fs::remove_file(path).map_err(|_| "Cannot uninstall extension.".into())
+    }
 }
 
 #[tauri::command]
@@ -207,6 +234,10 @@ pub fn extensions_install(state: tauri::State<'_, ExtensionPackages>, path: Stri
 #[tauri::command]
 pub fn extensions_enable(state: tauri::State<'_, ExtensionPackages>, id: String, enabled: bool) -> Result<Snapshot> {
     let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.enable(&id, enabled)?; Ok(state.snapshot())
+}
+#[tauri::command]
+pub fn extensions_uninstall(state: tauri::State<'_, ExtensionPackages>, id: String) -> Result<Snapshot> {
+    let state = state.0.lock().map_err(|_| "Extension manager unavailable.")?; state.uninstall(&id)?; Ok(state.snapshot())
 }
 #[tauri::command]
 pub fn extensions_safe_mode(state: tauri::State<'_, ExtensionPackages>) -> Result<Snapshot> {
@@ -266,7 +297,7 @@ mod tests {
         let path = packages.root.join("sample.project-helper.json");
         let (mut record, _) = packages.record(&path).unwrap(); record.checksum = "corrupted".into();
         packages.write(&path, &record).unwrap();
-        let recovered = packages.snapshot(); assert!(recovered.packages.is_empty()); assert_eq!(recovered.diagnostics, ["Extension checksum mismatch."]);
+        let recovered = packages.snapshot(); assert!(!recovered.packages[0].enabled); assert!(recovered.packages[0].reason.is_some()); assert_eq!(recovered.diagnostics, ["Extension checksum mismatch."]);
         assert!(packages.enable("sample.project-helper", true).is_err());
         assert!(std::fs::read_dir(&packages.root).unwrap().all(|entry| !entry.unwrap().path().to_string_lossy().ends_with(".stage")));
     }
@@ -278,6 +309,40 @@ mod tests {
         let snapshot = packages.snapshot(); assert!(snapshot.safe_mode); assert!(snapshot.packages.is_empty()); assert!(snapshot.diagnostics.is_empty());
         assert!(packages.install(&sample()).is_err()); assert!(packages.enable("sample.project-helper", true).is_err());
         assert_eq!(std::fs::read(&packages.root).unwrap(), b"not a directory");
+    }
+    #[test]
+    fn uninstall_is_owner_scoped_preserves_data_and_can_remove_a_failed_record() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        packages.install(&sample()).unwrap(); packages.enable("sample.project-helper", true).unwrap();
+        let other = MANIFEST.replace("sample.project-helper", "other.project-helper");
+        packages.install(&archive(&[("extension.json", other.as_bytes()), ("assets/info.svg", SVG.as_bytes())])).unwrap();
+        packages.enable("other.project-helper", true).unwrap();
+        // Synthetic core/data sentinels; manager has no handle to the app database.
+        for name in ["projects", "drafts", "history", "extension-data"] { std::fs::write(storage.0.join(name), b"retain exactly").unwrap(); }
+        packages.uninstall("sample.project-helper").unwrap();
+        let restarted = storage.packages(false).snapshot();
+        assert_eq!(restarted.packages.len(), 1); assert_eq!(restarted.packages[0].manifest["id"], "other.project-helper"); assert!(restarted.packages[0].enabled);
+        for name in ["projects", "drafts", "history", "extension-data"] { assert_eq!(std::fs::read(storage.0.join(name)).unwrap(), b"retain exactly"); }
+        packages.install(&sample()).unwrap(); assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == "sample.project-helper").unwrap().enabled);
+        std::fs::write(packages.root.join("sample.project-helper.json"), b"{broken").unwrap();
+        assert!(packages.snapshot().packages.iter().any(|p| p.reason.is_some()));
+        assert!(packages.enable("sample.project-helper", true).is_err());
+        assert!(packages.uninstall("../drafts").is_err());
+        packages.uninstall("sample.project-helper").unwrap();
+        assert_eq!(packages.snapshot().packages.len(), 1);
+    }
+    #[test]
+    fn missing_optional_icon_has_a_diagnostic_and_retry_revalidates_repaired_storage() {
+        let storage = Storage::new(); let packages = storage.packages(false);
+        let mut manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        for menu in manifest["contributes"]["menus"].as_array_mut().unwrap() { menu.as_object_mut().unwrap().remove("icon"); }
+        packages.install(&archive(&[("extension.json", &serde_json::to_vec(&manifest).unwrap()), ("assets/info.svg", SVG.as_bytes())])).unwrap();
+        packages.enable("sample.project-helper", true).unwrap();
+        let snapshot = packages.snapshot(); assert_eq!(snapshot.diagnostics.len(), 2); assert!(snapshot.diagnostics.iter().all(|d| d.contains("safe fallback"))); assert!(snapshot.packages[0].enabled);
+        let path = packages.root.join("sample.project-helper.json"); let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, b"{broken").unwrap(); assert!(packages.enable("sample.project-helper", true).is_err());
+        std::fs::write(&path, original).unwrap(); packages.enable("sample.project-helper", true).unwrap();
+        assert!(packages.snapshot().packages[0].reason.is_none());
     }
     #[test]
     fn rejects_traversal_absolute_windows_names_and_duplicate_entries() {
@@ -319,7 +384,7 @@ mod tests {
         assert!(packages.enable("../outside", true).is_err());
         let original = packages.root.join("sample.project-helper.json");
         std::fs::copy(&original, packages.root.join("forged.owner.json")).unwrap();
-        let snapshot = packages.snapshot(); assert_eq!(snapshot.packages.len(), 1); assert_eq!(snapshot.diagnostics, ["Extension record ownership mismatch."]);
+        let snapshot = packages.snapshot(); assert_eq!(snapshot.packages.iter().filter(|p| p.reason.is_none()).count(), 1); assert_eq!(snapshot.diagnostics, ["Extension record ownership mismatch."]);
         assert_eq!(std::fs::read_dir(&storage.0).unwrap().count(), 1);
     }
 }

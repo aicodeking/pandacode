@@ -19,6 +19,13 @@
       "icon": "sample.project-helper/info",
       "group": "extensions",
       "order": 100
+    }, {
+      "id": "sample.project-helper/sidebar",
+      "location": "panda.sidebar.footer",
+      "command": "sample.project-helper/hello",
+      "icon": "sample.project-helper/info",
+      "group": "extensions",
+      "order": 100
     }]
   }
 }
